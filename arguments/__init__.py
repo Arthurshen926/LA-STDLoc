@@ -87,6 +87,7 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
 #################################################
         self.loc_feature_lr = 0.001 
+        self.loc_opacity_lr = 0.005
 #################################################
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2

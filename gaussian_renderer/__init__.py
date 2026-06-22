@@ -19,6 +19,13 @@ from scene.gaussian_model import GaussianModel
 from utils.graphics_utils import fov2focal
 
 
+def _radii_to_visibility(info):
+    radii = info["radii"].squeeze(0)
+    if radii.dim() > 1:
+        radii = radii.max(dim=-1).values
+    return radii, radii > 0
+
+
 def get_render_visible_mask(
     pc: GaussianModel, viewpoint_camera, width, height, **rasterize_args
 ):
@@ -132,6 +139,9 @@ def render_gsplat(
     override_color=None,
     rgb_only=False,
     norm_feat_bf_render=True,
+    return_loc_meta=False,
+    use_loc_opacity=False,
+    loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
     longest_edge=640,
@@ -154,6 +164,9 @@ def render_gsplat(
             override_color,
             rgb_only,
             norm_feat_bf_render,
+            return_loc_meta,
+            use_loc_opacity,
+            loc_absgrad,
             near_plane,
             far_plane,
             longest_edge,
@@ -210,8 +223,7 @@ def render_gsplat(
     # [1, H, W, 3] -> [3, H, W]
     rendered_image = render_colors[0].permute(2, 0, 1)
     color = rendered_image
-    radii = info["radii"].squeeze(0)  # [N,]
-    visible_mask = radii > 0
+    radii, visible_mask = _radii_to_visibility(info)
     try:
         info["means2d"].retain_grad()  # [1, N, 2]
     except:
@@ -219,15 +231,17 @@ def render_gsplat(
 
     # render feature map
     if rgb_only is False:
+        visible_idx = torch.nonzero(visible_mask, as_tuple=False).squeeze(1)
         loc_feature = pc.get_loc_feature[visible_mask].squeeze()
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
+        feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
 
         feat_map, alphas, meta = rasterization(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=viewmat[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -238,19 +252,39 @@ def render_gsplat(
             far_plane=far_plane,
             **rasterize_args
         )
+        if loc_absgrad and "means2d" in meta:
+            meta["means2d"].absgrad = True
+        try:
+            meta["means2d"].retain_grad()
+        except:
+            pass
         feat_map = feat_map[0].permute(2, 0, 1)
         feat_map = F.normalize(feat_map, p=2, dim=0)
     else:
         feat_map = None
+        visible_idx = None
+        alphas = None
+        meta = None
 
-    return {
+    result = {
         "render": color,
         "feature_map": feat_map,
         "viewspace_points": info["means2d"],
-        "visibility_filter": radii > 0,
+        "visibility_filter": visible_mask,
         "radii": radii,
         "alphas": render_alphas,
     }
+    if return_loc_meta and meta is not None:
+        loc_radii, _ = _radii_to_visibility(meta)
+        result.update({
+            "loc_viewspace_points": meta["means2d"],
+            "loc_radii": loc_radii,
+            "loc_visible_idx": visible_idx,
+            "loc_alphas": alphas,
+            "loc_K": K,
+            "loc_viewmat": viewmat,
+        })
+    return result
 
 
 def render_gsplat_2dgs(
@@ -260,6 +294,9 @@ def render_gsplat_2dgs(
     override_color=None,
     rgb_only=False,
     norm_feat_bf_render=True,
+    return_loc_meta=False,
+    use_loc_opacity=False,
+    loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
     longest_edge=640,
@@ -341,8 +378,7 @@ def render_gsplat_2dgs(
     rendered_image = colors[0].permute(2, 0, 1)
     color = rendered_image[:3]
     depth = rendered_image[3:]
-    radii = info["radii"].squeeze(0)  # [N,]
-    visible_mask = radii > 0
+    radii, visible_mask = _radii_to_visibility(info)
 
     try:
         info["gradient_2dgs"].retain_grad()  # [1, N, 2]
@@ -350,15 +386,17 @@ def render_gsplat_2dgs(
         pass
 
     if rgb_only is False:
+        visible_idx = torch.nonzero(visible_mask, as_tuple=False).squeeze(1)
         loc_feature = pc.get_loc_feature[visible_mask].squeeze()
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
+        feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
 
-        feat_map, _, _, _, _, _, _ = rasterization_2dgs(
+        feat_map, feat_alphas, _, _, _, _, feat_meta = rasterization_2dgs(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=viewmat[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -370,13 +408,22 @@ def render_gsplat_2dgs(
             far_plane=far_plane,
             **rasterize_args
         )
+        loc_meta_key = "gradient_2dgs" if "gradient_2dgs" in feat_meta else "means2d"
+        try:
+            feat_meta[loc_meta_key].retain_grad()
+        except:
+            pass
 
         feat_map = feat_map[0].permute(2, 0, 1)
         feat_map = F.normalize(feat_map, p=2, dim=0)
     else:
         feat_map = None
+        visible_idx = None
+        feat_alphas = None
+        feat_meta = None
+        loc_meta_key = None
 
-    return {
+    result = {
         "render": color,
         "rend_alpha": alphas,
         "rend_normal": normals,
@@ -385,10 +432,21 @@ def render_gsplat_2dgs(
         "rend_median": median_depth,
         "feature_map": feat_map,
         "viewspace_points": info["gradient_2dgs"],
-        "visibility_filter": radii > 0,
+        "visibility_filter": visible_mask,
         "radii": radii,
         "surf_depth": depth,
     }
+    if return_loc_meta and feat_meta is not None:
+        loc_radii, _ = _radii_to_visibility(feat_meta)
+        result.update({
+            "loc_viewspace_points": feat_meta[loc_meta_key],
+            "loc_radii": loc_radii,
+            "loc_visible_idx": visible_idx,
+            "loc_alphas": feat_alphas,
+            "loc_K": K,
+            "loc_viewmat": viewmat,
+        })
+    return result
 
 
 def render_from_pose_gsplat(
@@ -402,6 +460,9 @@ def render_from_pose_gsplat(
     render_mode="RGB+ED",
     rgb_only=False,
     norm_feat_bf_render=True,
+    return_loc_meta=False,
+    use_loc_opacity=False,
+    loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
     **rasterize_args
@@ -427,6 +488,9 @@ def render_from_pose_gsplat(
             render_mode,
             rgb_only,
             norm_feat_bf_render,
+            return_loc_meta,
+            use_loc_opacity,
+            loc_absgrad,
             near_plane,
             far_plane,
             **rasterize_args
@@ -473,8 +537,7 @@ def render_from_pose_gsplat(
         depth = rendered_image[3:]
     else:
         depth = None
-    radii = info["radii"].squeeze(0)  # [N,]
-    visible_mask = radii > 0
+    radii, visible_mask = _radii_to_visibility(info)
 
     try:
         info["means2d"].retain_grad()  # [1, N, 2]
@@ -482,15 +545,17 @@ def render_from_pose_gsplat(
         pass
 
     if rgb_only is False:
+        visible_idx = torch.nonzero(visible_mask, as_tuple=False).squeeze(1)
         loc_feature = pc.get_loc_feature[visible_mask].squeeze()
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
+        feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
 
         feat_map, alphas, meta = rasterization(
             means3D[visible_mask],
             rotations[visible_mask],
             scales[visible_mask],
-            opacity.squeeze(-1)[visible_mask],
+            feat_opacity.squeeze(-1)[visible_mask],
             loc_feature,
             pose[None],
             K[None],
@@ -501,22 +566,42 @@ def render_from_pose_gsplat(
             far_plane=far_plane,
             **rasterize_args
         )
+        if loc_absgrad and "means2d" in meta:
+            meta["means2d"].absgrad = True
+        try:
+            meta["means2d"].retain_grad()
+        except:
+            pass
         feat_map = feat_map[0].permute(2, 0, 1)
         feat_map = F.normalize(feat_map, p=2, dim=0)
     else:
         feat_map = None
+        visible_idx = None
+        alphas = None
+        meta = None
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    return {
+    result = {
         "render": color,
         "feature_map": feat_map,
         "viewspace_points": info["means2d"],
-        "visibility_filter": radii > 0,
+        "visibility_filter": visible_mask,
         "radii": radii,
         "alphas": render_alphas,
         "depth": depth,
     }
+    if return_loc_meta and meta is not None:
+        loc_radii, _ = _radii_to_visibility(meta)
+        result.update({
+            "loc_viewspace_points": meta["means2d"],
+            "loc_radii": loc_radii,
+            "loc_visible_idx": visible_idx,
+            "loc_alphas": alphas,
+            "loc_K": K,
+            "loc_viewmat": pose,
+        })
+    return result
 
 
 def render_from_pose_gsplat_2dgs(
@@ -530,6 +615,9 @@ def render_from_pose_gsplat_2dgs(
     render_mode="RGB+ED",
     rgb_only=False,
     norm_feat_bf_render=True,
+    return_loc_meta=False,
+    use_loc_opacity=False,
+    loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
     **rasterize_args
@@ -593,8 +681,7 @@ def render_from_pose_gsplat_2dgs(
     rendered_image = colors[0].permute(2, 0, 1)
     color = rendered_image[:3]
     depth = rendered_image[3:]
-    radii = info["radii"].squeeze(0)  # [N,]
-    visible_mask = radii > 0
+    radii, visible_mask = _radii_to_visibility(info)
 
     try:
         info["gradient_2dgs"].retain_grad()  # [1, N, 2]
@@ -602,15 +689,17 @@ def render_from_pose_gsplat_2dgs(
         pass
 
     if rgb_only is False:
+        visible_idx = torch.nonzero(visible_mask, as_tuple=False).squeeze(1)
         loc_feature = pc.get_loc_feature[visible_mask].squeeze()
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
+        feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
 
-        feat_map, _, _, _, _, _, _ = rasterization_2dgs(
+        feat_map, feat_alphas, _, _, _, _, feat_meta = rasterization_2dgs(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=pose[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -622,12 +711,21 @@ def render_from_pose_gsplat_2dgs(
             far_plane=far_plane,
             **rasterize_args
         )
+        loc_meta_key = "gradient_2dgs" if "gradient_2dgs" in feat_meta else "means2d"
+        try:
+            feat_meta[loc_meta_key].retain_grad()
+        except:
+            pass
         feat_map = feat_map[0].permute(2, 0, 1)
         feat_map = F.normalize(feat_map, p=2, dim=0)
     else:
         feat_map = None
+        visible_idx = None
+        feat_alphas = None
+        feat_meta = None
+        loc_meta_key = None
 
-    return {
+    result = {
         "render": color,
         "rend_alpha": alphas,
         "rend_normal": normals,
@@ -636,7 +734,18 @@ def render_from_pose_gsplat_2dgs(
         "rend_median": median_depth,
         "feature_map": feat_map,
         "viewspace_points": info["gradient_2dgs"],
-        "visibility_filter": radii > 0,
+        "visibility_filter": visible_mask,
         "radii": radii,
         "depth": depth,
     }
+    if return_loc_meta and feat_meta is not None:
+        loc_radii, _ = _radii_to_visibility(feat_meta)
+        result.update({
+            "loc_viewspace_points": feat_meta[loc_meta_key],
+            "loc_radii": loc_radii,
+            "loc_visible_idx": visible_idx,
+            "loc_alphas": feat_alphas,
+            "loc_K": K,
+            "loc_viewmat": pose,
+        })
+    return result

@@ -125,6 +125,9 @@ class STDLoc:
             )
         )
         self.landmarks = sample_gaussians(gaussians, sampled_idx)
+        landmark_meta_path = config["sparse"].get("landmark_meta_path", "detector/landmark_meta.pt")
+        full_meta_path = os.path.join(config["model_path"], landmark_meta_path)
+        self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
 
         self.feature_extractor = FeatureExtractor(config["feature_type"]).cuda().eval()
         self.longest_edge = config["longest_edge"]
@@ -149,6 +152,8 @@ class STDLoc:
 
         # Sparse stage
         sparse_result = self.loc_sparse(query_fine_feature_map, fovx, fovy)
+        if self.config.get("sparse_only", self.config["sparse"].get("sparse_only", False)):
+            return {"sparse": sparse_result, "dense": []}
 
         # Dense stage
         pose_w2c = sparse_result["pose_w2c"]
@@ -199,12 +204,19 @@ class STDLoc:
         corr_matrix = torch.matmul(sampled_features.T, landmark_features.T)
 
         # dual softmax
-        if config["sparse"]["dual_softmax"] is True:
+        if self.config["sparse"]["dual_softmax"] is True:
             corr_matrix = dual_softmax(
-                corr_matrix=corr_matrix, temp=config["sparse"]["dual_softmap_temp"]
+                corr_matrix=corr_matrix, temp=self.config["sparse"]["dual_softmax_temp"]
             )
 
-        if config["sparse"]["mnn_match"] is True:
+        if self.landmark_meta is not None and self.config["sparse"].get("use_landmark_prior", False):
+            prior = self.landmark_meta.get("score", self.landmark_meta.get("utility", None))
+            if prior is not None:
+                prior = prior.to(corr_matrix.device, dtype=corr_matrix.dtype)
+                prior = (prior - prior.mean()) / prior.std().clamp_min(1e-6)
+                corr_matrix = corr_matrix + self.config["sparse"].get("landmark_prior_weight", 0.05) * prior[None]
+
+        if self.config["sparse"]["mnn_match"] is True:
             # mnn match
             b_ids, im_idx, gs_ids = mnn_match(
                 corr_matrix[None], thr=self.config["sparse"]["threshold"]
@@ -408,6 +420,7 @@ if __name__ == "__main__":
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--cfg", default=None, type=str)
     parser.add_argument("--prefix", default=None, type=str)
+    parser.add_argument("--sparse_only", action="store_true")
     args = get_combined_args(parser)
     args.eval = True
 
@@ -437,6 +450,8 @@ if __name__ == "__main__":
 
     # Set up config
     config = yaml.load(open(args.cfg), Loader=yaml.FullLoader)
+    if args.sparse_only:
+        config.setdefault("sparse", {})["sparse_only"] = True
         
     config["dense"]["norm_before_render"] = dataset.norm_before_render
     config["feature_type"] = dataset.feature_type
@@ -476,11 +491,12 @@ if __name__ == "__main__":
         loc_res["sparse_AE"] = sparse_ae
         loc_res["sparse_TE"] = sparse_te
 
-        dense_ae, dense_te = cal_pose_error(loc_res["dense"][-1]["pose_w2c"], gt_w2c) # degree, cm
+        dense_final = loc_res["dense"][-1] if len(loc_res["dense"]) > 0 else loc_res["sparse"]
+        dense_ae, dense_te = cal_pose_error(dense_final["pose_w2c"], gt_w2c) # degree, cm
         dense_aes.append(dense_ae)
         dense_tes.append(dense_te)
-        dense_inliers.append(loc_res["dense"][-1]["inliers"])
-        print(f"AE: {dense_ae:.3f}deg, TE: {dense_te:.3f}cm, inliers: {loc_res['dense'][-1]['inliers']}")
+        dense_inliers.append(dense_final["inliers"])
+        print(f"AE: {dense_ae:.3f}deg, TE: {dense_te:.3f}cm, inliers: {dense_final['inliers']}")
 
         loc_res["gt_pose_w2c"] = gt_w2c.tolist()
         loc_res["dense_AE"] = dense_ae

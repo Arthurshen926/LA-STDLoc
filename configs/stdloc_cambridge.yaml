@@ -1,4 +1,5 @@
 sparse:
+  sparse_only: False
   nms: 4
   detect_num: 2048
   mnn_match: False # default False, use topk match
@@ -13,6 +14,9 @@ sparse:
   min_iterations: 1000
   detector_path: detector/30000_detector.pth
   landmark_path: detector/sampled_idx.pkl
+  landmark_meta_path: detector/landmark_meta.pt
+  use_landmark_prior: False
+  landmark_prior_weight: 0.05
 
 dense:
   iters: 1

@@ -1,0 +1,55 @@
+localization:
+  enabled: true
+  interval: 8
+  query_mode: mixed
+  pose_noise_source: sparse_error_distribution
+  pose_noise_quantile: 0.5
+  anchors: 1024
+  min_spacing: 3
+  alpha_threshold: 0.2
+  desc_temperature: 0.07
+  fine_temperature: 0.05
+  fine_window_radius: 4
+  ema_decay: 0.95
+  min_observations: 8
+
+loss:
+  base: 1.0
+  base_feature: 1.0
+  loc: 1.0
+  desc: 1.0
+  reproj: 0.1
+  prototype: 0.1
+  ranking: 0.05
+  loc_opacity: 0.001
+  geometry_anchor: 0.01
+  pose: 0.0
+
+optimization:
+  feature_only_iterations: 3000
+  geometry_iterations: 3000
+  topology_iterations: 3000
+  closed_loop_iterations: 1000
+  episode_interval: 8
+  loc_opacity_target: 0.5
+  geometry_xyz_lr_mult: 0.05
+  geometry_scale_lr_mult: 0.1
+  geometry_rotation_lr_mult: 0.1
+
+topology:
+  stats_warmup: 1000
+  update_interval: 200
+  min_observations: 8
+  split_quantile: 0.95
+  ambiguity_quantile: 0.90
+  growth_cap_per_event: 0.03
+  total_point_budget_ratio: 1.25
+  cooldown_iterations: 300
+  enable_loc_clone: false
+  soft_prune_threshold: -1.0
+  soft_prune_step: 1.0
+
+differentiable_pose:
+  enabled: false
+  num_iterations: 3
+  damping: 0.001

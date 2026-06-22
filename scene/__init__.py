@@ -87,10 +87,12 @@ class Scene:
                     self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
 
         if self.loaded_iter:
-            self.gaussians.load_ply(os.path.join(self.model_path,
-                                                "point_cloud",
-                                                "iteration_" + str(self.loaded_iter),
-                                                "point_cloud.ply"))
+            point_cloud_path = os.path.join(self.model_path,
+                                            "point_cloud",
+                                            "iteration_" + str(self.loaded_iter))
+            self.gaussians.load_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+            if hasattr(self.gaussians, "load_localization_state"):
+                self.gaussians.load_localization_state(os.path.join(point_cloud_path, "loc_state.pt"))
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, scene_info.loc_feature_dim, args.speedup) 
         
@@ -99,6 +101,8 @@ class Scene:
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+        if hasattr(self.gaussians, "save_localization_state"):
+            self.gaussians.save_localization_state(os.path.join(point_cloud_path, "loc_state.pt"))
 
     def getTrainCameras(self, scale=1.0):
         if self.preload_cameras:
