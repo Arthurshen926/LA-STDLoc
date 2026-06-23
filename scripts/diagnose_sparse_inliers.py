@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import render_from_pose_gsplat
-from localization_training.descriptor_diagnostics import summarize_landmark_value
+from localization_training.descriptor_diagnostics import calibrate_landmark_quality, summarize_landmark_value
 from localization_training.direct_landmark_teacher import (
     _limit_valid_indices,
     filter_depth_consistent_landmarks,
@@ -23,15 +23,27 @@ from localization_training.direct_landmark_teacher import (
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scene.kpdetector import simple_nms
-from stdloc import STDLoc, dual_softmax, get_intrinsic, mnn_match, resolve_artifact_path, topk_match, validate_sampled_indices
+from stdloc import (
+    STDLoc,
+    dual_softmax,
+    get_intrinsic,
+    landmark_prior_from_meta,
+    mnn_match,
+    resolve_artifact_path,
+    topk_match,
+    validate_sampled_indices,
+)
 from utils.image_utils import get_resolution_from_longest_edge
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
 LEVEL3_METRIC_KEYS = (
     "spearman_utility_inlier_rate",
+    "spearman_utility_correct_rate",
     "top_quartile_inlier_rate",
     "bottom_quartile_inlier_rate",
+    "spearman_calibrated_inlier_rate",
+    "spearman_calibrated_correct_rate",
 )
 
 
@@ -195,7 +207,11 @@ def _detect_and_match(stdloc, query_feature_map):
         corr_matrix = dual_softmax(corr_matrix=corr_matrix, temp=sparse["dual_softmax_temp"])
 
     if stdloc.landmark_meta is not None and sparse.get("use_landmark_prior", False):
-        prior = stdloc.landmark_meta.get("score", stdloc.landmark_meta.get("utility", None))
+        prior = landmark_prior_from_meta(
+            stdloc.landmark_meta,
+            landmark_features.shape[0],
+            sampled_indices=getattr(stdloc, "landmark_indices", None),
+        )
         if prior is not None:
             prior = prior.to(corr_matrix.device, dtype=corr_matrix.dtype)
             prior = (prior - prior.mean()) / prior.std().clamp_min(1e-6)
@@ -250,6 +266,49 @@ def _add_counts(counter, indices, weights=None):
     counter.index_add_(0, indices, weights)
 
 
+def _calibration_image_roles(num_images, mode="none", eval_fraction=0.0):
+    num_images = int(num_images)
+    if num_images <= 0:
+        return []
+    mode = str(mode or "none")
+    eval_fraction = float(eval_fraction)
+    if mode == "none" or eval_fraction <= 0.0 or num_images < 2:
+        return ["train"] * num_images
+
+    eval_count = max(1, int(round(num_images * min(max(eval_fraction, 0.0), 1.0))))
+    eval_count = min(eval_count, num_images - 1)
+    if mode == "block":
+        split = num_images - eval_count
+        return ["train" if idx < split else "eval" for idx in range(num_images)]
+    if mode == "alternate":
+        period = max(2, int(round(1.0 / min(max(eval_fraction, 1e-6), 1.0))))
+        roles = ["eval" if (idx + 1) % period == 0 else "train" for idx in range(num_images)]
+        if "eval" not in roles:
+            roles[-1] = "eval"
+        if "train" not in roles:
+            roles[0] = "train"
+        return roles
+    raise ValueError(f"Unsupported calibration split mode: {mode}")
+
+
+def _calibration_target_counts(target, visible_count, matched_count, correct_count, inlier_count):
+    target = str(target)
+    if target == "correct":
+        return correct_count, visible_count, visible_count > 0
+    if target == "inlier":
+        return inlier_count, matched_count, matched_count > 0
+    raise ValueError(f"Unsupported calibration target: {target}")
+
+
+def _new_count_buffers(point_count):
+    return {
+        "visible": torch.zeros(point_count, dtype=torch.long),
+        "matched": torch.zeros(point_count, dtype=torch.long),
+        "correct": torch.zeros(point_count, dtype=torch.long),
+        "inlier": torch.zeros(point_count, dtype=torch.long),
+    }
+
+
 def _write_per_landmark_stats(path, landmark_indices, visible_count, matched_count, correct_count, inlier_count, utility):
     active = (visible_count > 0) | (matched_count > 0) | (utility.abs() > 0)
     rows = []
@@ -271,6 +330,37 @@ def _write_per_landmark_stats(path, landmark_indices, visible_count, matched_cou
         f.write("\n")
 
 
+def _calibration_features(gaussians, utility):
+    gaussians._ensure_localization_state()
+    return {
+        "utility": utility.detach().cpu().float(),
+        "repeatability": gaussians.loc_repeatability_ema.detach().cpu().float(),
+        "positive_prob": gaussians.loc_positive_prob_ema.detach().cpu().float(),
+        "margin": gaussians.loc_margin_ema.detach().cpu().float(),
+        "entropy": gaussians.loc_entropy_ema.detach().cpu().float(),
+        "outlier": gaussians.loc_outlier_ema.detach().cpu().float(),
+        "information": gaussians.loc_information_ema.detach().cpu().float(),
+        "reprojection_error": gaussians.loc_reproj_error_ema.detach().cpu().float(),
+        "redundancy": gaussians.loc_redundancy_ema.detach().cpu().float(),
+    }
+
+
+def _write_calibrated_utility(path, landmark_indices, calibration):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    score = calibration["score"].detach().cpu().float()
+    payload = {
+        "score": score[landmark_indices].clone(),
+        "full_score": score,
+        "landmark_indices": landmark_indices.detach().cpu().long(),
+        "feature_names": list(calibration["feature_names"]),
+        "weights": calibration["weights"].detach().cpu().float(),
+        "bias": float(calibration["bias"]),
+        "calibration_target": calibration.get("calibration_target_name", "inlier"),
+        "calibration_heldout": bool(calibration.get("calibration_heldout", False)),
+    }
+    torch.save(payload, path)
+
+
 def diagnose(args, dataset, scene, gaussians):
     config = _load_stdloc_config(dataset, args)
     stdloc = STDLoc(gaussians, config)
@@ -281,6 +371,8 @@ def diagnose(args, dataset, scene, gaussians):
     matched_count = torch.zeros(point_count, dtype=torch.long)
     correct_count = torch.zeros(point_count, dtype=torch.long)
     inlier_count = torch.zeros(point_count, dtype=torch.long)
+    train_counts = _new_count_buffers(point_count)
+    eval_counts = _new_count_buffers(point_count)
     utility = _compute_utility(
         gaussians,
         config,
@@ -291,6 +383,12 @@ def diagnose(args, dataset, scene, gaussians):
 
     cameras = scene.getTestCameras() if args.split == "test" else scene.getTrainCameras()
     cameras = _limit_cameras(cameras, args.max_images)
+    calibration_roles = _calibration_image_roles(
+        len(cameras),
+        mode=args.calibration_split_mode,
+        eval_fraction=args.calibration_eval_fraction,
+    )
+    calibration_heldout = "eval" in calibration_roles
     correct_reprojection_error = getattr(args, "correct_reprojection_error", None)
     correct_threshold = (
         float(correct_reprojection_error)
@@ -304,7 +402,9 @@ def diagnose(args, dataset, scene, gaussians):
     match_counts = []
     correct_counts = []
     inlier_counts = []
-    for camera in tqdm(cameras, desc="Sparse inlier diagnostics"):
+    for image_idx, camera in enumerate(tqdm(cameras, desc="Sparse inlier diagnostics")):
+        calibration_role = calibration_roles[image_idx] if image_idx < len(calibration_roles) else "train"
+        role_counts = eval_counts if calibration_role == "eval" else train_counts
         gt_w2c = camera.world_view_transform.transpose(0, 1).cuda()
         query_image = camera.original_image.cuda()
         fine_feature_map, _ = stdloc.get_feature_map(query_image)
@@ -344,6 +444,7 @@ def diagnose(args, dataset, scene, gaussians):
             max_landmarks=max_visible,
         )
         _add_counts(visible_count, visible)
+        _add_counts(role_counts["visible"], visible)
 
         matches = _detect_and_match(stdloc, fine_feature_map)
         if matches is None:
@@ -400,6 +501,9 @@ def diagnose(args, dataset, scene, gaussians):
         _add_counts(matched_count, full_landmark_ids_cpu)
         _add_counts(correct_count, full_landmark_ids_cpu[correct_mask.detach().cpu()])
         _add_counts(inlier_count, full_landmark_ids_cpu[inlier_mask])
+        _add_counts(role_counts["matched"], full_landmark_ids_cpu)
+        _add_counts(role_counts["correct"], full_landmark_ids_cpu[correct_mask.detach().cpu()])
+        _add_counts(role_counts["inlier"], full_landmark_ids_cpu[inlier_mask])
 
         gt_w2c_np = gt_w2c.detach().cpu().numpy()
         ae, te = cal_pose_error(pose_w2c, gt_w2c_np)
@@ -450,8 +554,79 @@ def diagnose(args, dataset, scene, gaussians):
         "avg_inliers": float(np.mean(inlier_counts)) if inlier_counts else 0.0,
         "median_sparse_ae": float(np.median(sparse_aes)) if sparse_aes else None,
         "median_sparse_te": float(np.median(sparse_tes)) if sparse_tes else None,
+        "calibration_target": args.calibration_target,
+        "calibration_split_mode": args.calibration_split_mode,
+        "calibration_eval_fraction": float(args.calibration_eval_fraction),
+        "calibration_heldout": calibration_heldout,
     }
     summary.update(value_summary)
+
+    if calibration_heldout:
+        fit_counts = train_counts
+        score_counts = eval_counts
+    else:
+        fit_counts = {
+            "visible": visible_count,
+            "matched": matched_count,
+            "correct": correct_count,
+            "inlier": inlier_count,
+        }
+        score_counts = None
+    train_positive, train_trial, train_mask = _calibration_target_counts(
+        args.calibration_target,
+        fit_counts["visible"],
+        fit_counts["matched"],
+        fit_counts["correct"],
+        fit_counts["inlier"],
+    )
+    if score_counts is not None:
+        eval_positive, eval_trial, eval_mask = _calibration_target_counts(
+            args.calibration_target,
+            score_counts["visible"],
+            score_counts["matched"],
+            score_counts["correct"],
+            score_counts["inlier"],
+        )
+    else:
+        eval_positive = None
+        eval_trial = None
+        eval_mask = None
+
+    calibration = calibrate_landmark_quality(
+        features=_calibration_features(gaussians, utility),
+        positive_count=train_positive,
+        trial_count=train_trial,
+        mask=train_mask,
+        eval_positive_count=eval_positive,
+        eval_trial_count=eval_trial,
+        eval_mask=eval_mask,
+        target_name=args.calibration_target,
+        steps=args.calibration_steps,
+        lr=args.calibration_lr,
+        l2=args.calibration_l2,
+    )
+    target = args.calibration_target
+    summary.update(
+        {
+            "calibration_feature_names": calibration["feature_names"],
+            "calibration_landmark_count": calibration["calibration_landmark_count"],
+            "calibration_train_landmark_count": calibration["calibration_train_landmark_count"],
+            "calibration_eval_landmark_count": calibration["calibration_eval_landmark_count"],
+            "calibration_trial_semantics": "visible_count" if target == "correct" else "matched_count",
+            "calibrated_brier": calibration["calibrated_brier"],
+            "calibrated_nll": calibration["calibrated_nll"],
+            "spearman_calibrated_label_rate": calibration["spearman_calibrated_label_rate"],
+            f"spearman_calibrated_{target}_rate": calibration[f"spearman_calibrated_{target}_rate"],
+            f"top_quartile_calibrated_{target}_rate": calibration[f"top_quartile_calibrated_{target}_rate"],
+            f"bottom_quartile_calibrated_{target}_rate": calibration[f"bottom_quartile_calibrated_{target}_rate"],
+            "top_quartile_calibrated_label_rate": calibration["top_quartile_calibrated_label_rate"],
+            "bottom_quartile_calibrated_label_rate": calibration["bottom_quartile_calibrated_label_rate"],
+        }
+    )
+    if target == "inlier":
+        summary["spearman_calibrated_inlier_rate"] = calibration["spearman_calibrated_inlier_rate"]
+        summary["top_quartile_calibrated_inlier_rate"] = calibration["top_quartile_calibrated_inlier_rate"]
+        summary["bottom_quartile_calibrated_inlier_rate"] = calibration["bottom_quartile_calibrated_inlier_rate"]
 
     per_landmark_output = getattr(args, "per_landmark_output", None)
     if per_landmark_output:
@@ -464,6 +639,30 @@ def diagnose(args, dataset, scene, gaussians):
             inlier_count,
             utility,
         )
+
+    label_state_output = getattr(args, "label_state_output", None)
+    if label_state_output:
+        if getattr(args, "label_state_reset", False):
+            gaussians.init_localization_state(from_rgb_opacity=True)
+        active = (visible_count > 0) | (matched_count > 0)
+        full_idx = torch.nonzero(active, as_tuple=False).squeeze(1)
+        gaussians.add_sparse_match_label_stats(
+            full_idx=full_idx,
+            visible_count=visible_count[full_idx],
+            matched_count=matched_count[full_idx],
+            correct_count=correct_count[full_idx],
+            inlier_count=inlier_count[full_idx],
+            ema_decay=0.0,
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(label_state_output)), exist_ok=True)
+        torch.save(gaussians.capture_localization_state(), label_state_output)
+        summary["label_state_output"] = label_state_output
+        summary["label_state_reset"] = bool(getattr(args, "label_state_reset", False))
+
+    calibrated_utility_output = getattr(args, "calibrated_utility_output", None)
+    if calibrated_utility_output:
+        _write_calibrated_utility(calibrated_utility_output, landmark_indices, calibration)
+        summary["calibrated_utility_output"] = calibrated_utility_output
 
     return {"summary": summary, "images": image_summaries}
 
@@ -495,6 +694,15 @@ if __name__ == "__main__":
     parser.add_argument("--max_visible_landmarks_per_image", type=int, default=0)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--per_landmark_output", type=str, default=None)
+    parser.add_argument("--label_state_output", type=str, default=None)
+    parser.add_argument("--label_state_reset", action="store_true", default=False)
+    parser.add_argument("--calibrated_utility_output", type=str, default=None)
+    parser.add_argument("--calibration_target", type=str, default="inlier", choices=["inlier", "correct"])
+    parser.add_argument("--calibration_split_mode", type=str, default="none", choices=["none", "block", "alternate"])
+    parser.add_argument("--calibration_eval_fraction", type=float, default=0.0)
+    parser.add_argument("--calibration_steps", type=int, default=200)
+    parser.add_argument("--calibration_lr", type=float, default=0.1)
+    parser.add_argument("--calibration_l2", type=float, default=1e-3)
     args = get_combined_args(parser)
     args.eval = args.split == "test"
 

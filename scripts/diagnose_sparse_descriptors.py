@@ -15,7 +15,9 @@ from gaussian_renderer import render_from_pose_gsplat
 from localization_training.descriptor_diagnostics import (
     collect_projected_descriptor_pairs,
     descriptor_alignment_metrics,
+    full_bank_descriptor_metrics,
     summarize_descriptor_metric_batches,
+    summarize_full_bank_metric_batches,
 )
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
@@ -23,6 +25,13 @@ from utils.image_utils import get_resolution_from_longest_edge
 
 
 LEVEL1_METRIC_KEYS = ("positive_cosine_mean", "margin_mean", "top1_recall", "mnn_precision")
+FULL_BANK_METRIC_KEYS = (
+    "full_bank_recall_at_1",
+    "full_bank_recall_at_5",
+    "full_bank_recall_at_10",
+    "full_bank_mnn_precision",
+    "full_bank_margin_mean",
+)
 
 
 def _resolve_artifact_path(model_path, artifact_path, artifact_model_path=None):
@@ -82,6 +91,9 @@ def _ensure_optional_args(args):
         "landmark_model_path": None,
         "baseline_model_path": None,
         "baseline_iteration": 30000,
+        "full_bank": False,
+        "full_bank_topk": [1, 5, 10],
+        "full_bank_temperature": 0.07,
         "output": None,
     }
     for key, value in defaults.items():
@@ -118,7 +130,18 @@ def diagnose(args, dataset, scene, gaussians):
     cameras = scene.getTestCameras() if args.split == "test" else scene.getTrainCameras()
     cameras = _limit_cameras(cameras, args.max_images)
 
+    bank_features = gaussians.get_loc_feature[
+        landmark_indices.to(device=gaussians.get_xyz.device)
+    ].reshape(landmark_indices.numel(), -1)
+    full_to_bank = torch.full(
+        (int(landmark_indices.max().item()) + 1,),
+        -1,
+        dtype=torch.long,
+    )
+    full_to_bank[landmark_indices.cpu()] = torch.arange(landmark_indices.numel(), dtype=torch.long)
+
     batch_metrics = []
+    full_bank_batch_metrics = []
     image_summaries = []
     for camera in tqdm(cameras, desc="Descriptor diagnostics"):
         image = camera.original_image.cuda()
@@ -166,11 +189,28 @@ def diagnose(args, dataset, scene, gaussians):
             pairs["query_features"],
             baseline_features=pairs["baseline_features"],
         )
-        metrics["image_name"] = camera.image_name
-        image_summaries.append(metrics)
+        image_metrics = dict(metrics)
+        if args.full_bank:
+            full_idx = pairs["full_idx"].detach().cpu()
+            positive_bank_indices = torch.full_like(full_idx, -1)
+            valid = (full_idx >= 0) & (full_idx < full_to_bank.numel())
+            positive_bank_indices[valid] = full_to_bank[full_idx[valid]]
+            full_bank_metrics = full_bank_descriptor_metrics(
+                pairs["query_features"],
+                bank_features,
+                positive_bank_indices.to(device=pairs["query_features"].device),
+                topk=tuple(args.full_bank_topk),
+                temperature=args.full_bank_temperature,
+            )
+            image_metrics.update(full_bank_metrics)
+            full_bank_batch_metrics.append(full_bank_metrics)
+        image_metrics["image_name"] = camera.image_name
+        image_summaries.append(image_metrics)
         batch_metrics.append(metrics)
 
     summary = summarize_descriptor_metric_batches(batch_metrics)
+    if args.full_bank:
+        summary.update(summarize_full_bank_metric_batches(full_bank_batch_metrics))
     summary.update(
         {
             "model_path": dataset.model_path,
@@ -183,6 +223,7 @@ def diagnose(args, dataset, scene, gaussians):
             "image_count": len(cameras),
             "depth_check": bool(args.depth_check),
             "max_landmarks_per_image": args.max_landmarks_per_image,
+            "full_bank": bool(args.full_bank),
         }
     )
     return {"summary": summary, "images": image_summaries}
@@ -204,6 +245,9 @@ if __name__ == "__main__":
     parser.add_argument("--alpha_threshold", type=float, default=0.2)
     parser.add_argument("--depth_abs_tolerance", type=float, default=1e-3)
     parser.add_argument("--depth_rel_tolerance", type=float, default=0.01)
+    parser.add_argument("--full_bank", action="store_true", default=False)
+    parser.add_argument("--full_bank_topk", nargs="+", type=int, default=[1, 5, 10])
+    parser.add_argument("--full_bank_temperature", type=float, default=0.07)
     parser.add_argument("--output", type=str, default=None)
     args = get_combined_args(parser)
     args = _ensure_optional_args(args)

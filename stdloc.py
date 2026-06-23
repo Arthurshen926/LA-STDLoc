@@ -13,6 +13,7 @@ from tqdm import tqdm
 from arguments import ModelParams, PipelineParams, get_combined_args
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat
+from localization_training.geometry_selector import GeometryBalancedSelector
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scene.kpdetector import KpDetector, simple_nms
@@ -118,6 +119,28 @@ def get_intrinsic(fovx, fovy, width, height):
     return K
 
 
+def _geometry_selector_from_config(sparse_config, width, height):
+    cfg = sparse_config.get("geometry_balance", None)
+    if not cfg or not cfg.get("enabled", False):
+        return None
+    post_cfg = cfg.get("post", {})
+    post_enabled = bool(post_cfg.get("enabled", False))
+    return GeometryBalancedSelector(
+        image_width=width,
+        image_height=height,
+        grid_rows=cfg.get("grid_rows", 4),
+        grid_cols=cfg.get("grid_cols", 4),
+        max_per_cell=cfg.get("max_per_cell", 64),
+        voxel_size=cfg.get("voxel_size", 0.25),
+        max_per_voxel=cfg.get("max_per_voxel", 64),
+        max_matches=cfg.get("max_matches", 0),
+        post_max_matches=post_cfg.get("max_matches", 0) if post_enabled else 0,
+        post_candidate_pool=post_cfg.get("candidate_pool", 1024),
+        post_regularization=post_cfg.get("regularization", 1e-4),
+        post_score_weight=post_cfg.get("score_weight", 1e-3),
+    )
+
+
 def resolve_artifact_path(model_path, artifact_path, artifact_model_path=None):
     if os.path.isabs(artifact_path):
         return artifact_path
@@ -144,6 +167,126 @@ def validate_sampled_indices(sampled_idx, point_count):
     return idx
 
 
+def remap_sampled_indices_from_source_index(
+    sampled_idx,
+    source_index,
+    return_missing=False,
+    fill_missing=False,
+    fill_scores=None,
+    remap_scores=None,
+):
+    sampled_idx = torch.as_tensor(sampled_idx, dtype=torch.long).reshape(-1).cpu()
+    source_index = torch.as_tensor(source_index, dtype=torch.long).reshape(-1).cpu()
+    if remap_scores is not None:
+        remap_scores = torch.as_tensor(remap_scores, dtype=torch.float32).reshape(-1).cpu()
+        if remap_scores.numel() != source_index.numel():
+            raise ValueError(
+                "remap_scores must contain one score per current point: "
+                f"got {remap_scores.numel()} scores for {source_index.numel()} points."
+            )
+    current_for_source = {}
+    for current_idx, source_id in enumerate(source_index.tolist()):
+        source_id = int(source_id)
+        if remap_scores is None:
+            current_for_source.setdefault(source_id, int(current_idx))
+            continue
+        old_idx = current_for_source.get(source_id)
+        if old_idx is None or remap_scores[current_idx] > remap_scores[old_idx]:
+            current_for_source[source_id] = int(current_idx)
+
+    remapped = []
+    missing = []
+    for source_id in sampled_idx.tolist():
+        current_idx = current_for_source.get(int(source_id))
+        if current_idx is None:
+            missing.append(int(source_id))
+        else:
+            remapped.append(current_idx)
+
+    if fill_missing and len(missing) > 0:
+        selected = set(remapped)
+        if fill_scores is None:
+            fill_scores = torch.zeros(source_index.numel(), dtype=torch.float32)
+        fill_scores = torch.as_tensor(fill_scores, dtype=torch.float32).reshape(-1).cpu()
+        if fill_scores.numel() != source_index.numel():
+            raise ValueError(
+                "fill_scores must contain one score per current point: "
+                f"got {fill_scores.numel()} scores for {source_index.numel()} points."
+            )
+        order = torch.argsort(fill_scores, descending=True).tolist()
+        for current_idx in order:
+            if current_idx in selected:
+                continue
+            remapped.append(int(current_idx))
+            selected.add(int(current_idx))
+            if len(remapped) >= sampled_idx.numel():
+                break
+
+    remapped = torch.tensor(remapped, dtype=torch.long)
+    missing = torch.tensor(missing, dtype=torch.long)
+    if return_missing:
+        return remapped, missing
+    return remapped
+
+
+def landmark_prior_from_meta(meta, landmark_count, sampled_indices=None):
+    if meta is None:
+        return None
+    landmark_count = int(landmark_count)
+    score = meta.get("score", meta.get("utility", None))
+    full_score = meta.get("full_score", None)
+    meta_indices = meta.get("landmark_indices", None)
+    if sampled_indices is not None:
+        sampled_indices = torch.as_tensor(sampled_indices, dtype=torch.long).reshape(-1).cpu()
+        if sampled_indices.numel() != landmark_count:
+            raise ValueError(
+                "sampled_indices must contain one index per sparse landmark: "
+                f"got {sampled_indices.numel()} for landmark_count={landmark_count}."
+            )
+    if meta_indices is not None:
+        meta_indices = torch.as_tensor(meta_indices, dtype=torch.long).reshape(-1).cpu()
+
+    if full_score is not None and sampled_indices is not None:
+        full_score = torch.as_tensor(full_score, dtype=torch.float32).reshape(-1)
+        if sampled_indices.numel() > 0 and int(sampled_indices.max().item()) >= full_score.numel():
+            raise ValueError(
+                "landmark prior sampled index is outside full_score: "
+                f"max_index={int(sampled_indices.max().item())}, full_score={full_score.numel()}."
+            )
+        return full_score[sampled_indices].clone()
+
+    if score is not None:
+        score = torch.as_tensor(score, dtype=torch.float32).reshape(-1)
+        if score.numel() == landmark_count:
+            if sampled_indices is not None and meta_indices is not None and not torch.equal(meta_indices, sampled_indices):
+                if full_score is not None:
+                    full_score = torch.as_tensor(full_score, dtype=torch.float32).reshape(-1)
+                    return full_score[sampled_indices].clone()
+                raise ValueError("landmark prior score indices do not match current sampled landmarks.")
+            return score.clone()
+        if full_score is None:
+            raise ValueError(
+                "landmark prior score length must match sparse landmark count: "
+                f"score={score.numel()}, landmark_count={landmark_count}."
+            )
+
+    if full_score is not None and meta_indices is not None:
+        if meta_indices.numel() != landmark_count:
+            raise ValueError(
+                "landmark prior meta indices must match sparse landmark count: "
+                f"indices={meta_indices.numel()}, landmark_count={landmark_count}."
+            )
+        full_score = torch.as_tensor(full_score, dtype=torch.float32).reshape(-1)
+        if meta_indices.numel() > 0 and int(meta_indices.max().item()) >= full_score.numel():
+            raise ValueError(
+                "landmark prior meta index is outside full_score: "
+                f"max_index={int(meta_indices.max().item())}, full_score={full_score.numel()}."
+            )
+        return full_score[meta_indices].clone()
+
+    return None
+
+
 class STDLoc:
     def __init__(self, gaussians, config):
         self.gaussians = gaussians
@@ -159,7 +302,8 @@ class STDLoc:
                 "rb",
             )
         )
-        self.landmarks = sample_gaussians(gaussians, sampled_idx)
+        self.landmark_indices = validate_sampled_indices(sampled_idx, gaussians.get_xyz.shape[0]).detach().cpu()
+        self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
         landmark_meta_path = config["sparse"].get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
             config["model_path"],
@@ -253,7 +397,11 @@ class STDLoc:
             )
 
         if self.landmark_meta is not None and self.config["sparse"].get("use_landmark_prior", False):
-            prior = self.landmark_meta.get("score", self.landmark_meta.get("utility", None))
+            prior = landmark_prior_from_meta(
+                self.landmark_meta,
+                landmark_features.shape[0],
+                sampled_indices=self.landmark_indices,
+            )
             if prior is not None:
                 prior = prior.to(corr_matrix.device, dtype=corr_matrix.dtype)
                 prior = (prior - prior.mean()) / prior.std().clamp_min(1e-6)
@@ -264,6 +412,7 @@ class STDLoc:
             b_ids, im_idx, gs_ids = mnn_match(
                 corr_matrix[None], thr=self.config["sparse"]["threshold"]
             )
+            val = corr_matrix[im_idx, gs_ids] if im_idx.numel() > 0 else corr_matrix.new_empty(0)
         else:
             # topk match
             im_idx, gs_ids, val = topk_match(
@@ -274,8 +423,17 @@ class STDLoc:
 
         p2d = torch.stack([torch.arange(H * W) % W, torch.arange(H * W) // W], dim=1)
 
-        p2d = p2d[kp_mask.cpu()][im_idx.cpu()].numpy()
-        p3d = self.landmarks.get_xyz[gs_ids].cpu().numpy()
+        p2d = p2d[kp_mask.cpu()][im_idx.cpu()].float()
+        p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
+        selector = _geometry_selector_from_config(self.config["sparse"], W, H)
+        if selector is not None:
+            selected = selector.select(p2d, p3d, val.detach().cpu().float())
+            p2d = p2d[selected]
+            p3d = p3d[selected]
+            val = val.detach().cpu().float()[selected]
+
+        p2d = p2d.numpy()
+        p3d = p3d.numpy()
 
         K = get_intrinsic(fovx, fovy, W, H)
 
@@ -289,6 +447,30 @@ class STDLoc:
             self.config["sparse"]["max_iterations"],
             self.config["sparse"]["min_iterations"],
         )
+
+        if selector is not None and inliers.shape[0] >= 4:
+            selected_inliers = selector.select_pose_informative_inliers(
+                torch.from_numpy(p3d),
+                torch.from_numpy(pose_w2c),
+                torch.from_numpy(K),
+                torch.from_numpy(inliers.reshape(-1)),
+                scores=val,
+            )
+            selected_inliers_np = selected_inliers.cpu().numpy()
+            if selected_inliers_np.shape[0] >= 4 and selected_inliers_np.shape[0] < inliers.shape[0]:
+                refined_pose_w2c, refined_inliers = solve_pose(
+                    p2d[selected_inliers_np] + 0.5,
+                    p3d[selected_inliers_np],
+                    K,
+                    self.config["sparse"]["solver"],
+                    self.config["sparse"]["reprojection_error"],
+                    self.config["sparse"]["confidence"],
+                    self.config["sparse"]["max_iterations"],
+                    self.config["sparse"]["min_iterations"],
+                )
+                if refined_inliers.shape[0] > 0:
+                    pose_w2c = refined_pose_w2c
+                    inliers = selected_inliers_np[refined_inliers.reshape(-1)]
 
         return {
             "pose_w2c": pose_w2c,
@@ -544,6 +726,7 @@ if __name__ == "__main__":
         loc_res["gt_pose_w2c"] = gt_w2c.tolist()
         loc_res["dense_AE"] = dense_ae
         loc_res["dense_TE"] = dense_te
+        loc_res["image_name"] = camera_info.image_name
 
         results.append(loc_res)
 

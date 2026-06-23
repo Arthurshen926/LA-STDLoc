@@ -281,6 +281,9 @@ def render_gsplat(
             "loc_radii": loc_radii,
             "loc_visible_idx": visible_idx,
             "loc_alphas": alphas,
+            "loc_depths": meta.get("depths"),
+            "loc_conics": meta.get("conics"),
+            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
             "loc_K": K,
             "loc_viewmat": viewmat,
         })
@@ -443,6 +446,9 @@ def render_gsplat_2dgs(
             "loc_radii": loc_radii,
             "loc_visible_idx": visible_idx,
             "loc_alphas": feat_alphas,
+            "loc_depths": feat_meta.get("depths"),
+            "loc_conics": feat_meta.get("conics"),
+            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
             "loc_K": K,
             "loc_viewmat": viewmat,
         })
@@ -598,6 +604,9 @@ def render_from_pose_gsplat(
             "loc_radii": loc_radii,
             "loc_visible_idx": visible_idx,
             "loc_alphas": alphas,
+            "loc_depths": meta.get("depths"),
+            "loc_conics": meta.get("conics"),
+            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
             "loc_K": K,
             "loc_viewmat": pose,
         })
@@ -745,6 +754,9 @@ def render_from_pose_gsplat_2dgs(
             "loc_radii": loc_radii,
             "loc_visible_idx": visible_idx,
             "loc_alphas": feat_alphas,
+            "loc_depths": feat_meta.get("depths"),
+            "loc_conics": feat_meta.get("conics"),
+            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
             "loc_K": K,
             "loc_viewmat": pose,
         })

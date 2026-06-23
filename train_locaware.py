@@ -99,6 +99,19 @@ def _restore_checkpoint(gaussians, opt, checkpoint):
     return first_iter
 
 
+def _restore_external_localization_state(gaussians, state_or_path):
+    if not state_or_path:
+        return False
+    if isinstance(state_or_path, (str, os.PathLike)):
+        point_tensor = getattr(gaussians, "get_xyz", None)
+        device = point_tensor.device if torch.is_tensor(point_tensor) else "cpu"
+        state = torch.load(os.fspath(state_or_path), map_location=device)
+    else:
+        state = state_or_path
+    gaussians.restore_localization_state(state)
+    return True
+
+
 def _capture_geometry_anchor(gaussians):
     return {
         "xyz": gaussians._xyz.detach().clone(),
@@ -121,6 +134,21 @@ def _current_geometry_state(gaussians):
     }
 
 
+def _capture_feature_anchor(gaussians):
+    return gaussians.get_loc_feature.detach().clone()
+
+
+def _refresh_feature_anchor_if_point_count_changed(gaussians, feature_anchor):
+    if feature_anchor is None:
+        return None
+    current = gaussians.get_loc_feature.detach()
+    if feature_anchor.shape[0] == current.shape[0]:
+        return feature_anchor
+    if feature_anchor.shape[0] < current.shape[0]:
+        return torch.cat([feature_anchor, current[feature_anchor.shape[0] :].clone()], dim=0)
+    return feature_anchor[: current.shape[0]].clone()
+
+
 def _load_landmark_indices(model_path, landmark_path, device="cpu"):
     path = landmark_path
     if not os.path.isabs(path):
@@ -128,6 +156,23 @@ def _load_landmark_indices(model_path, landmark_path, device="cpu"):
     with open(path, "rb") as f:
         indices = pickle.load(f)
     return torch.as_tensor(indices, dtype=torch.long, device=device)
+
+
+def _current_landmark_indices_from_source_index(source_landmark_indices, gaussians):
+    source_landmark_indices = torch.as_tensor(source_landmark_indices, dtype=torch.long).reshape(-1)
+    source_index = getattr(gaussians, "loc_source_index", None)
+    point_count = int(gaussians.get_xyz.shape[0])
+    if not torch.is_tensor(source_index) or source_index.numel() != point_count:
+        return source_landmark_indices.detach().cpu()
+    if source_landmark_indices.numel() == 0:
+        return source_landmark_indices.detach().cpu()
+    source_index = source_index.to(dtype=torch.long)
+    wanted = source_landmark_indices.to(device=source_index.device)
+    current_mask = torch.isin(source_index, wanted)
+    current = torch.nonzero(current_mask, as_tuple=False).squeeze(1).to(dtype=torch.long)
+    if current.numel() == 0:
+        return source_landmark_indices.detach().cpu()
+    return current.detach().cpu()
 
 
 def _flatten_render_map(value):
@@ -148,6 +193,10 @@ def _flatten_render_alpha(value):
 
 
 def _set_phase_lrs(gaussians, phase, args):
+    for group in gaussians.optimizer.param_groups:
+        group.setdefault("la_base_lr", group["lr"])
+        group["lr"] = group["la_base_lr"]
+
     if phase == "feature":
         trainable = {"loc_feature"}
     elif phase in {"geometry", "topology", "closed_loop"}:
@@ -156,12 +205,11 @@ def _set_phase_lrs(gaussians, phase, args):
         trainable = {group["name"] for group in gaussians.optimizer.param_groups}
 
     for group in gaussians.optimizer.param_groups:
-        group.setdefault("la_base_lr", group["lr"])
         if group["name"] not in trainable:
             group["lr"] = 0.0
         elif phase in {"geometry", "topology", "closed_loop"}:
             if group["name"] == "xyz":
-                group["lr"] *= args.geometry_xyz_lr_mult
+                group["lr"] = group["la_base_lr"] * args.geometry_xyz_lr_mult
             elif group["name"] == "scaling":
                 group["lr"] = group["la_base_lr"] * args.geometry_scale_lr_mult
             elif group["name"] == "rotation":
@@ -173,6 +221,7 @@ def add_locaware_training_args(parser):
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--load_iteration", type=int, default=None)
+    parser.add_argument("--localization_state_path", type=str, default=None)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
 
@@ -191,12 +240,22 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_fine_window_radius", type=int, default=4)
     parser.add_argument("--loc_desc_weight", type=float, default=1.0)
     parser.add_argument("--loc_reproj_weight", type=float, default=0.1)
+    parser.add_argument("--loc_dense_kl_weight", type=float, default=0.0)
+    parser.add_argument("--loc_dense_kl_temperature", type=float, default=0.07)
+    parser.add_argument("--loc_responsibility_topk", type=int, default=32)
+    parser.add_argument("--loc_responsibility_opacity_weight", type=float, default=0.0)
+    parser.add_argument("--loc_responsibility_depth_weight", type=float, default=0.0)
     parser.add_argument("--loc_teacher", type=str, default="dense", choices=["dense", "direct"])
     parser.add_argument("--loc_direct_weight", type=float, default=0.1)
     parser.add_argument("--loc_multiview_weight", type=float, default=0.05)
     parser.add_argument("--loc_multiview_temperature", type=float, default=0.07)
     parser.add_argument("--loc_multiview_slots", type=int, default=4)
     parser.add_argument("--loc_multiview_ignore_radius", type=float, default=2.0)
+    parser.add_argument("--loc_full_bank_weight", type=float, default=0.0)
+    parser.add_argument("--loc_full_bank_temperature", type=float, default=0.07)
+    parser.add_argument("--loc_full_bank_hard_negatives", type=int, default=32)
+    parser.add_argument("--loc_full_bank_margin", type=float, default=0.2)
+    parser.add_argument("--loc_anchor_weight", type=float, default=0.0)
     parser.add_argument("--landmark_path", type=str, default="detector/sampled_idx.pkl")
     parser.add_argument("--direct_depth_check", action="store_true", default=False)
     parser.add_argument("--direct_depth_abs_tolerance", type=float, default=1e-3)
@@ -236,10 +295,16 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_growth_cap_per_event", type=float, default=0.03)
     parser.add_argument("--topology_total_point_budget_ratio", type=float, default=1.25)
     parser.add_argument("--topology_cooldown_iterations", type=int, default=300)
+    parser.add_argument("--topology_min_repeatability", type=float, default=0.25)
+    parser.add_argument("--topology_min_radius", type=float, default=4.0)
     parser.add_argument("--topology_enable_soft_prune", action="store_true", default=False)
     parser.add_argument("--topology_enable_physical_prune", action="store_true", default=False)
+    parser.add_argument("--topology_protect_landmarks", action="store_true", default=False)
     parser.add_argument("--topology_soft_prune_threshold", type=float, default=-1.0)
     parser.add_argument("--topology_soft_prune_step", type=float, default=1.0)
+    parser.add_argument("--topology_physical_rgb_threshold", type=float, default=0.005)
+    parser.add_argument("--topology_physical_loc_threshold", type=float, default=0.005)
+    parser.add_argument("--topology_physical_utility_threshold", type=float, default=-3.0)
     return parser
 
 
@@ -327,9 +392,13 @@ def training(dataset, opt, args):
     masks = _load_masks(dataset)
     feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
     first_iter = _restore_checkpoint(gaussians, opt, args.start_checkpoint)
+    if args.localization_state_path:
+        _restore_external_localization_state(gaussians, args.localization_state_path)
+        print(f"Loaded external localization state from {args.localization_state_path}")
     if first_iter == 0 and scene.loaded_iter:
         first_iter = scene.loaded_iter
     geometry_anchor = _capture_geometry_anchor(gaussians)
+    loc_feature_anchor = _capture_feature_anchor(gaussians) if args.loc_anchor_weight > 0 else None
     sparse_pose_cache = None
     if args.sparse_pose_cache:
         sparse_pose_cache = SparsePoseCache(args.sparse_pose_cache).load()
@@ -359,6 +428,10 @@ def training(dataset, opt, args):
             )
     topology_controller = None
     if args.enable_topology or args.train_phase in {"topology", "closed_loop"}:
+        protected_source_indices = None
+        if args.topology_protect_landmarks:
+            protected_source_indices = _load_landmark_indices(dataset.model_path, args.landmark_path, device="cpu")
+            print(f"Protecting {protected_source_indices.numel()} sparse landmark source ids from physical prune")
         topology_controller = LocalizationTopologyController(
             TopologyConfig(
                 stats_warmup=args.topology_stats_warmup,
@@ -369,13 +442,19 @@ def training(dataset, opt, args):
                 growth_cap_per_event=args.topology_growth_cap_per_event,
                 total_point_budget_ratio=args.topology_total_point_budget_ratio,
                 cooldown_iterations=args.topology_cooldown_iterations,
+                min_repeatability=args.topology_min_repeatability,
+                min_radius=args.topology_min_radius,
                 enable_loc_clone=False,
                 enable_soft_prune=args.topology_enable_soft_prune,
                 enable_physical_prune=args.topology_enable_physical_prune,
                 soft_prune_threshold=args.topology_soft_prune_threshold,
                 soft_prune_step=args.topology_soft_prune_step,
+                physical_rgb_threshold=args.topology_physical_rgb_threshold,
+                physical_loc_threshold=args.topology_physical_loc_threshold,
+                physical_utility_threshold=args.topology_physical_utility_threshold,
             ),
             initial_points=gaussians.get_xyz.shape[0],
+            protected_source_indices=protected_source_indices,
         )
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -432,7 +511,10 @@ def training(dataset, opt, args):
         loc_loss = image.new_tensor(0.0)
         loc_desc_loss = image.new_tensor(0.0)
         loc_multiview_loss = image.new_tensor(0.0)
+        loc_full_bank_loss = image.new_tensor(0.0)
+        loc_anchor_loss = image.new_tensor(0.0)
         loc_reproj_loss = image.new_tensor(0.0)
+        loc_dense_kl_loss = image.new_tensor(0.0)
         loc_proto_loss = image.new_tensor(0.0)
         loc_rank_loss = image.new_tensor(0.0)
         loc_opacity_loss = image.new_tensor(0.0)
@@ -463,6 +545,10 @@ def training(dataset, opt, args):
             pose_gt = episode.pose_gt_w2c.cuda()
             pose_init = episode.pose_init_w2c.cuda()
             if args.loc_teacher == "direct":
+                current_direct_landmark_indices = _current_landmark_indices_from_source_index(
+                    direct_landmark_indices,
+                    gaussians,
+                )
                 target_depth = None
                 target_alpha = None
                 if args.direct_depth_check:
@@ -488,7 +574,7 @@ def training(dataset, opt, args):
                     pose_gt,
                     query_cam.FoVx,
                     query_cam.FoVy,
-                    direct_landmark_indices,
+                    current_direct_landmark_indices,
                     target_depth=target_depth,
                     target_alpha=target_alpha,
                     alpha_threshold=args.loc_alpha_threshold,
@@ -498,13 +584,22 @@ def training(dataset, opt, args):
                     multiview_memory=direct_observation_memory,
                     multiview_temperature=args.loc_multiview_temperature,
                     multiview_ignore_radius=args.loc_multiview_ignore_radius,
+                    full_bank_indices=current_direct_landmark_indices if args.loc_full_bank_weight > 0 else None,
+                    full_bank_temperature=args.loc_full_bank_temperature,
+                    full_bank_hard_negative_topk=args.loc_full_bank_hard_negatives,
+                    full_bank_hard_negative_margin=args.loc_full_bank_margin,
+                    anchor_features=loc_feature_anchor if args.loc_anchor_weight > 0 else None,
                 )
                 loc_desc_loss = teacher_out.desc_loss
                 loc_multiview_loss = teacher_out.multiview_loss
+                loc_full_bank_loss = teacher_out.full_bank_loss
+                loc_anchor_loss = teacher_out.anchor_loss
                 loc_reproj_loss = teacher_out.reproj_loss
                 loc_loss = (
                     args.loc_direct_weight * loc_desc_loss
                     + args.loc_multiview_weight * loc_multiview_loss
+                    + args.loc_full_bank_weight * loc_full_bank_loss
+                    + args.loc_anchor_weight * loc_anchor_loss
                 )
             else:
                 teacher_out = dense_localization_teacher(
@@ -522,13 +617,23 @@ def training(dataset, opt, args):
                     desc_temperature=args.loc_desc_temperature,
                     fine_temperature=args.loc_fine_temperature,
                     fine_window_radius=args.loc_fine_window_radius,
+                    dense_kl_weight=args.loc_dense_kl_weight,
+                    dense_kl_temperature=args.loc_dense_kl_temperature,
+                    responsibility_topk=args.loc_responsibility_topk,
+                    responsibility_opacity_weight=args.loc_responsibility_opacity_weight,
+                    responsibility_depth_weight=args.loc_responsibility_depth_weight,
                     norm_feat_bf_render=dataset.norm_before_render,
                     use_loc_opacity=args.use_loc_opacity,
                     rasterize_args={"rasterize_mode": "antialiased"},
                 )
                 loc_desc_loss = teacher_out.desc_loss
                 loc_reproj_loss = teacher_out.reproj_loss
-                loc_loss = args.loc_desc_weight * loc_desc_loss + args.loc_reproj_weight * loc_reproj_loss
+                loc_dense_kl_loss = teacher_out.kl_loss
+                loc_loss = (
+                    args.loc_desc_weight * loc_desc_loss
+                    + args.loc_reproj_weight * loc_reproj_loss
+                    + args.loc_dense_kl_weight * loc_dense_kl_loss
+                )
 
             visible_idx = teacher_out.loc_visible_idx
             if visible_idx is not None and visible_idx.numel() > 0:
@@ -593,13 +698,20 @@ def training(dataset, opt, args):
                 tb_writer.add_scalar("train_loss/loc", loc_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_desc", loc_desc_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_multiview", loc_multiview_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_full_bank", loc_full_bank_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_anchor", loc_anchor_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_reproj", loc_reproj_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_dense_kl", loc_dense_kl_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_proto", loc_proto_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_rank", loc_rank_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_opacity", loc_opacity_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/geometry_anchor", geom_anchor_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/total", total_loss.item(), iteration)
                 tb_writer.add_scalar("train/points", gaussians.get_xyz.shape[0], iteration)
+                if teacher_out is not None:
+                    for name, value in getattr(teacher_out, "diagnostics", {}).items():
+                        if isinstance(value, (int, float)):
+                            tb_writer.add_scalar(f"train_diagnostics/{name}", float(value), iteration)
 
             if teacher_out is not None and teacher_out.loc_visible_idx is not None:
                 gaussians.add_localization_stats(
@@ -612,6 +724,11 @@ def training(dataset, opt, args):
 
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none=True)
+
+            if topology_controller is not None and topology_controller.should_update(iteration):
+                topology_controller.update(gaussians, scene.cameras_extent, iteration)
+
+            loc_feature_anchor = _refresh_feature_anchor_if_point_count_changed(gaussians, loc_feature_anchor)
 
             if iteration in args.save_iterations:
                 print(f"\n[ITER {iteration}] Saving LA Gaussians")
@@ -633,9 +750,6 @@ def training(dataset, opt, args):
                     f"\n[ITER {iteration}] base {base_loss.item():.6f} "
                     f"loc {loc_loss.item():.6f} psnr {psnr_val:.3f}"
                 )
-
-            if topology_controller is not None and topology_controller.should_update(iteration):
-                topology_controller.update(gaussians, scene.cameras_extent, iteration)
 
     if tb_writer:
         tb_writer.close()

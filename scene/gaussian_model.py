@@ -26,6 +26,30 @@ from utils.sh_utils import RGB2SH
 from utils.system_utils import mkdir_p
 
 
+def split_localization_child_features(parent_features, parent_prototypes=None, prototype_counts=None, repeat=2):
+    child_features = parent_features.repeat(repeat, *([1] * (parent_features.dim() - 1)))
+    if repeat < 2 or parent_prototypes is None or prototype_counts is None or parent_features.numel() == 0:
+        return child_features
+
+    parent_count = parent_features.shape[0]
+    flat_dim = parent_features.reshape(parent_count, -1).shape[1]
+    prototypes = torch.as_tensor(parent_prototypes, device=parent_features.device, dtype=parent_features.dtype)
+    prototypes = prototypes.reshape(parent_count, -1)
+    if prototypes.shape[1] < flat_dim:
+        return child_features
+    prototypes = prototypes[:, :flat_dim]
+    counts = torch.as_tensor(prototype_counts, device=parent_features.device).reshape(parent_count)
+    valid = (counts > 0) & torch.isfinite(prototypes).all(dim=1) & (torch.linalg.norm(prototypes, dim=1) > 0)
+    if not valid.any():
+        return child_features
+
+    prototype_features = F.normalize(prototypes, p=2, dim=1).reshape_as(parent_features)
+    second_child = child_features[parent_count : 2 * parent_count]
+    second_child[valid] = prototype_features[valid]
+    child_features[parent_count : 2 * parent_count] = second_child
+    return child_features
+
+
 class GaussianModel_2dgs(nn.Module):
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(center, scaling, scaling_modifier, rotation):
@@ -512,6 +536,7 @@ class GaussianModel(nn.Module):
             "loc_prototype_count",
             "loc_birth_iteration",
             "last_topology_iteration",
+            "loc_source_index",
         ]
 
     def init_localization_state(self, from_rgb_opacity=True, birth_iteration=0):
@@ -539,6 +564,7 @@ class GaussianModel(nn.Module):
         self.loc_prototype_count = torch.zeros(n, dtype=torch.float32, device=device)
         self.loc_birth_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
         self.last_topology_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        self.loc_source_index = torch.arange(n, dtype=torch.long, device=device)
 
     def _default_localization_buffer(self, name, birth_iteration=0):
         n = self.get_xyz.shape[0]
@@ -554,6 +580,8 @@ class GaussianModel(nn.Module):
             return torch.zeros(n, dtype=torch.float32, device=device)
         if name in ("loc_birth_iteration", "last_topology_iteration"):
             return torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        if name == "loc_source_index":
+            return torch.arange(n, dtype=torch.long, device=device)
         return torch.zeros(n, dtype=torch.float32, device=device)
 
     def _ensure_localization_state(self, birth_iteration=0):
@@ -701,6 +729,15 @@ class GaussianModel(nn.Module):
         if episode_stats is None:
             return
 
+        update_mask = episode_stats.get("update_mask")
+        if update_mask is None:
+            update_mask = torch.ones(full_idx.numel(), device=self.get_xyz.device, dtype=torch.bool)
+        else:
+            update_mask = torch.as_tensor(update_mask, device=self.get_xyz.device, dtype=torch.bool).reshape(-1)
+            if update_mask.numel() == 1:
+                update_mask = update_mask.expand(full_idx.numel())
+            update_mask = update_mask[: full_idx.numel()]
+
         def as_vector(key, default=None):
             value = episode_stats.get(key, default)
             if value is None:
@@ -722,17 +759,74 @@ class GaussianModel(nn.Module):
         }
         for key, attr in stat_map.items():
             value = as_vector(key)
-            if value is not None:
-                old = getattr(self, attr)[full_idx]
-                getattr(self, attr)[full_idx] = ema_decay * old + (1.0 - ema_decay) * value
+            if value is not None and update_mask.any():
+                target_idx = full_idx[update_mask]
+                old = getattr(self, attr)[target_idx]
+                getattr(self, attr)[target_idx] = ema_decay * old + (1.0 - ema_decay) * value[update_mask]
 
         prototype = episode_stats.get("prototype")
-        if prototype is not None and self.loc_prototype.shape[1] > 0:
+        if prototype is not None and self.loc_prototype.shape[1] > 0 and update_mask.any():
             prototype = torch.as_tensor(prototype, device=self.get_xyz.device, dtype=torch.float32)
             prototype = prototype.reshape(full_idx.numel(), -1)[:, : self.loc_prototype.shape[1]]
-            old = self.loc_prototype[full_idx]
-            self.loc_prototype[full_idx] = ema_decay * old + (1.0 - ema_decay) * F.normalize(prototype, p=2, dim=-1)
-            self.loc_prototype_count[full_idx] += 1
+            target_idx = full_idx[update_mask]
+            old = self.loc_prototype[target_idx]
+            self.loc_prototype[target_idx] = (
+                ema_decay * old + (1.0 - ema_decay) * F.normalize(prototype[update_mask], p=2, dim=-1)
+            )
+            self.loc_prototype_count[target_idx] += 1
+
+    def add_sparse_match_label_stats(
+        self,
+        full_idx,
+        visible_count,
+        matched_count,
+        correct_count,
+        inlier_count,
+        ema_decay=0.95,
+    ):
+        self._ensure_localization_state()
+        full_idx = torch.as_tensor(full_idx, device=self.get_xyz.device, dtype=torch.long).reshape(-1)
+        if full_idx.numel() == 0:
+            return
+
+        def count_tensor(value):
+            return torch.as_tensor(value, device=self.get_xyz.device, dtype=torch.float32).reshape(-1)[: full_idx.numel()]
+
+        visible = count_tensor(visible_count)
+        matched = count_tensor(matched_count)
+        correct = count_tensor(correct_count)
+        inlier = count_tensor(inlier_count)
+        valid_visible = visible > 0
+        valid_matched = matched > 0
+        if valid_visible.any():
+            self.loc_observation_count[full_idx[valid_visible]] += visible[valid_visible].to(dtype=torch.long)
+
+        repeatability = torch.zeros_like(visible)
+        repeatability[valid_visible] = correct[valid_visible] / visible[valid_visible].clamp_min(1.0)
+        positive_prob = torch.zeros_like(matched)
+        positive_prob[valid_matched] = correct[valid_matched] / matched[valid_matched].clamp_min(1.0)
+        inlier_rate = torch.zeros_like(matched)
+        inlier_rate[valid_matched] = inlier[valid_matched] / matched[valid_matched].clamp_min(1.0)
+        outlier_rate = torch.zeros_like(matched)
+        outlier_rate[valid_matched] = 1.0 - inlier_rate[valid_matched]
+        entropy = -(positive_prob * positive_prob.clamp_min(1e-6).log())
+        margin = 2.0 * positive_prob - 1.0
+
+        updates = {
+            "loc_repeatability_ema": repeatability,
+            "loc_positive_prob_ema": positive_prob,
+            "loc_information_ema": inlier_rate,
+            "loc_outlier_ema": outlier_rate,
+            "loc_entropy_ema": entropy,
+            "loc_margin_ema": margin,
+        }
+        valid_any = valid_visible | valid_matched
+        for attr, value in updates.items():
+            if valid_any.any():
+                old = getattr(self, attr)[full_idx[valid_any]]
+                getattr(self, attr)[full_idx[valid_any]] = (
+                    ema_decay * old + (1.0 - ema_decay) * value[valid_any]
+                )
 
     def _robust_z(self, value, mask):
         out = torch.zeros_like(value, dtype=torch.float32)
@@ -780,9 +874,14 @@ class GaussianModel(nn.Module):
         eligible = observed & large & repeatable
         grad = self.loc_grad_accum.squeeze(-1) / self.loc_grad_denom.squeeze(-1).clamp_min(1.0)
         grad_score = self._robust_z(grad, eligible).clamp_min(0.0)
-        entropy_score = self._robust_z(self.loc_entropy_ema, eligible).clamp_min(0.0)
+        entropy_score = (1.0 + self._robust_z(self.loc_entropy_ema, eligible).clamp_min(0.0)) * self.loc_entropy_ema.float().clamp_min(0.0)
         repeatability = self.loc_repeatability_ema.float().clamp(0.0, 1.0)
-        split_score = grad_score * entropy_score * repeatability
+        raw_confidence = self.loc_positive_prob_ema.float()
+        teacher_confidence = torch.where(raw_confidence > 0, raw_confidence.clamp(0.0, 1.0), torch.ones_like(raw_confidence))
+        pose_effective = self.loc_information_ema.float().clamp(0.0, 1.0)
+        if not bool((pose_effective[eligible] > 0).any()):
+            pose_effective = torch.ones_like(pose_effective)
+        split_score = (1.0 + grad_score) * entropy_score * repeatability * teacher_confidence * pose_effective
         split_score[~torch.isfinite(split_score)] = 0.0
         split_score[~eligible] = 0.0
         return split_score
@@ -1283,12 +1382,9 @@ class GaussianModel(nn.Module):
                 "Cannot split selected Gaussians: "
                 f"mask has {selected_pts_mask.numel()} rows, model has {self.get_xyz.shape[0]} points."
             )
-        selected_pts_mask = torch.logical_and(
-            selected_pts_mask,
-            torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent,
-        )
         if selected_pts_mask.sum() == 0:
-            return
+            return 0
+        split_count = int(selected_pts_mask.sum().item())
 
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
         means = torch.zeros((stds.size(0), 3), device=self.get_xyz.device)
@@ -1300,7 +1396,12 @@ class GaussianModel(nn.Module):
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
-        new_loc_feature = self._loc_feature[selected_pts_mask].repeat(N, 1, 1)
+        new_loc_feature = split_localization_child_features(
+            self._loc_feature[selected_pts_mask],
+            self.loc_prototype[selected_pts_mask],
+            self.loc_prototype_count[selected_pts_mask],
+            repeat=N,
+        )
         new_loc_opacity = self._loc_opacity[selected_pts_mask].repeat(N, 1)
 
         self.densification_postfix(
@@ -1322,6 +1423,7 @@ class GaussianModel(nn.Module):
             )
         )
         self.prune_points(prune_filter)
+        return split_count
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]

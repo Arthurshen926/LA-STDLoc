@@ -20,6 +20,9 @@ class TopologyConfig:
     min_radius: float = 4.0
     soft_prune_threshold: float = -1.0
     soft_prune_step: float = 1.0
+    physical_rgb_threshold: float = 0.005
+    physical_loc_threshold: float = 0.005
+    physical_utility_threshold: float = -3.0
 
 
 def _quantile(values, q):
@@ -46,6 +49,7 @@ _LOCALIZATION_BUFFER_NAMES = (
     "loc_prototype_count",
     "loc_birth_iteration",
     "last_topology_iteration",
+    "loc_source_index",
 )
 
 
@@ -75,7 +79,7 @@ def _utility_quantiles(utility):
     }
 
 
-def select_localization_splits(gaussians, config: TopologyConfig, iteration):
+def localization_split_eligible_mask(gaussians, config: TopologyConfig, iteration):
     n = gaussians.get_xyz.shape[0]
     device = gaussians.get_xyz.device
     if hasattr(gaussians, "_ensure_screen_radius_state"):
@@ -85,7 +89,13 @@ def select_localization_splits(gaussians, config: TopologyConfig, iteration):
     repeatable = gaussians.loc_repeatability_ema.to(device=device) >= config.min_repeatability
     radii = gaussians.max_radii2D.to(device=device)
     large = radii >= config.min_radius
-    eligible = observed & cooldown & repeatable & large
+    return observed & cooldown & repeatable & large
+
+
+def select_localization_splits(gaussians, config: TopologyConfig, iteration):
+    n = gaussians.get_xyz.shape[0]
+    device = gaussians.get_xyz.device
+    eligible = localization_split_eligible_mask(gaussians, config, iteration).to(device=device)
     if eligible.sum() == 0:
         return torch.zeros(n, dtype=torch.bool, device=device)
     if hasattr(gaussians, "compute_split_necessity"):
@@ -123,22 +133,44 @@ def apply_localization_soft_prune(gaussians, utility=None, threshold=-1.0, step=
     return mask
 
 
-def joint_physical_prune_mask(gaussians, utility=None, rgb_threshold=0.005, loc_threshold=0.005, utility_threshold=-3.0):
+def joint_physical_prune_mask(
+    gaussians,
+    utility=None,
+    rgb_threshold=0.005,
+    loc_threshold=0.005,
+    utility_threshold=-3.0,
+    protected_source_indices=None,
+):
     if utility is None:
         utility = gaussians.compute_localization_utility()
     utility = utility.to(device=gaussians.get_xyz.device)
-    return (
+    mask = (
         (gaussians.get_opacity.squeeze(-1) < rgb_threshold)
         & (gaussians.get_loc_opacity.squeeze(-1) < loc_threshold)
         & (utility < utility_threshold)
     )
+    if protected_source_indices is not None:
+        protected_source_indices = torch.as_tensor(
+            protected_source_indices,
+            dtype=torch.long,
+            device=gaussians.get_xyz.device,
+        ).reshape(-1)
+        if protected_source_indices.numel() > 0:
+            source_index = getattr(gaussians, "loc_source_index", None)
+            if source_index is None:
+                source_index = torch.arange(gaussians.get_xyz.shape[0], dtype=torch.long, device=gaussians.get_xyz.device)
+            else:
+                source_index = source_index.to(device=gaussians.get_xyz.device, dtype=torch.long)
+            mask = mask & ~torch.isin(source_index, protected_source_indices)
+    return mask
 
 
 class LocalizationTopologyController:
-    def __init__(self, config: TopologyConfig, initial_points=None):
+    def __init__(self, config: TopologyConfig, initial_points=None, protected_source_indices=None):
         self.config = config
         self.initial_points = initial_points
         self.last_event = None
+        self.protected_source_indices = protected_source_indices
 
     def should_update(self, iteration):
         return iteration >= self.config.stats_warmup and iteration % self.config.update_interval == 0
@@ -160,18 +192,26 @@ class LocalizationTopologyController:
                 step=self.config.soft_prune_step,
             )
         if self.config.enable_physical_prune:
-            physical = joint_physical_prune_mask(gaussians, utility=utility)
+            physical = joint_physical_prune_mask(
+                gaussians,
+                utility=utility,
+                rgb_threshold=self.config.physical_rgb_threshold,
+                loc_threshold=self.config.physical_loc_threshold,
+                utility_threshold=self.config.physical_utility_threshold,
+                protected_source_indices=self.protected_source_indices,
+            )
         else:
             physical = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=gaussians.get_xyz.device)
         physical_count = int(physical.sum().item())
         if self.config.enable_physical_prune and physical.any():
             gaussians.prune_points(physical)
             _assert_localization_buffers_match_point_count(gaussians)
+        candidate_count = int(localization_split_eligible_mask(gaussians, self.config, iteration).sum().item())
         split = select_localization_splits(gaussians, self.config, iteration)
         budget = int((self.initial_points or gaussians.get_xyz.shape[0]) * self.config.total_point_budget_ratio)
         event = {
             "iteration": int(iteration),
-            "candidate_count": int(split.numel()),
+            "candidate_count": candidate_count,
             "requested_split_count": int(split.sum().item()),
             "actual_parent_removed": 0,
             "actual_children_added": 0,
@@ -211,6 +251,7 @@ class LocalizationTopologyController:
             print(
                 "[Topology] "
                 f"iter={iteration} candidates={event['candidate_count']} "
+                f"physical_prune={event['physical_prune_count']} "
                 f"requested_split={split_count} parent_removed={split_count} "
                 f"children_added={new_clone_count} points={point_count_before}->{point_count_after} "
                 f"utility_q25={event['utility_quantiles']['q25']:.4f} "
