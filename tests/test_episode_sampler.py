@@ -100,6 +100,40 @@ class EpisodeSamplerTest(unittest.TestCase):
         self.assertEqual(len(support_a), 7)
         self.assertTrue({cam.image_name for cam in support_a}.isdisjoint({cam.image_name for cam in query_a}))
 
+    def test_support_query_sequence_block_holds_out_whole_sequences(self):
+        from localization_training.episode_sampler import split_support_query_cameras
+
+        class Camera:
+            def __init__(self, name):
+                self.image_name = name
+
+        cameras = [
+            Camera(f"seq0/frame{idx:05d}.png") for idx in range(4)
+        ] + [
+            Camera(f"seq1/frame{idx:05d}.png") for idx in range(4)
+        ]
+
+        support, query = split_support_query_cameras(cameras, query_ratio=0.5, seed=0, mode="sequence_block")
+
+        query_sequences = {cam.image_name.split("/")[0] for cam in query}
+        self.assertEqual(len(query_sequences), 1)
+        self.assertTrue({cam.image_name for cam in support}.isdisjoint({cam.image_name for cam in query}))
+
+    def test_support_query_temporal_block_holds_out_contiguous_frames(self):
+        from localization_training.episode_sampler import split_support_query_cameras
+
+        class Camera:
+            def __init__(self, name):
+                self.image_name = name
+
+        cameras = [Camera(f"frame{idx:05d}.png") for idx in range(10)]
+
+        _, query = split_support_query_cameras(cameras, query_ratio=0.3, seed=0, mode="temporal_block")
+
+        query_indices = [int(cam.image_name[5:10]) for cam in query]
+        self.assertEqual(len(query_indices), 3)
+        self.assertEqual(query_indices, list(range(query_indices[0], query_indices[0] + len(query_indices))))
+
     def test_support_query_split_keeps_one_support_and_query_for_extreme_ratios(self):
         from localization_training.episode_sampler import split_support_query_cameras
 

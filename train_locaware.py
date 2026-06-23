@@ -135,18 +135,56 @@ def _current_geometry_state(gaussians):
 
 
 def _capture_feature_anchor(gaussians):
-    return gaussians.get_loc_feature.detach().clone()
+    features = gaussians.get_loc_feature.detach().clone()
+    node_ids = getattr(gaussians, "loc_node_id", None)
+    if torch.is_tensor(node_ids) and node_ids.numel() == features.shape[0]:
+        node_ids = node_ids.detach().clone().to(dtype=torch.long, device=features.device)
+    else:
+        node_ids = torch.arange(features.shape[0], dtype=torch.long, device=features.device)
+    return {"node_ids": node_ids, "features": features}
+
+
+def _feature_anchor_tensor(feature_anchor):
+    if feature_anchor is None:
+        return None
+    if isinstance(feature_anchor, dict):
+        return feature_anchor["features"]
+    return feature_anchor
 
 
 def _refresh_feature_anchor_if_point_count_changed(gaussians, feature_anchor):
     if feature_anchor is None:
         return None
     current = gaussians.get_loc_feature.detach()
-    if feature_anchor.shape[0] == current.shape[0]:
+    if not isinstance(feature_anchor, dict):
+        if feature_anchor.shape[0] == current.shape[0]:
+            return feature_anchor
+        if feature_anchor.shape[0] < current.shape[0]:
+            return torch.cat([feature_anchor, current[feature_anchor.shape[0] :].clone()], dim=0)
+        return feature_anchor[: current.shape[0]].clone()
+
+    anchor_features = feature_anchor["features"].detach()
+    anchor_node_ids = feature_anchor["node_ids"].detach().to(dtype=torch.long, device=current.device).reshape(-1)
+    current_node_ids = getattr(gaussians, "loc_node_id", None)
+    if torch.is_tensor(current_node_ids) and current_node_ids.numel() == current.shape[0]:
+        current_node_ids = current_node_ids.detach().to(dtype=torch.long, device=current.device).reshape(-1)
+    else:
+        current_node_ids = torch.arange(current.shape[0], dtype=torch.long, device=current.device)
+    if (
+        anchor_features.shape[0] == current.shape[0]
+        and anchor_node_ids.shape[0] == current_node_ids.shape[0]
+        and torch.equal(anchor_node_ids, current_node_ids)
+    ):
         return feature_anchor
-    if feature_anchor.shape[0] < current.shape[0]:
-        return torch.cat([feature_anchor, current[feature_anchor.shape[0] :].clone()], dim=0)
-    return feature_anchor[: current.shape[0]].clone()
+
+    anchor_features = anchor_features.to(device=current.device, dtype=current.dtype)
+    aligned = current.clone()
+    anchor_pos = {int(node_id): idx for idx, node_id in enumerate(anchor_node_ids.detach().cpu().tolist())}
+    for row, node_id in enumerate(current_node_ids.detach().cpu().tolist()):
+        idx = anchor_pos.get(int(node_id))
+        if idx is not None:
+            aligned[row] = anchor_features[idx]
+    return {"node_ids": current_node_ids.detach().clone(), "features": aligned.detach().clone()}
 
 
 def _load_landmark_indices(model_path, landmark_path, device="cpu"):
@@ -279,7 +317,10 @@ def add_locaware_training_args(parser):
     parser.add_argument("--sparse_pose_cache", type=str, default=None)
     parser.add_argument("--support_query_split", action="store_true", default=False)
     parser.add_argument("--query_holdout_ratio", type=float, default=0.2)
+    parser.add_argument("--train_seed", type=int, default=0)
     parser.add_argument("--query_split_seed", type=int, default=2025)
+    parser.add_argument("--query_split_mode", type=str, default="random", choices=["random", "sequence_block", "temporal_block"])
+    parser.add_argument("--loc_anchor_grid_size", type=int, default=8)
     parser.add_argument("--geometry_anchor_weight", type=float, default=0.0)
     parser.add_argument("--geometry_anchor_scale_weight", type=float, default=0.1)
     parser.add_argument("--geometry_anchor_rotation_weight", type=float, default=0.1)
@@ -295,6 +336,7 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_growth_cap_per_event", type=float, default=0.03)
     parser.add_argument("--topology_total_point_budget_ratio", type=float, default=1.25)
     parser.add_argument("--topology_cooldown_iterations", type=int, default=300)
+    parser.add_argument("--topology_disable_split", action="store_true", default=False)
     parser.add_argument("--topology_min_repeatability", type=float, default=0.25)
     parser.add_argument("--topology_min_radius", type=float, default=4.0)
     parser.add_argument("--topology_enable_soft_prune", action="store_true", default=False)
@@ -305,6 +347,7 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_physical_rgb_threshold", type=float, default=0.005)
     parser.add_argument("--topology_physical_loc_threshold", type=float, default=0.005)
     parser.add_argument("--topology_physical_utility_threshold", type=float, default=-3.0)
+    parser.add_argument("--topology_allow_untrained_loc_opacity_prune", action="store_true", default=False)
     return parser
 
 
@@ -442,6 +485,7 @@ def training(dataset, opt, args):
                 growth_cap_per_event=args.topology_growth_cap_per_event,
                 total_point_budget_ratio=args.topology_total_point_budget_ratio,
                 cooldown_iterations=args.topology_cooldown_iterations,
+                enable_split=not args.topology_disable_split,
                 min_repeatability=args.topology_min_repeatability,
                 min_radius=args.topology_min_radius,
                 enable_loc_clone=False,
@@ -452,6 +496,7 @@ def training(dataset, opt, args):
                 physical_rgb_threshold=args.topology_physical_rgb_threshold,
                 physical_loc_threshold=args.topology_physical_loc_threshold,
                 physical_utility_threshold=args.topology_physical_utility_threshold,
+                require_loc_opacity_trained_for_physical_prune=not args.topology_allow_untrained_loc_opacity_prune,
             ),
             initial_points=gaussians.get_xyz.shape[0],
             protected_source_indices=protected_source_indices,
@@ -465,11 +510,14 @@ def training(dataset, opt, args):
             train_cameras,
             query_ratio=args.query_holdout_ratio,
             seed=args.query_split_seed,
+            mode=args.query_split_mode,
         )
         print(
             "Support/query split enabled: "
             f"support={len(support_cameras)} query={len(query_cameras)} "
-            f"query_ratio={args.query_holdout_ratio}"
+            f"query_ratio={args.query_holdout_ratio} "
+            f"query_split_seed={args.query_split_seed} "
+            f"query_split_mode={args.query_split_mode}"
         )
     else:
         support_cameras = train_cameras
@@ -477,6 +525,7 @@ def training(dataset, opt, args):
     viewpoint_stack = None
     query_viewpoint_stack = None
     ema_loss_for_log = 0.0
+    loc_opacity_grad_seen = False
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="LA Feature Gaussian")
     first_iter += 1
 
@@ -588,7 +637,8 @@ def training(dataset, opt, args):
                     full_bank_temperature=args.loc_full_bank_temperature,
                     full_bank_hard_negative_topk=args.loc_full_bank_hard_negatives,
                     full_bank_hard_negative_margin=args.loc_full_bank_margin,
-                    anchor_features=loc_feature_anchor if args.loc_anchor_weight > 0 else None,
+                    sampling_grid_size=args.loc_anchor_grid_size,
+                    anchor_features=_feature_anchor_tensor(loc_feature_anchor) if args.loc_anchor_weight > 0 else None,
                 )
                 loc_desc_loss = teacher_out.desc_loss
                 loc_multiview_loss = teacher_out.multiview_loss
@@ -680,6 +730,13 @@ def training(dataset, opt, args):
             + args.geometry_anchor_weight * geom_anchor_loss
         )
         total_loss.backward()
+        loc_opacity_grad = getattr(getattr(gaussians, "_loc_opacity", None), "grad", None)
+        if loc_opacity_grad is not None:
+            loc_opacity_grad_seen = loc_opacity_grad_seen or bool(
+                torch.isfinite(loc_opacity_grad).any().item()
+                and (loc_opacity_grad.detach().abs().max() > 0).item()
+            )
+        gaussians.loc_opacity_grad_seen = loc_opacity_grad_seen
 
         with torch.no_grad():
             ema_loss_for_log = 0.4 * total_loss.item() + 0.6 * ema_loss_for_log
@@ -756,7 +813,6 @@ def training(dataset, opt, args):
 
 
 if __name__ == "__main__":
-    seed_everything(2025)
     parser = ArgumentParser(description="LA-STDLoc training script parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
@@ -767,6 +823,7 @@ if __name__ == "__main__":
     args.test_iterations.append(args.iterations)
     print("Optimizing " + args.model_path)
     safe_state(args.quiet)
+    seed_everything(args.train_seed)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), args)
     print("\nLA-STDLoc training complete.")

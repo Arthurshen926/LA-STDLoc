@@ -174,6 +174,10 @@ def remap_sampled_indices_from_source_index(
     fill_missing=False,
     fill_scores=None,
     remap_scores=None,
+    source_xyz=None,
+    current_xyz=None,
+    prefer_source_distance=False,
+    max_source_distance=None,
 ):
     sampled_idx = torch.as_tensor(sampled_idx, dtype=torch.long).reshape(-1).cpu()
     source_index = torch.as_tensor(source_index, dtype=torch.long).reshape(-1).cpu()
@@ -184,20 +188,49 @@ def remap_sampled_indices_from_source_index(
                 "remap_scores must contain one score per current point: "
                 f"got {remap_scores.numel()} scores for {source_index.numel()} points."
             )
-    current_for_source = {}
+    if source_xyz is not None or current_xyz is not None:
+        if source_xyz is None or current_xyz is None:
+            raise ValueError("source_xyz and current_xyz must be provided together.")
+        source_xyz = torch.as_tensor(source_xyz, dtype=torch.float32).reshape(source_index.numel(), -1).cpu()
+        current_xyz = torch.as_tensor(current_xyz, dtype=torch.float32).reshape(source_index.numel(), -1).cpu()
+        if source_xyz.shape[0] != source_index.numel() or current_xyz.shape[0] != source_index.numel():
+            raise ValueError(
+                "source_xyz/current_xyz must contain one row per current point: "
+                f"got {source_xyz.shape[0]} and {current_xyz.shape[0]} rows for {source_index.numel()} points."
+            )
+        source_distance = torch.linalg.norm(current_xyz[:, :3] - source_xyz[:, :3], dim=-1)
+    else:
+        source_distance = None
+
+    candidates_for_source = {}
     for current_idx, source_id in enumerate(source_index.tolist()):
         source_id = int(source_id)
+        candidates_for_source.setdefault(source_id, []).append(int(current_idx))
+
+    def choose_candidate(candidates):
+        if not candidates:
+            return None
+        if prefer_source_distance and source_distance is not None:
+            order = sorted(
+                candidates,
+                key=lambda idx: (
+                    float(source_distance[idx].item()),
+                    -float(remap_scores[idx].item()) if remap_scores is not None else 0.0,
+                    idx,
+                ),
+            )
+            best = order[0]
+            if max_source_distance is not None and float(source_distance[best].item()) > float(max_source_distance):
+                return None
+            return best
         if remap_scores is None:
-            current_for_source.setdefault(source_id, int(current_idx))
-            continue
-        old_idx = current_for_source.get(source_id)
-        if old_idx is None or remap_scores[current_idx] > remap_scores[old_idx]:
-            current_for_source[source_id] = int(current_idx)
+            return candidates[0]
+        return max(candidates, key=lambda idx: (float(remap_scores[idx].item()), -idx))
 
     remapped = []
     missing = []
     for source_id in sampled_idx.tolist():
-        current_idx = current_for_source.get(int(source_id))
+        current_idx = choose_candidate(candidates_for_source.get(int(source_id), []))
         if current_idx is None:
             missing.append(int(source_id))
         else:

@@ -536,7 +536,10 @@ class GaussianModel(nn.Module):
             "loc_prototype_count",
             "loc_birth_iteration",
             "last_topology_iteration",
+            "loc_node_id",
+            "loc_parent_node_id",
             "loc_source_index",
+            "loc_source_xyz",
         ]
 
     def init_localization_state(self, from_rgb_opacity=True, birth_iteration=0):
@@ -564,7 +567,10 @@ class GaussianModel(nn.Module):
         self.loc_prototype_count = torch.zeros(n, dtype=torch.float32, device=device)
         self.loc_birth_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
         self.last_topology_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        self.loc_node_id = torch.arange(n, dtype=torch.long, device=device)
+        self.loc_parent_node_id = torch.full((n,), -1, dtype=torch.long, device=device)
         self.loc_source_index = torch.arange(n, dtype=torch.long, device=device)
+        self.loc_source_xyz = self.get_xyz.detach().clone().to(device=device, dtype=torch.float32)
 
     def _default_localization_buffer(self, name, birth_iteration=0):
         n = self.get_xyz.shape[0]
@@ -580,8 +586,12 @@ class GaussianModel(nn.Module):
             return torch.zeros(n, dtype=torch.float32, device=device)
         if name in ("loc_birth_iteration", "last_topology_iteration"):
             return torch.full((n,), birth_iteration, dtype=torch.long, device=device)
-        if name == "loc_source_index":
+        if name in ("loc_source_index", "loc_node_id"):
             return torch.arange(n, dtype=torch.long, device=device)
+        if name == "loc_parent_node_id":
+            return torch.full((n,), -1, dtype=torch.long, device=device)
+        if name == "loc_source_xyz":
+            return self.get_xyz.detach().clone().to(device=device, dtype=torch.float32)
         return torch.zeros(n, dtype=torch.float32, device=device)
 
     def _ensure_localization_state(self, birth_iteration=0):
@@ -665,21 +675,49 @@ class GaussianModel(nn.Module):
                 f"param groups, current model has {expected}."
             )
 
+    def _new_localization_node_ids(self, count, existing_node_ids=None):
+        count = int(count)
+        device = self.get_xyz.device
+        if count <= 0:
+            return torch.empty((0,), dtype=torch.long, device=device)
+        if existing_node_ids is None:
+            existing_node_ids = getattr(self, "loc_node_id", None)
+        if torch.is_tensor(existing_node_ids) and existing_node_ids.numel() > 0:
+            start = int(existing_node_ids.to(dtype=torch.long).max().item()) + 1
+        else:
+            start = 0
+        return torch.arange(start, start + count, dtype=torch.long, device=device)
+
     def _cat_localization_buffers(self, parent_mask, repeat=1):
         if parent_mask is None:
             n = self.get_xyz.shape[0]
             self.init_localization_state(from_rgb_opacity=True)
             assert self.get_xyz.shape[0] == n
             return
+        originals = {name: getattr(self, name) for name in self._localization_buffer_names()}
         for name in self._localization_buffer_names():
-            value = getattr(self, name)
+            value = originals[name]
             if value.shape[0] != parent_mask.shape[0]:
                 raise RuntimeError(
                     f"Cannot extend localization buffer {name}: "
                     f"buffer has {value.shape[0]} rows, parent mask has {parent_mask.shape[0]}."
                 )
-            extension = value[parent_mask]
-            if repeat != 1:
+            if name == "loc_node_id":
+                parent_count = int(parent_mask.to(dtype=torch.bool).sum().item())
+                extension = self._new_localization_node_ids(
+                    parent_count * int(repeat),
+                    existing_node_ids=originals.get("loc_node_id"),
+                )
+            elif name == "loc_parent_node_id":
+                parent_node_id = originals.get("loc_node_id")
+                if not torch.is_tensor(parent_node_id) or parent_node_id.shape[0] != parent_mask.shape[0]:
+                    parent_node_id = torch.arange(parent_mask.shape[0], dtype=torch.long, device=value.device)
+                extension = parent_node_id[parent_mask].to(device=value.device, dtype=value.dtype)
+                if repeat != 1:
+                    extension = extension.repeat(int(repeat))
+            else:
+                extension = value[parent_mask]
+            if repeat != 1 and name not in ("loc_node_id", "loc_parent_node_id"):
                 reps = [repeat] + [1] * (extension.dim() - 1)
                 extension = extension.repeat(*reps)
             setattr(self, name, torch.cat([value, extension], dim=0))
@@ -900,7 +938,11 @@ class GaussianModel(nn.Module):
 
     def capture_localization_state(self):
         self._ensure_localization_state()
-        state = {"version": 1, "loc_opacity": self._loc_opacity.detach()}
+        state = {
+            "version": 2,
+            "loc_opacity": self._loc_opacity.detach(),
+            "loc_current_xyz": self.get_xyz.detach(),
+        }
         for name in self._localization_buffer_names():
             state[name] = getattr(self, name).detach()
         return state
@@ -913,7 +955,15 @@ class GaussianModel(nn.Module):
         loc_opacity = state.get("loc_opacity", None)
         if loc_opacity is None:
             loc_opacity = self._opacity.detach().clone()
-        self._loc_opacity = nn.Parameter(loc_opacity.to(device=device).detach().clone().requires_grad_(True))
+        loc_opacity = loc_opacity.to(device=device).detach().clone()
+        if self.optimizer is not None:
+            optimizable_tensors = self.replace_tensor_to_optimizer(loc_opacity, "loc_opacity")
+            self._loc_opacity = optimizable_tensors.get(
+                "loc_opacity",
+                nn.Parameter(loc_opacity.requires_grad_(True)),
+            )
+        else:
+            self._loc_opacity = nn.Parameter(loc_opacity.requires_grad_(True))
         for name in self._localization_buffer_names():
             if name in state:
                 setattr(self, name, state[name].to(device=device).detach().clone())
@@ -1157,14 +1207,15 @@ class GaussianModel(nn.Module):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
-                stored_state = self.optimizer.state.get(group['params'][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
-
-                del self.optimizer.state[group['params'][0]]
+                old_param = group["params"][0]
+                stored_state = self.optimizer.state.get(old_param, None)
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.zeros_like(tensor)
+                    stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                    del self.optimizer.state[old_param]
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
-
+                if stored_state is not None:
+                    self.optimizer.state[group["params"][0]] = stored_state
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 

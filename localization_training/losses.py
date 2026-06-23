@@ -141,6 +141,7 @@ def geometry_anchor_loss(current, anchor, xyz_weight=1.0, scale_weight=0.1, rota
 
 
 def localization_opacity_regularizer(loc_opacity, target_density=0.5, sparsity_weight=1.0, density_weight=1.0):
-    sparsity = loc_opacity.mean()
-    density = (loc_opacity.mean() - target_density).abs()
+    opacity_mean = loc_opacity.mean()
+    sparsity = opacity_mean
+    density = (opacity_mean - target_density).square()
     return sparsity_weight * sparsity + density_weight * density

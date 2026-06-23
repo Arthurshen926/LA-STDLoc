@@ -213,6 +213,51 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         aligned.backward()
         self.assertIsNotNone(aligned_bank.grad)
 
+    def test_full_bank_bimnn_loss_ignores_sibling_source_false_negatives(self):
+        from localization_training.direct_landmark_teacher import full_bank_bimnn_loss
+
+        query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        bank = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+        positives = torch.tensor([0])
+        ignore_mask = torch.tensor([[False, True, False]])
+
+        with_false_negative = full_bank_bimnn_loss(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            hard_negative_topk=1,
+        )
+        ignored = full_bank_bimnn_loss(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            hard_negative_topk=1,
+            ignore_bank_mask=ignore_mask,
+        )
+
+        self.assertLess(ignored.item(), with_false_negative.item())
+
+    def test_limit_valid_indices_can_stratify_by_projection_grid(self):
+        from localization_training.direct_landmark_teacher import _limit_valid_indices
+
+        valid = torch.ones(12, dtype=torch.bool)
+        uv = torch.tensor([[1.0, 1.0]] * 10 + [[9.0, 1.0], [15.0, 15.0]])
+
+        keep = _limit_valid_indices(valid, max_landmarks=3, uv=uv, image_size=(16, 16), grid_size=2)
+
+        self.assertIn(10, keep.tolist())
+        self.assertIn(11, keep.tolist())
+        self.assertEqual(keep.numel(), 3)
+
     def test_anchor_loss_penalizes_descriptor_drift_from_baseline(self):
         from localization_training.direct_landmark_teacher import descriptor_anchor_loss
 

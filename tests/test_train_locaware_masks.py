@@ -41,6 +41,45 @@ class TrainLocawareMaskTest(unittest.TestCase):
         same = _refresh_geometry_anchor_if_point_count_changed(FakeGaussians(3), refreshed)
         self.assertIs(same, refreshed)
 
+    def test_feature_anchor_refresh_aligns_by_stable_node_id_not_row_order(self):
+        from train_locaware import (
+            _capture_feature_anchor,
+            _feature_anchor_tensor,
+            _refresh_feature_anchor_if_point_count_changed,
+        )
+
+        class FakeGaussians:
+            def __init__(self, features, node_ids):
+                self._loc_feature = features.reshape(features.shape[0], 1, features.shape[1])
+                self.loc_node_id = node_ids
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self._loc_feature.shape[0], 3)
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        anchor = _capture_feature_anchor(
+            FakeGaussians(
+                torch.tensor([[10.0, 0.0], [20.0, 0.0], [30.0, 0.0]]),
+                torch.tensor([100, 101, 102]),
+            )
+        )
+        refreshed = _refresh_feature_anchor_if_point_count_changed(
+            FakeGaussians(
+                torch.tensor([[200.0, 0.0], [300.0, 0.0], [400.0, 0.0]]),
+                torch.tensor([101, 102, 103]),
+            ),
+            anchor,
+        )
+
+        aligned = _feature_anchor_tensor(refreshed).reshape(3, 2)
+        self.assertTrue(torch.equal(aligned[0], torch.tensor([20.0, 0.0])))
+        self.assertTrue(torch.equal(aligned[1], torch.tensor([30.0, 0.0])))
+        self.assertTrue(torch.equal(aligned[2], torch.tensor([400.0, 0.0])))
+
     def test_current_landmark_indices_expand_topology_split_children_from_source_ids(self):
         from train_locaware import _current_landmark_indices_from_source_index
 
@@ -279,20 +318,28 @@ class TrainLocawareMaskTest(unittest.TestCase):
         defaults = parser.parse_args([])
         self.assertEqual(defaults.mixed_sparse_probability, 0.5)
         self.assertEqual(defaults.pose_noise_sampling, "empirical")
+        self.assertEqual(defaults.train_seed, 0)
+        self.assertEqual(defaults.query_split_mode, "random")
 
         args = parser.parse_args(
             [
+                "--train_seed",
+                "13",
                 "--query_mode",
                 "mixed",
                 "--mixed_sparse_probability",
                 "0.25",
                 "--pose_noise_sampling",
                 "quantile",
+                "--query_split_mode",
+                "temporal_block",
             ]
         )
+        self.assertEqual(args.train_seed, 13)
         self.assertEqual(args.query_mode, "mixed")
         self.assertEqual(args.mixed_sparse_probability, 0.25)
         self.assertEqual(args.pose_noise_sampling, "quantile")
+        self.assertEqual(args.query_split_mode, "temporal_block")
 
     def test_locaware_parser_defaults_topology_to_split_only(self):
         from train_locaware import add_locaware_training_args
@@ -326,6 +373,18 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.topology_physical_rgb_threshold, 0.1)
         self.assertEqual(args.topology_physical_loc_threshold, 0.2)
         self.assertEqual(args.topology_physical_utility_threshold, -1.5)
+
+    def test_locaware_parser_requires_explicit_override_for_untrained_loc_opacity_prune(self):
+        from train_locaware import add_locaware_training_args
+
+        parser = ArgumentParser()
+        add_locaware_training_args(parser)
+
+        defaults = parser.parse_args([])
+        override = parser.parse_args(["--topology_allow_untrained_loc_opacity_prune"])
+
+        self.assertFalse(defaults.topology_allow_untrained_loc_opacity_prune)
+        self.assertTrue(override.topology_allow_untrained_loc_opacity_prune)
 
     def test_locaware_parser_accepts_topology_split_gate_controls(self):
         from train_locaware import add_locaware_training_args

@@ -263,10 +263,38 @@ def filter_depth_consistent_landmarks(
     return valid
 
 
-def _limit_valid_indices(valid, max_landmarks):
+def _limit_valid_indices(valid, max_landmarks, uv=None, image_size=None, grid_size=8):
     idx = torch.nonzero(valid, as_tuple=False).squeeze(1)
     if max_landmarks is None or idx.numel() <= max_landmarks:
         return idx
+    if uv is not None and image_size is not None and int(grid_size) > 1:
+        height, width = image_size
+        grid_size = int(grid_size)
+        uv = uv.to(device=valid.device, dtype=torch.float32)
+        cell_x = torch.floor(uv[idx, 0].clamp(0, max(float(width) - 1.0, 0.0)) / max(float(width), 1.0) * grid_size)
+        cell_y = torch.floor(uv[idx, 1].clamp(0, max(float(height) - 1.0, 0.0)) / max(float(height), 1.0) * grid_size)
+        cell_x = cell_x.to(dtype=torch.long).clamp(0, grid_size - 1)
+        cell_y = cell_y.to(dtype=torch.long).clamp(0, grid_size - 1)
+        cell_ids = cell_y * grid_size + cell_x
+        unique_cells = torch.unique(cell_ids, sorted=True)
+        selected = []
+        used = torch.zeros(idx.numel(), dtype=torch.bool, device=idx.device)
+        while len(selected) < int(max_landmarks) and not bool(used.all().item()):
+            progressed = False
+            for cell_id in unique_cells.tolist():
+                candidates = torch.nonzero((cell_ids == cell_id) & ~used, as_tuple=False).squeeze(1)
+                if candidates.numel() == 0:
+                    continue
+                pos = int(candidates[0].item())
+                selected.append(idx[pos])
+                used[pos] = True
+                progressed = True
+                if len(selected) >= int(max_landmarks):
+                    break
+            if not progressed:
+                break
+        if selected:
+            return torch.stack(selected)
     positions = torch.linspace(0, idx.numel() - 1, int(max_landmarks), device=idx.device).long()
     return idx[positions]
 
@@ -303,6 +331,7 @@ def full_bank_bimnn_loss(
     hard_negative_topk=0,
     hard_negative_margin=0.2,
     weights=None,
+    ignore_bank_mask=None,
 ):
     query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
     bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
@@ -318,20 +347,30 @@ def full_bank_bimnn_loss(
         return query_features.new_tensor(0.0)
     query = query[valid]
     positive_bank_indices = positive_bank_indices[valid]
+    if ignore_bank_mask is not None:
+        ignore_bank_mask = torch.as_tensor(ignore_bank_mask, dtype=torch.bool, device=query.device)
+        ignore_bank_mask = ignore_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
+    else:
+        ignore_bank_mask = None
     temperature = max(float(temperature), 1e-6)
 
     query_to_bank = query @ bank.T / temperature
+    query_ids = torch.arange(query.shape[0], dtype=torch.long, device=query.device)
+    if ignore_bank_mask is not None:
+        ignore_bank_mask[query_ids, positive_bank_indices] = False
+        query_to_bank = query_to_bank.masked_fill(ignore_bank_mask, -torch.inf)
     query_loss = F.cross_entropy(query_to_bank, positive_bank_indices, reduction="none")
 
     positive_bank = bank[positive_bank_indices]
     bank_to_query = positive_bank @ query.T / temperature
-    query_ids = torch.arange(query.shape[0], dtype=torch.long, device=query.device)
     bank_loss = F.cross_entropy(bank_to_query, query_ids, reduction="none")
     per_item = query_loss + bank_loss
 
     if int(hard_negative_topk) > 0 and bank.shape[0] > 1:
         scores = (query @ bank.T).clone()
         scores[query_ids, positive_bank_indices] = -torch.inf
+        if ignore_bank_mask is not None:
+            scores = scores.masked_fill(ignore_bank_mask, -torch.inf)
         topk = min(int(hard_negative_topk), max(1, bank.shape[0] - 1))
         hard_neg = torch.topk(scores, k=topk, dim=1).values
         pos = (query * positive_bank).sum(dim=-1, keepdim=True)
@@ -492,6 +531,7 @@ def direct_landmark_teacher(
     full_bank_temperature=0.07,
     full_bank_hard_negative_topk=0,
     full_bank_hard_negative_margin=0.2,
+    sampling_grid_size=8,
     anchor_features=None,
 ):
     device = query_feature_map.device
@@ -513,7 +553,13 @@ def direct_landmark_teacher(
         abs_tolerance=depth_abs_tolerance,
         rel_tolerance=depth_rel_tolerance,
     )
-    keep = _limit_valid_indices(valid, max_landmarks)
+    keep = _limit_valid_indices(
+        valid,
+        max_landmarks,
+        uv=uv,
+        image_size=(height, width),
+        grid_size=sampling_grid_size,
+    )
     zero = query_feature_map.new_tensor(0.0)
     if keep.numel() == 0:
         return DirectLandmarkTeacherOutput(
@@ -565,6 +611,15 @@ def direct_landmark_teacher(
             selected_full_idx.to(device=full_bank_indices.device),
             full_bank_indices,
         ).to(device=query_feature_map.device)
+        ignore_bank_mask = None
+        source_index = getattr(gaussians, "loc_source_index", None)
+        if torch.is_tensor(source_index) and source_index.numel() > 0:
+            source_index = source_index.to(device=gaussians.get_xyz.device, dtype=torch.long).reshape(-1)
+            max_required_idx = torch.cat([selected_full_idx.reshape(-1), full_bank_indices.reshape(-1)]).max()
+            if max_required_idx.item() < source_index.numel():
+                selected_source = source_index[selected_full_idx].to(device=query_feature_map.device)
+                bank_source = source_index[full_bank_indices].to(device=query_feature_map.device)
+                ignore_bank_mask = selected_source[:, None] == bank_source[None, :]
         full_bank_loss = full_bank_bimnn_loss(
             query_features,
             bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
@@ -572,6 +627,7 @@ def direct_landmark_teacher(
             temperature=full_bank_temperature,
             hard_negative_topk=full_bank_hard_negative_topk,
             hard_negative_margin=full_bank_hard_negative_margin,
+            ignore_bank_mask=ignore_bank_mask,
         )
         positive_prob, margin, entropy = full_bank_descriptor_stats(
             query_features,

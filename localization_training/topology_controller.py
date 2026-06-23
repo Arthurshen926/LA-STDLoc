@@ -13,6 +13,7 @@ class TopologyConfig:
     growth_cap_per_event: float = 0.03
     total_point_budget_ratio: float = 1.25
     cooldown_iterations: int = 300
+    enable_split: bool = True
     enable_loc_clone: bool = False
     enable_soft_prune: bool = False
     enable_physical_prune: bool = False
@@ -23,6 +24,7 @@ class TopologyConfig:
     physical_rgb_threshold: float = 0.005
     physical_loc_threshold: float = 0.005
     physical_utility_threshold: float = -3.0
+    require_loc_opacity_trained_for_physical_prune: bool = True
 
 
 def _quantile(values, q):
@@ -49,7 +51,10 @@ _LOCALIZATION_BUFFER_NAMES = (
     "loc_prototype_count",
     "loc_birth_iteration",
     "last_topology_iteration",
+    "loc_node_id",
+    "loc_parent_node_id",
     "loc_source_index",
+    "loc_source_xyz",
 )
 
 
@@ -92,35 +97,57 @@ def localization_split_eligible_mask(gaussians, config: TopologyConfig, iteratio
     return observed & cooldown & repeatable & large
 
 
+def _localization_split_ambiguity(gaussians):
+    if hasattr(gaussians, "loc_entropy_ema"):
+        return gaussians.loc_entropy_ema.to(device=gaussians.get_xyz.device).float().clamp_min(0.0)
+    return torch.ones(gaussians.get_xyz.shape[0], dtype=torch.float32, device=gaussians.get_xyz.device)
+
+
+def _localization_split_score(gaussians, config: TopologyConfig):
+    device = gaussians.get_xyz.device
+    if hasattr(gaussians, "compute_split_necessity"):
+        return gaussians.compute_split_necessity(
+            min_observations=config.min_observations,
+            min_radius=config.min_radius,
+            min_repeatability=config.min_repeatability,
+        ).to(device=device)
+    grad = (
+        gaussians.loc_grad_accum.to(device=device).squeeze(-1)
+        / gaussians.loc_grad_denom.to(device=device).squeeze(-1).clamp_min(1.0)
+    )
+    entropy = _localization_split_ambiguity(gaussians).to(device=device)
+    return grad.clamp_min(0.0) * entropy.clamp_min(0.0) * gaussians.loc_repeatability_ema.to(device=device).clamp(0.0, 1.0)
+
+
+def _cap_split_mask(split, score, cap):
+    cap = int(cap)
+    if cap <= 0:
+        return torch.zeros_like(split)
+    if int(split.sum().item()) <= cap:
+        return split
+    selected = torch.topk(score.masked_fill(~split, -torch.inf), cap).indices
+    capped = torch.zeros_like(split)
+    capped[selected] = True
+    return capped
+
+
 def select_localization_splits(gaussians, config: TopologyConfig, iteration):
     n = gaussians.get_xyz.shape[0]
     device = gaussians.get_xyz.device
     eligible = localization_split_eligible_mask(gaussians, config, iteration).to(device=device)
     if eligible.sum() == 0:
         return torch.zeros(n, dtype=torch.bool, device=device)
-    if hasattr(gaussians, "compute_split_necessity"):
-        split_score = gaussians.compute_split_necessity(
-            min_observations=config.min_observations,
-            min_radius=config.min_radius,
-            min_repeatability=config.min_repeatability,
-        ).to(device=device)
-    else:
-        grad = (
-            gaussians.loc_grad_accum.to(device=device).squeeze(-1)
-            / gaussians.loc_grad_denom.to(device=device).squeeze(-1).clamp_min(1.0)
-        )
-        entropy = gaussians.loc_entropy_ema.to(device=device)
-        split_score = grad.clamp_min(0.0) * entropy.clamp_min(0.0) * gaussians.loc_repeatability_ema.to(device=device).clamp(0.0, 1.0)
-        split_score[~eligible] = 0.0
+    ambiguity = _localization_split_ambiguity(gaussians).to(device=device)
+    ambiguity_thr = _quantile(ambiguity[eligible], config.ambiguity_quantile)
+    eligible = eligible & (ambiguity >= ambiguity_thr)
+    if eligible.sum() == 0:
+        return torch.zeros(n, dtype=torch.bool, device=device)
+    split_score = _localization_split_score(gaussians, config)
+    split_score[~eligible] = 0.0
     score_thr = _quantile(split_score[eligible], config.split_quantile)
     split = eligible & (split_score > 0) & (split_score >= score_thr)
     cap = max(1, int(n * config.growth_cap_per_event))
-    if split.sum() > cap:
-        selected = torch.topk(split_score.masked_fill(~split, -torch.inf), cap).indices
-        capped = torch.zeros_like(split)
-        capped[selected] = True
-        split = capped
-    return split
+    return _cap_split_mask(split, split_score, cap)
 
 
 def apply_localization_soft_prune(gaussians, utility=None, threshold=-1.0, step=1.0):
@@ -192,6 +219,15 @@ class LocalizationTopologyController:
                 step=self.config.soft_prune_step,
             )
         if self.config.enable_physical_prune:
+            if (
+                self.config.require_loc_opacity_trained_for_physical_prune
+                and not bool(getattr(gaussians, "loc_opacity_grad_seen", False))
+            ):
+                raise RuntimeError(
+                    "Physical topology prune requires trained loc opacity evidence. "
+                    "Enable loc opacity in the loss path until a non-zero loc opacity gradient is observed, "
+                    "or pass the explicit legacy override for untrained loc opacity pruning."
+                )
             physical = joint_physical_prune_mask(
                 gaussians,
                 utility=utility,
@@ -206,9 +242,25 @@ class LocalizationTopologyController:
         if self.config.enable_physical_prune and physical.any():
             gaussians.prune_points(physical)
             _assert_localization_buffers_match_point_count(gaussians)
-        candidate_count = int(localization_split_eligible_mask(gaussians, self.config, iteration).sum().item())
-        split = select_localization_splits(gaussians, self.config, iteration)
-        budget = int((self.initial_points or gaussians.get_xyz.shape[0]) * self.config.total_point_budget_ratio)
+        if self.config.enable_split:
+            candidate_count = int(localization_split_eligible_mask(gaussians, self.config, iteration).sum().item())
+            split = select_localization_splits(gaussians, self.config, iteration)
+            budget = int((self.initial_points or gaussians.get_xyz.shape[0]) * self.config.total_point_budget_ratio)
+            num_children_per_parent = 2
+            net_growth_per_split = max(1, num_children_per_parent - 1)
+            remaining_growth_budget = max(0, budget - int(gaussians.get_xyz.shape[0]))
+            max_splits_by_budget = remaining_growth_budget // net_growth_per_split
+            if split.any():
+                split = _cap_split_mask(
+                    split,
+                    _localization_split_score(gaussians, self.config),
+                    max_splits_by_budget,
+                )
+        else:
+            candidate_count = 0
+            split = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=gaussians.get_xyz.device)
+            budget = int(gaussians.get_xyz.shape[0])
+            num_children_per_parent = 2
         event = {
             "iteration": int(iteration),
             "candidate_count": candidate_count,
@@ -226,7 +278,6 @@ class LocalizationTopologyController:
             split_count = int(split.sum().item())
             if not hasattr(gaussians, "densify_and_split_selected"):
                 raise RuntimeError("Localization topology requires densify_and_split_selected(selected_mask=...).")
-            num_children_per_parent = 2
             gaussians.densify_and_split_selected(split, scene_extent=scene_extent, N=num_children_per_parent)
             point_count_after = int(gaussians.get_xyz.shape[0])
             expected_after = int(point_count_before + split_count * (num_children_per_parent - 1))

@@ -115,6 +115,42 @@ class LocalizationUtilityTest(unittest.TestCase):
 
         self.assertEqual(gaussians.loc_source_index.tolist(), [1, 2, 1, 1])
 
+    def test_localization_node_ids_are_stable_across_prune_and_unique_for_split_children(self):
+        gaussians = self._model_with_stats()
+        gaussians.loc_node_id[:] = torch.tensor([10, 11, 12])
+
+        gaussians._prune_localization_buffers(torch.tensor([False, True, True]))
+        gaussians._cat_localization_buffers(torch.tensor([True, False]), repeat=2)
+
+        self.assertEqual(gaussians.loc_source_index.tolist(), [1, 2, 1, 1])
+        self.assertEqual(gaussians.loc_node_id[:2].tolist(), [11, 12])
+        self.assertEqual(gaussians.loc_parent_node_id.tolist(), [-1, -1, 11, 11])
+        self.assertEqual(len(set(gaussians.loc_node_id.tolist())), 4)
+        self.assertGreater(min(gaussians.loc_node_id[2:].tolist()), 12)
+
+    def test_localization_source_xyz_tracks_original_parent_geometry(self):
+        gaussians = self._model_with_stats()
+        gaussians._xyz = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ]
+        )
+        gaussians.init_localization_state(from_rgb_opacity=True)
+        gaussians._xyz = torch.tensor(
+            [
+                [0.0, 0.0, 0.0],
+                [1.5, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ]
+        )
+
+        gaussians._prune_localization_buffers(torch.tensor([False, True, True]))
+        gaussians._cat_localization_buffers(torch.tensor([True, False]), repeat=2)
+
+        self.assertEqual(gaussians.loc_source_xyz.tolist(), [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+
     def test_remap_sampled_indices_from_source_index_reports_missing_landmarks(self):
         from stdloc import remap_sampled_indices_from_source_index
 
@@ -153,6 +189,38 @@ class LocalizationUtilityTest(unittest.TestCase):
 
         self.assertEqual(remapped.tolist(), [2, 1])
         self.assertEqual(missing.tolist(), [])
+
+    def test_remap_sampled_indices_can_prefer_projection_consistent_duplicate(self):
+        from stdloc import remap_sampled_indices_from_source_index
+
+        remapped, missing = remap_sampled_indices_from_source_index(
+            sampled_idx=torch.tensor([5]),
+            source_index=torch.tensor([5, 5]),
+            return_missing=True,
+            remap_scores=torch.tensor([0.1, 100.0]),
+            source_xyz=torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
+            current_xyz=torch.tensor([[0.01, 0.0, 0.0], [10.0, 0.0, 0.0]]),
+            prefer_source_distance=True,
+        )
+
+        self.assertEqual(remapped.tolist(), [0])
+        self.assertEqual(missing.tolist(), [])
+
+    def test_remap_sampled_indices_can_drop_projection_inconsistent_duplicate(self):
+        from stdloc import remap_sampled_indices_from_source_index
+
+        remapped, missing = remap_sampled_indices_from_source_index(
+            sampled_idx=torch.tensor([5]),
+            source_index=torch.tensor([5]),
+            return_missing=True,
+            source_xyz=torch.tensor([[0.0, 0.0, 0.0]]),
+            current_xyz=torch.tensor([[1.0, 0.0, 0.0]]),
+            prefer_source_distance=True,
+            max_source_distance=0.1,
+        )
+
+        self.assertEqual(remapped.tolist(), [])
+        self.assertEqual(missing.tolist(), [5])
 
     def test_landmark_prior_from_meta_aligns_full_score_to_sampled_landmarks(self):
         from stdloc import landmark_prior_from_meta

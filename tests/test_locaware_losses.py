@@ -65,6 +65,17 @@ class LocAwareLossesTest(unittest.TestCase):
         self.assertGreater(drift.item(), none.item())
         self.assertEqual(none.item(), 0.0)
 
+    def test_localization_opacity_regularizer_has_gradient_below_default_target(self):
+        from localization_training.losses import localization_opacity_regularizer
+
+        loc_opacity = torch.full((8, 1), 0.25, requires_grad=True)
+
+        loss = localization_opacity_regularizer(loc_opacity, target_density=0.5)
+        loss.backward()
+
+        self.assertIsNotNone(loc_opacity.grad)
+        self.assertGreater(loc_opacity.grad.abs().max().item(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,9 @@ DATA_ROOT=${DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}
 BASELINE_ROOT=${BASELINE_ROOT:-/mnt/pool/sqy/stdloc_la_full_runs}
 MODEL_ROOT=${MODEL_ROOT:-/mnt/pool/sqy/stdloc_la_v03_multiscene}
 SCENES=${SCENES:-ShopFacade KingsCollege OldHospital}
-SEEDS=${SEEDS:-2025 2026 2027}
+TRAIN_SEEDS=${TRAIN_SEEDS:-0 1 2}
+QUERY_SPLIT_SEEDS=${QUERY_SPLIT_SEEDS:-2025 2026 2027}
+V03_QUERY_SPLIT_MODE=${V03_QUERY_SPLIT_MODE:-random}
 RUN_SWEEP=${RUN_SWEEP:-1}
 
 if [[ -z "${PYTHON:-}" ]]; then
@@ -33,16 +35,20 @@ for scene in $SCENES; do
     echo "[LA-STDLoc v0.3 multiscene] Skip $scene: missing data directory $DATA_ROOT/$scene."
     continue
   fi
-  for seed in $SEEDS; do
-    echo "[LA-STDLoc v0.3 multiscene] scene=$scene seed=$seed"
-    env \
-      PYTHON="$PYTHON" \
-      DATA_ROOT="$DATA_ROOT" \
-      SCENE="$scene" \
-      BASELINE_MODEL="$BASELINE_MODEL" \
-      MODEL_ROOT="$MODEL_ROOT/${scene}/seed_${seed}" \
-      V03_QUERY_SPLIT_SEED="$seed" \
-      RUN_SWEEP="$RUN_SWEEP" \
-      "$SCRIPT_DIR/run_locaware_v03_shopfacade.sh"
+  for train_seed in $TRAIN_SEEDS; do
+    for query_split_seed in $QUERY_SPLIT_SEEDS; do
+      echo "[LA-STDLoc v0.3 multiscene] scene=$scene train_seed=$train_seed query_split_seed=$query_split_seed split_mode=$V03_QUERY_SPLIT_MODE"
+      env \
+        PYTHON="$PYTHON" \
+        DATA_ROOT="$DATA_ROOT" \
+        SCENE="$scene" \
+        BASELINE_MODEL="$BASELINE_MODEL" \
+        MODEL_ROOT="$MODEL_ROOT/${scene}/train_seed_${train_seed}/query_split_${query_split_seed}" \
+        V03_TRAIN_SEED="$train_seed" \
+        V03_QUERY_SPLIT_SEED="$query_split_seed" \
+        V03_QUERY_SPLIT_MODE="$V03_QUERY_SPLIT_MODE" \
+        RUN_SWEEP="$RUN_SWEEP" \
+        "$SCRIPT_DIR/run_locaware_v03_shopfacade.sh"
+    done
   done
 done

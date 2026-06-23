@@ -78,6 +78,35 @@ class GaussianLocalizationStatsTest(unittest.TestCase):
         self.assertTrue(torch.equal(restored.last_topology_iteration, torch.zeros(5, dtype=torch.long, device="cuda")))
         self.assertTrue(torch.equal(restored.loc_redundancy_ema, torch.zeros(5, device="cuda")))
 
+    def test_restore_localization_state_rebinds_loc_opacity_optimizer_param(self):
+        class Opt:
+            percent_dense = 0.01
+            position_lr_init = 0.001
+            position_lr_final = 0.0001
+            position_lr_delay_mult = 0.01
+            position_lr_max_steps = 100
+            feature_lr = 0.001
+            opacity_lr = 0.001
+            scaling_lr = 0.001
+            rotation_lr = 0.001
+            loc_feature_lr = 0.001
+            loc_opacity_lr = 0.001
+
+        model = self._make_model(n=3)
+        model.init_localization_state(from_rgb_opacity=True)
+        model.training_setup(Opt())
+        old_param = model._loc_opacity
+        restored_opacity = torch.full_like(model._loc_opacity, -4.0)
+
+        model.restore_localization_state({"loc_opacity": restored_opacity})
+
+        loc_group = next(group for group in model.optimizer.param_groups if group["name"] == "loc_opacity")
+        self.assertIs(loc_group["params"][0], model._loc_opacity)
+        self.assertIsNot(model._loc_opacity, old_param)
+        model.get_loc_opacity.mean().backward()
+        self.assertIsNotNone(model._loc_opacity.grad)
+        self.assertGreater(model._loc_opacity.grad.abs().max().item(), 0.0)
+
     def test_localization_stats_backfill_and_update_screen_radii(self):
         model = self._make_model()
         model.init_localization_state(from_rgb_opacity=True)

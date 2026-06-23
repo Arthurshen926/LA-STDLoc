@@ -65,18 +65,73 @@ class LocalizationEpisode:
     sparse_meta: dict
 
 
-def split_support_query_cameras(cameras, query_ratio=0.2, seed=0):
-    cameras = list(cameras)
-    if len(cameras) < 2:
-        return cameras, cameras.copy()
+def _camera_sequence_key(camera):
+    image_name = str(getattr(camera, "image_name", ""))
+    normalized = image_name.replace("\\", "/")
+    if "/" in normalized:
+        return normalized.split("/", 1)[0]
+    return ""
+
+
+def _query_count_for_split(camera_count, query_ratio):
     ratio = float(max(0.0, min(1.0, query_ratio)))
-    query_count = int(round(len(cameras) * ratio))
-    query_count = max(1, min(len(cameras) - 1, query_count))
-    generator = torch.Generator().manual_seed(int(seed))
-    query_ids = set(torch.randperm(len(cameras), generator=generator)[:query_count].tolist())
+    query_count = int(round(camera_count * ratio))
+    return max(1, min(camera_count - 1, query_count))
+
+
+def _split_by_query_ids(cameras, query_ids):
     support = [camera for idx, camera in enumerate(cameras) if idx not in query_ids]
     query = [camera for idx, camera in enumerate(cameras) if idx in query_ids]
     return support, query
+
+
+def _sequence_block_query_ids(cameras, query_count, generator):
+    sequence_to_indices = {}
+    for idx, camera in enumerate(cameras):
+        sequence_to_indices.setdefault(_camera_sequence_key(camera), []).append(idx)
+    if len(sequence_to_indices) < 2:
+        return None
+
+    sequence_keys = list(sequence_to_indices.keys())
+    order = torch.randperm(len(sequence_keys), generator=generator).tolist()
+    selected = set()
+    for seq_pos in order:
+        candidate = sequence_to_indices[sequence_keys[seq_pos]]
+        if len(selected) + len(candidate) >= len(cameras):
+            continue
+        selected.update(candidate)
+        if len(selected) >= query_count:
+            break
+    if not selected:
+        first = sequence_to_indices[sequence_keys[order[0]]]
+        if len(first) < len(cameras):
+            selected.update(first)
+    return selected if selected else None
+
+
+def _temporal_block_query_ids(camera_count, query_count, generator):
+    max_start = max(0, camera_count - query_count)
+    start = torch.randint(max_start + 1, (1,), generator=generator).item()
+    return set(range(start, start + query_count))
+
+
+def split_support_query_cameras(cameras, query_ratio=0.2, seed=0, mode="random"):
+    cameras = list(cameras)
+    if len(cameras) < 2:
+        return cameras, cameras.copy()
+    query_count = _query_count_for_split(len(cameras), query_ratio)
+    generator = torch.Generator().manual_seed(int(seed))
+    if mode == "random":
+        query_ids = set(torch.randperm(len(cameras), generator=generator)[:query_count].tolist())
+    elif mode == "sequence_block":
+        query_ids = _sequence_block_query_ids(cameras, query_count, generator)
+        if query_ids is None:
+            query_ids = set(torch.randperm(len(cameras), generator=generator)[:query_count].tolist())
+    elif mode == "temporal_block":
+        query_ids = _temporal_block_query_ids(len(cameras), query_count, generator)
+    else:
+        raise ValueError(f"Unknown support/query split mode: {mode}")
+    return _split_by_query_ids(cameras, query_ids)
 
 
 class SparsePoseCache:

@@ -17,7 +17,9 @@ V03_FULL_BANK_WEIGHT=${V03_FULL_BANK_WEIGHT:-0.05}
 V03_FULL_BANK_HARD_NEGATIVES=${V03_FULL_BANK_HARD_NEGATIVES:-32}
 V03_FULL_BANK_MARGIN=${V03_FULL_BANK_MARGIN:-0.2}
 V03_ANCHOR_WEIGHT=${V03_ANCHOR_WEIGHT:-0.01}
+V03_TRAIN_SEED=${V03_TRAIN_SEED:-0}
 V03_QUERY_SPLIT_SEED=${V03_QUERY_SPLIT_SEED:-2025}
+V03_QUERY_SPLIT_MODE=${V03_QUERY_SPLIT_MODE:-random}
 RUN_SWEEP=${RUN_SWEEP:-1}
 SWEEP_THRESHOLDS=${SWEEP_THRESHOLDS:-2 4 6 8 10 12 16}
 RUN_CFG="$MODEL_ROOT/${SCENE}_stdloc_baseline_artifacts.yaml"
@@ -117,7 +119,9 @@ if ! point_cloud_exists "$V03_MODEL" "$V03_END"; then
     --no-use_loc_opacity \
     --support_query_split \
     --query_holdout_ratio 0.2 \
+    --train_seed "$V03_TRAIN_SEED" \
     --query_split_seed "$V03_QUERY_SPLIT_SEED" \
+    --query_split_mode "$V03_QUERY_SPLIT_MODE" \
     --direct_depth_check \
     --direct_depth_abs_tolerance 0.001 \
     --direct_depth_rel_tolerance 0.01 \
