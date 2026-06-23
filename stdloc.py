@@ -52,6 +52,10 @@ def lift_2d_to_3d(points2d, intrinsic, Twc, depth_map):
 
 
 def sample_gaussians(gaussians: GaussianModel, idx_sampled):
+    idx_sampled = validate_sampled_indices(
+        idx_sampled,
+        gaussians.get_xyz.shape[0],
+    ).to(device=gaussians.get_xyz.device)
     sampled_gaussians = GaussianModel(3)
     sampled_gaussians._xyz = gaussians._xyz[idx_sampled]
     sampled_gaussians._loc_feature = gaussians._loc_feature[idx_sampled]
@@ -113,6 +117,33 @@ def get_intrinsic(fovx, fovy, width, height):
     )
     return K
 
+
+def resolve_artifact_path(model_path, artifact_path, artifact_model_path=None):
+    if os.path.isabs(artifact_path):
+        return artifact_path
+    root = artifact_model_path or model_path
+    return os.path.join(root, artifact_path)
+
+
+def validate_sampled_indices(sampled_idx, point_count):
+    if isinstance(sampled_idx, torch.Tensor):
+        idx = sampled_idx.detach().reshape(-1).to(dtype=torch.long)
+        idx_cpu = idx.cpu()
+    else:
+        idx_cpu = torch.tensor([int(idx) for idx in sampled_idx], dtype=torch.long)
+        idx = idx_cpu
+    if idx_cpu.numel() == 0:
+        raise ValueError(f"Landmark indices are empty for point_count={point_count}.")
+    min_idx = int(idx_cpu.min().item())
+    max_idx = int(idx_cpu.max().item())
+    if min_idx < 0 or max_idx >= int(point_count):
+        raise ValueError(
+            "Landmark indices out of bounds: "
+            f"point_count={int(point_count)}, min={min_idx}, max={max_idx}."
+        )
+    return idx
+
+
 class STDLoc:
     def __init__(self, gaussians, config):
         self.gaussians = gaussians
@@ -120,13 +151,21 @@ class STDLoc:
 
         sampled_idx = pickle.load(
             open(
-                os.path.join(config["model_path"], config["sparse"]["landmark_path"]),
+                resolve_artifact_path(
+                    config["model_path"],
+                    config["sparse"]["landmark_path"],
+                    config["sparse"].get("landmark_model_path"),
+                ),
                 "rb",
             )
         )
         self.landmarks = sample_gaussians(gaussians, sampled_idx)
         landmark_meta_path = config["sparse"].get("landmark_meta_path", "detector/landmark_meta.pt")
-        full_meta_path = os.path.join(config["model_path"], landmark_meta_path)
+        full_meta_path = resolve_artifact_path(
+            config["model_path"],
+            landmark_meta_path,
+            config["sparse"].get("landmark_meta_model_path", config["sparse"].get("landmark_model_path")),
+        )
         self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
 
         self.feature_extractor = FeatureExtractor(config["feature_type"]).cuda().eval()
@@ -135,7 +174,11 @@ class STDLoc:
         self.detector = KpDetector(self.feature_extractor.feature_dim)
         self.detector.load_state_dict(
             torch.load(
-                os.path.join(config["model_path"], config["sparse"]["detector_path"])
+                resolve_artifact_path(
+                    config["model_path"],
+                    config["sparse"]["detector_path"],
+                    config["sparse"].get("detector_model_path"),
+                )
             )
         )
         self.detector.eval().cuda()

@@ -99,7 +99,10 @@ class TopologyControllerTest(unittest.TestCase):
                 return torch.ones(self.last_topology_iteration.shape[0])
 
             def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
-                split = grads.squeeze(-1) > grad_threshold
+                raise AssertionError("topology update should use explicit selected split masks")
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                split = selected_mask.to(dtype=torch.bool)
                 parent_iters = self.last_topology_iteration[split].repeat(N)
                 keep = ~split
                 self.last_topology_iteration = torch.cat([self.last_topology_iteration[keep], parent_iters], dim=0)
@@ -130,10 +133,118 @@ class TopologyControllerTest(unittest.TestCase):
             initial_points=4,
         )
 
-        controller.update(gaussians, scene_extent=1.0, iteration=10)
+        event = controller.update(gaussians, scene_extent=1.0, iteration=10)
 
         self.assertEqual(gaussians.last_topology_iteration.shape[0], 5)
         self.assertTrue(torch.equal(gaussians.last_topology_iteration[-2:], torch.tensor([10, 10])))
+        self.assertEqual(event["requested_split_count"], 1)
+        self.assertEqual(event["actual_parent_removed"], 1)
+        self.assertEqual(event["actual_children_added"], 2)
+        self.assertEqual(event["point_count_before"], 4)
+        self.assertEqual(event["point_count_after"], 5)
+
+    def test_topology_update_rejects_split_count_mismatch(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.tensor([10, 10, 10, 10])
+                self.loc_grad_accum = torch.tensor([[1.0], [10.0], [0.5], [0.2]])
+                self.loc_grad_denom = torch.ones(4, 1)
+                self.loc_entropy_ema = torch.tensor([0.1, 1.0, 0.1, 0.1])
+                self.loc_repeatability_ema = torch.ones(4)
+                self.last_topology_iteration = torch.zeros(4, dtype=torch.long)
+                self.max_radii2D = torch.full((4,), 10.0)
+                self._loc_opacity = nn.Parameter(torch.zeros(4, 1))
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self.last_topology_iteration.shape[0], 3)
+
+            @property
+            def get_opacity(self):
+                return torch.full((self.last_topology_iteration.shape[0], 1), 0.8)
+
+            @property
+            def get_loc_opacity(self):
+                return torch.sigmoid(self._loc_opacity)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.ones(self.last_topology_iteration.shape[0])
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                return None
+
+            def prune_points(self, mask):
+                raise AssertionError("physical pruning should not run in this test")
+
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+                split_quantile=0.9,
+                ambiguity_quantile=0.9,
+                growth_cap_per_event=1.0,
+                cooldown_iterations=5,
+                min_repeatability=0.0,
+                min_radius=1.0,
+            ),
+            initial_points=4,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "requested 1 splits"):
+            controller.update(FakeGaussians(), scene_extent=1.0, iteration=10)
+
+    def test_topology_update_is_split_only_by_default(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.zeros(2, dtype=torch.long)
+                self.loc_grad_accum = torch.zeros(2, 1)
+                self.loc_grad_denom = torch.ones(2, 1)
+                self.loc_entropy_ema = torch.zeros(2)
+                self.loc_repeatability_ema = torch.zeros(2)
+                self.last_topology_iteration = torch.zeros(2, dtype=torch.long)
+                self.max_radii2D = torch.zeros(2)
+                self._loc_opacity = nn.Parameter(torch.full((2, 1), -10.0))
+                self.prune_called = False
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(2, 3)
+
+            @property
+            def get_opacity(self):
+                return torch.zeros(2, 1)
+
+            @property
+            def get_loc_opacity(self):
+                return torch.sigmoid(self._loc_opacity)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.full((2,), -5.0)
+
+            def prune_points(self, mask):
+                self.prune_called = True
+
+        gaussians = FakeGaussians()
+        before = gaussians._loc_opacity.detach().clone()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+            ),
+            initial_points=2,
+        )
+
+        event = controller.update(gaussians, scene_extent=1.0, iteration=10)
+
+        self.assertFalse(gaussians.prune_called)
+        self.assertTrue(torch.equal(gaussians._loc_opacity, before))
+        self.assertEqual(event["physical_prune_count"], 0)
 
 
 if __name__ == "__main__":

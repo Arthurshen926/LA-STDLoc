@@ -2,6 +2,7 @@ import os
 import pickle
 import sys
 import uuid
+import argparse
 from argparse import ArgumentParser, Namespace
 from random import randint
 
@@ -11,9 +12,10 @@ from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams
 from encoders.feature_extractor import FeatureExtractor
-from gaussian_renderer import render_gsplat
+from gaussian_renderer import render_from_pose_gsplat, render_gsplat
 from localization_training.dense_teacher import dense_localization_teacher
-from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
+from localization_training.direct_landmark_teacher import LandmarkObservationMemory, direct_landmark_teacher
+from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache, split_support_query_cameras
 from localization_training.losses import (
     geometry_anchor_loss,
     hard_negative_ranking_loss,
@@ -119,9 +121,35 @@ def _current_geometry_state(gaussians):
     }
 
 
+def _load_landmark_indices(model_path, landmark_path, device="cpu"):
+    path = landmark_path
+    if not os.path.isabs(path):
+        path = os.path.join(model_path, path)
+    with open(path, "rb") as f:
+        indices = pickle.load(f)
+    return torch.as_tensor(indices, dtype=torch.long, device=device)
+
+
+def _flatten_render_map(value):
+    if value is None:
+        return None
+    while value.dim() > 2:
+        value = value.squeeze(0)
+    return value
+
+
+def _flatten_render_alpha(value):
+    if value is None:
+        return None
+    value = value.squeeze()
+    if value.dim() == 3:
+        value = value[..., 0]
+    return value
+
+
 def _set_phase_lrs(gaussians, phase, args):
     if phase == "feature":
-        trainable = {"loc_feature", "loc_opacity"}
+        trainable = {"loc_feature"}
     elif phase in {"geometry", "topology", "closed_loop"}:
         trainable = {"xyz", "scaling", "rotation", "loc_feature", "loc_opacity"}
     else:
@@ -138,6 +166,81 @@ def _set_phase_lrs(gaussians, phase, args):
                 group["lr"] = group["la_base_lr"] * args.geometry_scale_lr_mult
             elif group["name"] == "rotation":
                 group["lr"] = group["la_base_lr"] * args.geometry_rotation_lr_mult
+
+
+def add_locaware_training_args(parser):
+    parser.add_argument("--detect_anomaly", action="store_true", default=False)
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--load_iteration", type=int, default=None)
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
+
+    parser.add_argument("--localization_enabled", action="store_true", default=True)
+    parser.add_argument("--feature_only", action="store_true", default=False)
+    parser.add_argument("--train_phase", type=str, default="feature", choices=["feature", "geometry", "topology", "closed_loop", "full"])
+    parser.add_argument("--base_loss_weight", type=float, default=1.0)
+    parser.add_argument("--base_feature_weight", type=float, default=1.0)
+    parser.add_argument("--loc_loss_weight", type=float, default=1.0)
+    parser.add_argument("--loc_start_iter", type=int, default=1)
+    parser.add_argument("--loc_interval", type=int, default=8)
+    parser.add_argument("--loc_anchors", type=int, default=512)
+    parser.add_argument("--loc_alpha_threshold", type=float, default=0.2)
+    parser.add_argument("--loc_desc_temperature", type=float, default=0.07)
+    parser.add_argument("--loc_fine_temperature", type=float, default=0.05)
+    parser.add_argument("--loc_fine_window_radius", type=int, default=4)
+    parser.add_argument("--loc_desc_weight", type=float, default=1.0)
+    parser.add_argument("--loc_reproj_weight", type=float, default=0.1)
+    parser.add_argument("--loc_teacher", type=str, default="dense", choices=["dense", "direct"])
+    parser.add_argument("--loc_direct_weight", type=float, default=0.1)
+    parser.add_argument("--loc_multiview_weight", type=float, default=0.05)
+    parser.add_argument("--loc_multiview_temperature", type=float, default=0.07)
+    parser.add_argument("--loc_multiview_slots", type=int, default=4)
+    parser.add_argument("--loc_multiview_ignore_radius", type=float, default=2.0)
+    parser.add_argument("--landmark_path", type=str, default="detector/sampled_idx.pkl")
+    parser.add_argument("--direct_depth_check", action="store_true", default=False)
+    parser.add_argument("--direct_depth_abs_tolerance", type=float, default=1e-3)
+    parser.add_argument("--direct_depth_rel_tolerance", type=float, default=0.01)
+    parser.add_argument("--loc_proto_weight", type=float, default=0.0)
+    parser.add_argument("--loc_rank_weight", type=float, default=0.0)
+    parser.add_argument("--loc_rank_margin", type=float, default=0.2)
+    parser.add_argument("--loc_opacity_weight", type=float, default=0.0)
+    parser.add_argument("--loc_opacity_target", type=float, default=0.5)
+    parser.add_argument("--loc_ema_decay", type=float, default=0.95)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument("--use_loc_opacity", action=argparse.BooleanOptionalAction, default=False)
+    else:
+        parser.add_argument("--use_loc_opacity", dest="use_loc_opacity", action="store_true")
+        parser.add_argument("--no-use_loc_opacity", dest="use_loc_opacity", action="store_false")
+        parser.set_defaults(use_loc_opacity=False)
+    parser.add_argument("--query_mode", type=str, default="noise", choices=["noise", "sparse", "mixed"])
+    parser.add_argument("--pose_noise_quantile", type=float, default=0.5)
+    parser.add_argument("--pose_noise_sampling", type=str, default="empirical", choices=["empirical", "quantile"])
+    parser.add_argument("--mixed_sparse_probability", type=float, default=0.5)
+    parser.add_argument("--sparse_pose_cache", type=str, default=None)
+    parser.add_argument("--support_query_split", action="store_true", default=False)
+    parser.add_argument("--query_holdout_ratio", type=float, default=0.2)
+    parser.add_argument("--query_split_seed", type=int, default=2025)
+    parser.add_argument("--geometry_anchor_weight", type=float, default=0.0)
+    parser.add_argument("--geometry_anchor_scale_weight", type=float, default=0.1)
+    parser.add_argument("--geometry_anchor_rotation_weight", type=float, default=0.1)
+    parser.add_argument("--geometry_xyz_lr_mult", type=float, default=0.05)
+    parser.add_argument("--geometry_scale_lr_mult", type=float, default=0.1)
+    parser.add_argument("--geometry_rotation_lr_mult", type=float, default=0.1)
+    parser.add_argument("--enable_topology", action="store_true", default=False)
+    parser.add_argument("--topology_stats_warmup", type=int, default=1000)
+    parser.add_argument("--topology_update_interval", type=int, default=200)
+    parser.add_argument("--topology_min_observations", type=int, default=8)
+    parser.add_argument("--topology_split_quantile", type=float, default=0.95)
+    parser.add_argument("--topology_ambiguity_quantile", type=float, default=0.90)
+    parser.add_argument("--topology_growth_cap_per_event", type=float, default=0.03)
+    parser.add_argument("--topology_total_point_budget_ratio", type=float, default=1.25)
+    parser.add_argument("--topology_cooldown_iterations", type=int, default=300)
+    parser.add_argument("--topology_enable_soft_prune", action="store_true", default=False)
+    parser.add_argument("--topology_enable_physical_prune", action="store_true", default=False)
+    parser.add_argument("--topology_soft_prune_threshold", type=float, default=-1.0)
+    parser.add_argument("--topology_soft_prune_step", type=float, default=1.0)
+    return parser
 
 
 def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=None):
@@ -191,6 +294,24 @@ def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=No
     }
 
 
+def _query_feature_map(viewpoint_cam, feature_extractor, target_hw, masks=None):
+    original_image = viewpoint_cam.original_image.cuda()
+    with torch.no_grad():
+        gt_feature_map = feature_extractor(original_image[None])["feature_map"][0]
+        gt_feature_map = F.interpolate(
+            gt_feature_map.unsqueeze(0),
+            size=target_hw,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+        gt_feature_map = F.normalize(gt_feature_map, p=2, dim=0)
+    if masks is not None:
+        obj_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][0].cuda()[None], target_hw)
+        distort_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][2].cuda()[None], target_hw)
+        gt_feature_map = gt_feature_map * (obj_mask & distort_mask)
+    return gt_feature_map
+
+
 def training(dataset, opt, args):
     print(opt)
     tb_writer = prepare_output_and_logger(dataset)
@@ -216,7 +337,26 @@ def training(dataset, opt, args):
         sparse_pose_cache=sparse_pose_cache,
         query_mode=args.query_mode,
         noise_quantile=args.pose_noise_quantile,
+        mixed_sparse_probability=args.mixed_sparse_probability,
+        noise_sampling=args.pose_noise_sampling,
     )
+    direct_landmark_indices = None
+    direct_observation_memory = None
+    if args.loc_teacher == "direct":
+        direct_landmark_indices = _load_landmark_indices(dataset.model_path, args.landmark_path, device="cpu")
+        print(f"Loaded {direct_landmark_indices.numel()} direct teacher landmarks from {args.landmark_path}")
+        if args.loc_multiview_weight > 0:
+            feature_dim = gaussians.get_loc_feature.reshape(gaussians.get_xyz.shape[0], -1).shape[1]
+            direct_observation_memory = LandmarkObservationMemory(
+                direct_landmark_indices,
+                feature_dim=feature_dim,
+                slots=args.loc_multiview_slots,
+                device=gaussians.get_xyz.device,
+            )
+            print(
+                "Initialized direct multi-view memory: "
+                f"landmarks={direct_landmark_indices.numel()} slots={args.loc_multiview_slots}"
+            )
     topology_controller = None
     if args.enable_topology or args.train_phase in {"topology", "closed_loop"}:
         topology_controller = LocalizationTopologyController(
@@ -230,6 +370,8 @@ def training(dataset, opt, args):
                 total_point_budget_ratio=args.topology_total_point_budget_ratio,
                 cooldown_iterations=args.topology_cooldown_iterations,
                 enable_loc_clone=False,
+                enable_soft_prune=args.topology_enable_soft_prune,
+                enable_physical_prune=args.topology_enable_physical_prune,
                 soft_prune_threshold=args.topology_soft_prune_threshold,
                 soft_prune_step=args.topology_soft_prune_step,
             ),
@@ -238,7 +380,23 @@ def training(dataset, opt, args):
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    train_cameras = scene.getTrainCameras().copy()
+    if args.support_query_split:
+        support_cameras, query_cameras = split_support_query_cameras(
+            train_cameras,
+            query_ratio=args.query_holdout_ratio,
+            seed=args.query_split_seed,
+        )
+        print(
+            "Support/query split enabled: "
+            f"support={len(support_cameras)} query={len(query_cameras)} "
+            f"query_ratio={args.query_holdout_ratio}"
+        )
+    else:
+        support_cameras = train_cameras
+        query_cameras = train_cameras
     viewpoint_stack = None
+    query_viewpoint_stack = None
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="LA Feature Gaussian")
     first_iter += 1
@@ -251,7 +409,7 @@ def training(dataset, opt, args):
             gaussians.oneupSHdegree()
 
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = support_cameras.copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
         render_pkg = render_gsplat(
@@ -273,6 +431,7 @@ def training(dataset, opt, args):
 
         loc_loss = image.new_tensor(0.0)
         loc_desc_loss = image.new_tensor(0.0)
+        loc_multiview_loss = image.new_tensor(0.0)
         loc_reproj_loss = image.new_tensor(0.0)
         loc_proto_loss = image.new_tensor(0.0)
         loc_rank_loss = image.new_tensor(0.0)
@@ -288,31 +447,88 @@ def training(dataset, opt, args):
         )
 
         if run_loc_episode:
-            episode = episode_sampler.sample(viewpoint_cam)
+            query_cam = viewpoint_cam
+            query_feature_map = losses["gt_feature_map"]
+            if args.support_query_split:
+                if not query_viewpoint_stack:
+                    query_viewpoint_stack = query_cameras.copy()
+                query_cam = query_viewpoint_stack.pop(randint(0, len(query_viewpoint_stack) - 1))
+                query_feature_map = _query_feature_map(
+                    query_cam,
+                    feature_extractor,
+                    target_hw=losses["gt_feature_map"].shape[-2:],
+                    masks=masks,
+                )
+            episode = episode_sampler.sample(query_cam)
             pose_gt = episode.pose_gt_w2c.cuda()
             pose_init = episode.pose_init_w2c.cuda()
-            teacher_out = dense_localization_teacher(
-                gaussians,
-                losses["gt_feature_map"],
-                pose_init,
-                pose_gt,
-                viewpoint_cam.FoVx,
-                viewpoint_cam.FoVy,
-                losses["gt_feature_map"].shape[2],
-                losses["gt_feature_map"].shape[1],
-                background,
-                anchor_count=args.loc_anchors,
-                alpha_threshold=args.loc_alpha_threshold,
-                desc_temperature=args.loc_desc_temperature,
-                fine_temperature=args.loc_fine_temperature,
-                fine_window_radius=args.loc_fine_window_radius,
-                norm_feat_bf_render=dataset.norm_before_render,
-                use_loc_opacity=args.use_loc_opacity,
-                rasterize_args={"rasterize_mode": "antialiased"},
-            )
-            loc_desc_loss = teacher_out.desc_loss
-            loc_reproj_loss = teacher_out.reproj_loss
-            loc_loss = args.loc_desc_weight * loc_desc_loss + args.loc_reproj_weight * loc_reproj_loss
+            if args.loc_teacher == "direct":
+                target_depth = None
+                target_alpha = None
+                if args.direct_depth_check:
+                    with torch.no_grad():
+                        gt_render = render_from_pose_gsplat(
+                            gaussians,
+                            pose_gt,
+                            query_cam.FoVx,
+                            query_cam.FoVy,
+                            query_feature_map.shape[2],
+                            query_feature_map.shape[1],
+                            bg_color=background,
+                            render_mode="RGB+ED",
+                            rgb_only=True,
+                            norm_feat_bf_render=dataset.norm_before_render,
+                            rasterize_mode="antialiased",
+                        )
+                    target_depth = _flatten_render_map(gt_render.get("depth"))
+                    target_alpha = _flatten_render_alpha(gt_render.get("alphas"))
+                teacher_out = direct_landmark_teacher(
+                    gaussians,
+                    query_feature_map,
+                    pose_gt,
+                    query_cam.FoVx,
+                    query_cam.FoVy,
+                    direct_landmark_indices,
+                    target_depth=target_depth,
+                    target_alpha=target_alpha,
+                    alpha_threshold=args.loc_alpha_threshold,
+                    depth_abs_tolerance=args.direct_depth_abs_tolerance,
+                    depth_rel_tolerance=args.direct_depth_rel_tolerance,
+                    max_landmarks=args.loc_anchors,
+                    multiview_memory=direct_observation_memory,
+                    multiview_temperature=args.loc_multiview_temperature,
+                    multiview_ignore_radius=args.loc_multiview_ignore_radius,
+                )
+                loc_desc_loss = teacher_out.desc_loss
+                loc_multiview_loss = teacher_out.multiview_loss
+                loc_reproj_loss = teacher_out.reproj_loss
+                loc_loss = (
+                    args.loc_direct_weight * loc_desc_loss
+                    + args.loc_multiview_weight * loc_multiview_loss
+                )
+            else:
+                teacher_out = dense_localization_teacher(
+                    gaussians,
+                    query_feature_map,
+                    pose_init,
+                    pose_gt,
+                    query_cam.FoVx,
+                    query_cam.FoVy,
+                    query_feature_map.shape[2],
+                    query_feature_map.shape[1],
+                    background,
+                    anchor_count=args.loc_anchors,
+                    alpha_threshold=args.loc_alpha_threshold,
+                    desc_temperature=args.loc_desc_temperature,
+                    fine_temperature=args.loc_fine_temperature,
+                    fine_window_radius=args.loc_fine_window_radius,
+                    norm_feat_bf_render=dataset.norm_before_render,
+                    use_loc_opacity=args.use_loc_opacity,
+                    rasterize_args={"rasterize_mode": "antialiased"},
+                )
+                loc_desc_loss = teacher_out.desc_loss
+                loc_reproj_loss = teacher_out.reproj_loss
+                loc_loss = args.loc_desc_weight * loc_desc_loss + args.loc_reproj_weight * loc_reproj_loss
 
             visible_idx = teacher_out.loc_visible_idx
             if visible_idx is not None and visible_idx.numel() > 0:
@@ -376,6 +592,7 @@ def training(dataset, opt, args):
                 tb_writer.add_scalar("train_loss/base", base_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc", loc_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_desc", loc_desc_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_multiview", loc_multiview_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_reproj", loc_reproj_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_proto", loc_proto_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_rank", loc_rank_loss.item(), iteration)
@@ -429,55 +646,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="LA-STDLoc training script parameters")
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
-    parser.add_argument("--detect_anomaly", action="store_true", default=False)
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--start_checkpoint", type=str, default=None)
-    parser.add_argument("--load_iteration", type=int, default=None)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[])
-
-    parser.add_argument("--localization_enabled", action="store_true", default=True)
-    parser.add_argument("--feature_only", action="store_true", default=False)
-    parser.add_argument("--train_phase", type=str, default="feature", choices=["feature", "geometry", "topology", "closed_loop", "full"])
-    parser.add_argument("--base_loss_weight", type=float, default=1.0)
-    parser.add_argument("--base_feature_weight", type=float, default=1.0)
-    parser.add_argument("--loc_loss_weight", type=float, default=1.0)
-    parser.add_argument("--loc_start_iter", type=int, default=1)
-    parser.add_argument("--loc_interval", type=int, default=8)
-    parser.add_argument("--loc_anchors", type=int, default=512)
-    parser.add_argument("--loc_alpha_threshold", type=float, default=0.2)
-    parser.add_argument("--loc_desc_temperature", type=float, default=0.07)
-    parser.add_argument("--loc_fine_temperature", type=float, default=0.05)
-    parser.add_argument("--loc_fine_window_radius", type=int, default=4)
-    parser.add_argument("--loc_desc_weight", type=float, default=1.0)
-    parser.add_argument("--loc_reproj_weight", type=float, default=0.1)
-    parser.add_argument("--loc_proto_weight", type=float, default=0.1)
-    parser.add_argument("--loc_rank_weight", type=float, default=0.05)
-    parser.add_argument("--loc_rank_margin", type=float, default=0.2)
-    parser.add_argument("--loc_opacity_weight", type=float, default=0.001)
-    parser.add_argument("--loc_opacity_target", type=float, default=0.5)
-    parser.add_argument("--loc_ema_decay", type=float, default=0.95)
-    parser.add_argument("--use_loc_opacity", action="store_true", default=True)
-    parser.add_argument("--query_mode", type=str, default="noise", choices=["noise", "sparse", "mixed"])
-    parser.add_argument("--pose_noise_quantile", type=float, default=0.5)
-    parser.add_argument("--sparse_pose_cache", type=str, default=None)
-    parser.add_argument("--geometry_anchor_weight", type=float, default=0.0)
-    parser.add_argument("--geometry_anchor_scale_weight", type=float, default=0.1)
-    parser.add_argument("--geometry_anchor_rotation_weight", type=float, default=0.1)
-    parser.add_argument("--geometry_xyz_lr_mult", type=float, default=0.05)
-    parser.add_argument("--geometry_scale_lr_mult", type=float, default=0.1)
-    parser.add_argument("--geometry_rotation_lr_mult", type=float, default=0.1)
-    parser.add_argument("--enable_topology", action="store_true", default=False)
-    parser.add_argument("--topology_stats_warmup", type=int, default=1000)
-    parser.add_argument("--topology_update_interval", type=int, default=200)
-    parser.add_argument("--topology_min_observations", type=int, default=8)
-    parser.add_argument("--topology_split_quantile", type=float, default=0.95)
-    parser.add_argument("--topology_ambiguity_quantile", type=float, default=0.90)
-    parser.add_argument("--topology_growth_cap_per_event", type=float, default=0.03)
-    parser.add_argument("--topology_total_point_budget_ratio", type=float, default=1.25)
-    parser.add_argument("--topology_cooldown_iterations", type=int, default=300)
-    parser.add_argument("--topology_soft_prune_threshold", type=float, default=-1.0)
-    parser.add_argument("--topology_soft_prune_step", type=float, default=1.0)
+    add_locaware_training_args(parser)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

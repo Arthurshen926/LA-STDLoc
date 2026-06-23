@@ -744,19 +744,55 @@ class GaussianModel(nn.Module):
         out[mask] = ((value[mask].float() - median) / (1.4826 * mad)).clamp(-5.0, 5.0)
         return out
 
-    def compute_localization_utility(self, min_observations=8):
+    def _observed_localization_mask(self, min_observations=8):
         self._ensure_localization_state()
-        observed = self.loc_observation_count >= min_observations
-        grad = self.loc_grad_accum.squeeze(-1) / self.loc_grad_denom.squeeze(-1).clamp_min(1.0)
-        utility = (
-            self._robust_z(grad, observed)
-            + self._robust_z(self.loc_repeatability_ema, observed)
+        return self.loc_observation_count >= min_observations
+
+    def compute_landmark_reliability(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        reliability = (
+            self._robust_z(self.loc_repeatability_ema, observed)
             + self._robust_z(self.loc_positive_prob_ema, observed)
             + self._robust_z(self.loc_margin_ema, observed)
-            + self._robust_z(self.loc_information_ema, observed)
             - self._robust_z(self.loc_entropy_ema, observed)
             - self._robust_z(self.loc_outlier_ema, observed)
             - self._robust_z(self.loc_reproj_error_ema, observed)
+        )
+        reliability[~torch.isfinite(reliability)] = 0.0
+        reliability[~observed] = 0.0
+        return reliability
+
+    def compute_pose_geometry_value(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        geometry = self._robust_z(self.loc_information_ema, observed)
+        geometry[~torch.isfinite(geometry)] = 0.0
+        geometry[~observed] = 0.0
+        return geometry
+
+    def compute_split_necessity(self, min_observations=8, min_radius=0.0, min_repeatability=0.25):
+        self._ensure_localization_state()
+        self._ensure_screen_radius_state()
+        observed = self._observed_localization_mask(min_observations)
+        large = self.max_radii2D >= min_radius
+        repeatable = self.loc_repeatability_ema >= min_repeatability
+        eligible = observed & large & repeatable
+        grad = self.loc_grad_accum.squeeze(-1) / self.loc_grad_denom.squeeze(-1).clamp_min(1.0)
+        grad_score = self._robust_z(grad, eligible).clamp_min(0.0)
+        entropy_score = self._robust_z(self.loc_entropy_ema, eligible).clamp_min(0.0)
+        repeatability = self.loc_repeatability_ema.float().clamp(0.0, 1.0)
+        split_score = grad_score * entropy_score * repeatability
+        split_score[~torch.isfinite(split_score)] = 0.0
+        split_score[~eligible] = 0.0
+        return split_score
+
+    def compute_localization_utility(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        utility = (
+            self.compute_landmark_reliability(min_observations)
+            + self.compute_pose_geometry_value(min_observations)
             - self._robust_z(self.loc_redundancy_ema, observed)
         )
         utility[~torch.isfinite(utility)] = 0.0
@@ -1235,6 +1271,57 @@ class GaussianModel(nn.Module):
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+
+    def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+        selected_pts_mask = torch.as_tensor(
+            selected_mask,
+            device=self.get_xyz.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        if selected_pts_mask.numel() != self.get_xyz.shape[0]:
+            raise RuntimeError(
+                "Cannot split selected Gaussians: "
+                f"mask has {selected_pts_mask.numel()} rows, model has {self.get_xyz.shape[0]} points."
+            )
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent,
+        )
+        if selected_pts_mask.sum() == 0:
+            return
+
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
+        means = torch.zeros((stds.size(0), 3), device=self.get_xyz.device)
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N))
+        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_loc_feature = self._loc_feature[selected_pts_mask].repeat(N, 1, 1)
+        new_loc_opacity = self._loc_opacity[selected_pts_mask].repeat(N, 1)
+
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacity,
+            new_scaling,
+            new_rotation,
+            new_loc_feature,
+            new_loc_opacity,
+            selected_pts_mask,
+            N,
+        )
+        prune_filter = torch.cat(
+            (
+                selected_pts_mask,
+                torch.zeros(N * selected_pts_mask.sum(), device=self.get_xyz.device, dtype=bool),
+            )
+        )
+        self.prune_points(prune_filter)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         n_init_points = self.get_xyz.shape[0]

@@ -14,7 +14,6 @@ import sys
 import uuid
 from argparse import ArgumentParser, Namespace
 from random import randint
-import math
 
 import torch
 from tqdm import tqdm
@@ -187,17 +186,27 @@ def _project_xyz_to_feature(xyz, pose, K, height, width):
     return xy, valid
 
 
-def generate_soft_gt_map(
+def _calibrated_utility_weights(utility, min_weight=1.0, max_weight=2.0):
+    if utility is None:
+        return None
+    utility = utility.float().reshape(-1)
+    if utility.numel() == 0:
+        return utility
+    center = utility.median()
+    scale = (utility - center).abs().median().clamp_min(1e-6)
+    normalized = (utility - center) / scale
+    return min_weight + (max_weight - min_weight) * torch.sigmoid(normalized)
+
+
+def generate_weighted_hard_gt_map(
     xyz,
     gt_feature_map,
     pose,
     K,
     utility=None,
-    sigma=1.5,
     render_visible_mask=None,
-    max_landmarks=4096,
 ):
-    """Generate a utility-weighted Gaussian detector target map."""
+    """Generate hard detector peaks and a calibrated utility loss-weight map."""
     height, width = gt_feature_map.shape[1], gt_feature_map.shape[2]
     device = gt_feature_map.device
     dtype = gt_feature_map.dtype
@@ -205,54 +214,31 @@ def generate_soft_gt_map(
     xy, valid = _project_xyz_to_feature(xyz, pose, K, height, width)
     if render_visible_mask is not None:
         valid = valid & render_visible_mask.to(device=device, dtype=torch.bool)
-    if utility is None:
-        utility = torch.ones(xyz.shape[0], device=device, dtype=dtype)
-    else:
-        utility = utility.to(device=device, dtype=dtype).reshape(-1)
-    if valid.sum() == 0:
-        return torch.zeros((1, height, width), device=device, dtype=dtype)
-
-    xy = xy[:, valid].T
-    utility = utility[valid]
-    utility = (utility - utility.min()) / (utility.max() - utility.min()).clamp_min(1e-6)
-    utility = utility.clamp_min(0.05)
-    if max_landmarks is not None and xy.shape[0] > max_landmarks:
-        keep = torch.topk(utility, k=int(max_landmarks), largest=True).indices
-        xy = xy[keep]
-        utility = utility[keep]
-
-    sigma2 = max(float(sigma), 1e-6) ** 2
-    radius = max(1, int(math.ceil(3.0 * max(float(sigma), 1e-6))))
-    offsets = torch.arange(-radius, radius + 1, device=device, dtype=torch.long)
-    window = offsets.numel()
-    offset_x = offsets.repeat(window)
-    offset_y = offsets.repeat_interleave(window)
-
-    base_x = torch.floor(xy[:, 0]).to(dtype=torch.long)[:, None]
-    base_y = torch.floor(xy[:, 1]).to(dtype=torch.long)[:, None]
-    px = base_x + offset_x[None]
-    py = base_y + offset_y[None]
-    pixel_valid = (px >= 0) & (px < width) & (py >= 0) & (py < height)
-
-    dist2 = (px.to(dtype=dtype) - xy[:, 0:1]).square() + (
-        py.to(dtype=dtype) - xy[:, 1:2]
-    ).square()
-    values = utility[:, None] * torch.exp(-0.5 * dist2 / sigma2)
-    flat_idx = py * width + px
 
     gt_flat = torch.zeros(height * width, device=device, dtype=dtype)
-    gt_flat.scatter_reduce_(
-        0,
-        flat_idx[pixel_valid],
-        values[pixel_valid],
-        reduce="amax",
-        include_self=True,
-    )
-    return gt_flat.view(height, width).clamp(0.0, 1.0)[None]
+    weight_flat = torch.ones(height * width, device=device, dtype=dtype)
+    if valid.sum() == 0:
+        return gt_flat.view(height, width)[None], weight_flat.view(height, width)[None]
+
+    xy_int = xy[:, valid].to(dtype=torch.long)
+    flat_idx = xy_int[1] * width + xy_int[0]
+    gt_flat[flat_idx] = 1.0
+
+    utility_weights = _calibrated_utility_weights(utility)
+    if utility_weights is not None:
+        utility_weights = utility_weights.to(device=device, dtype=dtype)[valid]
+        weight_flat.scatter_reduce_(
+            0,
+            flat_idx,
+            utility_weights,
+            reduce="amax",
+            include_self=True,
+        )
+    return gt_flat.view(height, width)[None], weight_flat.view(height, width)[None]
 
 
-def utility_weighted_detector_loss(pred, target, gamma=2.0, alpha=0.25):
-    """Focal BCE for soft utility targets; accepts probabilities or logits."""
+def utility_weighted_detector_loss(pred, target, weight_map=None, gamma=2.0, alpha=0.25):
+    """Focal BCE for detector targets with optional calibrated utility weights."""
     target = target.float()
     pred = pred.float()
     if pred.min() < 0 or pred.max() > 1:
@@ -264,8 +250,44 @@ def utility_weighted_detector_loss(pred, target, gamma=2.0, alpha=0.25):
     pt = prob * target + (1.0 - prob) * (1.0 - target)
     alpha_t = alpha * target + (1.0 - alpha) * (1.0 - target)
     focal = alpha_t * (1.0 - pt).pow(gamma) * bce
-    weights = 1.0 + target
+    weights = weight_map.float() if weight_map is not None else 1.0 + target
     return (focal * weights).sum() / weights.sum().clamp_min(1e-6)
+
+
+def build_detector_target_map(
+    gaussians,
+    gt_feature_map,
+    sampled_idx,
+    pose,
+    K,
+    render_visible_mask=None,
+    detector_target_mode="hard",
+    landmark_meta=None,
+    soft_sigma=1.5,
+):
+    if detector_target_mode == "soft":
+        utility = landmark_meta.get("utility") if landmark_meta is not None else None
+        sampled_visible = None
+        if render_visible_mask is not None:
+            sampled_visible = render_visible_mask[sampled_idx]
+        gt_map, weight_map = generate_weighted_hard_gt_map(
+            gaussians.get_xyz[sampled_idx],
+            gt_feature_map,
+            pose,
+            K,
+            utility=utility,
+            render_visible_mask=sampled_visible,
+        )
+        return gt_map, True, weight_map
+    if detector_target_mode != "hard":
+        raise ValueError(f"Unknown detector_target_mode: {detector_target_mode}")
+    return generate_gt_map(gaussians, gt_feature_map, sampled_idx, pose, K, render_visible_mask), False, None
+
+
+def detector_target_loss(heat_map, gt_map, soft_target=False, weight_map=None):
+    if soft_target:
+        return utility_weighted_detector_loss(heat_map, gt_map, weight_map=weight_map)
+    return score_map_bce_loss(heat_map, gt_map)
 
 
 def random_knn_score(points, npoints, score, k=32):
@@ -574,11 +596,12 @@ def training_detector(
     save_path = os.path.join(scene.model_path, detector_folder)
     os.makedirs(save_path, exist_ok=True)
     landmark_meta = None
-    if sampling_mode == "localization_aware":
+    if sampling_mode in {"localization_aware", "localization_aware_spatial", "localization_aware_global"}:
         if not hasattr(gaussians, "compute_localization_utility"):
             raise ValueError("localization_aware sampling requires Gaussian localization state")
         utility = gaussians.compute_localization_utility(min_observations=min_loc_observations)
         observed = gaussians.loc_observation_count >= min_loc_observations
+        use_spatial_sampling = sampling_mode != "localization_aware_global"
         sampled_idx, landmark_meta = localization_aware_sample(
             gaussians.get_xyz,
             score_avg,
@@ -587,6 +610,7 @@ def training_detector(
             k=landmark_k,
             min_observations=observed,
             utility_weight=utility_weight,
+            spatial=use_spatial_sampling,
         )
         landmark_meta["repeatability"] = gaussians.loc_repeatability_ema[sampled_idx]
         landmark_meta["margin"] = gaussians.loc_margin_ema[sampled_idx]
@@ -672,20 +696,17 @@ def training_detector(
             )
 
         # generate gt_map
-        if detector_target_mode == "soft" and landmark_meta is not None:
-            gt_map = generate_soft_gt_map(
-                gaussians.get_xyz[sampled_idx],
-                gt_feature_map,
-                viewmat,
-                K,
-                utility=landmark_meta.get("utility"),
-                sigma=soft_sigma,
-                render_visible_mask=render_visible_mask[sampled_idx],
-            )
-        else:
-            gt_map = generate_gt_map(
-                gaussians, gt_feature_map, sampled_idx, viewmat, K, render_visible_mask
-            )
+        gt_map, soft_target, weight_map = build_detector_target_map(
+            gaussians,
+            gt_feature_map,
+            sampled_idx,
+            viewmat,
+            K,
+            render_visible_mask=render_visible_mask,
+            detector_target_mode=detector_target_mode,
+            landmark_meta=landmark_meta,
+            soft_sigma=soft_sigma,
+        )
 
         # use mask to filter out object
         if masks is not None:
@@ -702,13 +723,17 @@ def training_detector(
                 > 0.5
             )
             gt_map *= gt_map_mask
+            if weight_map is not None:
+                weight_map = torch.where(gt_map_mask, weight_map, torch.ones_like(weight_map))
 
         # Loss
         heat_map = detector(gt_feature_map)
-        if detector_target_mode == "soft" and landmark_meta is not None:
-            loss = utility_weighted_detector_loss(heat_map, gt_map)
-        else:
-            loss = score_map_bce_loss(heat_map, gt_map)
+        loss = detector_target_loss(
+            heat_map,
+            gt_map,
+            soft_target=soft_target,
+            weight_map=weight_map,
+        )
 
         loss.backward()
         if iteration % grad_accum == 0:
@@ -787,9 +812,7 @@ def prepare_output_and_logger(args, folder=None):
     return tb_writer
 
 
-if __name__ == "__main__":
-    seed_everything(2025)
-    # Set up command line argument parser
+def build_arg_parser(with_components=False):
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser, sentinel=True)
     op = OptimizationParams(parser)
@@ -805,12 +828,30 @@ if __name__ == "__main__":
     parser.add_argument("--detector_folder", type=str, default="detector")
     parser.add_argument("--landmark_num", type=int, default=16384)
     parser.add_argument("--landmark_k", type=int, default=32)
-    parser.add_argument("--sampling_mode", type=str, default="baseline", choices=["baseline", "localization_aware"])
+    parser.add_argument(
+        "--sampling_mode",
+        type=str,
+        default="baseline",
+        choices=[
+            "baseline",
+            "localization_aware",
+            "localization_aware_spatial",
+            "localization_aware_global",
+        ],
+    )
     parser.add_argument("--utility_weight", type=float, default=1.0)
     parser.add_argument("--min_loc_observations", type=int, default=1)
     parser.add_argument("--detector_target_mode", type=str, default="hard", choices=["hard", "soft"])
     parser.add_argument("--soft_sigma", type=float, default=1.5)
+    if with_components:
+        return parser, lp, op
+    return parser
 
+
+if __name__ == "__main__":
+    seed_everything(2025)
+    # Set up command line argument parser
+    parser, lp, op = build_arg_parser(with_components=True)
     args = get_combined_args(parser)
     args.save_iterations.append(args.iterations)
 
