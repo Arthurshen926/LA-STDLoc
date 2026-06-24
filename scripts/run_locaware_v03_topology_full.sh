@@ -27,6 +27,8 @@ TOPOLOGY_MULTIVIEW_WEIGHT=${TOPOLOGY_MULTIVIEW_WEIGHT:-0.03}
 TOPOLOGY_FULL_BANK_WEIGHT=${TOPOLOGY_FULL_BANK_WEIGHT:-0.05}
 TOPOLOGY_FULL_BANK_HARD_NEGATIVES=${TOPOLOGY_FULL_BANK_HARD_NEGATIVES:-32}
 TOPOLOGY_FULL_BANK_MARGIN=${TOPOLOGY_FULL_BANK_MARGIN:-0.2}
+TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS=${TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS:-0.0}
+TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS=${TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS:-0.0}
 TOPOLOGY_ANCHOR_WEIGHT=${TOPOLOGY_ANCHOR_WEIGHT:-0.01}
 TOPOLOGY_DENSE_DESC_WEIGHT=${TOPOLOGY_DENSE_DESC_WEIGHT:-0.0}
 TOPOLOGY_DENSE_REPROJ_WEIGHT=${TOPOLOGY_DENSE_REPROJ_WEIGHT:-0.0}
@@ -54,6 +56,7 @@ LABEL_SPLIT=${LABEL_SPLIT:-train}
 LABEL_MAX_IMAGES=${LABEL_MAX_IMAGES:-64}
 LABEL_REPROJECTION_ERROR=${LABEL_REPROJECTION_ERROR:-12}
 FORCE_TOPOLOGY_COPY=${FORCE_TOPOLOGY_COPY:-0}
+FORCE_TOPOLOGY_TRAIN=${FORCE_TOPOLOGY_TRAIN:-0}
 FORCE_LABEL_STATE=${FORCE_LABEL_STATE:-0}
 
 if [[ -z "${PYTHON:-}" ]]; then
@@ -107,6 +110,19 @@ point_cloud_exists() {
   [[ -f "$model_path/point_cloud/iteration_${iteration}/point_cloud.ply" ]]
 }
 
+strip_future_point_clouds() {
+  local iteration_dir
+  local iteration
+  for iteration_dir in "$TOPOLOGY_MODEL"/point_cloud/iteration_*; do
+    [[ -d "$iteration_dir" ]] || continue
+    iteration=${iteration_dir##*/iteration_}
+    [[ "$iteration" =~ ^[0-9]+$ ]] || continue
+    if (( iteration > V03_ITERATION )); then
+      rm -rf "$iteration_dir"
+    fi
+  done
+}
+
 if [[ ! -d "$BASELINE_MODEL" ]]; then
   echo "[LA-STDLoc v0.3 topology] Missing baseline model: $BASELINE_MODEL" >&2
   exit 1
@@ -148,6 +164,9 @@ if [[ ! -d "$TOPOLOGY_MODEL" || "$FORCE_TOPOLOGY_COPY" == "1" ]]; then
   rm -rf "$TOPOLOGY_MODEL"
   mkdir -p "$(dirname "$TOPOLOGY_MODEL")"
   cp -a "$SOURCE_MODEL" "$TOPOLOGY_MODEL"
+  strip_future_point_clouds
+elif [[ "$FORCE_TOPOLOGY_TRAIN" == "1" ]]; then
+  strip_future_point_clouds
 fi
 
 if [[ ! -f "$LABEL_STATE" || "$FORCE_LABEL_STATE" == "1" ]]; then
@@ -237,7 +256,11 @@ if [[ "$TOPOLOGY_ALLOW_UNTRAINED_LOC_OPACITY_PRUNE" == "1" ]]; then
   TOPOLOGY_ARGS+=(--topology_allow_untrained_loc_opacity_prune)
 fi
 
-if ! point_cloud_exists "$TOPOLOGY_MODEL" "$TOPOLOGY_END"; then
+if [[ "$FORCE_TOPOLOGY_TRAIN" == "1" ]]; then
+  rm -rf "$TOPOLOGY_MODEL/point_cloud/iteration_${TOPOLOGY_END}"
+fi
+
+if [[ "$FORCE_TOPOLOGY_TRAIN" == "1" ]] || ! point_cloud_exists "$TOPOLOGY_MODEL" "$TOPOLOGY_END"; then
   "$PYTHON" train_locaware.py \
     "${DATA_ARGS[@]}" \
     "${TRAIN_ARGS[@]}" \
@@ -255,6 +278,8 @@ if ! point_cloud_exists "$TOPOLOGY_MODEL" "$TOPOLOGY_END"; then
     --loc_full_bank_temperature 0.07 \
     --loc_full_bank_hard_negatives "$TOPOLOGY_FULL_BANK_HARD_NEGATIVES" \
     --loc_full_bank_margin "$TOPOLOGY_FULL_BANK_MARGIN" \
+    --loc_full_bank_ignore_3d_radius "$TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS" \
+    --loc_full_bank_ignore_uv_radius "$TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS" \
     --loc_anchor_weight "$TOPOLOGY_ANCHOR_WEIGHT" \
     --loc_desc_weight "$TOPOLOGY_DENSE_DESC_WEIGHT" \
     --loc_reproj_weight "$TOPOLOGY_DENSE_REPROJ_WEIGHT" \

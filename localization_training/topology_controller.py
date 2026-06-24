@@ -299,12 +299,15 @@ class LocalizationTopologyController:
                     "point_count_after": point_count_after,
                 }
             )
+        if self.config.enable_physical_prune or split.any():
             print(
                 "[Topology] "
                 f"iter={iteration} candidates={event['candidate_count']} "
                 f"physical_prune={event['physical_prune_count']} "
-                f"requested_split={split_count} parent_removed={split_count} "
-                f"children_added={new_clone_count} points={point_count_before}->{point_count_after} "
+                f"requested_split={event['requested_split_count']} "
+                f"parent_removed={event['actual_parent_removed']} "
+                f"children_added={event['actual_children_added']} "
+                f"points={event['point_count_start']}->{event['point_count_after']} "
                 f"utility_q25={event['utility_quantiles']['q25']:.4f} "
                 f"utility_q50={event['utility_quantiles']['q50']:.4f} "
                 f"utility_q75={event['utility_quantiles']['q75']:.4f}"

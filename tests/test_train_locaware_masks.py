@@ -277,6 +277,10 @@ class TrainLocawareMaskTest(unittest.TestCase):
                 "16",
                 "--loc_full_bank_margin",
                 "0.4",
+                "--loc_full_bank_ignore_3d_radius",
+                "0.25",
+                "--loc_full_bank_ignore_uv_radius",
+                "2.5",
                 "--loc_anchor_weight",
                 "0.02",
             ]
@@ -286,6 +290,8 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.loc_full_bank_temperature, 0.11)
         self.assertEqual(args.loc_full_bank_hard_negatives, 16)
         self.assertEqual(args.loc_full_bank_margin, 0.4)
+        self.assertEqual(args.loc_full_bank_ignore_3d_radius, 0.25)
+        self.assertEqual(args.loc_full_bank_ignore_uv_radius, 2.5)
         self.assertEqual(args.loc_anchor_weight, 0.02)
 
     def test_locaware_parser_accepts_dense_responsibility_kl_controls(self):
@@ -309,6 +315,55 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.loc_dense_kl_weight, 0.05)
         self.assertEqual(args.loc_dense_kl_temperature, 0.09)
         self.assertEqual(args.loc_responsibility_topk, 6)
+
+    def test_locaware_parser_accepts_selective_dense_kl_controls(self):
+        from train_locaware import add_locaware_training_args
+
+        parser = ArgumentParser()
+        add_locaware_training_args(parser)
+        defaults = parser.parse_args([])
+        args = parser.parse_args(
+            [
+                "--loc_dense_pose_gate",
+                "--loc_dense_pose_gate_min_te",
+                "1.5",
+                "--loc_dense_pose_gate_min_ae",
+                "0.2",
+                "--loc_dense_attr_cosine_threshold",
+                "0.8",
+                "--loc_dense_attr_entropy_threshold",
+                "0.3",
+                "--loc_dense_min_positive_prob",
+                "0.6",
+                "--loc_dense_max_reproj_error",
+                "2.0",
+                "--loc_dense_min_eligible_anchors",
+                "4",
+            ]
+        )
+
+        self.assertFalse(defaults.loc_dense_pose_gate)
+        self.assertEqual(defaults.loc_dense_attr_cosine_threshold, -1.0)
+        self.assertTrue(args.loc_dense_pose_gate)
+        self.assertEqual(args.loc_dense_pose_gate_min_te, 1.5)
+        self.assertEqual(args.loc_dense_pose_gate_min_ae, 0.2)
+        self.assertEqual(args.loc_dense_attr_cosine_threshold, 0.8)
+        self.assertEqual(args.loc_dense_attr_entropy_threshold, 0.3)
+        self.assertEqual(args.loc_dense_min_positive_prob, 0.6)
+        self.assertEqual(args.loc_dense_max_reproj_error, 2.0)
+        self.assertEqual(args.loc_dense_min_eligible_anchors, 4)
+
+    def test_dense_pose_gate_requires_cached_dense_pose_improvement(self):
+        from train_locaware import _dense_pose_improvement_weight
+
+        improved = {"te": 20.0, "ae": 2.0, "dense_te": 10.0, "dense_ae": 1.0}
+        worse = {"te": 20.0, "ae": 2.0, "dense_te": 21.0, "dense_ae": 1.0}
+        missing = {"te": 20.0, "ae": 2.0}
+
+        self.assertEqual(_dense_pose_improvement_weight(improved, min_te=1.0, min_ae=0.1), 1.0)
+        self.assertEqual(_dense_pose_improvement_weight(worse, min_te=1.0, min_ae=0.1), 0.0)
+        self.assertEqual(_dense_pose_improvement_weight(missing, min_te=1.0, min_ae=0.1), 0.0)
+
 
     def test_locaware_parser_accepts_mixed_query_controls(self):
         from train_locaware import add_locaware_training_args

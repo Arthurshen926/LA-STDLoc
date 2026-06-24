@@ -246,6 +246,112 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
 
         self.assertLess(ignored.item(), with_false_negative.item())
 
+    def test_full_bank_descriptor_stats_ignore_mask_removes_nearby_false_negative(self):
+        from localization_training.direct_landmark_teacher import full_bank_descriptor_stats
+
+        query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        bank = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+        positives = torch.tensor([0])
+        ignore_mask = torch.tensor([[False, True, False]])
+
+        _, margin_without_ignore, _ = full_bank_descriptor_stats(query, bank, positives, temperature=0.2)
+        _, margin_with_ignore, _ = full_bank_descriptor_stats(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            ignore_bank_mask=ignore_mask,
+        )
+
+        self.assertGreater(margin_with_ignore.item(), margin_without_ignore.item() + 4.0)
+
+    def test_direct_teacher_can_ignore_full_bank_3d_and_uv_nearby_false_negatives(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [0.05, 0.0, 4.0],
+                        [0.0, 0.0, 5.0],
+                        [0.5, 0.0, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[1.0, 0.0]],
+                            [[0.99, 0.01]],
+                            [[0.98, 0.02]],
+                            [[0.0, 1.0]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        gaussians = FakeGaussians()
+
+        out_without_ignore = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2, 3]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+        )
+        out_with_ignore = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2, 3]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+            full_bank_ignore_3d_radius=0.1,
+            full_bank_ignore_uv_radius=1.0,
+        )
+
+        self.assertLess(out_with_ignore.full_bank_loss.item(), out_without_ignore.full_bank_loss.item())
+        self.assertGreater(
+            out_with_ignore.stats["margin"].item(),
+            out_without_ignore.stats["margin"].item(),
+        )
+
     def test_limit_valid_indices_can_stratify_by_projection_grid(self):
         from localization_training.direct_landmark_teacher import _limit_valid_indices
 

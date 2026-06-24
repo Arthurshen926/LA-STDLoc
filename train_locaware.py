@@ -283,6 +283,14 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_responsibility_topk", type=int, default=32)
     parser.add_argument("--loc_responsibility_opacity_weight", type=float, default=0.0)
     parser.add_argument("--loc_responsibility_depth_weight", type=float, default=0.0)
+    parser.add_argument("--loc_dense_pose_gate", action="store_true", default=False)
+    parser.add_argument("--loc_dense_pose_gate_min_te", type=float, default=0.0)
+    parser.add_argument("--loc_dense_pose_gate_min_ae", type=float, default=0.0)
+    parser.add_argument("--loc_dense_attr_cosine_threshold", type=float, default=-1.0)
+    parser.add_argument("--loc_dense_attr_entropy_threshold", type=float, default=-1.0)
+    parser.add_argument("--loc_dense_min_positive_prob", type=float, default=-1.0)
+    parser.add_argument("--loc_dense_max_reproj_error", type=float, default=-1.0)
+    parser.add_argument("--loc_dense_min_eligible_anchors", type=int, default=1)
     parser.add_argument("--loc_teacher", type=str, default="dense", choices=["dense", "direct"])
     parser.add_argument("--loc_direct_weight", type=float, default=0.1)
     parser.add_argument("--loc_multiview_weight", type=float, default=0.05)
@@ -293,6 +301,8 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_full_bank_temperature", type=float, default=0.07)
     parser.add_argument("--loc_full_bank_hard_negatives", type=int, default=32)
     parser.add_argument("--loc_full_bank_margin", type=float, default=0.2)
+    parser.add_argument("--loc_full_bank_ignore_3d_radius", type=float, default=0.0)
+    parser.add_argument("--loc_full_bank_ignore_uv_radius", type=float, default=0.0)
     parser.add_argument("--loc_anchor_weight", type=float, default=0.0)
     parser.add_argument("--landmark_path", type=str, default="detector/sampled_idx.pkl")
     parser.add_argument("--direct_depth_check", action="store_true", default=False)
@@ -349,6 +359,17 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_physical_utility_threshold", type=float, default=-3.0)
     parser.add_argument("--topology_allow_untrained_loc_opacity_prune", action="store_true", default=False)
     return parser
+
+
+def _dense_pose_improvement_weight(meta, min_te=0.0, min_ae=0.0):
+    if not meta:
+        return 0.0
+    required = ("te", "ae", "dense_te", "dense_ae")
+    if any(meta.get(key) is None for key in required):
+        return 0.0
+    te_improved = float(meta["te"]) - float(meta["dense_te"]) > float(min_te)
+    ae_improved = float(meta["ae"]) - float(meta["dense_ae"]) > float(min_ae)
+    return 1.0 if te_improved and ae_improved else 0.0
 
 
 def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=None):
@@ -637,6 +658,8 @@ def training(dataset, opt, args):
                     full_bank_temperature=args.loc_full_bank_temperature,
                     full_bank_hard_negative_topk=args.loc_full_bank_hard_negatives,
                     full_bank_hard_negative_margin=args.loc_full_bank_margin,
+                    full_bank_ignore_3d_radius=args.loc_full_bank_ignore_3d_radius,
+                    full_bank_ignore_uv_radius=args.loc_full_bank_ignore_uv_radius,
                     sampling_grid_size=args.loc_anchor_grid_size,
                     anchor_features=_feature_anchor_tensor(loc_feature_anchor) if args.loc_anchor_weight > 0 else None,
                 )
@@ -652,6 +675,13 @@ def training(dataset, opt, args):
                     + args.loc_anchor_weight * loc_anchor_loss
                 )
             else:
+                dense_pose_weight = 1.0
+                if args.loc_dense_pose_gate:
+                    dense_pose_weight = _dense_pose_improvement_weight(
+                        episode.sparse_meta,
+                        min_te=args.loc_dense_pose_gate_min_te,
+                        min_ae=args.loc_dense_pose_gate_min_ae,
+                    )
                 teacher_out = dense_localization_teacher(
                     gaussians,
                     query_feature_map,
@@ -672,6 +702,12 @@ def training(dataset, opt, args):
                     responsibility_topk=args.loc_responsibility_topk,
                     responsibility_opacity_weight=args.loc_responsibility_opacity_weight,
                     responsibility_depth_weight=args.loc_responsibility_depth_weight,
+                    dense_pose_weight=dense_pose_weight,
+                    attr_cosine_threshold=args.loc_dense_attr_cosine_threshold,
+                    attr_entropy_threshold=args.loc_dense_attr_entropy_threshold,
+                    min_positive_prob=args.loc_dense_min_positive_prob,
+                    max_reproj_error=args.loc_dense_max_reproj_error,
+                    min_eligible_anchors=args.loc_dense_min_eligible_anchors,
                     norm_feat_bf_render=dataset.norm_before_render,
                     use_loc_opacity=args.use_loc_opacity,
                     rasterize_args={"rasterize_mode": "antialiased"},

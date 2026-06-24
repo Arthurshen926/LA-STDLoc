@@ -148,7 +148,19 @@ class SparsePoseCache:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         torch.save(self.items, self.path)
 
-    def update(self, image_name, pose_w2c, inliers=0, ae=None, te=None, failed=False):
+    def update(
+        self,
+        image_name,
+        pose_w2c,
+        inliers=0,
+        ae=None,
+        te=None,
+        failed=False,
+        dense_pose_w2c=None,
+        dense_inliers=None,
+        dense_ae=None,
+        dense_te=None,
+    ):
         self.items[image_name] = {
             "pose_w2c": pose_w2c.detach().cpu(),
             "inliers": int(inliers),
@@ -156,6 +168,14 @@ class SparsePoseCache:
             "te": None if te is None else float(te),
             "failed": bool(failed),
         }
+        if dense_pose_w2c is not None:
+            self.items[image_name]["dense_pose_w2c"] = dense_pose_w2c.detach().cpu()
+        if dense_inliers is not None:
+            self.items[image_name]["dense_inliers"] = int(dense_inliers)
+        if dense_ae is not None:
+            self.items[image_name]["dense_ae"] = float(dense_ae)
+        if dense_te is not None:
+            self.items[image_name]["dense_te"] = float(dense_te)
 
     def get(self, image_name, default=None):
         return self.items.get(image_name, default)

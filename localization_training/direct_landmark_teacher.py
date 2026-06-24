@@ -383,6 +383,14 @@ def full_bank_bimnn_loss(
     return per_item.mean()
 
 
+def _merge_ignore_bank_mask(existing, extra):
+    if extra is None:
+        return existing
+    if existing is None:
+        return extra
+    return existing | extra
+
+
 def multiview_contrastive_landmark_loss(
     gaussian_features,
     query_features,
@@ -481,7 +489,13 @@ def _select_reference_features(features, full_idx, reference_indices=None):
     return selected, valid
 
 
-def full_bank_descriptor_stats(query_features, bank_features, positive_bank_indices, temperature=0.07):
+def full_bank_descriptor_stats(
+    query_features,
+    bank_features,
+    positive_bank_indices,
+    temperature=0.07,
+    ignore_bank_mask=None,
+):
     query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
     bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
     positive_bank_indices = torch.as_tensor(positive_bank_indices, dtype=torch.long, device=query.device).reshape(-1)
@@ -496,12 +510,22 @@ def full_bank_descriptor_stats(query_features, bank_features, positive_bank_indi
         return positive_prob, margin, entropy
     temperature = max(float(temperature), 1e-6)
     logits = query[valid] @ bank.T / temperature
+    if ignore_bank_mask is not None:
+        ignore_bank_mask = torch.as_tensor(ignore_bank_mask, dtype=torch.bool, device=query.device)
+        ignore_bank_mask = ignore_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
+        query_ids = torch.arange(ignore_bank_mask.shape[0], dtype=torch.long, device=query.device)
+        ignore_bank_mask[query_ids, positive_bank_indices[valid]] = False
+        logits = logits.masked_fill(ignore_bank_mask, -torch.inf)
     probs = torch.softmax(logits, dim=1)
     pos = positive_bank_indices[valid]
-    pos_prob = probs[torch.arange(pos.numel(), device=query.device), pos]
+    query_ids = torch.arange(pos.numel(), device=query.device)
+    pos_prob = probs[query_ids, pos]
     negative_logits = logits.clone()
-    negative_logits[torch.arange(pos.numel(), device=query.device), pos] = -torch.inf
-    margin_valid = logits[torch.arange(pos.numel(), device=query.device), pos] - negative_logits.max(dim=1).values
+    negative_logits[query_ids, pos] = -torch.inf
+    has_negative = torch.isfinite(negative_logits).any(dim=1)
+    hard_negative = negative_logits.max(dim=1).values
+    margin_valid = logits[query_ids, pos] - hard_negative
+    margin_valid = torch.where(has_negative, margin_valid, torch.ones_like(margin_valid))
     entropy_valid = -(probs * probs.clamp_min(1e-8).log()).sum(dim=1)
     entropy_valid = entropy_valid / torch.log(query.new_tensor(float(max(2, bank.shape[0]))))
     positive_prob[valid] = pos_prob.detach()
@@ -531,6 +555,8 @@ def direct_landmark_teacher(
     full_bank_temperature=0.07,
     full_bank_hard_negative_topk=0,
     full_bank_hard_negative_margin=0.2,
+    full_bank_ignore_3d_radius=0.0,
+    full_bank_ignore_uv_radius=0.0,
     sampling_grid_size=8,
     anchor_features=None,
 ):
@@ -607,6 +633,7 @@ def direct_landmark_teacher(
             device=gaussians.get_xyz.device,
         ).reshape(-1)
         bank_features = gaussians.get_loc_feature[full_bank_indices].reshape(full_bank_indices.numel(), -1)
+        bank_xyz = None
         positive_bank_indices = _compact_positions(
             selected_full_idx.to(device=full_bank_indices.device),
             full_bank_indices,
@@ -620,6 +647,24 @@ def direct_landmark_teacher(
                 selected_source = source_index[selected_full_idx].to(device=query_feature_map.device)
                 bank_source = source_index[full_bank_indices].to(device=query_feature_map.device)
                 ignore_bank_mask = selected_source[:, None] == bank_source[None, :]
+        if float(full_bank_ignore_3d_radius) > 0.0:
+            bank_xyz = gaussians.get_xyz[full_bank_indices].to(device=device, dtype=dtype)
+            xyz_dist = torch.cdist(selected_xyz.float(), bank_xyz.float())
+            nearby_xyz = xyz_dist <= float(full_bank_ignore_3d_radius)
+            ignore_bank_mask = _merge_ignore_bank_mask(
+                ignore_bank_mask,
+                nearby_xyz.to(device=query_feature_map.device),
+            )
+        if float(full_bank_ignore_uv_radius) > 0.0:
+            if bank_xyz is None:
+                bank_xyz = gaussians.get_xyz[full_bank_indices].to(device=device, dtype=dtype)
+            bank_uv, _, bank_valid = project_landmarks_to_query(bank_xyz, K, pose_gt_w2c, height, width)
+            uv_dist = torch.cdist(selected_uv.float(), bank_uv.float())
+            nearby_uv = (uv_dist <= float(full_bank_ignore_uv_radius)) & bank_valid[None, :]
+            ignore_bank_mask = _merge_ignore_bank_mask(
+                ignore_bank_mask,
+                nearby_uv.to(device=query_feature_map.device),
+            )
         full_bank_loss = full_bank_bimnn_loss(
             query_features,
             bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
@@ -634,6 +679,7 @@ def direct_landmark_teacher(
             bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
             positive_bank_indices,
             temperature=full_bank_temperature,
+            ignore_bank_mask=ignore_bank_mask,
         )
     if anchor_features is not None:
         anchor_selected, anchor_valid = _select_reference_features(

@@ -254,6 +254,62 @@ class TopologyControllerTest(unittest.TestCase):
         self.assertLess(torch.sigmoid(gaussians._loc_opacity[0]).item(), 0.5)
         self.assertLess(torch.sigmoid(gaussians._loc_opacity[2]).item(), 0.5)
 
+    def test_topology_update_logs_physical_prune_only_events_without_split(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self._opacity = torch.full((3, 1), -10.0)
+                self._loc_opacity = nn.Parameter(torch.full((3, 1), -10.0))
+                self._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+                self.utility = torch.full((3,), -2.0)
+                self.loc_opacity_grad_seen = True
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self._opacity.shape[0], 3)
+
+            @property
+            def get_opacity(self):
+                return torch.sigmoid(self._opacity)
+
+            @property
+            def get_loc_opacity(self):
+                return torch.sigmoid(self._loc_opacity)
+
+            def compute_localization_utility(self, min_observations=1):
+                return self.utility
+
+            def prune_points(self, mask):
+                keep = ~mask
+                self._opacity = self._opacity[keep]
+                self._loc_opacity = nn.Parameter(self._loc_opacity.detach()[keep])
+                self._loc_feature = nn.Parameter(self._loc_feature.detach()[keep])
+                self.utility = self.utility[keep]
+
+        gaussians = FakeGaussians()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                enable_split=False,
+                enable_physical_prune=True,
+                physical_rgb_threshold=0.1,
+                physical_loc_threshold=0.1,
+                physical_utility_threshold=1.0,
+            ),
+            initial_points=3,
+        )
+
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            event = controller.update(gaussians, scene_extent=1.0, iteration=10)
+
+        self.assertEqual(event["requested_split_count"], 0)
+        self.assertEqual(event["physical_prune_count"], 3)
+        self.assertIn("[Topology]", buffer.getvalue())
+        self.assertIn("physical_prune=3", buffer.getvalue())
+
     def test_topology_update_marks_all_new_split_clones_on_cooldown(self):
         from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
 

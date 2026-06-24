@@ -16,6 +16,8 @@ V03_MULTIVIEW_WEIGHT=${V03_MULTIVIEW_WEIGHT:-0.03}
 V03_FULL_BANK_WEIGHT=${V03_FULL_BANK_WEIGHT:-0.05}
 V03_FULL_BANK_HARD_NEGATIVES=${V03_FULL_BANK_HARD_NEGATIVES:-32}
 V03_FULL_BANK_MARGIN=${V03_FULL_BANK_MARGIN:-0.2}
+V03_FULL_BANK_IGNORE_3D_RADIUS=${V03_FULL_BANK_IGNORE_3D_RADIUS:-0.0}
+V03_FULL_BANK_IGNORE_UV_RADIUS=${V03_FULL_BANK_IGNORE_UV_RADIUS:-0.0}
 V03_ANCHOR_WEIGHT=${V03_ANCHOR_WEIGHT:-0.01}
 V03_TRAIN_SEED=${V03_TRAIN_SEED:-0}
 V03_QUERY_SPLIT_SEED=${V03_QUERY_SPLIT_SEED:-2025}
@@ -110,6 +112,8 @@ if ! point_cloud_exists "$V03_MODEL" "$V03_END"; then
     --loc_full_bank_temperature 0.07 \
     --loc_full_bank_hard_negatives "$V03_FULL_BANK_HARD_NEGATIVES" \
     --loc_full_bank_margin "$V03_FULL_BANK_MARGIN" \
+    --loc_full_bank_ignore_3d_radius "$V03_FULL_BANK_IGNORE_3D_RADIUS" \
+    --loc_full_bank_ignore_uv_radius "$V03_FULL_BANK_IGNORE_UV_RADIUS" \
     --loc_anchor_weight "$V03_ANCHOR_WEIGHT" \
     --loc_desc_weight 0.0 \
     --loc_reproj_weight 0.0 \

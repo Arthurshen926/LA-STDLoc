@@ -37,6 +37,20 @@ class EpisodeSamplerTest(unittest.TestCase):
             self.assertEqual(item["inliers"], 12)
             self.assertTrue(torch.allclose(item["pose_w2c"], noisy))
 
+            cache.update(
+                "image_b",
+                noisy,
+                inliers=12,
+                ae=2.0,
+                te=20.0,
+                dense_pose_w2c=torch.eye(4),
+                dense_inliers=18,
+                dense_ae=1.0,
+                dense_te=10.0,
+            )
+            self.assertEqual(cache.get("image_b")["dense_inliers"], 18)
+            self.assertEqual(cache.get("image_b")["dense_te"], 10.0)
+
     def test_mixed_mode_respects_sparse_probability(self):
         from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
 

@@ -13,6 +13,8 @@ from localization_training.correspondence import (
 from localization_training.dense_distill import (
     dense_to_sparse_kl,
     gaussian_teacher_distribution,
+    responsibility_entropy,
+    responsibility_reconstruction_cosine,
     responsibility_reconstruction_metrics,
 )
 from localization_training.losses import fine_reprojection_loss, symmetric_descriptor_loss
@@ -177,6 +179,7 @@ def dense_responsibility_kl_loss(
     responsibility_weights,
     dense_temperature=0.07,
     sparse_temperature=0.07,
+    anchor_weights=None,
 ):
     query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
     rendered = F.normalize(rendered_features.reshape(rendered_features.shape[0], -1), p=2, dim=-1)
@@ -195,7 +198,66 @@ def dense_responsibility_kl_loss(
         bank_features,
         teacher,
         temperature=sparse_temperature,
+        anchor_weights=anchor_weights,
     )
+
+
+def _selective_dense_anchor_weights(
+    query_features,
+    rendered_features,
+    visible_bank_features,
+    compact_contributor_ids,
+    responsibility_weights,
+    fine_stats,
+    dense_pose_weight=1.0,
+    attr_cosine_threshold=-1.0,
+    attr_entropy_threshold=-1.0,
+    min_positive_prob=-1.0,
+    max_reproj_error=-1.0,
+    min_eligible_anchors=1,
+):
+    weights = query_features.new_ones(query_features.shape[0]) * float(dense_pose_weight)
+    if float(dense_pose_weight) <= 0.0:
+        return weights.zero_(), {
+            "dense_kl_pose_weight": float(dense_pose_weight),
+            "dense_kl_eligible_anchor_count": 0,
+            "dense_kl_anchor_count": int(query_features.shape[0]),
+            "dense_kl_anchor_weight_mean": 0.0,
+        }
+
+    diagnostics = {
+        "dense_kl_pose_weight": float(dense_pose_weight),
+        "dense_kl_anchor_count": int(query_features.shape[0]),
+    }
+    if float(attr_cosine_threshold) >= 0.0:
+        cosine = responsibility_reconstruction_cosine(
+            rendered_features.detach(),
+            visible_bank_features.detach().to(device=query_features.device, dtype=query_features.dtype),
+            compact_contributor_ids,
+            responsibility_weights,
+        ).to(device=query_features.device, dtype=query_features.dtype)
+        weights = weights * (cosine >= float(attr_cosine_threshold)).to(dtype=weights.dtype)
+        valid_cos = cosine[torch.isfinite(cosine) & (cosine >= -1.0)]
+        diagnostics["dense_kl_attr_cosine_mean"] = float(valid_cos.mean().item()) if valid_cos.numel() else 0.0
+    if float(attr_entropy_threshold) >= 0.0:
+        entropy = responsibility_entropy(responsibility_weights).to(device=query_features.device, dtype=query_features.dtype)
+        weights = weights * (entropy <= float(attr_entropy_threshold)).to(dtype=weights.dtype)
+        finite_entropy = entropy[torch.isfinite(entropy)]
+        diagnostics["dense_kl_attr_entropy_mean"] = float(finite_entropy.mean().item()) if finite_entropy.numel() else 0.0
+    if float(min_positive_prob) >= 0.0 and "positive_prob" in fine_stats:
+        positive_prob = torch.as_tensor(fine_stats["positive_prob"], device=query_features.device, dtype=query_features.dtype).reshape(-1)
+        weights = weights * (positive_prob[: weights.numel()] >= float(min_positive_prob)).to(dtype=weights.dtype)
+    if float(max_reproj_error) >= 0.0 and "reproj_error" in fine_stats:
+        reproj_error = torch.as_tensor(fine_stats["reproj_error"], device=query_features.device, dtype=query_features.dtype).reshape(-1)
+        weights = weights * (reproj_error[: weights.numel()] <= float(max_reproj_error)).to(dtype=weights.dtype)
+
+    eligible = int((weights > 0).sum().item())
+    if eligible < int(min_eligible_anchors):
+        weights = weights.zero_()
+        eligible = 0
+    diagnostics["dense_kl_eligible_anchor_count"] = eligible
+    diagnostics["dense_kl_anchor_weight_mean"] = float(weights.mean().item()) if weights.numel() else 0.0
+    return weights, diagnostics
 
 
 def _compact_contributor_ids(contributor_ids, bank_indices):
@@ -324,6 +386,12 @@ def dense_localization_teacher(
     responsibility_topk=32,
     responsibility_opacity_weight=0.0,
     responsibility_depth_weight=0.0,
+    dense_pose_weight=1.0,
+    attr_cosine_threshold=-1.0,
+    attr_entropy_threshold=-1.0,
+    min_positive_prob=-1.0,
+    max_reproj_error=-1.0,
+    min_eligible_anchors=1,
     norm_feat_bf_render=True,
     use_loc_opacity=True,
     min_anchors=8,
@@ -444,6 +512,21 @@ def dense_localization_teacher(
         and responsibility_weights is not None
         and visible_bank_features is not None
     ):
+        anchor_weights, weight_diagnostics = _selective_dense_anchor_weights(
+            query_features,
+            rendered_features,
+            visible_bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
+            compact_contributor_ids,
+            responsibility_weights,
+            fine_stats,
+            dense_pose_weight=dense_pose_weight,
+            attr_cosine_threshold=attr_cosine_threshold,
+            attr_entropy_threshold=attr_entropy_threshold,
+            min_positive_prob=min_positive_prob,
+            max_reproj_error=max_reproj_error,
+            min_eligible_anchors=min_eligible_anchors,
+        )
+        diagnostics.update(weight_diagnostics)
         kl_loss = dense_responsibility_kl_loss(
             query_features,
             rendered_features,
@@ -452,6 +535,7 @@ def dense_localization_teacher(
             responsibility_weights,
             dense_temperature=dense_kl_temperature,
             sparse_temperature=dense_kl_temperature,
+            anchor_weights=anchor_weights,
         )
     loss = desc_loss + reproj_loss + float(dense_kl_weight) * kl_loss
 

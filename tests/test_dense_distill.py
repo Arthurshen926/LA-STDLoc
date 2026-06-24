@@ -82,6 +82,27 @@ class DenseDistillTest(unittest.TestCase):
         self.assertTrue(torch.allclose(teacher, torch.tensor([[0.8, 0.15, 0.05]]), atol=1e-6))
         self.assertLess(aligned.item(), confused.item())
 
+    def test_dense_to_sparse_kl_uses_anchor_weights_to_ignore_noisy_teacher_rows(self):
+        from localization_training.dense_distill import dense_to_sparse_kl
+
+        query = torch.tensor([[1.0, 0.0], [1.0, 0.0]], dtype=torch.float32)
+        bank = torch.eye(2, dtype=torch.float32)
+        teacher = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        unweighted = dense_to_sparse_kl(query, bank, teacher, temperature=0.1)
+        selected = dense_to_sparse_kl(query, bank, teacher, temperature=0.1, anchor_weights=torch.tensor([1.0, 0.0]))
+        none_selected = dense_to_sparse_kl(query, bank, teacher, temperature=0.1, anchor_weights=torch.zeros(2))
+
+        self.assertGreater(unweighted.item(), selected.item() + 4.0)
+        self.assertLess(selected.item(), 1e-3)
+        self.assertEqual(none_selected.item(), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

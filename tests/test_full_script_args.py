@@ -11,6 +11,8 @@ V03_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_locaware_v03
 V03_MULTISCENE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_locaware_v03_multiscene.sh"
 V03_TOPOLOGY_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_locaware_v03_topology_full.sh"
 DENSE_KL_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_densekl_v03_cambridge.sh"
+DENSE_LONG_WORKER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_la_update2_dense_long_worker.sh"
+TOPOLOGY_LONG_WORKER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_la_update2_long_worker.sh"
 PREPARE_BASELINES_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "prepare_cambridge_baseline_artifacts.sh"
 GEOM_2X2_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_geometry_balance_2x2_shopfacade.sh"
 DESCRIPTOR_DIAG_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "diagnose_sparse_descriptors.py"
@@ -83,6 +85,8 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn("--loc_teacher direct", text)
         self.assertIn("--loc_full_bank_weight", text)
         self.assertIn("--loc_full_bank_hard_negatives", text)
+        self.assertIn("--loc_full_bank_ignore_3d_radius", text)
+        self.assertIn("--loc_full_bank_ignore_uv_radius", text)
         self.assertIn("--loc_anchor_weight", text)
         self.assertIn("--loc_opacity_weight 0.0", text)
         self.assertIn("--no-use_loc_opacity", text)
@@ -134,6 +138,9 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn("TOPOLOGY_USE_LOC_OPACITY=${TOPOLOGY_USE_LOC_OPACITY:-0}", text)
         self.assertIn("TOPOLOGY_PROTECT_LANDMARKS=${TOPOLOGY_PROTECT_LANDMARKS:-0}", text)
         self.assertIn("TOPOLOGY_REMAP_MODE=${TOPOLOGY_REMAP_MODE:-source_distance}", text)
+        self.assertIn("FORCE_TOPOLOGY_TRAIN=${FORCE_TOPOLOGY_TRAIN:-0}", text)
+        self.assertIn("strip_future_point_clouds()", text)
+        self.assertIn("if (( iteration > V03_ITERATION )); then", text)
         self.assertIn("TOPOLOGY_DENSE_DESC_WEIGHT=${TOPOLOGY_DENSE_DESC_WEIGHT:-0.0}", text)
         self.assertIn("TOPOLOGY_DENSE_REPROJ_WEIGHT=${TOPOLOGY_DENSE_REPROJ_WEIGHT:-0.0}", text)
         self.assertIn('--train_phase "$TRAIN_PHASE"', text)
@@ -141,6 +148,8 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn("--loc_direct_weight", text)
         self.assertIn("--loc_multiview_weight", text)
         self.assertIn("--loc_full_bank_weight", text)
+        self.assertIn("--loc_full_bank_ignore_3d_radius", text)
+        self.assertIn("--loc_full_bank_ignore_uv_radius", text)
         self.assertIn("--loc_anchor_weight", text)
         self.assertIn("--direct_depth_check", text)
         self.assertIn("LOC_OPACITY_ARGS=(--no-use_loc_opacity --loc_opacity_weight 0.0)", text)
@@ -169,6 +178,8 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn('sparse["landmark_path"] = topology_landmark_path', text)
         self.assertIn('sparse["landmark_model_path"] = topology_model', text)
         self.assertIn("--prefix \"phase-v03-topology-${TOPOLOGY_END}\"", text)
+        self.assertIn('if [[ "$FORCE_TOPOLOGY_TRAIN" == "1" ]]; then', text)
+        self.assertIn('rm -rf "$TOPOLOGY_MODEL/point_cloud/iteration_${TOPOLOGY_END}"', text)
 
     def test_dense_kl_script_runs_dense_teacher_without_topology(self):
         text = DENSE_KL_SCRIPT.read_text()
@@ -177,12 +188,54 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn("--loc_responsibility_topk", text)
         self.assertIn("--loc_responsibility_opacity_weight", text)
         self.assertIn("--loc_responsibility_depth_weight", text)
+        self.assertIn("RUN_DENSE_POSE_CACHE=${RUN_DENSE_POSE_CACHE:-0}", text)
+        self.assertIn("DENSEKL_QUERY_MODE=${DENSEKL_QUERY_MODE:-noise}", text)
+        self.assertIn("DENSEKL_QUERY_MODE=sparse", text)
+        self.assertIn("--include_dense", text)
+        self.assertIn('--query_mode "$DENSEKL_QUERY_MODE"', text)
+        self.assertIn("--loc_dense_pose_gate", text)
+        self.assertIn("--loc_dense_attr_cosine_threshold", text)
+        self.assertIn("--loc_dense_attr_entropy_threshold", text)
+        self.assertIn("--loc_dense_min_positive_prob", text)
+        self.assertIn("--loc_dense_max_reproj_error", text)
+        self.assertIn("--loc_dense_min_eligible_anchors", text)
+        self.assertIn("DENSEKL_SAVE_STEPS=${DENSEKL_SAVE_STEPS:-$DENSEKL_STEPS}", text)
+        self.assertIn("DENSEKL_EVAL_STEPS=${DENSEKL_EVAL_STEPS:-$DENSEKL_SAVE_STEPS}", text)
+        self.assertIn("FORCE_DENSEKL_TRAIN=${FORCE_DENSEKL_TRAIN:-0}", text)
+        self.assertIn("steps_to_iterations()", text)
+        self.assertIn("strip_future_point_clouds()", text)
+        self.assertIn("if (( iteration > LOAD_ITERATION )); then", text)
+        self.assertIn("--save_iterations \"${DENSEKL_SAVE_ITERATIONS[@]}\"", text)
+        self.assertIn("for eval_iteration in \"${DENSEKL_EVAL_ITERATIONS[@]}\"; do", text)
         self.assertIn("--no-use_loc_opacity", text)
         self.assertNotIn("--enable_topology", text)
         self.assertIn("diagnose_dense_responsibility.py", text)
         self.assertIn('sparse["detector_model_path"] = baseline_model', text)
         self.assertIn('sparse["landmark_model_path"] = baseline_model', text)
         self.assertIn("--sparse_only", text)
+
+    def test_dense_kl_script_accepts_explicit_training_seed(self):
+        text = DENSE_KL_SCRIPT.read_text()
+
+        self.assertIn("DENSEKL_TRAIN_SEED=${DENSEKL_TRAIN_SEED:-0}", text)
+        self.assertIn('--train_seed "$DENSEKL_TRAIN_SEED"', text)
+
+    def test_la_update2_workers_separate_train_seed_from_query_split_seed(self):
+        dense_text = DENSE_LONG_WORKER_SCRIPT.read_text()
+        topology_text = TOPOLOGY_LONG_WORKER_SCRIPT.read_text()
+
+        for text in (dense_text, topology_text):
+            with self.subTest(script=text[:80]):
+                self.assertIn("TRAIN_SEEDS=${TRAIN_SEEDS:-${SEEDS:-0 1 2}}", text)
+                self.assertIn("QUERY_SPLIT_SEEDS=${QUERY_SPLIT_SEEDS:-${SEEDS:-2025 2026 2027}}", text)
+                self.assertIn("for train_seed in $TRAIN_SEEDS; do", text)
+                self.assertIn("for query_split_seed in $QUERY_SPLIT_SEEDS; do", text)
+                self.assertIn("train_seed_${train_seed}/query_split_${query_split_seed}", text)
+                self.assertIn("seed_${query_split_seed}", text)
+
+        self.assertIn('DENSEKL_TRAIN_SEED="$train_seed"', dense_text)
+        self.assertIn('TRAIN_SEED="$train_seed"', topology_text)
+        self.assertIn('QUERY_SPLIT_SEED="$query_split_seed"', topology_text)
 
     def test_prepare_baseline_artifacts_script_builds_missing_scene_baselines(self):
         text = PREPARE_BASELINES_SCRIPT.read_text()

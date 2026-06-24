@@ -258,6 +258,154 @@ dense feedback 与 topology 的完整闭环仍未被干净测试。
 3. physical prune 仍未验证 `loc_opacity.grad` 是否非零；在此之前不能把 loc opacity 当作独立定位剪枝门控。
 4. 需要按附件 C0-C7 矩阵补跑 matched continuation，至少先跑 C1/C4/C7 的 100-step ShopFacade/Kings/OldHospital 对照。
 
+## 长跑与删点闭环
+
+日期：2026-06-24
+
+本轮继续排除 topology 阶段剩余的高影响混杂，实验根目录固定为：
+
+```text
+/mnt/pool/sqy/stdloc_la_update2_long_closure_v2
+```
+
+旧的 `/mnt/pool/sqy/stdloc_la_update2_long_closure` 不再使用，因为早期脚本会把复制来的 source checkpoint 误判为目标 iteration 已存在，从而跳过真实 topology continuation。
+
+### 新增修复
+
+1. `scripts/run_locaware_v03_topology_full.sh` 增加 `FORCE_TOPOLOGY_TRAIN=1`：
+   - 若目标 final iteration 已存在，会先移除该 iteration 再训练；
+   - 避免 copied source checkpoint 污染 100/500-step continuation。
+2. `localization_training/topology_controller.py` 修复 physical-prune-only 事件日志：
+   - 旧逻辑只在 `split.any()` 时打印 `[Topology]`；
+   - 现在 prune-only 也会打印 `physical_prune`、`points=start->after`。
+3. 新增长跑 worker：
+   - `scripts/run_la_update2_long_worker.sh`
+   - 显式使用 `/mnt/pool/sqy/stdloc_la_v03_full_length/{scene}/seed_{seed}/{scene}_v03` 作为 source；
+   - 默认覆盖 `3 scenes x 3 seeds x {100,500} steps x {no_mutation, split_only}`；
+   - prune sweep 默认覆盖 mild / balanced / active。
+4. 新增最终汇总脚本：
+   - `scripts/summarize_la_update2_long_closure.py`
+   - 只统计目标 final iteration，避免把 source iteration 混进结果；
+   - 输出点数、child rows、source distance、opacity、event log 与 STDLoc sparse metrics。
+
+### 实验完整性
+
+最终汇总文件：
+
+```text
+/mnt/pool/sqy/stdloc_la_update2_long_closure_v2/summary_final.json
+```
+
+完整性检查：
+
+| Family | Tag | Rows |
+| --- | --- | ---: |
+| core | `core_no_mutation_100` | 9 |
+| core | `core_split_only_100` | 9 |
+| core | `core_no_mutation_500` | 9 |
+| core | `core_split_only_500` | 9 |
+| prune | `prune_mild_100` | 5 |
+| prune | `prune_balanced_100` | 5 |
+| prune | `prune_active_100` | 9 |
+
+所有 55 行都有 STDLoc sparse-only summary。核心矩阵完整覆盖 `3 scenes x 3 seeds x 2 steps x 2 modes = 36` 行。
+
+### Split-only matched continuation
+
+对每个 scene/seed/step 使用 `split_only - no_mutation` 做 paired delta：
+
+| Scene | Steps | n | mean dR5 | mean dR2 | R5 pos/zero/neg | mean child rows |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| ShopFacade | 100 | 3 | -0.971 pp | -1.942 pp | 0/1/2 | 136.0 |
+| ShopFacade | 500 | 3 | +0.324 pp | +1.618 pp | 2/0/1 | 703.3 |
+| KingsCollege | 100 | 3 | +0.000 pp | +0.097 pp | 0/3/0 | 134.0 |
+| KingsCollege | 500 | 3 | -0.000 pp | +0.000 pp | 1/0/2 | 774.0 |
+| OldHospital | 100 | 3 | -0.549 pp | -0.183 pp | 1/0/2 | 82.7 |
+| OldHospital | 500 | 3 | +0.549 pp | +0.366 pp | 2/0/1 | 419.3 |
+
+聚合结果：
+
+| Scope | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | median dR2 |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| 100-step | 9 | -0.507 pp | 0.000 pp | 1/4/4 | -0.676 pp | 0.000 pp |
+| 500-step | 9 | +0.291 pp | +0.549 pp | 5/0/4 | +0.661 pp | +0.549 pp |
+| all core | 18 | -0.108 pp | 0.000 pp | 6/4/8 | -0.007 pp | 0.000 pp |
+
+结论：split-only 已经被干净地从 teacher / geometry / physical prune 中分离出来，也确实产生 child rows；但在 3 scene x 3 seed 的 100/500-step matched continuation 上，R5/R2 收益很小且正负混合。当前数据不支持把 split-only 作为已验证的稳健精度增益。
+
+### Physical prune 删除与策略效果
+
+本轮已排除“默认阈值没有实际删点”的问题：active 阈值在三个 scene、三个 seed 都发生实删，event log 与最终 point count 一致。
+
+| Tag | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean point delta | logged physical prune |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `prune_mild_100` | 5 | -0.161 pp | 0.000 pp | 2/1/2 | -1,593.4 | 6,961 |
+| `prune_balanced_100` | 5 | +0.033 pp | +0.292 pp | 3/0/2 | -15,460.4 | 68,396 |
+| `prune_active_100` | 9 | +0.047 pp | 0.000 pp | 1/7/1 | -43,536.0 | 391,824 |
+
+`prune_active_100` 分 scene：
+
+| Scene | n | mean dR5 | mean dR2 | mean point delta | logged physical prune |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ShopFacade | 3 | +0.324 pp | -1.294 pp | -28,400 | 85,200 |
+| KingsCollege | 3 | +0.000 pp | +0.000 pp | -36,743 | 110,229 |
+| OldHospital | 3 | -0.183 pp | +0.000 pp | -65,465 | 196,395 |
+
+说明：
+
+1. `point_count_delta < 0` 是最终 checkpoint 的直接证据；`logged physical prune` 是事件日志证据。
+2. ShopFacade seed2025 的 mild/balanced 两行是在日志修复前启动的，因此 `logged physical prune=0`，但最终 `point_count_delta` 仍证明发生了实删点。
+3. physical prune 的“机制可生效”已经证明；“策略能提升 sparse-only relocalization”尚未证明。active 删除很激进，但 R5/R2 总体近似中性，ShopFacade 的 R2 还下降。
+
+### 本轮判断
+
+现在可以把几个高影响混杂点分开判断：
+
+| 混杂点 | 状态 | 证据 |
+| --- | --- | --- |
+| copied source checkpoint 导致 false skip | 已排除 | `FORCE_TOPOLOGY_TRAIN=1`，v2 root 重跑 |
+| teacher / geometry / topology mutation 混在一起 | 已排除首层 | core 矩阵使用 direct objective，对照 `no_mutation` vs `split_only` |
+| split-only 没有真实 topology event | 已排除 | 100-step 平均 4 个 event，500-step 平均 20 个 event |
+| physical prune 默认阈值没有删点 | 已排除 | active 9 行均实删，合计 logged physical prune 391,824 |
+| prune-only event log 漏报 | 已修复 | prune-only 也记录 `[Topology]` |
+
+更准确的闭环结论是：
+
+```text
+旧 mixed topology 结果不能用来证伪原始 topology 主张；
+但在排除主要实现与实验混杂后，split-only 的定位收益仍然很弱且不稳健；
+physical prune 的执行机制已经跑通，但当前阈值策略没有显示稳健收益，后续应改为 utility 校准和 risk-controlled commit，而不是继续扩大默认物理删点。
+```
+
+### 本轮验证
+
+脚本语法与汇总脚本编译：
+
+```text
+bash -n /root/STDLoc/scripts/run_locaware_v03_topology_full.sh
+bash -n /root/STDLoc/scripts/run_la_update2_long_worker.sh
+/root/miniconda3/envs/ulfloc_repro/bin/python -m py_compile /root/STDLoc/scripts/summarize_la_update2_long_closure.py
+```
+
+结果：均通过。
+
+全量 unittest：
+
+```text
+CUDA_HOME=/usr/local/cuda-11.8 \
+PATH=/usr/local/cuda-11.8/bin:$PATH \
+LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:${LD_LIBRARY_PATH:-} \
+PYTHONPATH=/root/STDLoc \
+/root/miniconda3/envs/ulfloc_repro/bin/python -m unittest discover -s tests
+```
+
+结果：
+
+```text
+Ran 142 tests in 6.002s
+OK
+```
+
 ## 高影响混杂闭合进展
 
 日期：2026-06-24
@@ -378,3 +526,448 @@ mean |delta loc_opacity|: 0.002898
 2. physical prune 在默认阈值下本轮没有实际删点，只闭合了“训练过 loc opacity 的 guard 与 prune-only 路径”，还没证明 physical prune 策略有效。
 3. optimizer restart 的严格 matched 对照仍需单独设计；目前只修了 loc_state 替换 Parameter 的明确 bug。
 4. dense feedback 与 topology 的正向闭环仍未被干净证明；C7 仍是混合路径，不是最终方法结论。
+
+## 最终状态更新
+
+上面的“仍未完全闭合”是 ShopFacade 10-step smoke 后的中间状态；截至本文件的“长跑与删点闭环”一节，前两项已经更新：
+
+1. 100/500-step、三 scene、三 seed 的 `no_mutation` vs `split_only` matched continuation 已完成，核心矩阵 36 行，0 个缺失 summary。
+2. physical prune 默认无删点的混杂已通过 mild/balanced/active sweep 排除；active 9 行均发生实删点，合计 logged physical prune 391,824。
+
+当前最终判断不再是“需要长跑后再判断”，而是：
+
+```text
+实现混杂已经基本排除到首层；
+split-only 的定位收益在当前矩阵中很弱且不稳健；
+physical prune 的机制有效，但当前阈值策略没有证明能提升 sparse-only relocalization。
+```
+
+## dense 长跑与 C6 默认阈值闭合补充
+
+日期：2026-06-24
+
+本节继续闭合上面剩余两项：dense feedback 的 100/500-step、多 scene、多 seed 长跑，以及 C6 默认阈值下 physical prune 是否真的删点。
+
+### 新增修复与脚本
+
+1. `scripts/run_densekl_v03_cambridge.sh`
+   - 新增 `DENSEKL_SAVE_STEPS` / `DENSEKL_EVAL_STEPS`，一次 500-step 训练可同时保存和评测 100/500-step。
+   - 新增 pose gate 和 selective dense gate 参数入口，并支持 `RUN_DENSE_POSE_CACHE=1`。
+   - 新增 `FORCE_DENSEKL_TRAIN=1`。
+   - 新增 `strip_future_point_clouds()`，从 full-length source copy 后删除所有 `iteration > LOAD_ITERATION` 的 checkpoint。
+2. `scripts/run_locaware_v03_topology_full.sh`
+   - 新增 `FORCE_TOPOLOGY_TRAIN=1`。
+   - 同样新增 future checkpoint 清理，避免 source 中已有 `iteration_30600/31000` 导致目标实验假跳过训练。
+3. 新增 dense 长跑 worker 和 summary：
+   - `scripts/run_la_update2_dense_long_worker.sh`
+   - `scripts/summarize_la_update2_dense_long.py`
+
+本轮确认并修复了一个高影响实现混杂：`/mnt/pool/sqy/stdloc_la_v03_full_length/*` 的 source model 已含后续 `iteration_30600/31000`，直接 copy 会让 target run 误以为 100/500-step 已训练完成。修复后 dense 长跑均使用 `FORCE_DENSEKL_TRAIN=1` 重跑。
+
+### dense pose-gate 100/500-step 长跑
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update2_dense_long_v1/summary_final.json
+```
+
+矩阵：
+
+```text
+scenes = ShopFacade, KingsCollege, OldHospital
+seeds = 2025, 2026, 2027
+steps = 100, 500
+rows = 18
+```
+
+关键 sanity check：
+
+| Scene | Pose cache valid | dense pose both-better ratio | Loc-positive iters |
+| --- | ---: | ---: | ---: |
+| KingsCollege | 1220 / 1220 | 0.550-0.567 | 61-63 / 103 |
+| OldHospital | 895 / 895 | 0.834-0.840 | 82-91 / 103 |
+| ShopFacade | 231 / 231 | 0.697-0.762 | 82-89 / 103 |
+
+这排除了两个混杂：dense pose metadata 不是空的，pose-gated dense loss 也确实进入训练；此前 strict 10-step smoke 里的 `Loc=0` 主要是过严 gate / sampling 设置导致。
+
+Sparse-only 指标与 `no_mutation` matched continuation 对齐后的结果：
+
+| Steps | n | dR5 mean | dR5 median | R5 pos/zero/neg | dR2 mean | dTE mean |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 100 | 9 | -0.003555 | 0.000000 | 4 / 2 / 3 | -0.001221 | +0.473840 |
+| 500 | 9 | -0.013509 | -0.010989 | 3 / 1 / 5 | +0.001689 | +1.309755 |
+
+按 scene 展开：
+
+| Scene | Steps | n | dR5 mean | dR2 mean | dTE mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| KingsCollege | 100 | 3 | +0.007775 | 0.000000 | +0.333471 |
+| KingsCollege | 500 | 3 | +0.008746 | 0.000000 | +0.625849 |
+| OldHospital | 100 | 3 | -0.005495 | -0.003663 | +1.297779 |
+| OldHospital | 500 | 3 | -0.020147 | +0.001832 | +3.301639 |
+| ShopFacade | 100 | 3 | -0.012945 | ~0.000000 | -0.209731 |
+| ShopFacade | 500 | 3 | -0.029126 | +0.003236 | +0.001777 |
+
+结论：dense pose-gate 分支已经证明“通路可训练、metadata 有效、loss 非零”，但没有证明正向精度收益。尤其 500-step 汇总下 R5 平均低于 no-mutation，TE 平均更差。当前更像是 dense teacher 质量/权重/采样仍有问题，而不是 loss path 没跑起来。
+
+### C6 默认阈值 physical prune
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update2_prune_default_v1/summary_final.json
+```
+
+矩阵：
+
+```text
+ShopFacade seeds 2025/2026/2027, steps 100/500
+KingsCollege seed 2025, steps 100
+OldHospital seed 2025, steps 100
+rows = 8
+```
+
+汇总：
+
+```text
+physical_prune_total = 0
+point_count_delta_total = 0
+max physical_prune per event = 0
+```
+
+所有 8 行与 `no_mutation` 对齐后，`dR5 = 0`、`dR2 = 0`、`dTE = 0`。其中 ShopFacade 500-step 每行有 20 个 topology events，KingsCollege/OldHospital 100-step 每行有 4 个 topology events，但默认阈值均没有候选通过：
+
+```text
+KingsCollege seed2025 100: physical_prune_total=0, point_count_delta=0
+OldHospital seed2025 100: physical_prune_total=0, point_count_delta=0
+ShopFacade seed2025/2026/2027 100/500: physical_prune_total=0, point_count_delta=0
+```
+
+结论：C6 默认阈值下的 physical prune 是 inert 策略，不能作为“prune 策略有效”的证据。它只闭合了“训练过 loc opacity 后不会误删”的混杂。之前 active sweep 已证明机制能真实删点，但 active 策略没有稳健精度收益，因此 physical prune 的策略有效性仍未证明。
+
+### 本轮最终判断
+
+用户关于“可能是实现问题而不是主张错误”的怀疑被部分确认：本轮确实发现并修复了 future checkpoint copy 导致假跳过训练、strict dense gate 导致 `Loc=0`、以及 topology source checkpoint 污染等高影响混杂。
+
+修复后更新判断：
+
+```text
+1. dense feedback 通路已跑通，但当前 pose-gate-only 100/500-step 结果不支持正向 precision 主张；
+2. split-only 长跑收益弱且不稳健；
+3. physical prune 默认策略没有实际删点，active 策略能删点但未显示稳健收益；
+4. 因此原始强主张不能用旧 mixed 结果证伪，但也尚未被修复后的 clean matrix 支持。
+```
+
+后续若要继续证明 physical prune 策略，需要单独设计阈值校准目标或 risk-controlled commit，而不是继续使用当前默认阈值。
+
+## 剩余长跑闭合补充
+
+日期：2026-06-24
+
+本节继续闭合用户指出的两个剩余点：
+
+1. dense feedback 不能只看 10-step ShopFacade smoke，需要 100/500-step、多 scene、多 seed。
+2. C6 默认阈值没有删点，不能证明 physical prune 策略有效；需要至少跑一个实际删点的 matched physical-prune-only 长跑矩阵。
+
+### Strict pose-gate dense 长跑
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update3_dense_strict_pose500_v1/summary_final.json
+```
+
+配置差异：
+
+```text
+DENSEKL_POSE_GATE_MIN_TE=1.0
+DENSEKL_POSE_GATE_MIN_AE=0.03
+DENSEKL_STEPS=500
+DENSEKL_SAVE_STEPS="100 500"
+DENSEKL_EVAL_STEPS="100 500"
+scenes = ShopFacade, KingsCollege, OldHospital
+seeds = 2025, 2026, 2027
+rows = 18
+```
+
+与上一轮 loose pose gate 相比，strict gate 明显降低了 eligible episode 比例，但仍保持非零 dense loss。最终 sparse-only paired delta 相对 `no_mutation`：
+
+| Steps | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 100 | 9 | +0.001697 | +0.005495 | 6 / 1 / 2 | -0.001079 | +0.343680 |
+| 500 | 9 | -0.012610 | 0.000000 | 3 / 3 / 3 | +0.006759 | +1.306976 |
+
+500-step 分 scene：
+
+| Scene | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| KingsCollege | 3 | +0.006803 | +0.005831 | 3 / 0 / 0 | -0.000972 | +0.661148 |
+| OldHospital | 3 | -0.021978 | -0.032967 | 0 / 1 / 2 | +0.001832 | +3.310144 |
+| ShopFacade | 3 | -0.022654 | 0.000000 | 0 / 2 / 1 | +0.019417 | -0.050364 |
+
+结论：
+
+```text
+strict pose gate 支持“dense 实现不是没跑起来，过宽 gate 确实会引入噪声”的判断；
+但 500-step 后整体 R5 仍偏负，TE 明显受 OldHospital 拉低；
+因此 dense pose-gate-only 仍不能作为 LA-STDLoc precision 正向主张的证据。
+```
+
+### Active physical-prune-only 500-step
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update3_prune_active500_v1/summary_final.json
+```
+
+配置：
+
+```text
+TOPOLOGY_MUTATION_MODE=physical_prune_only
+TOPOLOGY_STEPS=500
+TOPOLOGY_UPDATE_INTERVAL=25
+TOPOLOGY_USE_LOC_OPACITY=1
+TOPOLOGY_LOC_OPACITY_WEIGHT=0.01
+TOPOLOGY_PROTECT_LANDMARKS=1
+TOPOLOGY_DISABLE_SPLIT=1
+TOPOLOGY_PHYSICAL_RGB_THRESHOLD=0.005
+TOPOLOGY_PHYSICAL_LOC_THRESHOLD=0.20
+TOPOLOGY_PHYSICAL_UTILITY_THRESHOLD=0.10
+scenes = ShopFacade, KingsCollege, OldHospital
+seeds = 2025, 2026, 2027
+rows = 9
+```
+
+所有 9 行都发生实际物理删点，且 `requested_split_total=0`、`children_added_total=0`，因此这组隔离的是 physical prune 本身，而不是 split 或 mixed topology。
+
+| Scene | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE | mean point delta | logged prune |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| KingsCollege | 3 | -0.001944 | -0.002915 | 0 / 1 / 2 | 0.000000 | +0.177117 | -36,743 | 110,229 |
+| OldHospital | 3 | +0.003663 | +0.005495 | 2 / 0 / 1 | 0.000000 | +0.047611 | -65,465 | 196,395 |
+| ShopFacade | 3 | +0.006472 | +0.009709 | 2 / 1 / 0 | +0.003236 | -0.044586 | -28,400 | 85,200 |
+| Overall | 9 | +0.002731 | 0.000000 | 4 / 2 / 3 | +0.001079 | +0.060047 | -43,536 | 391,824 |
+
+关键判断：
+
+```text
+C6 默认阈值 inert 的混杂已经闭合：active 阈值下 9/9 行都实删点；
+physical prune 的机制有效，并且 active500 没有出现灾难性退化；
+但 precision 收益很小、median dR5=0，且 KingsCollege 偏负，所以“physical prune 策略能稳健提升 sparse-only relocalization”仍未被证明。
+```
+
+### 更新后的闭环结论
+
+现在对用户怀疑的回答应更精确：
+
+```text
+怀疑成立的一面：
+旧 mixed topology / dense 结果确实受到 source checkpoint copy、future iteration false skip、
+dense gate 过严/过宽、topology mutation 混合、未训练 loc opacity prune 等高影响混杂影响。
+这些混杂已经通过实现修复和 matched long-run 基本排除。
+
+怀疑未完全支持的一面：
+排除这些混杂后，dense pose-gate-only、split-only、active physical-prune-only 都没有给出稳健正向 precision 证据。
+所以目前不能说“原始主张已被证明”；更合理的状态是“旧结果不能证伪主张，但 clean matrix 也尚未支持强主张”。
+```
+
+## update4: seed 语义修复与 selective dense/prune 补跑
+
+日期：2026-06-24
+
+本节继续闭合用户指出的剩余两项：
+
+1. 之前所谓 multi-seed 主要是 `query_split_seed`，不是严格的训练随机种子。
+2. physical prune 的 active500 虽然证明机制能删点，但 mild/balanced 500-step 仍需补跑以判断策略强度。
+
+### Seed 语义修复
+
+确认问题：
+
+```text
+旧 root: /mnt/pool/sqy/stdloc_la_v03_full_length/{scene}/seed_{2025,2026,2027}/{scene}_v03
+```
+
+这些目录名里的 `seed_*` 实际更接近 query split repetition；旧 closure 不能当作真实 train-seed variance 证据。
+
+已修复：
+
+1. `train_locaware.py` 已在 `safe_state(args.quiet)` 之后调用 `seed_everything(args.train_seed)`。
+2. `scripts/run_densekl_v03_cambridge.sh` 新增 `DENSEKL_TRAIN_SEED` 并传入 `--train_seed`。
+3. `scripts/run_la_update2_dense_long_worker.sh` 和 `scripts/run_la_update2_long_worker.sh` 拆分：
+   - `TRAIN_SEEDS`
+   - `QUERY_SPLIT_SEEDS`
+   - 新路径优先使用 `train_seed_${train_seed}/query_split_${query_split_seed}`；
+   - 旧路径 `seed_${query_split_seed}` 只作为 legacy fallback。
+4. 两个 summary 脚本已兼容新旧 layout，并输出：
+   - `train_seed`
+   - `query_split_seed`
+   - `legacy_seed_layout`
+
+新增回归测试：
+
+```text
+tests/test_full_script_args.py::FullRunScriptArgsTest::test_dense_kl_script_accepts_explicit_training_seed
+tests/test_full_script_args.py::FullRunScriptArgsTest::test_la_update2_workers_separate_train_seed_from_query_split_seed
+tests/test_la_update_summarizers.py
+```
+
+### Selective dense attr-cos0.3 100-step
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update4_dense_attrcos03_100_v1/summary_final.json
+```
+
+配置：
+
+```text
+DENSEKL_STEPS=100
+DENSEKL_POSE_GATE_MIN_TE=1.0
+DENSEKL_POSE_GATE_MIN_AE=0.03
+DENSEKL_ATTR_COSINE_THRESHOLD=0.3
+DENSEKL_MIN_ELIGIBLE_ANCHORS=32
+TRAIN_SEEDS=0
+QUERY_SPLIT_SEEDS=2025 2026 2027
+scenes = ShopFacade, KingsCollege, OldHospital
+rows = 9
+```
+
+选择 `attr_cosine_threshold=0.3` 的依据：从 strict dense 长跑 TensorBoard 诊断看，p10 reconstruction cosine 大致在 0.21-0.49 区间，0.3 是保守的 selective attribution gate，能过滤明显低可信 episode，同时避免 `Loc=0`。
+
+与 `no_mutation` 100-step matched continuation 对齐：
+
+| Scene | n | mean dR5 | median dR5 | mean dR2 | mean dTE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| KingsCollege | 3 | +0.006803 | +0.005831 | 0.000000 | +0.220921 |
+| OldHospital | 3 | -0.003663 | +0.005495 | +0.003663 | +1.237161 |
+| ShopFacade | 3 | +0.009709 | +0.019417 | -0.012945 | -0.270468 |
+| Overall | 9 | +0.004283 | +0.005831 | -0.003094 | +0.395872 |
+
+R5 正负计数：
+
+```text
+6 positive / 1 zero / 2 negative
+```
+
+关键判断：
+
+```text
+attr-cos0.3 gate 排除了 dense loss 全零的混杂：9/9 行 loc_positive_iter_count 均为非零。
+R5 有弱正向桶效应，但 R2 均值为负，median TE 均值明显变差，尤其 OldHospital。
+因此这组 100-step 结果仍不能证明 selective dense feedback 对 sparse-only relocalization 稳健有效。
+```
+
+### Selective dense attr-cos0.3 500-step
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update4_dense_attrcos03_500_v1
+```
+
+配置与 100-step 相同，但 `DENSEKL_STEPS=500`，并保存/评测 `100` 与 `500` 两个 checkpoint。该矩阵也使用 `TRAIN_SEEDS=0`、`QUERY_SPLIT_SEEDS=2025 2026 2027`。
+
+| Steps | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 100 | 9 | +0.004283 | +0.005831 | 6 / 1 / 2 | -0.003094 | +0.395872 |
+| 500 | 9 | -0.010128 | 0.000000 | 3 / 2 / 4 | +0.010138 | +1.291585 |
+
+500-step 分 scene：
+
+| Scene | n | mean dR5 | mean dR2 | mean dTE |
+| --- | ---: | ---: | ---: | ---: |
+| KingsCollege | 3 | +0.007775 | -0.000972 | +0.659104 |
+| OldHospital | 3 | -0.021978 | +0.005495 | +3.224045 |
+| ShopFacade | 3 | -0.016181 | +0.025890 | -0.008394 |
+
+结论：
+
+```text
+500-step 后 attr-cos0.3 的表现变成 R2 正、R5 负、TE 明显变差。
+这说明 selective dense feedback 可能在个别场景/阈值上提高严格 precision bucket，
+但没有提升整体 sparse-only relocalization，且 OldHospital 出现系统性退化。
+```
+
+### Train-seed smoke
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update4_dense_attrcos03_trainseed_smoke_v1/summary_final.json
+```
+
+矩阵：
+
+```text
+scene = ShopFacade
+query_split_seed = 2025
+train_seed = 1, 2
+steps = 100
+```
+
+与已完成的 `train_seed=0` 对齐：
+
+| train_seed | R5 | R2 | median TE | dR5 vs no_mutation | dR2 vs no_mutation | dTE vs no_mutation | loc-positive iters |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.766990 | 0.291262 | 2.781322 | -0.019417 | -0.048544 | -0.334845 | 6 |
+| 1 | 0.747573 | 0.330097 | 2.899633 | -0.038835 | -0.009709 | -0.216534 | 6 |
+| 2 | 0.766990 | 0.330097 | 2.978816 | -0.019417 | -0.009709 | -0.137351 | 0 |
+
+结论：
+
+```text
+真实 train_seed 会影响结果，但这个 smoke 没有给出正向证据。
+train_seed=2 的 loc-positive iters 为 0，说明 selective gate 在真实训练随机性下仍可能采不到有效 dense supervision。
+旧 query-seed 矩阵不能替代 train-seed variance；后续若继续证明 dense 主张，需要显式 train_seed x query_split_seed 分解。
+```
+
+### physical-prune mild/balanced 500-step
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update4_prune_mb500_v1/summary_final.json
+/mnt/pool/sqy/stdloc_la_update4_prune_mb500_old_v1/summary_final.json
+/mnt/pool/sqy/stdloc_la_update4_prune_mb500_combined_summary_final.json
+```
+
+说明：ShopFacade/KingsCollege 使用主 root；OldHospital 为了并行提速使用独立 root。主 root 中有一个被主动中断的 OldHospital duplicate run，没有 final loc_state，不纳入 combined summary。
+
+合并后矩阵：
+
+```text
+scenes = ShopFacade, KingsCollege, OldHospital
+query_split_seed = 2025, 2026, 2027
+tags = prune_mild_500, prune_balanced_500
+rows = 18
+```
+
+总体结果：
+
+| Tag | n | point delta / seed | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| prune_mild_500 | 9 | scene-dependent | -0.000867 | -0.002915 | 2 / 2 / 5 | +0.005212 | +0.194086 |
+| prune_balanced_500 | 9 | scene-dependent | -0.000723 | 0.000000 | 2 / 3 / 4 | +0.004133 | +0.222194 |
+
+按 scene 展开：
+
+| Tag | Scene | n | point delta / seed | mean dR5 | mean dR2 | mean dTE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| prune_mild_500 | KingsCollege | 3 | -1,780 | -0.004859 | -0.000972 | +0.353731 |
+| prune_mild_500 | OldHospital | 3 | -3,169 | +0.005495 | +0.003663 | +0.259827 |
+| prune_mild_500 | ShopFacade | 3 | -1,006 | -0.003236 | +0.012945 | -0.031298 |
+| prune_balanced_500 | KingsCollege | 3 | -16,851 | -0.005831 | -0.000972 | +0.295086 |
+| prune_balanced_500 | OldHospital | 3 | -33,733 | +0.003663 | +0.003663 | +0.459569 |
+| prune_balanced_500 | ShopFacade | 3 | -8,906 | 0.000000 | +0.009709 | -0.088072 |
+
+结论：
+
+```text
+mild/balanced 500 在 18/18 行都实际删点，机制混杂已排除。
+相比 active500，它们更温和，且 R2 均值小幅正。
+但 R5 均值仍接近 0 且略负，TE 均值变差，KingsCollege 对 prune 尤其不友好。
+因此 physical prune 的“策略有效性”仍未被证明，只能说当前 mild/balanced 阈值不会造成灾难性退化。
+```

@@ -26,7 +26,7 @@ def load_stdloc(args):
         raise ValueError("Gaussian type not supported")
     scene = Scene(model, gaussians, load_iteration=args.iteration, shuffle=False, preload_cameras=True)
     config = yaml.load(open(args.cfg), Loader=yaml.FullLoader)
-    config.setdefault("sparse", {})["sparse_only"] = True
+    config.setdefault("sparse", {})["sparse_only"] = not args.include_dense
     config["dense"]["norm_before_render"] = model.norm_before_render
     config["feature_type"] = model.feature_type
     config["longest_edge"] = model.longest_edge
@@ -48,9 +48,12 @@ def cache_sparse_poses(scene, stdloc, output_path, split="train", max_queries=0)
     for camera in tqdm(cameras, desc=f"Cache sparse poses [{split}]"):
         gt_w2c = camera.world_view_transform.transpose(0, 1).cpu().numpy()
         query_image = camera.original_image.cuda()
-        result = stdloc.localize(query_image, camera.FoVx, camera.FoVy)["sparse"]
+        loc_res = stdloc.localize(query_image, camera.FoVx, camera.FoVy)
+        result = loc_res["sparse"]
         pose = result["pose_w2c"]
         ae, te = cal_pose_error(pose, gt_w2c)
+        dense_final = loc_res["dense"][-1] if len(loc_res.get("dense", [])) > 0 else result
+        dense_ae, dense_te = cal_pose_error(dense_final["pose_w2c"], gt_w2c)
         failed = int(result["inliers"]) < 4
         failures += int(failed)
         ae_values.append(float(ae))
@@ -63,6 +66,10 @@ def cache_sparse_poses(scene, stdloc, output_path, split="train", max_queries=0)
             ae=float(ae),
             te=float(te),
             failed=failed,
+            dense_pose_w2c=torch.as_tensor(dense_final["pose_w2c"], dtype=torch.float32),
+            dense_inliers=int(dense_final["inliers"]),
+            dense_ae=float(dense_ae),
+            dense_te=float(dense_te),
         )
     cache.save()
     summary = {
@@ -88,6 +95,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--split", default="train", choices=["train", "test"])
     parser.add_argument("--max_queries", default=0, type=int)
+    parser.add_argument("--include_dense", action="store_true", default=False)
     args = get_combined_args(parser)
     args.eval = args.split == "test"
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
