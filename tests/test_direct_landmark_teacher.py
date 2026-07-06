@@ -272,6 +272,42 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
 
         self.assertGreater(margin_with_ignore.item(), margin_without_ignore.item() + 4.0)
 
+    def test_full_bank_bimnn_loss_and_stats_support_multi_positive_mask(self):
+        from localization_training.direct_landmark_teacher import full_bank_bimnn_loss, full_bank_descriptor_stats
+
+        query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        bank = torch.tensor(
+            [
+                [0.0, 1.0],
+                [1.0, 0.0],
+                [0.5, 0.5],
+            ],
+            dtype=torch.float32,
+        )
+        positives = torch.tensor([0])
+        positive_mask = torch.tensor([[True, True, False]])
+
+        single_positive = full_bank_bimnn_loss(query, bank, positives, temperature=0.2)
+        multi_positive = full_bank_bimnn_loss(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            positive_bank_mask=positive_mask,
+        )
+        single_prob, single_margin, _ = full_bank_descriptor_stats(query, bank, positives, temperature=0.2)
+        multi_prob, multi_margin, _ = full_bank_descriptor_stats(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            positive_bank_mask=positive_mask,
+        )
+
+        self.assertLess(multi_positive.item(), single_positive.item())
+        self.assertGreater(multi_prob.item(), single_prob.item())
+        self.assertGreater(multi_margin.item(), single_margin.item())
+
     def test_direct_teacher_can_ignore_full_bank_3d_and_uv_nearby_false_negatives(self):
         from localization_training.direct_landmark_teacher import direct_landmark_teacher
 
@@ -351,6 +387,317 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
             out_with_ignore.stats["margin"].item(),
             out_without_ignore.stats["margin"].item(),
         )
+        self.assertEqual(out_with_ignore.diagnostics["full_bank_query_count"], 1)
+        self.assertEqual(out_with_ignore.diagnostics["full_bank_bank_count"], 4)
+        self.assertEqual(out_with_ignore.diagnostics["full_bank_valid_positive_count"], 1)
+        self.assertEqual(out_with_ignore.diagnostics["full_bank_ignore_negative_count"], 2)
+        self.assertEqual(out_with_ignore.diagnostics["full_bank_effective_negative_count"], 1)
+        self.assertAlmostEqual(out_with_ignore.diagnostics["full_bank_ignore_negative_ratio"], 2.0 / 3.0)
+
+    def test_direct_teacher_can_treat_nearby_full_bank_entries_as_multi_positives(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [0.05, 0.0, 4.0],
+                        [0.0, 0.0, 5.0],
+                        [0.5, 0.0, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[0.0, 1.0]],
+                            [[1.0, 0.0]],
+                            [[0.99, 0.01]],
+                            [[0.5, 0.5]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        gaussians = FakeGaussians()
+
+        single_positive = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2, 3]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+            full_bank_ignore_3d_radius=0.1,
+            full_bank_ignore_uv_radius=1.0,
+        )
+        multi_positive = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2, 3]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+            full_bank_ignore_3d_radius=0.1,
+            full_bank_ignore_uv_radius=1.0,
+            full_bank_nearby_as_positive=True,
+        )
+
+        self.assertLess(multi_positive.full_bank_loss.item(), single_positive.full_bank_loss.item())
+        self.assertEqual(multi_positive.diagnostics["full_bank_positive_count"], 3)
+        self.assertEqual(multi_positive.diagnostics["full_bank_extra_positive_count"], 2)
+        self.assertEqual(multi_positive.diagnostics["full_bank_effective_negative_count"], 1)
+
+    def test_direct_teacher_responsibility_source_mode_keeps_sibling_losers_as_negatives(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [0.05, 0.0, 4.0],
+                        [0.5, 0.0, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self.loc_source_index = torch.tensor([10, 10, 20])
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[1.0, 0.0]],
+                            [[0.99, 0.01]],
+                            [[0.0, 1.0]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        gaussians = FakeGaussians()
+
+        ignored = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+            full_bank_source_mode="ignore",
+        )
+        responsibility = direct_landmark_teacher(
+            gaussians,
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            full_bank_indices=torch.tensor([0, 1, 2]),
+            full_bank_temperature=0.2,
+            full_bank_hard_negative_topk=1,
+            full_bank_source_mode="responsibility",
+        )
+
+        self.assertGreater(responsibility.full_bank_loss.item(), ignored.full_bank_loss.item())
+        self.assertEqual(ignored.diagnostics["full_bank_source_ignore_count"], 1)
+        self.assertEqual(ignored.diagnostics["full_bank_source_negative_count"], 0)
+        self.assertEqual(responsibility.diagnostics["full_bank_source_ignore_count"], 0)
+        self.assertEqual(responsibility.diagnostics["full_bank_source_negative_count"], 1)
+
+    def test_child_responsibility_feature_mode_keeps_best_child_per_source(self):
+        from localization_training.direct_landmark_teacher import child_responsibility_keep_mask
+
+        selected_full_idx = torch.tensor([0, 1, 2])
+        source_index = torch.tensor([10, 10, 20])
+        gaussian_features = torch.tensor(
+            [
+                [0.0, 1.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+        query_features = torch.tensor(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        keep = child_responsibility_keep_mask(
+            selected_full_idx,
+            source_index,
+            gaussian_features,
+            query_features,
+            mode="feature",
+        )
+
+        self.assertEqual(keep.tolist(), [False, True, True])
+
+    def test_direct_teacher_child_responsibility_updates_only_best_child_per_source(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [0.05, 0.0, 4.0],
+                        [0.5, 0.0, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self.loc_source_index = torch.tensor([10, 10, 20])
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[0.0, 1.0]],
+                            [[1.0, 0.0]],
+                            [[0.0, 1.0]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 8, 10] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 8, 12] = torch.tensor([0.0, 1.0])
+
+        out = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1, 2]),
+            target_depth=torch.full((16, 16), 4.0, dtype=torch.float32),
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            child_responsibility_mode="feature",
+        )
+
+        self.assertEqual(out.loc_visible_idx.tolist(), [1, 2])
+        self.assertEqual(out.diagnostics["child_responsibility_candidate_count"], 3)
+        self.assertEqual(out.diagnostics["child_responsibility_kept_count"], 2)
+        self.assertEqual(out.diagnostics["child_responsibility_dropped_count"], 1)
+
+    def test_direct_teacher_child_responsibility_competes_before_anchor_limit(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [0.05, 0.0, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self.loc_source_index = torch.tensor([10, 10])
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[0.0, 1.0]],
+                            [[1.0, 0.0]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+
+        out = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=torch.full((16, 16), 4.0, dtype=torch.float32),
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=1,
+            child_responsibility_mode="feature",
+        )
+
+        self.assertEqual(out.loc_visible_idx.tolist(), [1])
+        self.assertEqual(out.diagnostics["child_responsibility_candidate_count"], 2)
+        self.assertEqual(out.diagnostics["child_responsibility_kept_count"], 1)
+        self.assertEqual(out.diagnostics["child_responsibility_dropped_count"], 1)
 
     def test_limit_valid_indices_can_stratify_by_projection_grid(self):
         from localization_training.direct_landmark_teacher import _limit_valid_indices
@@ -374,6 +721,190 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         loss = descriptor_anchor_loss(current, baseline, weights=weights)
 
         self.assertAlmostEqual(loss.item(), 1.0)
+
+    def test_direct_teacher_downweights_landmarks_in_artifact_regions(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor([[0.0, 0.0, 4.0], [0.5, 0.0, 4.0]], dtype=torch.float32)
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]], dtype=torch.float32)
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 8, 10] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        artifact_map = torch.ones(16, 16, dtype=torch.float32)
+        artifact_map[:, 9:] = 0.1
+
+        unweighted = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+        )
+        weighted = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            artifact_weight_map=artifact_map,
+        )
+
+        self.assertLess(weighted.desc_loss.item(), unweighted.desc_loss.item() * 0.35)
+        self.assertAlmostEqual(weighted.diagnostics["artifact_region_weight_min"], 0.1, places=3)
+        self.assertEqual(weighted.diagnostics["artifact_region_weighted_count"], 1)
+
+    def test_artifact_combined_mean_scales_direct_teacher_loss(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor([[0.0, 0.0, 4.0], [0.5, 0.0, 4.0]], dtype=torch.float32)
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]], dtype=torch.float32)
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 8, 10] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        artifact_map = torch.ones(16, 16, dtype=torch.float32) * 0.25
+
+        unscaled = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            artifact_weight_map=artifact_map,
+            artifact_image_weight=0.5,
+            artifact_weight_combine_mode="product",
+            artifact_loss_scale_mode="none",
+        )
+        scaled = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            artifact_weight_map=artifact_map,
+            artifact_image_weight=0.5,
+            artifact_weight_combine_mode="product",
+            artifact_loss_scale_mode="combined_mean",
+        )
+
+        self.assertAlmostEqual(scaled.diagnostics["artifact_teacher_loss_scale"], 0.125, places=4)
+        self.assertAlmostEqual(
+            scaled.desc_loss.item(),
+            unscaled.desc_loss.item() * 0.125,
+            places=5,
+        )
+        self.assertLess(scaled.loss.item(), unscaled.loss.item() * 0.2)
+
+    def test_artifact_loss_scale_none_preserves_legacy_weighted_mean(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor([[0.0, 0.0, 4.0], [0.5, 0.0, 4.0]], dtype=torch.float32)
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]], dtype=torch.float32)
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 16, 16, dtype=torch.float32)
+        query_feature_map[:, 8, 8] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 8, 10] = torch.tensor([1.0, 0.0])
+        target_depth = torch.full((16, 16), 4.0, dtype=torch.float32)
+        artifact_map = torch.ones(16, 16, dtype=torch.float32)
+        artifact_map[:, 9:] = 0.1
+
+        legacy = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            artifact_weight_map=artifact_map,
+        )
+        explicit_none = direct_landmark_teacher(
+            FakeGaussians(),
+            query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1]),
+            target_depth=target_depth,
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            artifact_weight_map=artifact_map,
+            artifact_image_weight=0.5,
+            artifact_weight_combine_mode="product",
+            artifact_loss_scale_mode="none",
+        )
+
+        self.assertAlmostEqual(explicit_none.desc_loss.item(), legacy.desc_loss.item(), places=6)
+        self.assertAlmostEqual(explicit_none.diagnostics["artifact_teacher_loss_scale"], 1.0)
 
     def test_direct_teacher_can_return_multiview_loss_and_update_memory(self):
         from localization_training.direct_landmark_teacher import LandmarkObservationMemory, direct_landmark_teacher

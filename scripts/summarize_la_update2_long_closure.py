@@ -58,6 +58,10 @@ def parse_tag(tag):
         steps = int(parts[-1])
         mode = "physical_prune_only"
         return "prune", "_".join(parts[1:-1]), steps
+    if tag.startswith("p0_") and len(parts) >= 3:
+        steps = int(parts[-1])
+        mode = "_".join(parts[1:-1])
+        return "p0", mode, steps
     return "unknown", tag, None
 
 

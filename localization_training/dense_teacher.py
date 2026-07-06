@@ -12,6 +12,7 @@ from localization_training.correspondence import (
 )
 from localization_training.dense_distill import (
     dense_to_sparse_kl,
+    dense_sparse_miss_hit_rank_loss,
     gaussian_teacher_distribution,
     responsibility_entropy,
     responsibility_reconstruction_cosine,
@@ -31,6 +32,7 @@ class DenseTeacherOutput:
     render_pkg: dict
     anchor_count: int
     diagnostics: dict = field(default_factory=dict)
+    rank_loss: torch.Tensor = None
 
     @property
     def loc_viewspace_points(self):
@@ -199,6 +201,51 @@ def dense_responsibility_kl_loss(
         teacher,
         temperature=sparse_temperature,
         anchor_weights=anchor_weights,
+    )
+
+
+def dense_responsibility_rank_loss(
+    query_features,
+    rendered_features,
+    bank_features,
+    contributor_ids,
+    responsibility_weights,
+    dense_temperature=0.07,
+    sparse_temperature=0.07,
+    anchor_weights=None,
+    teacher_confidence_threshold=0.0,
+    miss_topk=1,
+    margin=0.2,
+):
+    query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
+    rendered = F.normalize(rendered_features.reshape(rendered_features.shape[0], -1), p=2, dim=-1)
+    if query.numel() == 0 or rendered.numel() == 0 or bank_features.numel() == 0:
+        return query_features.new_tensor(0.0), {
+            "dense_rank_anchor_count": 0,
+            "dense_rank_eligible_anchor_count": 0,
+            "dense_rank_sparse_hit_count": 0,
+            "dense_rank_sparse_miss_count": 0,
+            "dense_rank_low_confidence_count": 0,
+            "dense_rank_teacher_confidence_mean": 0.0,
+        }
+    dense_logits = query @ rendered.T / max(float(dense_temperature), 1e-6)
+    dense_probs = F.softmax(dense_logits, dim=1)
+    teacher = gaussian_teacher_distribution(
+        dense_probs,
+        contributor_ids,
+        responsibility_weights,
+        bank_size=bank_features.reshape(bank_features.shape[0], -1).shape[0],
+    )
+    return dense_sparse_miss_hit_rank_loss(
+        query_features,
+        bank_features,
+        teacher,
+        temperature=sparse_temperature,
+        anchor_weights=anchor_weights,
+        teacher_confidence_threshold=teacher_confidence_threshold,
+        miss_topk=miss_topk,
+        margin=margin,
+        return_diagnostics=True,
     )
 
 
@@ -383,6 +430,10 @@ def dense_localization_teacher(
     fine_window_radius=4,
     dense_kl_weight=0.0,
     dense_kl_temperature=0.07,
+    dense_rank_weight=0.0,
+    dense_rank_margin=0.2,
+    dense_rank_teacher_confidence=0.0,
+    dense_rank_miss_topk=1,
     responsibility_topk=32,
     responsibility_opacity_weight=0.0,
     responsibility_depth_weight=0.0,
@@ -506,8 +557,9 @@ def dense_localization_teacher(
                 }
             )
     kl_loss = zero
+    rank_loss = zero
     if (
-        float(dense_kl_weight) > 0
+        (float(dense_kl_weight) > 0 or float(dense_rank_weight) > 0)
         and compact_contributor_ids is not None
         and responsibility_weights is not None
         and visible_bank_features is not None
@@ -527,17 +579,33 @@ def dense_localization_teacher(
             min_eligible_anchors=min_eligible_anchors,
         )
         diagnostics.update(weight_diagnostics)
-        kl_loss = dense_responsibility_kl_loss(
-            query_features,
-            rendered_features,
-            visible_bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
-            compact_contributor_ids,
-            responsibility_weights,
-            dense_temperature=dense_kl_temperature,
-            sparse_temperature=dense_kl_temperature,
-            anchor_weights=anchor_weights,
-        )
-    loss = desc_loss + reproj_loss + float(dense_kl_weight) * kl_loss
+        if float(dense_kl_weight) > 0:
+            kl_loss = dense_responsibility_kl_loss(
+                query_features,
+                rendered_features,
+                visible_bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
+                compact_contributor_ids,
+                responsibility_weights,
+                dense_temperature=dense_kl_temperature,
+                sparse_temperature=dense_kl_temperature,
+                anchor_weights=anchor_weights,
+            )
+        if float(dense_rank_weight) > 0:
+            rank_loss, rank_diagnostics = dense_responsibility_rank_loss(
+                query_features,
+                rendered_features,
+                visible_bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
+                compact_contributor_ids,
+                responsibility_weights,
+                dense_temperature=dense_kl_temperature,
+                sparse_temperature=dense_kl_temperature,
+                anchor_weights=anchor_weights,
+                teacher_confidence_threshold=dense_rank_teacher_confidence,
+                miss_topk=dense_rank_miss_topk,
+                margin=dense_rank_margin,
+            )
+            diagnostics.update(rank_diagnostics)
+    loss = desc_loss + reproj_loss + float(dense_kl_weight) * kl_loss + float(dense_rank_weight) * rank_loss
 
     with torch.no_grad():
         rendered_n = F.normalize(rendered_features, p=2, dim=-1)
@@ -594,4 +662,5 @@ def dense_localization_teacher(
         render_pkg,
         int(target_valid.sum().item()),
         diagnostics=diagnostics,
+        rank_loss=rank_loss,
     )

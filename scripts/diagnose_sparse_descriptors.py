@@ -56,6 +56,9 @@ def _load_gaussians_from_iteration(dataset, model_path, iteration):
         raise ValueError(f"Unsupported gaussian_type: {dataset.gaussian_type}")
     ply_path = os.path.join(model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply")
     gaussians.load_ply(ply_path)
+    loc_state_path = os.path.join(model_path, "point_cloud", f"iteration_{iteration}", "loc_state.pt")
+    if os.path.exists(loc_state_path) and hasattr(gaussians, "load_localization_state"):
+        gaussians.load_localization_state(loc_state_path)
     return gaussians
 
 

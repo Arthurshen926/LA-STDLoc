@@ -23,6 +23,28 @@ def _sparse_inliers(item):
     return 0.0
 
 
+def _sparse_optional_metric(item, name):
+    sparse = item.get("sparse", {})
+    if isinstance(sparse, dict) and name in sparse:
+        try:
+            return float(sparse[name])
+        except (TypeError, ValueError):
+            return None
+    if name in item:
+        try:
+            return float(item[name])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _sequence_name(image_name):
+    image_name = str(image_name)
+    if "/" in image_name:
+        return image_name.split("/", 1)[0]
+    return ""
+
+
 def sparse_metric_summary(results):
     total = max(1, len(results))
     ae = np.asarray([float(item["sparse_AE"]) for item in results], dtype=np.float64)
@@ -35,6 +57,159 @@ def sparse_metric_summary(results):
         "recall_5cm_5deg": float(((ae <= 5.0) & (te <= 5.0)).sum() / total),
         "recall_2cm_2deg": float(((ae <= 2.0) & (te <= 2.0)).sum() / total),
         "avg_inliers": float(inliers.mean()) if inliers.size else 0.0,
+    }
+
+
+def paired_sparse_stage_rows(baseline_results, candidate_results):
+    baseline_by_key = _query_keyed(baseline_results)
+    candidate_by_key = _query_keyed(candidate_results)
+    rows = []
+    for key in sorted(set(baseline_by_key) & set(candidate_by_key)):
+        base = baseline_by_key[key]
+        cand = candidate_by_key[key]
+        base_te = float(base["sparse_TE"])
+        cand_te = float(cand["sparse_TE"])
+        base_ae = float(base["sparse_AE"])
+        cand_ae = float(cand["sparse_AE"])
+        base_inliers = _sparse_inliers(base)
+        cand_inliers = _sparse_inliers(cand)
+        base_matches = _sparse_optional_metric(base, "matches")
+        cand_matches = _sparse_optional_metric(cand, "matches")
+        base_keypoints = _sparse_optional_metric(base, "detected_keypoints")
+        cand_keypoints = _sparse_optional_metric(cand, "detected_keypoints")
+        image_name = str(base.get("image_name", key))
+        rows.append(
+            {
+                "image_name": image_name,
+                "sequence": _sequence_name(image_name),
+                "baseline_te": base_te,
+                "candidate_te": cand_te,
+                "delta_te": cand_te - base_te,
+                "baseline_ae": base_ae,
+                "candidate_ae": cand_ae,
+                "delta_ae": cand_ae - base_ae,
+                "baseline_inliers": base_inliers,
+                "candidate_inliers": cand_inliers,
+                "delta_inliers": cand_inliers - base_inliers,
+                "baseline_matches": base_matches,
+                "candidate_matches": cand_matches,
+                "delta_matches": cand_matches - base_matches
+                if base_matches is not None and cand_matches is not None
+                else None,
+                "baseline_keypoints": base_keypoints,
+                "candidate_keypoints": cand_keypoints,
+                "delta_keypoints": cand_keypoints - base_keypoints
+                if base_keypoints is not None and cand_keypoints is not None
+                else None,
+            }
+        )
+    return rows
+
+
+def _mean(values):
+    values = [value for value in values if value is not None]
+    values = np.asarray(values, dtype=np.float64)
+    return float(values.mean()) if values.size else 0.0
+
+
+def _median(values):
+    values = [value for value in values if value is not None]
+    values = np.asarray(values, dtype=np.float64)
+    return float(np.median(values)) if values.size else 0.0
+
+
+def _top_rows(rows, key, top_k, reverse=True):
+    return [
+        dict(row)
+        for row in sorted(rows, key=lambda row: float(row.get(key, 0.0)), reverse=reverse)[
+            : max(0, int(top_k))
+        ]
+    ]
+
+
+def paired_sparse_stage_summary(
+    baseline_results,
+    candidate_results,
+    te_ok_cm=5.0,
+    ae_ok_deg=5.0,
+    inlier_drop_threshold=50,
+    top_k=10,
+):
+    rows = paired_sparse_stage_rows(baseline_results, candidate_results)
+    paired = paired_sparse_summary(baseline_results, candidate_results, bootstrap_samples=0)
+    te_ok_cm = float(te_ok_cm)
+    ae_ok_deg = float(ae_ok_deg)
+    inlier_drop_threshold = float(inlier_drop_threshold)
+
+    def ok(prefix, row):
+        return float(row[f"{prefix}_te"]) <= te_ok_cm and float(row[f"{prefix}_ae"]) <= ae_ok_deg
+
+    recall_gain = 0
+    recall_loss = 0
+    both_ok = 0
+    both_bad = 0
+    inlier_drop = 0
+    pose_degraded_and_inlier_drop = 0
+    pose_improved_despite_inlier_drop = 0
+    for row in rows:
+        base_ok = ok("baseline", row)
+        cand_ok = ok("candidate", row)
+        recall_gain += int((not base_ok) and cand_ok)
+        recall_loss += int(base_ok and (not cand_ok))
+        both_ok += int(base_ok and cand_ok)
+        both_bad += int((not base_ok) and (not cand_ok))
+        dropped = float(row["delta_inliers"]) <= -inlier_drop_threshold
+        inlier_drop += int(dropped)
+        pose_degraded_and_inlier_drop += int(dropped and float(row["delta_te"]) > 0.0)
+        pose_improved_despite_inlier_drop += int(dropped and float(row["delta_te"]) < 0.0)
+
+    sequence_groups = []
+    for sequence in sorted({row["sequence"] for row in rows}):
+        group = [row for row in rows if row["sequence"] == sequence]
+        sequence_groups.append(
+            {
+                "sequence": sequence,
+                "count": int(len(group)),
+                "baseline_median_te": _median([row["baseline_te"] for row in group]),
+                "candidate_median_te": _median([row["candidate_te"] for row in group]),
+                "delta_median_te": _median([row["delta_te"] for row in group]),
+                "delta_mean_te": _mean([row["delta_te"] for row in group]),
+                "delta_mean_inliers": _mean([row["delta_inliers"] for row in group]),
+                "candidate_avg_inliers": _mean([row["candidate_inliers"] for row in group]),
+                "recall_loss_count": int(sum(ok("baseline", row) and not ok("candidate", row) for row in group)),
+                "recall_gain_count": int(sum((not ok("baseline", row)) and ok("candidate", row) for row in group)),
+            }
+        )
+
+    return {
+        "query_count": int(len(rows)),
+        "baseline": sparse_metric_summary([_query_keyed(baseline_results)[row["image_name"]] for row in rows])
+        if rows
+        else sparse_metric_summary([]),
+        "candidate": sparse_metric_summary([_query_keyed(candidate_results)[row["image_name"]] for row in rows])
+        if rows
+        else sparse_metric_summary([]),
+        "paired": paired,
+        "delta_mean_te": _mean([row["delta_te"] for row in rows]),
+        "delta_median_te": _median([row["delta_te"] for row in rows]),
+        "delta_mean_ae": _mean([row["delta_ae"] for row in rows]),
+        "delta_median_ae": _median([row["delta_ae"] for row in rows]),
+        "delta_mean_inliers": _mean([row["delta_inliers"] for row in rows]),
+        "delta_median_inliers": _median([row["delta_inliers"] for row in rows]),
+        "delta_mean_matches": _mean([row["delta_matches"] for row in rows]),
+        "delta_mean_keypoints": _mean([row["delta_keypoints"] for row in rows]),
+        "recall_5cm_gain_count": int(recall_gain),
+        "recall_5cm_loss_count": int(recall_loss),
+        "both_ok_count": int(both_ok),
+        "both_bad_count": int(both_bad),
+        "inlier_drop_count": int(inlier_drop),
+        "pose_degraded_and_inlier_drop_count": int(pose_degraded_and_inlier_drop),
+        "pose_improved_despite_inlier_drop_count": int(pose_improved_despite_inlier_drop),
+        "sequence_groups": sequence_groups,
+        "top_te_degraded": _top_rows(rows, "delta_te", top_k, reverse=True),
+        "top_te_improved": _top_rows(rows, "delta_te", top_k, reverse=False),
+        "top_inlier_drop": _top_rows(rows, "delta_inliers", top_k, reverse=False),
+        "worst_candidate_te": _top_rows(rows, "candidate_te", top_k, reverse=True),
     }
 
 

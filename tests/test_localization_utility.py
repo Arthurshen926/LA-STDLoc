@@ -1,6 +1,7 @@
 import unittest
 
 import torch
+from torch import nn
 
 
 class LocalizationUtilityTest(unittest.TestCase):
@@ -243,6 +244,137 @@ class LocalizationUtilityTest(unittest.TestCase):
                 {"score": torch.tensor([0.1, 0.2, 0.3])},
                 landmark_count=2,
             )
+
+    def test_descriptor_overlay_adds_source_residual_without_mutating_base_feature(self):
+        gaussians = self._model_with_stats()
+        base = torch.tensor(
+            [
+                [[1.0, 0.0]],
+                [[0.0, 1.0]],
+                [[2.0, 2.0]],
+            ]
+        )
+        gaussians._loc_feature = nn.Parameter(base.clone())
+        gaussians.loc_source_index = torch.tensor([10, 20, 10])
+
+        gaussians.init_descriptor_overlay(torch.tensor([10, 20]), init_active_logit=20.0)
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[0.5, -0.25]])
+
+        overlaid = gaussians.get_loc_feature
+
+        self.assertTrue(torch.allclose(gaussians._loc_feature, base))
+        self.assertTrue(torch.allclose(overlaid[0], torch.tensor([[1.5, -0.25]]), atol=1e-4))
+        self.assertTrue(torch.allclose(overlaid[1], torch.tensor([[0.0, 1.0]]), atol=1e-4))
+        self.assertTrue(torch.allclose(overlaid[2], torch.tensor([[2.5, 1.75]]), atol=1e-4))
+
+    def test_descriptor_overlay_caps_residual_norm_per_source(self):
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.zeros(3, 1, 4))
+        gaussians.loc_source_index = torch.tensor([10, 20, 10])
+
+        gaussians.init_descriptor_overlay(
+            torch.tensor([10]),
+            init_active_logit=20.0,
+            max_residual_norm=0.5,
+        )
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[3.0, 4.0, 0.0, 0.0]])
+
+        overlaid = gaussians.get_loc_feature
+
+        expected = torch.tensor([[0.3, 0.4, 0.0, 0.0]])
+        self.assertTrue(torch.allclose(overlaid[0], expected, atol=1e-4))
+        self.assertTrue(torch.allclose(overlaid[2], expected, atol=1e-4))
+
+    def test_descriptor_overlay_can_normalize_materialized_feature(self):
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.tensor([[[3.0, 0.0]], [[1.0, 0.0]], [[0.0, 1.0]]]))
+        gaussians.loc_source_index = torch.tensor([10, 20, 30])
+
+        gaussians.init_descriptor_overlay(
+            torch.tensor([10]),
+            init_active_logit=20.0,
+            normalize=True,
+        )
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[0.0, 4.0]])
+
+        self.assertTrue(torch.allclose(gaussians.get_loc_feature[0], torch.tensor([[0.6, 0.8]]), atol=1e-4))
+
+    def test_descriptor_overlay_round_trips_in_localization_state(self):
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        gaussians._scaling = torch.zeros(3, 3)
+        gaussians._rotation = torch.zeros(3, 4)
+        gaussians._features_dc = torch.zeros(3, 1, 3)
+        gaussians._features_rest = torch.zeros(3, 1, 3)
+        gaussians.loc_source_index = torch.tensor([1, 2, 1])
+        gaussians.init_descriptor_overlay(torch.tensor([1, 2]), init_active_logit=20.0)
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[0.25, 0.75]])
+
+        state = gaussians.capture_localization_state()
+        restored = self._model_with_stats()
+        restored._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        restored.restore_localization_state(state)
+
+        self.assertTrue(torch.allclose(restored.get_loc_feature, gaussians.get_loc_feature, atol=1e-4))
+
+    def test_descriptor_overlay_stability_config_round_trips_in_localization_state(self):
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        gaussians.loc_source_index = torch.tensor([1, 2, 1])
+        gaussians.init_descriptor_overlay(
+            torch.tensor([1]),
+            init_active_logit=20.0,
+            max_residual_norm=0.25,
+            normalize=True,
+        )
+
+        state = gaussians.capture_localization_state()
+        restored = self._model_with_stats()
+        restored._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        restored.restore_localization_state(state)
+
+        self.assertAlmostEqual(restored.loc_overlay_max_residual_norm, 0.25)
+        self.assertTrue(restored.loc_overlay_normalize)
+
+    def test_descriptor_overlay_survives_utility_only_state_restore(self):
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        gaussians.loc_source_index = torch.tensor([1, 2, 1])
+        gaussians.init_descriptor_overlay(torch.tensor([1]), init_active_logit=20.0)
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[0.5, 0.25]])
+        before = gaussians.get_loc_feature.detach().clone()
+
+        gaussians.restore_localization_state(
+            {
+                "loc_opacity": torch.zeros(3, 1),
+                "loc_observation_count": torch.tensor([3, 2, 1]),
+            }
+        )
+
+        self.assertTrue(torch.allclose(gaussians.get_loc_feature, before, atol=1e-4))
+
+    def test_sparse_eval_sampling_materializes_descriptor_overlay(self):
+        from stdloc import sample_gaussians
+
+        gaussians = self._model_with_stats()
+        gaussians._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+        gaussians._scaling = torch.zeros(3, 3)
+        gaussians._rotation = torch.zeros(3, 4)
+        gaussians._features_dc = torch.zeros(3, 1, 3)
+        gaussians._features_rest = torch.zeros(3, 1, 3)
+        gaussians.loc_source_index = torch.tensor([1, 2, 1])
+        gaussians.init_descriptor_overlay(torch.tensor([1]), init_active_logit=20.0)
+        with torch.no_grad():
+            gaussians._loc_overlay_feature[0] = torch.tensor([[0.5, 0.25]])
+
+        sampled = sample_gaussians(gaussians, torch.tensor([0, 2]))
+
+        self.assertTrue(torch.allclose(sampled.get_loc_feature, gaussians.get_loc_feature[[0, 2]], atol=1e-4))
 
 
 if __name__ == "__main__":

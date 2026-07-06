@@ -26,6 +26,18 @@ def _radii_to_visibility(info):
     return radii, radii > 0
 
 
+def _apply_opacity_multiplier(opacity, opacity_multiplier):
+    if opacity_multiplier is None:
+        return opacity
+    multiplier = torch.as_tensor(opacity_multiplier, device=opacity.device, dtype=opacity.dtype).reshape(-1)
+    if multiplier.numel() != opacity.reshape(-1).numel():
+        raise ValueError(
+            "opacity_multiplier must have one value per Gaussian, "
+            f"got {multiplier.numel()} for {opacity.reshape(-1).numel()}."
+        )
+    return opacity.reshape(-1) * multiplier.clamp_min(0.0)
+
+
 def get_render_visible_mask(
     pc: GaussianModel, viewpoint_camera, width, height, **rasterize_args
 ):
@@ -145,6 +157,8 @@ def render_gsplat(
     near_plane=0.01,
     far_plane=10000,
     longest_edge=640,
+    opacity_multiplier=None,
+    loc_opacity_multiplier=None,
     **rasterize_args
 ):
     """
@@ -170,6 +184,8 @@ def render_gsplat(
             near_plane,
             far_plane,
             longest_edge,
+            opacity_multiplier,
+            loc_opacity_multiplier,
             **rasterize_args
         )
     
@@ -203,11 +219,12 @@ def render_gsplat(
     )
 
     # render color
+    render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     render_colors, render_alphas, info = rasterization(
         means=means3D,  # [N, 3]
         quats=rotations,  # [N, 4]
         scales=scales,  # [N, 3]
-        opacities=opacity.squeeze(-1),  # [N,]
+        opacities=render_opacity,  # [N,]
         colors=colors,
         viewmats=viewmat[None],  # [1, 4, 4]
         Ks=K[None],  # [1, 3, 3]
@@ -236,12 +253,14 @@ def render_gsplat(
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
         feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
+        feature_multiplier = loc_opacity_multiplier if loc_opacity_multiplier is not None else opacity_multiplier
+        feat_opacity_values = _apply_opacity_multiplier(feat_opacity.squeeze(-1), feature_multiplier)
 
         feat_map, alphas, meta = rasterization(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity_values[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=viewmat[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -283,7 +302,7 @@ def render_gsplat(
             "loc_alphas": alphas,
             "loc_depths": meta.get("depths"),
             "loc_conics": meta.get("conics"),
-            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
+            "loc_opacities": feat_opacity_values[visible_mask],
             "loc_K": K,
             "loc_viewmat": viewmat,
         })
@@ -303,6 +322,8 @@ def render_gsplat_2dgs(
     near_plane=0.01,
     far_plane=10000,
     longest_edge=640,
+    opacity_multiplier=None,
+    loc_opacity_multiplier=None,
     **rasterize_args
 ):
     """
@@ -357,12 +378,13 @@ def render_gsplat_2dgs(
     if bg_color.shape[0] == 3:
         bg_color = torch.cat([bg_color, bg_color[:1]], dim=0)
 
+    render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     colors, alphas, normals, surf_normals, distort, median_depth, info = (
         rasterization_2dgs(
             means=means3D,  # [N, 3]
             quats=rotations,  # [N, 4]
             scales=scales,  # [N, 3]
-            opacities=opacity.squeeze(-1),  # [N,]
+            opacities=render_opacity,  # [N,]
             colors=colors,
             viewmats=viewmat[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -394,12 +416,14 @@ def render_gsplat_2dgs(
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
         feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
+        feature_multiplier = loc_opacity_multiplier if loc_opacity_multiplier is not None else opacity_multiplier
+        feat_opacity_values = _apply_opacity_multiplier(feat_opacity.squeeze(-1), feature_multiplier)
 
         feat_map, feat_alphas, _, _, _, _, feat_meta = rasterization_2dgs(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity_values[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=viewmat[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -448,7 +472,7 @@ def render_gsplat_2dgs(
             "loc_alphas": feat_alphas,
             "loc_depths": feat_meta.get("depths"),
             "loc_conics": feat_meta.get("conics"),
-            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
+            "loc_opacities": feat_opacity_values[visible_mask],
             "loc_K": K,
             "loc_viewmat": viewmat,
         })
@@ -471,6 +495,8 @@ def render_from_pose_gsplat(
     loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
+    opacity_multiplier=None,
+    loc_opacity_multiplier=None,
     **rasterize_args
 ):
     """
@@ -499,6 +525,8 @@ def render_from_pose_gsplat(
             loc_absgrad,
             near_plane,
             far_plane,
+            opacity_multiplier,
+            loc_opacity_multiplier,
             **rasterize_args
         )
 
@@ -518,11 +546,12 @@ def render_from_pose_gsplat(
     if bg_color is None:
         bg_color = torch.zeros(3, device="cuda")
 
+    render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     render_colors, render_alphas, info = rasterization(
         means=means3D,  # [N, 3]
         quats=rotations,  # [N, 4]
         scales=scales,  # [N, 3]
-        opacities=opacity.squeeze(-1),  # [N,]
+        opacities=render_opacity,  # [N,]
         colors=colors,
         viewmats=pose[None],  # [1, 4, 4]
         Ks=K[None],  # [1, 3, 3]
@@ -556,12 +585,14 @@ def render_from_pose_gsplat(
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
         feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
+        feature_multiplier = loc_opacity_multiplier if loc_opacity_multiplier is not None else opacity_multiplier
+        feat_opacity_values = _apply_opacity_multiplier(feat_opacity.squeeze(-1), feature_multiplier)
 
         feat_map, alphas, meta = rasterization(
             means3D[visible_mask],
             rotations[visible_mask],
             scales[visible_mask],
-            feat_opacity.squeeze(-1)[visible_mask],
+            feat_opacity_values[visible_mask],
             loc_feature,
             pose[None],
             K[None],
@@ -606,7 +637,7 @@ def render_from_pose_gsplat(
             "loc_alphas": alphas,
             "loc_depths": meta.get("depths"),
             "loc_conics": meta.get("conics"),
-            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
+            "loc_opacities": feat_opacity_values[visible_mask],
             "loc_K": K,
             "loc_viewmat": pose,
         })
@@ -629,6 +660,8 @@ def render_from_pose_gsplat_2dgs(
     loc_absgrad=False,
     near_plane=0.01,
     far_plane=10000,
+    opacity_multiplier=None,
+    loc_opacity_multiplier=None,
     **rasterize_args
 ):
     """
@@ -666,12 +699,13 @@ def render_from_pose_gsplat_2dgs(
     if bg_color is None:
         bg_color = torch.zeros(4, device="cuda")
 
+    render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     colors, alphas, normals, surf_normals, distort, median_depth, info = (
         rasterization_2dgs(
             means=means3D,  # [N, 3]
             quats=rotations,  # [N, 4]
             scales=scales,  # [N, 3]
-            opacities=opacity.squeeze(-1),  # [N,]
+            opacities=render_opacity,  # [N,]
             colors=colors,
             viewmats=pose[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -703,12 +737,14 @@ def render_from_pose_gsplat_2dgs(
         if norm_feat_bf_render:
             loc_feature = F.normalize(loc_feature, p=2, dim=-1)
         feat_opacity = pc.get_loc_opacity if use_loc_opacity and hasattr(pc, "get_loc_opacity") else opacity
+        feature_multiplier = loc_opacity_multiplier if loc_opacity_multiplier is not None else opacity_multiplier
+        feat_opacity_values = _apply_opacity_multiplier(feat_opacity.squeeze(-1), feature_multiplier)
 
         feat_map, feat_alphas, _, _, _, _, feat_meta = rasterization_2dgs(
             means=means3D[visible_mask],  # [N, 3]
             quats=rotations[visible_mask],  # [N, 4]
             scales=scales[visible_mask],  # [N, 3]
-            opacities=feat_opacity.squeeze(-1)[visible_mask],  # [N,]
+            opacities=feat_opacity_values[visible_mask],  # [N,]
             colors=loc_feature,
             viewmats=pose[None],  # [1, 4, 4]
             Ks=K[None],  # [1, 3, 3]
@@ -756,7 +792,7 @@ def render_from_pose_gsplat_2dgs(
             "loc_alphas": feat_alphas,
             "loc_depths": feat_meta.get("depths"),
             "loc_conics": feat_meta.get("conics"),
-            "loc_opacities": feat_opacity.squeeze(-1)[visible_mask],
+            "loc_opacities": feat_opacity_values[visible_mask],
             "loc_K": K,
             "loc_viewmat": pose,
         })

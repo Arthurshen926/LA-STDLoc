@@ -136,3 +136,75 @@ def dense_to_sparse_kl(query_features, bank_features, teacher_distribution, temp
     if denom <= 0:
         return per_anchor.new_tensor(0.0)
     return (per_anchor * weights).sum() / denom.clamp_min(1e-8)
+
+
+def dense_sparse_miss_hit_rank_loss(
+    query_features,
+    bank_features,
+    teacher_distribution,
+    temperature=0.07,
+    anchor_weights=None,
+    teacher_confidence_threshold=0.0,
+    miss_topk=1,
+    margin=0.2,
+    return_diagnostics=False,
+):
+    query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
+    bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
+    teacher = torch.as_tensor(teacher_distribution, device=query.device, dtype=query.dtype)
+    if query.numel() == 0 or bank.numel() == 0 or teacher.numel() == 0:
+        loss = query.new_tensor(0.0)
+        diagnostics = {
+            "dense_rank_anchor_count": 0,
+            "dense_rank_eligible_anchor_count": 0,
+            "dense_rank_sparse_hit_count": 0,
+            "dense_rank_sparse_miss_count": 0,
+            "dense_rank_low_confidence_count": 0,
+            "dense_rank_teacher_confidence_mean": 0.0,
+        }
+        return (loss, diagnostics) if return_diagnostics else loss
+
+    teacher = teacher / teacher.sum(dim=1, keepdim=True).clamp_min(1e-8)
+    rows = min(query.shape[0], teacher.shape[0])
+    query = query[:rows]
+    teacher = teacher[:rows]
+    logits = query @ bank.T / max(float(temperature), 1e-6)
+    teacher_confidence, teacher_index = teacher.max(dim=1)
+
+    weights = query.new_ones(rows)
+    if anchor_weights is not None:
+        weights = torch.as_tensor(anchor_weights, device=query.device, dtype=query.dtype).reshape(-1)[:rows]
+        weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
+    active = weights > 0
+    high_confidence = (teacher_confidence >= float(teacher_confidence_threshold)) & active
+
+    topk = int(miss_topk)
+    if topk > 0 and logits.shape[1] > 0:
+        topk = min(topk, logits.shape[1])
+        sparse_topk = logits.topk(k=topk, dim=1).indices
+        sparse_hit = (sparse_topk == teacher_index[:, None]).any(dim=1)
+    else:
+        sparse_hit = torch.zeros(rows, dtype=torch.bool, device=query.device)
+    sparse_miss = high_confidence & (~sparse_hit)
+
+    positive = logits.gather(1, teacher_index[:, None]).squeeze(1)
+    negative_logits = logits.scatter(1, teacher_index[:, None], float("-inf"))
+    hardest_negative = negative_logits.max(dim=1).values
+    per_anchor = F.relu(float(margin) + hardest_negative - positive)
+
+    rank_weights = weights * sparse_miss.to(dtype=weights.dtype)
+    denom = rank_weights.sum()
+    if denom <= 0:
+        loss = per_anchor.new_tensor(0.0)
+    else:
+        loss = (per_anchor * rank_weights).sum() / denom.clamp_min(1e-8)
+
+    diagnostics = {
+        "dense_rank_anchor_count": int(rows),
+        "dense_rank_eligible_anchor_count": int(sparse_miss.sum().item()),
+        "dense_rank_sparse_hit_count": int((high_confidence & sparse_hit).sum().item()),
+        "dense_rank_sparse_miss_count": int(sparse_miss.sum().item()),
+        "dense_rank_low_confidence_count": int((active & (~high_confidence)).sum().item()),
+        "dense_rank_teacher_confidence_mean": float(teacher_confidence[active].mean().item()) if bool(active.any()) else 0.0,
+    }
+    return (loss, diagnostics) if return_diagnostics else loss

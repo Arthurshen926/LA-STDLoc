@@ -128,6 +128,121 @@ class EvalAnalysisTest(unittest.TestCase):
             self.assertEqual(summary["thresholds"], [4.0])
             self.assertAlmostEqual(summary["curve"][0]["delta"]["recall_5cm_5deg"], 0.5)
 
+    def test_paired_sparse_stage_summary_reports_inlier_and_sequence_failures(self):
+        from localization_training.eval_analysis import paired_sparse_stage_summary
+
+        baseline = [
+            {
+                "image_name": "seq4/a.png",
+                "sparse_TE": 4.0,
+                "sparse_AE": 0.2,
+                "sparse": {"inliers": 120, "matches": 300, "detected_keypoints": 900},
+            },
+            {
+                "image_name": "seq4/b.png",
+                "sparse_TE": 8.0,
+                "sparse_AE": 0.3,
+                "sparse": {"inliers": 100, "matches": 280, "detected_keypoints": 850},
+            },
+            {
+                "image_name": "seq8/c.png",
+                "sparse_TE": 12.0,
+                "sparse_AE": 0.4,
+                "sparse": {"inliers": 90, "matches": 250, "detected_keypoints": 800},
+            },
+        ]
+        la = [
+            {
+                "image_name": "seq4/a.png",
+                "sparse_TE": 7.0,
+                "sparse_AE": 0.4,
+                "sparse": {"inliers": 55, "matches": 240, "detected_keypoints": 700},
+            },
+            {
+                "image_name": "seq4/b.png",
+                "sparse_TE": 5.0,
+                "sparse_AE": 0.2,
+                "sparse": {"inliers": 110, "matches": 300, "detected_keypoints": 870},
+            },
+            {
+                "image_name": "seq8/c.png",
+                "sparse_TE": 20.0,
+                "sparse_AE": 0.8,
+                "sparse": {"inliers": 40, "matches": 220, "detected_keypoints": 760},
+            },
+        ]
+
+        summary = paired_sparse_stage_summary(baseline, la, inlier_drop_threshold=50, top_k=2)
+
+        self.assertEqual(summary["query_count"], 3)
+        self.assertEqual(summary["recall_5cm_loss_count"], 1)
+        self.assertEqual(summary["inlier_drop_count"], 2)
+        self.assertEqual(summary["pose_degraded_and_inlier_drop_count"], 2)
+        self.assertEqual(summary["sequence_groups"][0]["sequence"], "seq4")
+        self.assertEqual(summary["top_te_degraded"][0]["image_name"], "seq8/c.png")
+        self.assertEqual(summary["top_inlier_drop"][0]["image_name"], "seq4/a.png")
+
+    def test_sparse_stage_delta_script_writes_json_and_csv(self):
+        script = Path(__file__).resolve().parents[1] / "scripts" / "diagnose_sparse_stage_delta.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            baseline_path = tmp / "baseline.json"
+            la_path = tmp / "la.json"
+            summary_path = tmp / "summary.json"
+            csv_path = tmp / "frames.csv"
+            baseline_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "image_name": "seq/a.png",
+                            "sparse_TE": 2.0,
+                            "sparse_AE": 0.1,
+                            "sparse": {"inliers": 20},
+                        }
+                    ]
+                )
+            )
+            la_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "image_name": "seq/a.png",
+                            "sparse_TE": 8.0,
+                            "sparse_AE": 0.2,
+                            "sparse": {"inliers": 5},
+                        }
+                    ]
+                )
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--baseline_results",
+                    str(baseline_path),
+                    "--candidate_results",
+                    str(la_path),
+                    "--output_json",
+                    str(summary_path),
+                    "--output_csv",
+                    str(csv_path),
+                    "--inlier_drop_threshold",
+                    "10",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(summary_path.exists())
+            self.assertTrue(csv_path.exists())
+            summary = json.loads(summary_path.read_text())
+            self.assertEqual(summary["query_count"], 1)
+            self.assertEqual(summary["inlier_drop_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

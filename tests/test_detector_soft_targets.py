@@ -215,6 +215,134 @@ class DetectorSoftTargetsTest(unittest.TestCase):
         args = parser.parse_args(["--sampling_mode", "localization_aware_spatial"])
         self.assertEqual(args.sampling_mode, "localization_aware_spatial")
 
+    def test_detector_parser_accepts_pnp_aware_sampling_mode(self):
+        from train_detector import build_arg_parser
+
+        parser = build_arg_parser()
+        args = parser.parse_args(["--sampling_mode", "localization_aware_pnp"])
+
+        self.assertEqual(args.sampling_mode, "localization_aware_pnp")
+
+    def test_detector_parser_accepts_landmark_only_bootstrap(self):
+        from train_detector import build_arg_parser
+
+        parser = build_arg_parser()
+        args = parser.parse_args(["--landmark_only", "--iteration", "0", "--detector_folder", "detector_bootstrap"])
+
+        self.assertTrue(args.landmark_only)
+        self.assertEqual(args.iteration, 0)
+        self.assertEqual(args.detector_folder, "detector_bootstrap")
+
+    def test_detector_parser_accepts_precomputed_landmark_path(self):
+        from train_detector import build_arg_parser
+
+        parser = build_arg_parser()
+        args = parser.parse_args(["--precomputed_landmark_path", "/tmp/sample.pkl"])
+
+        self.assertEqual(args.precomputed_landmark_path, "/tmp/sample.pkl")
+
+    def test_precomputed_detector_landmarks_are_loaded_and_validated(self):
+        import pickle
+        import tempfile
+        from pathlib import Path
+
+        from train_detector import load_precomputed_detector_landmarks
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sampled_idx.pkl"
+            with path.open("wb") as handle:
+                pickle.dump([4, 2, 1], handle)
+
+            sampled = load_precomputed_detector_landmarks(str(path), point_count=8)
+
+        self.assertEqual(sampled.dtype, torch.long)
+        self.assertEqual(sampled.tolist(), [4, 2, 1])
+
+    def test_precomputed_detector_landmarks_can_be_moved_to_device(self):
+        import pickle
+        import tempfile
+        from pathlib import Path
+
+        from train_detector import load_precomputed_detector_landmarks
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sampled_idx.pkl"
+            with path.open("wb") as handle:
+                pickle.dump([1, 3], handle)
+
+            sampled = load_precomputed_detector_landmarks(
+                str(path),
+                point_count=4,
+                device=torch.device("cpu"),
+            )
+
+        self.assertEqual(sampled.device.type, "cpu")
+        self.assertEqual(sampled.tolist(), [1, 3])
+
+    def test_detector_model_defaults_are_filled_for_new_model_without_cfg(self):
+        from argparse import Namespace
+
+        from train_detector import fill_missing_model_defaults
+
+        args = Namespace(source_path="/data/scene", model_path="/tmp/new_model")
+        fill_missing_model_defaults(args)
+
+        self.assertEqual(args.sh_degree, 3)
+        self.assertEqual(args.feature_type, "")
+        self.assertEqual(args.gaussian_type, "3dgs")
+        self.assertEqual(args.images, "images")
+        self.assertEqual(args.resolution, -1)
+        self.assertEqual(args.data_device, "cuda")
+        self.assertTrue(args.white_background)
+
+    def test_detector_model_defaults_do_not_override_existing_cfg_values(self):
+        from argparse import Namespace
+
+        from train_detector import fill_missing_model_defaults
+
+        args = Namespace(
+            source_path="/data/scene",
+            model_path="/tmp/model",
+            sh_degree=2,
+            feature_type="sp",
+            gaussian_type="2dgs",
+            images="processed",
+            resolution=1,
+            data_device="cpu",
+            white_background=False,
+        )
+        fill_missing_model_defaults(args)
+
+        self.assertEqual(args.sh_degree, 2)
+        self.assertEqual(args.feature_type, "sp")
+        self.assertEqual(args.gaussian_type, "2dgs")
+        self.assertEqual(args.images, "processed")
+        self.assertEqual(args.resolution, 1)
+        self.assertEqual(args.data_device, "cpu")
+        self.assertFalse(args.white_background)
+
+    def test_empty_detector_landmark_sample_fails_before_training(self):
+        from train_detector import validate_detector_sampled_indices
+
+        with self.assertRaisesRegex(ValueError, "sampled 0 detector landmarks"):
+            validate_detector_sampled_indices(
+                torch.empty(0, dtype=torch.long),
+                sampling_mode="localization_aware",
+                min_loc_observations=4,
+            )
+
+    def test_nonempty_detector_landmark_sample_is_returned_as_long_tensor(self):
+        from train_detector import validate_detector_sampled_indices
+
+        sampled = validate_detector_sampled_indices(
+            [3, 1, 2],
+            sampling_mode="baseline",
+            min_loc_observations=0,
+        )
+
+        self.assertEqual(sampled.dtype, torch.long)
+        self.assertEqual(sampled.tolist(), [3, 1, 2])
+
 
 if __name__ == "__main__":
     unittest.main()

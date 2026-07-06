@@ -59,7 +59,7 @@ def sample_gaussians(gaussians: GaussianModel, idx_sampled):
     ).to(device=gaussians.get_xyz.device)
     sampled_gaussians = GaussianModel(3)
     sampled_gaussians._xyz = gaussians._xyz[idx_sampled]
-    sampled_gaussians._loc_feature = gaussians._loc_feature[idx_sampled]
+    sampled_gaussians._loc_feature = gaussians.materialized_loc_feature(idx_sampled)
     sampled_gaussians._scaling = gaussians._scaling[idx_sampled]
     sampled_gaussians._opacity = gaussians._opacity[idx_sampled]
     sampled_gaussians._rotation = gaussians._rotation[idx_sampled]
@@ -117,6 +117,215 @@ def get_intrinsic(fovx, fovy, width, height):
         dtype=np.float32,
     )
     return K
+
+
+def resize_sparse_valid_mask_to_feature_grid(valid_mask, height, width, min_fraction=0.5):
+    if valid_mask is None:
+        return None
+    mask = torch.as_tensor(valid_mask, dtype=torch.float32)
+    if mask.dim() == 3:
+        if mask.shape[0] == 1:
+            mask = mask[0]
+        elif mask.shape[-1] == 1:
+            mask = mask[..., 0]
+        else:
+            mask = mask.mean(dim=0)
+    if mask.dim() != 2:
+        raise ValueError(f"Expected sparse valid mask to be 2D, got shape {tuple(mask.shape)}")
+    if tuple(mask.shape) != (int(height), int(width)):
+        mask = F.interpolate(
+            mask[None, None],
+            size=(int(height), int(width)),
+            mode="area",
+        )[0, 0]
+    return mask >= float(min_fraction)
+
+
+def resize_sparse_score_to_feature_grid(score_map, height, width):
+    if score_map is None:
+        return None
+    score = torch.as_tensor(score_map, dtype=torch.float32).detach()
+    if score.dim() == 3:
+        if score.shape[0] == 1:
+            score = score[0]
+        elif score.shape[-1] == 1:
+            score = score[..., 0]
+        else:
+            score = score.mean(dim=0)
+    if score.dim() != 2:
+        raise ValueError(f"Expected sparse support score to be 2D, got shape {tuple(score.shape)}")
+    score = torch.nan_to_num(score, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    if tuple(score.shape) != (int(height), int(width)):
+        score = F.interpolate(
+            score[None, None],
+            size=(int(height), int(width)),
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+    return score.clamp(0.0, 1.0)
+
+
+def apply_sparse_support_score_prior(kp_scores, support_score, weight=0.0, min_multiplier=1.0):
+    scores = torch.as_tensor(kp_scores, dtype=torch.float32)
+    support = torch.as_tensor(support_score, dtype=torch.float32, device=scores.device)
+    if scores.dim() == 3 and scores.shape[0] == 1 and support.dim() == 2:
+        support = support[None]
+    if support.shape != scores.shape:
+        raise ValueError(
+            "support_score must match keypoint score grid shape after resizing: "
+            f"{tuple(support.shape)} vs {tuple(scores.shape)}"
+        )
+    weight = float(weight or 0.0)
+    min_multiplier = float(min_multiplier)
+    if weight == 0.0 and abs(min_multiplier - 1.0) < 1e-8:
+        return scores, {
+            "sparse_support_score_prior_weight": weight,
+            "sparse_support_score_prior_min_multiplier": min_multiplier,
+            "sparse_support_score_prior_multiplier_mean": 1.0,
+            "sparse_support_score_prior_score_mean": float(support.float().mean().item()) if support.numel() else 0.0,
+        }
+    support = torch.nan_to_num(support, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    multiplier = min_multiplier + (1.0 + weight - min_multiplier) * support
+    adjusted = scores * multiplier.to(dtype=scores.dtype, device=scores.device)
+    return adjusted, {
+        "sparse_support_score_prior_weight": weight,
+        "sparse_support_score_prior_min_multiplier": min_multiplier,
+        "sparse_support_score_prior_multiplier_mean": float(multiplier.float().mean().item()) if multiplier.numel() else 1.0,
+        "sparse_support_score_prior_score_mean": float(support.float().mean().item()) if support.numel() else 0.0,
+    }
+
+
+def apply_dense_query_valid_mask_to_corr(
+    corr_matrix,
+    valid_mask,
+    query_height,
+    query_width,
+    min_fraction=0.5,
+    fill_value=-1e9,
+):
+    corr = torch.as_tensor(corr_matrix)
+    if valid_mask is None:
+        return corr, {
+            "dense_valid_mask_enabled": False,
+            "dense_valid_mask_valid_cells": int(corr.shape[-2]) if corr.dim() >= 2 else 0,
+            "dense_valid_mask_valid_frac": 1.0,
+        }
+    if corr.dim() != 3:
+        raise ValueError(f"Expected dense correlation matrix as BxNxM, got shape {tuple(corr.shape)}")
+    query_height = int(query_height)
+    query_width = int(query_width)
+    expected = query_height * query_width
+    if int(corr.shape[-2]) != expected:
+        raise ValueError(
+            "dense valid mask grid does not match correlation query cells: "
+            f"{query_height}x{query_width}={expected} vs {int(corr.shape[-2])}"
+        )
+    mask = resize_sparse_valid_mask_to_feature_grid(
+        valid_mask,
+        query_height,
+        query_width,
+        min_fraction=min_fraction,
+    ).reshape(-1)
+    mask = mask.to(device=corr.device)
+    masked = corr.clone()
+    invalid = ~mask
+    if invalid.any():
+        masked[:, invalid, :] = torch.as_tensor(fill_value, dtype=masked.dtype, device=masked.device)
+    return masked, {
+        "dense_valid_mask_enabled": True,
+        "dense_valid_mask_valid_cells": int(mask.sum().item()),
+        "dense_valid_mask_valid_frac": float(mask.float().mean().item()) if mask.numel() else 0.0,
+    }
+
+
+def filter_sparse_keypoints_by_valid_mask(kp_ids, valid_mask, height, width, min_fraction=0.5):
+    kp_ids = torch.as_tensor(kp_ids, dtype=torch.long)
+    raw_count = int(kp_ids.numel())
+    if valid_mask is None:
+        return kp_ids, {
+            "detected_keypoints_raw": raw_count,
+            "detected_keypoints": raw_count,
+            "sparse_valid_mask_filtered_keypoints": 0,
+            "sparse_valid_mask_valid_frac": 1.0,
+        }
+    mask = resize_sparse_valid_mask_to_feature_grid(
+        valid_mask,
+        int(height),
+        int(width),
+        min_fraction=min_fraction,
+    ).reshape(-1)
+    if kp_ids.device != mask.device:
+        mask = mask.to(kp_ids.device)
+    keep = mask[kp_ids] if raw_count else torch.zeros(0, dtype=torch.bool, device=kp_ids.device)
+    filtered = kp_ids[keep]
+    filtered_count = int(raw_count - filtered.numel())
+    return filtered, {
+        "detected_keypoints_raw": raw_count,
+        "detected_keypoints": int(filtered.numel()),
+        "sparse_valid_mask_filtered_keypoints": filtered_count,
+        "sparse_valid_mask_valid_frac": float(mask.float().mean().item()) if mask.numel() else 0.0,
+    }
+
+
+def select_sparse_keypoints_by_valid_mask(
+    kp_ids,
+    valid_mask,
+    height,
+    width,
+    target_count=0,
+    min_fraction=0.5,
+    refill_invalid=True,
+):
+    kp_ids = torch.as_tensor(kp_ids, dtype=torch.long)
+    raw_count = int(kp_ids.numel())
+    target_count = int(target_count or 0)
+    if valid_mask is None:
+        if target_count > 0:
+            kp_ids = kp_ids[:target_count]
+        count = int(kp_ids.numel())
+        return kp_ids, {
+            "detected_keypoints_raw": raw_count,
+            "detected_keypoints": count,
+            "sparse_valid_mask_filtered_keypoints": raw_count - count,
+            "sparse_valid_mask_valid_frac": 1.0,
+            "sparse_valid_mask_invalid_candidates": 0,
+            "sparse_valid_mask_selected_valid_keypoints": 0,
+            "sparse_valid_mask_refill_keypoints": 0,
+        }
+
+    mask = resize_sparse_valid_mask_to_feature_grid(
+        valid_mask,
+        int(height),
+        int(width),
+        min_fraction=min_fraction,
+    ).reshape(-1)
+    if kp_ids.device != mask.device:
+        mask = mask.to(kp_ids.device)
+    keep = mask[kp_ids] if raw_count else torch.zeros(0, dtype=torch.bool, device=kp_ids.device)
+    valid_kp_ids = kp_ids[keep]
+    invalid_kp_ids = kp_ids[~keep]
+    if target_count <= 0:
+        selected = valid_kp_ids
+        refill_count = 0
+    else:
+        selected_valid = valid_kp_ids[:target_count]
+        if bool(refill_invalid) and selected_valid.numel() < target_count:
+            refill = invalid_kp_ids[: target_count - selected_valid.numel()]
+        else:
+            refill = invalid_kp_ids[:0]
+        selected = torch.cat([selected_valid, refill], dim=0)
+        refill_count = int(refill.numel())
+    selected_valid_count = int((mask[selected].sum().item() if selected.numel() else 0))
+    selected_count = int(selected.numel())
+    return selected, {
+        "detected_keypoints_raw": raw_count,
+        "detected_keypoints": selected_count,
+        "sparse_valid_mask_filtered_keypoints": raw_count - selected_count,
+        "sparse_valid_mask_valid_frac": float(mask.float().mean().item()) if mask.numel() else 0.0,
+        "sparse_valid_mask_invalid_candidates": int((~keep).sum().item()) if keep.numel() else 0,
+        "sparse_valid_mask_selected_valid_keypoints": selected_valid_count,
+        "sparse_valid_mask_refill_keypoints": refill_count,
+    }
 
 
 def _geometry_selector_from_config(sparse_config, width, height):
@@ -361,7 +570,7 @@ class STDLoc:
         self.detector.eval().cuda()
 
     @torch.no_grad()
-    def localize(self, query_image, fovx, fovy):
+    def localize(self, query_image, fovx, fovy, sparse_valid_mask=None, sparse_support_score=None):
         """
         image: torch.Tensor, shape (3, H, W)
         """
@@ -371,7 +580,13 @@ class STDLoc:
         )
 
         # Sparse stage
-        sparse_result = self.loc_sparse(query_fine_feature_map, fovx, fovy)
+        sparse_result = self.loc_sparse(
+            query_fine_feature_map,
+            fovx,
+            fovy,
+            valid_mask=sparse_valid_mask,
+            support_score=sparse_support_score,
+        )
         if self.config.get("sparse_only", self.config["sparse"].get("sparse_only", False)):
             return {"sparse": sparse_result, "dense": []}
 
@@ -380,7 +595,13 @@ class STDLoc:
         dense_results = []
         for iter in range(self.config["dense"]["iters"]):
             dense_result = self.loc_dense(
-                query_coarse_feature_map, query_fine_feature_map, pose_w2c, fovx, fovy
+                query_coarse_feature_map,
+                query_fine_feature_map,
+                pose_w2c,
+                fovx,
+                fovy,
+                valid_mask=sparse_valid_mask,
+                support_score=sparse_support_score,
             )
             pose_w2c = dense_result["pose_w2c"]
             
@@ -389,7 +610,7 @@ class STDLoc:
         return {"sparse": sparse_result, "dense": dense_results}
 
     @torch.no_grad()
-    def loc_sparse(self, query_feature_map, fovx, fovy):
+    def loc_sparse(self, query_feature_map, fovx, fovy, valid_mask=None, support_score=None):
         """
         feature_map: torch.Tensor, shape (C, H, W)
         """
@@ -400,12 +621,50 @@ class STDLoc:
 
         kp_scores_after_nms = simple_nms(
             heat_map, self.config["sparse"].get("nms", 4)
-        ).flatten()
+        )
+        support_diagnostics = {}
+        if support_score is not None:
+            support_grid = resize_sparse_score_to_feature_grid(support_score, H, W)
+            if support_grid.device != kp_scores_after_nms.device:
+                support_grid = support_grid.to(kp_scores_after_nms.device)
+            kp_scores_after_nms, support_diagnostics = apply_sparse_support_score_prior(
+                kp_scores_after_nms,
+                support_grid,
+                weight=self.config["sparse"].get("support_score_weight", 0.0),
+                min_multiplier=self.config["sparse"].get("support_score_min_multiplier", 1.0),
+            )
+        kp_scores_after_nms = kp_scores_after_nms.flatten()
+        detect_num = int(self.config["sparse"].get("detect_num", 2048))
+        valid_mask_refill = bool(self.config["sparse"].get("valid_mask_refill", True))
+        candidate_num = detect_num
+        if valid_mask is not None and valid_mask_refill:
+            candidate_multiplier = float(self.config["sparse"].get("valid_mask_candidate_multiplier", 2.0))
+            candidate_num = max(detect_num, int(np.ceil(detect_num * candidate_multiplier)))
+        candidate_num = min(candidate_num, int(kp_scores_after_nms.numel()))
         _, kp_ids = torch.topk(
-            kp_scores_after_nms, self.config["sparse"].get("detect_num", 2048)
+            kp_scores_after_nms,
+            candidate_num,
         )
         pos_mask = kp_scores_after_nms > 0
         kp_ids = kp_ids[pos_mask[kp_ids]]
+        kp_ids, mask_diagnostics = select_sparse_keypoints_by_valid_mask(
+            kp_ids,
+            valid_mask,
+            H,
+            W,
+            target_count=detect_num,
+            min_fraction=self.config["sparse"].get("valid_mask_min_fraction", 0.5),
+            refill_invalid=valid_mask_refill,
+        )
+        if kp_ids.numel() == 0:
+            result = {
+                "pose_w2c": np.eye(4, dtype=np.float32),
+                "inliers": 0,
+                "matches": 0,
+            }
+            result.update(support_diagnostics)
+            result.update(mask_diagnostics)
+            return result
 
         kp_mask = torch.zeros_like(kp_scores_after_nms, dtype=torch.bool)
         kp_mask[kp_ids] = True
@@ -453,17 +712,28 @@ class STDLoc:
                 self.config["sparse"]["topk"],
                 thr=self.config["sparse"]["threshold"],
             )
+        if im_idx.numel() == 0:
+            result = {
+                "pose_w2c": np.eye(4, dtype=np.float32),
+                "inliers": 0,
+                "matches": 0,
+            }
+            result.update(support_diagnostics)
+            result.update(mask_diagnostics)
+            return result
 
         p2d = torch.stack([torch.arange(H * W) % W, torch.arange(H * W) // W], dim=1)
 
         p2d = p2d[kp_mask.cpu()][im_idx.cpu()].float()
         p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
+        match_count_before_selector = int(p2d.shape[0])
         selector = _geometry_selector_from_config(self.config["sparse"], W, H)
         if selector is not None:
             selected = selector.select(p2d, p3d, val.detach().cpu().float())
             p2d = p2d[selected]
             p3d = p3d[selected]
             val = val.detach().cpu().float()[selected]
+        match_count = int(p2d.shape[0])
 
         p2d = p2d.numpy()
         p3d = p3d.numpy()
@@ -505,14 +775,26 @@ class STDLoc:
                     pose_w2c = refined_pose_w2c
                     inliers = selected_inliers_np[refined_inliers.reshape(-1)]
 
-        return {
+        result = {
             "pose_w2c": pose_w2c,
             "inliers": inliers.shape[0],
+            "matches": match_count,
+            "matches_before_selector": match_count_before_selector,
         }
+        result.update(support_diagnostics)
+        result.update(mask_diagnostics)
+        return result
 
     @torch.no_grad()
     def loc_dense(
-        self, coarse_query_feature_map, fine_query_feature_map, pose_w2c, fovx, fovy
+        self,
+        coarse_query_feature_map,
+        fine_query_feature_map,
+        pose_w2c,
+        fovx,
+        fovy,
+        valid_mask=None,
+        support_score=None,
     ):
         """
         coarse_feature_map: torch.Tensor, shape (C, H, W)
@@ -525,6 +807,7 @@ class STDLoc:
         WW = W * W
         overlap_size = 0  
         K = get_intrinsic(fovx, fovy, Wf, Hf)
+        dense_guidance_diagnostics = {}
 
         render_pkg = render_from_pose_gsplat(
             self.gaussians,
@@ -543,7 +826,9 @@ class STDLoc:
         fine_rendered_feature_map = render_pkg["feature_map"]
         if (fine_rendered_feature_map == 0).all():
             print("[skip] Rendered feature map is all zero")
-            return {"pose_w2c": pose_w2c, "inliers": 0}
+            result = {"pose_w2c": pose_w2c, "inliers": 0}
+            result.update(dense_guidance_diagnostics)
+            return result
         
         coarse_rendered_feature_map = F.interpolate(
             fine_rendered_feature_map[None],
@@ -562,6 +847,16 @@ class STDLoc:
         coarse_corr_matrix = dual_softmax(
             coarse_corr_matrix, temp=self.config["dense"]["coarse_dual_softmax_temp"]
         )
+        coarse_corr_matrix, dense_guidance_diagnostics = apply_dense_query_valid_mask_to_corr(
+            coarse_corr_matrix,
+            valid_mask,
+            Hc,
+            Wc,
+            min_fraction=self.config["dense"].get(
+                "valid_mask_min_fraction",
+                self.config["sparse"].get("valid_mask_min_fraction", 0.5),
+            ),
+        )
 
         c_b_ids, c_i_ids, c_j_ids = mnn_match(
             coarse_corr_matrix, thr=self.config["dense"]["coarse_threshold"]
@@ -569,10 +864,14 @@ class STDLoc:
 
         if c_i_ids.dim() == 0:
             print("[skip] Failed in coarse match")
-            return {"pose_w2c": pose_w2c, "inliers": 0}
+            result = {"pose_w2c": pose_w2c, "inliers": 0}
+            result.update(dense_guidance_diagnostics)
+            return result
         elif c_i_ids.shape[0] < 3:
             print("[skip] Failed in coarse match")
-            return {"pose_w2c": pose_w2c, "inliers": 0}
+            result = {"pose_w2c": pose_w2c, "inliers": 0}
+            result.update(dense_guidance_diagnostics)
+            return result
         
         # fine match
         query_feature_windows = (
@@ -604,10 +903,14 @@ class STDLoc:
 
         if f_i_ids.dim() == 0:
             print("[skip] Failed in fine match")
-            return {"pose_w2c": pose_w2c, "inliers": 0}
+            result = {"pose_w2c": pose_w2c, "inliers": 0}
+            result.update(dense_guidance_diagnostics)
+            return result
         elif f_i_ids.shape[0] < 3:
             print("[skip] Failed in fine match")
-            return {"pose_w2c": pose_w2c, "inliers": 0}
+            result = {"pose_w2c": pose_w2c, "inliers": 0}
+            result.update(dense_guidance_diagnostics)
+            return result
 
         query_p2d = torch.stack(
             [
@@ -642,10 +945,12 @@ class STDLoc:
             self.config["dense"]["min_iterations"],
         )
 
-        return {
+        result = {
             "pose_w2c": pose_w2c,
             "inliers": inliers.shape[0],
         }
+        result.update(dense_guidance_diagnostics)
+        return result
 
     def get_feature_map(self, image):
         """

@@ -214,6 +214,351 @@ class TopologyControllerTest(unittest.TestCase):
         self.assertEqual(event["requested_split_count"], 1)
         self.assertEqual(event["point_count_after"], 5)
 
+    def test_risk_commit_rejects_split_proposal_before_mutation(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.full((4,), 10)
+                self.loc_grad_accum = torch.ones(4, 1)
+                self.loc_grad_denom = torch.ones(4, 1)
+                self.loc_entropy_ema = torch.ones(4)
+                self.loc_repeatability_ema = torch.ones(4)
+                self.last_topology_iteration = torch.zeros(4, dtype=torch.long)
+                self.max_radii2D = torch.full((4,), 10.0)
+                self._loc_feature = nn.Parameter(torch.zeros(4, 1, 2))
+                self._loc_opacity = nn.Parameter(torch.zeros(4, 1))
+                self.split_requests = []
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self.loc_observation_count.shape[0], 3)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.ones(self.get_xyz.shape[0])
+
+            def compute_split_necessity(self, min_observations=1, min_radius=0.0, min_repeatability=0.0):
+                return torch.arange(self.get_xyz.shape[0], 0, -1, dtype=torch.float32)
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                self.split_requests.append(int(selected_mask.sum().item()))
+                raise AssertionError("risk-rejected proposal should not mutate topology")
+
+        decisions = []
+
+        def reject_risk(proposal, gaussians):
+            decisions.append(int(proposal.split_mask.sum().item()))
+            return {"accepted": False, "reason": "holdout risk increased", "delta_risk": 0.25}
+
+        gaussians = FakeGaussians()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+                split_quantile=0.0,
+                ambiguity_quantile=0.0,
+                growth_cap_per_event=1.0,
+                total_point_budget_ratio=2.0,
+                cooldown_iterations=0,
+                min_repeatability=0.0,
+                min_radius=1.0,
+                risk_commit_policy="callback",
+            ),
+            initial_points=4,
+            risk_evaluator=reject_risk,
+        )
+
+        event = controller.update(gaussians, scene_extent=1.0, iteration=10)
+
+        self.assertEqual(decisions, [4])
+        self.assertEqual(gaussians.split_requests, [])
+        self.assertEqual(event["requested_split_count"], 4)
+        self.assertEqual(event["actual_children_added"], 0)
+        self.assertEqual(event["point_count_after"], 4)
+        self.assertFalse(event["risk_commit"]["accepted"])
+        self.assertEqual(event["risk_commit"]["reason"], "holdout risk increased")
+        self.assertEqual(controller.mutation_event_count, 0)
+
+    def test_risk_commit_logs_numeric_risk_details(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.full((2,), 10)
+                self.loc_grad_accum = torch.ones(2, 1)
+                self.loc_grad_denom = torch.ones(2, 1)
+                self.loc_entropy_ema = torch.ones(2)
+                self.loc_repeatability_ema = torch.ones(2)
+                self.last_topology_iteration = torch.zeros(2, dtype=torch.long)
+                self.max_radii2D = torch.full((2,), 10.0)
+                self._loc_opacity = nn.Parameter(torch.zeros(2, 1))
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(2, 3)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.ones(2)
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                raise AssertionError("rejected risk proposal must not mutate")
+
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+                split_quantile=0.0,
+                ambiguity_quantile=0.0,
+                growth_cap_per_event=1.0,
+                total_point_budget_ratio=2.0,
+                cooldown_iterations=0,
+                min_repeatability=0.0,
+                min_radius=1.0,
+                risk_commit_policy="callback",
+            ),
+            initial_points=2,
+            risk_evaluator=lambda proposal, gaussians: {
+                "accepted": False,
+                "reason": "heldout_descriptor_not_decreased",
+                "baseline_risk": 1.25,
+                "trial_risk": 1.50,
+                "delta_risk": 0.25,
+                "epsilon": 0.01,
+            },
+        )
+
+        buffer = StringIO()
+        with redirect_stdout(buffer):
+            controller.update(FakeGaussians(), scene_extent=1.0, iteration=10)
+
+        text = buffer.getvalue()
+        self.assertIn("risk_baseline=1.250000", text)
+        self.assertIn("risk_trial=1.500000", text)
+        self.assertIn("risk_delta=0.250000", text)
+        self.assertIn("risk_epsilon=0.010000", text)
+
+    def test_risk_commit_accepts_split_proposal_before_mutation(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.full((3,), 10)
+                self.loc_grad_accum = torch.ones(3, 1)
+                self.loc_grad_denom = torch.ones(3, 1)
+                self.loc_entropy_ema = torch.ones(3)
+                self.loc_repeatability_ema = torch.ones(3)
+                self.last_topology_iteration = torch.zeros(3, dtype=torch.long)
+                self.max_radii2D = torch.full((3,), 10.0)
+                self._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+                self._loc_opacity = nn.Parameter(torch.zeros(3, 1))
+                self.split_requests = []
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self.loc_observation_count.shape[0], 3)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.ones(self.get_xyz.shape[0])
+
+            def compute_split_necessity(self, min_observations=1, min_radius=0.0, min_repeatability=0.0):
+                return torch.arange(self.get_xyz.shape[0], 0, -1, dtype=torch.float32)
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                split = selected_mask.to(dtype=torch.bool)
+                split_count = int(split.sum().item())
+                self.split_requests.append(split_count)
+                keep = ~split
+                self.loc_observation_count = self.loc_observation_count[keep]
+                self.loc_grad_accum = self.loc_grad_accum[keep]
+                self.loc_grad_denom = self.loc_grad_denom[keep]
+                self.loc_entropy_ema = self.loc_entropy_ema[keep]
+                self.loc_repeatability_ema = self.loc_repeatability_ema[keep]
+                self.last_topology_iteration = self.last_topology_iteration[keep]
+                self.max_radii2D = self.max_radii2D[keep]
+                self._loc_feature = nn.Parameter(self._loc_feature.detach()[keep])
+                self._loc_opacity = nn.Parameter(self._loc_opacity.detach()[keep])
+                self.loc_observation_count = torch.cat([self.loc_observation_count, torch.full((N * split_count,), 10)])
+                self.loc_grad_accum = torch.cat([self.loc_grad_accum, torch.ones(N * split_count, 1)])
+                self.loc_grad_denom = torch.cat([self.loc_grad_denom, torch.ones(N * split_count, 1)])
+                self.loc_entropy_ema = torch.cat([self.loc_entropy_ema, torch.ones(N * split_count)])
+                self.loc_repeatability_ema = torch.cat([self.loc_repeatability_ema, torch.ones(N * split_count)])
+                self.last_topology_iteration = torch.cat(
+                    [self.last_topology_iteration, torch.zeros(N * split_count, dtype=torch.long)]
+                )
+                self.max_radii2D = torch.cat([self.max_radii2D, torch.full((N * split_count,), 10.0)])
+                self._loc_feature = nn.Parameter(
+                    torch.cat([self._loc_feature.detach(), torch.zeros(N * split_count, 1, 2)])
+                )
+                self._loc_opacity = nn.Parameter(torch.cat([self._loc_opacity.detach(), torch.zeros(N * split_count, 1)]))
+
+        def accept_risk(proposal, gaussians):
+            return {"accepted": True, "reason": "holdout risk decreased", "delta_risk": -0.1}
+
+        gaussians = FakeGaussians()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+                split_quantile=0.0,
+                ambiguity_quantile=0.0,
+                growth_cap_per_event=1.0,
+                total_point_budget_ratio=2.0,
+                cooldown_iterations=0,
+                min_repeatability=0.0,
+                min_radius=1.0,
+                risk_commit_policy="callback",
+            ),
+            initial_points=3,
+            risk_evaluator=accept_risk,
+        )
+
+        event = controller.update(gaussians, scene_extent=1.0, iteration=10)
+
+        self.assertEqual(gaussians.split_requests, [3])
+        self.assertTrue(event["risk_commit"]["accepted"])
+        self.assertEqual(event["risk_commit"]["reason"], "holdout risk decreased")
+        self.assertEqual(event["actual_parent_removed"], 3)
+        self.assertEqual(event["actual_children_added"], 6)
+        self.assertEqual(event["point_count_after"], 6)
+
+    def test_risk_commit_rejects_unsupported_soft_prune_before_mutation(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self._loc_feature = nn.Parameter(torch.zeros(2, 1, 2))
+                self._loc_opacity = nn.Parameter(torch.zeros(2, 1))
+                self.utility = torch.tensor([-2.0, 1.0])
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(2, 3)
+
+            def compute_localization_utility(self, min_observations=1):
+                return self.utility
+
+        gaussians = FakeGaussians()
+        before = gaussians._loc_opacity.detach().clone()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                enable_split=False,
+                enable_soft_prune=True,
+                soft_prune_threshold=-1.0,
+                risk_commit_policy="reject_all",
+            ),
+            initial_points=2,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "soft prune"):
+            controller.update(gaussians, scene_extent=1.0, iteration=10)
+        self.assertTrue(torch.equal(gaussians._loc_opacity.detach(), before))
+
+    def test_topology_controller_stops_after_max_mutation_events(self):
+        from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
+
+        class FakeGaussians:
+            def __init__(self):
+                self.loc_observation_count = torch.full((3,), 10)
+                self.loc_grad_accum = torch.ones(3, 1)
+                self.loc_grad_denom = torch.ones(3, 1)
+                self.loc_entropy_ema = torch.ones(3)
+                self.loc_repeatability_ema = torch.ones(3)
+                self.last_topology_iteration = torch.zeros(3, dtype=torch.long)
+                self.loc_birth_iteration = torch.zeros(3, dtype=torch.long)
+                self.max_radii2D = torch.full((3,), 10.0)
+                self.loc_node_id = torch.arange(3)
+                self.loc_parent_node_id = torch.full((3,), -1)
+                self.loc_source_index = torch.arange(3)
+                self.loc_source_xyz = torch.zeros(3, 3)
+                self.loc_prototype = torch.zeros(3, 2)
+                self.loc_prototype_count = torch.zeros(3)
+                self._loc_feature = nn.Parameter(torch.zeros(3, 1, 2))
+                self._loc_opacity = nn.Parameter(torch.zeros(3, 1))
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(self.loc_observation_count.shape[0], 3)
+
+            def compute_localization_utility(self, min_observations=1):
+                return torch.ones(self.get_xyz.shape[0])
+
+            def compute_split_necessity(self, min_observations=1, min_radius=0.0, min_repeatability=0.0):
+                return torch.arange(self.get_xyz.shape[0], 0, -1, dtype=torch.float32)
+
+            def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+                split_count = int(selected_mask.sum().item())
+                keep = ~selected_mask.to(dtype=torch.bool)
+                for name in (
+                    "loc_observation_count",
+                    "loc_grad_accum",
+                    "loc_grad_denom",
+                    "loc_entropy_ema",
+                    "loc_repeatability_ema",
+                    "last_topology_iteration",
+                    "loc_birth_iteration",
+                    "max_radii2D",
+                    "loc_node_id",
+                    "loc_parent_node_id",
+                    "loc_source_index",
+                    "loc_source_xyz",
+                    "loc_prototype",
+                    "loc_prototype_count",
+                ):
+                    setattr(self, name, getattr(self, name)[keep])
+                self._loc_feature = nn.Parameter(self._loc_feature.detach()[keep])
+                self._loc_opacity = nn.Parameter(self._loc_opacity.detach()[keep])
+                self.loc_observation_count = torch.cat([self.loc_observation_count, torch.full((2 * split_count,), 10)])
+                self.loc_grad_accum = torch.cat([self.loc_grad_accum, torch.ones(2 * split_count, 1)])
+                self.loc_grad_denom = torch.cat([self.loc_grad_denom, torch.ones(2 * split_count, 1)])
+                self.loc_entropy_ema = torch.cat([self.loc_entropy_ema, torch.ones(2 * split_count)])
+                self.loc_repeatability_ema = torch.cat([self.loc_repeatability_ema, torch.ones(2 * split_count)])
+                self.last_topology_iteration = torch.cat(
+                    [self.last_topology_iteration, torch.zeros(2 * split_count, dtype=torch.long)]
+                )
+                self.loc_birth_iteration = torch.cat(
+                    [self.loc_birth_iteration, torch.zeros(2 * split_count, dtype=torch.long)]
+                )
+                self.max_radii2D = torch.cat([self.max_radii2D, torch.full((2 * split_count,), 10.0)])
+                self.loc_node_id = torch.cat([self.loc_node_id, torch.arange(100, 100 + 2 * split_count)])
+                self.loc_parent_node_id = torch.cat([self.loc_parent_node_id, torch.zeros(2 * split_count, dtype=torch.long)])
+                self.loc_source_index = torch.cat([self.loc_source_index, torch.zeros(2 * split_count, dtype=torch.long)])
+                self.loc_source_xyz = torch.cat([self.loc_source_xyz, torch.zeros(2 * split_count, 3)])
+                self.loc_prototype = torch.cat([self.loc_prototype, torch.zeros(2 * split_count, 2)])
+                self.loc_prototype_count = torch.cat([self.loc_prototype_count, torch.zeros(2 * split_count)])
+                self._loc_feature = nn.Parameter(
+                    torch.cat([self._loc_feature.detach(), torch.zeros(2 * split_count, 1, 2)])
+                )
+                self._loc_opacity = nn.Parameter(torch.cat([self._loc_opacity.detach(), torch.zeros(2 * split_count, 1)]))
+
+        gaussians = FakeGaussians()
+        controller = LocalizationTopologyController(
+            TopologyConfig(
+                stats_warmup=0,
+                update_interval=1,
+                min_observations=8,
+                split_quantile=0.0,
+                ambiguity_quantile=0.0,
+                growth_cap_per_event=1.0,
+                total_point_budget_ratio=2.0,
+                cooldown_iterations=0,
+                min_repeatability=0.0,
+                min_radius=1.0,
+                max_mutation_events=1,
+            ),
+            initial_points=3,
+        )
+
+        first = controller.update(gaussians, scene_extent=1.0, iteration=1)
+
+        self.assertGreater(first["actual_children_added"], 0)
+        self.assertEqual(controller.mutation_event_count, 1)
+        self.assertFalse(controller.should_update(2))
+
     def test_topology_update_can_disable_split_for_prune_only_attribution(self):
         from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
 

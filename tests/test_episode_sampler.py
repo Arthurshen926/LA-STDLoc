@@ -72,6 +72,7 @@ class EpisodeSamplerTest(unittest.TestCase):
         episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
         self.assertEqual(episode.source, "noise")
         self.assertTrue(torch.allclose(episode.pose_init_w2c, torch.eye(4)))
+        self.assertEqual(episode.sparse_meta["inliers"], 20)
 
         sampler = EpisodeSampler(
             sparse_pose_cache=cache,
@@ -81,6 +82,109 @@ class EpisodeSamplerTest(unittest.TestCase):
         episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
         self.assertEqual(episode.source, "sparse")
         self.assertTrue(torch.allclose(episode.pose_init_w2c, sparse_pose))
+
+    def test_sparse_mode_prefers_teacher_cache_key(self):
+        from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
+
+        class Camera:
+            image_name = "synthetic/000000.png"
+            teacher_cache_key = "synthetic_rgb:synthetic/000000.png"
+            world_view_transform = torch.eye(4)
+
+        sparse_pose = torch.eye(4)
+        sparse_pose[1, 3] = 2.0
+        cache = SparsePoseCache("unused.pt")
+        cache.update(Camera.teacher_cache_key, sparse_pose, inliers=24, ae=0.2, te=2.0)
+
+        sampler = EpisodeSampler(sparse_pose_cache=cache, query_mode="sparse")
+        episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
+
+        self.assertEqual(episode.source, "sparse")
+        self.assertTrue(torch.allclose(episode.pose_init_w2c, sparse_pose))
+        self.assertEqual(episode.sparse_meta["inliers"], 24)
+
+    def test_sparse_mode_uses_stage_failed_cache_by_default(self):
+        from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
+
+        class Camera:
+            image_name = "synthetic/000000.png"
+            teacher_cache_key = "synthetic_rgb:synthetic/000000.png"
+            world_view_transform = torch.eye(4)
+
+        bad_sparse_pose = torch.eye(4)
+        bad_sparse_pose[0, 3] = 10.0
+        cache = SparsePoseCache("unused.pt")
+        cache.update(Camera.teacher_cache_key, bad_sparse_pose, inliers=24, ae=90.0, te=1000.0)
+        cache.items[Camera.teacher_cache_key]["failure_stage"] = "sparse_failure"
+
+        sampler = EpisodeSampler(
+            sparse_pose_cache=cache,
+            query_mode="sparse",
+            error_distribution={"translation": torch.tensor([0.0]), "rotation_deg": torch.tensor([0.0])},
+        )
+        episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
+
+        self.assertEqual(episode.source, "sparse")
+        self.assertTrue(torch.allclose(episode.pose_init_w2c, bad_sparse_pose))
+
+    def test_sparse_mode_can_opt_in_to_reject_cache_stage_sparse_failure(self):
+        from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
+
+        class Camera:
+            image_name = "synthetic/000000.png"
+            teacher_cache_key = "synthetic_rgb:synthetic/000000.png"
+            world_view_transform = torch.eye(4)
+
+        bad_sparse_pose = torch.eye(4)
+        bad_sparse_pose[0, 3] = 10.0
+        cache = SparsePoseCache("unused.pt")
+        cache.update(Camera.teacher_cache_key, bad_sparse_pose, inliers=24, ae=90.0, te=1000.0)
+        cache.items[Camera.teacher_cache_key]["failure_stage"] = "sparse_failure"
+
+        sampler = EpisodeSampler(
+            sparse_pose_cache=cache,
+            query_mode="sparse",
+            error_distribution={"translation": torch.tensor([0.0]), "rotation_deg": torch.tensor([0.0])},
+            exclude_sparse_failure_stages=True,
+        )
+        episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
+
+        self.assertEqual(episode.source, "noise")
+        self.assertTrue(torch.allclose(episode.pose_init_w2c, torch.eye(4)))
+
+    def test_noise_mode_preserves_sparse_meta_for_advantage_gates(self):
+        from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache
+
+        class Camera:
+            image_name = "image_a"
+            world_view_transform = torch.eye(4)
+
+        sparse_pose = torch.eye(4)
+        sparse_pose[0, 3] = 1.0
+        cache = SparsePoseCache("unused.pt")
+        cache.update(
+            "image_a",
+            sparse_pose,
+            inliers=20,
+            ae=2.0,
+            te=20.0,
+            dense_pose_w2c=torch.eye(4),
+            dense_inliers=30,
+            dense_ae=1.0,
+            dense_te=10.0,
+        )
+
+        sampler = EpisodeSampler(
+            sparse_pose_cache=cache,
+            query_mode="noise",
+            error_distribution={"translation": torch.tensor([0.0]), "rotation_deg": torch.tensor([0.0])},
+        )
+        episode = sampler.sample(Camera(), generator=torch.Generator().manual_seed(0))
+
+        self.assertEqual(episode.source, "noise")
+        self.assertTrue(torch.allclose(episode.pose_init_w2c, torch.eye(4)))
+        self.assertEqual(episode.sparse_meta["te"], 20.0)
+        self.assertEqual(episode.sparse_meta["dense_te"], 10.0)
 
     def test_empirical_noise_sampling_uses_observed_error_magnitudes(self):
         from localization_training.episode_sampler import sample_noise_from_distribution
@@ -160,6 +264,71 @@ class EpisodeSamplerTest(unittest.TestCase):
 
         self.assertEqual(len(support), 1)
         self.assertEqual(len(query), 1)
+
+    def test_interpolated_novel_view_samples_between_adjacent_cameras(self):
+        from localization_training.episode_sampler import sample_interpolated_novel_view
+
+        class Camera:
+            def __init__(self, name, x):
+                self.image_name = name
+                self.FoVx = 0.7
+                self.FoVy = 0.6
+                self.world_view_transform = torch.eye(4)
+                self.world_view_transform[3, 0] = -x
+
+        cameras = [Camera("frame_000.png", 0.0), Camera("frame_001.png", 2.0)]
+
+        synthetic = sample_interpolated_novel_view(
+            cameras,
+            generator=torch.Generator().manual_seed(0),
+            alpha_min=0.5,
+            alpha_max=0.5,
+        )
+
+        self.assertEqual(synthetic.image_name, "synthetic/frame_000.png__frame_001.png__0.500")
+        self.assertEqual(synthetic.source, "synthetic_interpolate")
+        self.assertAlmostEqual(synthetic.FoVx, 0.7)
+        self.assertAlmostEqual(synthetic.FoVy, 0.6)
+        pose_w2c = synthetic.world_view_transform.transpose(0, 1)
+        center = torch.linalg.inv(pose_w2c)[:3, 3]
+        self.assertTrue(torch.allclose(center, torch.tensor([1.0, 0.0, 0.0]), atol=1e-5))
+
+    def test_spatial_offset_novel_view_moves_off_train_trajectory(self):
+        from localization_training.episode_sampler import sample_spatial_offset_novel_view
+
+        class Camera:
+            def __init__(self, image_name, center):
+                c2w = torch.eye(4)
+                c2w[:3, 3] = torch.tensor(center, dtype=torch.float32)
+                w2c = torch.linalg.inv(c2w)
+                self.image_name = image_name
+                self.world_view_transform = w2c.transpose(0, 1)
+                self.FoVx = 0.8
+                self.FoVy = 0.6
+                self.image_width = 8
+                self.image_height = 6
+
+        cameras = [
+            Camera("seq/frame000.png", [0.0, 0.0, 0.0]),
+            Camera("seq/frame001.png", [1.0, 0.0, 0.0]),
+            Camera("seq/frame002.png", [2.0, 0.0, 0.0]),
+        ]
+
+        view = sample_spatial_offset_novel_view(
+            cameras,
+            generator=torch.Generator().manual_seed(3),
+            min_offset_ratio=2.0,
+            max_offset_ratio=2.0,
+            yaw_deg=0.0,
+            height_offset_ratio=0.0,
+        )
+        pose_w2c = view.world_view_transform.transpose(0, 1)
+        center = torch.linalg.inv(pose_w2c)[:3, 3]
+
+        self.assertEqual(view.source, "synthetic_spatial_offset")
+        self.assertGreaterEqual(view.nearest_train_distance, 1.9)
+        self.assertGreater(torch.linalg.norm(center[1:]).item(), 1.9)
+        self.assertIn("spatial_offset", view.image_name)
 
 
 if __name__ == "__main__":

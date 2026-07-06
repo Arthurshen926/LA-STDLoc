@@ -108,6 +108,65 @@ class DenseTeacherLossTest(unittest.TestCase):
         self.assertLess(aligned.item(), 1e-3)
         self.assertGreater(confused.item(), aligned.item() + 5.0)
 
+    def test_dense_miss_hit_rank_loss_updates_only_sparse_misses(self):
+        from localization_training.dense_distill import dense_sparse_miss_hit_rank_loss
+
+        teacher = torch.tensor(
+            [
+                [0.9, 0.1, 0.0],
+                [0.0, 0.1, 0.9],
+                [0.34, 0.33, 0.33],
+            ],
+            dtype=torch.float32,
+        )
+        query_features = torch.tensor(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+            ],
+            dtype=torch.float32,
+        )
+        bank_features = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [-1.0, 0.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        loss, diagnostics = dense_sparse_miss_hit_rank_loss(
+            query_features,
+            bank_features,
+            teacher,
+            temperature=1.0,
+            teacher_confidence_threshold=0.5,
+            miss_topk=1,
+            margin=0.2,
+            return_diagnostics=True,
+        )
+
+        self.assertGreater(loss.item(), 0.0)
+        self.assertEqual(diagnostics["dense_rank_sparse_hit_count"], 1)
+        self.assertEqual(diagnostics["dense_rank_sparse_miss_count"], 1)
+        self.assertEqual(diagnostics["dense_rank_low_confidence_count"], 1)
+        self.assertEqual(diagnostics["dense_rank_eligible_anchor_count"], 1)
+
+        aligned_loss, aligned_diagnostics = dense_sparse_miss_hit_rank_loss(
+            query_features,
+            bank_features,
+            teacher,
+            temperature=1.0,
+            teacher_confidence_threshold=0.5,
+            miss_topk=3,
+            margin=0.2,
+            return_diagnostics=True,
+        )
+
+        self.assertEqual(aligned_loss.item(), 0.0)
+        self.assertEqual(aligned_diagnostics["dense_rank_eligible_anchor_count"], 0)
+
     def test_dense_teacher_output_carries_responsibility_diagnostics(self):
         from localization_training.dense_teacher import DenseTeacherOutput
 

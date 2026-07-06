@@ -71,7 +71,7 @@ def render_visible_mask_from_cache(render_visible_masks, image_name, device):
 def get_sampled_gaussian(gaussians: GaussianModel, idx_sampled):
     sampled_gaussians = GaussianModel(gaussians.max_sh_degree)
     sampled_gaussians._xyz = gaussians._xyz[idx_sampled]
-    sampled_gaussians._loc_feature = gaussians._loc_feature[idx_sampled]
+    sampled_gaussians._loc_feature = gaussians.materialized_loc_feature(idx_sampled)
     sampled_gaussians._scaling = gaussians._scaling[idx_sampled]
     sampled_gaussians._opacity = gaussians._opacity[idx_sampled]
     sampled_gaussians._rotation = gaussians._rotation[idx_sampled]
@@ -409,6 +409,51 @@ def matching_oriented_sample(
     return sampled_idx, score_avg, score_num
 
 
+def validate_detector_sampled_indices(
+    sampled_idx,
+    sampling_mode="baseline",
+    min_loc_observations=0,
+    point_count=None,
+):
+    sampled_idx = torch.as_tensor(sampled_idx, dtype=torch.long).reshape(-1)
+    if sampled_idx.numel() == 0:
+        raise ValueError(
+            "sampled 0 detector landmarks; "
+            f"sampling_mode={sampling_mode}, min_loc_observations={min_loc_observations}. "
+            "Check that the loaded Gaussian map has localization observations for localization-aware sampling, "
+            "or lower min_loc_observations/use baseline sampling for detector-only ablations."
+        )
+    if point_count is not None:
+        min_idx = int(sampled_idx.min().item())
+        max_idx = int(sampled_idx.max().item())
+        if min_idx < 0 or max_idx >= int(point_count):
+            raise ValueError(
+                "detector landmark indices are outside the Gaussian point cloud; "
+                f"point_count={int(point_count)}, min_idx={min_idx}, max_idx={max_idx}"
+            )
+    return sampled_idx
+
+
+def load_precomputed_detector_landmarks(path, point_count=None, device=None):
+    with open(path, "rb") as handle:
+        sampled_idx = pickle.load(handle)
+    sampled_idx = validate_detector_sampled_indices(
+        sampled_idx,
+        sampling_mode="precomputed",
+        point_count=point_count,
+    )
+    if device is not None:
+        sampled_idx = sampled_idx.to(device=device, dtype=torch.long)
+    return sampled_idx
+
+
+def load_precomputed_landmark_meta(path, device="cuda"):
+    meta_path = os.path.join(os.path.dirname(path), "landmark_meta.pt")
+    if not os.path.exists(meta_path):
+        return None
+    return torch.load(meta_path, map_location=device)
+
+
 def evaluate_detector(
     detector,
     feature_extractor,
@@ -572,9 +617,14 @@ def training_detector(
     landmark_k=32,
     sampling_mode="baseline",
     utility_weight=1.0,
+    pnp_voxel_size=0.25,
+    pnp_max_per_voxel=8,
+    pnp_preserve_ratio=0.5,
     min_loc_observations=1,
     detector_target_mode="hard",
     soft_sigma=1.5,
+    landmark_only=False,
+    precomputed_landmark_path="",
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
@@ -582,45 +632,91 @@ def training_detector(
 
     render_visible_masks = {}
 
-    # M.O. sampling
-    print("Matching oriented sampling...")
-    sampled_idx, score_avg, score_num = matching_oriented_sample(
-        scene,
-        gaussians,
-        feature_extractor,
-        render_visible_masks,
-        masks=masks,
-        num=landmark_num,
-        k=landmark_k,
-    )
     save_path = os.path.join(scene.model_path, detector_folder)
     os.makedirs(save_path, exist_ok=True)
     landmark_meta = None
-    if sampling_mode in {"localization_aware", "localization_aware_spatial", "localization_aware_global"}:
-        if not hasattr(gaussians, "compute_localization_utility"):
-            raise ValueError("localization_aware sampling requires Gaussian localization state")
-        utility = gaussians.compute_localization_utility(min_observations=min_loc_observations)
-        observed = gaussians.loc_observation_count >= min_loc_observations
-        use_spatial_sampling = sampling_mode != "localization_aware_global"
-        sampled_idx, landmark_meta = localization_aware_sample(
-            gaussians.get_xyz,
-            score_avg,
-            utility,
+    if precomputed_landmark_path:
+        print(f"Loading precomputed detector landmarks from {precomputed_landmark_path}")
+        sampled_idx = validate_detector_sampled_indices(
+            load_precomputed_detector_landmarks(
+                precomputed_landmark_path,
+                point_count=gaussians.get_xyz.shape[0],
+                device=gaussians.get_xyz.device,
+            ),
+            sampling_mode="precomputed",
+            min_loc_observations=min_loc_observations,
+            point_count=gaussians.get_xyz.shape[0],
+        )
+        landmark_meta = load_precomputed_landmark_meta(precomputed_landmark_path)
+        if landmark_meta is not None:
+            save_landmark_meta(os.path.join(save_path, "landmark_meta.pt"), landmark_meta)
+    else:
+        # M.O. sampling
+        print("Matching oriented sampling...")
+        sampled_idx, score_avg, score_num = matching_oriented_sample(
+            scene,
+            gaussians,
+            feature_extractor,
+            render_visible_masks,
+            masks=masks,
             num=landmark_num,
             k=landmark_k,
-            min_observations=observed,
-            utility_weight=utility_weight,
-            spatial=use_spatial_sampling,
         )
-        landmark_meta["repeatability"] = gaussians.loc_repeatability_ema[sampled_idx]
-        landmark_meta["margin"] = gaussians.loc_margin_ema[sampled_idx]
-        landmark_meta["information"] = gaussians.loc_information_ema[sampled_idx]
-        landmark_meta["prototype"] = gaussians.loc_prototype[sampled_idx]
-        save_landmark_meta(os.path.join(save_path, "landmark_meta.pt"), landmark_meta)
-    elif sampling_mode != "baseline":
-        raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
+        if sampling_mode in {
+            "localization_aware",
+            "localization_aware_spatial",
+            "localization_aware_global",
+            "localization_aware_pnp",
+        }:
+            if not hasattr(gaussians, "compute_localization_utility"):
+                raise ValueError("localization_aware sampling requires Gaussian localization state")
+            utility = gaussians.compute_localization_utility(min_observations=min_loc_observations)
+            observed = gaussians.loc_observation_count >= min_loc_observations
+            pnp_balance = sampling_mode == "localization_aware_pnp"
+            use_spatial_sampling = sampling_mode != "localization_aware_global"
+            sampled_idx, landmark_meta = localization_aware_sample(
+                gaussians.get_xyz,
+                score_avg,
+                utility,
+                num=landmark_num,
+                k=landmark_k,
+                min_observations=observed,
+                utility_weight=utility_weight,
+                spatial=use_spatial_sampling,
+                pnp_balance=pnp_balance,
+                pnp_voxel_size=pnp_voxel_size,
+                pnp_max_per_voxel=pnp_max_per_voxel,
+                pnp_preserve_ratio=pnp_preserve_ratio,
+            )
+            sampled_idx = validate_detector_sampled_indices(
+                sampled_idx,
+                sampling_mode=sampling_mode,
+                min_loc_observations=min_loc_observations,
+                point_count=gaussians.get_xyz.shape[0],
+            )
+            landmark_meta["repeatability"] = gaussians.loc_repeatability_ema[sampled_idx]
+            landmark_meta["margin"] = gaussians.loc_margin_ema[sampled_idx]
+            landmark_meta["information"] = gaussians.loc_information_ema[sampled_idx]
+            landmark_meta["prototype"] = gaussians.loc_prototype[sampled_idx]
+            save_landmark_meta(os.path.join(save_path, "landmark_meta.pt"), landmark_meta)
+        elif sampling_mode != "baseline":
+            raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
+        else:
+            sampled_idx = validate_detector_sampled_indices(
+                sampled_idx,
+                sampling_mode=sampling_mode,
+                min_loc_observations=min_loc_observations,
+                point_count=gaussians.get_xyz.shape[0],
+            )
     pickle.dump(sampled_idx, open(os.path.join(save_path, "sampled_idx.pkl"), "wb"))
-    del score_avg, score_num
+    if landmark_only:
+        print(
+            "Detector landmark-only bootstrap complete: "
+            f"path={save_path} landmarks={sampled_idx.numel()} sampling_mode={sampling_mode}"
+        )
+        return
+    if "score_avg" in locals():
+        del score_avg, score_num
     if "utility" in locals():
         del utility
     if "observed" in locals():
@@ -812,6 +908,27 @@ def prepare_output_and_logger(args, folder=None):
     return tb_writer
 
 
+def fill_missing_model_defaults(args):
+    defaults = {
+        "sh_degree": 3,
+        "feature_type": "",
+        "gaussian_type": "3dgs",
+        "images": "images",
+        "resolution": -1,
+        "white_background": True,
+        "longest_edge": 640,
+        "data_device": "cuda",
+        "eval": False,
+        "speedup": False,
+        "norm_before_render": True,
+        "render_items": ["RGB", "Depth", "Edge", "Normal", "Curvature", "Feature Map"],
+    }
+    for key, value in defaults.items():
+        if not hasattr(args, key) or getattr(args, key) is None:
+            setattr(args, key, value)
+    return args
+
+
 def build_arg_parser(with_components=False):
     parser = ArgumentParser(description="Training script parameters")
     lp = ModelParams(parser, sentinel=True)
@@ -837,12 +954,18 @@ def build_arg_parser(with_components=False):
             "localization_aware",
             "localization_aware_spatial",
             "localization_aware_global",
+            "localization_aware_pnp",
         ],
     )
     parser.add_argument("--utility_weight", type=float, default=1.0)
+    parser.add_argument("--pnp_voxel_size", type=float, default=0.25)
+    parser.add_argument("--pnp_max_per_voxel", type=int, default=8)
+    parser.add_argument("--pnp_preserve_ratio", type=float, default=0.5)
     parser.add_argument("--min_loc_observations", type=int, default=1)
     parser.add_argument("--detector_target_mode", type=str, default="hard", choices=["hard", "soft"])
     parser.add_argument("--soft_sigma", type=float, default=1.5)
+    parser.add_argument("--landmark_only", action="store_true", default=False)
+    parser.add_argument("--precomputed_landmark_path", type=str, default="")
     if with_components:
         return parser, lp, op
     return parser
@@ -853,6 +976,7 @@ if __name__ == "__main__":
     # Set up command line argument parser
     parser, lp, op = build_arg_parser(with_components=True)
     args = get_combined_args(parser)
+    fill_missing_model_defaults(args)
     args.save_iterations.append(args.iterations)
 
     # Initialize system state (RNG)
@@ -899,9 +1023,14 @@ if __name__ == "__main__":
         landmark_k=args.landmark_k,
         sampling_mode=args.sampling_mode,
         utility_weight=args.utility_weight,
+        pnp_voxel_size=args.pnp_voxel_size,
+        pnp_max_per_voxel=args.pnp_max_per_voxel,
+        pnp_preserve_ratio=args.pnp_preserve_ratio,
         min_loc_observations=args.min_loc_observations,
         detector_target_mode=args.detector_target_mode,
         soft_sigma=args.soft_sigma,
+        landmark_only=args.landmark_only,
+        precomputed_landmark_path=args.precomputed_landmark_path,
     )
 
     # All done

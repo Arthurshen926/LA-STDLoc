@@ -971,3 +971,273 @@ mild/balanced 500 在 18/18 行都实际删点，机制混杂已排除。
 但 R5 均值仍接近 0 且略负，TE 均值变差，KingsCollege 对 prune 尤其不友好。
 因此 physical prune 的“策略有效性”仍未被证明，只能说当前 mild/balanced 阈值不会造成灾难性退化。
 ```
+
+## update5: full-bank false-negative ignore 与 split-only 重跑
+
+本轮继续闭合 LA_update2 中 descriptor 主路径的一个高影响混杂：
+
+```text
+full-bank hard negatives 会把 3D/2D 近邻当作负样本，可能惩罚同一局部结构的合理多解。
+```
+
+### 新增修复
+
+1. `localization_training/direct_landmark_teacher.py`
+   - `full_bank_descriptor_stats()` 支持 `ignore_bank_mask`，训练 loss 与诊断 margin 使用同一 false-negative mask。
+   - `direct_landmark_teacher()` 新增：
+     - `full_bank_ignore_3d_radius`
+     - `full_bank_ignore_uv_radius`
+   - full-bank ignore mask 现在合并三类 false negative：
+     - stable source sibling；
+     - 3D 半径内近邻；
+     - 同 query pose 下投影 UV 半径内近邻。
+   - `DirectLandmarkTeacherOutput` 新增 `diagnostics`，训练时会向 TensorBoard 记录：
+     - `full_bank_query_count`
+     - `full_bank_bank_count`
+     - `full_bank_valid_positive_count`
+     - `full_bank_potential_negative_count`
+     - `full_bank_ignore_negative_count`
+     - `full_bank_effective_negative_count`
+     - `full_bank_ignore_negative_ratio`
+2. `train_locaware.py`
+   - 新增命令行参数：
+     - `--loc_full_bank_ignore_3d_radius`
+     - `--loc_full_bank_ignore_uv_radius`
+3. v03/topology 脚本
+   - `scripts/run_locaware_v03_shopfacade.sh`
+   - `scripts/run_locaware_v03_topology_full.sh`
+   - 默认半径仍为 `0.0`，可通过环境变量显式打开：
+     - `V03_FULL_BANK_IGNORE_3D_RADIUS`
+     - `V03_FULL_BANK_IGNORE_UV_RADIUS`
+     - `TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS`
+     - `TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS`
+
+### 单元验证
+
+```text
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m unittest tests.test_direct_landmark_teacher -v
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m unittest tests.test_train_locaware_masks tests.test_full_script_args -v
+bash -n scripts/run_locaware_v03_shopfacade.sh scripts/run_locaware_v03_topology_full.sh scripts/run_la_update2_long_worker.sh
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m py_compile train_locaware.py localization_training/direct_landmark_teacher.py
+```
+
+结果：
+
+```text
+direct teacher: 12/12 passed
+parser/script args: 47/47 passed
+bash -n / py_compile: passed
+full unittest with CUDA_HOME=/usr/local/cuda-11.8: 151/151 passed
+```
+
+### 10-step smoke
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update5_desc_ignorefn_smoke_v1/summary_final.json
+```
+
+配置：
+
+```text
+scene = ShopFacade
+query_split_seed = 2025
+mode = no_mutation
+steps = 10
+TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS = 0.1
+TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS = 2.0
+```
+
+结果：
+
+| Scene | Steps | R5 | R2 | median TE | point delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ShopFacade | 10 | 0.776699 | 0.320388 | 3.008794 | 0 |
+
+结论：新参数路径能跑通，并确认 `train_locaware.py` 收到了 `--loc_full_bank_ignore_3d_radius 0.1 --loc_full_bank_ignore_uv_radius 2.0`。
+
+### 100/500-step multi-scene matrix
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update5_desc_ignorefn_core_v1/summary_final.json
+```
+
+矩阵：
+
+```text
+scenes = ShopFacade, KingsCollege, OldHospital
+train_seed = 0
+query_split_seed = 2025, 2026, 2027
+modes = no_mutation, split_only
+steps = 100, 500
+rows = 36
+TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS = 0.1
+TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS = 2.0
+```
+
+完整性检查：
+
+```text
+logs = 36
+iteration_30600 checkpoints = 18
+iteration_31000 checkpoints = 18
+GPU processes after completion = none
+```
+
+总体绝对指标：
+
+| Tag | n | mean R5 | median R5 | mean R2 | mean TE | mean point delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| core_no_mutation_100 | 9 | 0.276467 | 0.043956 | 0.086300 | 11.885187 | 0.0 |
+| core_no_mutation_500 | 9 | 0.277323 | 0.060440 | 0.093993 | 11.687521 | 0.0 |
+| core_split_only_100 | 9 | 0.278119 | 0.049451 | 0.093851 | 11.910717 | 61.0 |
+| core_split_only_500 | 9 | 0.279587 | 0.065934 | 0.093993 | 11.677187 | 376.9 |
+
+与旧 `stdloc_la_update2_long_closure_v2` 的 matched tag 对照：
+
+| Tag | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| core_no_mutation_100 | 9 | +0.002770 | 0.000000 | 4 / 2 / 3 | -0.013087 | -0.358017 |
+| core_no_mutation_500 | 9 | -0.002234 | 0.000000 | 2 / 3 / 4 | +0.004602 | +0.192469 |
+| core_split_only_100 | 9 | +0.009490 | +0.005831 | 5 / 1 / 3 | +0.001223 | -0.374848 |
+| core_split_only_500 | 9 | -0.002880 | -0.002915 | 2 / 2 / 5 | -0.002013 | +0.085881 |
+
+与同一 run 的 no-mutation 对照：
+
+| Steps | n | mean dR5 | median dR5 | R5 pos/zero/neg | mean dR2 | mean dTE |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 100 | 9 | +0.001652 | 0.000000 | 4 / 3 / 2 | +0.007551 | +0.025530 |
+| 500 | 9 | +0.002264 | 0.000000 | 4 / 1 / 4 | 0.000000 | -0.010335 |
+
+按 scene 的 split-only minus no-mutation：
+
+| Steps | Scene | mean dR5 | mean dR2 | mean dTE | mean children_added |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | KingsCollege | -0.001944 | 0.000000 | -0.057947 | 143.3 |
+| 100 | OldHospital | +0.003663 | 0.000000 | +0.137368 | 84.0 |
+| 100 | ShopFacade | +0.003236 | +0.022654 | -0.002832 | 138.7 |
+| 500 | KingsCollege | -0.002915 | 0.000000 | +0.100077 | 914.7 |
+| 500 | OldHospital | 0.000000 | 0.000000 | -0.165235 | 484.0 |
+| 500 | ShopFacade | +0.009709 | 0.000000 | +0.034154 | 862.7 |
+
+### update5 判断
+
+```text
+full-bank 3D/UV false-negative ignore 的实现混杂已经闭合：路径可运行、测试覆盖、36 行矩阵完整。
+```
+
+但精度结论仍然谨慎：
+
+1. 与旧 matched tag 对照，`core_split_only_100` 有小幅正向：R5 `+0.00949`、R2 `+0.00122`、TE `-0.37485`。
+2. 与同 run no-mutation 对照，split-only 的提升更小：100-step R5 `+0.00165`，500-step R5 `+0.00226`，median dR5 均为 `0`。
+3. 500-step matched tag 对照仍为负：`core_split_only_500` mean dR5 `-0.00288`，R5 pos/zero/neg 为 `2 / 2 / 5`。
+4. scene 依赖明显：ShopFacade split-only 较友好，KingsCollege 在 100/500 都为负，OldHospital 主要改善 TE 而非 R5。
+
+因此，这轮结果支持：
+
+```text
+之前 descriptor full-bank hard-negative 确实存在 false-negative 混杂；
+修复后 split-only 有更干净的小正向信号；
+但该信号仍弱且不稳健，不能作为 LA-STDLoc 精度主张的强证据。
+```
+
+下一步不应继续无目标扫 split/prune 阈值。direct teacher 诊断已经补上，用于后续确认 ignore 半径是否过度屏蔽。更合理的后续方向是按 LA_update2.md 进入方法层调整：
+
+1. 做真正的 multi-positive descriptor objective，而不是只 mask false negatives。
+2. 评估 3DGS novel/perturbed-view query supervision 是否能补足当前只用原始相机视角的问题。
+3. 对 topology mutation 改成 held-out risk commit 或 localization-only overlay map，避免直接改主 Gaussian map 造成不稳定。
+
+## update6: full-bank multi-positive objective
+
+本轮落实 update5 末尾的第一项：把 full-bank 的 3D/UV/source 近邻从“只忽略 false negative”扩展为可选的多正样本目标。
+
+### 新增修复
+
+1. `localization_training/direct_landmark_teacher.py`
+   - `full_bank_bimnn_loss()` 新增 `positive_bank_mask`。
+   - query-to-bank loss 从单一正样本 CE 改为对多正样本 logits 做 `logsumexp`。
+   - hard negative mining 会排除所有正样本。
+   - `full_bank_descriptor_stats()` 的 positive probability / margin 也按多正样本统计。
+   - full-bank 诊断新增：
+     - `full_bank_positive_count`
+     - `full_bank_extra_positive_count`
+     - 修正后的 `full_bank_effective_negative_count`
+2. `direct_landmark_teacher()` 新增 `full_bank_nearby_as_positive`。
+   - 关闭时维持 update5 行为：source sibling、3D 近邻、UV 近邻作为 ignore mask。
+   - 开启时这些 related entries 进入 `positive_bank_mask`，作为同一个 query anchor 的多正样本。
+3. `train_locaware.py` 新增命令行：
+   - `--loc_full_bank_nearby_as_positive`
+4. v03/topology 脚本新增环境变量：
+   - `V03_FULL_BANK_NEARBY_AS_POSITIVE=1`
+   - `TOPOLOGY_FULL_BANK_NEARBY_AS_POSITIVE=1`
+
+### 验证
+
+```text
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m unittest tests.test_direct_landmark_teacher -v
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m unittest tests.test_train_locaware_masks tests.test_full_script_args -v
+PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m py_compile train_locaware.py localization_training/direct_landmark_teacher.py
+bash -n scripts/run_locaware_v03_shopfacade.sh scripts/run_locaware_v03_topology_full.sh
+CUDA_HOME=/usr/local/cuda-11.8 PATH=/usr/local/cuda-11.8/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:${LD_LIBRARY_PATH:-} PYTHONPATH=/root/STDLoc /root/miniconda3/envs/ulfloc_repro/bin/python -m unittest discover -s tests
+```
+
+结果：
+
+```text
+direct teacher: 14/14 passed
+parser/script args: 47/47 passed
+py_compile / bash -n: passed
+full unittest with CUDA_HOME=/usr/local/cuda-11.8: 153/153 passed
+```
+
+### 10-step smoke
+
+输出：
+
+```text
+/mnt/pool/sqy/stdloc_la_update6_multipos_smoke_v1/summary_final.json
+```
+
+配置：
+
+```text
+scene = ShopFacade
+train_seed = 0
+query_split_seed = 2025
+mode = no_mutation
+steps = 10
+TOPOLOGY_FULL_BANK_IGNORE_3D_RADIUS = 0.1
+TOPOLOGY_FULL_BANK_IGNORE_UV_RADIUS = 2.0
+TOPOLOGY_FULL_BANK_NEARBY_AS_POSITIVE = 1
+```
+
+结果：
+
+| Scene | Steps | R5 | R2 | median TE | point delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ShopFacade | 10 | 0.766990 | 0.320388 | 3.032771 | 0 |
+
+对照 update5 ignore-only 10-step smoke：
+
+| Variant | R5 | R2 | median TE |
+| --- | ---: | ---: | ---: |
+| update5 ignore-only | 0.776699 | 0.320388 | 3.008794 |
+| update6 multi-positive | 0.766990 | 0.320388 | 3.032771 |
+
+结论：
+
+```text
+multi-positive full-bank objective 的实现路径已跑通，且不会立即造成 smoke 级别崩坏。
+但当前只有 ShopFacade 10-step no-mutation 单点结果，不能据此判断 multi-positive 是否优于 ignore-only。
+```
+
+下一步若继续沿 descriptor 主路径推进，应跑：
+
+```text
+3 scenes x query_split_seed=2025/2026/2027 x steps=100/500 x no_mutation/split_only
+```
+
+并与 update5 ignore-only 的 36 行矩阵做 matched delta。

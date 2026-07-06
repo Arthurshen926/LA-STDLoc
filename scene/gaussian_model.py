@@ -24,6 +24,7 @@ from utils.general_utils import (build_rotation, build_scaling_rotation,
 from utils.graphics_utils import BasicPointCloud
 from utils.sh_utils import RGB2SH
 from utils.system_utils import mkdir_p
+from localization_training.lafgs_reconstruction import pose_aware_split_score
 
 
 def split_localization_child_features(parent_features, parent_prototypes=None, prototype_counts=None, repeat=2):
@@ -257,7 +258,7 @@ class GaussianModel_2dgs(nn.Module):
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    def load_ply(self, path):
+    def load_ply(self, path, loc_feature_dim=None):
         plydata = PlyData.read(path)
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
@@ -271,8 +272,21 @@ class GaussianModel_2dgs(nn.Module):
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
 
         count = sum(1 for name in plydata.elements[0].data.dtype.names if name.startswith("loc_"))
-        loc_feature = np.stack([np.asarray(plydata.elements[0][f"loc_{i}"]) for i in range(count)], axis=1) 
-        loc_feature = np.expand_dims(loc_feature, axis=-1) 
+        if count > 0:
+            loc_feature = np.stack([np.asarray(plydata.elements[0][f"loc_{i}"]) for i in range(count)], axis=1)
+            loc_feature = np.expand_dims(loc_feature, axis=-1)
+        else:
+            feature_dim = int(loc_feature_dim or 256)
+            if feature_dim <= 0:
+                raise ValueError(f"loc_feature_dim must be positive for RGB-only PLY loading, got {feature_dim}")
+            rng = np.random.default_rng(0)
+            loc_feature = rng.standard_normal((xyz.shape[0], feature_dim, 1)).astype(np.float32)
+            norm = np.linalg.norm(loc_feature, axis=1, keepdims=True)
+            loc_feature = loc_feature / np.clip(norm, 1e-12, None)
+            print(
+                "Loaded RGB-only Gaussian PLY without loc_* fields; "
+                f"initialized LaFGS loc_feature with dim={feature_dim}"
+            )
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))
@@ -502,11 +516,110 @@ class GaussianModel(nn.Module):
         self.setup_functions()
         self._loc_feature = torch.empty(0)
         self._loc_opacity = torch.empty(0)
+        self._loc_overlay_feature = torch.empty(0)
+        self._loc_overlay_active_logit = torch.empty(0)
+        self.loc_overlay_source_index = torch.empty(0, dtype=torch.long)
+        self.loc_overlay_max_residual_norm = 0.0
+        self.loc_overlay_normalize = False
 
     def _loc_feature_dim(self):
         if self._loc_feature.numel() == 0:
             return 0
         return self._loc_feature.reshape(self._loc_feature.shape[0], -1).shape[1]
+
+    def _has_descriptor_overlay(self):
+        overlay_feature = getattr(self, "_loc_overlay_feature", None)
+        overlay_active = getattr(self, "_loc_overlay_active_logit", None)
+        overlay_source = getattr(self, "loc_overlay_source_index", None)
+        if not torch.is_tensor(overlay_feature) or overlay_feature.numel() == 0:
+            return False
+        if not torch.is_tensor(overlay_active) or overlay_active.shape[0] != overlay_feature.shape[0]:
+            return False
+        if not torch.is_tensor(overlay_source) or overlay_source.numel() != overlay_feature.shape[0]:
+            return False
+        return True
+
+    def clear_descriptor_overlay(self):
+        device = self._loc_feature.device if torch.is_tensor(self._loc_feature) else torch.device("cpu")
+        self._loc_overlay_feature = nn.Parameter(torch.empty(0, device=device), requires_grad=True)
+        self._loc_overlay_active_logit = nn.Parameter(torch.empty(0, device=device), requires_grad=True)
+        self.loc_overlay_source_index = torch.empty(0, dtype=torch.long, device=device)
+        self.loc_overlay_max_residual_norm = 0.0
+        self.loc_overlay_normalize = False
+
+    def init_descriptor_overlay(
+        self,
+        source_indices,
+        init_active_logit=0.0,
+        reset=False,
+        max_residual_norm=0.0,
+        normalize=False,
+    ):
+        if self._loc_feature.numel() == 0:
+            raise ValueError("descriptor overlay requires initialized localization features")
+        device = self._loc_feature.device
+        dtype = self._loc_feature.dtype
+        source_indices = torch.as_tensor(source_indices, dtype=torch.long, device=device).reshape(-1)
+        if source_indices.numel() == 0:
+            self.clear_descriptor_overlay()
+            return False
+        source_indices = torch.unique(source_indices, sorted=True)
+        feature_shape = (source_indices.numel(),) + tuple(self._loc_feature.shape[1:])
+        active_shape = (source_indices.numel(),) + (1,) * max(self._loc_feature.dim() - 1, 1)
+        overlay_feature = torch.zeros(feature_shape, dtype=dtype, device=device)
+        overlay_active = torch.full(active_shape, float(init_active_logit), dtype=dtype, device=device)
+
+        if self._has_descriptor_overlay() and not reset:
+            old_sources = self.loc_overlay_source_index.to(device=device, dtype=torch.long)
+            old_feature = self._loc_overlay_feature.detach().to(device=device, dtype=dtype)
+            old_active = self._loc_overlay_active_logit.detach().to(device=device, dtype=dtype)
+            old_pos = torch.searchsorted(old_sources, source_indices)
+            old_pos_clamped = old_pos.clamp(max=max(old_sources.numel() - 1, 0))
+            has_old = (old_pos < old_sources.numel()) & (old_sources[old_pos_clamped] == source_indices)
+            if bool(has_old.any()):
+                overlay_feature[has_old] = old_feature[old_pos[has_old]]
+                overlay_active[has_old] = old_active[old_pos[has_old]]
+
+        self._loc_overlay_feature = nn.Parameter(overlay_feature.requires_grad_(True))
+        self._loc_overlay_active_logit = nn.Parameter(overlay_active.requires_grad_(True))
+        self.loc_overlay_source_index = source_indices.detach().clone()
+        self.loc_overlay_max_residual_norm = float(max_residual_norm)
+        self.loc_overlay_normalize = bool(normalize)
+        return True
+
+    def add_descriptor_overlay_to_optimizer(self, lr=None):
+        if not self._has_descriptor_overlay() or self.optimizer is None:
+            return False
+        if lr is None or float(lr) <= 0.0:
+            lr = None
+            for group in self.optimizer.param_groups:
+                if group.get("name") == "loc_feature":
+                    lr = group.get("la_base_lr", group.get("lr", 0.0))
+                    break
+            if lr is None:
+                lr = 0.0
+        lr = float(lr)
+        params = {
+            "loc_overlay_feature": self._loc_overlay_feature,
+            "loc_overlay_active_logit": self._loc_overlay_active_logit,
+        }
+        existing = {group.get("name"): group for group in self.optimizer.param_groups}
+        for name, param in params.items():
+            group = existing.get(name)
+            if group is None:
+                self.optimizer.add_param_group({"params": [param], "lr": lr, "name": name, "la_base_lr": lr})
+            else:
+                group["params"] = [param]
+                group["lr"] = lr
+                group["la_base_lr"] = lr
+        return True
+
+    def materialized_loc_feature(self, indices=None):
+        features = self.get_loc_feature
+        if indices is not None:
+            indices = torch.as_tensor(indices, dtype=torch.long, device=features.device)
+            features = features[indices]
+        return features
 
     def _has_localization_state(self):
         n = self.get_xyz.shape[0]
@@ -919,7 +1032,21 @@ class GaussianModel(nn.Module):
         pose_effective = self.loc_information_ema.float().clamp(0.0, 1.0)
         if not bool((pose_effective[eligible] > 0).any()):
             pose_effective = torch.ones_like(pose_effective)
-        split_score = (1.0 + grad_score) * entropy_score * repeatability * teacher_confidence * pose_effective
+        pnp_residual = self.loc_reproj_error_ema.float().clamp_min(0.0)
+        if not bool((pnp_residual[eligible] > 0).any()):
+            pnp_residual = 1.0 + grad_score
+        else:
+            pnp_residual = pnp_residual * (1.0 + grad_score)
+        split_score = pose_aware_split_score(
+            footprint=self.max_radii2D.float(),
+            ambiguity=entropy_score,
+            pnp_residual=pnp_residual,
+            repeatability=repeatability,
+            positive_prob=teacher_confidence,
+            pose_information=pose_effective,
+            min_footprint=min_radius,
+            min_repeatability=min_repeatability,
+        )
         split_score[~torch.isfinite(split_score)] = 0.0
         split_score[~eligible] = 0.0
         return split_score
@@ -945,6 +1072,12 @@ class GaussianModel(nn.Module):
         }
         for name in self._localization_buffer_names():
             state[name] = getattr(self, name).detach()
+        if self._has_descriptor_overlay():
+            state["loc_overlay_source_index"] = self.loc_overlay_source_index.detach()
+            state["loc_overlay_feature"] = self._loc_overlay_feature.detach()
+            state["loc_overlay_active_logit"] = self._loc_overlay_active_logit.detach()
+            state["loc_overlay_max_residual_norm"] = float(getattr(self, "loc_overlay_max_residual_norm", 0.0))
+            state["loc_overlay_normalize"] = bool(getattr(self, "loc_overlay_normalize", False))
         return state
 
     def restore_localization_state(self, state):
@@ -968,6 +1101,25 @@ class GaussianModel(nn.Module):
             if name in state:
                 setattr(self, name, state[name].to(device=device).detach().clone())
         self._ensure_localization_state()
+        overlay_feature = state.get("loc_overlay_feature", None)
+        overlay_source = state.get("loc_overlay_source_index", None)
+        overlay_active = state.get("loc_overlay_active_logit", None)
+        if overlay_feature is not None and overlay_source is not None:
+            overlay_feature = overlay_feature.to(device=device, dtype=self._loc_feature.dtype).detach().clone()
+            if overlay_active is None:
+                overlay_active = torch.zeros(
+                    (overlay_feature.shape[0],) + (1,) * max(overlay_feature.dim() - 1, 1),
+                    dtype=overlay_feature.dtype,
+                    device=device,
+                )
+            else:
+                overlay_active = overlay_active.to(device=device, dtype=overlay_feature.dtype).detach().clone()
+            self._loc_overlay_feature = nn.Parameter(overlay_feature.requires_grad_(True))
+            self._loc_overlay_active_logit = nn.Parameter(overlay_active.requires_grad_(True))
+            self.loc_overlay_source_index = overlay_source.to(device=device, dtype=torch.long).detach().clone()
+            self.loc_overlay_max_residual_norm = float(state.get("loc_overlay_max_residual_norm", 0.0))
+            self.loc_overlay_normalize = bool(state.get("loc_overlay_normalize", False))
+            self.add_descriptor_overlay_to_optimizer()
 
     def save_localization_state(self, path):
         mkdir_p(os.path.dirname(path))
@@ -1039,7 +1191,37 @@ class GaussianModel(nn.Module):
         return self.opacity_activation(self._opacity)
     @property
     def get_loc_feature(self):
-        return self._loc_feature 
+        if not self._has_descriptor_overlay():
+            return self._loc_feature
+        base = self._loc_feature
+        n = base.shape[0]
+        source_index = getattr(self, "loc_source_index", None)
+        if not torch.is_tensor(source_index) or source_index.numel() != n:
+            source_index = torch.arange(n, dtype=torch.long, device=base.device)
+        else:
+            source_index = source_index.to(device=base.device, dtype=torch.long).reshape(-1)
+        overlay_source = self.loc_overlay_source_index.to(device=base.device, dtype=torch.long)
+        if overlay_source.numel() == 0:
+            return base
+        pos = torch.searchsorted(overlay_source, source_index)
+        pos_clamped = pos.clamp(max=overlay_source.numel() - 1)
+        valid = (pos < overlay_source.numel()) & (overlay_source[pos_clamped] == source_index)
+        if not bool(valid.any()):
+            return base
+        overlay = torch.zeros_like(base)
+        active = torch.sigmoid(self._loc_overlay_active_logit.to(device=base.device, dtype=base.dtype))
+        residual_table = self._loc_overlay_feature.to(device=base.device, dtype=base.dtype) * active
+        max_norm = float(getattr(self, "loc_overlay_max_residual_norm", 0.0))
+        if max_norm > 0.0 and residual_table.numel() > 0:
+            flat = residual_table.reshape(residual_table.shape[0], -1)
+            norm = torch.linalg.norm(flat, dim=1, keepdim=True)
+            scale = torch.clamp(max_norm / norm.clamp_min(1e-12), max=1.0)
+            residual_table = (flat * scale).reshape_as(residual_table)
+        overlay[valid] = residual_table[pos[valid]]
+        features = base + overlay
+        if bool(getattr(self, "loc_overlay_normalize", False)):
+            features = F.normalize(features.reshape(n, -1), p=2, dim=1).reshape_as(features)
+        return features
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -1096,6 +1278,16 @@ class GaussianModel(nn.Module):
             {'params': [self._loc_feature], 'lr':training_args.loc_feature_lr, "name": "loc_feature"},
             {'params': [self._loc_opacity], 'lr': loc_opacity_lr, "name": "loc_opacity"},
         ]
+        if self._has_descriptor_overlay():
+            overlay_lr = getattr(training_args, "loc_overlay_lr", 0.0)
+            if float(overlay_lr) <= 0.0:
+                overlay_lr = training_args.loc_feature_lr
+            l.extend(
+                [
+                    {'params': [self._loc_overlay_feature], 'lr': overlay_lr, "name": "loc_overlay_feature"},
+                    {'params': [self._loc_overlay_active_logit], 'lr': overlay_lr, "name": "loc_overlay_active_logit"},
+                ]
+            )
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
@@ -1154,7 +1346,7 @@ class GaussianModel(nn.Module):
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
 
-    def load_ply(self, path):
+    def load_ply(self, path, loc_feature_dim=None):
         plydata = PlyData.read(path)
 
         xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
@@ -1168,8 +1360,21 @@ class GaussianModel(nn.Module):
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
 
         count = sum(1 for name in plydata.elements[0].data.dtype.names if name.startswith("loc_"))
-        loc_feature = np.stack([np.asarray(plydata.elements[0][f"loc_{i}"]) for i in range(count)], axis=1) 
-        loc_feature = np.expand_dims(loc_feature, axis=-1) 
+        if count > 0:
+            loc_feature = np.stack([np.asarray(plydata.elements[0][f"loc_{i}"]) for i in range(count)], axis=1)
+            loc_feature = np.expand_dims(loc_feature, axis=-1)
+        else:
+            feature_dim = int(loc_feature_dim or 256)
+            if feature_dim <= 0:
+                raise ValueError(f"loc_feature_dim must be positive for RGB-only PLY loading, got {feature_dim}")
+            rng = np.random.default_rng(0)
+            loc_feature = rng.standard_normal((xyz.shape[0], feature_dim, 1)).astype(np.float32)
+            norm = np.linalg.norm(loc_feature, axis=1, keepdims=True)
+            loc_feature = loc_feature / np.clip(norm, 1e-12, None)
+            print(
+                "Loaded RGB-only Gaussian PLY without loc_* fields; "
+                f"initialized LaFGS loc_feature with dim={feature_dim}"
+            )
 
         extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
         extra_f_names = sorted(extra_f_names, key = lambda x: int(x.split('_')[-1]))

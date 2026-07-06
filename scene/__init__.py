@@ -90,7 +90,11 @@ class Scene:
             point_cloud_path = os.path.join(self.model_path,
                                             "point_cloud",
                                             "iteration_" + str(self.loaded_iter))
-            self.gaussians.load_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
+            self.gaussians.load_ply(
+                os.path.join(point_cloud_path, "point_cloud.ply"),
+                loc_feature_dim=scene_info.loc_feature_dim,
+            )
+            self.gaussians.spatial_lr_scale = self.cameras_extent
             if hasattr(self.gaussians, "load_localization_state"):
                 self.gaussians.load_localization_state(os.path.join(point_cloud_path, "loc_state.pt"))
         else:

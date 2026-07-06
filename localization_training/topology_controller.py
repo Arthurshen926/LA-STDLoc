@@ -25,6 +25,22 @@ class TopologyConfig:
     physical_loc_threshold: float = 0.005
     physical_utility_threshold: float = -3.0
     require_loc_opacity_trained_for_physical_prune: bool = True
+    max_mutation_events: int = 0
+    risk_commit_policy: str = "off"
+
+
+@dataclass
+class TopologyMutationProposal:
+    iteration: int
+    split_mask: torch.Tensor
+    physical_prune_mask: torch.Tensor
+    soft_prune_mask: torch.Tensor
+    utility: torch.Tensor
+    candidate_count: int
+    point_count_start: int
+    point_count_before: int
+    budget: int
+    num_children_per_parent: int = 2
 
 
 def _quantile(values, q):
@@ -82,6 +98,17 @@ def _utility_quantiles(utility):
         "q50": float(torch.quantile(finite, 0.50).item()),
         "q75": float(torch.quantile(finite, 0.75).item()),
     }
+
+
+def _coerce_risk_decision(decision):
+    if isinstance(decision, bool):
+        return {"accepted": bool(decision), "reason": "callback_bool"}
+    if isinstance(decision, dict):
+        out = dict(decision)
+        out["accepted"] = bool(out.get("accepted", False))
+        out.setdefault("reason", "callback")
+        return out
+    raise TypeError("risk evaluator must return bool or dict with an 'accepted' field")
 
 
 def localization_split_eligible_mask(gaussians, config: TopologyConfig, iteration):
@@ -193,18 +220,41 @@ def joint_physical_prune_mask(
 
 
 class LocalizationTopologyController:
-    def __init__(self, config: TopologyConfig, initial_points=None, protected_source_indices=None):
+    def __init__(self, config: TopologyConfig, initial_points=None, protected_source_indices=None, risk_evaluator=None):
         self.config = config
         self.initial_points = initial_points
         self.last_event = None
         self.protected_source_indices = protected_source_indices
+        self.mutation_event_count = 0
+        self.risk_evaluator = risk_evaluator
 
     def should_update(self, iteration):
+        if int(self.config.max_mutation_events) > 0 and self.mutation_event_count >= int(self.config.max_mutation_events):
+            return False
         return iteration >= self.config.stats_warmup and iteration % self.config.update_interval == 0
+
+    def _risk_commit_enabled(self):
+        return self.risk_evaluator is not None or self.config.risk_commit_policy != "off"
+
+    def _evaluate_risk_commit(self, proposal, gaussians):
+        policy = self.config.risk_commit_policy
+        if self.risk_evaluator is not None:
+            return _coerce_risk_decision(self.risk_evaluator(proposal, gaussians))
+        if policy == "accept_all":
+            return {"accepted": True, "reason": "accept_all"}
+        if policy == "reject_all":
+            return {"accepted": False, "reason": "reject_all"}
+        if policy == "callback":
+            raise RuntimeError("risk_commit_policy='callback' requires a risk_evaluator")
+        if policy == "off":
+            return {"accepted": True, "reason": "off"}
+        raise ValueError(f"Unknown risk_commit_policy: {policy}")
 
     def update(self, gaussians, scene_extent, iteration):
         _assert_localization_buffers_match_point_count(gaussians)
         point_count_start = int(gaussians.get_xyz.shape[0])
+        risk_decision = None
+        risk_commit_active = self._risk_commit_enabled()
         if hasattr(gaussians, "compute_landmark_reliability"):
             reliability = gaussians.compute_landmark_reliability(self.config.min_observations)
             geometry = gaussians.compute_pose_geometry_value(self.config.min_observations)
@@ -212,6 +262,11 @@ class LocalizationTopologyController:
         else:
             utility = gaussians.compute_localization_utility(self.config.min_observations)
         if self.config.enable_soft_prune:
+            if risk_commit_active:
+                raise RuntimeError(
+                    "Risk commit does not yet support rollback-safe soft prune. "
+                    "Disable soft prune for risk-commit experiments."
+                )
             apply_localization_soft_prune(
                 gaussians,
                 utility=utility,
@@ -239,7 +294,7 @@ class LocalizationTopologyController:
         else:
             physical = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=gaussians.get_xyz.device)
         physical_count = int(physical.sum().item())
-        if self.config.enable_physical_prune and physical.any():
+        if self.config.enable_physical_prune and physical.any() and not risk_commit_active:
             gaussians.prune_points(physical)
             _assert_localization_buffers_match_point_count(gaussians)
         if self.config.enable_split:
@@ -261,10 +316,37 @@ class LocalizationTopologyController:
             split = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=gaussians.get_xyz.device)
             budget = int(gaussians.get_xyz.shape[0])
             num_children_per_parent = 2
+        proposed_split_count = int(split.sum().item())
+        if risk_commit_active and (split.any() or physical.any()):
+            proposal = TopologyMutationProposal(
+                iteration=int(iteration),
+                split_mask=split.detach().clone(),
+                physical_prune_mask=physical.detach().clone(),
+                soft_prune_mask=torch.zeros_like(split, dtype=torch.bool),
+                utility=utility.detach().clone(),
+                candidate_count=int(candidate_count),
+                point_count_start=int(point_count_start),
+                point_count_before=int(gaussians.get_xyz.shape[0]),
+                budget=int(budget),
+                num_children_per_parent=int(num_children_per_parent),
+            )
+            risk_decision = self._evaluate_risk_commit(proposal, gaussians)
+            if not risk_decision["accepted"]:
+                split = torch.zeros_like(split, dtype=torch.bool)
+                physical = torch.zeros_like(physical, dtype=torch.bool)
+                physical_count = 0
+            elif physical.any() and split.any():
+                raise RuntimeError(
+                    "Risk commit currently requires physical prune and split proposals to be evaluated separately. "
+                    "Disable physical prune for split-risk experiments."
+                )
+        if risk_commit_active and self.config.enable_physical_prune and physical.any():
+            gaussians.prune_points(physical)
+            _assert_localization_buffers_match_point_count(gaussians)
         event = {
             "iteration": int(iteration),
             "candidate_count": candidate_count,
-            "requested_split_count": int(split.sum().item()),
+            "requested_split_count": proposed_split_count,
             "actual_parent_removed": 0,
             "actual_children_added": 0,
             "physical_prune_count": physical_count,
@@ -273,6 +355,8 @@ class LocalizationTopologyController:
             "point_count_after": int(gaussians.get_xyz.shape[0]),
             "utility_quantiles": _utility_quantiles(utility),
         }
+        if risk_decision is not None:
+            event["risk_commit"] = risk_decision
         if split.any() and gaussians.get_xyz.shape[0] < budget:
             point_count_before = gaussians.get_xyz.shape[0]
             split_count = int(split.sum().item())
@@ -291,6 +375,8 @@ class LocalizationTopologyController:
             new_clone_count = split_count * num_children_per_parent
             if new_clone_count > 0:
                 gaussians.last_topology_iteration[-new_clone_count:] = iteration
+                if hasattr(gaussians, "loc_birth_iteration"):
+                    gaussians.loc_birth_iteration[-new_clone_count:] = iteration
             event.update(
                 {
                     "actual_parent_removed": split_count,
@@ -299,7 +385,39 @@ class LocalizationTopologyController:
                     "point_count_after": point_count_after,
                 }
             )
-        if self.config.enable_physical_prune or split.any():
+        if self.config.enable_physical_prune or split.any() or event["requested_split_count"] > 0 or "risk_commit" in event:
+            risk_text = ""
+            if "risk_commit" in event:
+                risk_parts = [
+                    f"risk_accepted={event['risk_commit']['accepted']}",
+                    f"risk_reason={str(event['risk_commit'].get('reason', '')).replace(' ', '_')}",
+                ]
+                for key, label in (
+                    ("baseline_risk", "risk_baseline"),
+                    ("trial_risk", "risk_trial"),
+                    ("delta_risk", "risk_delta"),
+                    ("delta_risk_ucb", "risk_delta_ucb"),
+                    ("epsilon", "risk_epsilon"),
+                    ("ci_z", "risk_ci_z"),
+                    ("risk_sample_count", "risk_samples"),
+                    ("risk_metric_count", "risk_metric_count"),
+                    ("risk_r5_delta", "risk_r5_delta"),
+                    ("risk_r2_delta", "risk_r2_delta"),
+                    ("risk_tail_fail_delta", "risk_tail_fail_delta"),
+                    ("risk_r5_rate_delta", "risk_r5_rate_delta"),
+                    ("risk_r2_rate_delta", "risk_r2_rate_delta"),
+                    ("risk_tail_fail_rate_delta", "risk_tail_fail_rate_delta"),
+                ):
+                    value = event["risk_commit"].get(key)
+                    if isinstance(value, (int, float)):
+                        if key in {"risk_sample_count", "risk_metric_count", "risk_r5_delta", "risk_r2_delta", "risk_tail_fail_delta"}:
+                            risk_parts.append(f"{label}={int(value)}")
+                        else:
+                            risk_parts.append(f"{label}={float(value):.6f}")
+                risk_text = (
+                    " "
+                    + " ".join(risk_parts)
+                )
             print(
                 "[Topology] "
                 f"iter={iteration} candidates={event['candidate_count']} "
@@ -311,6 +429,9 @@ class LocalizationTopologyController:
                 f"utility_q25={event['utility_quantiles']['q25']:.4f} "
                 f"utility_q50={event['utility_quantiles']['q50']:.4f} "
                 f"utility_q75={event['utility_quantiles']['q75']:.4f}"
+                f"{risk_text}"
             )
+        if event["actual_children_added"] > 0 or event["physical_prune_count"] > 0:
+            self.mutation_event_count += 1
         self.last_event = event
         return event

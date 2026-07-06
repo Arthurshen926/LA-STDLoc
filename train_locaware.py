@@ -3,30 +3,79 @@ import pickle
 import sys
 import uuid
 import argparse
+import copy
+import csv
+import json
+import math
+import random as py_random
 from argparse import ArgumentParser, Namespace
-from random import randint
+from random import random, randint
 
 import torch
 import torch.nn.functional as F
+import yaml
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat, render_gsplat
+from la_artifacts.no_reference_valid_mask import NoReferenceValidMaskBuilder, NoReferenceValidMaskConfig
+from la_artifacts.pseudo_query import PseudoQueryManifest, PseudoQuerySampler, PseudoTeacherCache
+from la_artifacts.pseudo_query_training import (
+    pseudo_query_reliability_decision as _pseudo_query_reliability_decision,
+    pseudo_teacher_cache_reliability_stats as _pseudo_teacher_cache_reliability_stats,
+)
 from localization_training.dense_teacher import dense_localization_teacher
-from localization_training.direct_landmark_teacher import LandmarkObservationMemory, direct_landmark_teacher
-from localization_training.episode_sampler import EpisodeSampler, SparsePoseCache, split_support_query_cameras
+from localization_training.direct_landmark_teacher import (
+    LandmarkObservationMemory,
+    direct_landmark_teacher,
+    make_intrinsics_from_fov,
+)
+from localization_training.episode_sampler import (
+    EpisodeSampler,
+    SparsePoseCache,
+    sample_interpolated_novel_view,
+    split_support_query_cameras,
+)
+from localization_training.render_artifacts import (
+    comma_set as artifact_comma_set,
+    filter_cameras_by_artifacts,
+    load_artifact_filter_names,
+    load_artifact_region_weight_lookup,
+    load_artifact_weight_lookup,
+    weighted_mean,
+)
 from localization_training.losses import (
     geometry_anchor_loss,
     hard_negative_ranking_loss,
     localization_opacity_regularizer,
     prototype_loss,
 )
+from localization_training.lafgs_reconstruction import (
+    apply_multiview_initialization,
+    bounded_geometry_residual_loss,
+    build_multiview_initialization,
+    DifferentiablePnPConfig,
+    MultiViewInitConfig,
+    differentiable_pnp_pose_loss,
+    lafgs_curriculum_step,
+    lafgs_phase_from_starts,
+    lafgs_should_sample_synthetic_view,
+    pnp_output_to_landmark_stats,
+    select_multiview_init_cameras,
+    update_diff_pnp_training_summary,
+)
 from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig
 from scene import Scene
 from utils.general_utils import safe_state, seed_everything
 from utils.image_utils import psnr
 from utils.loss_utils import l1_loss, ssim
+from utils.pose_utils import cal_pose_error
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -56,6 +105,45 @@ def _load_masks(dataset):
             print("Loading masks from", path)
             return pickle.load(open(path, "rb"))
     return None
+
+
+def _comma_set(value):
+    return artifact_comma_set(value, lower=False)
+
+
+def _normalize_image_name(name):
+    return str(name).replace("\\", "/").lstrip("./")
+
+
+def _iter_artifact_filter_rows(path):
+    suffix = os.path.splitext(os.fspath(path))[1].lower()
+    if suffix == ".json":
+        with open(path) as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            payload = payload.get("items", payload.get("rows", []))
+        if not isinstance(payload, list):
+            raise ValueError(f"Artifact filter JSON must contain a list of rows: {path}")
+        for row in payload:
+            if isinstance(row, dict):
+                yield row
+        return
+
+    with open(path, newline="") as f:
+        yield from csv.DictReader(f)
+
+
+def _load_query_artifact_filter_names(path, scene_name=None, severities="mild,severe", splits="heldout_query_sample"):
+    return load_artifact_filter_names(
+        path,
+        scene_name=scene_name,
+        severities=severities,
+        splits=splits,
+    )
+
+
+def _filter_query_cameras_by_artifacts(cameras, artifact_names):
+    return filter_cameras_by_artifacts(cameras, artifact_names)
 
 
 def _resize_bool_mask(mask, target_hw):
@@ -110,6 +198,202 @@ def _restore_external_localization_state(gaussians, state_or_path):
         state = state_or_path
     gaussians.restore_localization_state(state)
     return True
+
+
+def _pseudo_teacher_cache_required(args):
+    if bool(getattr(args, "pseudo_query_filter_teacher_cache", False)):
+        return True
+    if getattr(args, "pseudo_query_manifest", "") and bool(getattr(args, "pseudo_query_require_teacher_cache", True)):
+        return True
+    if str(getattr(args, "pseudo_query_reliability_mode", "none") or "none").lower() != "none":
+        return True
+    if str(getattr(args, "pseudo_query_stage_objective_mode", "none") or "none").lower() != "none":
+        return True
+    if not getattr(args, "pseudo_query_manifest", ""):
+        return False
+    query_mode = str(getattr(args, "query_mode", "noise") or "noise").lower()
+    if query_mode == "sparse":
+        return True
+    if query_mode == "mixed" and float(getattr(args, "mixed_sparse_probability", 0.0) or 0.0) > 0.0:
+        return True
+    return False
+
+
+def _scale_loc_loss_by_pseudo_reliability(loc_loss, pseudo_query_reliability, args):
+    weight = float((pseudo_query_reliability or {}).get("weight", 1.0))
+    if str(getattr(args, "pseudo_query_reliability_loss_mode", "none") or "none").lower() != "soft":
+        return loc_loss
+    if weight >= 0.999999:
+        return loc_loss
+    return loc_loss * loc_loss.new_tensor(weight)
+
+
+def _pseudo_query_stage_direct_loss_policy(pseudo_query_reliability, args):
+    mode = str(getattr(args, "pseudo_query_stage_objective_mode", "none") or "none").lower()
+    reliability = pseudo_query_reliability or {}
+    base_update_memory = bool(reliability.get("update_memory", True))
+    base_update_stats = bool(reliability.get("update_stats", True))
+    stage = str(reliability.get("stage", "unknown") or "unknown")
+    policy = {
+        "enabled": False,
+        "stage": stage,
+        "desc": 1.0,
+        "multiview": 1.0,
+        "full_bank": 1.0,
+        "anchor": 1.0,
+        "update_memory": base_update_memory,
+        "update_stats": base_update_stats,
+    }
+    if mode == "none":
+        return policy
+    if mode != "direct":
+        raise ValueError(f"Unsupported pseudo_query_stage_objective_mode: {mode}")
+
+    stage_weights = {
+        "teacher_ok": (1.0, 1.0, 1.0, 1.0, True, True),
+        "dense_improves_sparse": (1.0, 1.0, 1.0, 1.0, True, True),
+        "mixed_or_uncertain": (0.70, 0.70, 0.50, 1.0, True, True),
+        "dense_rescues_sparse": (0.55, 1.0, 0.85, 1.0, True, True),
+        "sparse_failure": (0.25, 0.0, 0.75, 1.0, False, False),
+        "dense_regression_after_good_sparse": (0.35, 0.25, 0.50, 1.0, False, False),
+        "unknown": (0.60, 0.50, 0.50, 1.0, True, True),
+    }
+    desc, multiview, full_bank, anchor, stage_update_memory, stage_update_stats = stage_weights.get(
+        stage,
+        stage_weights["unknown"],
+    )
+    stats_policy = str(getattr(args, "pseudo_query_stage_stats_policy", "hard") or "hard").lower()
+    if stats_policy not in {"hard", "soft"}:
+        raise ValueError(f"Unsupported pseudo_query_stage_stats_policy: {stats_policy}")
+    update_stats = bool(base_update_stats and (stage_update_stats or stats_policy == "soft"))
+    policy.update(
+        {
+            "enabled": True,
+            "desc": float(desc),
+            "multiview": float(multiview),
+            "full_bank": float(full_bank),
+            "anchor": float(anchor),
+            "update_memory": bool(base_update_memory and stage_update_memory),
+            "update_stats": update_stats,
+        }
+    )
+    return policy
+
+
+def _compose_direct_loc_loss(
+    loc_desc_loss,
+    loc_multiview_loss,
+    loc_full_bank_loss,
+    loc_anchor_loss,
+    pseudo_query_reliability,
+    args,
+    stage_policy=None,
+):
+    policy = (
+        stage_policy
+        if stage_policy is not None
+        else _pseudo_query_stage_direct_loss_policy(pseudo_query_reliability, args)
+    )
+    loc_loss = (
+        float(args.loc_direct_weight) * float(policy.get("desc", 1.0)) * loc_desc_loss
+        + float(args.loc_multiview_weight) * float(policy.get("multiview", 1.0)) * loc_multiview_loss
+        + float(args.loc_full_bank_weight) * float(policy.get("full_bank", 1.0)) * loc_full_bank_loss
+        + float(args.loc_anchor_weight) * float(policy.get("anchor", 1.0)) * loc_anchor_loss
+    )
+    return loc_loss, policy
+
+
+def _pseudo_query_stage_source_diagnostics(record, pseudo_query_reliability):
+    source = str(getattr(record, "source", "") or "")
+    known_sources = ("train_rgb", "synthetic_rgb", "other")
+    source_key = source if source in {"train_rgb", "synthetic_rgb"} else "other"
+    stage = str((pseudo_query_reliability or {}).get("stage", "unknown") or "unknown")
+    known_stages = (
+        "teacher_ok",
+        "dense_improves_sparse",
+        "mixed_or_uncertain",
+        "dense_rescues_sparse",
+        "sparse_failure",
+        "dense_regression_after_good_sparse",
+        "unknown",
+    )
+    if stage not in known_stages:
+        stage = "unknown"
+
+    diagnostics = {
+        "pseudo_query_source_train_rgb": 1.0 if source_key == "train_rgb" else 0.0,
+        "pseudo_query_source_synthetic_rgb": 1.0 if source_key == "synthetic_rgb" else 0.0,
+        "pseudo_query_source_other": 1.0 if source_key == "other" else 0.0,
+    }
+    for stage_name in known_stages:
+        diagnostics[f"pseudo_query_stage_{stage_name}"] = 1.0 if stage == stage_name else 0.0
+    for source_name in known_sources:
+        for stage_name in known_stages:
+            diagnostics[f"pseudo_query_source_stage_{source_name}_{stage_name}"] = (
+                1.0 if source_key == source_name and stage == stage_name else 0.0
+            )
+    return diagnostics
+
+
+def _load_training_pose_cache(args):
+    if getattr(args, "sparse_pose_cache", None):
+        return SparsePoseCache(args.sparse_pose_cache).load()
+    cache_path = getattr(args, "pseudo_teacher_cache", "") or ""
+    if not cache_path:
+        if _pseudo_teacher_cache_required(args):
+            raise FileNotFoundError("Pseudo teacher cache is required by the current pseudo-query training options.")
+        return None
+    if not os.path.exists(cache_path):
+        if _pseudo_teacher_cache_required(args):
+            raise FileNotFoundError(
+                "Pseudo teacher cache is required by the current pseudo-query training options "
+                f"but was not found: {cache_path}"
+            )
+        print(f"Skipping missing optional pseudo teacher cache: {cache_path}")
+        return None
+    cache = PseudoTeacherCache.load(cache_path)
+    print(f"Loaded pseudo teacher cache: {cache_path} items={len(cache.items)}")
+    return cache
+
+
+def _pseudo_teacher_cache_get_for_record(cache, record):
+    if cache is None or record is None:
+        return None
+    key = getattr(record, "teacher_cache_key", "") or getattr(record, "query_id", "")
+    item = cache.get(key) if key else None
+    image_name = getattr(record, "image_name", "")
+    if item is None and image_name and key != image_name:
+        item = cache.get(image_name)
+    return item
+
+
+def _align_pseudo_manifest_to_teacher_cache(pseudo_manifest, sparse_pose_cache, enabled=True):
+    before = len(getattr(pseudo_manifest, "records", []) or [])
+    summary = {
+        "enabled": bool(enabled),
+        "before": int(before),
+        "after": int(before),
+        "dropped_missing_teacher_cache": 0,
+        "quality_filtered": 0,
+    }
+    if not enabled:
+        return pseudo_manifest, summary
+    if sparse_pose_cache is None:
+        summary["enabled"] = False
+        summary["reason"] = "no_teacher_cache"
+        return pseudo_manifest, summary
+
+    rows = []
+    for record in pseudo_manifest.records:
+        if _pseudo_teacher_cache_get_for_record(sparse_pose_cache, record) is None:
+            summary["dropped_missing_teacher_cache"] += 1
+            continue
+        rows.append(record)
+    summary["after"] = len(rows)
+    summary["source_counts_before"] = pseudo_manifest.source_counts()
+    aligned = PseudoQueryManifest(version=pseudo_manifest.version, records=rows)
+    summary["source_counts_after"] = aligned.source_counts()
+    return aligned, summary
 
 
 def _capture_geometry_anchor(gaussians):
@@ -235,23 +519,242 @@ def _set_phase_lrs(gaussians, phase, args):
         group.setdefault("la_base_lr", group["lr"])
         group["lr"] = group["la_base_lr"]
 
-    if phase == "feature":
-        trainable = {"loc_feature"}
+    overlay_mode = getattr(args, "loc_overlay_mode", "none")
+    loc_trainable = {"loc_feature"}
+    if getattr(args, "use_loc_opacity", False):
+        loc_trainable.add("loc_opacity")
+    if overlay_mode == "descriptor":
+        loc_trainable = {"loc_overlay_feature", "loc_overlay_active_logit"}
+        if getattr(args, "use_loc_opacity", False):
+            loc_trainable.add("loc_opacity")
+
+    diff_pnp_geometry_grad = _diff_pnp_allows_geometry_grad(args, phase)
+    if phase == "mv_init":
+        trainable = set()
+    elif phase in {"feature", "locrec", "diff_pnp"}:
+        trainable = loc_trainable
+        if diff_pnp_geometry_grad:
+            trainable = trainable | {"xyz"}
     elif phase in {"geometry", "topology", "closed_loop"}:
-        trainable = {"xyz", "scaling", "rotation", "loc_feature", "loc_opacity"}
+        trainable = {"xyz", "scaling", "rotation", "loc_opacity"} | loc_trainable
     else:
         trainable = {group["name"] for group in gaussians.optimizer.param_groups}
 
     for group in gaussians.optimizer.param_groups:
         if group["name"] not in trainable:
             group["lr"] = 0.0
-        elif phase in {"geometry", "topology", "closed_loop"}:
+        elif phase in {"geometry", "topology", "closed_loop"} or diff_pnp_geometry_grad:
             if group["name"] == "xyz":
-                group["lr"] = group["la_base_lr"] * args.geometry_xyz_lr_mult
-            elif group["name"] == "scaling":
+                diff_pnp_xyz_lr = float(getattr(args, "lafgs_diff_pnp_geometry_xyz_lr", 0.0) or 0.0)
+                if diff_pnp_geometry_grad and diff_pnp_xyz_lr > 0.0:
+                    group["lr"] = diff_pnp_xyz_lr
+                else:
+                    group["lr"] = group["la_base_lr"] * args.geometry_xyz_lr_mult
+            elif phase in {"geometry", "topology", "closed_loop"} and group["name"] == "scaling":
                 group["lr"] = group["la_base_lr"] * args.geometry_scale_lr_mult
-            elif group["name"] == "rotation":
+            elif phase in {"geometry", "topology", "closed_loop"} and group["name"] == "rotation":
                 group["lr"] = group["la_base_lr"] * args.geometry_rotation_lr_mult
+
+
+def _diff_pnp_allows_geometry_grad(args, phase):
+    return bool(getattr(args, "lafgs_diff_pnp_allow_geometry_grad", False)) and phase in {
+        "diff_pnp",
+        "geometry",
+        "topology",
+        "closed_loop",
+        "full",
+    }
+
+
+def _diff_pnp_needs_projected_uv(args):
+    return (
+        float(getattr(args, "lafgs_diff_pnp_local_window_radius", 0.0) or 0.0) > 0.0
+        or float(getattr(args, "lafgs_diff_pnp_geometry_local_window_radius", 0.0) or 0.0) > 0.0
+    )
+
+
+def _phase_allows_geometry_update(args, phase):
+    return phase in {"geometry", "topology", "closed_loop", "full"} or _diff_pnp_allows_geometry_grad(args, phase)
+
+
+def _optimizer_lr_for_group(optimizer, group_name):
+    for group in optimizer.param_groups:
+        if group.get("name") == group_name:
+            return float(group.get("lr", 0.0))
+    return 0.0
+
+
+def _record_geometry_optimizer_diagnostics(
+    summary,
+    gaussians,
+    phase,
+    xyz_before=None,
+    record_lr_grad=True,
+    geometry_active=None,
+):
+    if geometry_active is None:
+        geometry_active = phase in {"geometry", "topology", "closed_loop", "full"}
+    if not bool(geometry_active):
+        return
+
+    if record_lr_grad:
+        xyz_lr = _optimizer_lr_for_group(gaussians.optimizer, "xyz")
+        summary["geometry_optimizer_episodes"] = summary.get("geometry_optimizer_episodes", 0) + 1
+        summary["geometry_xyz_lr_total"] = summary.get("geometry_xyz_lr_total", 0.0) + xyz_lr
+        summary["geometry_xyz_lr_max"] = max(summary.get("geometry_xyz_lr_max", 0.0), xyz_lr)
+        if xyz_lr > 0.0:
+            summary["geometry_xyz_lr_nonzero_episodes"] = summary.get("geometry_xyz_lr_nonzero_episodes", 0) + 1
+
+        xyz_grad = getattr(gaussians._xyz, "grad", None)
+        grad_max = 0.0
+        if xyz_grad is not None:
+            finite_grad = torch.nan_to_num(xyz_grad.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+            if finite_grad.numel() > 0:
+                grad_max = float(finite_grad.abs().max().item())
+        summary["geometry_xyz_grad_abs_max"] = max(summary.get("geometry_xyz_grad_abs_max", 0.0), grad_max)
+        if grad_max > 0.0:
+            summary["geometry_xyz_grad_nonzero_episodes"] = (
+                summary.get("geometry_xyz_grad_nonzero_episodes", 0) + 1
+            )
+
+    if xyz_before is not None:
+        with torch.no_grad():
+            delta = torch.linalg.norm(gaussians._xyz.detach() - xyz_before, dim=-1)
+            step_max = float(delta.max().item()) if delta.numel() else 0.0
+        summary["geometry_xyz_step_delta_max"] = max(
+            summary.get("geometry_xyz_step_delta_max", 0.0),
+            step_max,
+        )
+        if step_max > 0.0:
+            summary["geometry_xyz_step_nonzero_episodes"] = (
+                summary.get("geometry_xyz_step_nonzero_episodes", 0) + 1
+            )
+
+
+def _tensor_abs_max(value):
+    if value is None:
+        return 0.0
+    finite = torch.nan_to_num(value.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+    return float(finite.abs().max().item()) if finite.numel() else 0.0
+
+
+def _backward_with_optional_isolated_xyz_grad(
+    total_loss,
+    xyz_only_loss,
+    gaussians,
+    isolate_xyz_grad=False,
+    isolated_xyz_regularizer_loss=None,
+    summary=None,
+):
+    if not bool(isolate_xyz_grad):
+        total_loss.backward()
+        return
+
+    xyz_param = getattr(gaussians, "_xyz", None)
+    if xyz_param is None:
+        total_loss.backward()
+        return
+
+    isolated_xyz_terms = []
+    if torch.is_tensor(xyz_only_loss) and bool(xyz_only_loss.requires_grad):
+        isolated_xyz_terms.append(xyz_only_loss)
+    if torch.is_tensor(isolated_xyz_regularizer_loss) and bool(isolated_xyz_regularizer_loss.requires_grad):
+        isolated_xyz_terms.append(isolated_xyz_regularizer_loss)
+    isolated_xyz_loss = None
+    if isolated_xyz_terms:
+        isolated_xyz_loss = isolated_xyz_terms[0]
+        for term in isolated_xyz_terms[1:]:
+            isolated_xyz_loss = isolated_xyz_loss + term
+
+    xyz_loss_requires_grad = isolated_xyz_loss is not None
+    total_loss.backward(retain_graph=xyz_loss_requires_grad)
+    full_grad = getattr(xyz_param, "grad", None)
+    full_grad_max = _tensor_abs_max(full_grad)
+
+    isolated_grad = None
+    if isolated_xyz_loss is not None:
+        isolated_grad = torch.autograd.grad(
+            isolated_xyz_loss,
+            xyz_param,
+            retain_graph=False,
+            allow_unused=True,
+        )[0]
+
+    if isolated_grad is None:
+        xyz_param.grad = None
+        isolated_grad_max = 0.0
+    else:
+        if xyz_param.grad is None:
+            xyz_param.grad = isolated_grad.detach().clone()
+        else:
+            xyz_param.grad.detach().copy_(isolated_grad.detach())
+        isolated_grad_max = _tensor_abs_max(isolated_grad)
+
+    if summary is not None:
+        summary["geometry_xyz_isolated_grad_episodes"] = (
+            summary.get("geometry_xyz_isolated_grad_episodes", 0) + 1
+        )
+        summary["geometry_xyz_full_grad_abs_max"] = max(
+            summary.get("geometry_xyz_full_grad_abs_max", 0.0),
+            full_grad_max,
+        )
+        summary["geometry_xyz_isolated_grad_abs_max"] = max(
+            summary.get("geometry_xyz_isolated_grad_abs_max", 0.0),
+            isolated_grad_max,
+        )
+
+
+def _configure_descriptor_overlay(gaussians, args, direct_landmark_indices=None):
+    mode = getattr(args, "loc_overlay_mode", "none")
+    if mode == "none":
+        return False
+    if mode != "descriptor":
+        raise ValueError(f"Unsupported loc_overlay_mode: {mode}")
+    if direct_landmark_indices is None:
+        raise ValueError("descriptor overlay requires direct landmark source indices")
+    gaussians.init_descriptor_overlay(
+        direct_landmark_indices,
+        init_active_logit=getattr(args, "loc_overlay_active_logit", 0.0),
+        max_residual_norm=getattr(args, "loc_overlay_max_residual_norm", 0.0),
+        normalize=getattr(args, "loc_overlay_normalize", False),
+    )
+    gaussians.add_descriptor_overlay_to_optimizer(lr=getattr(args, "loc_overlay_lr", 0.0))
+    return True
+
+
+def _descriptor_overlay_regularizer(gaussians):
+    if not getattr(gaussians, "_has_descriptor_overlay", lambda: False)():
+        feature = getattr(gaussians, "_loc_feature", None)
+        if torch.is_tensor(feature):
+            return feature.new_tensor(0.0)
+        return torch.tensor(0.0)
+    feature = gaussians._loc_overlay_feature
+    active = torch.sigmoid(gaussians._loc_overlay_active_logit.to(device=feature.device, dtype=feature.dtype))
+    residual = feature * active
+    return residual.reshape(residual.shape[0], -1).pow(2).sum(dim=1).mean()
+
+
+def _mask_frozen_child_loc_feature_gradients(gaussians, iteration, freeze_steps):
+    if int(freeze_steps) <= 0:
+        return 0
+    loc_feature = getattr(gaussians, "_loc_feature", None)
+    grad = getattr(loc_feature, "grad", None)
+    if grad is None:
+        return 0
+    parent_node_id = getattr(gaussians, "loc_parent_node_id", None)
+    last_topology_iteration = getattr(gaussians, "last_topology_iteration", None)
+    if not torch.is_tensor(parent_node_id) or not torch.is_tensor(last_topology_iteration):
+        return 0
+    if parent_node_id.shape[0] != grad.shape[0] or last_topology_iteration.shape[0] != grad.shape[0]:
+        return 0
+    parent_node_id = parent_node_id.to(device=grad.device, dtype=torch.long).reshape(-1)
+    last_topology_iteration = last_topology_iteration.to(device=grad.device, dtype=torch.long).reshape(-1)
+    age = int(iteration) - last_topology_iteration
+    frozen = (parent_node_id >= 0) & (age >= 0) & (age <= int(freeze_steps))
+    if not frozen.any():
+        return 0
+    grad[frozen] = 0
+    return int(frozen.sum().item())
 
 
 def add_locaware_training_args(parser):
@@ -280,12 +783,21 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_reproj_weight", type=float, default=0.1)
     parser.add_argument("--loc_dense_kl_weight", type=float, default=0.0)
     parser.add_argument("--loc_dense_kl_temperature", type=float, default=0.07)
+    parser.add_argument("--loc_dense_rank_weight", type=float, default=0.0)
+    parser.add_argument("--loc_dense_rank_margin", type=float, default=0.2)
+    parser.add_argument("--loc_dense_rank_teacher_confidence", type=float, default=0.0)
+    parser.add_argument("--loc_dense_rank_miss_topk", type=int, default=1)
     parser.add_argument("--loc_responsibility_topk", type=int, default=32)
     parser.add_argument("--loc_responsibility_opacity_weight", type=float, default=0.0)
     parser.add_argument("--loc_responsibility_depth_weight", type=float, default=0.0)
     parser.add_argument("--loc_dense_pose_gate", action="store_true", default=False)
     parser.add_argument("--loc_dense_pose_gate_min_te", type=float, default=0.0)
     parser.add_argument("--loc_dense_pose_gate_min_ae", type=float, default=0.0)
+    parser.add_argument("--loc_dense_advantage_gate", action="store_true", default=False)
+    parser.add_argument("--loc_dense_advantage_min_te", type=float, default=0.0)
+    parser.add_argument("--loc_dense_advantage_min_ae", type=float, default=0.0)
+    parser.add_argument("--loc_dense_advantage_te_scale", type=float, default=10.0)
+    parser.add_argument("--loc_dense_advantage_ae_scale", type=float, default=1.0)
     parser.add_argument("--loc_dense_attr_cosine_threshold", type=float, default=-1.0)
     parser.add_argument("--loc_dense_attr_entropy_threshold", type=float, default=-1.0)
     parser.add_argument("--loc_dense_min_positive_prob", type=float, default=-1.0)
@@ -303,6 +815,23 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_full_bank_margin", type=float, default=0.2)
     parser.add_argument("--loc_full_bank_ignore_3d_radius", type=float, default=0.0)
     parser.add_argument("--loc_full_bank_ignore_uv_radius", type=float, default=0.0)
+    parser.add_argument(
+        "--loc_full_bank_source_mode",
+        type=str,
+        default="ignore",
+        choices=["ignore", "positive", "responsibility"],
+    )
+    parser.add_argument("--loc_full_bank_nearby_as_positive", action="store_true", default=False)
+    parser.add_argument("--loc_full_bank_nearby_as_positive_until", type=int, default=0)
+    parser.add_argument("--loc_child_feature_freeze_steps", type=int, default=0)
+    parser.add_argument("--loc_child_responsibility_mode", type=str, default="none", choices=["none", "feature"])
+    parser.add_argument("--loc_child_responsibility_start_iter", type=int, default=0)
+    parser.add_argument("--loc_overlay_mode", type=str, default="none", choices=["none", "descriptor"])
+    parser.add_argument("--loc_overlay_lr", type=float, default=0.0)
+    parser.add_argument("--loc_overlay_active_logit", type=float, default=0.0)
+    parser.add_argument("--loc_overlay_max_residual_norm", type=float, default=0.0)
+    parser.add_argument("--loc_overlay_normalize", action="store_true", default=False)
+    parser.add_argument("--loc_overlay_reg_weight", type=float, default=0.0)
     parser.add_argument("--loc_anchor_weight", type=float, default=0.0)
     parser.add_argument("--landmark_path", type=str, default="detector/sampled_idx.pkl")
     parser.add_argument("--direct_depth_check", action="store_true", default=False)
@@ -314,6 +843,107 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_opacity_weight", type=float, default=0.0)
     parser.add_argument("--loc_opacity_target", type=float, default=0.5)
     parser.add_argument("--loc_ema_decay", type=float, default=0.95)
+    parser.add_argument("--lafgs_diff_pnp_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_start_iter", type=int, default=0)
+    parser.add_argument("--lafgs_diff_pnp_temperature", type=float, default=0.07)
+    parser.add_argument("--lafgs_diff_pnp_confidence_threshold", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_min_correspondences", type=int, default=6)
+    parser.add_argument("--lafgs_diff_pnp_iterations", type=int, default=3)
+    parser.add_argument("--lafgs_diff_pnp_pose_weight", type=float, default=1.0)
+    parser.add_argument("--lafgs_diff_pnp_reproj_weight", type=float, default=0.1)
+    parser.add_argument("--lafgs_diff_pnp_gt_reproj_weight", type=float, default=1.0)
+    parser.add_argument("--lafgs_diff_pnp_entropy_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--lafgs_diff_pnp_reprojection_loss_type",
+        choices=["smooth_l1", "huber", "cauchy"],
+        default="smooth_l1",
+    )
+    parser.add_argument("--lafgs_diff_pnp_reprojection_loss_delta", type=float, default=1.0)
+    parser.add_argument("--lafgs_diff_pnp_local_window_radius", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_max_correspondences", type=int, default=0)
+    parser.add_argument("--lafgs_diff_pnp_spatial_grid_size", type=int, default=0)
+    parser.add_argument("--lafgs_diff_pnp_min_spatial_span", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_min_spatial_area", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_point_weight_floor", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_utility_pose_loss_scale", type=float, default=1.0)
+    parser.add_argument("--lafgs_diff_pnp_utility_reprojection_error_scale", type=float, default=4.0)
+    parser.add_argument("--lafgs_diff_pnp_allow_geometry_grad", action="store_true", default=False)
+    parser.add_argument("--lafgs_diff_pnp_isolate_geometry_grad", action="store_true", default=False)
+    parser.add_argument("--lafgs_diff_pnp_geometry_xyz_lr", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_reproj_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_depth_anchor_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_reproj_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_confidence_threshold", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_margin_threshold", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_peak_probability_threshold", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_max_entropy", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_match_max_reproj_error", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_confidence_threshold", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_margin_threshold", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_peak_probability_threshold", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_max_entropy", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_max_reproj_error", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_use_all_correspondences", action="store_true", default=False)
+    parser.add_argument("--lafgs_diff_pnp_geometry_local_window_radius", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_max_condition_number", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_pose_guard_max_loss_increase", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_pose_guard_max_loss", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_pose_guard_softness", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_pose_guard_min_scale", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_max_loss_increase", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_max_loss", type=float, default=-1.0)
+    parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_softness", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_min_scale", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_keep_gt_reprojection", action="store_true", default=False)
+    parser.add_argument("--lafgs_diff_pnp_detach_pnp_points", action="store_true", default=False)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument(
+            "--lafgs_diff_pnp_detach_gt_reprojection_points",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+        )
+    else:
+        parser.add_argument(
+            "--lafgs_diff_pnp_detach_gt_reprojection_points",
+            dest="lafgs_diff_pnp_detach_gt_reprojection_points",
+            action="store_true",
+        )
+        parser.add_argument(
+            "--no-lafgs_diff_pnp_detach_gt_reprojection_points",
+            dest="lafgs_diff_pnp_detach_gt_reprojection_points",
+            action="store_false",
+        )
+        parser.set_defaults(lafgs_diff_pnp_detach_gt_reprojection_points=False)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument(
+            "--lafgs_diff_pnp_use_loc_opacity_weight",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+        )
+    else:
+        parser.add_argument("--lafgs_diff_pnp_use_loc_opacity_weight", dest="lafgs_diff_pnp_use_loc_opacity_weight", action="store_true")
+        parser.add_argument("--no-lafgs_diff_pnp_use_loc_opacity_weight", dest="lafgs_diff_pnp_use_loc_opacity_weight", action="store_false")
+        parser.set_defaults(lafgs_diff_pnp_use_loc_opacity_weight=False)
+    parser.add_argument("--lafgs_mvinit_enabled", action="store_true", default=False)
+    parser.add_argument("--lafgs_mv_init_until", type=int, default=0)
+    parser.add_argument("--lafgs_mvinit_max_views", type=int, default=0)
+    parser.add_argument("--lafgs_mvinit_view_selection", choices=["first", "uniform"], default="first")
+    parser.add_argument("--lafgs_mvinit_min_observations", type=int, default=1)
+    parser.add_argument("--lafgs_mvinit_chunk_size", type=int, default=0)
+    parser.add_argument("--lafgs_mvinit_feature_scale", type=float, default=1.0)
+    parser.add_argument("--lafgs_curriculum", action="store_true", default=False)
+    parser.add_argument("--lafgs_locrec_start_iter", type=int, default=1)
+    parser.add_argument("--lafgs_geometry_start_iter", type=int, default=10000)
+    parser.add_argument("--lafgs_topology_start_iter", type=int, default=15000)
+    parser.add_argument("--lafgs_geometry_residual", action="store_true", default=False)
+    parser.add_argument("--lafgs_geometry_residual_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_geometry_residual_max_scale_ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--lafgs_synthetic_feature_source",
+        type=str,
+        default="loc_feature",
+        choices=["loc_feature", "rgb"],
+    )
     if hasattr(argparse, "BooleanOptionalAction"):
         parser.add_argument("--use_loc_opacity", action=argparse.BooleanOptionalAction, default=False)
     else:
@@ -325,11 +955,132 @@ def add_locaware_training_args(parser):
     parser.add_argument("--pose_noise_sampling", type=str, default="empirical", choices=["empirical", "quantile"])
     parser.add_argument("--mixed_sparse_probability", type=float, default=0.5)
     parser.add_argument("--sparse_pose_cache", type=str, default=None)
+    parser.add_argument("--synthetic_view_ratio", type=float, default=0.0)
+    parser.add_argument("--synthetic_view_candidates", type=int, default=1)
+    parser.add_argument("--synthetic_view_alpha_min", type=float, default=0.35)
+    parser.add_argument("--synthetic_view_alpha_max", type=float, default=0.65)
+    parser.add_argument("--synthetic_view_min_observability", type=float, default=0.0)
+    parser.add_argument("--synthetic_view_desc_weight", type=float, default=0.0)
+    parser.add_argument("--synthetic_view_reproj_weight", type=float, default=0.0)
+    parser.add_argument("--pseudo_query_manifest", type=str, default="")
+    parser.add_argument("--pseudo_teacher_cache", type=str, default="")
+    parser.add_argument("--pseudo_query_real_weight", type=float, default=2.0)
+    parser.add_argument("--pseudo_query_synthetic_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--pseudo_query_sampling_mode",
+        type=str,
+        default="record_proportional",
+        choices=["source_balanced", "record_proportional"],
+    )
+    parser.add_argument("--pseudo_query_max_synthetic", type=int, default=0)
+    parser.add_argument("--pseudo_query_sources", type=str, default="train_rgb")
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument("--pseudo_query_require_teacher_cache", action=argparse.BooleanOptionalAction, default=True)
+    else:
+        parser.add_argument("--pseudo_query_require_teacher_cache", dest="pseudo_query_require_teacher_cache", action="store_true")
+        parser.add_argument("--no-pseudo_query_require_teacher_cache", dest="pseudo_query_require_teacher_cache", action="store_false")
+        parser.set_defaults(pseudo_query_require_teacher_cache=True)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument("--pseudo_query_filter_teacher_cache", action=argparse.BooleanOptionalAction, default=False)
+    else:
+        parser.add_argument("--pseudo_query_filter_teacher_cache", dest="pseudo_query_filter_teacher_cache", action="store_true")
+        parser.add_argument("--no-pseudo_query_filter_teacher_cache", dest="pseudo_query_filter_teacher_cache", action="store_false")
+        parser.set_defaults(pseudo_query_filter_teacher_cache=False)
+    parser.add_argument("--pseudo_query_exclude_sparse_failure_stages", action="store_true", default=False)
+    parser.add_argument("--pseudo_query_teacher_max_sparse_te", type=float, default=100.0)
+    parser.add_argument("--pseudo_query_teacher_max_dense_te", type=float, default=100.0)
+    parser.add_argument("--pseudo_query_teacher_allowed_stages", type=str, default="")
+    parser.add_argument(
+        "--pseudo_query_reliability_mode",
+        type=str,
+        default="none",
+        choices=["none", "soft"],
+    )
+    parser.add_argument(
+        "--pseudo_query_reliability_loss_mode",
+        type=str,
+        default="none",
+        choices=["none", "soft"],
+    )
+    parser.add_argument(
+        "--pseudo_query_stage_objective_mode",
+        type=str,
+        default="none",
+        choices=["none", "direct"],
+        help="Use pseudo teacher cache stages to reweight direct localization loss components.",
+    )
+    parser.add_argument(
+        "--pseudo_query_stage_stats_policy",
+        type=str,
+        default="hard",
+        choices=["hard", "soft"],
+        help="Use hard stage gates for stats updates, or keep soft-weighted stages in stats updates.",
+    )
+    parser.add_argument("--pseudo_query_reliability_min_weight", type=float, default=0.20)
+    parser.add_argument("--pseudo_query_reliability_real_min_weight", type=float, default=0.50)
+    parser.add_argument("--pseudo_query_reliability_synthetic_min_weight", type=float, default=0.25)
+    parser.add_argument("--pseudo_query_reliability_memory_min_weight", type=float, default=0.75)
+    parser.add_argument("--pseudo_query_reliability_stats_min_weight", type=float, default=None)
+    parser.add_argument("--pseudo_query_reliability_error_scale", type=float, default=2.0)
+    parser.add_argument("--pseudo_query_reliability_inlier_power", type=float, default=0.5)
+    parser.add_argument("--pseudo_query_reliability_teacher_ok_weight", type=float, default=1.0)
+    parser.add_argument("--pseudo_query_reliability_dense_improves_weight", type=float, default=0.90)
+    parser.add_argument("--pseudo_query_reliability_mixed_weight", type=float, default=0.70)
+    parser.add_argument("--pseudo_query_reliability_dense_rescues_weight", type=float, default=0.55)
+    parser.add_argument("--pseudo_query_reliability_sparse_failure_weight", type=float, default=0.30)
+    parser.add_argument("--pseudo_query_reliability_dense_regression_weight", type=float, default=0.35)
+    parser.add_argument("--pseudo_query_reliability_unknown_weight", type=float, default=0.60)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument("--pseudo_query_no_reference_region_weight", action=argparse.BooleanOptionalAction, default=False)
+    else:
+        parser.add_argument("--pseudo_query_no_reference_region_weight", dest="pseudo_query_no_reference_region_weight", action="store_true")
+        parser.add_argument("--no-pseudo_query_no_reference_region_weight", dest="pseudo_query_no_reference_region_weight", action="store_false")
+        parser.set_defaults(pseudo_query_no_reference_region_weight=False)
+    parser.add_argument("--pseudo_query_no_reference_region_weight_sources", type=str, default="synthetic_rgb")
+    parser.add_argument("--pseudo_query_no_reference_region_weight_min", type=float, default=0.25)
+    parser.add_argument("--pseudo_query_no_reference_region_weight_support_power", type=float, default=1.0)
+    parser.add_argument("--pseudo_query_no_reference_region_weight_image_scale", type=float, default=0.25)
+    parser.add_argument("--pseudo_query_no_reference_support_threshold", type=float, default=0.22)
+    parser.add_argument("--pseudo_query_no_reference_support_dilate_radius", type=int, default=5)
+    parser.add_argument("--pseudo_query_no_reference_support_min_area", type=int, default=24)
+    parser.add_argument("--pseudo_query_no_reference_invalid_min_area", type=int, default=96)
     parser.add_argument("--support_query_split", action="store_true", default=False)
     parser.add_argument("--query_holdout_ratio", type=float, default=0.2)
     parser.add_argument("--train_seed", type=int, default=0)
     parser.add_argument("--query_split_seed", type=int, default=2025)
     parser.add_argument("--query_split_mode", type=str, default="random", choices=["random", "sequence_block", "temporal_block"])
+    parser.add_argument("--support_query_sort_by_name", action="store_true", default=False)
+    parser.add_argument("--query_artifact_filter_path", type=str, default="")
+    parser.add_argument("--query_artifact_filter_severities", type=str, default="mild,severe")
+    parser.add_argument("--query_artifact_filter_splits", type=str, default="heldout_query_sample")
+    parser.add_argument("--render_artifact_weight_path", type=str, default="")
+    parser.add_argument("--render_artifact_weight_splits", type=str, default="heldout_query_sample")
+    parser.add_argument("--render_artifact_weight_severities", type=str, default="severe")
+    parser.add_argument("--render_artifact_weight_mode", type=str, default="severity", choices=["severity", "continuous"])
+    parser.add_argument("--render_artifact_weight_targets", type=str, default="teacher")
+    parser.add_argument("--render_artifact_weight_default", type=float, default=1.0)
+    parser.add_argument("--render_artifact_weight_mild", type=float, default=1.0)
+    parser.add_argument("--render_artifact_weight_severe", type=float, default=0.70)
+    parser.add_argument("--render_artifact_weight_continuous_min", type=float, default=0.70)
+    parser.add_argument("--render_artifact_weight_continuous_power", type=float, default=1.0)
+    parser.add_argument(
+        "--render_artifact_direct_weight_combine_mode",
+        type=str,
+        default="product",
+        choices=["product", "min", "none"],
+    )
+    parser.add_argument(
+        "--render_artifact_direct_loss_scale_mode",
+        type=str,
+        default="none",
+        choices=["none", "region_mean", "combined_mean"],
+    )
+    parser.add_argument("--render_artifact_region_weight_path", type=str, default="")
+    parser.add_argument("--render_artifact_region_weight_root", type=str, default="")
+    parser.add_argument("--render_artifact_region_weight_splits", type=str, default="heldout_query_sample")
+    parser.add_argument("--render_artifact_region_weight_severities", type=str, default="severe")
+    parser.add_argument("--render_artifact_region_weight_targets", type=str, default="direct")
+    parser.add_argument("--render_artifact_region_weight_default", type=float, default=1.0)
     parser.add_argument("--loc_anchor_grid_size", type=int, default=8)
     parser.add_argument("--geometry_anchor_weight", type=float, default=0.0)
     parser.add_argument("--geometry_anchor_scale_weight", type=float, default=0.1)
@@ -358,6 +1109,51 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_physical_loc_threshold", type=float, default=0.005)
     parser.add_argument("--topology_physical_utility_threshold", type=float, default=-3.0)
     parser.add_argument("--topology_allow_untrained_loc_opacity_prune", action="store_true", default=False)
+    parser.add_argument("--topology_max_mutation_events", type=int, default=0)
+    parser.add_argument(
+        "--topology_risk_commit_policy",
+        type=str,
+        default="off",
+        choices=["off", "accept_all", "reject_all", "heldout_descriptor", "heldout_pose"],
+    )
+    parser.add_argument("--topology_risk_holdout_size", type=int, default=4)
+    parser.add_argument(
+        "--topology_risk_holdout_selection",
+        choices=["prefix", "strided", "pose_stratified"],
+        default="prefix",
+    )
+    parser.add_argument("--topology_risk_epsilon", type=float, default=0.0)
+    parser.add_argument("--topology_risk_ci_z", type=float, default=0.0)
+    parser.add_argument("--topology_risk_min_ci_samples", type=int, default=2)
+    parser.add_argument("--topology_risk_desc_weight", type=float, default=1.0)
+    parser.add_argument("--topology_risk_full_bank_weight", type=float, default=1.0)
+    parser.add_argument("--topology_risk_reproj_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_anchors", type=int, default=256)
+    parser.add_argument("--topology_risk_pose_cfg", type=str, default="")
+    parser.add_argument("--topology_risk_pose_ae_weight", type=float, default=1.0)
+    parser.add_argument("--topology_risk_pose_te_weight", type=float, default=1.0)
+    parser.add_argument("--topology_risk_pose_inlier_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_ae_scale", type=float, default=5.0)
+    parser.add_argument("--topology_risk_pose_te_scale", type=float, default=200.0)
+    parser.add_argument("--topology_risk_pose_inlier_scale", type=float, default=100.0)
+    parser.add_argument("--topology_risk_pose_r5_miss_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_r2_miss_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_tail_fail_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_cvar_weight", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_cvar_fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--topology_risk_pose_veto_mode",
+        choices=["off", "r5", "r5_r2", "r5_r2_tail"],
+        default="off",
+    )
+    parser.add_argument("--topology_risk_pose_r5_ae_threshold", type=float, default=5.0)
+    parser.add_argument("--topology_risk_pose_r5_te_threshold", type=float, default=5.0)
+    parser.add_argument("--topology_risk_pose_r2_ae_threshold", type=float, default=2.0)
+    parser.add_argument("--topology_risk_pose_r2_te_threshold", type=float, default=2.0)
+    parser.add_argument("--topology_risk_pose_tail_ae_threshold", type=float, default=10.0)
+    parser.add_argument("--topology_risk_pose_tail_te_threshold", type=float, default=500.0)
+    parser.add_argument("--topology_risk_pose_r2_tolerance", type=float, default=0.0)
+    parser.add_argument("--topology_risk_pose_tail_tolerance", type=float, default=0.0)
     return parser
 
 
@@ -370,6 +1166,716 @@ def _dense_pose_improvement_weight(meta, min_te=0.0, min_ae=0.0):
     te_improved = float(meta["te"]) - float(meta["dense_te"]) > float(min_te)
     ae_improved = float(meta["ae"]) - float(meta["dense_ae"]) > float(min_ae)
     return 1.0 if te_improved and ae_improved else 0.0
+
+
+def _dense_pose_advantage_weight(
+    meta,
+    min_te=0.0,
+    min_ae=0.0,
+    te_scale=10.0,
+    ae_scale=1.0,
+):
+    if not meta:
+        return 0.0
+    required = ("te", "ae", "dense_te", "dense_ae")
+    if any(meta.get(key) is None for key in required):
+        return 0.0
+    te_advantage = float(meta["te"]) - float(meta["dense_te"]) - float(min_te)
+    ae_advantage = float(meta["ae"]) - float(meta["dense_ae"]) - float(min_ae)
+    if te_advantage <= 0.0 or ae_advantage <= 0.0:
+        return 0.0
+    weights = []
+    if float(te_scale) > 0.0:
+        weights.append(te_advantage / float(te_scale))
+    if float(ae_scale) > 0.0:
+        weights.append(ae_advantage / float(ae_scale))
+    if not weights:
+        return 1.0
+    return float(max(0.0, min(1.0, min(weights))))
+
+
+def _dense_loss_weights_for_episode(args, synthetic_view_used=False):
+    desc_weight = float(args.loc_desc_weight)
+    reproj_weight = float(args.loc_reproj_weight)
+    if synthetic_view_used:
+        desc_weight = float(args.synthetic_view_desc_weight)
+        reproj_weight = float(args.synthetic_view_reproj_weight)
+    return {
+        "desc": desc_weight,
+        "reproj": reproj_weight,
+        "kl": float(args.loc_dense_kl_weight),
+        "rank": float(args.loc_dense_rank_weight),
+    }
+
+
+def _clone_tensor_tree(value):
+    if isinstance(value, torch.nn.Parameter):
+        return torch.nn.Parameter(value.detach().clone(), requires_grad=value.requires_grad)
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    if isinstance(value, dict):
+        return {key: _clone_tensor_tree(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_clone_tensor_tree(item) for item in value)
+    if isinstance(value, list):
+        return [_clone_tensor_tree(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _capture_locaware_training_state(gaussians):
+    return {
+        "model_params": _clone_tensor_tree(gaussians.capture()),
+        "localization_state": _clone_tensor_tree(gaussians.capture_localization_state()),
+        "loc_opacity_grad_seen": bool(getattr(gaussians, "loc_opacity_grad_seen", False)),
+    }
+
+
+def _restore_locaware_training_state(gaussians, opt, state):
+    gaussians.restore(state["model_params"], opt)
+    gaussians.restore_localization_state(state["localization_state"])
+    gaussians.loc_opacity_grad_seen = bool(state.get("loc_opacity_grad_seen", False))
+
+
+def _apply_split_proposal_trial(gaussians, proposal, scene_extent):
+    if torch.as_tensor(proposal.physical_prune_mask).bool().any():
+        raise RuntimeError("held-out descriptor risk currently supports split-only proposals")
+    split = torch.as_tensor(
+        proposal.split_mask,
+        dtype=torch.bool,
+        device=gaussians.get_xyz.device,
+    ).reshape(-1)
+    split_count = int(split.sum().item())
+    if split_count == 0:
+        return 0
+    point_count_before = int(gaussians.get_xyz.shape[0])
+    gaussians.densify_and_split_selected(
+        split,
+        scene_extent=scene_extent,
+        N=int(getattr(proposal, "num_children_per_parent", 2)),
+    )
+    point_count_after = int(gaussians.get_xyz.shape[0])
+    new_clone_count = point_count_after - point_count_before + split_count
+    if new_clone_count > 0:
+        gaussians.last_topology_iteration[-new_clone_count:] = int(proposal.iteration)
+        if hasattr(gaussians, "loc_birth_iteration"):
+            gaussians.loc_birth_iteration[-new_clone_count:] = int(proposal.iteration)
+    return split_count
+
+
+def _normalize_risk_score(score):
+    metrics = {}
+    if isinstance(score, dict):
+        raw_metrics = score.get("metrics")
+        if isinstance(raw_metrics, dict):
+            metrics = raw_metrics
+        raw_values = score.get("values", score.get("risks", score.get("samples", None)))
+        if raw_values is not None:
+            values = _risk_score_values(raw_values)
+            risk = float(score.get("risk", sum(values) / len(values) if values else float("inf")))
+            return risk, values, metrics
+        return float(score.get("risk", float("inf"))), [], metrics
+    values = _risk_score_values(score)
+    if values:
+        return float(sum(values) / len(values)), values, metrics
+    return float(score), [], metrics
+
+
+def _risk_score_values(score):
+    if torch.is_tensor(score):
+        score = score.detach().flatten().cpu().tolist()
+    if isinstance(score, (list, tuple)):
+        values = []
+        for value in score:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return []
+            values.append(value)
+        return values
+    return []
+
+
+def _paired_delta_upper_confidence_bound(baseline_values, trial_values, z):
+    if len(baseline_values) != len(trial_values) or not baseline_values:
+        return float("nan")
+    deltas = [float(t) - float(b) for b, t in zip(baseline_values, trial_values)]
+    if any(not math.isfinite(delta) for delta in deltas):
+        return float("nan")
+    mean_delta = sum(deltas) / len(deltas)
+    if len(deltas) == 1:
+        return mean_delta
+    variance = sum((delta - mean_delta) ** 2 for delta in deltas) / (len(deltas) - 1)
+    stderr = math.sqrt(max(variance, 0.0)) / math.sqrt(len(deltas))
+    return mean_delta + float(z) * stderr
+
+
+def _capture_rng_state():
+    state = {
+        "python": py_random.getstate(),
+        "torch": torch.get_rng_state(),
+        "cuda": None,
+        "numpy": None,
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    if np is not None:
+        state["numpy"] = np.random.get_state()
+    return state
+
+
+def _restore_rng_state(state):
+    py_random.setstate(state["python"])
+    torch.set_rng_state(state["torch"])
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+    if np is not None and state.get("numpy") is not None:
+        np.random.set_state(state["numpy"])
+
+
+class HeldoutRiskCommitEvaluator:
+    def __init__(
+        self,
+        score_fn,
+        apply_trial_fn,
+        capture_state_fn,
+        restore_state_fn,
+        epsilon=0.0,
+        ci_z=0.0,
+        min_ci_samples=2,
+        reason_prefix="heldout_descriptor",
+        metric_gate_fn=None,
+    ):
+        self.score_fn = score_fn
+        self.apply_trial_fn = apply_trial_fn
+        self.capture_state_fn = capture_state_fn
+        self.restore_state_fn = restore_state_fn
+        self.epsilon = float(epsilon)
+        self.ci_z = float(ci_z)
+        self.min_ci_samples = max(1, int(min_ci_samples))
+        self.reason_prefix = str(reason_prefix)
+        self.metric_gate_fn = metric_gate_fn
+
+    def __call__(self, proposal, gaussians):
+        rng_state = _capture_rng_state()
+        state = None
+        try:
+            baseline_risk, baseline_values, baseline_metrics = _normalize_risk_score(self.score_fn(gaussians))
+            state = self.capture_state_fn(gaussians)
+            trial_risk = float("nan")
+            trial_values = []
+            trial_metrics = {}
+            try:
+                self.apply_trial_fn(gaussians, proposal)
+                trial_risk, trial_values, trial_metrics = _normalize_risk_score(self.score_fn(gaussians))
+            finally:
+                self.restore_state_fn(gaussians, state)
+        finally:
+            _restore_rng_state(rng_state)
+        delta = trial_risk - baseline_risk
+        finite = math.isfinite(baseline_risk) and math.isfinite(trial_risk) and math.isfinite(delta)
+        if not finite:
+            accepted = False
+            reason = f"{self.reason_prefix}_nonfinite"
+            delta_ucb = float("nan")
+        elif self.ci_z > 0.0:
+            sample_count = min(len(baseline_values), len(trial_values))
+            delta_ucb = _paired_delta_upper_confidence_bound(baseline_values, trial_values, self.ci_z)
+            if sample_count < self.min_ci_samples or not math.isfinite(delta_ucb):
+                accepted = False
+                reason = f"{self.reason_prefix}_ci_insufficient"
+            else:
+                accepted = delta_ucb <= -self.epsilon
+                reason = f"{self.reason_prefix}_{'ucb_decreased' if accepted else 'ucb_not_decreased'}"
+        else:
+            delta_ucb = float("nan")
+            accepted = delta <= -self.epsilon
+            reason = f"{self.reason_prefix}_{'decreased' if accepted else 'not_decreased'}"
+        metric_details = {}
+        if self.metric_gate_fn is not None:
+            metric_ok, metric_reason, metric_details = self.metric_gate_fn(baseline_metrics, trial_metrics)
+            if accepted and not metric_ok:
+                accepted = False
+                metric_reason = metric_reason or "metric_veto"
+                reason = f"{self.reason_prefix}_{metric_reason}"
+        metric_log = {}
+        for key, value in (metric_details or {}).items():
+            metric_log[key if key.startswith("risk_") else f"risk_{key}"] = value
+        return {
+            "accepted": accepted,
+            "reason": reason,
+            "baseline_risk": baseline_risk,
+            "trial_risk": trial_risk,
+            "delta_risk": delta,
+            "delta_risk_ucb": delta_ucb,
+            "epsilon": self.epsilon,
+            "ci_z": self.ci_z,
+            "risk_sample_count": int(min(len(baseline_values), len(trial_values))),
+            "candidate_count": int(getattr(proposal, "candidate_count", 0)),
+            "requested_split_count": int(torch.as_tensor(proposal.split_mask).bool().sum().item()),
+            **metric_log,
+        }
+
+
+def _heldout_query_feature_map(viewpoint_cam, feature_extractor, masks=None):
+    original_image = viewpoint_cam.original_image.cuda()
+    with torch.no_grad():
+        feature_map = feature_extractor(original_image[None])["feature_map"][0]
+        feature_map = _normalize_feature_map_inplace(feature_map)
+    if masks is not None:
+        obj_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][0].cuda()[None], feature_map.shape[-2:])
+        distort_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][2].cuda()[None], feature_map.shape[-2:])
+        feature_map = feature_map * (obj_mask & distort_mask)
+    return feature_map
+
+
+def _normalize_feature_map_inplace(feature_map, eps=1e-12):
+    denom = torch.linalg.vector_norm(feature_map, ord=2, dim=0, keepdim=True).clamp_min_(float(eps))
+    return feature_map.div_(denom)
+
+
+def _score_heldout_direct_descriptor_risk(
+    gaussians,
+    heldout_cameras,
+    feature_extractor,
+    args,
+    masks,
+    direct_landmark_indices,
+    return_values=False,
+):
+    risks = []
+    with torch.no_grad():
+        current_direct_landmark_indices = _current_landmark_indices_from_source_index(
+            direct_landmark_indices,
+            gaussians,
+        )
+        if current_direct_landmark_indices.numel() == 0:
+            return [float("inf")] if return_values else float("inf")
+        for query_cam in heldout_cameras:
+            query_feature_map = _heldout_query_feature_map(query_cam, feature_extractor, masks=masks)
+            pose_gt = query_cam.world_view_transform.transpose(0, 1).cuda()
+            teacher_out = direct_landmark_teacher(
+                gaussians,
+                query_feature_map,
+                pose_gt,
+                query_cam.FoVx,
+                query_cam.FoVy,
+                current_direct_landmark_indices,
+                alpha_threshold=args.loc_alpha_threshold,
+                max_landmarks=args.topology_risk_anchors,
+                full_bank_indices=(
+                    current_direct_landmark_indices
+                    if float(args.topology_risk_full_bank_weight) > 0.0
+                    else None
+                ),
+                full_bank_temperature=args.loc_full_bank_temperature,
+                full_bank_hard_negative_topk=args.loc_full_bank_hard_negatives,
+                full_bank_hard_negative_margin=args.loc_full_bank_margin,
+                full_bank_ignore_3d_radius=args.loc_full_bank_ignore_3d_radius,
+                full_bank_ignore_uv_radius=args.loc_full_bank_ignore_uv_radius,
+                full_bank_source_mode=args.loc_full_bank_source_mode,
+                sampling_grid_size=args.loc_anchor_grid_size,
+                child_responsibility_mode=args.loc_child_responsibility_mode,
+            )
+            risk = (
+                float(args.topology_risk_desc_weight) * teacher_out.desc_loss
+                + float(args.topology_risk_full_bank_weight) * teacher_out.full_bank_loss
+                + float(args.topology_risk_reproj_weight) * teacher_out.reproj_loss
+            )
+            risks.append(float(risk.detach().item()))
+    if not risks:
+        return [float("inf")] if return_values else float("inf")
+    if return_values:
+        return risks
+    return float(sum(risks) / len(risks))
+
+
+def _make_heldout_descriptor_risk_evaluator(
+    args,
+    gaussians,
+    opt,
+    heldout_cameras,
+    feature_extractor,
+    masks,
+    direct_landmark_indices,
+    scene_extent,
+):
+    risk_cameras = _select_risk_cameras(
+        heldout_cameras,
+        args.topology_risk_holdout_size,
+        args.topology_risk_holdout_selection,
+    )
+    if not risk_cameras:
+        raise ValueError("heldout_descriptor risk requires at least one held-out query camera")
+
+    def score_fn(model):
+        return _score_heldout_direct_descriptor_risk(
+            model,
+            risk_cameras,
+            feature_extractor,
+            args,
+            masks,
+            direct_landmark_indices,
+            return_values=float(args.topology_risk_ci_z) > 0.0,
+        )
+
+    return HeldoutRiskCommitEvaluator(
+        score_fn=score_fn,
+        apply_trial_fn=lambda model, proposal: _apply_split_proposal_trial(model, proposal, scene_extent),
+        capture_state_fn=_capture_locaware_training_state,
+        restore_state_fn=lambda model, state: _restore_locaware_training_state(model, opt, state),
+        epsilon=args.topology_risk_epsilon,
+        ci_z=args.topology_risk_ci_z,
+        min_ci_samples=args.topology_risk_min_ci_samples,
+        reason_prefix="heldout_descriptor",
+    )
+
+
+def _strided_sample_indices(count, sample_count):
+    if count <= 0:
+        return []
+    sample_count = max(1, int(sample_count))
+    if sample_count >= count:
+        return list(range(count))
+    if sample_count == 1:
+        return [count // 2]
+    last = count - 1
+    return [int(round(i * last / (sample_count - 1))) for i in range(sample_count)]
+
+
+def _camera_center_tensor(camera):
+    center = getattr(camera, "camera_center", None)
+    if center is None:
+        return None
+    try:
+        tensor = torch.as_tensor(center).detach().cpu().float().flatten()
+    except Exception:
+        return None
+    if tensor.numel() < 3:
+        return None
+    tensor = tensor[:3]
+    if not torch.isfinite(tensor).all():
+        return None
+    return tensor
+
+
+def _pose_stratified_sample_indices(cameras, sample_count):
+    centers = [_camera_center_tensor(camera) for camera in cameras]
+    if any(center is None for center in centers):
+        return _strided_sample_indices(len(cameras), sample_count)
+    center_tensor = torch.stack(centers, dim=0)
+    centered = center_tensor - center_tensor.mean(dim=0, keepdim=True)
+    if float(centered.norm().item()) <= 1e-12:
+        return _strided_sample_indices(len(cameras), sample_count)
+    try:
+        _, _, vh = torch.linalg.svd(centered, full_matrices=False)
+        axis = vh[0]
+        major_axis = int(torch.argmax(torch.abs(axis)).item())
+        if float(axis[major_axis].item()) < 0.0:
+            axis = -axis
+        scores = torch.matmul(centered, axis).tolist()
+    except Exception:
+        return _strided_sample_indices(len(cameras), sample_count)
+    sorted_indices = [idx for idx, _ in sorted(enumerate(scores), key=lambda item: (item[1], item[0]))]
+    sampled_positions = _strided_sample_indices(len(sorted_indices), sample_count)
+    return [sorted_indices[pos] for pos in sampled_positions]
+
+
+def _select_risk_cameras(heldout_cameras, holdout_size, selection):
+    cameras = list(heldout_cameras)
+    if not cameras:
+        return []
+    holdout_size = max(1, int(holdout_size))
+    if holdout_size >= len(cameras):
+        return cameras
+    mode = str(selection)
+    if mode == "prefix":
+        return cameras[:holdout_size]
+    if mode == "strided":
+        indices = _strided_sample_indices(len(cameras), holdout_size)
+        return [cameras[idx] for idx in indices]
+    if mode == "pose_stratified":
+        indices = _pose_stratified_sample_indices(cameras, holdout_size)
+        return [cameras[idx] for idx in indices]
+    raise ValueError(f"unknown topology risk holdout selection: {selection}")
+
+
+def _pose_risk_from_sparse_metrics(ae_deg, te_cm, inliers, args):
+    ae = float(ae_deg)
+    te = float(te_cm)
+    inlier_count = float(inliers)
+    if not (math.isfinite(ae) and math.isfinite(te) and math.isfinite(inlier_count)):
+        return float("inf")
+    ae_scale = max(float(args.topology_risk_pose_ae_scale), 1e-6)
+    te_scale = max(float(args.topology_risk_pose_te_scale), 1e-6)
+    inlier_scale = max(float(args.topology_risk_pose_inlier_scale), 1e-6)
+    inlier_reward = min(max(inlier_count, 0.0) / inlier_scale, 1.0)
+    risk = (
+        float(args.topology_risk_pose_ae_weight) * (ae / ae_scale)
+        + float(args.topology_risk_pose_te_weight) * (te / te_scale)
+        - float(args.topology_risk_pose_inlier_weight) * inlier_reward
+    )
+    r5_ae = float(getattr(args, "topology_risk_pose_r5_ae_threshold", 5.0))
+    r5_te = float(getattr(args, "topology_risk_pose_r5_te_threshold", 5.0))
+    r2_ae = float(getattr(args, "topology_risk_pose_r2_ae_threshold", 2.0))
+    r2_te = float(getattr(args, "topology_risk_pose_r2_te_threshold", 2.0))
+    tail_ae = float(getattr(args, "topology_risk_pose_tail_ae_threshold", 10.0))
+    tail_te = float(getattr(args, "topology_risk_pose_tail_te_threshold", 500.0))
+    r5_miss_weight = max(float(getattr(args, "topology_risk_pose_r5_miss_weight", 0.0)), 0.0)
+    r2_miss_weight = max(float(getattr(args, "topology_risk_pose_r2_miss_weight", 0.0)), 0.0)
+    tail_fail_weight = max(float(getattr(args, "topology_risk_pose_tail_fail_weight", 0.0)), 0.0)
+    if r5_miss_weight > 0.0 and not (ae <= r5_ae and te <= r5_te):
+        risk += r5_miss_weight
+    if r2_miss_weight > 0.0 and not (ae <= r2_ae and te <= r2_te):
+        risk += r2_miss_weight
+    if tail_fail_weight > 0.0 and (ae > tail_ae or te > tail_te):
+        risk += tail_fail_weight
+    return float(risk)
+
+
+def _aggregate_pose_risk_values(risks, args, weights=None):
+    values = [float(v) for v in risks]
+    if not values or any(not math.isfinite(v) for v in values):
+        return float("inf")
+    mean_risk = weighted_mean(values, weights)
+    cvar_weight = max(float(getattr(args, "topology_risk_pose_cvar_weight", 0.0)), 0.0)
+    if cvar_weight <= 0.0:
+        return mean_risk
+    cvar_fraction = float(getattr(args, "topology_risk_pose_cvar_fraction", 0.25))
+    cvar_fraction = min(max(cvar_fraction, 1.0 / len(values)), 1.0)
+    tail_count = max(1, int(math.ceil(len(values) * cvar_fraction)))
+    if weights is None:
+        tail_values = sorted(values, reverse=True)[:tail_count]
+        tail_mean = float(sum(tail_values) / len(tail_values))
+    else:
+        weights = [max(0.0, float(weight)) for weight in weights[: len(values)]]
+        pairs = sorted(zip(values, weights), key=lambda item: item[0], reverse=True)[:tail_count]
+        tail_values = [value for value, _ in pairs]
+        tail_weights = [weight for _, weight in pairs]
+        tail_mean = weighted_mean(tail_values, tail_weights)
+    return float(mean_risk + cvar_weight * tail_mean)
+
+
+def _metric_rate(count, total):
+    total = int(total)
+    if total <= 0:
+        return float("nan")
+    return float(count) / float(total)
+
+
+def _pose_metric_summary(ae_values, te_values, inlier_values, args):
+    count = min(len(ae_values), len(te_values), len(inlier_values))
+    ae_values = [float(v) for v in ae_values[:count]]
+    te_values = [float(v) for v in te_values[:count]]
+    inlier_values = [float(v) for v in inlier_values[:count]]
+    r5_ae = float(getattr(args, "topology_risk_pose_r5_ae_threshold", 5.0))
+    r5_te = float(getattr(args, "topology_risk_pose_r5_te_threshold", 5.0))
+    r2_ae = float(getattr(args, "topology_risk_pose_r2_ae_threshold", 2.0))
+    r2_te = float(getattr(args, "topology_risk_pose_r2_te_threshold", 2.0))
+    tail_ae = float(getattr(args, "topology_risk_pose_tail_ae_threshold", 10.0))
+    tail_te = float(getattr(args, "topology_risk_pose_tail_te_threshold", 500.0))
+    r5_count = sum(1 for ae, te in zip(ae_values, te_values) if ae <= r5_ae and te <= r5_te)
+    r2_count = sum(1 for ae, te in zip(ae_values, te_values) if ae <= r2_ae and te <= r2_te)
+    tail_fail_count = sum(1 for ae, te in zip(ae_values, te_values) if ae > tail_ae or te > tail_te)
+    avg_inliers = sum(inlier_values) / count if count > 0 else float("nan")
+    return {
+        "count": int(count),
+        "r5_count": int(r5_count),
+        "r2_count": int(r2_count),
+        "tail_fail_count": int(tail_fail_count),
+        "r5_rate": _metric_rate(r5_count, count),
+        "r2_rate": _metric_rate(r2_count, count),
+        "tail_fail_rate": _metric_rate(tail_fail_count, count),
+        "avg_inliers": float(avg_inliers),
+    }
+
+
+def _pose_recall_tail_veto(baseline_metrics, trial_metrics, args):
+    mode = str(getattr(args, "topology_risk_pose_veto_mode", "off"))
+    if mode == "off":
+        return True, "", {}
+    baseline_count = int(baseline_metrics.get("count", 0) or 0)
+    trial_count = int(trial_metrics.get("count", 0) or 0)
+    count = min(baseline_count, trial_count)
+    details = {
+        "metric_count": int(count),
+        "r5_delta": int(trial_metrics.get("r5_count", 0) or 0) - int(baseline_metrics.get("r5_count", 0) or 0),
+        "r2_delta": int(trial_metrics.get("r2_count", 0) or 0) - int(baseline_metrics.get("r2_count", 0) or 0),
+        "tail_fail_delta": int(trial_metrics.get("tail_fail_count", 0) or 0)
+        - int(baseline_metrics.get("tail_fail_count", 0) or 0),
+    }
+    if count <= 0:
+        return False, "metrics_missing", details
+    baseline_r5 = _metric_rate(baseline_metrics.get("r5_count", 0), baseline_count)
+    trial_r5 = _metric_rate(trial_metrics.get("r5_count", 0), trial_count)
+    baseline_r2 = _metric_rate(baseline_metrics.get("r2_count", 0), baseline_count)
+    trial_r2 = _metric_rate(trial_metrics.get("r2_count", 0), trial_count)
+    baseline_tail = _metric_rate(baseline_metrics.get("tail_fail_count", 0), baseline_count)
+    trial_tail = _metric_rate(trial_metrics.get("tail_fail_count", 0), trial_count)
+    details.update(
+        {
+            "r5_rate_delta": trial_r5 - baseline_r5,
+            "r2_rate_delta": trial_r2 - baseline_r2,
+            "tail_fail_rate_delta": trial_tail - baseline_tail,
+        }
+    )
+    if mode in {"r5", "r5_r2", "r5_r2_tail"} and trial_r5 < baseline_r5 - 1e-12:
+        return False, "r5_decreased", details
+    r2_tolerance = max(float(getattr(args, "topology_risk_pose_r2_tolerance", 0.0)), 0.0)
+    if mode in {"r5_r2", "r5_r2_tail"} and trial_r2 < baseline_r2 - r2_tolerance - 1e-12:
+        return False, "r2_decreased", details
+    tail_tolerance = max(float(getattr(args, "topology_risk_pose_tail_tolerance", 0.0)), 0.0)
+    if mode == "r5_r2_tail" and trial_tail > baseline_tail + tail_tolerance + 1e-12:
+        return False, "tail_increased", details
+    return True, "", details
+
+
+def _make_sparse_pose_risk_config(args, dataset):
+    if not args.topology_risk_pose_cfg:
+        raise ValueError("heldout_pose risk requires --topology_risk_pose_cfg")
+    with open(args.topology_risk_pose_cfg) as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
+    config.setdefault("sparse", {})["sparse_only"] = True
+    config["sparse"]["use_landmark_prior"] = False
+    config.setdefault("dense", {})["norm_before_render"] = dataset.norm_before_render
+    config["feature_type"] = dataset.feature_type
+    config["longest_edge"] = dataset.longest_edge
+    config["model_path"] = dataset.model_path
+    return config
+
+
+def _refresh_stdloc_sparse_landmarks(stdloc, gaussians, source_landmark_indices):
+    from stdloc import sample_gaussians
+
+    current_indices = _current_landmark_indices_from_source_index(
+        source_landmark_indices,
+        gaussians,
+    )
+    if current_indices.numel() == 0:
+        return 0
+    stdloc.landmark_indices = current_indices.detach().cpu()
+    stdloc.landmarks = sample_gaussians(gaussians, stdloc.landmark_indices)
+    stdloc.landmark_meta = None
+    return int(current_indices.numel())
+
+
+def _score_heldout_sparse_pose_risk(
+    gaussians,
+    stdloc,
+    heldout_cameras,
+    args,
+    direct_landmark_indices,
+    artifact_weight_lookup=None,
+    return_values=False,
+    return_metrics=False,
+):
+    if _refresh_stdloc_sparse_landmarks(stdloc, gaussians, direct_landmark_indices) == 0:
+        if return_values or return_metrics:
+            output = {"risk": float("inf")}
+            if return_values:
+                output["values"] = [float("inf")]
+            if return_metrics:
+                output["metrics"] = _pose_metric_summary([], [], [], args)
+            return output
+        return float("inf")
+    risks = []
+    ae_values = []
+    te_values = []
+    inlier_values = []
+    risk_weights = []
+    with torch.no_grad():
+        for query_cam in heldout_cameras:
+            query_image = query_cam.original_image.to("cuda")
+            loc_res = stdloc.localize(query_image, query_cam.FoVx, query_cam.FoVy)
+            gt_w2c = query_cam.world_view_transform.transpose(0, 1).detach().cpu().numpy()
+            sparse_res = loc_res["sparse"]
+            ae, te = cal_pose_error(sparse_res["pose_w2c"], gt_w2c)
+            inliers = sparse_res.get("inliers", 0)
+            risk = _pose_risk_from_sparse_metrics(
+                ae,
+                te,
+                inliers,
+                args,
+            )
+            ae_values.append(float(ae))
+            te_values.append(float(te))
+            inlier_values.append(float(inliers))
+            risks.append(float(risk))
+            if artifact_weight_lookup is not None:
+                risk_weights.append(artifact_weight_lookup.weight_for_camera(query_cam))
+    if not risks:
+        if return_values or return_metrics:
+            output = {"risk": float("inf")}
+            if return_values:
+                output["values"] = [float("inf")]
+            if return_metrics:
+                output["metrics"] = _pose_metric_summary([], [], [], args)
+            return output
+        return float("inf")
+    risk_mean = _aggregate_pose_risk_values(
+        risks,
+        args,
+        weights=risk_weights if artifact_weight_lookup is not None else None,
+    )
+    if return_values or return_metrics:
+        output = {"risk": risk_mean}
+        if return_values:
+            output["values"] = risks
+        if return_metrics:
+            output["metrics"] = _pose_metric_summary(ae_values, te_values, inlier_values, args)
+        return output
+    return risk_mean
+
+
+def _make_heldout_pose_risk_evaluator(
+    args,
+    dataset,
+    gaussians,
+    opt,
+    heldout_cameras,
+    direct_landmark_indices,
+    scene_extent,
+    artifact_weight_lookup=None,
+):
+    from stdloc import STDLoc
+
+    risk_cameras = _select_risk_cameras(
+        heldout_cameras,
+        args.topology_risk_holdout_size,
+        args.topology_risk_holdout_selection,
+    )
+    if not risk_cameras:
+        raise ValueError("heldout_pose risk requires at least one held-out query camera")
+    config = _make_sparse_pose_risk_config(args, dataset)
+    stdloc = STDLoc(gaussians, config)
+    use_metric_veto = str(args.topology_risk_pose_veto_mode) != "off"
+
+    def score_fn(model):
+        return _score_heldout_sparse_pose_risk(
+            model,
+            stdloc,
+            risk_cameras,
+            args,
+            direct_landmark_indices,
+            artifact_weight_lookup=artifact_weight_lookup,
+            return_values=float(args.topology_risk_ci_z) > 0.0,
+            return_metrics=use_metric_veto,
+        )
+
+    return HeldoutRiskCommitEvaluator(
+        score_fn=score_fn,
+        apply_trial_fn=lambda model, proposal: _apply_split_proposal_trial(model, proposal, scene_extent),
+        capture_state_fn=_capture_locaware_training_state,
+        restore_state_fn=lambda model, state: _restore_locaware_training_state(model, opt, state),
+        epsilon=args.topology_risk_epsilon,
+        ci_z=args.topology_risk_ci_z,
+        min_ci_samples=args.topology_risk_min_ci_samples,
+        reason_prefix="heldout_pose",
+        metric_gate_fn=(
+            (lambda baseline, trial: _pose_recall_tail_veto(baseline, trial, args))
+            if use_metric_veto
+            else None
+        ),
+    )
 
 
 def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=None):
@@ -433,12 +1939,214 @@ def _query_feature_map(viewpoint_cam, feature_extractor, target_hw, masks=None):
             mode="bilinear",
             align_corners=False,
         ).squeeze(0)
-        gt_feature_map = F.normalize(gt_feature_map, p=2, dim=0)
-    if masks is not None:
+        gt_feature_map = _normalize_feature_map_inplace(gt_feature_map)
+    if masks is not None and getattr(viewpoint_cam, "image_name", "") in masks:
         obj_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][0].cuda()[None], target_hw)
         distort_mask = _resize_bool_mask(masks[viewpoint_cam.image_name][2].cuda()[None], target_hw)
         gt_feature_map = gt_feature_map * (obj_mask & distort_mask)
     return gt_feature_map
+
+
+def _scale_chw_image(image, scale):
+    scale = float(scale or 1.0)
+    if abs(scale - 1.0) < 1e-6:
+        return image
+    height, width = image.shape[-2:]
+    target_hw = (
+        max(8, int(round(height * scale))),
+        max(8, int(round(width * scale))),
+    )
+    return F.interpolate(
+        image.float()[None],
+        size=target_hw,
+        mode="bilinear",
+        align_corners=False,
+    )[0]
+
+
+def _combine_region_weight_maps(first, second):
+    if first is None:
+        return second
+    if second is None:
+        return first
+    first = torch.as_tensor(first, dtype=torch.float32)
+    second = torch.as_tensor(second, dtype=torch.float32, device=first.device)
+    while first.dim() > 2:
+        first = first.squeeze(0)
+    while second.dim() > 2:
+        second = second.squeeze(0)
+    if first.shape != second.shape:
+        first = F.interpolate(
+            first[None, None],
+            size=second.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+    return (first.to(device=second.device, dtype=second.dtype) * second).clamp(0.0, 1.0)
+
+
+def _pseudo_query_no_reference_region_weight(
+    record,
+    query_image,
+    enabled=False,
+    allowed_sources=None,
+    min_weight=0.25,
+    support_power=1.0,
+    image_scale=1.0,
+    builder=None,
+):
+    if not enabled:
+        return None, {"enabled": False, "reason": "disabled"}
+    allowed_sources = {str(item) for item in (allowed_sources or []) if str(item)}
+    if allowed_sources and getattr(record, "source", "") not in allowed_sources:
+        return None, {"enabled": False, "reason": "source_not_enabled"}
+    builder = builder or NoReferenceValidMaskBuilder()
+    image = torch.as_tensor(query_image).detach().cpu().float()
+    if image.dim() == 4 and image.shape[0] == 1:
+        image = image[0]
+    image = _scale_chw_image(image, image_scale)
+    result = builder.build(image)
+    support = result.support_score.detach().float().clamp(0.0, 1.0)
+    power = float(support_power or 1.0)
+    if abs(power - 1.0) > 1e-6:
+        support = support.pow(power)
+    min_weight = max(0.0, min(float(min_weight), 1.0))
+    weight_map = min_weight + (1.0 - min_weight) * support
+    weight_map = weight_map * result.valid_mask.detach().float()
+    weight_map = weight_map.clamp(0.0, 1.0)
+    summary = {
+        "enabled": True,
+        "reason": "ok",
+        "mode": "no_reference_region_weight",
+        **result.summary,
+        "region_weight_min": float(weight_map.min().item()) if weight_map.numel() else 1.0,
+        "region_weight_mean": float(weight_map.mean().item()) if weight_map.numel() else 1.0,
+        "region_weight_max": float(weight_map.max().item()) if weight_map.numel() else 1.0,
+        "region_weight_min_config": min_weight,
+        "support_power": power,
+        "image_scale": float(image_scale or 1.0),
+    }
+    return weight_map, summary
+
+
+def _pseudo_record_to_camera(record, train_camera_by_name):
+    if record.source == "train_rgb":
+        camera = train_camera_by_name.get(_normalize_image_name(record.image_name))
+        if camera is not None:
+            camera.teacher_cache_key = record.teacher_cache_key or record.query_id
+            camera.pseudo_query_source = record.source
+            camera.pseudo_query_artifact_score = float(record.artifact_score)
+            return camera
+    camera = record.to_camera(device="cpu")
+    camera.teacher_cache_key = record.teacher_cache_key or record.query_id
+    camera.pseudo_query_source = record.source
+    camera.pseudo_query_artifact_score = float(record.artifact_score)
+    return camera
+
+
+def _synthetic_query_feature_map(
+    gaussians,
+    pose_w2c,
+    fovx,
+    fovy,
+    target_hw,
+    background,
+    feature_extractor=None,
+    feature_source="loc_feature",
+    norm_feat_bf_render=True,
+    alpha_threshold=0.2,
+):
+    feature_source = str(feature_source)
+    with torch.no_grad():
+        render_pkg = render_from_pose_gsplat(
+            gaussians,
+            pose_w2c,
+            fovx,
+            fovy,
+            target_hw[1],
+            target_hw[0],
+            bg_color=background,
+            render_mode="RGB+ED",
+            rgb_only=feature_source == "rgb",
+            norm_feat_bf_render=norm_feat_bf_render,
+            rasterize_mode="antialiased",
+        )
+        if feature_source == "rgb":
+            if feature_extractor is None:
+                return None, 0.0
+            feature_map = feature_extractor(render_pkg["render"].clamp(0.0, 1.0)[None])["feature_map"][0]
+            feature_map = F.interpolate(
+                feature_map.unsqueeze(0),
+                size=target_hw,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+            feature_map = _normalize_feature_map_inplace(feature_map.detach())
+        else:
+            feature_map = render_pkg.get("feature_map")
+            if feature_map is None:
+                return None, 0.0
+            feature_map = _normalize_feature_map_inplace(feature_map.detach())
+        alpha = _flatten_render_alpha(render_pkg.get("alphas"))
+        if alpha is None:
+            return feature_map, 1.0
+        alpha = alpha.to(device=feature_map.device, dtype=feature_map.dtype)
+        valid = alpha > float(alpha_threshold)
+        observability = float(valid.float().mean().item()) if valid.numel() else 0.0
+        if valid.shape == feature_map.shape[-2:]:
+            feature_map = feature_map * valid.to(dtype=feature_map.dtype).unsqueeze(0)
+        return feature_map, observability
+
+
+def _sample_synthetic_query(
+    cameras,
+    gaussians,
+    target_hw,
+    background,
+    args,
+    feature_extractor=None,
+    norm_feat_bf_render=True,
+):
+    best = None
+    best_score = -1.0
+    for _ in range(max(1, int(args.synthetic_view_candidates))):
+        try:
+            candidate = sample_interpolated_novel_view(
+                cameras,
+                alpha_min=args.synthetic_view_alpha_min,
+                alpha_max=args.synthetic_view_alpha_max,
+            )
+        except ValueError:
+            return None, None, {}
+        pose_gt = candidate.world_view_transform.transpose(0, 1).cuda()
+        feature_map, observability = _synthetic_query_feature_map(
+            gaussians,
+            pose_gt,
+            candidate.FoVx,
+            candidate.FoVy,
+            target_hw,
+            background,
+            feature_extractor=feature_extractor,
+            feature_source=args.lafgs_synthetic_feature_source,
+            norm_feat_bf_render=norm_feat_bf_render,
+            alpha_threshold=args.loc_alpha_threshold,
+        )
+        if feature_map is None:
+            continue
+        score = float(candidate.difficulty * candidate.coverage * observability)
+        if observability >= float(args.synthetic_view_min_observability) and score > best_score:
+            best = candidate
+            best_score = score
+            diagnostics = {
+                "synthetic_view_used": 1.0,
+                "synthetic_view_observability": observability,
+                "synthetic_view_score": score,
+                "synthetic_view_alpha": float(candidate.alpha),
+            }
+            best = (candidate, feature_map, diagnostics)
+    if best is None:
+        return None, None, {"synthetic_view_used": 0.0}
+    return best
 
 
 def training(dataset, opt, args):
@@ -463,15 +2171,14 @@ def training(dataset, opt, args):
         first_iter = scene.loaded_iter
     geometry_anchor = _capture_geometry_anchor(gaussians)
     loc_feature_anchor = _capture_feature_anchor(gaussians) if args.loc_anchor_weight > 0 else None
-    sparse_pose_cache = None
-    if args.sparse_pose_cache:
-        sparse_pose_cache = SparsePoseCache(args.sparse_pose_cache).load()
+    sparse_pose_cache = _load_training_pose_cache(args)
     episode_sampler = EpisodeSampler(
         sparse_pose_cache=sparse_pose_cache,
         query_mode=args.query_mode,
         noise_quantile=args.pose_noise_quantile,
         mixed_sparse_probability=args.mixed_sparse_probability,
         noise_sampling=args.pose_noise_sampling,
+        exclude_sparse_failure_stages=args.pseudo_query_exclude_sparse_failure_stages,
     )
     direct_landmark_indices = None
     direct_observation_memory = None
@@ -490,12 +2197,344 @@ def training(dataset, opt, args):
                 "Initialized direct multi-view memory: "
                 f"landmarks={direct_landmark_indices.numel()} slots={args.loc_multiview_slots}"
             )
+    if args.loc_overlay_mode == "descriptor":
+        if direct_landmark_indices is None:
+            direct_landmark_indices = _load_landmark_indices(dataset.model_path, args.landmark_path, device="cpu")
+            print(f"Loaded {direct_landmark_indices.numel()} descriptor overlay landmarks from {args.landmark_path}")
+        _configure_descriptor_overlay(gaussians, args, direct_landmark_indices=direct_landmark_indices)
+        print(
+            "Initialized descriptor overlay: "
+            f"sources={gaussians.loc_overlay_source_index.numel()} "
+            f"lr={args.loc_overlay_lr if args.loc_overlay_lr > 0 else opt.loc_feature_lr}"
+        )
+    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    train_cameras = scene.getTrainCameras().copy()
+    if args.support_query_sort_by_name:
+        train_cameras = sorted(
+            train_cameras,
+            key=lambda camera: _normalize_image_name(getattr(camera, "image_name", "")),
+        )
+    if args.support_query_split:
+        support_cameras, query_cameras = split_support_query_cameras(
+            train_cameras,
+            query_ratio=args.query_holdout_ratio,
+            seed=args.query_split_seed,
+            mode=args.query_split_mode,
+        )
+        print(
+            "Support/query split enabled: "
+            f"support={len(support_cameras)} query={len(query_cameras)} "
+            f"query_ratio={args.query_holdout_ratio} "
+            f"query_split_seed={args.query_split_seed} "
+            f"query_split_mode={args.query_split_mode} "
+            f"sort_by_name={args.support_query_sort_by_name}"
+        )
+    else:
+        support_cameras = train_cameras
+        query_cameras = train_cameras
+    mvinit_summary = {
+        "mvinit_enabled": bool(getattr(args, "lafgs_mvinit_enabled", False)),
+        "mvinit_requested_max_views": int(getattr(args, "lafgs_mvinit_max_views", 0)),
+        "mvinit_view_selection": str(getattr(args, "lafgs_mvinit_view_selection", "first")),
+        "mvinit_feature_scale": float(getattr(args, "lafgs_mvinit_feature_scale", 1.0) or 1.0),
+        "mvinit_used_views": 0,
+        "mvinit_observed_gaussians": 0,
+        "mvinit_mean_observations": 0.0,
+    }
+    if bool(getattr(args, "lafgs_mvinit_enabled", False)) and int(args.lafgs_mvinit_max_views) != 0:
+        mvinit_cameras = select_multiview_init_cameras(
+            support_cameras,
+            max_views=args.lafgs_mvinit_max_views,
+            mode=args.lafgs_mvinit_view_selection,
+        )
+        print(
+            "Running LaFGS MVInit: "
+            f"views={len(mvinit_cameras)} "
+            f"selection={args.lafgs_mvinit_view_selection} "
+            f"min_observations={args.lafgs_mvinit_min_observations}"
+        )
+
+        mvinit_feature_scale = max(float(getattr(args, "lafgs_mvinit_feature_scale", 1.0) or 1.0), 1e-3)
+
+        def _mvinit_feature_map(camera):
+            target_hw = (
+                max(8, int(round(camera.image_height * mvinit_feature_scale))),
+                max(8, int(round(camera.image_width * mvinit_feature_scale))),
+            )
+            return _query_feature_map(
+                camera,
+                feature_extractor,
+                target_hw=target_hw,
+                masks=masks,
+            )
+
+        mvinit_result = build_multiview_initialization(
+            gaussians,
+            mvinit_cameras,
+            _mvinit_feature_map,
+            config=MultiViewInitConfig(
+                min_observations=args.lafgs_mvinit_min_observations,
+                chunk_size=args.lafgs_mvinit_chunk_size,
+            ),
+        )
+        apply_multiview_initialization(gaussians, mvinit_result)
+        if args.loc_anchor_weight > 0:
+            loc_feature_anchor = _capture_feature_anchor(gaussians)
+        print(
+            "LaFGS MVInit complete: "
+            f"observed={mvinit_result.diagnostics.get('observed_gaussians', 0)} "
+            f"mean_obs={mvinit_result.diagnostics.get('mean_observations', 0.0):.3f}"
+        )
+        mvinit_summary.update(
+            {
+                "mvinit_used_views": len(mvinit_cameras),
+                "mvinit_observed_gaussians": int(mvinit_result.diagnostics.get("observed_gaussians", 0)),
+                "mvinit_mean_observations": float(mvinit_result.diagnostics.get("mean_observations", 0.0)),
+            }
+        )
+    pseudo_query_sampler = None
+    pseudo_query_reliability_stats = None
+    train_camera_by_name = {
+        _normalize_image_name(getattr(camera, "image_name", "")): camera
+        for camera in train_cameras
+    }
+    if args.pseudo_query_manifest:
+        pseudo_manifest = PseudoQueryManifest.load(args.pseudo_query_manifest).accepted(
+            sources=artifact_comma_set(args.pseudo_query_sources, lower=False)
+        )
+        pseudo_manifest, cache_alignment_summary = _align_pseudo_manifest_to_teacher_cache(
+            pseudo_manifest,
+            sparse_pose_cache,
+            enabled=bool(args.pseudo_query_require_teacher_cache),
+        )
+        if cache_alignment_summary.get("enabled", False):
+            print(
+                "Pseudo-query teacher-cache alignment: "
+                f"before={cache_alignment_summary['before']} "
+                f"after={cache_alignment_summary['after']} "
+                f"dropped_missing={cache_alignment_summary['dropped_missing_teacher_cache']}"
+            )
+        elif cache_alignment_summary.get("reason"):
+            print(
+                "Pseudo-query teacher-cache alignment skipped: "
+                f"reason={cache_alignment_summary['reason']} "
+                f"records={cache_alignment_summary['before']}"
+            )
+        if sparse_pose_cache is not None and bool(args.pseudo_query_filter_teacher_cache):
+            before_counts = pseudo_manifest.source_counts()
+            allowed_stages = artifact_comma_set(args.pseudo_query_teacher_allowed_stages, lower=False)
+            pseudo_manifest = pseudo_manifest.filter_by_teacher_cache(
+                sparse_pose_cache,
+                max_sparse_te=float(args.pseudo_query_teacher_max_sparse_te),
+                max_dense_te=float(args.pseudo_query_teacher_max_dense_te),
+                allowed_stages=allowed_stages or None,
+            )
+            print(
+                "Pseudo-query teacher-cache filter: "
+                f"before={before_counts} after={pseudo_manifest.source_counts()} "
+                f"max_sparse_te={args.pseudo_query_teacher_max_sparse_te} "
+                f"max_dense_te={args.pseudo_query_teacher_max_dense_te} "
+                f"allowed_stages={','.join(allowed_stages) if allowed_stages else '<any>'}"
+            )
+        if int(args.pseudo_query_max_synthetic) > 0:
+            kept = []
+            synthetic_seen = 0
+            for record in pseudo_manifest.records:
+                if record.source == "synthetic_rgb":
+                    if synthetic_seen >= int(args.pseudo_query_max_synthetic):
+                        continue
+                    synthetic_seen += 1
+                kept.append(record)
+            pseudo_manifest = PseudoQueryManifest(version=pseudo_manifest.version, records=kept)
+        pseudo_query_sampler = PseudoQuerySampler(
+            pseudo_manifest.records,
+            real_weight=args.pseudo_query_real_weight,
+            synthetic_weight=args.pseudo_query_synthetic_weight,
+            seed=args.train_seed,
+            sampling_mode=args.pseudo_query_sampling_mode,
+        )
+        print(
+            "Pseudo-query manifest enabled: "
+            f"path={args.pseudo_query_manifest} "
+            f"counts={pseudo_manifest.source_counts()} "
+            f"real_weight={args.pseudo_query_real_weight} "
+            f"synthetic_weight={args.pseudo_query_synthetic_weight} "
+            f"sampling_mode={args.pseudo_query_sampling_mode}"
+        )
+        if sparse_pose_cache is not None and args.pseudo_query_reliability_mode != "none":
+            pseudo_query_reliability_stats = _pseudo_teacher_cache_reliability_stats(sparse_pose_cache)
+            global_stats = pseudo_query_reliability_stats.get("__global__", {})
+            print(
+                "Pseudo-query reliability weighting enabled: "
+                f"mode={args.pseudo_query_reliability_mode} "
+                f"global_median_te={global_stats.get('median_final_te', 0.0):.3f} "
+                f"global_median_inliers={global_stats.get('median_inliers', 0.0):.1f} "
+                f"memory_min_weight={args.pseudo_query_reliability_memory_min_weight:.3f}"
+            )
+    pseudo_no_reference_region_weight_sources = artifact_comma_set(
+        args.pseudo_query_no_reference_region_weight_sources,
+        lower=False,
+    )
+    pseudo_no_reference_region_weight_builder = None
+    if bool(args.pseudo_query_no_reference_region_weight):
+        pseudo_no_reference_region_weight_builder = NoReferenceValidMaskBuilder(
+            NoReferenceValidMaskConfig(
+                support_threshold=float(args.pseudo_query_no_reference_support_threshold),
+                support_dilate_radius=int(args.pseudo_query_no_reference_support_dilate_radius),
+                support_min_area=int(args.pseudo_query_no_reference_support_min_area),
+                invalid_min_area=int(args.pseudo_query_no_reference_invalid_min_area),
+            )
+        )
+        print(
+            "Pseudo-query no-reference region weighting enabled: "
+            f"sources={','.join(sorted(pseudo_no_reference_region_weight_sources))} "
+            f"min={args.pseudo_query_no_reference_region_weight_min:.3f} "
+            f"support_power={args.pseudo_query_no_reference_region_weight_support_power:.3f} "
+            f"image_scale={args.pseudo_query_no_reference_region_weight_image_scale:.3f}"
+        )
+    if args.query_artifact_filter_path:
+        scene_name = os.path.basename(os.path.normpath(dataset.source_path))
+        artifact_names = _load_query_artifact_filter_names(
+            args.query_artifact_filter_path,
+            scene_name=scene_name,
+            severities=args.query_artifact_filter_severities,
+            splits=args.query_artifact_filter_splits,
+        )
+        original_query_count = len(query_cameras)
+        query_cameras, removed_query_artifacts = _filter_query_cameras_by_artifacts(query_cameras, artifact_names)
+        print(
+            "Query artifact filter enabled: "
+            f"path={args.query_artifact_filter_path} "
+            f"scene={scene_name} "
+            f"severities={args.query_artifact_filter_severities} "
+            f"splits={args.query_artifact_filter_splits} "
+            f"matched={len(artifact_names)} "
+            f"removed={len(removed_query_artifacts)} "
+            f"query={len(query_cameras)}/{original_query_count}"
+        )
+    artifact_weight_lookup = None
+    artifact_weight_targets = {item.lower() for item in _comma_set(args.render_artifact_weight_targets)}
+    if args.render_artifact_weight_path:
+        scene_name = os.path.basename(os.path.normpath(dataset.source_path))
+        artifact_weight_lookup = load_artifact_weight_lookup(
+            args.render_artifact_weight_path,
+            scene_name=scene_name,
+            splits=args.render_artifact_weight_splits,
+            severities=args.render_artifact_weight_severities,
+            default_weight=args.render_artifact_weight_default,
+            mild_weight=args.render_artifact_weight_mild,
+            severe_weight=args.render_artifact_weight_severe,
+            mode=args.render_artifact_weight_mode,
+            continuous_min_weight=args.render_artifact_weight_continuous_min,
+            continuous_power=args.render_artifact_weight_continuous_power,
+        )
+        print(
+            "Render artifact weight enabled: "
+            f"path={args.render_artifact_weight_path} "
+            f"scene={scene_name} "
+            f"mode={args.render_artifact_weight_mode} "
+            f"targets={','.join(sorted(artifact_weight_targets))} "
+            f"splits={args.render_artifact_weight_splits} "
+            f"severities={args.render_artifact_weight_severities} "
+            f"default={args.render_artifact_weight_default:.3f} "
+            f"mild={args.render_artifact_weight_mild:.3f} "
+            f"severe={args.render_artifact_weight_severe:.3f} "
+            f"continuous_min={args.render_artifact_weight_continuous_min:.3f} "
+            f"continuous_power={args.render_artifact_weight_continuous_power:.3f} "
+            f"direct_combine={args.render_artifact_direct_weight_combine_mode} "
+            f"direct_loss_scale={args.render_artifact_direct_loss_scale_mode} "
+            f"matched={len(artifact_weight_lookup.weights_by_name)} "
+            f"summary={artifact_weight_lookup.summary()}"
+        )
+    teacher_artifact_weight_lookup = (
+        artifact_weight_lookup if artifact_weight_lookup is not None and "teacher" in artifact_weight_targets else None
+    )
+    risk_artifact_weight_lookup = (
+        artifact_weight_lookup if artifact_weight_lookup is not None and "risk" in artifact_weight_targets else None
+    )
+    artifact_region_weight_lookup = None
+    artifact_region_weight_targets = {
+        item.lower() for item in _comma_set(args.render_artifact_region_weight_targets)
+    }
+    if args.render_artifact_region_weight_path:
+        scene_name = os.path.basename(os.path.normpath(dataset.source_path))
+        artifact_region_weight_lookup = load_artifact_region_weight_lookup(
+            args.render_artifact_region_weight_path,
+            scene_name=scene_name,
+            splits=args.render_artifact_region_weight_splits,
+            severities=args.render_artifact_region_weight_severities,
+            default_weight=args.render_artifact_region_weight_default,
+            root=args.render_artifact_region_weight_root,
+        )
+        print(
+            "Render artifact region weight enabled: "
+            f"path={args.render_artifact_region_weight_path} "
+            f"root={args.render_artifact_region_weight_root} "
+            f"scene={scene_name} "
+            f"targets={','.join(sorted(artifact_region_weight_targets))} "
+            f"splits={args.render_artifact_region_weight_splits} "
+            f"severities={args.render_artifact_region_weight_severities} "
+            f"default={args.render_artifact_region_weight_default:.3f} "
+            f"matched={len(artifact_region_weight_lookup.maps_by_name)} "
+            f"summary={artifact_region_weight_lookup.summary()}"
+        )
+    teacher_artifact_region_weight_lookup = (
+        artifact_region_weight_lookup
+        if artifact_region_weight_lookup is not None
+        and ("direct" in artifact_region_weight_targets or "teacher" in artifact_region_weight_targets)
+        else None
+    )
     topology_controller = None
-    if args.enable_topology or args.train_phase in {"topology", "closed_loop"}:
+    if args.enable_topology or args.train_phase in {"topology", "closed_loop"} or bool(getattr(args, "lafgs_curriculum", False)):
         protected_source_indices = None
         if args.topology_protect_landmarks:
             protected_source_indices = _load_landmark_indices(dataset.model_path, args.landmark_path, device="cpu")
             print(f"Protecting {protected_source_indices.numel()} sparse landmark source ids from physical prune")
+        risk_evaluator = None
+        if args.topology_risk_commit_policy in {"heldout_descriptor", "heldout_pose"}:
+            if direct_landmark_indices is None:
+                direct_landmark_indices = _load_landmark_indices(dataset.model_path, args.landmark_path, device="cpu")
+                print(f"Loaded {direct_landmark_indices.numel()} held-out risk landmarks from {args.landmark_path}")
+        if args.topology_risk_commit_policy == "heldout_descriptor":
+            risk_evaluator = _make_heldout_descriptor_risk_evaluator(
+                args,
+                gaussians,
+                opt,
+                query_cameras,
+                feature_extractor,
+                masks,
+                direct_landmark_indices,
+                scene.cameras_extent,
+            )
+            print(
+                "Initialized held-out descriptor topology risk: "
+                f"holdout={min(max(1, int(args.topology_risk_holdout_size)), len(query_cameras))} "
+                f"selection={args.topology_risk_holdout_selection} "
+                f"epsilon={args.topology_risk_epsilon} "
+                f"ci_z={args.topology_risk_ci_z} "
+                f"min_ci_samples={args.topology_risk_min_ci_samples}"
+            )
+        elif args.topology_risk_commit_policy == "heldout_pose":
+            risk_evaluator = _make_heldout_pose_risk_evaluator(
+                args,
+                dataset,
+                gaussians,
+                opt,
+                query_cameras,
+                direct_landmark_indices,
+                scene.cameras_extent,
+                artifact_weight_lookup=risk_artifact_weight_lookup,
+            )
+            print(
+                "Initialized held-out sparse pose topology risk: "
+                f"holdout={min(max(1, int(args.topology_risk_holdout_size)), len(query_cameras))} "
+                f"selection={args.topology_risk_holdout_selection} "
+                f"epsilon={args.topology_risk_epsilon} "
+                f"ci_z={args.topology_risk_ci_z} "
+                f"min_ci_samples={args.topology_risk_min_ci_samples} "
+                f"cfg={args.topology_risk_pose_cfg}"
+            )
         topology_controller = LocalizationTopologyController(
             TopologyConfig(
                 stats_warmup=args.topology_stats_warmup,
@@ -518,42 +2557,56 @@ def training(dataset, opt, args):
                 physical_loc_threshold=args.topology_physical_loc_threshold,
                 physical_utility_threshold=args.topology_physical_utility_threshold,
                 require_loc_opacity_trained_for_physical_prune=not args.topology_allow_untrained_loc_opacity_prune,
+                max_mutation_events=args.topology_max_mutation_events,
+                risk_commit_policy=args.topology_risk_commit_policy,
             ),
             initial_points=gaussians.get_xyz.shape[0],
             protected_source_indices=protected_source_indices,
+            risk_evaluator=risk_evaluator,
         )
-
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    train_cameras = scene.getTrainCameras().copy()
-    if args.support_query_split:
-        support_cameras, query_cameras = split_support_query_cameras(
-            train_cameras,
-            query_ratio=args.query_holdout_ratio,
-            seed=args.query_split_seed,
-            mode=args.query_split_mode,
-        )
-        print(
-            "Support/query split enabled: "
-            f"support={len(support_cameras)} query={len(query_cameras)} "
-            f"query_ratio={args.query_holdout_ratio} "
-            f"query_split_seed={args.query_split_seed} "
-            f"query_split_mode={args.query_split_mode}"
-        )
-    else:
-        support_cameras = train_cameras
-        query_cameras = train_cameras
     viewpoint_stack = None
     query_viewpoint_stack = None
     ema_loss_for_log = 0.0
     loc_opacity_grad_seen = False
+    loc_training_summary = {
+        "episodes": 0,
+        "pseudo_query_episodes": 0,
+        "direct_episodes": 0,
+        "direct_visible_episodes": 0,
+        "direct_visible_total": 0,
+        "direct_visible_max": 0,
+        "direct_nonzero_loss_episodes": 0,
+        "stats_candidate_episodes": 0,
+        "stats_update_episodes": 0,
+        "stats_update_points_total": 0,
+        "stats_skip_reliability_episodes": 0,
+        "stats_skip_stage_episodes": 0,
+        "stats_skip_no_visible_episodes": 0,
+        "diff_pnp_episodes": 0,
+        "diff_pnp_used_correspondences_total": 0,
+    }
+    loc_training_summary.update(mvinit_summary)
+    lafgs_curriculum_base_iter = int(scene.loaded_iter or 0)
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="LA Feature Gaussian")
     first_iter += 1
 
     for iteration in range(first_iter, opt.iterations + 1):
         gaussians.update_learning_rate(iteration)
+        lafgs_step = lafgs_curriculum_step(iteration, base_iteration=lafgs_curriculum_base_iter)
         phase = "feature" if args.feature_only else args.train_phase
+        if bool(getattr(args, "lafgs_curriculum", False)) and not args.feature_only:
+            phase = lafgs_phase_from_starts(
+                lafgs_step,
+                args.lafgs_locrec_start_iter,
+                args.lafgs_diff_pnp_start_iter,
+                args.lafgs_geometry_start_iter,
+                args.lafgs_topology_start_iter,
+            )
         _set_phase_lrs(gaussians, phase, args)
+        geometry_update_active = _phase_allows_geometry_update(args, phase)
+        geometry_xyz_before = None
+        if geometry_update_active:
+            geometry_xyz_before = gaussians._xyz.detach().clone()
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
@@ -584,40 +2637,203 @@ def training(dataset, opt, args):
         loc_full_bank_loss = image.new_tensor(0.0)
         loc_anchor_loss = image.new_tensor(0.0)
         loc_reproj_loss = image.new_tensor(0.0)
+        loc_pnp_loss = image.new_tensor(0.0)
         loc_dense_kl_loss = image.new_tensor(0.0)
+        loc_dense_rank_loss = image.new_tensor(0.0)
         loc_proto_loss = image.new_tensor(0.0)
         loc_rank_loss = image.new_tensor(0.0)
         loc_opacity_loss = image.new_tensor(0.0)
+        loc_overlay_reg_loss = image.new_tensor(0.0)
         geom_anchor_loss = image.new_tensor(0.0)
+        loc_geometry_residual_loss = image.new_tensor(0.0)
         loc_grad = None
         teacher_out = None
+        loc_stats_update_allowed = False
         run_loc_episode = (
             args.localization_enabled
             and losses["gt_feature_map"] is not None
             and iteration >= args.loc_start_iter
             and iteration % args.loc_interval == 0
         )
+        pseudo_query_reliability = {
+            "enabled": False,
+            "weight": 1.0,
+            "update_memory": True,
+            "update_stats": True,
+        }
+        pseudo_query_stage_direct_policy = _pseudo_query_stage_direct_loss_policy(
+            pseudo_query_reliability,
+            args,
+        )
 
         if run_loc_episode:
-            query_cam = viewpoint_cam
-            query_feature_map = losses["gt_feature_map"]
-            if args.support_query_split:
-                if not query_viewpoint_stack:
-                    query_viewpoint_stack = query_cameras.copy()
-                query_cam = query_viewpoint_stack.pop(randint(0, len(query_viewpoint_stack) - 1))
+            loc_training_summary["episodes"] += 1
+            synthetic_diagnostics = {}
+            query_record = None
+            query_cam = None
+            query_feature_map = None
+            pseudo_query_region_weight_map = None
+            if pseudo_query_sampler is not None:
+                query_record = pseudo_query_sampler.sample_record()
+                if query_record is None:
+                    raise RuntimeError("Pseudo-query manifest has no accepted records.")
+                query_cam = _pseudo_record_to_camera(query_record, train_camera_by_name)
                 query_feature_map = _query_feature_map(
                     query_cam,
                     feature_extractor,
                     target_hw=losses["gt_feature_map"].shape[-2:],
-                    masks=masks,
+                    masks=masks if query_record.source == "train_rgb" else None,
                 )
+                synthetic_diagnostics = {
+                    "pseudo_query_used": 1.0,
+                    "pseudo_query_is_synthetic": 1.0 if query_record.source == "synthetic_rgb" else 0.0,
+                    "pseudo_query_artifact_score": float(query_record.artifact_score),
+                }
+                pseudo_query_region_weight_map, region_weight_summary = _pseudo_query_no_reference_region_weight(
+                    query_record,
+                    query_cam.original_image,
+                    enabled=bool(args.pseudo_query_no_reference_region_weight),
+                    allowed_sources=pseudo_no_reference_region_weight_sources,
+                    min_weight=args.pseudo_query_no_reference_region_weight_min,
+                    support_power=args.pseudo_query_no_reference_region_weight_support_power,
+                    image_scale=args.pseudo_query_no_reference_region_weight_image_scale,
+                    builder=pseudo_no_reference_region_weight_builder,
+                )
+                if region_weight_summary:
+                    synthetic_diagnostics.update(
+                        {
+                            "pseudo_query_region_weight_enabled": 1.0
+                            if region_weight_summary.get("enabled", False)
+                            else 0.0,
+                            "pseudo_query_region_weight_mean": float(
+                                region_weight_summary.get("region_weight_mean", 1.0)
+                            ),
+                            "pseudo_query_region_weight_min": float(
+                                region_weight_summary.get("region_weight_min", 1.0)
+                            ),
+                            "pseudo_query_region_weight_valid_frac": float(
+                                region_weight_summary.get("valid_frac", 1.0)
+                            ),
+                            "pseudo_query_region_weight_support_frac": float(
+                                region_weight_summary.get("support_frac", 1.0)
+                            ),
+                        }
+                    )
+            else:
+                use_synthetic_view = (
+                    lafgs_should_sample_synthetic_view(
+                        args.loc_teacher,
+                        args.synthetic_view_ratio,
+                        query_camera_count=len(query_cameras),
+                        random_value=random(),
+                    )
+                )
+                if use_synthetic_view:
+                    query_cam, query_feature_map, synthetic_diagnostics = _sample_synthetic_query(
+                        query_cameras,
+                        gaussians,
+                        losses["gt_feature_map"].shape[-2:],
+                        background,
+                        args,
+                        feature_extractor=feature_extractor,
+                        norm_feat_bf_render=dataset.norm_before_render,
+                    )
+                if query_cam is None or query_feature_map is None:
+                    if float(args.synthetic_view_ratio) > 0.0 and args.loc_teacher in {"dense", "direct"}:
+                        synthetic_diagnostics = {"synthetic_view_used": 0.0}
+                    query_cam = viewpoint_cam
+                    query_feature_map = losses["gt_feature_map"]
+                if args.support_query_split and query_cam is viewpoint_cam:
+                    if not query_viewpoint_stack:
+                        query_viewpoint_stack = query_cameras.copy()
+                    query_cam = query_viewpoint_stack.pop(randint(0, len(query_viewpoint_stack) - 1))
+                    query_feature_map = _query_feature_map(
+                        query_cam,
+                        feature_extractor,
+                        target_hw=losses["gt_feature_map"].shape[-2:],
+                        masks=masks,
+                    )
             episode = episode_sampler.sample(query_cam)
+            if query_record is not None:
+                loc_training_summary["pseudo_query_episodes"] += 1
+                source_key = str(query_record.source or "unknown").replace("/", "_")
+                source_metric = f"source_{source_key}_episodes"
+                loc_training_summary[source_metric] = loc_training_summary.get(source_metric, 0) + 1
+                pseudo_query_reliability = _pseudo_query_reliability_decision(
+                    query_record,
+                    episode.sparse_meta,
+                    pseudo_query_reliability_stats,
+                    args,
+                )
+                synthetic_diagnostics.update(
+                    {
+                        "pseudo_query_reliability_enabled": 1.0
+                        if pseudo_query_reliability.get("enabled", False)
+                        else 0.0,
+                        "pseudo_query_reliability_weight": float(
+                            pseudo_query_reliability.get("weight", 1.0)
+                        ),
+                        "pseudo_query_reliability_stage_weight": float(
+                            pseudo_query_reliability.get("stage_weight", 1.0)
+                        ),
+                        "pseudo_query_reliability_error_weight": float(
+                            pseudo_query_reliability.get("error_weight", 1.0)
+                        ),
+                        "pseudo_query_reliability_inlier_weight": float(
+                            pseudo_query_reliability.get("inlier_weight", 1.0)
+                        ),
+                        "pseudo_query_reliability_support_weight": float(
+                            pseudo_query_reliability.get("support_weight", 1.0)
+                        ),
+                        "pseudo_query_reliability_update_memory": 1.0
+                        if pseudo_query_reliability.get("update_memory", True)
+                        else 0.0,
+                        "pseudo_query_reliability_update_stats": 1.0
+                        if pseudo_query_reliability.get("update_stats", True)
+                        else 0.0,
+                        "pseudo_query_reliability_loss_scaled": 1.0
+                        if args.pseudo_query_reliability_loss_mode == "soft"
+                        else 0.0,
+                    }
+                )
+                synthetic_diagnostics.update(
+                    _pseudo_query_stage_source_diagnostics(query_record, pseudo_query_reliability)
+                )
             pose_gt = episode.pose_gt_w2c.cuda()
             pose_init = episode.pose_init_w2c.cuda()
             if args.loc_teacher == "direct":
                 current_direct_landmark_indices = _current_landmark_indices_from_source_index(
                     direct_landmark_indices,
                     gaussians,
+                )
+                pseudo_query_stage_direct_policy = _pseudo_query_stage_direct_loss_policy(
+                    pseudo_query_reliability,
+                    args,
+                )
+                synthetic_diagnostics.update(
+                    {
+                        "pseudo_query_stage_objective_enabled": 1.0
+                        if pseudo_query_stage_direct_policy.get("enabled", False)
+                        else 0.0,
+                        "pseudo_query_stage_objective_desc_weight": float(
+                            pseudo_query_stage_direct_policy.get("desc", 1.0)
+                        ),
+                        "pseudo_query_stage_objective_multiview_weight": float(
+                            pseudo_query_stage_direct_policy.get("multiview", 1.0)
+                        ),
+                        "pseudo_query_stage_objective_full_bank_weight": float(
+                            pseudo_query_stage_direct_policy.get("full_bank", 1.0)
+                        ),
+                        "pseudo_query_stage_objective_anchor_weight": float(
+                            pseudo_query_stage_direct_policy.get("anchor", 1.0)
+                        ),
+                        "pseudo_query_stage_objective_update_memory": 1.0
+                        if pseudo_query_stage_direct_policy.get("update_memory", True)
+                        else 0.0,
+                        "pseudo_query_stage_objective_update_stats": 1.0
+                        if pseudo_query_stage_direct_policy.get("update_stats", True)
+                        else 0.0,
+                    }
                 )
                 target_depth = None
                 target_alpha = None
@@ -638,6 +2854,31 @@ def training(dataset, opt, args):
                         )
                     target_depth = _flatten_render_map(gt_render.get("depth"))
                     target_alpha = _flatten_render_alpha(gt_render.get("alphas"))
+                child_responsibility_mode = args.loc_child_responsibility_mode
+                if (
+                    args.loc_child_responsibility_start_iter > 0
+                    and iteration < args.loc_child_responsibility_start_iter
+                ):
+                    child_responsibility_mode = "none"
+                artifact_region_weight_map = None
+                if teacher_artifact_region_weight_lookup is not None:
+                    artifact_region_weight_map = teacher_artifact_region_weight_lookup.map_for_camera(
+                        query_cam,
+                        device=query_feature_map.device,
+                        dtype=query_feature_map.dtype,
+                    )
+                if pseudo_query_region_weight_map is not None:
+                    pseudo_query_region_weight_map = pseudo_query_region_weight_map.to(
+                        device=query_feature_map.device,
+                        dtype=query_feature_map.dtype,
+                    )
+                    artifact_region_weight_map = _combine_region_weight_maps(
+                        artifact_region_weight_map,
+                        pseudo_query_region_weight_map,
+                    )
+                artifact_image_weight = 1.0
+                if teacher_artifact_weight_lookup is not None:
+                    artifact_image_weight = float(teacher_artifact_weight_lookup.weight_for_camera(query_cam))
                 teacher_out = direct_landmark_teacher(
                     gaussians,
                     query_feature_map,
@@ -654,29 +2895,303 @@ def training(dataset, opt, args):
                     multiview_memory=direct_observation_memory,
                     multiview_temperature=args.loc_multiview_temperature,
                     multiview_ignore_radius=args.loc_multiview_ignore_radius,
+                    update_multiview_memory=bool(pseudo_query_stage_direct_policy.get("update_memory", True)),
                     full_bank_indices=current_direct_landmark_indices if args.loc_full_bank_weight > 0 else None,
                     full_bank_temperature=args.loc_full_bank_temperature,
                     full_bank_hard_negative_topk=args.loc_full_bank_hard_negatives,
                     full_bank_hard_negative_margin=args.loc_full_bank_margin,
                     full_bank_ignore_3d_radius=args.loc_full_bank_ignore_3d_radius,
                     full_bank_ignore_uv_radius=args.loc_full_bank_ignore_uv_radius,
+                    full_bank_source_mode=args.loc_full_bank_source_mode,
+                    full_bank_nearby_as_positive=(
+                        args.loc_full_bank_nearby_as_positive
+                        and (
+                            args.loc_full_bank_nearby_as_positive_until <= 0
+                            or iteration <= args.loc_full_bank_nearby_as_positive_until
+                        )
+                    ),
                     sampling_grid_size=args.loc_anchor_grid_size,
                     anchor_features=_feature_anchor_tensor(loc_feature_anchor) if args.loc_anchor_weight > 0 else None,
+                    child_responsibility_mode=child_responsibility_mode,
+                    artifact_weight_map=artifact_region_weight_map,
+                    artifact_image_weight=artifact_image_weight,
+                    artifact_weight_combine_mode=args.render_artifact_direct_weight_combine_mode,
+                    artifact_loss_scale_mode=args.render_artifact_direct_loss_scale_mode,
                 )
                 loc_desc_loss = teacher_out.desc_loss
                 loc_multiview_loss = teacher_out.multiview_loss
                 loc_full_bank_loss = teacher_out.full_bank_loss
                 loc_anchor_loss = teacher_out.anchor_loss
                 loc_reproj_loss = teacher_out.reproj_loss
-                loc_loss = (
-                    args.loc_direct_weight * loc_desc_loss
-                    + args.loc_multiview_weight * loc_multiview_loss
-                    + args.loc_full_bank_weight * loc_full_bank_loss
-                    + args.loc_anchor_weight * loc_anchor_loss
+                loc_loss, pseudo_query_stage_direct_policy = _compose_direct_loc_loss(
+                    loc_desc_loss,
+                    loc_multiview_loss,
+                    loc_full_bank_loss,
+                    loc_anchor_loss,
+                    pseudo_query_reliability,
+                    args,
+                    stage_policy=pseudo_query_stage_direct_policy,
                 )
+                if bool(synthetic_diagnostics.get("synthetic_view_used", 0.0) > 0.0):
+                    loc_loss = loc_loss * float(args.synthetic_view_desc_weight)
+                visible_count = 0
+                if teacher_out.loc_visible_idx is not None:
+                    visible_count = int(teacher_out.loc_visible_idx.numel())
+                loc_training_summary["direct_episodes"] += 1
+                loc_training_summary["direct_visible_total"] += visible_count
+                loc_training_summary["direct_visible_max"] = max(
+                    loc_training_summary["direct_visible_max"],
+                    visible_count,
+                )
+                if visible_count > 0:
+                    loc_training_summary["direct_visible_episodes"] += 1
+                if (
+                    args.lafgs_diff_pnp_weight > 0.0
+                    and lafgs_step >= args.lafgs_diff_pnp_start_iter
+                    and teacher_out.loc_visible_idx is not None
+                    and teacher_out.loc_visible_idx.numel() >= args.lafgs_diff_pnp_min_correspondences
+                ):
+                    pnp_indices = teacher_out.loc_visible_idx.to(device=gaussians.get_xyz.device, dtype=torch.long)
+                    K = make_intrinsics_from_fov(
+                        query_cam.FoVx,
+                        query_cam.FoVy,
+                        query_feature_map.shape[2],
+                        query_feature_map.shape[1],
+                        device=query_feature_map.device,
+                        dtype=query_feature_map.dtype,
+                    )
+                    allow_geometry_grad = _diff_pnp_allows_geometry_grad(args, phase)
+                    pnp_point_weights = None
+                    if bool(args.lafgs_diff_pnp_use_loc_opacity_weight) and args.use_loc_opacity:
+                        pnp_point_weights = gaussians.get_loc_opacity[pnp_indices].reshape(-1)
+                    pnp_geometry_anchor_points = None
+                    if (
+                        float(args.lafgs_diff_pnp_geometry_depth_anchor_weight) > 0.0
+                        and hasattr(gaussians, "loc_source_xyz")
+                    ):
+                        pnp_geometry_anchor_points = gaussians.loc_source_xyz[pnp_indices]
+                    pnp_out = differentiable_pnp_pose_loss(
+                        gaussians.get_loc_feature[pnp_indices].reshape(pnp_indices.numel(), -1),
+                        query_feature_map,
+                        gaussians.get_xyz[pnp_indices],
+                        K,
+                        pose_gt,
+                        pose_init_w2c=pose_init,
+                        projected_uv=teacher_out.target_uv if _diff_pnp_needs_projected_uv(args) else None,
+                        geometry_anchor_points_world=pnp_geometry_anchor_points,
+                        point_weights=pnp_point_weights,
+                        config=DifferentiablePnPConfig(
+                            temperature=args.lafgs_diff_pnp_temperature,
+                            min_correspondences=args.lafgs_diff_pnp_min_correspondences,
+                            confidence_threshold=args.lafgs_diff_pnp_confidence_threshold,
+                            pnp_iterations=args.lafgs_diff_pnp_iterations,
+                            pose_weight=args.lafgs_diff_pnp_pose_weight,
+                            reprojection_weight=args.lafgs_diff_pnp_reproj_weight,
+                            gt_reprojection_weight=args.lafgs_diff_pnp_gt_reproj_weight,
+                            entropy_weight=args.lafgs_diff_pnp_entropy_weight,
+                            reprojection_loss_type=args.lafgs_diff_pnp_reprojection_loss_type,
+                            reprojection_loss_delta=args.lafgs_diff_pnp_reprojection_loss_delta,
+                            max_condition_number=args.lafgs_diff_pnp_max_condition_number,
+                            geometry_reprojection_weight=args.lafgs_diff_pnp_geometry_reproj_weight,
+                            geometry_depth_anchor_weight=args.lafgs_diff_pnp_geometry_depth_anchor_weight,
+                            geometry_match_reprojection_weight=(
+                                args.lafgs_diff_pnp_geometry_match_reproj_weight
+                            ),
+                            geometry_match_confidence_threshold=(
+                                args.lafgs_diff_pnp_geometry_match_confidence_threshold
+                            ),
+                            geometry_match_margin_threshold=(
+                                args.lafgs_diff_pnp_geometry_match_margin_threshold
+                            ),
+                            geometry_match_peak_probability_threshold=(
+                                args.lafgs_diff_pnp_geometry_match_peak_probability_threshold
+                            ),
+                            geometry_match_max_entropy=args.lafgs_diff_pnp_geometry_match_max_entropy,
+                            geometry_match_max_reprojection_error=(
+                                args.lafgs_diff_pnp_geometry_match_max_reproj_error
+                            ),
+                            geometry_confidence_threshold=args.lafgs_diff_pnp_geometry_confidence_threshold,
+                            geometry_margin_threshold=args.lafgs_diff_pnp_geometry_margin_threshold,
+                            geometry_peak_probability_threshold=(
+                                args.lafgs_diff_pnp_geometry_peak_probability_threshold
+                            ),
+                            geometry_max_entropy=args.lafgs_diff_pnp_geometry_max_entropy,
+                            geometry_max_reprojection_error=args.lafgs_diff_pnp_geometry_max_reproj_error,
+                            geometry_use_all_correspondences=(
+                                args.lafgs_diff_pnp_geometry_use_all_correspondences
+                            ),
+                            geometry_local_window_radius=args.lafgs_diff_pnp_geometry_local_window_radius,
+                            geometry_pose_guard_max_loss_increase=(
+                                args.lafgs_diff_pnp_geometry_pose_guard_max_loss_increase
+                            ),
+                            geometry_pose_guard_max_loss=args.lafgs_diff_pnp_geometry_pose_guard_max_loss,
+                            geometry_pose_guard_softness=args.lafgs_diff_pnp_geometry_pose_guard_softness,
+                            geometry_pose_guard_min_scale=args.lafgs_diff_pnp_geometry_pose_guard_min_scale,
+                            feedback_pose_guard_max_loss_increase=(
+                                args.lafgs_diff_pnp_feedback_pose_guard_max_loss_increase
+                            ),
+                            feedback_pose_guard_max_loss=args.lafgs_diff_pnp_feedback_pose_guard_max_loss,
+                            feedback_pose_guard_softness=args.lafgs_diff_pnp_feedback_pose_guard_softness,
+                            feedback_pose_guard_min_scale=args.lafgs_diff_pnp_feedback_pose_guard_min_scale,
+                            feedback_pose_guard_keep_gt_reprojection=(
+                                args.lafgs_diff_pnp_feedback_pose_guard_keep_gt_reprojection
+                            ),
+                            detach_gt_reprojection_points=args.lafgs_diff_pnp_detach_gt_reprojection_points,
+                            detach_pnp_points=args.lafgs_diff_pnp_detach_pnp_points,
+                            allow_geometry_grad=allow_geometry_grad,
+                            local_window_radius=args.lafgs_diff_pnp_local_window_radius,
+                            max_correspondences=args.lafgs_diff_pnp_max_correspondences,
+                            spatial_grid_size=args.lafgs_diff_pnp_spatial_grid_size,
+                            min_spatial_span=args.lafgs_diff_pnp_min_spatial_span,
+                            min_spatial_area=args.lafgs_diff_pnp_min_spatial_area,
+                            point_weight_floor=args.lafgs_diff_pnp_point_weight_floor,
+                        ),
+                    )
+                    loc_pnp_loss = pnp_out.loss
+                    loc_loss = loc_loss + args.lafgs_diff_pnp_weight * loc_pnp_loss
+                    pnp_landmark_stats = pnp_output_to_landmark_stats(
+                        pnp_out,
+                        gaussians.get_xyz[pnp_indices],
+                        K,
+                        pose_gt,
+                        full_bank_positive_prob=teacher_out.stats.get("full_bank_positive_prob"),
+                        full_bank_margin=teacher_out.stats.get("margin"),
+                        pose_loss_scale=args.lafgs_diff_pnp_utility_pose_loss_scale,
+                        reprojection_error_scale=args.lafgs_diff_pnp_utility_reprojection_error_scale,
+                    )
+                    teacher_out.stats.update(pnp_landmark_stats)
+                    teacher_out.diagnostics.update(
+                        {
+                            "lafgs_diff_pnp_loss": float(loc_pnp_loss.detach().item()),
+                            "lafgs_diff_pnp_pose_loss": float(pnp_out.pose_loss.detach().item()),
+                            "lafgs_diff_pnp_reprojection_loss": float(pnp_out.reprojection_loss.detach().item()),
+                            "lafgs_diff_pnp_gt_reprojection_loss": float(
+                                pnp_out.gt_reprojection_loss.detach().item()
+                            ),
+                            "lafgs_diff_pnp_geometry_reprojection_loss": float(
+                                pnp_out.geometry_reprojection_loss.detach().item()
+                            ),
+                            "lafgs_diff_pnp_geometry_depth_anchor_loss": float(
+                                pnp_out.geometry_depth_anchor_loss.detach().item()
+                            ),
+                            "lafgs_diff_pnp_geometry_match_reprojection_loss": float(
+                                pnp_out.geometry_match_reprojection_loss.detach().item()
+                            ),
+                            "lafgs_diff_pnp_entropy_loss": float(pnp_out.entropy_loss.detach().item()),
+                            "lafgs_diff_pnp_used_correspondences": float(pnp_out.used_correspondences),
+                            "lafgs_diff_pnp_geometry_correspondences": float(
+                                pnp_out.diagnostics.get("geometry_correspondences", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_candidate_count": float(
+                                pnp_out.diagnostics.get("geometry_candidate_count", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_depth_anchor_correspondences": float(
+                                pnp_out.diagnostics.get("geometry_depth_anchor_correspondences", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_depth_anchor_candidate_count": float(
+                                pnp_out.diagnostics.get("geometry_depth_anchor_candidate_count", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_depth_anchor_weight": float(
+                                args.lafgs_diff_pnp_geometry_depth_anchor_weight
+                            ),
+                            "lafgs_diff_pnp_geometry_match_correspondences": float(
+                                pnp_out.diagnostics.get("geometry_match_correspondences", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_candidate_count": float(
+                                pnp_out.diagnostics.get("geometry_match_candidate_count", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_reproj_weight": float(
+                                args.lafgs_diff_pnp_geometry_match_reproj_weight
+                            ),
+                            "lafgs_diff_pnp_geometry_match_confidence_threshold": float(
+                                pnp_out.diagnostics.get("geometry_match_confidence_threshold", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_margin_threshold": float(
+                                pnp_out.diagnostics.get("geometry_match_margin_threshold", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_peak_probability_threshold": float(
+                                pnp_out.diagnostics.get("geometry_match_peak_probability_threshold", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_max_entropy": float(
+                                pnp_out.diagnostics.get("geometry_match_max_entropy", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_match_max_reproj_error": float(
+                                pnp_out.diagnostics.get("geometry_match_max_reprojection_error", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_use_all_correspondences": (
+                                1.0 if args.lafgs_diff_pnp_geometry_use_all_correspondences else 0.0
+                            ),
+                            "lafgs_diff_pnp_geometry_local_window_radius": float(
+                                args.lafgs_diff_pnp_geometry_local_window_radius
+                            ),
+                            "lafgs_diff_pnp_geometry_peak_probability_threshold": float(
+                                args.lafgs_diff_pnp_geometry_peak_probability_threshold
+                            ),
+                            "lafgs_diff_pnp_geometry_max_entropy": float(
+                                args.lafgs_diff_pnp_geometry_max_entropy
+                            ),
+                            "lafgs_diff_pnp_condition_guard_scale": float(
+                                pnp_out.diagnostics.get("condition_guard_scale", 0.0)
+                            ),
+                            "lafgs_diff_pnp_condition_guard_passed": float(
+                                pnp_out.diagnostics.get("condition_guard_passed", 0.0)
+                            ),
+                            "lafgs_diff_pnp_geometry_pose_guard_scale": float(
+                                pnp_out.diagnostics.get("geometry_pose_guard_scale", 0.0)
+                            ),
+                            "lafgs_diff_pnp_reprojection_loss_type": str(
+                                args.lafgs_diff_pnp_reprojection_loss_type
+                            ),
+                            "lafgs_diff_pnp_reprojection_loss_delta": float(
+                                args.lafgs_diff_pnp_reprojection_loss_delta
+                            ),
+                            "lafgs_diff_pnp_allow_geometry_grad": 1.0 if allow_geometry_grad else 0.0,
+                            "lafgs_diff_pnp_use_loc_opacity_weight": (
+                                1.0 if pnp_point_weights is not None else 0.0
+                            ),
+                            "lafgs_diff_pnp_selected_spatial_cells": float(
+                                pnp_out.diagnostics.get("selected_spatial_cells", 0.0)
+                            ),
+                            "lafgs_diff_pnp_spatial_min_span": float(
+                                pnp_out.diagnostics.get("spatial_min_span", 0.0)
+                            ),
+                            "lafgs_diff_pnp_spatial_area": float(
+                                pnp_out.diagnostics.get("spatial_area", 0.0)
+                            ),
+                            "lafgs_diff_pnp_point_weight_mean": float(
+                                pnp_out.diagnostics.get("point_weight_mean", 0.0)
+                            ),
+                            "lafgs_diff_pnp_point_weight_floor": float(
+                                args.lafgs_diff_pnp_point_weight_floor
+                            ),
+                            "lafgs_diff_pnp_utility_pose_loss_scale": float(
+                                args.lafgs_diff_pnp_utility_pose_loss_scale
+                            ),
+                            "lafgs_diff_pnp_utility_reprojection_error_scale": float(
+                                args.lafgs_diff_pnp_utility_reprojection_error_scale
+                            ),
+                            "lafgs_diff_pnp_loc_utility_mean": float(
+                                pnp_landmark_stats["loc_utility"].detach().mean().item()
+                            ),
+                        }
+                    )
+                    update_diff_pnp_training_summary(
+                        loc_training_summary,
+                        pnp_out,
+                        loc_pnp_loss,
+                        allow_geometry_grad=allow_geometry_grad,
+                    )
             else:
                 dense_pose_weight = 1.0
-                if args.loc_dense_pose_gate:
+                if args.loc_dense_advantage_gate:
+                    dense_pose_weight = _dense_pose_advantage_weight(
+                        episode.sparse_meta,
+                        min_te=args.loc_dense_advantage_min_te,
+                        min_ae=args.loc_dense_advantage_min_ae,
+                        te_scale=args.loc_dense_advantage_te_scale,
+                        ae_scale=args.loc_dense_advantage_ae_scale,
+                    )
+                elif args.loc_dense_pose_gate:
                     dense_pose_weight = _dense_pose_improvement_weight(
                         episode.sparse_meta,
                         min_te=args.loc_dense_pose_gate_min_te,
@@ -699,6 +3214,10 @@ def training(dataset, opt, args):
                     fine_window_radius=args.loc_fine_window_radius,
                     dense_kl_weight=args.loc_dense_kl_weight,
                     dense_kl_temperature=args.loc_dense_kl_temperature,
+                    dense_rank_weight=args.loc_dense_rank_weight,
+                    dense_rank_margin=args.loc_dense_rank_margin,
+                    dense_rank_teacher_confidence=args.loc_dense_rank_teacher_confidence,
+                    dense_rank_miss_topk=args.loc_dense_rank_miss_topk,
                     responsibility_topk=args.loc_responsibility_topk,
                     responsibility_opacity_weight=args.loc_responsibility_opacity_weight,
                     responsibility_depth_weight=args.loc_responsibility_depth_weight,
@@ -715,11 +3234,40 @@ def training(dataset, opt, args):
                 loc_desc_loss = teacher_out.desc_loss
                 loc_reproj_loss = teacher_out.reproj_loss
                 loc_dense_kl_loss = teacher_out.kl_loss
-                loc_loss = (
-                    args.loc_desc_weight * loc_desc_loss
-                    + args.loc_reproj_weight * loc_reproj_loss
-                    + args.loc_dense_kl_weight * loc_dense_kl_loss
+                loc_dense_rank_loss = getattr(teacher_out, "rank_loss", None)
+                if loc_dense_rank_loss is None:
+                    loc_dense_rank_loss = image.new_tensor(0.0)
+                dense_loss_weights = _dense_loss_weights_for_episode(
+                    args,
+                    synthetic_view_used=bool(synthetic_diagnostics.get("synthetic_view_used", 0.0) > 0.0),
                 )
+                loc_loss = (
+                    dense_loss_weights["desc"] * loc_desc_loss
+                    + dense_loss_weights["reproj"] * loc_reproj_loss
+                    + dense_loss_weights["kl"] * loc_dense_kl_loss
+                    + dense_loss_weights["rank"] * loc_dense_rank_loss
+                )
+
+            if teacher_out is not None and synthetic_diagnostics:
+                teacher_out.diagnostics.update(synthetic_diagnostics)
+
+            direct_consumed_artifact_image_weight = (
+                args.loc_teacher == "direct"
+                and args.render_artifact_direct_loss_scale_mode == "combined_mean"
+            )
+            if teacher_artifact_weight_lookup is not None:
+                artifact_weight = float(teacher_artifact_weight_lookup.weight_for_camera(query_cam))
+                if not direct_consumed_artifact_image_weight:
+                    loc_loss = loc_loss * artifact_weight
+                teacher_out.diagnostics["render_artifact_weight"] = artifact_weight
+                teacher_out.diagnostics["render_artifact_is_weighted"] = 1.0 if artifact_weight < 1.0 else 0.0
+                teacher_out.diagnostics["render_artifact_outer_scale_applied"] = (
+                    0.0 if direct_consumed_artifact_image_weight else 1.0
+                )
+
+            loc_loss = _scale_loc_loss_by_pseudo_reliability(loc_loss, pseudo_query_reliability, args)
+            if args.loc_teacher == "direct" and float(loc_loss.detach().item()) > 0.0:
+                loc_training_summary["direct_nonzero_loss_episodes"] += 1
 
             visible_idx = teacher_out.loc_visible_idx
             if visible_idx is not None and visible_idx.numel() > 0:
@@ -742,6 +3290,10 @@ def training(dataset, opt, args):
                 )
                 loc_loss = loc_loss + args.loc_opacity_weight * loc_opacity_loss
 
+            if args.loc_overlay_reg_weight > 0:
+                loc_overlay_reg_loss = _descriptor_overlay_regularizer(gaussians)
+                loc_loss = loc_loss + args.loc_overlay_reg_weight * loc_overlay_reg_loss
+
             if teacher_out.loc_viewspace_points is not None and loc_loss.requires_grad:
                 loc_grad = torch.autograd.grad(
                     loc_loss,
@@ -749,8 +3301,15 @@ def training(dataset, opt, args):
                     retain_graph=True,
                     allow_unused=True,
                 )[0]
+            loc_stats_update_allowed = (
+                teacher_out is not None
+                and teacher_out.loc_visible_idx is not None
+                and teacher_out.loc_visible_idx.numel() > 0
+                and bool(pseudo_query_reliability.get("update_stats", True))
+                and bool(pseudo_query_stage_direct_policy.get("update_stats", True))
+            )
 
-        if phase in {"geometry", "topology", "closed_loop"} and args.geometry_anchor_weight > 0:
+        if geometry_update_active and args.geometry_anchor_weight > 0:
             geometry_anchor = _refresh_geometry_anchor_if_point_count_changed(gaussians, geometry_anchor)
             geom_anchor_loss = geometry_anchor_loss(
                 _current_geometry_state(gaussians),
@@ -759,13 +3318,67 @@ def training(dataset, opt, args):
                 scale_weight=args.geometry_anchor_scale_weight,
                 rotation_weight=args.geometry_anchor_rotation_weight,
             )
+        if (
+            geometry_update_active
+            and float(getattr(args, "lafgs_geometry_residual_weight", 0.0)) > 0.0
+            and hasattr(gaussians, "loc_source_xyz")
+        ):
+            loc_geometry_residual_loss, loc_geometry_residual_stats = bounded_geometry_residual_loss(
+                gaussians.get_xyz,
+                gaussians.loc_source_xyz,
+                gaussians.get_scaling,
+                max_scale_ratio=args.lafgs_geometry_residual_max_scale_ratio,
+            )
+            if teacher_out is not None:
+                teacher_out.diagnostics.update(
+                    {
+                        "lafgs_geometry_residual_loss": float(loc_geometry_residual_loss.detach().item()),
+                        "lafgs_geometry_residual_over_limit_count": float(
+                            loc_geometry_residual_stats["over_limit_count"]
+                        ),
+                        "lafgs_geometry_residual_max_norm": float(
+                            loc_geometry_residual_stats["max_residual_norm"]
+                        ),
+                        "lafgs_geometry_residual_max_allowed": float(
+                            loc_geometry_residual_stats["max_allowed_norm"]
+                        ),
+                    }
+                )
 
         total_loss = (
             args.base_loss_weight * base_loss
             + args.loc_loss_weight * loc_loss
             + args.geometry_anchor_weight * geom_anchor_loss
+            + args.lafgs_geometry_residual_weight * loc_geometry_residual_loss
         )
-        total_loss.backward()
+        isolate_diff_pnp_geometry_grad = (
+            bool(getattr(args, "lafgs_diff_pnp_isolate_geometry_grad", False))
+            and _diff_pnp_allows_geometry_grad(args, phase)
+        )
+        isolated_xyz_loss = args.loc_loss_weight * args.lafgs_diff_pnp_weight * loc_pnp_loss
+        isolated_xyz_regularizer_loss = (
+            args.geometry_anchor_weight * geom_anchor_loss
+            + args.lafgs_geometry_residual_weight * loc_geometry_residual_loss
+        )
+        _backward_with_optional_isolated_xyz_grad(
+            total_loss,
+            isolated_xyz_loss,
+            gaussians,
+            isolate_xyz_grad=isolate_diff_pnp_geometry_grad,
+            isolated_xyz_regularizer_loss=isolated_xyz_regularizer_loss,
+            summary=loc_training_summary,
+        )
+        _record_geometry_optimizer_diagnostics(
+            loc_training_summary,
+            gaussians,
+            phase,
+            geometry_active=geometry_update_active,
+        )
+        frozen_child_feature_count = _mask_frozen_child_loc_feature_gradients(
+            gaussians,
+            iteration=iteration,
+            freeze_steps=args.loc_child_feature_freeze_steps,
+        )
         loc_opacity_grad = getattr(getattr(gaussians, "_loc_opacity", None), "grad", None)
         if loc_opacity_grad is not None:
             loc_opacity_grad_seen = loc_opacity_grad_seen or bool(
@@ -794,31 +3407,65 @@ def training(dataset, opt, args):
                 tb_writer.add_scalar("train_loss/loc_full_bank", loc_full_bank_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_anchor", loc_anchor_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_reproj", loc_reproj_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_pnp", loc_pnp_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_dense_kl", loc_dense_kl_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_dense_rank", loc_dense_rank_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_proto", loc_proto_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_rank", loc_rank_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_opacity", loc_opacity_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/loc_overlay_reg", loc_overlay_reg_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/geometry_anchor", geom_anchor_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/lafgs_geometry_residual", loc_geometry_residual_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/total", total_loss.item(), iteration)
                 tb_writer.add_scalar("train/points", gaussians.get_xyz.shape[0], iteration)
+                tb_writer.add_scalar("train/frozen_child_feature_count", frozen_child_feature_count, iteration)
                 if teacher_out is not None:
                     for name, value in getattr(teacher_out, "diagnostics", {}).items():
                         if isinstance(value, (int, float)):
                             tb_writer.add_scalar(f"train_diagnostics/{name}", float(value), iteration)
 
-            if teacher_out is not None and teacher_out.loc_visible_idx is not None:
-                gaussians.add_localization_stats(
-                    full_idx=teacher_out.loc_visible_idx,
-                    means2d_grad=loc_grad,
-                    radii=teacher_out.loc_radii,
-                    episode_stats=teacher_out.stats,
-                    ema_decay=args.loc_ema_decay,
-                )
+            if (
+                teacher_out is not None
+                and teacher_out.loc_visible_idx is not None
+            ):
+                has_visible_stats = teacher_out.loc_visible_idx.numel() > 0
+                if has_visible_stats:
+                    loc_training_summary["stats_candidate_episodes"] += 1
+                else:
+                    loc_training_summary["stats_skip_no_visible_episodes"] += 1
+                if not bool(pseudo_query_reliability.get("update_stats", True)):
+                    loc_training_summary["stats_skip_reliability_episodes"] += 1
+                if not bool(pseudo_query_stage_direct_policy.get("update_stats", True)):
+                    loc_training_summary["stats_skip_stage_episodes"] += 1
+                if loc_stats_update_allowed:
+                    gaussians.add_localization_stats(
+                        full_idx=teacher_out.loc_visible_idx,
+                        means2d_grad=loc_grad,
+                        radii=teacher_out.loc_radii,
+                        episode_stats=teacher_out.stats,
+                        ema_decay=args.loc_ema_decay,
+                    )
+                    loc_training_summary["stats_update_episodes"] += 1
+                    loc_training_summary["stats_update_points_total"] += int(
+                        teacher_out.loc_visible_idx.numel()
+                    )
 
             gaussians.optimizer.step()
+            _record_geometry_optimizer_diagnostics(
+                loc_training_summary,
+                gaussians,
+                phase,
+                xyz_before=geometry_xyz_before,
+                record_lr_grad=False,
+                geometry_active=geometry_update_active,
+            )
             gaussians.optimizer.zero_grad(set_to_none=True)
 
-            if topology_controller is not None and topology_controller.should_update(iteration):
+            if (
+                topology_controller is not None
+                and phase in {"topology", "closed_loop", "full"}
+                and topology_controller.should_update(iteration)
+            ):
                 topology_controller.update(gaussians, scene.cameras_extent, iteration)
 
             loc_feature_anchor = _refresh_feature_anchor_if_point_count_changed(gaussians, loc_feature_anchor)
@@ -846,6 +3493,23 @@ def training(dataset, opt, args):
 
     if tb_writer:
         tb_writer.close()
+    with torch.no_grad():
+        obs = getattr(gaussians, "loc_observation_count", None)
+        if torch.is_tensor(obs):
+            obs_cpu = obs.detach().cpu()
+            loc_training_summary.update(
+                {
+                    "observed_points": int((obs_cpu > 0).sum().item()),
+                    "observed_points_ge_1": int((obs_cpu >= 1).sum().item()),
+                    "observed_points_ge_2": int((obs_cpu >= 2).sum().item()),
+                    "observed_points_ge_4": int((obs_cpu >= 4).sum().item()),
+                    "observed_points_max": int(obs_cpu.max().item()) if obs_cpu.numel() else 0,
+                }
+            )
+    loc_summary_path = os.path.join(dataset.model_path, "loc_training_summary.json")
+    with open(loc_summary_path, "w") as f:
+        json.dump(loc_training_summary, f, indent=2, sort_keys=True)
+    print(f"Saved LA localization training summary: {loc_summary_path} {loc_training_summary}")
 
 
 if __name__ == "__main__":
