@@ -54,6 +54,7 @@ def build_parser():
     parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_min_scale", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_keep_gt_reprojection", action="store_true", default=None)
     parser.add_argument("--lafgs_diff_pnp_detach_pnp_points", action="store_true", default=None)
+    parser.add_argument("--allow_raw_xyz_geometry_grad", action="store_true", default=None)
     if hasattr(argparse, "BooleanOptionalAction"):
         parser.add_argument(
             "--lafgs_diff_pnp_detach_gt_reprojection_points",
@@ -131,6 +132,7 @@ def _explicit_lafgs_overrides(argv):
             or normalized_item.startswith("--loc_")
             or normalized_item.startswith("--geometry_")
             or normalized_item.startswith("--surfel_")
+            or normalized_item == "--allow_raw_xyz_geometry_grad"
         ):
             name = normalized_item[2:].split("=", 1)[0].replace("-", "_")
             overrides.add(name)
@@ -232,9 +234,9 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "lafgs_diff_pnp_use_loc_opacity_weight", False)
     if "lafgs_diff_pnp_point_weight_floor" not in explicit_overrides:
-        _set_if_missing_or_legacy(args, "lafgs_diff_pnp_point_weight_floor", 0.75, {0.0})
+        _set_if_missing_or_legacy(args, "lafgs_diff_pnp_point_weight_floor", 0.05, {0.0, 0.75})
     else:
-        _setdefault(args, "lafgs_diff_pnp_point_weight_floor", 0.75)
+        _setdefault(args, "lafgs_diff_pnp_point_weight_floor", 0.05)
     if "lafgs_diff_pnp_utility_pose_loss_scale" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_utility_pose_loss_scale", 1.0)
     else:
@@ -244,9 +246,9 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "lafgs_diff_pnp_utility_reprojection_error_scale", 4.0)
     if "lafgs_diff_pnp_local_window_radius" not in explicit_overrides:
-        _setdefault(args, "lafgs_diff_pnp_local_window_radius", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_local_window_radius", 2.0)
     else:
-        _setdefault(args, "lafgs_diff_pnp_local_window_radius", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_local_window_radius", 2.0)
     if "lafgs_diff_pnp_geometry_xyz_lr" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_geometry_xyz_lr", 0.0)
     else:
@@ -312,13 +314,13 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "lafgs_diff_pnp_geometry_use_all_correspondences", False)
     if "lafgs_diff_pnp_geometry_local_window_radius" not in explicit_overrides:
-        _setdefault(args, "lafgs_diff_pnp_geometry_local_window_radius", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_local_window_radius", 2.0)
     else:
-        _setdefault(args, "lafgs_diff_pnp_geometry_local_window_radius", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_local_window_radius", 2.0)
     if "lafgs_diff_pnp_max_condition_number" not in explicit_overrides:
-        _setdefault(args, "lafgs_diff_pnp_max_condition_number", -1.0)
+        _setdefault(args, "lafgs_diff_pnp_max_condition_number", 1_000_000.0)
     else:
-        _setdefault(args, "lafgs_diff_pnp_max_condition_number", -1.0)
+        _setdefault(args, "lafgs_diff_pnp_max_condition_number", 1_000_000.0)
     if "lafgs_diff_pnp_geometry_pose_guard_max_loss_increase" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_geometry_pose_guard_max_loss_increase", -1.0)
     else:
@@ -359,6 +361,10 @@ def lafgs_defaults(args, explicit_overrides=None):
         _setdefault(args, "lafgs_diff_pnp_detach_pnp_points", False)
     else:
         _setdefault(args, "lafgs_diff_pnp_detach_pnp_points", False)
+    if "allow_raw_xyz_geometry_grad" not in explicit_overrides:
+        _setdefault(args, "allow_raw_xyz_geometry_grad", False)
+    else:
+        _setdefault(args, "allow_raw_xyz_geometry_grad", False)
     if "lafgs_diff_pnp_detach_gt_reprojection_points" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_detach_gt_reprojection_points", False)
     else:

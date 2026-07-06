@@ -112,6 +112,7 @@ class GaussianModel_2dgs(nn.Module):
         self._loc_anchor_offset = torch.empty(0)
         self.surfel_loc_tangent_bound = 0.0
         self.surfel_loc_normal_bound = 0.0
+        self.detach_loc_anchor_base = False
 
     def capture(self):
         return (
@@ -191,12 +192,17 @@ class GaussianModel_2dgs(nn.Module):
         normal_bound = float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0)
         if tangent_bound <= 0.0 and normal_bound <= 0.0:
             return self.get_xyz
-        xyz = self.get_xyz
+        detach_base = bool(getattr(self, "detach_loc_anchor_base", False))
+        xyz = self.get_xyz.detach() if detach_base else self.get_xyz
         if xyz.numel() == 0:
             return xyz
         raw = self._loc_anchor_offset.to(device=xyz.device, dtype=xyz.dtype)
-        rotation = _rotation_matrix_from_quaternion(self.get_rotation.to(device=xyz.device, dtype=xyz.dtype))
+        rotation_input = self.get_rotation.to(device=xyz.device, dtype=xyz.dtype)
         scales = self.get_scaling.to(device=xyz.device, dtype=xyz.dtype)
+        if detach_base:
+            rotation_input = rotation_input.detach()
+            scales = scales.detach()
+        rotation = _rotation_matrix_from_quaternion(rotation_input)
         if scales.shape[1] >= 2:
             tangent_scales = scales[:, :2]
             radius = tangent_scales.mean(dim=1, keepdim=True).clamp_min(1e-8)
@@ -448,6 +454,7 @@ class GaussianModel_2dgs(nn.Module):
             "loc_anchor_offset": self._loc_anchor_offset.detach(),
             "surfel_loc_tangent_bound": float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0),
             "surfel_loc_normal_bound": float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0),
+            "detach_loc_anchor_base": bool(getattr(self, "detach_loc_anchor_base", False)),
         }
         for name in self._localization_buffer_names():
             state[name] = getattr(self, name).detach()
@@ -470,6 +477,7 @@ class GaussianModel_2dgs(nn.Module):
                 setattr(self, name, state[name].to(device=device).detach().clone())
         self.surfel_loc_tangent_bound = float(state.get("surfel_loc_tangent_bound", getattr(self, "surfel_loc_tangent_bound", 0.0)) or 0.0)
         self.surfel_loc_normal_bound = float(state.get("surfel_loc_normal_bound", getattr(self, "surfel_loc_normal_bound", 0.0)) or 0.0)
+        self.detach_loc_anchor_base = bool(state.get("detach_loc_anchor_base", getattr(self, "detach_loc_anchor_base", False)))
         loc_anchor_offset = state.get("loc_anchor_offset", None)
         if loc_anchor_offset is not None:
             loc_anchor_offset = loc_anchor_offset.to(device=device, dtype=self.get_xyz.dtype).detach().clone()

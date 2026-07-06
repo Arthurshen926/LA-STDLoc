@@ -70,7 +70,7 @@ class LafgsCambridgeExperimentPlanTest(unittest.TestCase):
                 self.assertIn("--lafgs_diff_pnp_geometry_pose_guard_max_loss 5.0", train_cmd)
                 self.assertIn("--lafgs_diff_pnp_geometry_pose_guard_softness 10.0", train_cmd)
                 self.assertIn("--lafgs_diff_pnp_geometry_pose_guard_min_scale 0.05", train_cmd)
-                self.assertIn("--lafgs_diff_pnp_geometry_use_all_correspondences", train_cmd)
+                self.assertNotIn("--lafgs_diff_pnp_geometry_use_all_correspondences", train_cmd)
                 self.assertIn("--lafgs_diff_pnp_geometry_local_window_radius 1.5", train_cmd)
                 self.assertIn("--lafgs_diff_pnp_utility_pose_loss_scale 1.0", train_cmd)
                 self.assertIn("--lafgs_diff_pnp_utility_reprojection_error_scale 4.0", train_cmd)
@@ -391,6 +391,53 @@ class LafgsCambridgeExperimentPlanTest(unittest.TestCase):
         self.assertNotIn("--lafgs_diff_pnp_isolate_geometry_grad", command)
         self.assertIn("--lafgs_diff_pnp_geometry_xyz_lr", command)
         self.assertEqual(command[command.index("--lafgs_diff_pnp_geometry_xyz_lr") + 1], "0.0")
+
+    def test_runner_requires_explicit_raw_xyz_geometry_grad_for_2dgs(self):
+        from scripts.run_lafgs_cambridge_guarded_pnp import build_scene_plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "data"
+            baseline_root = root / "baseline"
+            output_root = root / "lafgs"
+            scene = "ShopFacade"
+            (data_root / scene).mkdir(parents=True)
+            model = baseline_root / f"{scene}_baseline"
+            (model / "point_cloud" / "iteration_30000").mkdir(parents=True)
+            (model / "point_cloud" / "iteration_30000" / "point_cloud.ply").write_text("ply\n")
+            (model / "detector").mkdir(parents=True)
+            (model / "detector" / "30000_detector.pth").write_text("detector")
+            (model / "detector" / "sampled_idx.pkl").write_text("idx")
+
+            common = dict(
+                scene=scene,
+                data_root=data_root,
+                baseline_root=baseline_root,
+                output_root=output_root,
+                python="python",
+                baseline_iterations=30000,
+                lafgs_steps=500,
+                detect_num=8192,
+                nms=2,
+                reprojection_error=12.0,
+                train_missing_baseline=False,
+                force_train=False,
+                skip_train=False,
+                skip_eval=False,
+                eval_baseline=True,
+                cfg="configs/stdloc_cambridge.yaml",
+                gaussian_type="2dgs",
+                geometry_xyz_lr=0.00002,
+            )
+
+            with self.assertRaisesRegex(ValueError, "allow_raw_xyz_geometry_grad"):
+                build_scene_plan(**common)
+
+            plan = build_scene_plan(**common, allow_raw_xyz_geometry_grad=True)
+
+        command = plan.train_lafgs_command
+        self.assertIn("--allow_raw_xyz_geometry_grad", command)
+        self.assertEqual(command[command.index("--lafgs_diff_pnp_geometry_xyz_lr") + 1], "2e-05")
 
     def test_runner_can_build_depth_anchored_geometry_command(self):
         from scripts.run_lafgs_cambridge_guarded_pnp import build_scene_plan

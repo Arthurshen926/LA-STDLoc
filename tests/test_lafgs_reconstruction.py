@@ -136,6 +136,29 @@ def test_2dgs_localization_anchor_is_surface_bounded_on_cpu():
     assert torch.allclose(model.get_loc_xyz, torch.tensor([[0.1, 0.0, 1.975]]), atol=1e-6)
 
 
+def test_2dgs_localization_anchor_can_detach_surface_base_grad_on_cpu():
+    from scene.gaussian_model import GaussianModel_2dgs
+
+    model = GaussianModel_2dgs(3)
+    model._xyz = nn.Parameter(torch.tensor([[0.0, 0.0, 2.0]]))
+    model._opacity = nn.Parameter(torch.zeros(1, 1))
+    model._loc_feature = nn.Parameter(torch.zeros(1, 1, 4))
+    model._scaling = nn.Parameter(torch.zeros(1, 2))
+    model._rotation = nn.Parameter(torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
+    model.init_localization_state(from_rgb_opacity=True)
+
+    model.surfel_loc_tangent_bound = 0.2
+    model.surfel_loc_normal_bound = 0.1
+    model.detach_loc_anchor_base = True
+    model.get_loc_xyz[:, 0].sum().backward()
+
+    assert model._xyz.grad is None
+    assert model._scaling.grad is None
+    assert model._rotation.grad is None
+    assert model._loc_anchor_offset.grad is not None
+    assert model._loc_anchor_offset.grad.abs().max() > 0
+
+
 def test_multiview_init_projects_localization_anchor_when_available():
     from localization_training.lafgs_reconstruction import build_multiview_initialization
 
@@ -2310,7 +2333,7 @@ def test_train_lafgs_keeps_diff_pnp_loc_opacity_weight_optional_with_safe_floor(
     parser = train_lafgs.build_parser()
     defaults = train_lafgs.lafgs_defaults(parser.parse_args([]))
     assert defaults.lafgs_diff_pnp_use_loc_opacity_weight is False
-    assert defaults.lafgs_diff_pnp_point_weight_floor == pytest.approx(0.75)
+    assert defaults.lafgs_diff_pnp_point_weight_floor == pytest.approx(0.05)
 
     enabled_argv = ["--lafgs_diff_pnp_use_loc_opacity_weight"]
     enabled = train_lafgs.lafgs_defaults(
@@ -2440,9 +2463,9 @@ def test_train_lafgs_exposes_gated_diff_pnp_geometry_reprojection_controls():
     assert defaults.lafgs_diff_pnp_geometry_peak_probability_threshold == pytest.approx(0.0)
     assert defaults.lafgs_diff_pnp_geometry_max_entropy == pytest.approx(0.0)
     assert defaults.lafgs_diff_pnp_geometry_use_all_correspondences is False
-    assert defaults.lafgs_diff_pnp_local_window_radius == pytest.approx(0.0)
-    assert defaults.lafgs_diff_pnp_geometry_local_window_radius == pytest.approx(0.0)
-    assert defaults.lafgs_diff_pnp_max_condition_number == pytest.approx(-1.0)
+    assert defaults.lafgs_diff_pnp_local_window_radius == pytest.approx(2.0)
+    assert defaults.lafgs_diff_pnp_geometry_local_window_radius == pytest.approx(2.0)
+    assert defaults.lafgs_diff_pnp_max_condition_number == pytest.approx(1_000_000.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_max_loss_increase == pytest.approx(-1.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_max_loss == pytest.approx(-1.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_softness == pytest.approx(0.0)

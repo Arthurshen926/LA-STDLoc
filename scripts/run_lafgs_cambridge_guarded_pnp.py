@@ -104,9 +104,15 @@ def _train_lafgs_command(
     baseline_iterations,
     final_iteration,
     gaussian_type="3dgs",
+    loc_interval=8,
     mvinit_feature_scale=0.5,
     mvinit_max_views=64,
     mvinit_chunk_size=32768,
+    diff_pnp_start_iter=400,
+    diff_pnp_weight=0.0005,
+    diff_pnp_max_correspondences=64,
+    diff_pnp_spatial_grid_size=4,
+    diff_pnp_point_weight_floor=0.05,
     pose_information_weight=0.0,
     pose_information_floor=0.0,
     geometry_pose_guard_max_loss_increase=-1.0,
@@ -123,7 +129,7 @@ def _train_lafgs_command(
     geometry_peak_probability_threshold=0.0,
     geometry_max_entropy=0.0,
     geometry_max_reprojection_error=12.0,
-    geometry_use_all_correspondences=True,
+    geometry_use_all_correspondences=False,
     geometry_match_reprojection_weight=0.0,
     geometry_match_confidence_threshold=-1.0,
     geometry_match_margin_threshold=-1.0,
@@ -132,18 +138,19 @@ def _train_lafgs_command(
     geometry_match_max_reprojection_error=-1.0,
     utility_pose_loss_scale=1.0,
     utility_reprojection_error_scale=4.0,
-    pnp_local_window_radius=0.0,
-    max_condition_number=-1.0,
+    pnp_local_window_radius=2.0,
+    max_condition_number=1_000_000.0,
     feedback_pose_guard_keep_gt_reprojection=False,
     allow_geometry_grad=True,
-    geometry_reprojection_weight=1.0,
-    geometry_depth_anchor_weight=0.0,
-    geometry_xyz_lr=0.00002,
+    geometry_reprojection_weight=0.01,
+    geometry_depth_anchor_weight=0.1,
+    geometry_xyz_lr=0.0,
     loc_anchor_lr=0.0,
     surfel_loc_tangent_bound=0.0,
     surfel_loc_normal_bound=0.0,
     surfel_loc_anchor_reg_weight=0.0,
     detach_pnp_points=True,
+    allow_raw_xyz_geometry_grad=False,
 ):
     command = [
         python,
@@ -159,7 +166,7 @@ def _train_lafgs_command(
         "--train_phase",
         "full",
         "--loc_interval",
-        "8",
+        str(loc_interval),
         "--synthetic_view_ratio",
         "0.0",
         "--synthetic_view_desc_weight",
@@ -181,13 +188,15 @@ def _train_lafgs_command(
         str(pose_information_floor),
         "--lafgs_curriculum",
         "--lafgs_diff_pnp_start_iter",
-        "400",
+        str(diff_pnp_start_iter),
         "--lafgs_diff_pnp_weight",
-        "0.0005",
+        str(diff_pnp_weight),
         "--lafgs_diff_pnp_max_correspondences",
-        "64",
+        str(diff_pnp_max_correspondences),
         "--lafgs_diff_pnp_spatial_grid_size",
-        "4",
+        str(diff_pnp_spatial_grid_size),
+        "--lafgs_diff_pnp_point_weight_floor",
+        str(diff_pnp_point_weight_floor),
         "--lafgs_diff_pnp_local_window_radius",
         str(pnp_local_window_radius),
         "--lafgs_diff_pnp_geometry_xyz_lr",
@@ -271,6 +280,11 @@ def _train_lafgs_command(
             "--lafgs_diff_pnp_allow_geometry_grad",
             "--lafgs_diff_pnp_isolate_geometry_grad",
         ]
+    if allow_raw_xyz_geometry_grad:
+        command.insert(
+            command.index("--lafgs_diff_pnp_geometry_xyz_lr"),
+            "--allow_raw_xyz_geometry_grad",
+        )
     if detach_pnp_points:
         command.insert(
             command.index("--lafgs_diff_pnp_feedback_pose_guard_max_loss_increase"),
@@ -349,9 +363,15 @@ def build_scene_plan(
     eval_baseline,
     cfg,
     gaussian_type="3dgs",
+    loc_interval=8,
     mvinit_feature_scale=0.5,
     mvinit_max_views=64,
     mvinit_chunk_size=32768,
+    diff_pnp_start_iter=400,
+    diff_pnp_weight=0.0005,
+    diff_pnp_max_correspondences=64,
+    diff_pnp_spatial_grid_size=4,
+    diff_pnp_point_weight_floor=0.05,
     pose_information_weight=0.0,
     pose_information_floor=0.0,
     geometry_pose_guard_max_loss_increase=-1.0,
@@ -368,7 +388,7 @@ def build_scene_plan(
     geometry_peak_probability_threshold=0.0,
     geometry_max_entropy=0.0,
     geometry_max_reprojection_error=12.0,
-    geometry_use_all_correspondences=True,
+    geometry_use_all_correspondences=False,
     geometry_match_reprojection_weight=0.0,
     geometry_match_confidence_threshold=-1.0,
     geometry_match_margin_threshold=-1.0,
@@ -377,18 +397,19 @@ def build_scene_plan(
     geometry_match_max_reprojection_error=-1.0,
     utility_pose_loss_scale=1.0,
     utility_reprojection_error_scale=4.0,
-    pnp_local_window_radius=0.0,
-    max_condition_number=-1.0,
+    pnp_local_window_radius=2.0,
+    max_condition_number=1_000_000.0,
     feedback_pose_guard_keep_gt_reprojection=False,
     allow_geometry_grad=True,
-    geometry_reprojection_weight=1.0,
-    geometry_depth_anchor_weight=0.0,
-    geometry_xyz_lr=0.00002,
+    geometry_reprojection_weight=0.01,
+    geometry_depth_anchor_weight=0.1,
+    geometry_xyz_lr=0.0,
     loc_anchor_lr=0.0,
     surfel_loc_tangent_bound=0.0,
     surfel_loc_normal_bound=0.0,
     surfel_loc_anchor_reg_weight=0.0,
     direct_pnp_xyz_grad=False,
+    allow_raw_xyz_geometry_grad=False,
 ):
     data_root = Path(data_root)
     baseline_root = Path(baseline_root)
@@ -403,6 +424,15 @@ def build_scene_plan(
     detector_path = detector_source / f"{baseline_iterations}_detector.pth"
     sampled_idx = detector_source / "sampled_idx.pkl"
     lafgs_final = lafgs_model / "point_cloud" / f"iteration_{final_iteration}" / "point_cloud.ply"
+    if (
+        str(gaussian_type).lower() == "2dgs"
+        and bool(allow_geometry_grad)
+        and float(geometry_xyz_lr) > 0.0
+        and not bool(allow_raw_xyz_geometry_grad)
+    ):
+        raise ValueError(
+            "2DGS raw xyz geometry updates require allow_raw_xyz_geometry_grad=True."
+        )
 
     missing = []
     if not data_dir.is_dir():
@@ -449,9 +479,15 @@ def build_scene_plan(
             baseline_iterations,
             final_iteration,
             gaussian_type=gaussian_type,
+            loc_interval=loc_interval,
             mvinit_feature_scale=mvinit_feature_scale,
             mvinit_max_views=mvinit_max_views,
             mvinit_chunk_size=mvinit_chunk_size,
+            diff_pnp_start_iter=diff_pnp_start_iter,
+            diff_pnp_weight=diff_pnp_weight,
+            diff_pnp_max_correspondences=diff_pnp_max_correspondences,
+            diff_pnp_spatial_grid_size=diff_pnp_spatial_grid_size,
+            diff_pnp_point_weight_floor=diff_pnp_point_weight_floor,
             pose_information_weight=pose_information_weight,
             pose_information_floor=pose_information_floor,
             geometry_pose_guard_max_loss_increase=geometry_pose_guard_max_loss_increase,
@@ -489,6 +525,7 @@ def build_scene_plan(
             surfel_loc_normal_bound=surfel_loc_normal_bound,
             surfel_loc_anchor_reg_weight=surfel_loc_anchor_reg_weight,
             detach_pnp_points=not direct_pnp_xyz_grad,
+            allow_raw_xyz_geometry_grad=allow_raw_xyz_geometry_grad,
         ),
         baseline_eval_cfg_command=[]
         if skip_eval or not eval_baseline
@@ -649,9 +686,15 @@ def parse_args(argv=None):
     parser.add_argument("--nms", type=int, default=2)
     parser.add_argument("--reprojection_error", type=float, default=12.0)
     parser.add_argument("--gaussian_type", choices=["3dgs", "2dgs"], default="3dgs")
+    parser.add_argument("--loc_interval", type=int, default=8)
     parser.add_argument("--mvinit_feature_scale", type=float, default=0.5)
     parser.add_argument("--mvinit_max_views", type=int, default=64)
     parser.add_argument("--mvinit_chunk_size", type=int, default=32768)
+    parser.add_argument("--diff_pnp_start_iter", type=int, default=400)
+    parser.add_argument("--diff_pnp_weight", type=float, default=0.0005)
+    parser.add_argument("--diff_pnp_max_correspondences", type=int, default=64)
+    parser.add_argument("--diff_pnp_spatial_grid_size", type=int, default=4)
+    parser.add_argument("--diff_pnp_point_weight_floor", type=float, default=0.05)
     parser.add_argument("--pose_information_weight", type=float, default=0.0)
     parser.add_argument("--pose_information_floor", type=float, default=0.0)
     parser.add_argument("--geometry_pose_guard_max_loss_increase", type=float, default=-1.0)
@@ -673,6 +716,11 @@ def parse_args(argv=None):
         action="store_true",
         help="Use only the selected PnP correspondences for geometry and descriptor-match feedback.",
     )
+    parser.add_argument(
+        "--geometry_all_correspondences",
+        action="store_true",
+        help="Use all valid soft correspondences for geometry feedback.",
+    )
     parser.add_argument("--geometry_match_reprojection_weight", type=float, default=0.0)
     parser.add_argument("--geometry_match_confidence_threshold", type=float, default=-1.0)
     parser.add_argument("--geometry_match_margin_threshold", type=float, default=-1.0)
@@ -681,13 +729,13 @@ def parse_args(argv=None):
     parser.add_argument("--geometry_match_max_reprojection_error", type=float, default=-1.0)
     parser.add_argument("--utility_pose_loss_scale", type=float, default=1.0)
     parser.add_argument("--utility_reprojection_error_scale", type=float, default=4.0)
-    parser.add_argument("--pnp_local_window_radius", type=float, default=0.0)
-    parser.add_argument("--max_condition_number", type=float, default=-1.0)
+    parser.add_argument("--pnp_local_window_radius", type=float, default=2.0)
+    parser.add_argument("--max_condition_number", type=float, default=1_000_000.0)
     parser.add_argument("--feedback_pose_guard_keep_gt_reprojection", action="store_true")
     parser.add_argument("--no_geometry_grad", action="store_true")
-    parser.add_argument("--geometry_reprojection_weight", type=float, default=1.0)
-    parser.add_argument("--geometry_depth_anchor_weight", type=float, default=0.0)
-    parser.add_argument("--geometry_xyz_lr", type=float, default=0.00002)
+    parser.add_argument("--geometry_reprojection_weight", type=float, default=0.01)
+    parser.add_argument("--geometry_depth_anchor_weight", type=float, default=0.1)
+    parser.add_argument("--geometry_xyz_lr", type=float, default=0.0)
     parser.add_argument("--loc_anchor_lr", type=float, default=0.0)
     parser.add_argument("--surfel_loc_tangent_bound", type=float, default=0.0)
     parser.add_argument("--surfel_loc_normal_bound", type=float, default=0.0)
@@ -696,6 +744,11 @@ def parse_args(argv=None):
         "--direct_pnp_xyz_grad",
         action="store_true",
         help="Let differentiable PnP pose loss backpropagate through soft PnP 3D points to Gaussian xyz.",
+    )
+    parser.add_argument(
+        "--allow_raw_xyz_geometry_grad",
+        action="store_true",
+        help="Explicitly allow 2DGS geometry feedback to update raw surfel centers.",
     )
     parser.add_argument("--train_missing_baseline", action="store_true")
     parser.add_argument("--skip_train", action="store_true")
@@ -734,9 +787,15 @@ def main(argv=None):
             eval_baseline=not args.no_eval_baseline,
             cfg=args.cfg,
             gaussian_type=args.gaussian_type,
+            loc_interval=args.loc_interval,
             mvinit_feature_scale=args.mvinit_feature_scale,
             mvinit_max_views=args.mvinit_max_views,
             mvinit_chunk_size=args.mvinit_chunk_size,
+            diff_pnp_start_iter=args.diff_pnp_start_iter,
+            diff_pnp_weight=args.diff_pnp_weight,
+            diff_pnp_max_correspondences=args.diff_pnp_max_correspondences,
+            diff_pnp_spatial_grid_size=args.diff_pnp_spatial_grid_size,
+            diff_pnp_point_weight_floor=args.diff_pnp_point_weight_floor,
             pose_information_weight=args.pose_information_weight,
             pose_information_floor=args.pose_information_floor,
             geometry_pose_guard_max_loss_increase=args.geometry_pose_guard_max_loss_increase,
@@ -753,7 +812,9 @@ def main(argv=None):
             geometry_peak_probability_threshold=args.geometry_peak_probability_threshold,
             geometry_max_entropy=args.geometry_max_entropy,
             geometry_max_reprojection_error=args.geometry_max_reprojection_error,
-            geometry_use_all_correspondences=not args.geometry_selected_correspondences,
+            geometry_use_all_correspondences=(
+                bool(args.geometry_all_correspondences) and not bool(args.geometry_selected_correspondences)
+            ),
             geometry_match_reprojection_weight=args.geometry_match_reprojection_weight,
             geometry_match_confidence_threshold=args.geometry_match_confidence_threshold,
             geometry_match_margin_threshold=args.geometry_match_margin_threshold,
@@ -774,6 +835,7 @@ def main(argv=None):
             surfel_loc_normal_bound=args.surfel_loc_normal_bound,
             surfel_loc_anchor_reg_weight=args.surfel_loc_anchor_reg_weight,
             direct_pnp_xyz_grad=args.direct_pnp_xyz_grad,
+            allow_raw_xyz_geometry_grad=args.allow_raw_xyz_geometry_grad,
         )
         for scene in args.scenes
     ]

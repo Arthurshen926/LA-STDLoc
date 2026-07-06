@@ -532,14 +532,17 @@ def _set_phase_lrs(gaussians, phase, args):
         group["lr"] = group["la_base_lr"]
 
     overlay_mode = getattr(args, "loc_overlay_mode", "none")
+    is_2dgs = _gaussian_type_is_2dgs(args)
+    raw_xyz_trainable = (not is_2dgs) or _allow_raw_xyz_geometry_grad(args)
+    anchor_trainable = _surface_loc_anchor_active(args)
     loc_trainable = {"loc_feature"}
-    if float(getattr(args, "loc_anchor_lr", 0.0) or 0.0) > 0.0:
+    if anchor_trainable:
         loc_trainable.add("loc_anchor_offset")
     if getattr(args, "use_loc_opacity", False):
         loc_trainable.add("loc_opacity")
     if overlay_mode == "descriptor":
         loc_trainable = {"loc_overlay_feature", "loc_overlay_active_logit"}
-        if float(getattr(args, "loc_anchor_lr", 0.0) or 0.0) > 0.0:
+        if anchor_trainable:
             loc_trainable.add("loc_anchor_offset")
         if getattr(args, "use_loc_opacity", False):
             loc_trainable.add("loc_opacity")
@@ -549,12 +552,16 @@ def _set_phase_lrs(gaussians, phase, args):
         trainable = set()
     elif phase in {"feature", "locrec", "diff_pnp"}:
         trainable = loc_trainable
-        if diff_pnp_geometry_grad:
+        if diff_pnp_geometry_grad and raw_xyz_trainable:
             trainable = trainable | {"xyz"}
     elif phase in {"geometry", "topology", "closed_loop"}:
-        trainable = {"xyz", "scaling", "rotation", "loc_opacity"} | loc_trainable
+        trainable = {"scaling", "rotation", "loc_opacity"} | loc_trainable
+        if raw_xyz_trainable:
+            trainable.add("xyz")
     else:
         trainable = {group["name"] for group in gaussians.optimizer.param_groups}
+        if is_2dgs and not raw_xyz_trainable:
+            trainable.discard("xyz")
 
     for group in gaussians.optimizer.param_groups:
         if group["name"] not in trainable:
@@ -589,9 +596,87 @@ def _diff_pnp_needs_projected_uv(args):
     )
 
 
+def _float_arg(args, name, default=0.0):
+    value = getattr(args, name, default)
+    if value is None:
+        value = default
+    return float(value)
+
+
+def _gaussian_type_is_2dgs(args):
+    return str(getattr(args, "gaussian_type", "") or "").lower() == "2dgs"
+
+
+def _surface_loc_bounds_active(args):
+    return (
+        _float_arg(args, "surfel_loc_tangent_bound") > 0.0
+        or _float_arg(args, "surfel_loc_normal_bound") > 0.0
+    )
+
+
+def _surface_loc_anchor_active(args):
+    return _float_arg(args, "loc_anchor_lr") > 0.0 and _surface_loc_bounds_active(args)
+
+
+def _allow_raw_xyz_geometry_grad(args):
+    return bool(getattr(args, "allow_raw_xyz_geometry_grad", False))
+
+
+def _geometry_feedback_requested(args):
+    return any(
+        _float_arg(args, name) > 0.0
+        for name in (
+            "lafgs_diff_pnp_geometry_reproj_weight",
+            "lafgs_diff_pnp_geometry_depth_anchor_weight",
+            "lafgs_diff_pnp_geometry_match_reproj_weight",
+        )
+    )
+
+
+def _validate_lafgs_surface_geometry_config(gaussians, args):
+    if _float_arg(args, "loc_anchor_lr") > 0.0 and not _surface_loc_bounds_active(args):
+        raise ValueError(
+            "--loc_anchor_lr is positive but both surfel localization bounds are zero; "
+            "set --surfel_loc_tangent_bound and/or --surfel_loc_normal_bound so get_loc_xyz can move."
+        )
+    if _gaussian_type_is_2dgs(args) and bool(getattr(args, "lafgs_diff_pnp_allow_geometry_grad", False)):
+        geometry_xyz_lr = _float_arg(args, "lafgs_diff_pnp_geometry_xyz_lr")
+        if geometry_xyz_lr > 0.0 and not _allow_raw_xyz_geometry_grad(args):
+            raise ValueError(
+                "2DGS raw surfel-center geometry updates are disabled by default. "
+                "Set --allow_raw_xyz_geometry_grad to explicitly allow "
+                "--lafgs_diff_pnp_geometry_xyz_lr > 0."
+            )
+        if (
+            not _allow_raw_xyz_geometry_grad(args)
+            and not _surface_loc_anchor_active(args)
+            and _geometry_feedback_requested(args)
+        ):
+            print(
+                "[LaFGS config warning] 2DGS geometry feedback is enabled, but neither "
+                "surface localization anchors nor raw xyz updates are trainable. Geometry losses "
+                "will mainly act on descriptors/scores."
+            )
+    if (
+        _float_arg(args, "lafgs_diff_pnp_weight") > 0.0
+        and _float_arg(args, "lafgs_diff_pnp_local_window_radius") <= 0.0
+    ):
+        print(
+            "[LaFGS config warning] --lafgs_diff_pnp_local_window_radius <= 0 uses global "
+            "soft matching for PnP feedback; this is noisy for localization-aware geometry."
+        )
+    if _float_arg(args, "lafgs_diff_pnp_point_weight_floor") > 0.5:
+        print(
+            "[LaFGS config warning] --lafgs_diff_pnp_point_weight_floor is high; low-utility "
+            "landmarks will still receive strong PnP weights."
+        )
+
+
 def _configure_surface_localization_anchor(gaussians, args, opt=None):
     if opt is not None:
         setattr(opt, "loc_anchor_lr", float(getattr(args, "loc_anchor_lr", 0.0) or 0.0))
+    if hasattr(gaussians, "detach_loc_anchor_base"):
+        gaussians.detach_loc_anchor_base = _gaussian_type_is_2dgs(args) and not _allow_raw_xyz_geometry_grad(args)
     if hasattr(gaussians, "surfel_loc_tangent_bound"):
         gaussians.surfel_loc_tangent_bound = float(getattr(args, "surfel_loc_tangent_bound", 0.0) or 0.0)
     if hasattr(gaussians, "surfel_loc_normal_bound"):
@@ -626,11 +711,21 @@ def _record_geometry_optimizer_diagnostics(
 
     if record_lr_grad:
         xyz_lr = _optimizer_lr_for_group(gaussians.optimizer, "xyz")
+        loc_anchor_lr = _optimizer_lr_for_group(gaussians.optimizer, "loc_anchor_offset")
         summary["geometry_optimizer_episodes"] = summary.get("geometry_optimizer_episodes", 0) + 1
         summary["geometry_xyz_lr_total"] = summary.get("geometry_xyz_lr_total", 0.0) + xyz_lr
         summary["geometry_xyz_lr_max"] = max(summary.get("geometry_xyz_lr_max", 0.0), xyz_lr)
         if xyz_lr > 0.0:
             summary["geometry_xyz_lr_nonzero_episodes"] = summary.get("geometry_xyz_lr_nonzero_episodes", 0) + 1
+        summary["geometry_loc_anchor_lr_total"] = summary.get("geometry_loc_anchor_lr_total", 0.0) + loc_anchor_lr
+        summary["geometry_loc_anchor_lr_max"] = max(
+            summary.get("geometry_loc_anchor_lr_max", 0.0),
+            loc_anchor_lr,
+        )
+        if loc_anchor_lr > 0.0:
+            summary["geometry_loc_anchor_lr_nonzero_episodes"] = (
+                summary.get("geometry_loc_anchor_lr_nonzero_episodes", 0) + 1
+            )
 
         xyz_grad = getattr(gaussians._xyz, "grad", None)
         grad_max = 0.0
@@ -642,6 +737,20 @@ def _record_geometry_optimizer_diagnostics(
         if grad_max > 0.0:
             summary["geometry_xyz_grad_nonzero_episodes"] = (
                 summary.get("geometry_xyz_grad_nonzero_episodes", 0) + 1
+            )
+        loc_anchor_grad = getattr(getattr(gaussians, "_loc_anchor_offset", None), "grad", None)
+        loc_anchor_grad_max = 0.0
+        if loc_anchor_grad is not None:
+            finite_grad = torch.nan_to_num(loc_anchor_grad.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+            if finite_grad.numel() > 0:
+                loc_anchor_grad_max = float(finite_grad.abs().max().item())
+        summary["geometry_loc_anchor_grad_abs_max"] = max(
+            summary.get("geometry_loc_anchor_grad_abs_max", 0.0),
+            loc_anchor_grad_max,
+        )
+        if loc_anchor_grad_max > 0.0:
+            summary["geometry_loc_anchor_grad_nonzero_episodes"] = (
+                summary.get("geometry_loc_anchor_grad_nonzero_episodes", 0) + 1
             )
 
     if xyz_before is not None:
@@ -682,6 +791,213 @@ def _tensor_abs_max(value):
         return 0.0
     finite = torch.nan_to_num(value.detach(), nan=0.0, posinf=0.0, neginf=0.0)
     return float(finite.abs().max().item()) if finite.numel() else 0.0
+
+
+def _record_gradient_source_diagnostics(summary, gaussians, loss, source_name, scale=1.0):
+    if not (torch.is_tensor(loss) and bool(loss.requires_grad)):
+        return
+    targets = [
+        ("raw_xyz", getattr(gaussians, "_xyz", None)),
+        ("loc_anchor_offset", getattr(gaussians, "_loc_anchor_offset", None)),
+        ("loc_feature", getattr(gaussians, "_loc_feature", None)),
+    ]
+    params = [
+        (name, param)
+        for name, param in targets
+        if torch.is_tensor(param) and bool(getattr(param, "requires_grad", False))
+    ]
+    if not params:
+        return
+    scaled_loss = loss * loss.new_tensor(float(scale))
+    grads = torch.autograd.grad(
+        scaled_loss,
+        [param for _, param in params],
+        retain_graph=True,
+        allow_unused=True,
+    )
+    for (target_name, _), grad in zip(params, grads):
+        prefix = f"diff_pnp_grad_{source_name}_{target_name}"
+        summary[f"{prefix}_episodes"] = summary.get(f"{prefix}_episodes", 0) + 1
+        abs_max = _tensor_abs_max(grad)
+        norm = 0.0
+        if grad is not None:
+            finite = torch.nan_to_num(grad.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+            norm = float(torch.linalg.norm(finite.reshape(-1)).item()) if finite.numel() else 0.0
+        summary[f"{prefix}_abs_max_max"] = max(summary.get(f"{prefix}_abs_max_max", 0.0), abs_max)
+        summary[f"{prefix}_norm_total"] = summary.get(f"{prefix}_norm_total", 0.0) + norm
+        summary[f"{prefix}_norm_max"] = max(summary.get(f"{prefix}_norm_max", 0.0), norm)
+        if abs_max > 0.0:
+            summary[f"{prefix}_nonzero_episodes"] = summary.get(f"{prefix}_nonzero_episodes", 0) + 1
+
+
+def _record_diff_pnp_gradient_diagnostics(summary, gaussians, pnp_out, args):
+    base_scale = _float_arg(args, "loc_loss_weight", 1.0) * _float_arg(args, "lafgs_diff_pnp_weight", 1.0)
+    if base_scale == 0.0:
+        return
+    components = (
+        ("total_loss", pnp_out.loss, 1.0),
+        ("pose_loss", pnp_out.pose_loss, _float_arg(args, "lafgs_diff_pnp_pose_weight", 1.0)),
+        (
+            "reprojection_loss",
+            pnp_out.reprojection_loss,
+            _float_arg(args, "lafgs_diff_pnp_reproj_weight", 1.0),
+        ),
+        (
+            "gt_reprojection_loss",
+            pnp_out.gt_reprojection_loss,
+            _float_arg(args, "lafgs_diff_pnp_gt_reproj_weight", 1.0),
+        ),
+        (
+            "geometry_reproj_loss",
+            pnp_out.geometry_reprojection_loss,
+            _float_arg(args, "lafgs_diff_pnp_geometry_reproj_weight", 1.0),
+        ),
+        (
+            "geometry_depth_anchor_loss",
+            pnp_out.geometry_depth_anchor_loss,
+            _float_arg(args, "lafgs_diff_pnp_geometry_depth_anchor_weight", 1.0),
+        ),
+        (
+            "geometry_match_loss",
+            pnp_out.geometry_match_reprojection_loss,
+            _float_arg(args, "lafgs_diff_pnp_geometry_match_reproj_weight", 1.0),
+        ),
+    )
+    for name, component_loss, component_scale in components:
+        if component_scale == 0.0:
+            continue
+        _record_gradient_source_diagnostics(
+            summary,
+            gaussians,
+            component_loss,
+            name,
+            scale=base_scale * component_scale,
+        )
+
+
+def _record_norm_stats(summary, prefix, values):
+    if values is None:
+        return
+    values = torch.nan_to_num(values.detach().reshape(-1).float(), nan=0.0, posinf=0.0, neginf=0.0)
+    if values.numel() == 0:
+        summary[f"{prefix}_mean"] = 0.0
+        summary[f"{prefix}_median"] = 0.0
+        summary[f"{prefix}_p95"] = 0.0
+        summary[f"{prefix}_max"] = 0.0
+        return
+    summary[f"{prefix}_mean"] = float(values.mean().item())
+    summary[f"{prefix}_median"] = float(torch.quantile(values, 0.5).item())
+    summary[f"{prefix}_p95"] = float(torch.quantile(values, 0.95).item())
+    summary[f"{prefix}_max"] = float(values.max().item())
+
+
+def _record_lafgs_static_config(summary, args):
+    summary.update(
+        {
+            "gaussian_type": str(getattr(args, "gaussian_type", "")),
+            "loc_anchor_lr_config": _float_arg(args, "loc_anchor_lr"),
+            "loc_anchor_active": bool(_surface_loc_anchor_active(args)),
+            "loc_anchor_bounds_active": bool(_surface_loc_bounds_active(args)),
+            "surfel_loc_tangent_bound_config": _float_arg(args, "surfel_loc_tangent_bound"),
+            "surfel_loc_normal_bound_config": _float_arg(args, "surfel_loc_normal_bound"),
+            "surfel_loc_anchor_reg_weight_config": _float_arg(args, "surfel_loc_anchor_reg_weight"),
+            "detach_loc_anchor_base": bool(getattr(gaussians, "detach_loc_anchor_base", False)),
+            "allow_raw_xyz_geometry_grad": bool(_allow_raw_xyz_geometry_grad(args)),
+            "geometry_xyz_lr_config": _float_arg(args, "lafgs_diff_pnp_geometry_xyz_lr"),
+            "diff_pnp_local_window_radius_config": _float_arg(args, "lafgs_diff_pnp_local_window_radius"),
+            "diff_pnp_geometry_local_window_radius_config": _float_arg(
+                args,
+                "lafgs_diff_pnp_geometry_local_window_radius",
+            ),
+            "diff_pnp_point_weight_floor_config": _float_arg(args, "lafgs_diff_pnp_point_weight_floor"),
+            "diff_pnp_max_condition_number_config": _float_arg(args, "lafgs_diff_pnp_max_condition_number", -1.0),
+            "diff_pnp_detach_pnp_points_config": bool(getattr(args, "lafgs_diff_pnp_detach_pnp_points", False)),
+            "diff_pnp_allow_geometry_grad_config": bool(
+                getattr(args, "lafgs_diff_pnp_allow_geometry_grad", False)
+            ),
+            "diff_pnp_geometry_reproj_weight_config": _float_arg(
+                args,
+                "lafgs_diff_pnp_geometry_reproj_weight",
+            ),
+            "diff_pnp_geometry_depth_anchor_weight_config": _float_arg(
+                args,
+                "lafgs_diff_pnp_geometry_depth_anchor_weight",
+            ),
+            "diff_pnp_geometry_match_reproj_weight_config": _float_arg(
+                args,
+                "lafgs_diff_pnp_geometry_match_reproj_weight",
+            ),
+            "diff_pnp_geometry_use_all_correspondences_config": bool(
+                getattr(args, "lafgs_diff_pnp_geometry_use_all_correspondences", False)
+            ),
+        }
+    )
+
+
+def _capture_geometry_delta_reference(gaussians):
+    with torch.no_grad():
+        return {
+            "raw_xyz": gaussians.get_xyz.detach().clone(),
+            "loc_xyz": gaussian_localization_xyz(gaussians).detach().clone(),
+        }
+
+
+def _record_anchor_component_stats(summary, gaussians):
+    raw_offset = getattr(gaussians, "_loc_anchor_offset", None)
+    if not torch.is_tensor(raw_offset) or raw_offset.numel() == 0:
+        return
+    tangent_bound = float(getattr(gaussians, "surfel_loc_tangent_bound", 0.0) or 0.0)
+    normal_bound = float(getattr(gaussians, "surfel_loc_normal_bound", 0.0) or 0.0)
+    with torch.no_grad():
+        raw_offset = raw_offset.detach()
+        _record_norm_stats(summary, "loc_anchor_raw_tanh_norm", torch.linalg.norm(torch.tanh(raw_offset), dim=-1))
+        scales = gaussians.get_scaling.detach()
+        if scales.numel() == 0:
+            return
+        if scales.shape[1] >= 2:
+            radius = scales[:, :2].mean(dim=1, keepdim=True).clamp_min(1e-8)
+        else:
+            radius = scales.reshape(scales.shape[0], -1).mean(dim=1, keepdim=True).clamp_min(1e-8)
+        tangent_delta = torch.tanh(raw_offset[:, :2]) * (tangent_bound * radius)
+        normal_delta = torch.tanh(raw_offset[:, 2:3]) * (normal_bound * radius)
+        _record_norm_stats(summary, "loc_anchor_tangent_delta_norm", torch.linalg.norm(tangent_delta, dim=-1))
+        _record_norm_stats(summary, "loc_anchor_normal_delta_abs", normal_delta.abs().reshape(-1))
+
+
+def _record_final_geometry_delta_summary(summary, gaussians, reference):
+    if not reference:
+        return
+    with torch.no_grad():
+        raw_xyz = gaussians.get_xyz.detach()
+        loc_xyz = gaussian_localization_xyz(gaussians).detach()
+        raw_ref = reference.get("raw_xyz")
+        loc_ref = reference.get("loc_xyz")
+        summary["geometry_initial_point_count"] = int(raw_ref.shape[0]) if torch.is_tensor(raw_ref) else 0
+        summary["geometry_final_point_count"] = int(raw_xyz.shape[0])
+        summary["geometry_point_count_changed"] = bool(
+            torch.is_tensor(raw_ref) and raw_ref.shape[0] != raw_xyz.shape[0]
+        )
+        if torch.is_tensor(raw_ref):
+            count = min(int(raw_ref.shape[0]), int(raw_xyz.shape[0]))
+            _record_norm_stats(
+                summary,
+                "raw_xyz_delta_from_initial",
+                torch.linalg.norm(raw_xyz[:count] - raw_ref[:count].to(raw_xyz.device), dim=-1),
+            )
+        if torch.is_tensor(loc_ref):
+            count = min(int(loc_ref.shape[0]), int(loc_xyz.shape[0]))
+            _record_norm_stats(
+                summary,
+                "loc_xyz_delta_from_initial",
+                torch.linalg.norm(loc_xyz[:count] - loc_ref[:count].to(loc_xyz.device), dim=-1),
+            )
+        count = min(int(raw_xyz.shape[0]), int(loc_xyz.shape[0]))
+        _record_norm_stats(
+            summary,
+            "loc_xyz_minus_raw_xyz",
+            torch.linalg.norm(loc_xyz[:count] - raw_xyz[:count], dim=-1),
+        )
+    _record_anchor_component_stats(summary, gaussians)
 
 
 def _backward_with_optional_isolated_xyz_grad(
@@ -920,6 +1236,7 @@ def add_locaware_training_args(parser):
     parser.add_argument("--lafgs_diff_pnp_utility_pose_loss_scale", type=float, default=1.0)
     parser.add_argument("--lafgs_diff_pnp_utility_reprojection_error_scale", type=float, default=4.0)
     parser.add_argument("--lafgs_diff_pnp_allow_geometry_grad", action="store_true", default=False)
+    parser.add_argument("--allow_raw_xyz_geometry_grad", action="store_true", default=False)
     parser.add_argument("--lafgs_diff_pnp_isolate_geometry_grad", action="store_true", default=False)
     parser.add_argument("--lafgs_diff_pnp_geometry_xyz_lr", type=float, default=0.0)
     parser.add_argument("--lafgs_diff_pnp_geometry_reproj_weight", type=float, default=0.0)
@@ -2219,6 +2536,7 @@ def training(dataset, opt, args):
         _restore_external_localization_state(gaussians, args.localization_state_path)
         _configure_surface_localization_anchor(gaussians, args, opt)
         print(f"Loaded external localization state from {args.localization_state_path}")
+    _validate_lafgs_surface_geometry_config(gaussians, args)
     if first_iter == 0 and scene.loaded_iter:
         first_iter = scene.loaded_iter
     geometry_anchor = _capture_geometry_anchor(gaussians)
@@ -2345,6 +2663,7 @@ def training(dataset, opt, args):
                 "mvinit_mean_observations": float(mvinit_result.diagnostics.get("mean_observations", 0.0)),
             }
         )
+    geometry_delta_reference = _capture_geometry_delta_reference(gaussians)
     pseudo_query_sampler = None
     pseudo_query_reliability_stats = None
     train_camera_by_name = {
@@ -2637,6 +2956,7 @@ def training(dataset, opt, args):
         "diff_pnp_episodes": 0,
         "diff_pnp_used_correspondences_total": 0,
     }
+    _record_lafgs_static_config(loc_training_summary, args)
     loc_training_summary.update(mvinit_summary)
     lafgs_curriculum_base_iter = int(scene.loaded_iter or 0)
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="LA Feature Gaussian")
@@ -3238,6 +3558,12 @@ def training(dataset, opt, args):
                         loc_pnp_loss,
                         allow_geometry_grad=allow_geometry_grad,
                     )
+                    _record_diff_pnp_gradient_diagnostics(
+                        loc_training_summary,
+                        gaussians,
+                        pnp_out,
+                        args,
+                    )
             else:
                 dense_pose_weight = 1.0
                 if args.loc_dense_advantage_gate:
@@ -3587,6 +3913,7 @@ def training(dataset, opt, args):
                     "observed_points_max": int(obs_cpu.max().item()) if obs_cpu.numel() else 0,
                 }
             )
+        _record_final_geometry_delta_summary(loc_training_summary, gaussians, geometry_delta_reference)
     loc_summary_path = os.path.join(dataset.model_path, "loc_training_summary.json")
     with open(loc_summary_path, "w") as f:
         json.dump(loc_training_summary, f, indent=2, sort_keys=True)
