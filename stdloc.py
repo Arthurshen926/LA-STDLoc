@@ -13,6 +13,7 @@ from tqdm import tqdm
 from arguments import ModelParams, PipelineParams, get_combined_args
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat
+from localization_training.direct_landmark_teacher import gaussian_localization_xyz
 from localization_training.geometry_selector import GeometryBalancedSelector
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
@@ -53,12 +54,13 @@ def lift_2d_to_3d(points2d, intrinsic, Twc, depth_map):
 
 
 def sample_gaussians(gaussians: GaussianModel, idx_sampled):
+    loc_xyz = gaussian_localization_xyz(gaussians)
     idx_sampled = validate_sampled_indices(
         idx_sampled,
-        gaussians.get_xyz.shape[0],
-    ).to(device=gaussians.get_xyz.device)
+        loc_xyz.shape[0],
+    ).to(device=loc_xyz.device)
     sampled_gaussians = GaussianModel(3)
-    sampled_gaussians._xyz = gaussians._xyz[idx_sampled]
+    sampled_gaussians._xyz = loc_xyz[idx_sampled]
     sampled_gaussians._loc_feature = gaussians.materialized_loc_feature(idx_sampled)
     sampled_gaussians._scaling = gaussians._scaling[idx_sampled]
     sampled_gaussians._opacity = gaussians._opacity[idx_sampled]

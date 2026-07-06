@@ -39,6 +39,7 @@ import pickle
 import torch.nn.functional as F
 
 from encoders.feature_extractor import FeatureExtractor
+from localization_training.direct_landmark_teacher import gaussian_localization_xyz
 from localization_training.landmark_distill import localization_aware_sample, save_landmark_meta
 from scene.kpdetector import KpDetector
 
@@ -69,7 +70,9 @@ def render_visible_mask_from_cache(render_visible_masks, image_name, device):
 
 
 def get_sampled_gaussian(gaussians: GaussianModel, idx_sampled):
-    sampled_gaussians = GaussianModel(gaussians.max_sh_degree)
+    sampled_gaussians = gaussians.__class__(gaussians.max_sh_degree)
+    sampled_gaussians.active_sh_degree = gaussians.active_sh_degree
+    sampled_gaussians.spatial_lr_scale = gaussians.spatial_lr_scale
     sampled_gaussians._xyz = gaussians._xyz[idx_sampled]
     sampled_gaussians._loc_feature = gaussians.materialized_loc_feature(idx_sampled)
     sampled_gaussians._scaling = gaussians._scaling[idx_sampled]
@@ -77,6 +80,17 @@ def get_sampled_gaussian(gaussians: GaussianModel, idx_sampled):
     sampled_gaussians._rotation = gaussians._rotation[idx_sampled]
     sampled_gaussians._features_dc = gaussians._features_dc[idx_sampled]
     sampled_gaussians._features_rest = gaussians._features_rest[idx_sampled]
+    if torch.is_tensor(getattr(gaussians, "_loc_opacity", None)) and gaussians._loc_opacity.shape[0] == gaussians.get_xyz.shape[0]:
+        sampled_gaussians._loc_opacity = gaussians._loc_opacity[idx_sampled]
+    if torch.is_tensor(getattr(gaussians, "_loc_anchor_offset", None)) and gaussians._loc_anchor_offset.shape[0] == gaussians.get_xyz.shape[0]:
+        sampled_gaussians._loc_anchor_offset = gaussians._loc_anchor_offset[idx_sampled]
+    sampled_gaussians.surfel_loc_tangent_bound = float(getattr(gaussians, "surfel_loc_tangent_bound", 0.0) or 0.0)
+    sampled_gaussians.surfel_loc_normal_bound = float(getattr(gaussians, "surfel_loc_normal_bound", 0.0) or 0.0)
+    sampled_gaussians.max_radii2D = torch.zeros(
+        sampled_gaussians.get_xyz.shape[0],
+        dtype=torch.float32,
+        device=sampled_gaussians.get_xyz.device,
+    )
     return sampled_gaussians
 
 
@@ -89,7 +103,7 @@ def calculate_match_score(
     render_visible_mask=None,
     img_mask=None,
 ):
-    xyz = gaussians.get_xyz
+    xyz = gaussian_localization_xyz(gaussians)
     feat = gaussians.get_loc_feature.squeeze()
 
     # project gaussians to image space
@@ -139,7 +153,7 @@ def generate_gt_map(
     if render_visible_mask is not None:
         render_visible_mask = render_visible_mask[idx_sampled]
         idx_sampled = idx_sampled[render_visible_mask]
-    sampled_xyz = gaussians.get_xyz[idx_sampled]
+    sampled_xyz = gaussian_localization_xyz(gaussians)[idx_sampled]
 
     gt_map = torch.zeros(
         (1, gt_feature_map.shape[1], gt_feature_map.shape[2]),
@@ -271,7 +285,7 @@ def build_detector_target_map(
         if render_visible_mask is not None:
             sampled_visible = render_visible_mask[sampled_idx]
         gt_map, weight_map = generate_weighted_hard_gt_map(
-            gaussians.get_xyz[sampled_idx],
+            gaussian_localization_xyz(gaussians)[sampled_idx],
             gt_feature_map,
             pose,
             K,
@@ -290,31 +304,63 @@ def detector_target_loss(heat_map, gt_map, soft_target=False, weight_map=None):
     return score_map_bce_loss(heat_map, gt_map)
 
 
-def random_knn_score(points, npoints, score, k=32):
-    sampled_idx = torch.randperm(points.shape[0])[:npoints]
-    sampled_points = points[sampled_idx]
-    points = points.cpu()
-    sampled_points = sampled_points.cpu()
-    dist = torch.cdist(sampled_points, points)
-    knn_idx = torch.topk(dist, k, largest=False, dim=-1)[1]
-    knn_idx = knn_idx.cuda()
+@torch.no_grad()
+def random_knn_score(points, npoints, score, k=32, query_chunk=512, point_chunk=65536):
+    points = points.detach()
+    device = points.device
+    dtype = torch.float32 if not points.is_floating_point() else points.dtype
+    points = points.to(device=device, dtype=dtype)
+    score = score.to(device=device, dtype=torch.float32).reshape(-1)
+    total = int(points.shape[0])
+    if total == 0:
+        return torch.empty(0, dtype=torch.long, device=device)
 
-    # knn select
-    knn_score = score[knn_idx]  # (npoints, k)
-    score_knn_sort_idx = torch.argsort(
-        knn_score, descending=True, dim=-1
-    )  # (npoints, k)
+    npoints = min(int(npoints), total)
+    k = max(1, min(int(k), total))
+    sampled_idx = torch.randperm(total, device=device)[:npoints]
+    selected = []
+    selected_set = set()
 
-    final_sampled_idx = set()
+    for q_start in range(0, npoints, int(query_chunk)):
+        q_end = min(q_start + int(query_chunk), npoints)
+        query = points[sampled_idx[q_start:q_end]]
+        q_count = query.shape[0]
+        best_dist = torch.full((q_count, k), float("inf"), dtype=dtype, device=device)
+        best_idx = torch.full((q_count, k), -1, dtype=torch.long, device=device)
 
-    for i in range(npoints):
-        for j in score_knn_sort_idx[i]:
-            idx = knn_idx[i, j].item()  
-            if idx not in final_sampled_idx: 
-                final_sampled_idx.add(idx)  
-                break  
+        for p_start in range(0, total, int(point_chunk)):
+            p_end = min(p_start + int(point_chunk), total)
+            dist = torch.cdist(query, points[p_start:p_end])
+            local_k = min(k, p_end - p_start)
+            local_dist, local_idx = torch.topk(dist, local_k, largest=False, dim=-1)
+            local_idx = local_idx + p_start
 
-    return torch.tensor(list(final_sampled_idx)).cuda()
+            merged_dist = torch.cat([best_dist, local_dist], dim=1)
+            merged_idx = torch.cat([best_idx, local_idx], dim=1)
+            best_dist, order = torch.topk(merged_dist, k, largest=False, dim=-1)
+            best_idx = torch.gather(merged_idx, 1, order)
+            del dist, local_dist, local_idx, merged_dist, merged_idx, order
+
+        knn_score = score[best_idx.clamp_min(0)]
+        score_order = torch.argsort(knn_score, descending=True, dim=-1)
+        best_idx_cpu = best_idx.detach().cpu()
+        score_order_cpu = score_order.detach().cpu()
+        fallback_cpu = sampled_idx[q_start:q_end].detach().cpu()
+        for row in range(q_count):
+            chosen = None
+            for col in score_order_cpu[row].tolist():
+                idx = int(best_idx_cpu[row, col].item())
+                if idx >= 0 and idx not in selected_set:
+                    chosen = idx
+                    break
+            if chosen is None:
+                chosen = int(fallback_cpu[row].item())
+            if chosen not in selected_set:
+                selected_set.add(chosen)
+                selected.append(chosen)
+        del best_dist, best_idx, knn_score, score_order
+
+    return torch.tensor(selected, dtype=torch.long, device=device)
 
 
 def matching_oriented_sample(
@@ -327,10 +373,11 @@ def matching_oriented_sample(
     k=32,
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
+    loc_xyz = gaussian_localization_xyz(gaussians)
     score_sum = torch.zeros(
-        gaussians.get_xyz.shape[0], dtype=torch.float32, device="cuda"
+        loc_xyz.shape[0], dtype=torch.float32, device="cuda"
     )
-    score_num = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.int, device="cuda")
+    score_num = torch.zeros(loc_xyz.shape[0], dtype=torch.int, device="cuda")
     fine_resolution = (
         viewpoint_stack[0].original_image.shape[1],
         viewpoint_stack[0].original_image.shape[2],
@@ -404,7 +451,7 @@ def matching_oriented_sample(
     score_num[score_num == 0] = 1  # avoid divide by zero
     score_avg = score_sum / score_num
 
-    sampled_idx = random_knn_score(gaussians.get_xyz, num, score_avg, k=k)
+    sampled_idx = random_knn_score(loc_xyz, num, score_avg, k=k)
     sampled_idx = torch.unique(sampled_idx)
     return sampled_idx, score_avg, score_num
 
@@ -675,7 +722,7 @@ def training_detector(
             pnp_balance = sampling_mode == "localization_aware_pnp"
             use_spatial_sampling = sampling_mode != "localization_aware_global"
             sampled_idx, landmark_meta = localization_aware_sample(
-                gaussians.get_xyz,
+                gaussian_localization_xyz(gaussians),
                 score_avg,
                 utility,
                 num=landmark_num,

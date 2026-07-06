@@ -43,6 +43,17 @@ def make_intrinsics_from_fov(fovx, fovy, width, height, device=None, dtype=torch
     )
 
 
+def gaussian_localization_xyz(gaussians):
+    loc_xyz = getattr(gaussians, "get_loc_xyz", None)
+    if torch.is_tensor(loc_xyz):
+        return loc_xyz
+    if callable(loc_xyz):
+        loc_xyz = loc_xyz()
+        if torch.is_tensor(loc_xyz):
+            return loc_xyz
+    return gaussians.get_xyz
+
+
 def project_landmarks_to_query(xyz, K, pose_w2c, height, width, eps=1e-8):
     if xyz.numel() == 0:
         empty_uv = xyz.new_zeros((0, 2))
@@ -311,6 +322,58 @@ def direct_landmark_feature_loss(gaussian_features, query_features, weights=None
         return per_item.mean()
     weights = weights.to(device=per_item.device, dtype=per_item.dtype).reshape(-1)
     return (per_item * weights).sum() / weights.sum().clamp_min(1e-6)
+
+
+def pose_information_weights(points_world, K, pose_w2c, floor=0.0, eps=1e-8):
+    """Approximate per-anchor pose information from the projection Jacobian."""
+    points_world = torch.as_tensor(points_world)
+    if points_world.numel() == 0:
+        return points_world.new_zeros((0,))
+    device = points_world.device
+    dtype = points_world.dtype if points_world.is_floating_point() else torch.float32
+    points_world = points_world.to(device=device, dtype=dtype).reshape(-1, 3)
+    K = torch.as_tensor(K, device=device, dtype=dtype)
+    pose_w2c = torch.as_tensor(pose_w2c, device=device, dtype=dtype)
+    xyz_h = torch.cat([points_world, torch.ones(points_world.shape[0], 1, device=device, dtype=dtype)], dim=1)
+    xyz_cam = (pose_w2c @ xyz_h.T)[:3].T
+    x, y, z = xyz_cam[:, 0], xyz_cam[:, 1], xyz_cam[:, 2].clamp_min(float(eps))
+    fx = K[0, 0].clamp_min(float(eps))
+    fy = K[1, 1].clamp_min(float(eps))
+    z2 = z * z
+
+    du = torch.stack(
+        [
+            fx / z,
+            torch.zeros_like(z),
+            -fx * x / z2,
+            -fx * x * y / z2,
+            fx * (1.0 + (x * x) / z2),
+            -fx * y / z,
+        ],
+        dim=1,
+    )
+    dv = torch.stack(
+        [
+            torch.zeros_like(z),
+            fy / z,
+            -fy * y / z2,
+            -fy * (1.0 + (y * y) / z2),
+            fy * x * y / z2,
+            fy * x / z,
+        ],
+        dim=1,
+    )
+    info = (du.square().sum(dim=1) + dv.square().sum(dim=1)).clamp_min(0.0)
+    finite = torch.isfinite(info) & (xyz_cam[:, 2] > float(eps))
+    if not bool(finite.any().item()):
+        return points_world.new_full((points_world.shape[0],), max(0.0, min(float(floor), 1.0)))
+    max_info = info[finite].max().clamp_min(float(eps))
+    weights = (info / max_info).clamp(0.0, 1.0)
+    weights = torch.where(finite, weights, torch.zeros_like(weights))
+    floor = max(0.0, min(float(floor), 1.0))
+    if floor > 0.0:
+        weights = floor + (1.0 - floor) * weights
+    return weights.clamp(0.0, 1.0)
 
 
 def descriptor_anchor_loss(current_features, baseline_features, weights=None):
@@ -722,6 +785,8 @@ def direct_landmark_teacher(
     full_bank_ignore_uv_radius=0.0,
     full_bank_source_mode="ignore",
     full_bank_nearby_as_positive=False,
+    full_bank_pose_information_weight=0.0,
+    full_bank_pose_information_floor=0.0,
     sampling_grid_size=8,
     anchor_features=None,
     child_responsibility_mode="none",
@@ -734,8 +799,9 @@ def direct_landmark_teacher(
     dtype = query_feature_map.dtype
     height, width = query_feature_map.shape[-2:]
     pose_gt_w2c = pose_gt_w2c.to(device=device, dtype=dtype)
-    landmark_indices = landmark_indices.to(device=gaussians.get_xyz.device, dtype=torch.long).reshape(-1)
-    xyz = gaussians.get_xyz[landmark_indices].to(device=device, dtype=dtype)
+    loc_xyz_all = gaussian_localization_xyz(gaussians)
+    landmark_indices = landmark_indices.to(device=loc_xyz_all.device, dtype=torch.long).reshape(-1)
+    xyz = loc_xyz_all[landmark_indices].to(device=device, dtype=dtype)
     K = make_intrinsics_from_fov(fovx, fovy, width, height, device=device, dtype=dtype)
 
     uv, depth, valid = project_landmarks_to_query(xyz, K, pose_gt_w2c, height, width)
@@ -755,7 +821,7 @@ def direct_landmark_teacher(
         if responsibility_candidates.numel() > 0:
             candidate_full_idx = landmark_indices[
                 responsibility_candidates.to(device=landmark_indices.device)
-            ].to(device=gaussians.get_xyz.device)
+            ].to(device=loc_xyz_all.device)
             candidate_uv = uv[responsibility_candidates]
             candidate_query_features = bilinear_sample_features(query_feature_map.detach(), candidate_uv)
             candidate_gaussian_features = gaussians.get_loc_feature[candidate_full_idx].reshape(
@@ -825,7 +891,7 @@ def direct_landmark_teacher(
             diagnostics=diagnostics,
         )
 
-    selected_full_idx = landmark_indices[keep].to(device=gaussians.get_xyz.device)
+    selected_full_idx = landmark_indices[keep].to(device=loc_xyz_all.device)
     selected_uv = uv[keep]
     selected_xyz = xyz[keep]
     query_features = bilinear_sample_features(query_feature_map.detach(), selected_uv)
@@ -891,6 +957,26 @@ def direct_landmark_teacher(
     desc_loss = direct_landmark_feature_loss(gaussian_features, query_features, weights=artifact_weights)
     selected_count = selected_full_idx.numel()
     multiview_positive_count = torch.zeros(selected_count, dtype=torch.float32, device=query_feature_map.device)
+    pose_info_weight = pose_information_weights(
+        selected_xyz,
+        K,
+        pose_gt_w2c,
+        floor=full_bank_pose_information_floor,
+    ).to(device=query_feature_map.device, dtype=query_feature_map.dtype)
+    full_bank_weights = artifact_weights
+    pose_info_blend = max(0.0, min(float(full_bank_pose_information_weight), 1.0))
+    if pose_info_blend > 0.0:
+        pose_info_scale = (1.0 - pose_info_blend) + pose_info_blend * pose_info_weight
+        full_bank_weights = artifact_weights * pose_info_scale.detach()
+        diagnostics.update(
+            {
+                "pose_information_weight_min": float(pose_info_weight.min().detach().item()),
+                "pose_information_weight_mean": float(pose_info_weight.mean().detach().item()),
+                "pose_information_weight_max": float(pose_info_weight.max().detach().item()),
+                "pose_information_weight_blend": pose_info_blend,
+                "pose_information_weight_floor": float(max(0.0, min(float(full_bank_pose_information_floor), 1.0))),
+            }
+        )
     if multiview_memory is not None:
         multiview_positive_count = multiview_memory.positive_count(selected_full_idx).to(
             device=query_feature_map.device,
@@ -914,7 +1000,7 @@ def direct_landmark_teacher(
         full_bank_indices = torch.as_tensor(
             full_bank_indices,
             dtype=torch.long,
-            device=gaussians.get_xyz.device,
+            device=loc_xyz_all.device,
         ).reshape(-1)
         bank_features = gaussians.get_loc_feature[full_bank_indices].reshape(full_bank_indices.numel(), -1)
         bank_xyz = None
@@ -928,14 +1014,14 @@ def direct_landmark_teacher(
         spatial_bank_mask = None
         source_index = getattr(gaussians, "loc_source_index", None)
         if torch.is_tensor(source_index) and source_index.numel() > 0:
-            source_index = source_index.to(device=gaussians.get_xyz.device, dtype=torch.long).reshape(-1)
+            source_index = source_index.to(device=loc_xyz_all.device, dtype=torch.long).reshape(-1)
             max_required_idx = torch.cat([selected_full_idx.reshape(-1), full_bank_indices.reshape(-1)]).max()
             if max_required_idx.item() < source_index.numel():
                 selected_source = source_index[selected_full_idx].to(device=query_feature_map.device)
                 bank_source = source_index[full_bank_indices].to(device=query_feature_map.device)
                 source_bank_mask = selected_source[:, None] == bank_source[None, :]
         if float(full_bank_ignore_3d_radius) > 0.0:
-            bank_xyz = gaussians.get_xyz[full_bank_indices].to(device=device, dtype=dtype)
+            bank_xyz = loc_xyz_all[full_bank_indices].to(device=device, dtype=dtype)
             xyz_dist = torch.cdist(selected_xyz.float(), bank_xyz.float())
             nearby_xyz = xyz_dist <= float(full_bank_ignore_3d_radius)
             spatial_bank_mask = _merge_ignore_bank_mask(
@@ -944,7 +1030,7 @@ def direct_landmark_teacher(
             )
         if float(full_bank_ignore_uv_radius) > 0.0:
             if bank_xyz is None:
-                bank_xyz = gaussians.get_xyz[full_bank_indices].to(device=device, dtype=dtype)
+                bank_xyz = loc_xyz_all[full_bank_indices].to(device=device, dtype=dtype)
             bank_uv, _, bank_valid = project_landmarks_to_query(bank_xyz, K, pose_gt_w2c, height, width)
             uv_dist = torch.cdist(selected_uv.float(), bank_uv.float())
             nearby_uv = (uv_dist <= float(full_bank_ignore_uv_radius)) & bank_valid[None, :]
@@ -967,7 +1053,7 @@ def direct_landmark_teacher(
             temperature=full_bank_temperature,
             hard_negative_topk=full_bank_hard_negative_topk,
             hard_negative_margin=full_bank_hard_negative_margin,
-            weights=artifact_weights,
+            weights=full_bank_weights,
             ignore_bank_mask=ignore_bank_mask,
             positive_bank_mask=positive_bank_mask,
         )
@@ -1033,7 +1119,7 @@ def direct_landmark_teacher(
         "margin": margin,
         "entropy": entropy,
         "reproj_error": torch.zeros_like(positive_prob),
-        "information": torch.zeros_like(positive_prob),
+        "information": pose_info_weight.detach(),
         "repeatability": (positive_prob > 0.25).float(),
         "prototype": F.normalize(query_features.detach(), p=2, dim=-1),
         "multiview_positive_count": multiview_positive_count,

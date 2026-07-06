@@ -306,7 +306,7 @@ def training(
             testing_iterations=test_detector_iterations,
             saving_iterations=save_detector_iterations,
             tb_writer=tb_writer,
-            train_iteration=30000,
+            train_iteration=opt.iterations,
             detector_folder=detector_folder,
             landmark_num=landmark_num,
             landmark_k=landmark_k,

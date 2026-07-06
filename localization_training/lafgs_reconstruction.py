@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from localization_training.correspondence import bilinear_sample_features
 from localization_training.direct_landmark_teacher import (
     filter_depth_consistent_landmarks,
+    gaussian_localization_xyz,
     make_intrinsics_from_fov,
     project_landmarks_to_query,
 )
@@ -321,7 +322,7 @@ def _build_multiview_initialization_chunked(
     view_weights,
     config,
 ):
-    xyz_all = gaussians.get_xyz
+    xyz_all = gaussian_localization_xyz(gaussians)
     device = xyz_all.device
     dtype = xyz_all.dtype
     landmark_count = int(landmark_indices.numel())
@@ -512,7 +513,7 @@ def build_multiview_initialization(
             chunk_size=config.chunk_size,
             eps=config.eps,
         )
-    xyz_all = gaussians.get_xyz
+    xyz_all = gaussian_localization_xyz(gaussians)
     device = xyz_all.device
     dtype = xyz_all.dtype
     if landmark_indices is None:

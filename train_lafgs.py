@@ -95,6 +95,12 @@ def build_parser():
     parser.add_argument("--loc_direct_weight", type=float, default=None)
     parser.add_argument("--loc_multiview_weight", type=float, default=None)
     parser.add_argument("--loc_full_bank_weight", type=float, default=None)
+    parser.add_argument("--loc_full_bank_pose_information_weight", type=float, default=None)
+    parser.add_argument("--loc_full_bank_pose_information_floor", type=float, default=None)
+    parser.add_argument("--loc_anchor_lr", type=float, default=None)
+    parser.add_argument("--surfel_loc_tangent_bound", type=float, default=None)
+    parser.add_argument("--surfel_loc_normal_bound", type=float, default=None)
+    parser.add_argument("--surfel_loc_anchor_reg_weight", type=float, default=None)
     parser.add_argument("--geometry_anchor_weight", type=float, default=None)
     parser.add_argument("--synthetic_view_ratio", type=float, default=None)
     parser.add_argument("--synthetic_view_desc_weight", type=float, default=None)
@@ -124,6 +130,7 @@ def _explicit_lafgs_overrides(argv):
             or normalized_item.startswith("--synthetic_view_")
             or normalized_item.startswith("--loc_")
             or normalized_item.startswith("--geometry_")
+            or normalized_item.startswith("--surfel_")
         ):
             name = normalized_item[2:].split("=", 1)[0].replace("-", "_")
             overrides.add(name)
@@ -152,8 +159,20 @@ def lafgs_defaults(args, explicit_overrides=None):
         _set_if_missing_or_legacy(args, "loc_full_bank_weight", 0.1, {0.0})
     else:
         _setdefault(args, "loc_full_bank_weight", 0.1)
+    if "loc_full_bank_pose_information_weight" not in explicit_overrides:
+        _setdefault(args, "loc_full_bank_pose_information_weight", 0.0)
+    else:
+        _setdefault(args, "loc_full_bank_pose_information_weight", 0.0)
+    if "loc_full_bank_pose_information_floor" not in explicit_overrides:
+        _setdefault(args, "loc_full_bank_pose_information_floor", 0.0)
+    else:
+        _setdefault(args, "loc_full_bank_pose_information_floor", 0.0)
     _set_if_missing_or_legacy(args, "loc_full_bank_hard_negatives", 64, {32})
     _setdefault(args, "loc_full_bank_source_mode", "ignore")
+    _setdefault(args, "loc_anchor_lr", 0.0)
+    _setdefault(args, "surfel_loc_tangent_bound", 0.0)
+    _setdefault(args, "surfel_loc_normal_bound", 0.0)
+    _setdefault(args, "surfel_loc_anchor_reg_weight", 0.0)
     _set_if_missing_or_legacy(args, "direct_depth_check", True, {False})
     if "geometry_anchor_weight" not in explicit_overrides:
         _set_if_missing_or_legacy(args, "geometry_anchor_weight", 0.05, {0.0})

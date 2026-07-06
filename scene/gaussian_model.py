@@ -27,6 +27,26 @@ from utils.system_utils import mkdir_p
 from localization_training.lafgs_reconstruction import pose_aware_split_score
 
 
+def _rotation_matrix_from_quaternion(rotation):
+    norm = torch.linalg.norm(rotation, dim=1, keepdim=True).clamp_min(1e-12)
+    q = rotation / norm
+    matrix = torch.zeros((q.shape[0], 3, 3), dtype=q.dtype, device=q.device)
+    r = q[:, 0]
+    x = q[:, 1]
+    y = q[:, 2]
+    z = q[:, 3]
+    matrix[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    matrix[:, 0, 1] = 2 * (x * y - r * z)
+    matrix[:, 0, 2] = 2 * (x * z + r * y)
+    matrix[:, 1, 0] = 2 * (x * y + r * z)
+    matrix[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    matrix[:, 1, 2] = 2 * (y * z - r * x)
+    matrix[:, 2, 0] = 2 * (x * z - r * y)
+    matrix[:, 2, 1] = 2 * (y * z + r * x)
+    matrix[:, 2, 2] = 1 - 2 * (x * x + y * y)
+    return matrix
+
+
 def split_localization_child_features(parent_features, parent_prototypes=None, prototype_counts=None, repeat=2):
     child_features = parent_features.repeat(repeat, *([1] * (parent_features.dim() - 1)))
     if repeat < 2 or parent_prototypes is None or prototype_counts is None or parent_features.numel() == 0:
@@ -87,7 +107,11 @@ class GaussianModel_2dgs(nn.Module):
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
-        self._loc_feature = torch.empty(0) 
+        self._loc_feature = torch.empty(0)
+        self._loc_opacity = torch.empty(0)
+        self._loc_anchor_offset = torch.empty(0)
+        self.surfel_loc_tangent_bound = 0.0
+        self.surfel_loc_normal_bound = 0.0
 
     def capture(self):
         return (
@@ -103,27 +127,50 @@ class GaussianModel_2dgs(nn.Module):
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
-            self._loc_feature, 
+            self._loc_feature,
+            self._loc_opacity,
+            self._loc_anchor_offset,
+            float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0),
+            float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0),
         )
     
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self.max_radii2D,
-        xyz_gradient_accum, 
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale,
-        self._loc_feature) = model_args 
+        (
+            self.active_sh_degree,
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._scaling,
+            self._rotation,
+            self._opacity,
+            self.max_radii2D,
+            xyz_gradient_accum,
+            denom,
+            opt_dict,
+            self.spatial_lr_scale,
+            self._loc_feature,
+            *loc_extra,
+        ) = model_args
+        if len(loc_extra) >= 1 and torch.is_tensor(loc_extra[0]):
+            self._loc_opacity = nn.Parameter(loc_extra[0].detach().clone().requires_grad_(True))
+        if len(loc_extra) >= 2 and torch.is_tensor(loc_extra[1]):
+            self._loc_anchor_offset = nn.Parameter(loc_extra[1].detach().clone().requires_grad_(True))
+        if len(loc_extra) >= 3:
+            self.surfel_loc_tangent_bound = float(loc_extra[2] or 0.0)
+        if len(loc_extra) >= 4:
+            self.surfel_loc_normal_bound = float(loc_extra[3] or 0.0)
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
-        self.optimizer.load_state_dict(opt_dict)
+        expected = len(self.optimizer.param_groups)
+        actual = len(opt_dict.get("param_groups", [])) if opt_dict else 0
+        if actual == expected:
+            self.optimizer.load_state_dict(opt_dict)
+        elif opt_dict:
+            print(
+                f"[LaFGS-2DGS] Skip optimizer restore: checkpoint has {actual} "
+                f"param groups, current model has {expected}."
+            )
 
     @property
     def get_scaling(self):
@@ -136,6 +183,33 @@ class GaussianModel_2dgs(nn.Module):
     @property
     def get_xyz(self):
         return self._xyz
+
+    @property
+    def get_loc_xyz(self):
+        self._ensure_loc_anchor_state()
+        tangent_bound = float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0)
+        normal_bound = float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0)
+        if tangent_bound <= 0.0 and normal_bound <= 0.0:
+            return self.get_xyz
+        xyz = self.get_xyz
+        if xyz.numel() == 0:
+            return xyz
+        raw = self._loc_anchor_offset.to(device=xyz.device, dtype=xyz.dtype)
+        rotation = _rotation_matrix_from_quaternion(self.get_rotation.to(device=xyz.device, dtype=xyz.dtype))
+        scales = self.get_scaling.to(device=xyz.device, dtype=xyz.dtype)
+        if scales.shape[1] >= 2:
+            tangent_scales = scales[:, :2]
+            radius = tangent_scales.mean(dim=1, keepdim=True).clamp_min(1e-8)
+        else:
+            radius = scales.reshape(scales.shape[0], -1).mean(dim=1, keepdim=True).clamp_min(1e-8)
+        tangent_delta = torch.tanh(raw[:, :2]) * (tangent_bound * radius)
+        normal_delta = torch.tanh(raw[:, 2:3]) * (normal_bound * radius)
+        return (
+            xyz
+            + rotation[:, :, 0] * tangent_delta[:, 0:1]
+            + rotation[:, :, 1] * tangent_delta[:, 1:2]
+            + rotation[:, :, 2] * normal_delta
+        )
     
     @property
     def get_features(self):
@@ -150,6 +224,274 @@ class GaussianModel_2dgs(nn.Module):
     @property
     def get_loc_feature(self):
         return self._loc_feature
+
+    def materialized_loc_feature(self, indices=None):
+        features = self.get_loc_feature
+        if indices is not None:
+            indices = torch.as_tensor(indices, dtype=torch.long, device=features.device)
+            features = features[indices]
+        return features
+
+    def _loc_feature_dim(self):
+        if self._loc_feature.numel() == 0:
+            return 0
+        return self._loc_feature.reshape(self._loc_feature.shape[0], -1).shape[1]
+
+    def _localization_buffer_names(self):
+        return [
+            "loc_grad_accum",
+            "loc_grad_denom",
+            "loc_observation_count",
+            "loc_repeatability_ema",
+            "loc_positive_prob_ema",
+            "loc_margin_ema",
+            "loc_entropy_ema",
+            "loc_outlier_ema",
+            "loc_reproj_error_ema",
+            "loc_information_ema",
+            "loc_redundancy_ema",
+            "loc_prototype",
+            "loc_prototype_count",
+            "loc_birth_iteration",
+            "last_topology_iteration",
+            "loc_node_id",
+            "loc_parent_node_id",
+            "loc_source_index",
+            "loc_source_xyz",
+        ]
+
+    def init_localization_state(self, from_rgb_opacity=True, birth_iteration=0):
+        n = self.get_xyz.shape[0]
+        device = self.get_xyz.device
+        feature_dim = self._loc_feature_dim()
+        if from_rgb_opacity and torch.is_tensor(self._opacity) and self._opacity.numel() == n:
+            loc_opacity = self._opacity.detach().clone()
+        else:
+            loc_opacity = inverse_sigmoid(torch.full((n, 1), 0.1, dtype=torch.float32, device=device))
+        self._loc_opacity = nn.Parameter(loc_opacity.to(device=device).detach().clone().requires_grad_(True))
+        self.loc_grad_accum = torch.zeros((n, 1), dtype=torch.float32, device=device)
+        self.loc_grad_denom = torch.zeros((n, 1), dtype=torch.float32, device=device)
+        self.loc_observation_count = torch.zeros(n, dtype=torch.long, device=device)
+        self.loc_repeatability_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_positive_prob_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_margin_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_entropy_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_outlier_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_reproj_error_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_information_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_redundancy_ema = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_prototype = torch.zeros((n, feature_dim), dtype=torch.float32, device=device)
+        self.loc_prototype_count = torch.zeros(n, dtype=torch.float32, device=device)
+        self.loc_birth_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        self.last_topology_iteration = torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        self.loc_node_id = torch.arange(n, dtype=torch.long, device=device)
+        self.loc_parent_node_id = torch.full((n,), -1, dtype=torch.long, device=device)
+        self.loc_source_index = torch.arange(n, dtype=torch.long, device=device)
+        self.loc_source_xyz = self.get_xyz.detach().clone().to(device=device, dtype=torch.float32)
+        self._ensure_loc_anchor_state()
+
+    def _default_localization_buffer(self, name, birth_iteration=0):
+        n = self.get_xyz.shape[0]
+        device = self.get_xyz.device
+        feature_dim = self._loc_feature_dim()
+        if name in ("loc_grad_accum", "loc_grad_denom"):
+            return torch.zeros((n, 1), dtype=torch.float32, device=device)
+        if name == "loc_observation_count":
+            return torch.zeros(n, dtype=torch.long, device=device)
+        if name == "loc_prototype":
+            return torch.zeros((n, feature_dim), dtype=torch.float32, device=device)
+        if name == "loc_prototype_count":
+            return torch.zeros(n, dtype=torch.float32, device=device)
+        if name in ("loc_birth_iteration", "last_topology_iteration"):
+            return torch.full((n,), birth_iteration, dtype=torch.long, device=device)
+        if name in ("loc_source_index", "loc_node_id"):
+            return torch.arange(n, dtype=torch.long, device=device)
+        if name == "loc_parent_node_id":
+            return torch.full((n,), -1, dtype=torch.long, device=device)
+        if name == "loc_source_xyz":
+            return self.get_xyz.detach().clone().to(device=device, dtype=torch.float32)
+        return torch.zeros(n, dtype=torch.float32, device=device)
+
+    def _ensure_localization_state(self, birth_iteration=0):
+        n = self.get_xyz.shape[0]
+        device = self.get_xyz.device
+        loc_opacity = getattr(self, "_loc_opacity", None)
+        if not torch.is_tensor(loc_opacity) or loc_opacity.shape[0] != n:
+            if torch.is_tensor(self._opacity) and self._opacity.numel() == n:
+                loc_opacity = self._opacity.detach().clone()
+            else:
+                loc_opacity = inverse_sigmoid(torch.full((n, 1), 0.1, dtype=torch.float32, device=device))
+            self._loc_opacity = nn.Parameter(loc_opacity.to(device=device).detach().clone().requires_grad_(True))
+        for name in self._localization_buffer_names():
+            value = getattr(self, name, None)
+            if not torch.is_tensor(value) or value.shape[0] != n:
+                setattr(self, name, self._default_localization_buffer(name, birth_iteration=birth_iteration))
+        self._ensure_loc_anchor_state()
+
+    def _ensure_loc_anchor_state(self):
+        n = self.get_xyz.shape[0]
+        device = self.get_xyz.device
+        dtype = self.get_xyz.dtype if self.get_xyz.is_floating_point() else torch.float32
+        value = getattr(self, "_loc_anchor_offset", None)
+        if torch.is_tensor(value) and value.shape == (n, 3):
+            if value.device != device or value.dtype != dtype:
+                self._loc_anchor_offset = nn.Parameter(
+                    value.to(device=device, dtype=dtype).detach().clone().requires_grad_(True)
+                )
+            return
+        self._loc_anchor_offset = nn.Parameter(torch.zeros((n, 3), dtype=dtype, device=device).requires_grad_(True))
+
+    def loc_anchor_offset_regularization(self):
+        self._ensure_loc_anchor_state()
+        if self._loc_anchor_offset.numel() == 0:
+            return self.get_xyz.new_tensor(0.0)
+        return torch.tanh(self._loc_anchor_offset).square().mean()
+
+    def _ensure_screen_radius_state(self):
+        n = self.get_xyz.shape[0]
+        radii = getattr(self, "max_radii2D", None)
+        if not torch.is_tensor(radii) or radii.shape[0] != n:
+            self.max_radii2D = torch.zeros((n,), dtype=torch.float32, device=self.get_xyz.device)
+
+    @property
+    def get_loc_opacity(self):
+        if not torch.is_tensor(getattr(self, "_loc_opacity", None)) or self._loc_opacity.numel() == 0:
+            return self.get_opacity
+        return self.opacity_activation(self._loc_opacity)
+
+    def update_screen_radii(self, point_selector, radii):
+        if point_selector is None or radii is None:
+            return
+        self._ensure_screen_radius_state()
+        selector = point_selector.to(device=self.get_xyz.device)
+        radii = torch.as_tensor(radii, device=self.get_xyz.device, dtype=torch.float32).reshape(-1)
+        if selector.dtype == torch.bool:
+            selector = selector.reshape(-1)
+            if selector.shape[0] != self.get_xyz.shape[0]:
+                return
+            count = int(selector.sum().item())
+            if count == 0:
+                return
+            values = radii[selector] if radii.numel() == selector.numel() else radii[:count]
+            self.max_radii2D[selector] = torch.maximum(self.max_radii2D[selector], values)
+            return
+        idx = selector.to(dtype=torch.long).reshape(-1)
+        if idx.numel() == 0:
+            return
+        values = radii[idx] if radii.numel() == self.get_xyz.shape[0] else radii[: idx.numel()]
+        self.max_radii2D[idx] = torch.maximum(self.max_radii2D[idx], values)
+
+    def add_localization_stats(self, full_idx, means2d_grad=None, radii=None, episode_stats=None, ema_decay=0.95):
+        self._ensure_localization_state()
+        full_idx = torch.as_tensor(full_idx, device=self.get_xyz.device, dtype=torch.long).reshape(-1)
+        if full_idx.numel() == 0:
+            return
+        self.update_screen_radii(full_idx, radii)
+        if means2d_grad is not None:
+            grad = means2d_grad.detach().reshape(full_idx.numel(), -1)
+            self.loc_grad_accum[full_idx] += torch.linalg.norm(grad[:, :2], dim=-1, keepdim=True)
+            self.loc_grad_denom[full_idx] += 1
+        self.loc_observation_count[full_idx] += 1
+        if episode_stats is None:
+            return
+        update_mask = torch.as_tensor(
+            episode_stats.get("update_mask", torch.ones(full_idx.numel(), device=self.get_xyz.device)),
+            device=self.get_xyz.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        if update_mask.numel() == 1:
+            update_mask = update_mask.expand(full_idx.numel())
+        update_mask = update_mask[: full_idx.numel()]
+
+        def as_vector(key):
+            value = episode_stats.get(key)
+            if value is None:
+                return None
+            value = torch.as_tensor(value, device=self.get_xyz.device, dtype=torch.float32).reshape(-1)
+            if value.numel() == 1:
+                value = value.expand(full_idx.numel())
+            return value[: full_idx.numel()]
+
+        stat_map = {
+            "repeatability": "loc_repeatability_ema",
+            "positive_prob": "loc_positive_prob_ema",
+            "margin": "loc_margin_ema",
+            "entropy": "loc_entropy_ema",
+            "outlier": "loc_outlier_ema",
+            "reproj_error": "loc_reproj_error_ema",
+            "information": "loc_information_ema",
+            "redundancy": "loc_redundancy_ema",
+        }
+        for key, attr in stat_map.items():
+            value = as_vector(key)
+            if value is not None and bool(update_mask.any().item()):
+                target_idx = full_idx[update_mask]
+                old = getattr(self, attr)[target_idx]
+                getattr(self, attr)[target_idx] = float(ema_decay) * old + (1.0 - float(ema_decay)) * value[update_mask]
+        prototype = episode_stats.get("prototype")
+        if prototype is not None and self.loc_prototype.shape[1] > 0 and bool(update_mask.any().item()):
+            prototype = torch.as_tensor(prototype, device=self.get_xyz.device, dtype=torch.float32)
+            prototype = prototype.reshape(full_idx.numel(), -1)[:, : self.loc_prototype.shape[1]]
+            target_idx = full_idx[update_mask]
+            old = self.loc_prototype[target_idx]
+            self.loc_prototype[target_idx] = (
+                float(ema_decay) * old + (1.0 - float(ema_decay)) * F.normalize(prototype[update_mask], p=2, dim=-1)
+            )
+            self.loc_prototype_count[target_idx] += 1
+
+    def capture_localization_state(self):
+        self._ensure_localization_state()
+        state = {
+            "version": 3,
+            "loc_opacity": self._loc_opacity.detach(),
+            "loc_current_xyz": self.get_xyz.detach(),
+            "loc_anchor_offset": self._loc_anchor_offset.detach(),
+            "surfel_loc_tangent_bound": float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0),
+            "surfel_loc_normal_bound": float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0),
+        }
+        for name in self._localization_buffer_names():
+            state[name] = getattr(self, name).detach()
+        return state
+
+    def restore_localization_state(self, state):
+        if state is None:
+            self.init_localization_state(from_rgb_opacity=True)
+            return
+        self._ensure_localization_state()
+        device = self.get_xyz.device
+        loc_opacity = state.get("loc_opacity", self._opacity.detach().clone()).to(device=device).detach().clone()
+        if self.optimizer is not None:
+            optimizable_tensors = self.replace_tensor_to_optimizer(loc_opacity, "loc_opacity")
+            self._loc_opacity = optimizable_tensors.get("loc_opacity", nn.Parameter(loc_opacity.requires_grad_(True)))
+        else:
+            self._loc_opacity = nn.Parameter(loc_opacity.requires_grad_(True))
+        for name in self._localization_buffer_names():
+            if name in state:
+                setattr(self, name, state[name].to(device=device).detach().clone())
+        self.surfel_loc_tangent_bound = float(state.get("surfel_loc_tangent_bound", getattr(self, "surfel_loc_tangent_bound", 0.0)) or 0.0)
+        self.surfel_loc_normal_bound = float(state.get("surfel_loc_normal_bound", getattr(self, "surfel_loc_normal_bound", 0.0)) or 0.0)
+        loc_anchor_offset = state.get("loc_anchor_offset", None)
+        if loc_anchor_offset is not None:
+            loc_anchor_offset = loc_anchor_offset.to(device=device, dtype=self.get_xyz.dtype).detach().clone()
+            if self.optimizer is not None:
+                optimizable_tensors = self.replace_tensor_to_optimizer(loc_anchor_offset, "loc_anchor_offset")
+                self._loc_anchor_offset = optimizable_tensors.get(
+                    "loc_anchor_offset",
+                    nn.Parameter(loc_anchor_offset.requires_grad_(True)),
+                )
+            else:
+                self._loc_anchor_offset = nn.Parameter(loc_anchor_offset.requires_grad_(True))
+        self._ensure_localization_state()
+
+    def save_localization_state(self, path):
+        mkdir_p(os.path.dirname(path))
+        torch.save(self.capture_localization_state(), path)
+
+    def load_localization_state(self, path):
+        if os.path.exists(path):
+            self.restore_localization_state(torch.load(path, map_location=self.get_xyz.device))
+        else:
+            self.init_localization_state(from_rgb_opacity=True)
 
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_xyz, self.get_scaling, scaling_modifier, self._rotation)
@@ -185,11 +527,15 @@ class GaussianModel_2dgs(nn.Module):
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self._loc_feature = nn.Parameter(_loc_feature.transpose(1, 2).contiguous().requires_grad_(True))
+        self.init_localization_state(from_rgb_opacity=True)
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
+        self._ensure_localization_state()
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        loc_opacity_lr = getattr(training_args, "loc_opacity_lr", training_args.opacity_lr * 0.1)
+        loc_anchor_lr = getattr(training_args, "loc_anchor_lr", 0.0)
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -199,6 +545,8 @@ class GaussianModel_2dgs(nn.Module):
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"},
             {'params': [self._rotation], 'lr': training_args.rotation_lr, "name": "rotation"},
             {'params': [self._loc_feature], 'lr':training_args.loc_feature_lr, "name": "loc_feature"},
+            {'params': [self._loc_opacity], 'lr': loc_opacity_lr, "name": "loc_opacity"},
+            {'params': [self._loc_anchor_offset], 'lr': loc_anchor_lr, "name": "loc_anchor_offset"},
         ]
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
@@ -318,18 +666,22 @@ class GaussianModel_2dgs(nn.Module):
 
         self._loc_feature = nn.Parameter(torch.tensor(loc_feature, dtype=torch.float, device="cuda").transpose(1, 2).contiguous().requires_grad_(True))
         self.active_sh_degree = self.max_sh_degree
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.init_localization_state(from_rgb_opacity=True)
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
             if group["name"] == name:
-                stored_state = self.optimizer.state.get(group['params'][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
-
-                del self.optimizer.state[group['params'][0]]
+                old_param = group["params"][0]
+                stored_state = self.optimizer.state.get(old_param, None)
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.zeros_like(tensor)
+                    stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                    del self.optimizer.state[old_param]
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group['params'][0]] = stored_state
+                if stored_state is not None:
+                    self.optimizer.state[group["params"][0]] = stored_state
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
@@ -363,11 +715,19 @@ class GaussianModel_2dgs(nn.Module):
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         self._loc_feature = optimizable_tensors["loc_feature"]
+        if "loc_opacity" in optimizable_tensors:
+            self._loc_opacity = optimizable_tensors["loc_opacity"]
+        if "loc_anchor_offset" in optimizable_tensors:
+            self._loc_anchor_offset = optimizable_tensors["loc_anchor_offset"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        for name in self._localization_buffer_names():
+            value = getattr(self, name, None)
+            if torch.is_tensor(value) and value.shape[0] == valid_points_mask.shape[0]:
+                setattr(self, name, value[valid_points_mask])
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -391,14 +751,33 @@ class GaussianModel_2dgs(nn.Module):
 
         return optimizable_tensors
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_loc_feature):
+    def densification_postfix(
+        self,
+        new_xyz,
+        new_features_dc,
+        new_features_rest,
+        new_opacities,
+        new_scaling,
+        new_rotation,
+        new_loc_feature,
+        new_loc_opacity=None,
+        new_loc_anchor_offset=None,
+        loc_parent_mask=None,
+        loc_repeat=1,
+    ):
+        if new_loc_opacity is None:
+            new_loc_opacity = new_opacities.detach().clone()
+        if new_loc_anchor_offset is None:
+            new_loc_anchor_offset = torch.zeros((new_xyz.shape[0], 3), dtype=self._loc_anchor_offset.dtype, device=self._loc_anchor_offset.device)
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
         "opacity": new_opacities,
         "scaling" : new_scaling,
         "rotation" : new_rotation,
-        "loc_feature": new_loc_feature} 
+        "loc_feature": new_loc_feature,
+        "loc_opacity": new_loc_opacity,
+        "loc_anchor_offset": new_loc_anchor_offset} 
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
         self._xyz = optimizable_tensors["xyz"]
@@ -408,6 +787,18 @@ class GaussianModel_2dgs(nn.Module):
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
         self._loc_feature = optimizable_tensors["loc_feature"] 
+        self._loc_opacity = optimizable_tensors["loc_opacity"]
+        self._loc_anchor_offset = optimizable_tensors["loc_anchor_offset"]
+        if loc_parent_mask is not None:
+            parent_mask = torch.as_tensor(loc_parent_mask, device=self.get_xyz.device, dtype=torch.bool)
+            for name in self._localization_buffer_names():
+                value = getattr(self, name, None)
+                if not torch.is_tensor(value) or value.shape[0] != parent_mask.shape[0]:
+                    continue
+                extension = value[parent_mask]
+                if int(loc_repeat) != 1:
+                    extension = extension.repeat(*([int(loc_repeat)] + [1] * (extension.dim() - 1)))
+                setattr(self, name, torch.cat([value, extension], dim=0))
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -434,8 +825,22 @@ class GaussianModel_2dgs(nn.Module):
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
         new_loc_feature = self._loc_feature[selected_pts_mask].repeat(N,1,1) 
+        new_loc_opacity = self._loc_opacity[selected_pts_mask].repeat(N, 1)
+        new_loc_anchor_offset = self._loc_anchor_offset[selected_pts_mask].repeat(N, 1)
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_loc_feature) 
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacity,
+            new_scaling,
+            new_rotation,
+            new_loc_feature,
+            new_loc_opacity,
+            new_loc_anchor_offset,
+            selected_pts_mask,
+            N,
+        ) 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
@@ -452,8 +857,22 @@ class GaussianModel_2dgs(nn.Module):
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
         new_loc_feature = self._loc_feature[selected_pts_mask] 
+        new_loc_opacity = self._loc_opacity[selected_pts_mask]
+        new_loc_anchor_offset = self._loc_anchor_offset[selected_pts_mask]
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_loc_feature) 
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacities,
+            new_scaling,
+            new_rotation,
+            new_loc_feature,
+            new_loc_opacity,
+            new_loc_anchor_offset,
+            selected_pts_mask,
+            1,
+        ) 
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
         grads = self.xyz_gradient_accum / self.denom
@@ -1179,6 +1598,10 @@ class GaussianModel(nn.Module):
     @property
     def get_xyz(self):
         return self._xyz
+
+    @property
+    def get_loc_xyz(self):
+        return self.get_xyz
 
     @property
     def get_features(self):

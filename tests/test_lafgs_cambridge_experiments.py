@@ -171,6 +171,84 @@ class LafgsCambridgeExperimentPlanTest(unittest.TestCase):
             self.assertIn("--lafgs_diff_pnp_geometry_match_reproj_weight 0.25", train_cmd)
             self.assertNotIn("--lafgs_diff_pnp_geometry_use_all_correspondences", train_cmd)
 
+    def test_guarded_pnp_plan_can_use_2dgs_surface_bootstrap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "data"
+            baseline_root = root / "baseline"
+            output_root = root / "lafgs"
+            scene = "OldHospital"
+            (data_root / scene).mkdir(parents=True)
+            model = baseline_root / f"{scene}_baseline"
+            (model / "point_cloud" / "iteration_30000").mkdir(parents=True)
+            (model / "point_cloud" / "iteration_30000" / "point_cloud.ply").write_text("ply\n")
+            (model / "detector").mkdir(parents=True)
+            (model / "detector" / "30000_detector.pth").write_text("detector")
+            (model / "detector" / "sampled_idx.pkl").write_text("idx")
+
+            plan = build_scene_plan(
+                scene,
+                data_root=data_root,
+                baseline_root=baseline_root,
+                output_root=output_root,
+                python="python",
+                baseline_iterations=30000,
+                lafgs_steps=500,
+                detect_num=8192,
+                nms=2,
+                reprojection_error=12.0,
+                train_missing_baseline=False,
+                force_train=False,
+                skip_train=False,
+                skip_eval=False,
+                eval_baseline=True,
+                cfg="configs/stdloc_cambridge.yaml",
+                gaussian_type="2dgs",
+            )
+
+            self.assertIn("-g", plan.train_lafgs_command)
+            self.assertEqual(plan.train_lafgs_command[plan.train_lafgs_command.index("-g") + 1], "2dgs")
+            self.assertEqual(plan.train_baseline_command[plan.train_baseline_command.index("-g") + 1], "2dgs")
+            self.assertEqual(plan.lafgs_eval_command[plan.lafgs_eval_command.index("-g") + 1], "2dgs")
+
+    def test_guarded_pnp_plan_keeps_pose_information_weight_off_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_root = root / "data"
+            baseline_root = root / "baseline"
+            output_root = root / "lafgs"
+            scene = "OldHospital"
+            (data_root / scene).mkdir(parents=True)
+            model = baseline_root / f"{scene}_baseline"
+            (model / "point_cloud" / "iteration_30000").mkdir(parents=True)
+            (model / "point_cloud" / "iteration_30000" / "point_cloud.ply").write_text("ply\n")
+            (model / "detector").mkdir(parents=True)
+            (model / "detector" / "30000_detector.pth").write_text("detector")
+            (model / "detector" / "sampled_idx.pkl").write_text("idx")
+
+            plan = build_scene_plan(
+                scene,
+                data_root=data_root,
+                baseline_root=baseline_root,
+                output_root=output_root,
+                python="python",
+                baseline_iterations=30000,
+                lafgs_steps=500,
+                detect_num=8192,
+                nms=2,
+                reprojection_error=12.0,
+                train_missing_baseline=False,
+                force_train=False,
+                skip_train=False,
+                skip_eval=False,
+                eval_baseline=True,
+                cfg="configs/stdloc_cambridge.yaml",
+            )
+
+            train_cmd = " ".join(plan.train_lafgs_command)
+            self.assertIn("--loc_full_bank_pose_information_weight 0.0", train_cmd)
+            self.assertIn("--loc_full_bank_pose_information_floor 0.0", train_cmd)
+
     def test_guarded_pnp_plan_can_override_localization_utility_scales(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -459,6 +537,12 @@ class LafgsCambridgeSummaryTest(unittest.TestCase):
                                     "diff_pnp_geometry_pose_guard_max_loss_increase_total": 0.0,
                                     "diff_pnp_feedback_pose_guard_max_loss_increase_total": 0.0,
                                     "geometry_xyz_full_grad_abs_max": 0.03,
+                                    "direct_diag_pose_information_weight_mean_total": 1.2,
+                                    "direct_diag_pose_information_weight_mean_max": 0.7,
+                                    "direct_diag_pose_information_weight_min_min": 0.25,
+                                    "direct_diag_surfel_loc_anchor_reg_loss_total": 0.004,
+                                    "direct_diag_surfel_loc_tangent_bound_max": 0.2,
+                                    "direct_diag_surfel_loc_normal_bound_max": 0.05,
                                 }
                             )
                         )
@@ -544,6 +628,12 @@ class LafgsCambridgeSummaryTest(unittest.TestCase):
             self.assertEqual(kings["diff_pnp_geometry_pose_guard_max_loss_increase_total"], 0.0)
             self.assertEqual(kings["diff_pnp_feedback_pose_guard_max_loss_increase_total"], 0.0)
             self.assertEqual(kings["geometry_xyz_full_grad_abs_max"], 0.03)
+            self.assertEqual(kings["direct_diag_pose_information_weight_mean_total"], 1.2)
+            self.assertEqual(kings["direct_diag_pose_information_weight_mean_max"], 0.7)
+            self.assertEqual(kings["direct_diag_pose_information_weight_min_min"], 0.25)
+            self.assertEqual(kings["direct_diag_surfel_loc_anchor_reg_loss_total"], 0.004)
+            self.assertEqual(kings["direct_diag_surfel_loc_tangent_bound_max"], 0.2)
+            self.assertEqual(kings["direct_diag_surfel_loc_normal_bound_max"], 0.05)
             old = next(row for row in summary["scenes"] if row["scene"] == "OldHospital")
             self.assertEqual(old["delta_median_te_cm"], 1.0)
 

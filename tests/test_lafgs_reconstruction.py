@@ -80,6 +80,209 @@ def test_build_multiview_init_from_projected_training_views():
     assert torch.allclose(result.features[1], torch.tensor([0.0, 1.0]), atol=1e-6)
 
 
+def test_train_locaware_builds_2dgs_gaussian_model_for_lafgs_bootstrap():
+    from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
+    from train_locaware import _gaussian_model_for_type
+
+    assert isinstance(_gaussian_model_for_type("3dgs", 3), GaussianModel)
+    assert isinstance(_gaussian_model_for_type("2dgs", 3), GaussianModel_2dgs)
+    with pytest.raises(ValueError, match="Unsupported gaussian_type"):
+        _gaussian_model_for_type("mesh", 3)
+
+
+def test_2dgs_model_exposes_lafgs_localization_state_on_cpu():
+    from scene.gaussian_model import GaussianModel_2dgs
+
+    model = GaussianModel_2dgs(3)
+    model._xyz = nn.Parameter(torch.tensor([[0.0, 0.0, 2.0], [0.5, 0.0, 2.0]]))
+    model._opacity = nn.Parameter(torch.zeros(2, 1))
+    model._loc_feature = nn.Parameter(torch.zeros(2, 1, 4))
+
+    model.init_localization_state(from_rgb_opacity=True, birth_iteration=7)
+    model.add_localization_stats(
+        torch.tensor([0, 1]),
+        episode_stats={
+            "positive_prob": torch.tensor([0.8, 0.2]),
+            "information": torch.tensor([0.6, 0.1]),
+            "prototype": torch.ones(2, 4),
+        },
+        ema_decay=0.0,
+    )
+
+    assert model.get_loc_opacity.shape == (2, 1)
+    assert torch.equal(model.loc_birth_iteration, torch.tensor([7, 7]))
+    assert torch.equal(model.loc_source_index, torch.tensor([0, 1]))
+    assert torch.allclose(model.loc_source_xyz, model.get_xyz.detach())
+    assert torch.allclose(model.loc_positive_prob_ema, torch.tensor([0.8, 0.2]))
+    assert torch.allclose(model.loc_information_ema, torch.tensor([0.6, 0.1]))
+    assert torch.equal(model.loc_prototype_count, torch.tensor([1.0, 1.0]))
+
+
+def test_2dgs_localization_anchor_is_surface_bounded_on_cpu():
+    from scene.gaussian_model import GaussianModel_2dgs
+
+    model = GaussianModel_2dgs(3)
+    model._xyz = nn.Parameter(torch.tensor([[0.0, 0.0, 2.0]]))
+    model._opacity = nn.Parameter(torch.zeros(1, 1))
+    model._loc_feature = nn.Parameter(torch.zeros(1, 1, 4))
+    model._scaling = nn.Parameter(torch.zeros(1, 2))
+    model._rotation = nn.Parameter(torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
+    model.init_localization_state(from_rgb_opacity=True)
+
+    model.surfel_loc_tangent_bound = 0.2
+    model.surfel_loc_normal_bound = 0.1
+    model._loc_anchor_offset.data[:] = torch.tensor([[math.atanh(0.5), 0.0, math.atanh(-0.25)]])
+
+    assert torch.allclose(model.get_loc_xyz, torch.tensor([[0.1, 0.0, 1.975]]), atol=1e-6)
+
+
+def test_multiview_init_projects_localization_anchor_when_available():
+    from localization_training.lafgs_reconstruction import build_multiview_initialization
+
+    class DummyGaussians:
+        def __init__(self):
+            self._xyz = torch.tensor([[99.0, 99.0, 2.0]])
+            self._loc_xyz = torch.tensor([[0.5, -0.5, 2.0]])
+
+        @property
+        def get_xyz(self):
+            return self._xyz
+
+        @property
+        def get_loc_xyz(self):
+            return self._loc_xyz
+
+    class DummyCamera:
+        FoVx = 2.0 * math.atan(1.25)
+        FoVy = FoVx
+        image_width = 5
+        image_height = 5
+        world_view_transform = torch.eye(4)
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 2, 3] = torch.tensor([0.0, 1.0])
+
+    result = build_multiview_initialization(
+        DummyGaussians(),
+        [DummyCamera()],
+        [feature_map],
+        min_observations=1,
+    )
+
+    assert result.observation_count.tolist() == [1]
+    assert torch.allclose(result.features[0], torch.tensor([0.0, 1.0]), atol=1e-6)
+
+
+def test_direct_teacher_projects_localization_anchor_when_available():
+    from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+    class DummyGaussians:
+        def __init__(self):
+            self._xyz = torch.tensor([[99.0, 99.0, 2.0]])
+            self._loc_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+            self._loc_feature = torch.tensor([[[1.0, 0.0]]])
+
+        @property
+        def get_xyz(self):
+            return self._xyz
+
+        @property
+        def get_loc_xyz(self):
+            return self._loc_xyz
+
+        @property
+        def get_loc_feature(self):
+            return self._loc_feature
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 2, 2] = torch.tensor([1.0, 0.0])
+    out = direct_landmark_teacher(
+        DummyGaussians(),
+        feature_map,
+        torch.eye(4),
+        2.0 * math.atan(1.25),
+        2.0 * math.atan(1.25),
+        torch.tensor([0]),
+        max_landmarks=1,
+    )
+
+    assert out.loc_visible_idx.tolist() == [0]
+    assert out.desc_loss.item() < 1e-6
+
+
+def test_pose_information_weights_favor_pose_informative_projected_anchors():
+    from localization_training.direct_landmark_teacher import pose_information_weights
+
+    points = torch.tensor(
+        [
+            [0.0, 0.0, 2.0],
+            [0.8, 0.0, 2.0],
+            [0.0, 0.0, 8.0],
+        ]
+    )
+    K = torch.tensor([[8.0, 0.0, 4.0], [0.0, 8.0, 4.0], [0.0, 0.0, 1.0]])
+    weights = pose_information_weights(points, K, torch.eye(4), floor=0.2)
+
+    assert weights.shape == (3,)
+    assert torch.all(weights >= 0.2)
+    assert torch.all(weights <= 1.0)
+    assert weights[1] > weights[2]
+    assert weights[0] > weights[2]
+
+
+def test_direct_teacher_can_pose_weight_full_bank_matching_loss():
+    from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+    class DummyGaussians:
+        def __init__(self):
+            self._xyz = torch.tensor(
+                [
+                    [0.0, 0.0, 2.0],
+                    [0.5, 0.0, 2.0],
+                    [0.0, 0.0, 8.0],
+                ]
+            )
+            self._loc_feature = torch.tensor(
+                [
+                    [[1.0, 0.0, 0.0]],
+                    [[0.0, 1.0, 0.0]],
+                    [[0.0, 0.0, 1.0]],
+                ]
+            )
+
+        @property
+        def get_xyz(self):
+            return self._xyz
+
+        @property
+        def get_loc_feature(self):
+            return self._loc_feature
+
+    feature_map = torch.zeros(3, 9, 9)
+    feature_map[:, 4, 4] = torch.tensor([1.0, 0.0, 0.0])
+    feature_map[:, 4, 6] = torch.tensor([0.0, 1.0, 0.0])
+    feature_map[:, 4, 4] = torch.tensor([1.0, 0.0, 0.0])
+    feature_map[:, 4, 5] = torch.tensor([0.0, 0.0, 1.0])
+
+    out = direct_landmark_teacher(
+        DummyGaussians(),
+        feature_map,
+        torch.eye(4),
+        2.0 * math.atan(1.0),
+        2.0 * math.atan(1.0),
+        torch.tensor([0, 1, 2]),
+        max_landmarks=3,
+        full_bank_indices=torch.tensor([0, 1, 2]),
+        full_bank_pose_information_weight=1.0,
+        full_bank_pose_information_floor=0.25,
+    )
+
+    assert out.full_bank_loss > 0.0
+    assert "pose_information_weight_mean" in out.diagnostics
+    assert out.diagnostics["pose_information_weight_min"] >= 0.25
+    assert torch.any(out.stats["information"] > 0.0)
+
+
 def test_multiview_init_does_not_retain_gradient_graph_from_trainable_geometry():
     from localization_training.lafgs_reconstruction import build_multiview_initialization
 
@@ -1885,6 +2088,39 @@ def test_diff_pnp_summary_records_usage_loss_and_geometry_grad():
     assert summary["diff_pnp_condition_guard_scale_total"] == pytest.approx(1.0)
     assert summary["diff_pnp_condition_guard_passed_total"] == pytest.approx(1.0)
     assert summary["diff_pnp_loss_total"] == pytest.approx(0.25)
+
+
+def test_direct_teacher_diagnostic_summary_records_pose_information_weights():
+    from train_locaware import _record_direct_teacher_diagnostics
+
+    summary = {}
+    _record_direct_teacher_diagnostics(
+        summary,
+        {
+            "pose_information_weight_mean": 0.4,
+            "pose_information_weight_max": 1.0,
+            "pose_information_weight_min": 0.2,
+            "ignored_tensor": torch.ones(1),
+            "ignored_nan": float("nan"),
+        },
+    )
+    _record_direct_teacher_diagnostics(
+        summary,
+        {
+            "pose_information_weight_mean": 0.6,
+            "pose_information_weight_max": 0.9,
+            "pose_information_weight_min": 0.3,
+        },
+    )
+
+    assert summary["direct_diag_episodes"] == 2
+    assert summary["direct_diag_pose_information_weight_mean_total"] == pytest.approx(1.0)
+    assert summary["direct_diag_pose_information_weight_mean_max"] == pytest.approx(0.6)
+    assert summary["direct_diag_pose_information_weight_mean_min"] == pytest.approx(0.4)
+    assert summary["direct_diag_pose_information_weight_max_max"] == pytest.approx(1.0)
+    assert summary["direct_diag_pose_information_weight_min_min"] == pytest.approx(0.2)
+    assert "direct_diag_ignored_tensor_total" not in summary
+    assert "direct_diag_ignored_nan_total" not in summary
 
 
 def test_pose_aware_split_score_requires_residual_ambiguity_repeatability_and_footprint():

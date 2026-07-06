@@ -45,7 +45,7 @@ def _existing_python():
     return str(path) if path.exists() else sys.executable
 
 
-def _common_data_args(data_dir):
+def _common_data_args(data_dir, gaussian_type="3dgs"):
     return [
         "-s",
         str(data_dir),
@@ -54,7 +54,7 @@ def _common_data_args(data_dir):
         "-f",
         "sp",
         "-g",
-        "3dgs",
+        str(gaussian_type),
         "--images",
         "processed",
         "--data_device",
@@ -73,11 +73,11 @@ def _common_train_args():
     ]
 
 
-def _train_baseline_command(python, data_dir, baseline_model, baseline_iterations):
+def _train_baseline_command(python, data_dir, baseline_model, baseline_iterations, gaussian_type="3dgs"):
     return [
         python,
         "train.py",
-        *_common_data_args(data_dir),
+        *_common_data_args(data_dir, gaussian_type=gaussian_type),
         *_common_train_args(),
         "-m",
         str(baseline_model),
@@ -103,9 +103,12 @@ def _train_lafgs_command(
     lafgs_model,
     baseline_iterations,
     final_iteration,
+    gaussian_type="3dgs",
     mvinit_feature_scale=0.5,
     mvinit_max_views=64,
     mvinit_chunk_size=32768,
+    pose_information_weight=0.0,
+    pose_information_floor=0.0,
     geometry_pose_guard_max_loss_increase=-1.0,
     geometry_pose_guard_max_loss=5.0,
     geometry_pose_guard_softness=10.0,
@@ -136,12 +139,16 @@ def _train_lafgs_command(
     geometry_reprojection_weight=1.0,
     geometry_depth_anchor_weight=0.0,
     geometry_xyz_lr=0.00002,
+    loc_anchor_lr=0.0,
+    surfel_loc_tangent_bound=0.0,
+    surfel_loc_normal_bound=0.0,
+    surfel_loc_anchor_reg_weight=0.0,
     detach_pnp_points=True,
 ):
     command = [
         python,
         "train_lafgs.py",
-        *_common_data_args(data_dir),
+        *_common_data_args(data_dir, gaussian_type=gaussian_type),
         *_common_train_args(),
         "-m",
         str(lafgs_model),
@@ -168,6 +175,10 @@ def _train_lafgs_command(
         str(mvinit_chunk_size),
         "--lafgs_mvinit_feature_scale",
         str(mvinit_feature_scale),
+        "--loc_full_bank_pose_information_weight",
+        str(pose_information_weight),
+        "--loc_full_bank_pose_information_floor",
+        str(pose_information_floor),
         "--lafgs_curriculum",
         "--lafgs_diff_pnp_start_iter",
         "400",
@@ -185,6 +196,14 @@ def _train_lafgs_command(
         str(geometry_reprojection_weight),
         "--lafgs_diff_pnp_geometry_depth_anchor_weight",
         str(geometry_depth_anchor_weight),
+        "--loc_anchor_lr",
+        str(loc_anchor_lr),
+        "--surfel_loc_tangent_bound",
+        str(surfel_loc_tangent_bound),
+        "--surfel_loc_normal_bound",
+        str(surfel_loc_normal_bound),
+        "--surfel_loc_anchor_reg_weight",
+        str(surfel_loc_anchor_reg_weight),
         "--lafgs_diff_pnp_geometry_match_reproj_weight",
         str(geometry_match_reprojection_weight),
         "--lafgs_diff_pnp_geometry_match_confidence_threshold",
@@ -294,11 +313,11 @@ def _eval_cfg_command(
     ]
 
 
-def _eval_command(python, data_dir, model, iteration, cfg, prefix):
+def _eval_command(python, data_dir, model, iteration, cfg, prefix, gaussian_type="3dgs"):
     return [
         python,
         "stdloc.py",
-        *_common_data_args(data_dir),
+        *_common_data_args(data_dir, gaussian_type=gaussian_type),
         "-m",
         str(model),
         "--iteration",
@@ -329,9 +348,12 @@ def build_scene_plan(
     skip_eval,
     eval_baseline,
     cfg,
+    gaussian_type="3dgs",
     mvinit_feature_scale=0.5,
     mvinit_max_views=64,
     mvinit_chunk_size=32768,
+    pose_information_weight=0.0,
+    pose_information_floor=0.0,
     geometry_pose_guard_max_loss_increase=-1.0,
     geometry_pose_guard_max_loss=5.0,
     geometry_pose_guard_softness=10.0,
@@ -362,6 +384,10 @@ def build_scene_plan(
     geometry_reprojection_weight=1.0,
     geometry_depth_anchor_weight=0.0,
     geometry_xyz_lr=0.00002,
+    loc_anchor_lr=0.0,
+    surfel_loc_tangent_bound=0.0,
+    surfel_loc_normal_bound=0.0,
+    surfel_loc_anchor_reg_weight=0.0,
     direct_pnp_xyz_grad=False,
 ):
     data_root = Path(data_root)
@@ -409,16 +435,25 @@ def build_scene_plan(
         final_iteration=final_iteration,
         status=status,
         missing_reasons=missing,
-        train_baseline_command=_train_baseline_command(python, data_dir, baseline_model, baseline_iterations),
+        train_baseline_command=_train_baseline_command(
+            python,
+            data_dir,
+            baseline_model,
+            baseline_iterations,
+            gaussian_type=gaussian_type,
+        ),
         train_lafgs_command=_train_lafgs_command(
             python,
             data_dir,
             lafgs_model,
             baseline_iterations,
             final_iteration,
+            gaussian_type=gaussian_type,
             mvinit_feature_scale=mvinit_feature_scale,
             mvinit_max_views=mvinit_max_views,
             mvinit_chunk_size=mvinit_chunk_size,
+            pose_information_weight=pose_information_weight,
+            pose_information_floor=pose_information_floor,
             geometry_pose_guard_max_loss_increase=geometry_pose_guard_max_loss_increase,
             geometry_pose_guard_max_loss=geometry_pose_guard_max_loss,
             geometry_pose_guard_softness=geometry_pose_guard_softness,
@@ -449,6 +484,10 @@ def build_scene_plan(
             geometry_reprojection_weight=geometry_reprojection_weight,
             geometry_depth_anchor_weight=geometry_depth_anchor_weight,
             geometry_xyz_lr=geometry_xyz_lr,
+            loc_anchor_lr=loc_anchor_lr,
+            surfel_loc_tangent_bound=surfel_loc_tangent_bound,
+            surfel_loc_normal_bound=surfel_loc_normal_bound,
+            surfel_loc_anchor_reg_weight=surfel_loc_anchor_reg_weight,
             detach_pnp_points=not direct_pnp_xyz_grad,
         ),
         baseline_eval_cfg_command=[]
@@ -472,6 +511,7 @@ def build_scene_plan(
             baseline_iterations,
             baseline_eval_cfg,
             f"baseline-{baseline_iterations}",
+            gaussian_type=gaussian_type,
         ),
         lafgs_eval_cfg_command=[]
         if skip_eval
@@ -494,6 +534,7 @@ def build_scene_plan(
             final_iteration,
             lafgs_eval_cfg,
             f"lafgs-guarded-pnp-{final_iteration}",
+            gaussian_type=gaussian_type,
         ),
     )
 
@@ -607,9 +648,12 @@ def parse_args(argv=None):
     parser.add_argument("--detect_num", type=int, default=8192)
     parser.add_argument("--nms", type=int, default=2)
     parser.add_argument("--reprojection_error", type=float, default=12.0)
+    parser.add_argument("--gaussian_type", choices=["3dgs", "2dgs"], default="3dgs")
     parser.add_argument("--mvinit_feature_scale", type=float, default=0.5)
     parser.add_argument("--mvinit_max_views", type=int, default=64)
     parser.add_argument("--mvinit_chunk_size", type=int, default=32768)
+    parser.add_argument("--pose_information_weight", type=float, default=0.0)
+    parser.add_argument("--pose_information_floor", type=float, default=0.0)
     parser.add_argument("--geometry_pose_guard_max_loss_increase", type=float, default=-1.0)
     parser.add_argument("--geometry_pose_guard_max_loss", type=float, default=5.0)
     parser.add_argument("--geometry_pose_guard_softness", type=float, default=10.0)
@@ -644,6 +688,10 @@ def parse_args(argv=None):
     parser.add_argument("--geometry_reprojection_weight", type=float, default=1.0)
     parser.add_argument("--geometry_depth_anchor_weight", type=float, default=0.0)
     parser.add_argument("--geometry_xyz_lr", type=float, default=0.00002)
+    parser.add_argument("--loc_anchor_lr", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_tangent_bound", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_normal_bound", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_anchor_reg_weight", type=float, default=0.0)
     parser.add_argument(
         "--direct_pnp_xyz_grad",
         action="store_true",
@@ -685,9 +733,12 @@ def main(argv=None):
             skip_eval=args.skip_eval,
             eval_baseline=not args.no_eval_baseline,
             cfg=args.cfg,
+            gaussian_type=args.gaussian_type,
             mvinit_feature_scale=args.mvinit_feature_scale,
             mvinit_max_views=args.mvinit_max_views,
             mvinit_chunk_size=args.mvinit_chunk_size,
+            pose_information_weight=args.pose_information_weight,
+            pose_information_floor=args.pose_information_floor,
             geometry_pose_guard_max_loss_increase=args.geometry_pose_guard_max_loss_increase,
             geometry_pose_guard_max_loss=args.geometry_pose_guard_max_loss,
             geometry_pose_guard_softness=args.geometry_pose_guard_softness,
@@ -718,6 +769,10 @@ def main(argv=None):
             geometry_reprojection_weight=args.geometry_reprojection_weight,
             geometry_depth_anchor_weight=args.geometry_depth_anchor_weight,
             geometry_xyz_lr=args.geometry_xyz_lr,
+            loc_anchor_lr=args.loc_anchor_lr,
+            surfel_loc_tangent_bound=args.surfel_loc_tangent_bound,
+            surfel_loc_normal_bound=args.surfel_loc_normal_bound,
+            surfel_loc_anchor_reg_weight=args.surfel_loc_anchor_reg_weight,
             direct_pnp_xyz_grad=args.direct_pnp_xyz_grad,
         )
         for scene in args.scenes

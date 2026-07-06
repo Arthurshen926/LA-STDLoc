@@ -29,6 +29,7 @@ from localization_training.dense_teacher import dense_localization_teacher
 from localization_training.direct_landmark_teacher import (
     LandmarkObservationMemory,
     direct_landmark_teacher,
+    gaussian_localization_xyz,
     make_intrinsics_from_fov,
 )
 from localization_training.episode_sampler import (
@@ -198,6 +199,17 @@ def _restore_external_localization_state(gaussians, state_or_path):
         state = state_or_path
     gaussians.restore_localization_state(state)
     return True
+
+
+def _gaussian_model_for_type(gaussian_type, sh_degree):
+    from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
+
+    gaussian_type = str(gaussian_type or "3dgs").lower()
+    if gaussian_type == "3dgs":
+        return GaussianModel(sh_degree)
+    if gaussian_type == "2dgs":
+        return GaussianModel_2dgs(sh_degree)
+    raise ValueError(f"Unsupported gaussian_type for LaFGS training: {gaussian_type}")
 
 
 def _pseudo_teacher_cache_required(args):
@@ -521,10 +533,14 @@ def _set_phase_lrs(gaussians, phase, args):
 
     overlay_mode = getattr(args, "loc_overlay_mode", "none")
     loc_trainable = {"loc_feature"}
+    if float(getattr(args, "loc_anchor_lr", 0.0) or 0.0) > 0.0:
+        loc_trainable.add("loc_anchor_offset")
     if getattr(args, "use_loc_opacity", False):
         loc_trainable.add("loc_opacity")
     if overlay_mode == "descriptor":
         loc_trainable = {"loc_overlay_feature", "loc_overlay_active_logit"}
+        if float(getattr(args, "loc_anchor_lr", 0.0) or 0.0) > 0.0:
+            loc_trainable.add("loc_anchor_offset")
         if getattr(args, "use_loc_opacity", False):
             loc_trainable.add("loc_opacity")
 
@@ -571,6 +587,17 @@ def _diff_pnp_needs_projected_uv(args):
         float(getattr(args, "lafgs_diff_pnp_local_window_radius", 0.0) or 0.0) > 0.0
         or float(getattr(args, "lafgs_diff_pnp_geometry_local_window_radius", 0.0) or 0.0) > 0.0
     )
+
+
+def _configure_surface_localization_anchor(gaussians, args, opt=None):
+    if opt is not None:
+        setattr(opt, "loc_anchor_lr", float(getattr(args, "loc_anchor_lr", 0.0) or 0.0))
+    if hasattr(gaussians, "surfel_loc_tangent_bound"):
+        gaussians.surfel_loc_tangent_bound = float(getattr(args, "surfel_loc_tangent_bound", 0.0) or 0.0)
+    if hasattr(gaussians, "surfel_loc_normal_bound"):
+        gaussians.surfel_loc_normal_bound = float(getattr(args, "surfel_loc_normal_bound", 0.0) or 0.0)
+    if hasattr(gaussians, "_ensure_loc_anchor_state"):
+        gaussians._ensure_loc_anchor_state()
 
 
 def _phase_allows_geometry_update(args, phase):
@@ -629,6 +656,25 @@ def _record_geometry_optimizer_diagnostics(
             summary["geometry_xyz_step_nonzero_episodes"] = (
                 summary.get("geometry_xyz_step_nonzero_episodes", 0) + 1
             )
+
+
+def _record_direct_teacher_diagnostics(summary, diagnostics, prefix="direct_diag"):
+    if not diagnostics:
+        return
+    recorded = 0
+    for name, value in diagnostics.items():
+        if not isinstance(value, (int, float)):
+            continue
+        value = float(value)
+        if not math.isfinite(value):
+            continue
+        key = f"{prefix}_{name}"
+        summary[f"{key}_total"] = summary.get(f"{key}_total", 0.0) + value
+        summary[f"{key}_max"] = max(summary.get(f"{key}_max", value), value)
+        summary[f"{key}_min"] = min(summary.get(f"{key}_min", value), value)
+        recorded += 1
+    if recorded > 0:
+        summary[f"{prefix}_episodes"] = summary.get(f"{prefix}_episodes", 0) + 1
 
 
 def _tensor_abs_max(value):
@@ -823,6 +869,8 @@ def add_locaware_training_args(parser):
     )
     parser.add_argument("--loc_full_bank_nearby_as_positive", action="store_true", default=False)
     parser.add_argument("--loc_full_bank_nearby_as_positive_until", type=int, default=0)
+    parser.add_argument("--loc_full_bank_pose_information_weight", type=float, default=0.0)
+    parser.add_argument("--loc_full_bank_pose_information_floor", type=float, default=0.0)
     parser.add_argument("--loc_child_feature_freeze_steps", type=int, default=0)
     parser.add_argument("--loc_child_responsibility_mode", type=str, default="none", choices=["none", "feature"])
     parser.add_argument("--loc_child_responsibility_start_iter", type=int, default=0)
@@ -833,6 +881,10 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_overlay_normalize", action="store_true", default=False)
     parser.add_argument("--loc_overlay_reg_weight", type=float, default=0.0)
     parser.add_argument("--loc_anchor_weight", type=float, default=0.0)
+    parser.add_argument("--loc_anchor_lr", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_tangent_bound", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_normal_bound", type=float, default=0.0)
+    parser.add_argument("--surfel_loc_anchor_reg_weight", type=float, default=0.0)
     parser.add_argument("--landmark_path", type=str, default="detector/sampled_idx.pkl")
     parser.add_argument("--direct_depth_check", action="store_true", default=False)
     parser.add_argument("--direct_depth_abs_tolerance", type=float, default=1e-3)
@@ -1473,6 +1525,8 @@ def _score_heldout_direct_descriptor_risk(
                 full_bank_ignore_3d_radius=args.loc_full_bank_ignore_3d_radius,
                 full_bank_ignore_uv_radius=args.loc_full_bank_ignore_uv_radius,
                 full_bank_source_mode=args.loc_full_bank_source_mode,
+                full_bank_pose_information_weight=args.loc_full_bank_pose_information_weight,
+                full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
                 sampling_grid_size=args.loc_anchor_grid_size,
                 child_responsibility_mode=args.loc_child_responsibility_mode,
             )
@@ -2154,18 +2208,16 @@ def training(dataset, opt, args):
     tb_writer = prepare_output_and_logger(dataset)
     print("Feature type:", dataset.feature_type)
     print("Gaussian type:", dataset.gaussian_type)
-    if dataset.gaussian_type != "3dgs":
-        raise ValueError("LA-STDLoc MVP currently supports gaussian_type=3dgs")
-
-    from scene.gaussian_model import GaussianModel
-
-    gaussians = GaussianModel(dataset.sh_degree)
+    gaussians = _gaussian_model_for_type(dataset.gaussian_type, dataset.sh_degree)
+    _configure_surface_localization_anchor(gaussians, args, opt)
     scene = Scene(dataset, gaussians, load_iteration=args.load_iteration)
     masks = _load_masks(dataset)
     feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
     first_iter = _restore_checkpoint(gaussians, opt, args.start_checkpoint)
+    _configure_surface_localization_anchor(gaussians, args, opt)
     if args.localization_state_path:
         _restore_external_localization_state(gaussians, args.localization_state_path)
+        _configure_surface_localization_anchor(gaussians, args, opt)
         print(f"Loaded external localization state from {args.localization_state_path}")
     if first_iter == 0 and scene.loaded_iter:
         first_iter = scene.loaded_iter
@@ -2644,6 +2696,7 @@ def training(dataset, opt, args):
         loc_rank_loss = image.new_tensor(0.0)
         loc_opacity_loss = image.new_tensor(0.0)
         loc_overlay_reg_loss = image.new_tensor(0.0)
+        loc_surface_anchor_loss = image.new_tensor(0.0)
         geom_anchor_loss = image.new_tensor(0.0)
         loc_geometry_residual_loss = image.new_tensor(0.0)
         loc_grad = None
@@ -2910,6 +2963,8 @@ def training(dataset, opt, args):
                             or iteration <= args.loc_full_bank_nearby_as_positive_until
                         )
                     ),
+                    full_bank_pose_information_weight=args.loc_full_bank_pose_information_weight,
+                    full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
                     sampling_grid_size=args.loc_anchor_grid_size,
                     anchor_features=_feature_anchor_tensor(loc_feature_anchor) if args.loc_anchor_weight > 0 else None,
                     child_responsibility_mode=child_responsibility_mode,
@@ -2951,7 +3006,9 @@ def training(dataset, opt, args):
                     and teacher_out.loc_visible_idx is not None
                     and teacher_out.loc_visible_idx.numel() >= args.lafgs_diff_pnp_min_correspondences
                 ):
-                    pnp_indices = teacher_out.loc_visible_idx.to(device=gaussians.get_xyz.device, dtype=torch.long)
+                    loc_xyz_all = gaussian_localization_xyz(gaussians)
+                    pnp_indices = teacher_out.loc_visible_idx.to(device=loc_xyz_all.device, dtype=torch.long)
+                    pnp_points_world = loc_xyz_all[pnp_indices]
                     K = make_intrinsics_from_fov(
                         query_cam.FoVx,
                         query_cam.FoVy,
@@ -2973,7 +3030,7 @@ def training(dataset, opt, args):
                     pnp_out = differentiable_pnp_pose_loss(
                         gaussians.get_loc_feature[pnp_indices].reshape(pnp_indices.numel(), -1),
                         query_feature_map,
-                        gaussians.get_xyz[pnp_indices],
+                        pnp_points_world,
                         K,
                         pose_gt,
                         pose_init_w2c=pose_init,
@@ -3051,7 +3108,7 @@ def training(dataset, opt, args):
                     loc_loss = loc_loss + args.lafgs_diff_pnp_weight * loc_pnp_loss
                     pnp_landmark_stats = pnp_output_to_landmark_stats(
                         pnp_out,
-                        gaussians.get_xyz[pnp_indices],
+                        pnp_points_world,
                         K,
                         pose_gt,
                         full_bank_positive_prob=teacher_out.stats.get("full_bank_positive_prob"),
@@ -3294,6 +3351,29 @@ def training(dataset, opt, args):
                 loc_overlay_reg_loss = _descriptor_overlay_regularizer(gaussians)
                 loc_loss = loc_loss + args.loc_overlay_reg_weight * loc_overlay_reg_loss
 
+            if (
+                float(getattr(args, "surfel_loc_anchor_reg_weight", 0.0) or 0.0) > 0.0
+                and hasattr(gaussians, "loc_anchor_offset_regularization")
+            ):
+                loc_surface_anchor_loss = gaussians.loc_anchor_offset_regularization()
+                loc_loss = loc_loss + args.surfel_loc_anchor_reg_weight * loc_surface_anchor_loss
+                if teacher_out is not None:
+                    teacher_out.diagnostics["surfel_loc_anchor_reg_loss"] = float(
+                        loc_surface_anchor_loss.detach().item()
+                    )
+                    teacher_out.diagnostics["surfel_loc_tangent_bound"] = float(
+                        getattr(gaussians, "surfel_loc_tangent_bound", 0.0) or 0.0
+                    )
+                    teacher_out.diagnostics["surfel_loc_normal_bound"] = float(
+                        getattr(gaussians, "surfel_loc_normal_bound", 0.0) or 0.0
+                    )
+
+            if teacher_out is not None:
+                _record_direct_teacher_diagnostics(
+                    loc_training_summary,
+                    getattr(teacher_out, "diagnostics", {}),
+                )
+
             if teacher_out.loc_viewspace_points is not None and loc_loss.requires_grad:
                 loc_grad = torch.autograd.grad(
                     loc_loss,
@@ -3414,6 +3494,7 @@ def training(dataset, opt, args):
                 tb_writer.add_scalar("train_loss/loc_rank", loc_rank_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_opacity", loc_opacity_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc_overlay_reg", loc_overlay_reg_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/surfel_loc_anchor_reg", loc_surface_anchor_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/geometry_anchor", geom_anchor_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/lafgs_geometry_residual", loc_geometry_residual_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/total", total_loss.item(), iteration)
