@@ -44,6 +44,8 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "detector_la",
                     "--detector_iters",
                     "123",
+                    "--candidate_teacher_state_path",
+                    "detector_la/candidate_teacher_state.pt",
                     "--detect_num",
                     "4096",
                     "--reprojection_error",
@@ -80,6 +82,11 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             self.assertEqual(sparse["detector_model_path"], "/tmp/model")
             self.assertEqual(sparse["landmark_model_path"], "/tmp/model")
             self.assertEqual(sparse["landmark_meta_model_path"], "/tmp/model")
+            self.assertEqual(
+                sparse["candidate_teacher_state_path"],
+                "detector_la/candidate_teacher_state.pt",
+            )
+            self.assertEqual(sparse["candidate_teacher_state_model_path"], "/tmp/model")
             self.assertEqual(sparse["detect_num"], 4096)
             self.assertEqual(float(sparse["reprojection_error"]), 8.0)
             self.assertEqual(sparse["nms"], 2)
@@ -96,6 +103,10 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             summary = json.loads((tmp / "summary.json").read_text())
             self.assertEqual(summary["output"], str(out_cfg))
             self.assertEqual(summary["detector_path"], "detector_la/123_detector.pth")
+            self.assertEqual(
+                summary["candidate_teacher_state_path"],
+                "detector_la/candidate_teacher_state.pt",
+            )
             self.assertEqual(summary["nms"], 2)
             self.assertTrue(summary["diagnostics"]["enabled"])
             self.assertEqual(summary["diagnostics"]["grid_rows"], 3)

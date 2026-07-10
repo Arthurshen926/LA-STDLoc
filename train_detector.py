@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import json
 import os
 import sys
 import uuid
@@ -40,10 +41,15 @@ import torch.nn.functional as F
 
 from encoders.feature_extractor import FeatureExtractor
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
+from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.landmark_distill import (
     coverage_preserving_sample,
     localization_aware_sample,
     save_landmark_meta,
+)
+from localization_training.sparse_candidate_teacher import (
+    build_sparse_candidate_batch,
+    sparse_candidate_losses,
 )
 from scene.kpdetector import KpDetector
 
@@ -1216,10 +1222,79 @@ def evaluate_detector(
             )
             if tb_writer:
                 tb_writer.add_scalar(
-                    f"detector_loss_patches/{config['name']}_loss",
-                    loss_sum,
-                    iteration,
-                )
+                f"detector_loss_patches/{config['name']}_loss",
+                loss_sum,
+                iteration,
+            )
+
+
+def _resolve_detector_artifact_path(scene_model_path, path):
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return path
+    candidate = os.path.join(scene_model_path, path)
+    return candidate if os.path.exists(candidate) else path
+
+
+def save_sparse_candidate_teacher_state(
+    path,
+    sampled_idx,
+    landmark_features,
+    iteration,
+    config,
+    diagnostics=None,
+):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    state = {
+        "version": 1,
+        "iteration": int(iteration),
+        "landmark_indices": torch.as_tensor(sampled_idx, dtype=torch.long).detach().cpu(),
+        "landmark_features": F.normalize(
+            landmark_features.detach().reshape(landmark_features.shape[0], -1).float(),
+            dim=1,
+        ).cpu(),
+        "config": dict(config),
+        "diagnostics": dict(diagnostics or {}),
+    }
+    torch.save(state, path)
+    return state
+
+
+def load_sparse_candidate_teacher_features(path, sampled_idx, device="cuda"):
+    state = torch.load(path, map_location="cpu")
+    if not isinstance(state, dict) or "landmark_features" not in state:
+        raise ValueError(f"Invalid sparse candidate teacher state: {path}")
+    expected = torch.as_tensor(sampled_idx, dtype=torch.long).reshape(-1).cpu()
+    actual = torch.as_tensor(state.get("landmark_indices"), dtype=torch.long).reshape(-1).cpu()
+    if not torch.equal(actual, expected):
+        raise ValueError(
+            "sparse candidate teacher landmark indices do not match sampled_idx: "
+            f"state_count={actual.numel()} expected_count={expected.numel()}"
+        )
+    features = torch.as_tensor(state["landmark_features"], dtype=torch.float32)
+    if features.ndim < 2 or features.shape[0] != expected.numel():
+        raise ValueError(
+            "sparse candidate teacher feature count does not match sampled_idx: "
+            f"features={features.shape[0] if features.ndim else 0} expected={expected.numel()}"
+        )
+    if not bool(torch.isfinite(features).all().item()):
+        raise ValueError("sparse candidate teacher features contain non-finite values")
+    return features.to(device=device)
+
+
+def _numeric_teacher_diagnostics(diagnostics):
+    result = {}
+    for key, value in diagnostics.items():
+        if isinstance(value, bool):
+            result[key] = bool(value)
+        elif isinstance(value, (int, float)):
+            result[key] = float(value)
+        elif torch.is_tensor(value) and value.numel() == 1:
+            result[key] = float(value.detach().item())
+    return result
 
 
 def training_detector(
@@ -1257,6 +1332,41 @@ def training_detector(
     candidate_utility_weight=0.0,
     landmark_only=False,
     precomputed_landmark_path="",
+    sparse_candidate_teacher=False,
+    candidate_teacher_detector_init_path="",
+    candidate_teacher_state_init_path="",
+    candidate_teacher_optimize_features=False,
+    candidate_teacher_freeze_detector=False,
+    candidate_teacher_detector_lr=1e-4,
+    candidate_teacher_feature_lr=5e-5,
+    candidate_teacher_detect_num=2048,
+    candidate_teacher_nms_radius=2,
+    candidate_teacher_match_mode="topk",
+    candidate_teacher_match_topk=1,
+    candidate_teacher_match_threshold=0.0,
+    candidate_teacher_dual_softmax=False,
+    candidate_teacher_dual_softmax_temperature=0.1,
+    candidate_teacher_positive_radius_px=2.0,
+    candidate_teacher_hard_negatives=8,
+    candidate_teacher_match_temperature=0.1,
+    candidate_teacher_match_margin=0.5,
+    candidate_teacher_assignment_temperature=0.05,
+    candidate_teacher_assignment_margin=0.05,
+    candidate_teacher_grid_rows=4,
+    candidate_teacher_grid_cols=4,
+    candidate_teacher_depth_bins=4,
+    candidate_teacher_pair_weight=1.0,
+    candidate_teacher_hard_negative_weight=0.5,
+    candidate_teacher_assignment_weight=1.0,
+    candidate_teacher_detector_match_weight=1.0,
+    candidate_teacher_geometry_weight=0.1,
+    candidate_teacher_coverage_weight=0.1,
+    candidate_teacher_base_detector_weight=0.1,
+    candidate_teacher_feature_anchor_weight=0.01,
+    candidate_teacher_support_query_split=False,
+    candidate_teacher_query_ratio=0.2,
+    candidate_teacher_split_mode="temporal_block",
+    candidate_teacher_split_seed=2026,
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
@@ -1407,6 +1517,14 @@ def training_detector(
                 point_count=gaussians.get_xyz.shape[0],
             )
     pickle.dump(sampled_idx, open(os.path.join(save_path, "sampled_idx.pkl"), "wb"))
+    if sparse_candidate_teacher:
+        requested_landmarks = int(landmark_num)
+        unique_landmarks = int(torch.unique(sampled_idx).numel())
+        if sampled_idx.numel() != requested_landmarks or unique_landmarks != requested_landmarks:
+            raise ValueError(
+                "sparse candidate teacher requires an exact, duplicate-free landmark bank: "
+                f"requested={requested_landmarks} actual={sampled_idx.numel()} unique={unique_landmarks}"
+            )
     if landmark_only:
         print(
             "Detector landmark-only bootstrap complete: "
@@ -1426,21 +1544,153 @@ def training_detector(
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
 
+    training_cameras = scene.getTrainCameras().copy()
+    support_camera_count = len(training_cameras)
+    if sparse_candidate_teacher and candidate_teacher_support_query_split:
+        support_cameras, query_cameras = split_support_query_cameras(
+            training_cameras,
+            query_ratio=candidate_teacher_query_ratio,
+            seed=candidate_teacher_split_seed,
+            mode=candidate_teacher_split_mode,
+        )
+        training_cameras = query_cameras
+        support_camera_count = len(support_cameras)
+        print(
+            "Sparse candidate teacher support/query split: "
+            f"support={len(support_cameras)} query={len(query_cameras)} "
+            f"mode={candidate_teacher_split_mode}"
+        )
+
     viewpoint_stack = None
     progress_bar = tqdm(range(0, train_iteration), desc="Scene-Specific Detector")
     first_iter = 1
 
     detector = KpDetector(feature_extractor.feature_dim).cuda().train()
-    optimizer = torch.optim.AdamW(detector.parameters(), lr=0.001)
-    grad_accum = 8
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=train_iteration // grad_accum, eta_min=0.0005
+    detector_init_path = _resolve_detector_artifact_path(
+        scene.model_path,
+        candidate_teacher_detector_init_path,
     )
+    if detector_init_path:
+        print(f"Loading detector initialization from {detector_init_path}")
+        detector.load_state_dict(torch.load(detector_init_path, map_location="cuda"))
+
+    teacher_landmark_features = None
+    teacher_initial_features = None
+    teacher_landmark_xyz = None
+    teacher_history = []
+    teacher_last_diagnostics = {}
+    grad_accum = 8
+    grad_clip_norm = 10.0
+    teacher_config = {
+        "enabled": bool(sparse_candidate_teacher),
+        "optimize_features": bool(candidate_teacher_optimize_features),
+        "freeze_detector": bool(candidate_teacher_freeze_detector),
+        "detector_init_path": detector_init_path,
+        "state_init_path": candidate_teacher_state_init_path,
+        "detector_lr": float(candidate_teacher_detector_lr),
+        "feature_lr": float(candidate_teacher_feature_lr),
+        "optimizer": "AdamW",
+        "optimizer_weight_decay": 1e-4,
+        "gradient_accumulation": int(grad_accum),
+        "gradient_clip_norm": float(grad_clip_norm),
+        "landmark_num": int(landmark_num),
+        "sampling_mode": str(sampling_mode),
+        "precomputed_landmark_path": str(precomputed_landmark_path),
+        "detector_target_mode": str(detector_target_mode),
+        "soft_sigma": float(soft_sigma),
+        "detect_num": int(candidate_teacher_detect_num),
+        "nms_radius": int(candidate_teacher_nms_radius),
+        "match_mode": str(candidate_teacher_match_mode),
+        "match_topk": int(candidate_teacher_match_topk),
+        "match_threshold": float(candidate_teacher_match_threshold),
+        "dual_softmax": bool(candidate_teacher_dual_softmax),
+        "dual_softmax_temperature": float(candidate_teacher_dual_softmax_temperature),
+        "positive_radius_px": float(candidate_teacher_positive_radius_px),
+        "hard_negatives": int(candidate_teacher_hard_negatives),
+        "match_temperature": float(candidate_teacher_match_temperature),
+        "match_margin": float(candidate_teacher_match_margin),
+        "assignment_temperature": float(candidate_teacher_assignment_temperature),
+        "assignment_margin": float(candidate_teacher_assignment_margin),
+        "grid_rows": int(candidate_teacher_grid_rows),
+        "grid_cols": int(candidate_teacher_grid_cols),
+        "depth_bins": int(candidate_teacher_depth_bins),
+        "pair_weight": float(candidate_teacher_pair_weight),
+        "hard_negative_weight": float(candidate_teacher_hard_negative_weight),
+        "assignment_weight": float(candidate_teacher_assignment_weight),
+        "detector_match_weight": float(candidate_teacher_detector_match_weight),
+        "geometry_weight": float(candidate_teacher_geometry_weight),
+        "coverage_weight": float(candidate_teacher_coverage_weight),
+        "base_detector_weight": float(candidate_teacher_base_detector_weight),
+        "feature_anchor_weight": float(candidate_teacher_feature_anchor_weight),
+        "support_query_split": bool(candidate_teacher_support_query_split),
+        "support_camera_count": int(support_camera_count),
+        "query_camera_count": int(len(training_cameras)),
+        "query_ratio": float(candidate_teacher_query_ratio),
+        "split_mode": str(candidate_teacher_split_mode),
+        "split_seed": int(candidate_teacher_split_seed),
+    }
+
+    if sparse_candidate_teacher:
+        teacher_initial_features = gaussians.materialized_loc_feature(sampled_idx).reshape(
+            sampled_idx.numel(), -1
+        ).detach().float().clone()
+        state_init_path = _resolve_detector_artifact_path(
+            scene.model_path,
+            candidate_teacher_state_init_path,
+        )
+        if state_init_path:
+            print(f"Loading sparse candidate teacher feature initialization from {state_init_path}")
+            teacher_initial_features = load_sparse_candidate_teacher_features(
+                state_init_path,
+                sampled_idx,
+                device=teacher_initial_features.device,
+            )
+        teacher_initial_features = F.normalize(teacher_initial_features, dim=1)
+        teacher_landmark_features = torch.nn.Parameter(
+            teacher_initial_features.clone(),
+            requires_grad=bool(candidate_teacher_optimize_features),
+        )
+        teacher_landmark_xyz = gaussian_localization_xyz(gaussians)[sampled_idx].detach().float()
+
+    if sparse_candidate_teacher and candidate_teacher_freeze_detector:
+        for parameter in detector.parameters():
+            parameter.requires_grad_(False)
+
+    if sparse_candidate_teacher:
+        parameter_groups = []
+        detector_parameters = [parameter for parameter in detector.parameters() if parameter.requires_grad]
+        if detector_parameters:
+            parameter_groups.append(
+                {"params": detector_parameters, "lr": float(candidate_teacher_detector_lr), "name": "detector"}
+            )
+        if teacher_landmark_features is not None and teacher_landmark_features.requires_grad:
+            parameter_groups.append(
+                {
+                    "params": [teacher_landmark_features],
+                    "lr": float(candidate_teacher_feature_lr),
+                    "weight_decay": 0.0,
+                    "name": "landmark_features",
+                }
+            )
+        if not parameter_groups:
+            raise ValueError(
+                "sparse candidate teacher has no trainable parameters; enable detector training or "
+                "--candidate_teacher_optimize_features"
+            )
+        optimizer = torch.optim.AdamW(parameter_groups, weight_decay=1e-4)
+    else:
+        optimizer = torch.optim.AdamW(detector.parameters(), lr=0.001)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, train_iteration // grad_accum),
+        eta_min=0.0 if sparse_candidate_teacher else 0.0005,
+    )
+    optimizer.zero_grad()
 
     for iteration in range(first_iter, train_iteration + 1):
         iter_start.record()
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = training_cameras.copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
         fine_resolution = get_resolution_from_longest_edge(
             viewpoint_cam.original_image.shape[1],
@@ -1489,20 +1739,25 @@ def training_detector(
                 render_visible_mask,
             )
 
-        # generate gt_map
-        gt_map, soft_target, weight_map = build_detector_target_map(
-            gaussians,
-            gt_feature_map,
-            sampled_idx,
-            viewmat,
-            K,
-            render_visible_mask=render_visible_mask,
-            detector_target_mode=detector_target_mode,
-            landmark_meta=landmark_meta,
-            soft_sigma=soft_sigma,
-        )
+        need_base_target = (not sparse_candidate_teacher) or float(candidate_teacher_base_detector_weight) > 0.0
+        gt_map = None
+        soft_target = False
+        weight_map = None
+        if need_base_target:
+            gt_map, soft_target, weight_map = build_detector_target_map(
+                gaussians,
+                gt_feature_map,
+                sampled_idx,
+                viewmat,
+                K,
+                render_visible_mask=render_visible_mask,
+                detector_target_mode=detector_target_mode,
+                landmark_meta=landmark_meta,
+                soft_sigma=soft_sigma,
+            )
 
         # use mask to filter out object
+        gt_map_mask = None
         if masks is not None:
             object_mask = masks[viewpoint_cam.image_name][0].cuda()[None]
             distort_mask = masks[viewpoint_cam.image_name][2].cuda()[None]
@@ -1510,27 +1765,102 @@ def training_detector(
             gt_map_mask = (
                 F.interpolate(
                     mask[None].float(),
-                    size=(gt_map.shape[1], gt_map.shape[2]),
+                    size=(gt_feature_map.shape[1], gt_feature_map.shape[2]),
                     mode="bilinear",
                     align_corners=False,
                 ).squeeze(0)
                 > 0.5
             )
-            gt_map = gt_map * gt_map_mask
-            if weight_map is not None:
-                weight_map = torch.where(gt_map_mask, weight_map, torch.ones_like(weight_map))
+            if gt_map is not None:
+                gt_map = gt_map * gt_map_mask
+                if weight_map is not None:
+                    weight_map = torch.where(gt_map_mask, weight_map, torch.ones_like(weight_map))
 
         # Loss
         heat_map = detector(gt_feature_map)
-        loss = detector_target_loss(
-            heat_map,
-            gt_map,
-            soft_target=soft_target,
-            weight_map=weight_map,
+        base_detector_loss = (
+            detector_target_loss(
+                heat_map,
+                gt_map,
+                soft_target=soft_target,
+                weight_map=weight_map,
+            )
+            if gt_map is not None
+            else heat_map.sum() * 0.0
         )
+        teacher_losses = None
+        feature_anchor_loss = heat_map.sum() * 0.0
+        if sparse_candidate_teacher:
+            teacher_heat_map = heat_map if gt_map_mask is None else heat_map * gt_map_mask
+            candidate_batch = build_sparse_candidate_batch(
+                gt_feature_map,
+                teacher_heat_map,
+                teacher_landmark_features,
+                teacher_landmark_xyz,
+                K,
+                viewmat,
+                visible_mask=render_visible_mask[sampled_idx],
+                detect_num=candidate_teacher_detect_num,
+                nms_radius=candidate_teacher_nms_radius,
+                match_mode=candidate_teacher_match_mode,
+                match_topk=candidate_teacher_match_topk,
+                match_threshold=candidate_teacher_match_threshold,
+                dual_softmax=candidate_teacher_dual_softmax,
+                dual_softmax_temperature=candidate_teacher_dual_softmax_temperature,
+                positive_radius_px=candidate_teacher_positive_radius_px,
+                hard_negatives=candidate_teacher_hard_negatives,
+                match_temperature=candidate_teacher_match_temperature,
+                match_margin=candidate_teacher_match_margin,
+                grid_rows=candidate_teacher_grid_rows,
+                grid_cols=candidate_teacher_grid_cols,
+                depth_bins=candidate_teacher_depth_bins,
+            )
+            teacher_losses = sparse_candidate_losses(
+                candidate_batch,
+                assignment_temperature=candidate_teacher_assignment_temperature,
+                assignment_margin=candidate_teacher_assignment_margin,
+            )
+            if candidate_teacher_optimize_features:
+                feature_anchor_loss = (
+                    1.0
+                    - (
+                        F.normalize(teacher_landmark_features, dim=1)
+                        * teacher_initial_features
+                    ).sum(dim=1)
+                ).clamp_min(0.0).mean()
+            loss = (
+                float(candidate_teacher_pair_weight) * teacher_losses.pair
+                + float(candidate_teacher_hard_negative_weight) * teacher_losses.hard_negative
+                + float(candidate_teacher_assignment_weight) * teacher_losses.assignment
+                + float(candidate_teacher_detector_match_weight) * teacher_losses.detector_match
+                + float(candidate_teacher_geometry_weight) * teacher_losses.geometry_set
+                + float(candidate_teacher_coverage_weight) * teacher_losses.coverage
+                + float(candidate_teacher_base_detector_weight) * base_detector_loss
+                + float(candidate_teacher_feature_anchor_weight) * feature_anchor_loss
+            )
+            teacher_last_diagnostics = _numeric_teacher_diagnostics(candidate_batch.diagnostics)
+        else:
+            loss = base_detector_loss
+
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError(
+                f"non-finite detector loss at iteration {iteration}: {float(loss.detach().item())}"
+            )
 
         loss.backward()
-        if iteration % grad_accum == 0:
+        if iteration % grad_accum == 0 or iteration == train_iteration:
+            if sparse_candidate_teacher:
+                trainable_parameters = [
+                    parameter
+                    for group in optimizer.param_groups
+                    for parameter in group["params"]
+                    if parameter.grad is not None
+                ]
+                if trainable_parameters:
+                    torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters,
+                        max_norm=grad_clip_norm,
+                    )
             optimizer.step()
             optimizer.zero_grad()
             lr_scheduler.step()
@@ -1540,10 +1870,18 @@ def training_detector(
             # Progress bar
             loss_val = loss.item()
             if iteration % 10 == 0:
+                postfix = {"Loss": f"{loss_val:.7f}"}
+                if sparse_candidate_teacher:
+                    postfix.update(
+                        {
+                            "Pair": f"{float(teacher_losses.pair.detach().item()):.4f}",
+                            "Rank": f"{float(teacher_losses.assignment.detach().item()):.4f}",
+                            "Prec": f"{teacher_last_diagnostics.get('predicted_gt_precision', 0.0):.3f}",
+                            "FN": f"{teacher_last_diagnostics.get('false_negative_rate', 0.0):.3f}",
+                        }
+                    )
                 progress_bar.set_postfix(
-                    {
-                        "Loss": f"{loss_val:.{7}f}",
-                    }
+                    postfix
                 )
                 progress_bar.update(10)
             if iteration == train_iteration:
@@ -1557,6 +1895,47 @@ def training_detector(
                     optimizer.param_groups[0]["lr"],
                     iteration,
                 )
+                if sparse_candidate_teacher:
+                    component_values = {
+                        "pair": teacher_losses.pair,
+                        "hard_negative": teacher_losses.hard_negative,
+                        "assignment": teacher_losses.assignment,
+                        "detector_match": teacher_losses.detector_match,
+                        "geometry_set": teacher_losses.geometry_set,
+                        "coverage": teacher_losses.coverage,
+                        "base_detector": base_detector_loss,
+                        "feature_anchor": feature_anchor_loss,
+                    }
+                    for name, value in component_values.items():
+                        tb_writer.add_scalar(
+                            f"sparse_candidate_teacher/loss_{name}",
+                            float(value.detach().item()),
+                            iteration,
+                        )
+                    for name, value in teacher_last_diagnostics.items():
+                        tb_writer.add_scalar(
+                            f"sparse_candidate_teacher/{name}",
+                            value,
+                            iteration,
+                        )
+
+            if sparse_candidate_teacher and (
+                iteration == 1 or iteration % 50 == 0 or iteration == train_iteration
+            ):
+                history_item = {
+                    "iteration": int(iteration),
+                    "loss_total": float(loss.detach().item()),
+                    "loss_pair": float(teacher_losses.pair.detach().item()),
+                    "loss_hard_negative": float(teacher_losses.hard_negative.detach().item()),
+                    "loss_assignment": float(teacher_losses.assignment.detach().item()),
+                    "loss_detector_match": float(teacher_losses.detector_match.detach().item()),
+                    "loss_geometry_set": float(teacher_losses.geometry_set.detach().item()),
+                    "loss_coverage": float(teacher_losses.coverage.detach().item()),
+                    "loss_base_detector": float(base_detector_loss.detach().item()),
+                    "loss_feature_anchor": float(feature_anchor_loss.detach().item()),
+                }
+                history_item.update(teacher_last_diagnostics)
+                teacher_history.append(history_item)
 
         if iteration in testing_iterations:
             print("\n[ITER {}] Evaluating detector".format(iteration))
@@ -1577,6 +1956,42 @@ def training_detector(
         if iteration in saving_iterations:
             print("\n[ITER {}] Saving detector".format(iteration))
             torch.save(detector.state_dict(), save_path + f"/{iteration}_detector.pth")
+            if sparse_candidate_teacher:
+                state_path = os.path.join(
+                    save_path,
+                    f"{iteration}_candidate_teacher_state.pt",
+                )
+                save_sparse_candidate_teacher_state(
+                    state_path,
+                    sampled_idx,
+                    teacher_landmark_features,
+                    iteration,
+                    teacher_config,
+                    teacher_last_diagnostics,
+                )
+                save_sparse_candidate_teacher_state(
+                    os.path.join(save_path, "candidate_teacher_state.pt"),
+                    sampled_idx,
+                    teacher_landmark_features,
+                    iteration,
+                    teacher_config,
+                    teacher_last_diagnostics,
+                )
+
+    if sparse_candidate_teacher:
+        summary = {
+            "version": 1,
+            "iterations": int(train_iteration),
+            "landmark_count": int(sampled_idx.numel()),
+            "config": teacher_config,
+            "final": teacher_history[-1] if teacher_history else teacher_last_diagnostics,
+            "history": teacher_history,
+        }
+        summary_path = os.path.join(save_path, "candidate_teacher_training_summary.json")
+        with open(summary_path, "w") as handle:
+            json.dump(summary, handle, indent=2)
+            handle.write("\n")
+        print(f"Saved sparse candidate teacher summary: {summary_path}")
 
 
 def prepare_output_and_logger(args, folder=None):
@@ -1679,6 +2094,49 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_utility_weight", type=float, default=0.0)
     parser.add_argument("--landmark_only", action="store_true", default=False)
     parser.add_argument("--precomputed_landmark_path", type=str, default="")
+    parser.add_argument("--sparse_candidate_teacher", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_detector_init_path", type=str, default="")
+    parser.add_argument("--candidate_teacher_state_init_path", type=str, default="")
+    parser.add_argument("--candidate_teacher_optimize_features", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_freeze_detector", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_detector_lr", type=float, default=1e-4)
+    parser.add_argument("--candidate_teacher_feature_lr", type=float, default=5e-5)
+    parser.add_argument("--candidate_teacher_detect_num", type=int, default=2048)
+    parser.add_argument("--candidate_teacher_nms_radius", type=int, default=2)
+    parser.add_argument(
+        "--candidate_teacher_match_mode",
+        choices=["topk", "mnn"],
+        default="topk",
+    )
+    parser.add_argument("--candidate_teacher_match_topk", type=int, default=1)
+    parser.add_argument("--candidate_teacher_match_threshold", type=float, default=0.0)
+    parser.add_argument("--candidate_teacher_dual_softmax", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_dual_softmax_temperature", type=float, default=0.1)
+    parser.add_argument("--candidate_teacher_positive_radius_px", type=float, default=2.0)
+    parser.add_argument("--candidate_teacher_hard_negatives", type=int, default=8)
+    parser.add_argument("--candidate_teacher_match_temperature", type=float, default=0.1)
+    parser.add_argument("--candidate_teacher_match_margin", type=float, default=0.5)
+    parser.add_argument("--candidate_teacher_assignment_temperature", type=float, default=0.05)
+    parser.add_argument("--candidate_teacher_assignment_margin", type=float, default=0.05)
+    parser.add_argument("--candidate_teacher_grid_rows", type=int, default=4)
+    parser.add_argument("--candidate_teacher_grid_cols", type=int, default=4)
+    parser.add_argument("--candidate_teacher_depth_bins", type=int, default=4)
+    parser.add_argument("--candidate_teacher_pair_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_teacher_hard_negative_weight", type=float, default=0.5)
+    parser.add_argument("--candidate_teacher_assignment_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_teacher_detector_match_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_teacher_geometry_weight", type=float, default=0.1)
+    parser.add_argument("--candidate_teacher_coverage_weight", type=float, default=0.1)
+    parser.add_argument("--candidate_teacher_base_detector_weight", type=float, default=0.1)
+    parser.add_argument("--candidate_teacher_feature_anchor_weight", type=float, default=0.01)
+    parser.add_argument("--candidate_teacher_support_query_split", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_query_ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--candidate_teacher_split_mode",
+        choices=["random", "sequence_block", "temporal_block"],
+        default="temporal_block",
+    )
+    parser.add_argument("--candidate_teacher_split_seed", type=int, default=2026)
     if with_components:
         return parser, lp, op
     return parser
@@ -1758,6 +2216,41 @@ if __name__ == "__main__":
         candidate_utility_weight=args.candidate_utility_weight,
         landmark_only=args.landmark_only,
         precomputed_landmark_path=args.precomputed_landmark_path,
+        sparse_candidate_teacher=args.sparse_candidate_teacher,
+        candidate_teacher_detector_init_path=args.candidate_teacher_detector_init_path,
+        candidate_teacher_state_init_path=args.candidate_teacher_state_init_path,
+        candidate_teacher_optimize_features=args.candidate_teacher_optimize_features,
+        candidate_teacher_freeze_detector=args.candidate_teacher_freeze_detector,
+        candidate_teacher_detector_lr=args.candidate_teacher_detector_lr,
+        candidate_teacher_feature_lr=args.candidate_teacher_feature_lr,
+        candidate_teacher_detect_num=args.candidate_teacher_detect_num,
+        candidate_teacher_nms_radius=args.candidate_teacher_nms_radius,
+        candidate_teacher_match_mode=args.candidate_teacher_match_mode,
+        candidate_teacher_match_topk=args.candidate_teacher_match_topk,
+        candidate_teacher_match_threshold=args.candidate_teacher_match_threshold,
+        candidate_teacher_dual_softmax=args.candidate_teacher_dual_softmax,
+        candidate_teacher_dual_softmax_temperature=args.candidate_teacher_dual_softmax_temperature,
+        candidate_teacher_positive_radius_px=args.candidate_teacher_positive_radius_px,
+        candidate_teacher_hard_negatives=args.candidate_teacher_hard_negatives,
+        candidate_teacher_match_temperature=args.candidate_teacher_match_temperature,
+        candidate_teacher_match_margin=args.candidate_teacher_match_margin,
+        candidate_teacher_assignment_temperature=args.candidate_teacher_assignment_temperature,
+        candidate_teacher_assignment_margin=args.candidate_teacher_assignment_margin,
+        candidate_teacher_grid_rows=args.candidate_teacher_grid_rows,
+        candidate_teacher_grid_cols=args.candidate_teacher_grid_cols,
+        candidate_teacher_depth_bins=args.candidate_teacher_depth_bins,
+        candidate_teacher_pair_weight=args.candidate_teacher_pair_weight,
+        candidate_teacher_hard_negative_weight=args.candidate_teacher_hard_negative_weight,
+        candidate_teacher_assignment_weight=args.candidate_teacher_assignment_weight,
+        candidate_teacher_detector_match_weight=args.candidate_teacher_detector_match_weight,
+        candidate_teacher_geometry_weight=args.candidate_teacher_geometry_weight,
+        candidate_teacher_coverage_weight=args.candidate_teacher_coverage_weight,
+        candidate_teacher_base_detector_weight=args.candidate_teacher_base_detector_weight,
+        candidate_teacher_feature_anchor_weight=args.candidate_teacher_feature_anchor_weight,
+        candidate_teacher_support_query_split=args.candidate_teacher_support_query_split,
+        candidate_teacher_query_ratio=args.candidate_teacher_query_ratio,
+        candidate_teacher_split_mode=args.candidate_teacher_split_mode,
+        candidate_teacher_split_seed=args.candidate_teacher_split_seed,
     )
 
     # All done

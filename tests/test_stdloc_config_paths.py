@@ -2,6 +2,60 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_candidate_teacher_features_require_exact_landmark_alignment(self):
+        import tempfile
+        from pathlib import Path
+
+        import torch
+
+        from stdloc import load_candidate_teacher_landmark_features
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "candidate.pt"
+            torch.save(
+                {
+                    "landmark_indices": torch.tensor([2, 5]),
+                    "landmark_features": torch.tensor([[3.0, 0.0], [0.0, 4.0]]),
+                },
+                path,
+            )
+            features, _ = load_candidate_teacher_landmark_features(
+                path,
+                torch.tensor([2, 5]),
+                expected_feature_dim=2,
+            )
+            self.assertTrue(torch.allclose(torch.linalg.norm(features, dim=1), torch.ones(2)))
+
+            with self.assertRaisesRegex(ValueError, "not aligned"):
+                load_candidate_teacher_landmark_features(path, torch.tensor([5, 2]))
+
+            malformed_path = Path(tmp) / "malformed_candidate.pt"
+            torch.save(
+                {
+                    "landmark_indices": torch.tensor([2, 5]),
+                    "landmark_features": torch.tensor([[1.0, 0.0, 0.0, 1.0]]),
+                },
+                malformed_path,
+            )
+            with self.assertRaisesRegex(ValueError, "feature count"):
+                load_candidate_teacher_landmark_features(
+                    malformed_path,
+                    torch.tensor([2, 5]),
+                    expected_feature_dim=2,
+                )
+
+    def test_topk_match_preserves_keypoint_ids_for_multiple_matches_per_row(self):
+        import torch
+
+        from stdloc import topk_match
+
+        correlation = torch.tensor([[[0.9, 0.8, 0.1], [0.7, 0.6, 0.5]]])
+        image_idx, landmark_idx, values = topk_match(correlation, topk=2, thr=0.0)
+
+        self.assertEqual(image_idx.tolist(), [0, 0, 1, 1])
+        self.assertEqual(landmark_idx.tolist(), [0, 1, 0, 1])
+        self.assertTrue(torch.allclose(values, torch.tensor([0.9, 0.8, 0.7, 0.6])))
+
     def test_resolve_artifact_path_supports_external_model_roots_and_absolute_paths(self):
         from stdloc import resolve_artifact_path
 

@@ -12,6 +12,7 @@ def make_stdloc_eval_cfg(
     artifact_model_path,
     detector_folder="detector",
     detector_iters=30000,
+    candidate_teacher_state_path=None,
     detect_num=None,
     reprojection_error=None,
     nms=None,
@@ -41,6 +42,9 @@ def make_stdloc_eval_cfg(
     sparse["landmark_model_path"] = artifact_model_path
     sparse["landmark_meta_model_path"] = artifact_model_path
     sparse["use_landmark_prior"] = False
+    if candidate_teacher_state_path:
+        sparse["candidate_teacher_state_path"] = str(candidate_teacher_state_path)
+        sparse["candidate_teacher_state_model_path"] = artifact_model_path
     if detect_num is not None:
         sparse["detect_num"] = int(detect_num)
     if reprojection_error is not None:
@@ -75,6 +79,7 @@ def make_stdloc_eval_cfg(
         "artifact_model_path": artifact_model_path,
         "detector_path": sparse["detector_path"],
         "landmark_path": sparse["landmark_path"],
+        "candidate_teacher_state_path": sparse.get("candidate_teacher_state_path"),
         "detect_num": sparse.get("detect_num"),
         "reprojection_error": sparse.get("reprojection_error"),
         "nms": sparse.get("nms"),
@@ -90,6 +95,7 @@ def main():
     parser.add_argument("--artifact_model_path", required=True)
     parser.add_argument("--detector_folder", default="detector")
     parser.add_argument("--detector_iters", type=int, default=30000)
+    parser.add_argument("--candidate_teacher_state_path", default="")
     parser.add_argument("--detect_num", type=int, default=None)
     parser.add_argument("--reprojection_error", type=float, default=None)
     parser.add_argument("--nms", type=int, default=None)
@@ -114,6 +120,7 @@ def main():
         args.artifact_model_path,
         detector_folder=args.detector_folder,
         detector_iters=args.detector_iters,
+        candidate_teacher_state_path=args.candidate_teacher_state_path,
         detect_num=args.detect_num,
         reprojection_error=args.reprojection_error,
         nms=args.nms,

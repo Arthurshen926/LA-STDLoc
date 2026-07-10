@@ -94,7 +94,10 @@ def topk_match(corr_matrix, topk, thr=-1):
     idx_flattened = idx.flatten(1)
     mask = val_flattened > thr
     arange_tensor = torch.arange(N_im, device=corr_matrix.device)
-    idx_im = arange_tensor[None].repeat(corr_matrix.shape[0], topk)[mask]
+    image_ids = arange_tensor.view(1, N_im, 1).expand(
+        corr_matrix.shape[0], N_im, topk
+    )
+    idx_im = image_ids.reshape(corr_matrix.shape[0], -1)[mask]
     idx_gs = idx_flattened[mask]
     val = val_flattened[mask]
 
@@ -572,6 +575,47 @@ def validate_sampled_indices(sampled_idx, point_count):
     return idx
 
 
+def load_candidate_teacher_landmark_features(
+    path,
+    landmark_indices,
+    *,
+    expected_feature_dim=None,
+    device=None,
+    dtype=torch.float32,
+):
+    state = torch.load(path, map_location="cpu")
+    if not isinstance(state, dict) or "landmark_features" not in state:
+        raise ValueError(f"Invalid sparse candidate teacher state: {path}")
+    expected_indices = torch.as_tensor(landmark_indices, dtype=torch.long).reshape(-1).cpu()
+    state_indices = torch.as_tensor(
+        state.get("landmark_indices", []), dtype=torch.long
+    ).reshape(-1).cpu()
+    if not torch.equal(state_indices, expected_indices):
+        raise ValueError(
+            "sparse candidate teacher state is not aligned with detector landmarks: "
+            f"state_count={state_indices.numel()} expected_count={expected_indices.numel()}"
+        )
+    features = torch.as_tensor(state["landmark_features"], dtype=dtype)
+    if features.ndim < 2 or features.shape[0] != expected_indices.numel():
+        raise ValueError(
+            "sparse candidate teacher feature count does not match detector landmarks: "
+            f"features={features.shape[0] if features.ndim else 0} "
+            f"expected={expected_indices.numel()}"
+        )
+    features = features.reshape(expected_indices.numel(), -1)
+    if expected_feature_dim is not None and features.shape[1] != int(expected_feature_dim):
+        raise ValueError(
+            "sparse candidate teacher feature dimension does not match map features: "
+            f"state_dim={features.shape[1]} expected_dim={int(expected_feature_dim)}"
+        )
+    if not bool(torch.isfinite(features).all().item()):
+        raise ValueError("sparse candidate teacher features contain non-finite values")
+    features = F.normalize(features, dim=1)
+    if device is not None:
+        features = features.to(device=device, dtype=dtype)
+    return features, state
+
+
 def remap_sampled_indices_from_source_index(
     sampled_idx,
     source_index,
@@ -742,6 +786,30 @@ class STDLoc:
         )
         self.landmark_indices = validate_sampled_indices(sampled_idx, gaussians.get_xyz.shape[0]).detach().cpu()
         self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
+        candidate_state_path = config["sparse"].get(
+            "candidate_teacher_state_path",
+            config["sparse"].get("landmark_feature_path", ""),
+        )
+        self.candidate_teacher_state = None
+        if candidate_state_path:
+            full_candidate_state_path = resolve_artifact_path(
+                config["model_path"],
+                candidate_state_path,
+                config["sparse"].get(
+                    "candidate_teacher_state_model_path",
+                    config["sparse"].get("landmark_model_path"),
+                ),
+            )
+            current_features = self.landmarks.get_loc_feature
+            current_flat = current_features.reshape(current_features.shape[0], -1)
+            override, self.candidate_teacher_state = load_candidate_teacher_landmark_features(
+                full_candidate_state_path,
+                self.landmark_indices,
+                expected_feature_dim=current_flat.shape[1],
+                device=current_features.device,
+                dtype=current_features.dtype,
+            )
+            self.landmarks._loc_feature = override.reshape_as(current_features)
         landmark_meta_path = config["sparse"].get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
             config["model_path"],
@@ -922,10 +990,15 @@ class STDLoc:
 
         p2d = p2d[kp_mask.cpu()][im_idx.cpu()].float()
         p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
+        p2d_pre_selector = p2d.clone()
+        p3d_pre_selector = p3d.clone()
+        scores_pre_selector = val.detach().cpu().float().clone()
+        selector_indices = torch.arange(p2d.shape[0], dtype=torch.long)
         match_count_before_selector = int(p2d.shape[0])
         selector = _geometry_selector_from_config(self.config["sparse"], W, H)
         if selector is not None:
             selected = selector.select(p2d, p3d, val.detach().cpu().float())
+            selector_indices = selected.detach().cpu().long()
             p2d = p2d[selected]
             p3d = p3d[selected]
             val = val.detach().cpu().float()[selected]
@@ -995,11 +1068,24 @@ class STDLoc:
                 )
             )
         if bool(diag_cfg.get("gt_metrics", True)) or bool(diag_cfg.get("dump_correspondences", False)):
+            inliers_flat = inliers.reshape(-1).copy()
+            valid_post_inliers = inliers_flat[
+                (inliers_flat >= 0) & (inliers_flat < selector_indices.numel())
+            ]
+            pre_selector_inliers = (
+                selector_indices[torch.from_numpy(valid_post_inliers).long()].numpy()
+                if valid_post_inliers.size > 0
+                else np.empty(0, dtype=np.int64)
+            )
             result["_debug_sparse_matches"] = {
                 "p2d": p2d,
                 "p3d": p3d,
                 "scores": scores,
-                "inliers": inliers.reshape(-1).copy(),
+                "inliers": inliers_flat,
+                "p2d_pre_selector": p2d_pre_selector.numpy(),
+                "p3d_pre_selector": p3d_pre_selector.numpy(),
+                "scores_pre_selector": scores_pre_selector.numpy(),
+                "inliers_pre_selector": pre_selector_inliers,
                 "K": K,
                 "width": int(W),
                 "height": int(H),
@@ -1275,13 +1361,33 @@ if __name__ == "__main__":
         loc_res = stdloc.localize(query_image, fovx, fovy)
         sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
         if sparse_debug is not None:
-            loc_res["sparse"].update(
-                sparse_correspondence_diagnostics(
-                    sparse_debug["p2d"],
-                    sparse_debug["p3d"],
+            post_selector_diagnostics = sparse_correspondence_diagnostics(
+                sparse_debug["p2d"],
+                sparse_debug["p3d"],
+                sparse_debug["K"],
+                loc_res["sparse"]["pose_w2c"],
+                sparse_debug["inliers"],
+                sparse_debug["width"],
+                sparse_debug["height"],
+                gt_pose_w2c=gt_w2c,
+                grid_rows=sparse_diag_cfg.get("grid_rows", 4),
+                grid_cols=sparse_diag_cfg.get("grid_cols", 4),
+                voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+            )
+            loc_res["sparse"].update(post_selector_diagnostics)
+            for key, value in post_selector_diagnostics.items():
+                if key.startswith("sparse_diag_"):
+                    loc_res["sparse"][
+                        "sparse_diag_post_selector_" + key[len("sparse_diag_") :]
+                    ] = value
+
+            if "p2d_pre_selector" in sparse_debug:
+                pre_selector_diagnostics = sparse_correspondence_diagnostics(
+                    sparse_debug["p2d_pre_selector"],
+                    sparse_debug["p3d_pre_selector"],
                     sparse_debug["K"],
                     loc_res["sparse"]["pose_w2c"],
-                    sparse_debug["inliers"],
+                    sparse_debug.get("inliers_pre_selector", []),
                     sparse_debug["width"],
                     sparse_debug["height"],
                     gt_pose_w2c=gt_w2c,
@@ -1289,7 +1395,17 @@ if __name__ == "__main__":
                     grid_cols=sparse_diag_cfg.get("grid_cols", 4),
                     voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
                 )
-            )
+                for key, value in pre_selector_diagnostics.items():
+                    if key.startswith("sparse_diag_"):
+                        loc_res["sparse"][
+                            "sparse_diag_pre_selector_" + key[len("sparse_diag_") :]
+                        ] = value
+                loc_res["sparse"]["raw_pre_selector_gt_precision_2px"] = pre_selector_diagnostics.get(
+                    "sparse_diag_all_gt_precision_2px", 0.0
+                )
+                loc_res["sparse"]["raw_post_selector_gt_precision_2px"] = post_selector_diagnostics.get(
+                    "sparse_diag_all_gt_precision_2px", 0.0
+                )
             if corr_dump_file is not None:
                 inliers_only = bool(sparse_diag_cfg.get("dump_inliers_only", True))
                 max_dump = int(sparse_diag_cfg.get("dump_max_correspondences", 0) or 0)

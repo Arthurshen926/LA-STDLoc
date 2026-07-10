@@ -924,6 +924,38 @@ class DetectorSoftTargetsTest(unittest.TestCase):
 
         self.assertEqual(args.precomputed_landmark_path, "/tmp/sample.pkl")
 
+    def test_detector_parser_accepts_sparse_candidate_teacher_controls(self):
+        from train_detector import build_arg_parser
+
+        parser = build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--sparse_candidate_teacher",
+                "--candidate_teacher_optimize_features",
+                "--candidate_teacher_detector_init_path",
+                "/tmp/detector.pth",
+                "--candidate_teacher_detect_num",
+                "4096",
+                "--candidate_teacher_assignment_weight",
+                "1.5",
+                "--candidate_teacher_assignment_margin",
+                "0.08",
+                "--candidate_teacher_geometry_weight",
+                "0.2",
+                "--candidate_teacher_support_query_split",
+                "--candidate_teacher_split_mode",
+                "temporal_block",
+            ]
+        )
+
+        self.assertTrue(args.sparse_candidate_teacher)
+        self.assertTrue(args.candidate_teacher_optimize_features)
+        self.assertEqual(args.candidate_teacher_detect_num, 4096)
+        self.assertEqual(args.candidate_teacher_assignment_weight, 1.5)
+        self.assertEqual(args.candidate_teacher_assignment_margin, 0.08)
+        self.assertEqual(args.candidate_teacher_geometry_weight, 0.2)
+        self.assertTrue(args.candidate_teacher_support_query_split)
+
     def test_precomputed_detector_landmarks_are_loaded_and_validated(self):
         import pickle
         import tempfile
