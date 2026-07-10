@@ -44,22 +44,27 @@ class GeometrySelectorTest(unittest.TestCase):
 
         self.assertEqual(selected.tolist(), [0, 2, 3, 4])
 
-    def test_balanced_selector_is_noop_when_disabled_by_budget(self):
+    def test_balanced_selector_with_no_global_limit_still_enforces_quotas(self):
         from localization_training.geometry_selector import GeometryBalancedSelector
 
-        p2d = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
-        p3d = torch.tensor([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
-        scores = torch.tensor([0.1, 0.9])
+        p2d = torch.tensor([[0.0, 0.0], [1.0, 1.0], [8.0, 8.0]])
+        p3d = torch.tensor([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [2.0, 2.0, 0.0]])
+        scores = torch.tensor([0.1, 0.9, 0.5])
 
         selector = GeometryBalancedSelector(
             image_width=10,
             image_height=10,
+            grid_rows=1,
+            grid_cols=1,
+            max_per_cell=1,
+            voxel_size=1.0,
+            max_per_voxel=1,
             max_matches=0,
         )
 
         selected = selector.select(p2d, p3d, scores)
 
-        self.assertEqual(selected.tolist(), [1, 0])
+        self.assertEqual(selected.tolist(), [1])
 
     def test_pose_informative_inlier_selection_prefers_spatial_baseline(self):
         from localization_training.geometry_selector import GeometryBalancedSelector

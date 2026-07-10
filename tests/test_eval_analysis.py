@@ -1,5 +1,6 @@
 import unittest
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -136,19 +137,37 @@ class EvalAnalysisTest(unittest.TestCase):
                 "image_name": "seq4/a.png",
                 "sparse_TE": 4.0,
                 "sparse_AE": 0.2,
-                "sparse": {"inliers": 120, "matches": 300, "detected_keypoints": 900},
+                "sparse": {
+                    "inliers": 120,
+                    "matches": 300,
+                    "detected_keypoints": 900,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.8,
+                    "sparse_diag_inlier_gt_precision_4px": 0.9,
+                },
             },
             {
                 "image_name": "seq4/b.png",
                 "sparse_TE": 8.0,
                 "sparse_AE": 0.3,
-                "sparse": {"inliers": 100, "matches": 280, "detected_keypoints": 850},
+                "sparse": {
+                    "inliers": 100,
+                    "matches": 280,
+                    "detected_keypoints": 850,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.6,
+                    "sparse_diag_inlier_gt_precision_4px": 0.7,
+                },
             },
             {
                 "image_name": "seq8/c.png",
                 "sparse_TE": 12.0,
                 "sparse_AE": 0.4,
-                "sparse": {"inliers": 90, "matches": 250, "detected_keypoints": 800},
+                "sparse": {
+                    "inliers": 90,
+                    "matches": 250,
+                    "detected_keypoints": 800,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.9,
+                    "sparse_diag_inlier_gt_precision_4px": 0.8,
+                },
             },
         ]
         la = [
@@ -156,19 +175,37 @@ class EvalAnalysisTest(unittest.TestCase):
                 "image_name": "seq4/a.png",
                 "sparse_TE": 7.0,
                 "sparse_AE": 0.4,
-                "sparse": {"inliers": 55, "matches": 240, "detected_keypoints": 700},
+                "sparse": {
+                    "inliers": 55,
+                    "matches": 240,
+                    "detected_keypoints": 700,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.5,
+                    "sparse_diag_inlier_gt_precision_4px": 0.6,
+                },
             },
             {
                 "image_name": "seq4/b.png",
                 "sparse_TE": 5.0,
                 "sparse_AE": 0.2,
-                "sparse": {"inliers": 110, "matches": 300, "detected_keypoints": 870},
+                "sparse": {
+                    "inliers": 110,
+                    "matches": 300,
+                    "detected_keypoints": 870,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.7,
+                    "sparse_diag_inlier_gt_precision_4px": 0.75,
+                },
             },
             {
                 "image_name": "seq8/c.png",
                 "sparse_TE": 20.0,
                 "sparse_AE": 0.8,
-                "sparse": {"inliers": 40, "matches": 220, "detected_keypoints": 760},
+                "sparse": {
+                    "inliers": 40,
+                    "matches": 220,
+                    "detected_keypoints": 760,
+                    "sparse_diag_inlier_2d_entropy_norm": 0.4,
+                    "sparse_diag_inlier_gt_precision_4px": 0.5,
+                },
             },
         ]
 
@@ -180,7 +217,16 @@ class EvalAnalysisTest(unittest.TestCase):
         self.assertEqual(summary["pose_degraded_and_inlier_drop_count"], 2)
         self.assertEqual(summary["sequence_groups"][0]["sequence"], "seq4")
         self.assertEqual(summary["top_te_degraded"][0]["image_name"], "seq8/c.png")
+        self.assertNotIn("baseline_sparse_diag_inlier_2d_entropy_norm", summary["top_te_degraded"][0])
         self.assertEqual(summary["top_inlier_drop"][0]["image_name"], "seq4/a.png")
+        entropy = summary["diagnostics"]["sparse_diag_inlier_2d_entropy_norm"]
+        self.assertAlmostEqual(entropy["delta_mean"], (-0.3 + 0.1 - 0.5) / 3.0)
+        self.assertAlmostEqual(entropy["pose_degraded_delta_mean"], (-0.3 - 0.5) / 2.0)
+        self.assertAlmostEqual(entropy["pose_improved_delta_mean"], 0.1)
+        self.assertAlmostEqual(
+            summary["diagnostics"]["sparse_diag_inlier_gt_precision_4px"]["delta_mean"],
+            (-0.3 + 0.05 - 0.3) / 3.0,
+        )
 
     def test_sparse_stage_delta_script_writes_json_and_csv(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "diagnose_sparse_stage_delta.py"
@@ -234,6 +280,8 @@ class EvalAnalysisTest(unittest.TestCase):
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                cwd=Path(__file__).resolve().parents[1],
+                env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
             )
 
             self.assertEqual(proc.returncode, 0, proc.stderr)

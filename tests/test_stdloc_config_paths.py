@@ -85,6 +85,54 @@ class STDLocConfigPathTest(unittest.TestCase):
         self.assertEqual(diagnostics["sparse_valid_mask_selected_valid_keypoints"], 3)
         self.assertEqual(diagnostics["sparse_valid_mask_refill_keypoints"], 1)
 
+    def test_sparse_correspondence_diagnostics_reports_geometry_and_gt_precision(self):
+        import numpy as np
+
+        from stdloc import sparse_correspondence_diagnostics
+
+        K = np.array([[100.0, 0.0, 50.0], [0.0, 100.0, 40.0], [0.0, 0.0, 1.0]])
+        pose = np.eye(4)
+        p3d = np.array(
+            [
+                [-0.2, -0.1, 2.0],
+                [0.1, -0.1, 2.2],
+                [0.2, 0.1, 2.5],
+                [-0.1, 0.2, 3.0],
+                [0.3, -0.2, 3.2],
+                [-0.3, 0.3, 3.5],
+            ],
+            dtype=np.float64,
+        )
+        projected = np.stack(
+            [
+                K[0, 0] * p3d[:, 0] / p3d[:, 2] + K[0, 2],
+                K[1, 1] * p3d[:, 1] / p3d[:, 2] + K[1, 2],
+            ],
+            axis=1,
+        )
+        p2d = projected - 0.5
+
+        diagnostics = sparse_correspondence_diagnostics(
+            p2d,
+            p3d,
+            K,
+            pose,
+            np.arange(6),
+            width=100,
+            height=80,
+            gt_pose_w2c=pose,
+            grid_rows=2,
+            grid_cols=2,
+            voxel_size=0.25,
+        )
+
+        self.assertEqual(diagnostics["sparse_diag_match_count"], 6)
+        self.assertEqual(diagnostics["sparse_diag_inlier_count"], 6)
+        self.assertAlmostEqual(diagnostics["sparse_diag_all_gt_precision_2px"], 1.0)
+        self.assertGreater(diagnostics["sparse_diag_inlier_2d_occupied_cells"], 1)
+        self.assertGreater(diagnostics["sparse_diag_inlier_depth_range"], 0.0)
+        self.assertIn("sparse_diag_inlier_pose_info_condition", diagnostics)
+
 
 if __name__ == "__main__":
     unittest.main()

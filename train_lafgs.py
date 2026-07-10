@@ -15,6 +15,20 @@ def build_parser():
     parser.add_argument("--lafgs_diff_pnp_start_iter", type=int, default=5_000)
     parser.add_argument("--lafgs_geometry_start_iter", type=int, default=10_000)
     parser.add_argument("--lafgs_topology_start_iter", type=int, default=15_000)
+    parser.add_argument("--lafgs_stage_schedule", choices=["none", "sfm_from_zero"], default="none")
+    parser.add_argument("--lafgs_stage_bootstrap_until", type=int, default=None)
+    parser.add_argument("--lafgs_stage_joint_until", type=int, default=None)
+    parser.add_argument("--lafgs_stage_bootstrap_base_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_bootstrap_loc_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_bootstrap_geometry_anchor_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_joint_base_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_joint_loc_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_joint_geometry_anchor_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_refine_base_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_refine_loc_weight", type=float, default=None)
+    parser.add_argument("--lafgs_stage_refine_geometry_anchor_weight", type=float, default=None)
+    parser.add_argument("--lafgs_rgb_densify", action="store_true", default=None)
+    parser.add_argument("--lafgs_rgb_densify_until_iter", type=int, default=None)
     parser.add_argument("--lafgs_diff_pnp_weight", type=float, default=0.0)
     parser.add_argument(
         "--lafgs_diff_pnp_reprojection_loss_type",
@@ -54,7 +68,9 @@ def build_parser():
     parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_min_scale", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_feedback_pose_guard_keep_gt_reprojection", action="store_true", default=None)
     parser.add_argument("--lafgs_diff_pnp_detach_pnp_points", action="store_true", default=None)
-    parser.add_argument("--allow_raw_xyz_geometry_grad", action="store_true", default=None)
+    parser.add_argument("--allow_raw_xyz_geometry_grad", dest="allow_raw_xyz_geometry_grad", action="store_true")
+    parser.add_argument("--disallow_raw_xyz_geometry_grad", dest="allow_raw_xyz_geometry_grad", action="store_false")
+    parser.set_defaults(allow_raw_xyz_geometry_grad=None)
     if hasattr(argparse, "BooleanOptionalAction"):
         parser.add_argument(
             "--lafgs_diff_pnp_detach_gt_reprojection_points",
@@ -98,11 +114,41 @@ def build_parser():
     parser.add_argument("--loc_full_bank_weight", type=float, default=None)
     parser.add_argument("--loc_full_bank_pose_information_weight", type=float, default=None)
     parser.add_argument("--loc_full_bank_pose_information_floor", type=float, default=None)
+    parser.add_argument("--loc_full_bank_stats_chunk_size", type=int, default=None)
+    parser.add_argument(
+        "--loc_full_checkpoint_mode",
+        choices=["save_iterations", "final", "explicit", "none"],
+        default=None,
+    )
+    parser.add_argument("--loc_full_checkpoint_iterations", nargs="+", type=int, default=None)
+    parser.add_argument("--loc_full_bank_ignore_3d_radius", type=float, default=None)
+    parser.add_argument("--loc_full_bank_ignore_uv_radius", type=float, default=None)
+    parser.add_argument("--loc_full_bank_nearby_as_positive_until", type=int, default=None)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument(
+            "--loc_full_bank_nearby_as_positive",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+        )
+    else:
+        parser.add_argument(
+            "--loc_full_bank_nearby_as_positive",
+            dest="loc_full_bank_nearby_as_positive",
+            action="store_true",
+        )
+        parser.add_argument(
+            "--no-loc_full_bank_nearby_as_positive",
+            dest="loc_full_bank_nearby_as_positive",
+            action="store_false",
+        )
+        parser.set_defaults(loc_full_bank_nearby_as_positive=None)
     parser.add_argument("--loc_anchor_lr", type=float, default=None)
     parser.add_argument("--surfel_loc_tangent_bound", type=float, default=None)
     parser.add_argument("--surfel_loc_normal_bound", type=float, default=None)
+    parser.add_argument("--surfel_loc_radius_floor", type=float, default=None)
     parser.add_argument("--surfel_loc_anchor_reg_weight", type=float, default=None)
     parser.add_argument("--geometry_anchor_weight", type=float, default=None)
+    parser.add_argument("--landmark_path", type=str, default=None)
     parser.add_argument("--synthetic_view_ratio", type=float, default=None)
     parser.add_argument("--synthetic_view_desc_weight", type=float, default=None)
     parser.add_argument("--synthetic_view_reproj_weight", type=float, default=None)
@@ -124,7 +170,7 @@ def _explicit_lafgs_overrides(argv):
     overrides = set()
     for index, item in enumerate(argv):
         normalized_item = item
-        if normalized_item.startswith("--no-lafgs_"):
+        if normalized_item.startswith("--no-lafgs_") or normalized_item.startswith("--no-loc_"):
             normalized_item = "--" + normalized_item[len("--no-") :]
         if (
             normalized_item.startswith("--lafgs_")
@@ -133,8 +179,12 @@ def _explicit_lafgs_overrides(argv):
             or normalized_item.startswith("--geometry_")
             or normalized_item.startswith("--surfel_")
             or normalized_item == "--allow_raw_xyz_geometry_grad"
+            or normalized_item == "--disallow_raw_xyz_geometry_grad"
+            or normalized_item == "--landmark_path"
         ):
             name = normalized_item[2:].split("=", 1)[0].replace("-", "_")
+            if name == "disallow_raw_xyz_geometry_grad":
+                name = "allow_raw_xyz_geometry_grad"
             overrides.add(name)
         if item == "--lafgs_synthetic_feature_source":
             if index + 1 < len(argv):
@@ -162,18 +212,41 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "loc_full_bank_weight", 0.1)
     if "loc_full_bank_pose_information_weight" not in explicit_overrides:
-        _setdefault(args, "loc_full_bank_pose_information_weight", 0.0)
+        _setdefault(args, "loc_full_bank_pose_information_weight", 0.5)
     else:
-        _setdefault(args, "loc_full_bank_pose_information_weight", 0.0)
+        _setdefault(args, "loc_full_bank_pose_information_weight", 0.5)
     if "loc_full_bank_pose_information_floor" not in explicit_overrides:
-        _setdefault(args, "loc_full_bank_pose_information_floor", 0.0)
+        _setdefault(args, "loc_full_bank_pose_information_floor", 0.2)
     else:
-        _setdefault(args, "loc_full_bank_pose_information_floor", 0.0)
+        _setdefault(args, "loc_full_bank_pose_information_floor", 0.2)
+    _setdefault(args, "loc_full_bank_stats_chunk_size", 256)
+    if "loc_full_checkpoint_mode" not in explicit_overrides:
+        _setdefault(args, "loc_full_checkpoint_mode", "none")
+    else:
+        _setdefault(args, "loc_full_checkpoint_mode", "none")
+    _setdefault(args, "loc_full_checkpoint_iterations", [])
     _set_if_missing_or_legacy(args, "loc_full_bank_hard_negatives", 64, {32})
     _setdefault(args, "loc_full_bank_source_mode", "ignore")
+    if "loc_full_bank_ignore_3d_radius" not in explicit_overrides:
+        _set_if_missing_or_legacy(args, "loc_full_bank_ignore_3d_radius", 0.1, {0.0})
+    else:
+        _setdefault(args, "loc_full_bank_ignore_3d_radius", 0.1)
+    if "loc_full_bank_ignore_uv_radius" not in explicit_overrides:
+        _set_if_missing_or_legacy(args, "loc_full_bank_ignore_uv_radius", 2.0, {0.0})
+    else:
+        _setdefault(args, "loc_full_bank_ignore_uv_radius", 2.0)
+    if "loc_full_bank_nearby_as_positive" not in explicit_overrides:
+        _set_if_missing_or_legacy(args, "loc_full_bank_nearby_as_positive", True, {False})
+    else:
+        _setdefault(args, "loc_full_bank_nearby_as_positive", True)
+    if "loc_full_bank_nearby_as_positive_until" not in explicit_overrides:
+        _set_if_missing_or_legacy(args, "loc_full_bank_nearby_as_positive_until", 10_000, {0})
+    else:
+        _setdefault(args, "loc_full_bank_nearby_as_positive_until", 10_000)
     _setdefault(args, "loc_anchor_lr", 0.0)
     _setdefault(args, "surfel_loc_tangent_bound", 0.0)
     _setdefault(args, "surfel_loc_normal_bound", 0.0)
+    _setdefault(args, "surfel_loc_radius_floor", 1.0)
     _setdefault(args, "surfel_loc_anchor_reg_weight", 0.0)
     _set_if_missing_or_legacy(args, "direct_depth_check", True, {False})
     if "geometry_anchor_weight" not in explicit_overrides:
@@ -217,6 +290,21 @@ def lafgs_defaults(args, explicit_overrides=None):
     _set_if_missing_or_legacy(args, "lafgs_diff_pnp_start_iter", 5_000, {0})
     _setdefault(args, "lafgs_geometry_start_iter", 10_000)
     _setdefault(args, "lafgs_topology_start_iter", 15_000)
+    _setdefault(args, "lafgs_stage_schedule", "none")
+    _setdefault(args, "lafgs_stage_bootstrap_until", 3_000)
+    _setdefault(args, "lafgs_stage_joint_until", 15_000)
+    _setdefault(args, "lafgs_stage_bootstrap_base_weight", 1.0)
+    _setdefault(args, "lafgs_stage_bootstrap_loc_weight", 0.15)
+    _setdefault(args, "lafgs_stage_bootstrap_geometry_anchor_weight", 0.05)
+    _setdefault(args, "lafgs_stage_joint_base_weight", 0.5)
+    _setdefault(args, "lafgs_stage_joint_loc_weight", 1.0)
+    _setdefault(args, "lafgs_stage_joint_geometry_anchor_weight", 0.05)
+    _setdefault(args, "lafgs_stage_refine_base_weight", 0.15)
+    _setdefault(args, "lafgs_stage_refine_loc_weight", 1.5)
+    _setdefault(args, "lafgs_stage_refine_geometry_anchor_weight", 0.02)
+    _setdefault(args, "lafgs_rgb_densify", False)
+    _setdefault(args, "lafgs_rgb_densify_until_iter", 0)
+    _setdefault(args, "landmark_path", "detector/sampled_idx.pkl")
     if "lafgs_diff_pnp_weight" not in explicit_overrides:
         _set_if_missing_or_legacy(args, "lafgs_diff_pnp_weight", 0.05, {0.0})
     else:
@@ -266,9 +354,9 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "lafgs_diff_pnp_geometry_depth_anchor_weight", 0.0)
     if "lafgs_diff_pnp_geometry_match_reproj_weight" not in explicit_overrides:
-        _setdefault(args, "lafgs_diff_pnp_geometry_match_reproj_weight", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_match_reproj_weight", 0.5)
     else:
-        _setdefault(args, "lafgs_diff_pnp_geometry_match_reproj_weight", 0.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_match_reproj_weight", 0.5)
     if "lafgs_diff_pnp_geometry_match_confidence_threshold" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_geometry_match_confidence_threshold", -1.0)
     else:
@@ -286,9 +374,9 @@ def lafgs_defaults(args, explicit_overrides=None):
     else:
         _setdefault(args, "lafgs_diff_pnp_geometry_match_max_entropy", -1.0)
     if "lafgs_diff_pnp_geometry_match_max_reproj_error" not in explicit_overrides:
-        _setdefault(args, "lafgs_diff_pnp_geometry_match_max_reproj_error", -1.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_match_max_reproj_error", 2.0)
     else:
-        _setdefault(args, "lafgs_diff_pnp_geometry_match_max_reproj_error", -1.0)
+        _setdefault(args, "lafgs_diff_pnp_geometry_match_max_reproj_error", 2.0)
     if "lafgs_diff_pnp_geometry_confidence_threshold" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_geometry_confidence_threshold", 0.0)
     else:
@@ -369,9 +457,48 @@ def lafgs_defaults(args, explicit_overrides=None):
         _setdefault(args, "lafgs_diff_pnp_detach_gt_reprojection_points", False)
     else:
         _setdefault(args, "lafgs_diff_pnp_detach_gt_reprojection_points", False)
-    _set_if_missing_or_legacy(args, "lafgs_geometry_residual_weight", 1.0, {0.0})
+    geometry_residual_enabled = bool(getattr(args, "lafgs_geometry_residual", False))
+    if "lafgs_geometry_residual_weight" not in explicit_overrides:
+        args.lafgs_geometry_residual_weight = 1.0 if geometry_residual_enabled else 0.0
+    else:
+        _setdefault(args, "lafgs_geometry_residual_weight", 0.0)
     _set_if_missing_or_legacy(args, "lafgs_geometry_residual_max_scale_ratio", 0.2, {0.0})
     _setdefault(args, "lafgs_geometry_residual", False)
+    if str(getattr(args, "lafgs_stage_schedule", "none") or "none") == "sfm_from_zero":
+        if "lafgs_stage_bootstrap_until" not in explicit_overrides:
+            args.lafgs_stage_bootstrap_until = 3_000
+        if "lafgs_stage_joint_until" not in explicit_overrides:
+            args.lafgs_stage_joint_until = 15_000
+        if "lafgs_locrec_start_iter" not in explicit_overrides:
+            args.lafgs_locrec_start_iter = 500
+        if "lafgs_diff_pnp_start_iter" not in explicit_overrides:
+            args.lafgs_diff_pnp_start_iter = args.lafgs_stage_bootstrap_until
+        if "lafgs_geometry_start_iter" not in explicit_overrides:
+            args.lafgs_geometry_start_iter = args.lafgs_stage_bootstrap_until
+        if "lafgs_topology_start_iter" not in explicit_overrides:
+            args.lafgs_topology_start_iter = args.lafgs_stage_joint_until
+        if "lafgs_rgb_densify" not in explicit_overrides:
+            args.lafgs_rgb_densify = True
+        if "lafgs_rgb_densify_until_iter" not in explicit_overrides:
+            args.lafgs_rgb_densify_until_iter = args.lafgs_stage_joint_until
+        if "landmark_path" not in explicit_overrides:
+            args.landmark_path = "__all__"
+        if "allow_raw_xyz_geometry_grad" not in explicit_overrides:
+            args.allow_raw_xyz_geometry_grad = True
+        if "lafgs_diff_pnp_geometry_xyz_lr" not in explicit_overrides:
+            args.lafgs_diff_pnp_geometry_xyz_lr = 2.0e-5
+        if "lafgs_diff_pnp_geometry_reproj_weight" not in explicit_overrides:
+            args.lafgs_diff_pnp_geometry_reproj_weight = 0.01
+        if "lafgs_diff_pnp_geometry_depth_anchor_weight" not in explicit_overrides:
+            args.lafgs_diff_pnp_geometry_depth_anchor_weight = 0.1
+        if "lafgs_diff_pnp_geometry_max_reproj_error" not in explicit_overrides:
+            args.lafgs_diff_pnp_geometry_max_reproj_error = 4.0
+        if "lafgs_diff_pnp_isolate_geometry_grad" not in explicit_overrides:
+            args.lafgs_diff_pnp_isolate_geometry_grad = True
+        if "lafgs_diff_pnp_detach_pnp_points" not in explicit_overrides:
+            args.lafgs_diff_pnp_detach_pnp_points = False
+        if "loc_full_bank_nearby_as_positive_until" not in explicit_overrides:
+            args.loc_full_bank_nearby_as_positive_until = args.lafgs_stage_joint_until
     return args
 
 
@@ -389,7 +516,7 @@ def _build_locaware_parser():
 
 
 def main(argv=None):
-    from train_locaware import training
+    from train_locaware import append_unique_iteration, training
     from utils.general_utils import safe_state, seed_everything
     import torch
 
@@ -401,8 +528,8 @@ def main(argv=None):
     args.loc_teacher = "direct"
     args.localization_enabled = True
     args.use_loc_opacity = True
-    args.save_iterations.append(args.iterations)
-    args.test_iterations.append(args.iterations)
+    append_unique_iteration(args.save_iterations, args.iterations)
+    append_unique_iteration(args.test_iterations, args.iterations)
 
     print("Optimizing LaFGS " + args.model_path)
     safe_state(args.quiet)

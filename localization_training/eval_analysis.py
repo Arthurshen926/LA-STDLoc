@@ -38,6 +38,24 @@ def _sparse_optional_metric(item, name):
     return None
 
 
+def _numeric_sparse_diagnostic_names(*items):
+    names = set()
+    for item in items:
+        sparse = item.get("sparse", {})
+        for source in (item, sparse if isinstance(sparse, dict) else {}):
+            if not isinstance(source, dict):
+                continue
+            for key, value in source.items():
+                if not str(key).startswith("sparse_diag_"):
+                    continue
+                try:
+                    float(value)
+                except (TypeError, ValueError):
+                    continue
+                names.add(str(key))
+    return names
+
+
 def _sequence_name(image_name):
     image_name = str(image_name)
     if "/" in image_name:
@@ -78,7 +96,7 @@ def paired_sparse_stage_rows(baseline_results, candidate_results):
         base_keypoints = _sparse_optional_metric(base, "detected_keypoints")
         cand_keypoints = _sparse_optional_metric(cand, "detected_keypoints")
         image_name = str(base.get("image_name", key))
-        rows.append(
+        row = (
             {
                 "image_name": image_name,
                 "sequence": _sequence_name(image_name),
@@ -103,6 +121,15 @@ def paired_sparse_stage_rows(baseline_results, candidate_results):
                 else None,
             }
         )
+        for diag_key in sorted(_numeric_sparse_diagnostic_names(base, cand)):
+            base_value = _sparse_optional_metric(base, diag_key)
+            cand_value = _sparse_optional_metric(cand, diag_key)
+            row[f"baseline_{diag_key}"] = base_value
+            row[f"candidate_{diag_key}"] = cand_value
+            row[f"delta_{diag_key}"] = (
+                cand_value - base_value if base_value is not None and cand_value is not None else None
+            )
+        rows.append(row)
     return rows
 
 
@@ -119,12 +146,76 @@ def _median(values):
 
 
 def _top_rows(rows, key, top_k, reverse=True):
+    public_keys = (
+        "image_name",
+        "sequence",
+        "baseline_te",
+        "candidate_te",
+        "delta_te",
+        "baseline_ae",
+        "candidate_ae",
+        "delta_ae",
+        "baseline_inliers",
+        "candidate_inliers",
+        "delta_inliers",
+        "baseline_matches",
+        "candidate_matches",
+        "delta_matches",
+        "baseline_keypoints",
+        "candidate_keypoints",
+        "delta_keypoints",
+    )
     return [
-        dict(row)
+        {public_key: row.get(public_key) for public_key in public_keys if public_key in row}
         for row in sorted(rows, key=lambda row: float(row.get(key, 0.0)), reverse=reverse)[
             : max(0, int(top_k))
         ]
     ]
+
+
+def _pearson(xs, ys):
+    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    if len(pairs) < 2:
+        return 0.0
+    xs = np.asarray([pair[0] for pair in pairs], dtype=np.float64)
+    ys = np.asarray([pair[1] for pair in pairs], dtype=np.float64)
+    if float(xs.std()) == 0.0 or float(ys.std()) == 0.0:
+        return 0.0
+    return float(np.corrcoef(xs, ys)[0, 1])
+
+
+def _paired_sparse_diagnostic_summary(rows):
+    keys = sorted(
+        key[len("baseline_") :]
+        for row in rows
+        for key in row
+        if key.startswith("baseline_sparse_diag_")
+    )
+    summaries = {}
+    for key in keys:
+        paired_rows = [
+            row
+            for row in rows
+            if row.get(f"baseline_{key}") is not None and row.get(f"candidate_{key}") is not None
+        ]
+        if not paired_rows:
+            continue
+        deltas = [row[f"delta_{key}"] for row in paired_rows]
+        degraded = [row[f"delta_{key}"] for row in paired_rows if float(row["delta_te"]) > 0.0]
+        improved = [row[f"delta_{key}"] for row in paired_rows if float(row["delta_te"]) < 0.0]
+        summaries[key] = {
+            "count": int(len(paired_rows)),
+            "baseline_mean": _mean([row[f"baseline_{key}"] for row in paired_rows]),
+            "candidate_mean": _mean([row[f"candidate_{key}"] for row in paired_rows]),
+            "delta_mean": _mean(deltas),
+            "baseline_median": _median([row[f"baseline_{key}"] for row in paired_rows]),
+            "candidate_median": _median([row[f"candidate_{key}"] for row in paired_rows]),
+            "delta_median": _median(deltas),
+            "pose_degraded_delta_mean": _mean(degraded),
+            "pose_improved_delta_mean": _mean(improved),
+            "translation_delta_pearson": _pearson(deltas, [row["delta_te"] for row in paired_rows]),
+        }
+    return summaries
 
 
 def paired_sparse_stage_summary(
@@ -198,6 +289,7 @@ def paired_sparse_stage_summary(
         "delta_median_inliers": _median([row["delta_inliers"] for row in rows]),
         "delta_mean_matches": _mean([row["delta_matches"] for row in rows]),
         "delta_mean_keypoints": _mean([row["delta_keypoints"] for row in rows]),
+        "diagnostics": _paired_sparse_diagnostic_summary(rows),
         "recall_5cm_gain_count": int(recall_gain),
         "recall_5cm_loss_count": int(recall_loss),
         "both_ok_count": int(both_ok),

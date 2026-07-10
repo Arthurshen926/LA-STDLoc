@@ -40,7 +40,11 @@ import torch.nn.functional as F
 
 from encoders.feature_extractor import FeatureExtractor
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
-from localization_training.landmark_distill import localization_aware_sample, save_landmark_meta
+from localization_training.landmark_distill import (
+    coverage_preserving_sample,
+    localization_aware_sample,
+    save_landmark_meta,
+)
 from scene.kpdetector import KpDetector
 
 
@@ -200,6 +204,22 @@ def _project_xyz_to_feature(xyz, pose, K, height, width):
     return xy, valid
 
 
+def _project_xyz_to_feature_with_depth(xyz, pose, K, height, width):
+    xyz_homo = torch.cat([xyz, torch.ones(xyz.shape[0], 1, device=xyz.device, dtype=xyz.dtype)], dim=-1)
+    xyz_cam = (pose.to(device=xyz.device, dtype=xyz.dtype) @ xyz_homo.T)[:3]
+    depths = xyz_cam[2]
+    xyz_cam_norm = xyz_cam / depths.clamp_min(1e-8)
+    xy = (K.to(device=xyz.device, dtype=xyz.dtype) @ xyz_cam_norm)[:2]
+    valid = (
+        (depths > 1e-8)
+        & (xy[0] >= 0)
+        & (xy[0] <= width - 1)
+        & (xy[1] >= 0)
+        & (xy[1] <= height - 1)
+    )
+    return xy, valid, depths
+
+
 def _calibrated_utility_weights(utility, min_weight=1.0, max_weight=2.0):
     if utility is None:
         return None
@@ -210,6 +230,369 @@ def _calibrated_utility_weights(utility, min_weight=1.0, max_weight=2.0):
     scale = (utility - center).abs().median().clamp_min(1e-6)
     normalized = (utility - center) / scale
     return min_weight + (max_weight - min_weight) * torch.sigmoid(normalized)
+
+
+def _meta_vector(landmark_meta, key, count):
+    if landmark_meta is None or key not in landmark_meta:
+        return None
+    value = torch.as_tensor(landmark_meta[key], dtype=torch.float32).reshape(-1)
+    if value.numel() == 1:
+        value = value.expand(count)
+    if value.numel() < count:
+        pad = value[-1].expand(count - value.numel()) if value.numel() else torch.zeros(count)
+        value = torch.cat([value, pad], dim=0)
+    return value[:count]
+
+
+def _first_meta_vector(landmark_meta, keys, count):
+    for key in keys:
+        value = _meta_vector(landmark_meta, key, count)
+        if value is not None:
+            return value
+    return None
+
+
+def _quality_factor(values, floor=0.25):
+    values = values.float()
+    finite = torch.isfinite(values)
+    factor = torch.zeros_like(values)
+    if finite.any():
+        finite_values = values[finite].clamp_min(0.0)
+        if finite_values.numel() > 0 and float(finite_values.max().item()) > 1.0:
+            finite_values = finite_values / finite_values.max().clamp_min(1e-6)
+        factor[finite] = finite_values.clamp(0.0, 1.0)
+    floor = max(0.0, min(float(floor), 1.0))
+    return floor + (1.0 - floor) * factor
+
+
+def _has_any_meta_key(landmark_meta, keys):
+    return landmark_meta is not None and any(key in landmark_meta for key in keys)
+
+
+def _error_cleanliness(values, scale=4.0):
+    values = values.float()
+    scale = max(float(scale), 1e-6)
+    clean = torch.exp(-values.clamp_min(0.0) / scale).clamp(0.0, 1.0)
+    clean[~torch.isfinite(clean)] = 0.0
+    return clean
+
+
+def _inverse_count_balance(ids, count):
+    ids = torch.as_tensor(ids, dtype=torch.long).reshape(-1)
+    device = ids.device
+    balance = torch.ones(count, dtype=torch.float32, device=device)
+    if ids.numel() < count:
+        pad = torch.full((count - ids.numel(),), -1, dtype=torch.long, device=device)
+        ids = torch.cat([ids, pad], dim=0)
+    ids = ids[:count]
+    valid = ids >= 0
+    if not bool(valid.any().item()):
+        return balance
+    unique, counts = torch.unique(ids[valid], return_counts=True)
+    count_map = torch.zeros(int(unique.max().item()) + 1, dtype=torch.float32, device=device)
+    count_map[unique] = counts.to(dtype=torch.float32)
+    balance[valid] = torch.rsqrt(count_map[ids[valid]].clamp_min(1.0))
+    return balance / balance.mean().clamp_min(1e-6)
+
+
+def _coverage_spatial_balance_from_meta(landmark_meta, count):
+    uv = landmark_meta.get("coverage_uv") if landmark_meta is not None else None
+    if uv is None:
+        return None
+    uv = torch.as_tensor(uv, dtype=torch.float32).reshape(-1, 2)
+    if uv.numel() == 0:
+        return None
+    if uv.shape[0] < count:
+        pad = uv[-1:].expand(count - uv.shape[0], -1) if uv.shape[0] else torch.zeros(count, 2)
+        uv = torch.cat([uv, pad], dim=0)
+    uv = uv[:count]
+    grid_size_value = landmark_meta.get("coverage_grid_size", 4)
+    grid_size = int(torch.as_tensor(grid_size_value).reshape(-1)[0].item()) if grid_size_value is not None else 4
+    if grid_size <= 1:
+        return None
+    image_size = landmark_meta.get("coverage_image_size")
+    if image_size is not None:
+        image_size = torch.as_tensor(image_size, dtype=torch.float32).reshape(-1)
+    if image_size is not None and image_size.numel() >= 2 and float(image_size[0]) > 0 and float(image_size[1]) > 0:
+        height = float(image_size[0])
+        width = float(image_size[1])
+        x = torch.floor(uv[:, 0].clamp(0, width - 1) / max(width, 1.0) * grid_size)
+        y = torch.floor(uv[:, 1].clamp(0, height - 1) / max(height, 1.0) * grid_size)
+    else:
+        finite = torch.isfinite(uv).all(dim=1)
+        if not bool(finite.any().item()):
+            return None
+        min_xy = uv[finite].min(dim=0).values
+        span = (uv[finite].max(dim=0).values - min_xy).clamp_min(1e-6)
+        normalized = (uv - min_xy) / span
+        x = torch.floor(normalized[:, 0].clamp(0, 1) * grid_size)
+        y = torch.floor(normalized[:, 1].clamp(0, 1) * grid_size)
+    x = x.to(dtype=torch.long).clamp(0, grid_size - 1)
+    y = y.to(dtype=torch.long).clamp(0, grid_size - 1)
+    return _inverse_count_balance(y * grid_size + x, count)
+
+
+def _coverage_depth_balance_from_meta(landmark_meta, count):
+    depth = landmark_meta.get("coverage_depth") if landmark_meta is not None else None
+    if depth is None:
+        return None
+    depth = torch.as_tensor(depth, dtype=torch.float32).reshape(-1)
+    if depth.numel() == 0:
+        return None
+    if depth.numel() < count:
+        pad = depth[-1].expand(count - depth.numel())
+        depth = torch.cat([depth, pad], dim=0)
+    depth = depth[:count]
+    bins_value = landmark_meta.get("coverage_depth_bins", 4)
+    bins = int(torch.as_tensor(bins_value).reshape(-1)[0].item()) if bins_value is not None else 4
+    if bins <= 1:
+        return None
+    finite = torch.isfinite(depth)
+    if not bool(finite.any().item()):
+        return None
+    selected = depth[finite]
+    span = (selected.max() - selected.min()).clamp_min(1e-6)
+    ids = torch.full((count,), -1, dtype=torch.long, device=depth.device)
+    ids[finite] = torch.floor((selected - selected.min()) / span * bins).to(dtype=torch.long).clamp(0, bins - 1)
+    return _inverse_count_balance(ids, count)
+
+
+def final_candidate_quality_from_meta(
+    landmark_meta,
+    count,
+    reprojection_error_scale=4.0,
+    cleanliness_weight=1.0,
+    pose_info_weight=1.0,
+    balance_weight=1.0,
+    reliability_weight=0.25,
+    utility_weight=0.0,
+):
+    """Compose detector supervision from final-candidate localization quality signals."""
+    device = None
+    if landmark_meta is not None:
+        for value in landmark_meta.values():
+            if torch.is_tensor(value):
+                device = value.device
+                break
+    if device is None:
+        device = torch.device("cpu")
+    count = int(count)
+    ones = torch.ones(count, dtype=torch.float32, device=device)
+    eps = 1e-6
+
+    raw_precision = _first_meta_vector(
+        landmark_meta,
+        ("raw_gt_precision_2px", "all_gt_precision_2px", "gt_precision_2px"),
+        count,
+    )
+    inlier_precision = _first_meta_vector(
+        landmark_meta,
+        ("inlier_gt_precision_2px", "pnp_inlier_precision_2px"),
+        count,
+    )
+    explicit_cleanliness = _first_meta_vector(
+        landmark_meta,
+        ("candidate_cleanliness", "gt_cleanliness", "gt_precision_6px", "raw_gt_precision_4px", "all_gt_precision_4px"),
+        count,
+    )
+    clean_parts = []
+    if raw_precision is not None:
+        clean_parts.append(_quality_factor(raw_precision.to(device), floor=0.0))
+    if inlier_precision is not None:
+        clean_parts.append(_quality_factor(inlier_precision.to(device), floor=0.0))
+    if explicit_cleanliness is not None:
+        clean_parts.append(_quality_factor(explicit_cleanliness.to(device), floor=0.0))
+    reproj_error = _first_meta_vector(
+        landmark_meta,
+        ("reproj_error", "gt_reproj_error", "gt_reproj_px"),
+        count,
+    )
+    if reproj_error is not None:
+        clean_parts.append(_error_cleanliness(reproj_error.to(device), scale=reprojection_error_scale))
+    if clean_parts:
+        cleanliness = torch.stack(clean_parts, dim=0).clamp_min(eps).log().mean(dim=0).exp()
+    else:
+        cleanliness = ones
+
+    pose = _first_meta_vector(
+        landmark_meta,
+        ("pose_info_contribution", "pose_min_eig", "information", "pose_information"),
+        count,
+    )
+    if pose is not None:
+        pose_info = _quality_factor(pose.to(device), floor=0.05)
+    else:
+        pose_info = ones
+
+    spatial_balance = _first_meta_vector(
+        landmark_meta,
+        ("spatial_balance", "geometry_balance"),
+        count,
+    )
+    if spatial_balance is None and landmark_meta is not None:
+        spatial_balance = _coverage_spatial_balance_from_meta(landmark_meta, count)
+    if spatial_balance is not None:
+        spatial_balance = _quality_factor(spatial_balance.to(device), floor=0.05)
+    else:
+        spatial_balance = ones
+
+    depth_balance = _meta_vector(landmark_meta, "depth_balance", count)
+    if depth_balance is None and landmark_meta is not None:
+        depth_balance = _coverage_depth_balance_from_meta(landmark_meta, count)
+    if depth_balance is not None:
+        depth_balance = _quality_factor(depth_balance.to(device), floor=0.05)
+    else:
+        depth_balance = ones
+    balance = (spatial_balance.clamp_min(eps) * depth_balance.clamp_min(eps)).sqrt()
+
+    reliability_parts = []
+    repeatability = _meta_vector(landmark_meta, "repeatability", count)
+    if repeatability is not None:
+        reliability_parts.append(_quality_factor(repeatability.to(device), floor=0.05))
+    positive_prob = _meta_vector(landmark_meta, "positive_prob", count)
+    if positive_prob is not None:
+        reliability_parts.append(_quality_factor(positive_prob.to(device), floor=0.05))
+    margin = _meta_vector(landmark_meta, "margin", count)
+    if margin is not None:
+        reliability_parts.append(_quality_factor(margin.to(device), floor=0.05))
+    outlier = _meta_vector(landmark_meta, "outlier", count)
+    if outlier is not None:
+        reliability_parts.append((1.0 - _quality_factor(outlier.to(device), floor=0.0)).clamp(0.0, 1.0))
+    if reliability_parts:
+        reliability = torch.stack(reliability_parts, dim=0).clamp_min(eps).log().mean(dim=0).exp()
+    else:
+        reliability = ones
+
+    utility = _meta_vector(landmark_meta, "utility", count)
+    if utility is not None:
+        utility_quality = _quality_factor(utility.to(device), floor=0.05)
+    else:
+        utility_quality = ones
+
+    weighted_logs = []
+    weight_sum = 0.0
+    for value, weight in (
+        (cleanliness, cleanliness_weight),
+        (pose_info, pose_info_weight),
+        (balance, balance_weight),
+        (reliability, reliability_weight),
+        (utility_quality, utility_weight),
+    ):
+        weight = max(0.0, float(weight))
+        if weight <= 0.0:
+            continue
+        weighted_logs.append(weight * value.clamp_min(eps).log())
+        weight_sum += weight
+
+    if not weighted_logs:
+        quality = ones
+    else:
+        quality = (torch.stack(weighted_logs, dim=0).sum(dim=0) / max(weight_sum, eps)).exp()
+    quality[~torch.isfinite(quality)] = 0.0
+    components = {
+        "candidate_quality": quality.clamp(0.0, 1.0),
+        "candidate_cleanliness": cleanliness.clamp(0.0, 1.0),
+        "pose_info_contribution": pose_info.clamp(0.0, 1.0),
+        "spatial_balance": spatial_balance.clamp(0.0, 1.0),
+        "depth_balance": depth_balance.clamp(0.0, 1.0),
+        "candidate_balance": balance.clamp(0.0, 1.0),
+        "candidate_reliability": reliability.clamp(0.0, 1.0),
+    }
+    return components["candidate_quality"], components
+
+
+def detector_landmark_quality_from_meta(landmark_meta, count, reprojection_error_scale=8.0):
+    if landmark_meta is None:
+        return None
+    candidate_quality = _meta_vector(landmark_meta, "candidate_quality", count)
+    if candidate_quality is not None:
+        candidate_quality[~torch.isfinite(candidate_quality)] = 0.0
+        return candidate_quality.clamp_min(0.0)
+    final_signal_keys = (
+        "candidate_cleanliness",
+        "gt_cleanliness",
+        "raw_gt_precision_2px",
+        "all_gt_precision_2px",
+        "gt_precision_2px",
+        "inlier_gt_precision_2px",
+        "pnp_inlier_precision_2px",
+        "pose_info_contribution",
+        "pose_min_eig",
+        "reproj_error",
+        "gt_reproj_error",
+        "gt_reproj_px",
+        "depth_balance",
+        "spatial_balance",
+        "geometry_balance",
+        "coverage_uv",
+        "coverage_depth",
+    )
+    if _has_any_meta_key(landmark_meta, final_signal_keys):
+        quality, _ = final_candidate_quality_from_meta(
+            landmark_meta,
+            count,
+            reprojection_error_scale=reprojection_error_scale,
+        )
+        return quality
+    quality = _meta_vector(landmark_meta, "utility", count)
+    if quality is None:
+        quality = torch.ones(count, dtype=torch.float32)
+    else:
+        quality = quality.float().clamp_min(0.0)
+
+    information = _first_meta_vector(landmark_meta, ("pose_min_eig", "information", "pose_information"), count)
+    if information is not None:
+        quality = quality * _quality_factor(information, floor=0.25)
+
+    raw_precision = _first_meta_vector(
+        landmark_meta,
+        ("raw_gt_precision_2px", "all_gt_precision_2px", "gt_precision_2px"),
+        count,
+    )
+    if raw_precision is not None:
+        quality = quality * _quality_factor(raw_precision, floor=0.1)
+
+    inlier_precision = _first_meta_vector(
+        landmark_meta,
+        ("inlier_gt_precision_2px", "pnp_inlier_precision_2px"),
+        count,
+    )
+    if inlier_precision is not None:
+        quality = quality * _quality_factor(inlier_precision, floor=0.1)
+
+    precision = _first_meta_vector(
+        landmark_meta,
+        ("gt_precision_6px", "raw_gt_precision_4px", "all_gt_precision_4px"),
+        count,
+    )
+    if precision is not None:
+        quality = quality * _quality_factor(precision, floor=0.25)
+
+    for balance_key in ("depth_balance", "spatial_balance", "geometry_balance"):
+        balance = _meta_vector(landmark_meta, balance_key, count)
+        if balance is not None:
+            quality = quality * _quality_factor(balance, floor=0.25)
+    if not any(key in landmark_meta for key in ("spatial_balance", "geometry_balance")):
+        spatial_balance = _coverage_spatial_balance_from_meta(landmark_meta, count)
+        if spatial_balance is not None:
+            quality = quality * _quality_factor(spatial_balance, floor=0.25)
+    if "depth_balance" not in landmark_meta:
+        depth_balance = _coverage_depth_balance_from_meta(landmark_meta, count)
+        if depth_balance is not None:
+            quality = quality * _quality_factor(depth_balance, floor=0.25)
+
+    reproj_error = _meta_vector(landmark_meta, "reproj_error", count)
+    if reproj_error is None:
+        reproj_error = _meta_vector(landmark_meta, "gt_reproj_error", count)
+    if reproj_error is None:
+        reproj_error = _meta_vector(landmark_meta, "gt_reproj_px", count)
+    if reproj_error is not None:
+        scale = max(float(reprojection_error_scale), 1e-6)
+        reproj_quality = torch.exp(-reproj_error.float().clamp_min(0.0) / scale).clamp(0.0, 1.0)
+        quality = quality * reproj_quality
+
+    quality[~torch.isfinite(quality)] = 0.0
+    return quality.clamp_min(0.0)
 
 
 def generate_weighted_hard_gt_map(
@@ -248,7 +631,68 @@ def generate_weighted_hard_gt_map(
             reduce="amax",
             include_self=True,
         )
-    return gt_flat.view(height, width)[None], weight_flat.view(height, width)[None]
+    return gt_flat.view(height, width)[None].detach(), weight_flat.view(height, width)[None].detach()
+
+
+def generate_soft_gt_map(
+    xyz,
+    gt_feature_map,
+    pose,
+    K,
+    utility=None,
+    render_visible_mask=None,
+    soft_sigma=1.5,
+):
+    """Generate local Gaussian detector targets without allocating a full image meshgrid per landmark."""
+    height, width = gt_feature_map.shape[1], gt_feature_map.shape[2]
+    device = gt_feature_map.device
+    dtype = gt_feature_map.dtype
+    xyz = xyz.to(device=device, dtype=dtype)
+    xy, valid = _project_xyz_to_feature(xyz, pose, K, height, width)
+    if render_visible_mask is not None:
+        valid = valid & render_visible_mask.to(device=device, dtype=torch.bool)
+
+    gt_flat = torch.zeros(height * width, device=device, dtype=dtype)
+    weight_flat = torch.ones(height * width, device=device, dtype=dtype)
+    if valid.sum() == 0:
+        return gt_flat.view(height, width)[None], weight_flat.view(height, width)[None]
+
+    sigma = max(float(soft_sigma), 1e-6)
+    radius = max(1, int(torch.ceil(torch.tensor(3.0 * sigma)).item()))
+    offsets = torch.arange(-radius, radius + 1, device=device)
+    off_y, off_x = torch.meshgrid(offsets, offsets, indexing="ij")
+    off_x = off_x.reshape(1, -1)
+    off_y = off_y.reshape(1, -1)
+
+    centers = xy[:, valid].T
+    centers_int = centers.round().to(dtype=torch.long)
+    px = centers_int[:, 0:1] + off_x
+    py = centers_int[:, 1:2] + off_y
+    in_image = (px >= 0) & (px < width) & (py >= 0) & (py < height)
+    dist2 = (px.to(dtype=dtype) - centers[:, 0:1]).pow(2) + (py.to(dtype=dtype) - centers[:, 1:2]).pow(2)
+    values = torch.exp(-0.5 * dist2 / (sigma * sigma)).to(dtype=dtype)
+    flat_idx = py * width + px
+
+    gt_flat.scatter_reduce_(
+        0,
+        flat_idx[in_image].to(dtype=torch.long),
+        values[in_image],
+        reduce="amax",
+        include_self=True,
+    )
+
+    utility_weights = _calibrated_utility_weights(utility)
+    if utility_weights is not None:
+        utility_weights = utility_weights.to(device=device, dtype=dtype)[valid]
+        weight_values = 1.0 + (utility_weights[:, None] - 1.0) * values
+        weight_flat.scatter_reduce_(
+            0,
+            flat_idx[in_image].to(dtype=torch.long),
+            weight_values[in_image],
+            reduce="amax",
+            include_self=True,
+        )
+    return gt_flat.view(height, width)[None].detach(), weight_flat.view(height, width)[None].detach()
 
 
 def utility_weighted_detector_loss(pred, target, weight_map=None, gamma=2.0, alpha=0.25):
@@ -280,7 +724,22 @@ def build_detector_target_map(
     soft_sigma=1.5,
 ):
     if detector_target_mode == "soft":
-        utility = landmark_meta.get("utility") if landmark_meta is not None else None
+        utility = detector_landmark_quality_from_meta(landmark_meta, int(sampled_idx.numel()))
+        sampled_visible = None
+        if render_visible_mask is not None:
+            sampled_visible = render_visible_mask[sampled_idx]
+        gt_map, weight_map = generate_soft_gt_map(
+            gaussian_localization_xyz(gaussians)[sampled_idx],
+            gt_feature_map,
+            pose,
+            K,
+            utility=utility,
+            render_visible_mask=sampled_visible,
+            soft_sigma=soft_sigma,
+        )
+        return gt_map, True, weight_map
+    if detector_target_mode == "weighted_hard":
+        utility = detector_landmark_quality_from_meta(landmark_meta, int(sampled_idx.numel()))
         sampled_visible = None
         if render_visible_mask is not None:
             sampled_visible = render_visible_mask[sampled_idx]
@@ -371,6 +830,7 @@ def matching_oriented_sample(
     masks=None,
     num=16384,
     k=32,
+    return_coverage_stats=False,
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
     loc_xyz = gaussian_localization_xyz(gaussians)
@@ -378,6 +838,8 @@ def matching_oriented_sample(
         loc_xyz.shape[0], dtype=torch.float32, device="cuda"
     )
     score_num = torch.zeros(loc_xyz.shape[0], dtype=torch.int, device="cuda")
+    uv_sum = torch.zeros((loc_xyz.shape[0], 2), dtype=torch.float32, device="cuda")
+    depth_sum = torch.zeros(loc_xyz.shape[0], dtype=torch.float32, device="cuda")
     fine_resolution = (
         viewpoint_stack[0].original_image.shape[1],
         viewpoint_stack[0].original_image.shape[2],
@@ -447,12 +909,37 @@ def matching_oriented_sample(
         )
         score_num[mask] += 1
         score_sum[mask] += score
+        if return_coverage_stats and bool(mask.any().item()):
+            xy, project_valid, depths = _project_xyz_to_feature_with_depth(
+                loc_xyz,
+                viewmat,
+                K,
+                gt_feature_map.shape[1],
+                gt_feature_map.shape[2],
+            )
+            stat_mask = mask & project_valid
+            uv_sum[stat_mask] += xy[:, stat_mask].T.float()
+            depth_sum[stat_mask] += depths[stat_mask].float()
 
+    observation_count = score_num.clone()
     score_num[score_num == 0] = 1  # avoid divide by zero
     score_avg = score_sum / score_num
 
     sampled_idx = random_knn_score(loc_xyz, num, score_avg, k=k)
     sampled_idx = torch.unique(sampled_idx)
+    if return_coverage_stats:
+        denom = observation_count.clamp_min(1).to(dtype=torch.float32)
+        coverage_stats = {
+            "uv": uv_sum / denom[:, None],
+            "depth": depth_sum / denom,
+            "observed": observation_count > 0,
+            "image_size": torch.tensor(
+                [fine_resolution[0], fine_resolution[1]],
+                dtype=torch.long,
+                device=loc_xyz.device,
+            ),
+        }
+        return sampled_idx, score_avg, score_num, coverage_stats
     return sampled_idx, score_avg, score_num
 
 
@@ -481,6 +968,23 @@ def validate_detector_sampled_indices(
     return sampled_idx
 
 
+def detector_sampling_observed_mask(loc_observation_count, min_loc_observations=1, coverage_stats=None):
+    observed = torch.as_tensor(loc_observation_count) >= int(min_loc_observations)
+    if coverage_stats is None or "observed" not in coverage_stats:
+        return observed
+    coverage_observed = torch.as_tensor(
+        coverage_stats["observed"],
+        device=observed.device,
+        dtype=torch.bool,
+    )
+    if coverage_observed.shape != observed.shape:
+        raise ValueError(
+            "coverage_stats['observed'] shape does not match localization observation count: "
+            f"{tuple(coverage_observed.shape)} vs {tuple(observed.shape)}"
+        )
+    return observed & coverage_observed
+
+
 def load_precomputed_detector_landmarks(path, point_count=None, device=None):
     with open(path, "rb") as handle:
         sampled_idx = pickle.load(handle)
@@ -499,6 +1003,73 @@ def load_precomputed_landmark_meta(path, device="cuda"):
     if not os.path.exists(meta_path):
         return None
     return torch.load(meta_path, map_location=device)
+
+
+def _gaussian_localization_vector(gaussians, name, count, default=0.0):
+    value = getattr(gaussians, name, None)
+    if torch.is_tensor(value):
+        value = value.detach().float().reshape(-1)
+        if value.numel() >= count:
+            return value[:count]
+        if value.numel() > 0:
+            return torch.cat([value, value[-1].expand(count - value.numel())], dim=0)
+    device = gaussians.get_xyz.device
+    return torch.full((count,), float(default), dtype=torch.float32, device=device)
+
+
+def final_candidate_quality_from_gaussians(
+    gaussians,
+    min_observations=4,
+    coverage_stats=None,
+    reprojection_error_scale=4.0,
+    cleanliness_weight=1.0,
+    pose_info_weight=1.0,
+    balance_weight=1.0,
+    reliability_weight=0.25,
+    utility_weight=0.0,
+):
+    count = int(gaussians.get_xyz.shape[0])
+    legacy_utility = gaussians.compute_localization_utility(min_observations=min_observations)
+    meta = {
+        "utility": legacy_utility.detach(),
+        "repeatability": _gaussian_localization_vector(gaussians, "loc_repeatability_ema", count),
+        "positive_prob": _gaussian_localization_vector(gaussians, "loc_positive_prob_ema", count),
+        "margin": _gaussian_localization_vector(gaussians, "loc_margin_ema", count),
+        "outlier": _gaussian_localization_vector(gaussians, "loc_outlier_ema", count),
+        "reproj_error": _gaussian_localization_vector(gaussians, "loc_reproj_error_ema", count),
+        "information": _gaussian_localization_vector(gaussians, "loc_information_ema", count),
+    }
+    if coverage_stats is not None:
+        if coverage_stats.get("uv") is not None:
+            meta["coverage_uv"] = coverage_stats["uv"]
+        if coverage_stats.get("depth") is not None:
+            meta["coverage_depth"] = coverage_stats["depth"]
+        if coverage_stats.get("image_size") is not None:
+            meta["coverage_image_size"] = coverage_stats["image_size"]
+        if "coverage_grid_size" in coverage_stats:
+            meta["coverage_grid_size"] = coverage_stats["coverage_grid_size"]
+        if "coverage_depth_bins" in coverage_stats:
+            meta["coverage_depth_bins"] = coverage_stats["coverage_depth_bins"]
+    quality, components = final_candidate_quality_from_meta(
+        meta,
+        count,
+        reprojection_error_scale=reprojection_error_scale,
+        cleanliness_weight=cleanliness_weight,
+        pose_info_weight=pose_info_weight,
+        balance_weight=balance_weight,
+        reliability_weight=reliability_weight,
+        utility_weight=utility_weight,
+    )
+    observed = detector_sampling_observed_mask(
+        gaussians.loc_observation_count,
+        min_loc_observations=min_observations,
+        coverage_stats=coverage_stats,
+    )
+    quality = quality.to(device=gaussians.get_xyz.device, dtype=torch.float32)
+    quality = quality.masked_fill(~observed.to(device=quality.device, dtype=torch.bool), 0.0)
+    components["candidate_quality"] = quality
+    components["legacy_utility"] = legacy_utility.detach()
+    return quality, components
 
 
 def evaluate_detector(
@@ -601,7 +1172,7 @@ def evaluate_detector(
                         ).squeeze(0)
                         > 0.5
                     )
-                    gt_map *= gt_map_mask
+                    gt_map = gt_map * gt_map_mask
 
                 # Loss
                 heat_map = detector(gt_feature_map)
@@ -670,6 +1241,20 @@ def training_detector(
     min_loc_observations=1,
     detector_target_mode="hard",
     soft_sigma=1.5,
+    coverage_preserve_ratio=0.5,
+    coverage_utility_ratio=0.25,
+    coverage_high_confidence_ratio=0.0,
+    coverage_grid_size=0,
+    coverage_max_per_grid=0,
+    coverage_depth_bins=0,
+    coverage_max_per_depth_bin=0,
+    coverage_allow_unbalanced_fallback=False,
+    candidate_reprojection_error_scale=4.0,
+    candidate_cleanliness_weight=1.0,
+    candidate_pose_info_weight=1.0,
+    candidate_balance_weight=1.0,
+    candidate_reliability_weight=0.25,
+    candidate_utility_weight=0.0,
     landmark_only=False,
     precomputed_landmark_path="",
 ):
@@ -700,7 +1285,7 @@ def training_detector(
     else:
         # M.O. sampling
         print("Matching oriented sampling...")
-        sampled_idx, score_avg, score_num = matching_oriented_sample(
+        sample_result = matching_oriented_sample(
             scene,
             gaussians,
             feature_extractor,
@@ -708,33 +1293,91 @@ def training_detector(
             masks=masks,
             num=landmark_num,
             k=landmark_k,
+            return_coverage_stats=sampling_mode == "coverage_preserving",
         )
+        if sampling_mode == "coverage_preserving":
+            sampled_idx, score_avg, score_num, coverage_stats = sample_result
+        else:
+            sampled_idx, score_avg, score_num = sample_result
+            coverage_stats = None
         if sampling_mode in {
             "localization_aware",
             "localization_aware_spatial",
             "localization_aware_global",
             "localization_aware_pnp",
+            "coverage_preserving",
         }:
             if not hasattr(gaussians, "compute_localization_utility"):
                 raise ValueError("localization_aware sampling requires Gaussian localization state")
-            utility = gaussians.compute_localization_utility(min_observations=min_loc_observations)
-            observed = gaussians.loc_observation_count >= min_loc_observations
-            pnp_balance = sampling_mode == "localization_aware_pnp"
-            use_spatial_sampling = sampling_mode != "localization_aware_global"
-            sampled_idx, landmark_meta = localization_aware_sample(
-                gaussian_localization_xyz(gaussians),
-                score_avg,
-                utility,
-                num=landmark_num,
-                k=landmark_k,
-                min_observations=observed,
-                utility_weight=utility_weight,
-                spatial=use_spatial_sampling,
-                pnp_balance=pnp_balance,
-                pnp_voxel_size=pnp_voxel_size,
-                pnp_max_per_voxel=pnp_max_per_voxel,
-                pnp_preserve_ratio=pnp_preserve_ratio,
+            observed = detector_sampling_observed_mask(
+                gaussians.loc_observation_count,
+                min_loc_observations=min_loc_observations,
+                coverage_stats=coverage_stats if sampling_mode == "coverage_preserving" else None,
             )
+            candidate_quality, candidate_components = final_candidate_quality_from_gaussians(
+                gaussians,
+                min_observations=min_loc_observations,
+                coverage_stats=coverage_stats if sampling_mode == "coverage_preserving" else None,
+                reprojection_error_scale=candidate_reprojection_error_scale,
+                cleanliness_weight=candidate_cleanliness_weight,
+                pose_info_weight=candidate_pose_info_weight,
+                balance_weight=candidate_balance_weight,
+                reliability_weight=candidate_reliability_weight,
+                utility_weight=candidate_utility_weight,
+            )
+            utility = candidate_quality
+            if sampling_mode == "coverage_preserving":
+                high_confidence = candidate_components.get("candidate_cleanliness", utility) * candidate_components.get(
+                    "pose_info_contribution", utility.new_ones(utility.shape)
+                )
+                coverage_uv = coverage_stats.get("uv") if coverage_stats is not None else None
+                coverage_depth = coverage_stats.get("depth") if coverage_stats is not None else None
+                image_size_tensor = coverage_stats.get("image_size") if coverage_stats is not None else None
+                image_size = (
+                    tuple(int(v) for v in image_size_tensor.detach().cpu().tolist())
+                    if image_size_tensor is not None
+                    else None
+                )
+                sampled_idx, landmark_meta = coverage_preserving_sample(
+                    gaussian_localization_xyz(gaussians),
+                    score_avg,
+                    utility,
+                    num=landmark_num,
+                    k=landmark_k,
+                    min_observations=observed,
+                    utility_weight=utility_weight,
+                    base_preserve_ratio=coverage_preserve_ratio,
+                    utility_preserve_ratio=coverage_utility_ratio,
+                    high_confidence=high_confidence,
+                    high_confidence_ratio=coverage_high_confidence_ratio,
+                    voxel_size=pnp_voxel_size,
+                    max_per_voxel=pnp_max_per_voxel,
+                    uv=coverage_uv,
+                    image_size=image_size,
+                    grid_size=coverage_grid_size,
+                    max_per_grid=coverage_max_per_grid,
+                    depth=coverage_depth,
+                    depth_bins=coverage_depth_bins,
+                    max_per_depth_bin=coverage_max_per_depth_bin,
+                    allow_unbalanced_fallback=coverage_allow_unbalanced_fallback,
+                )
+            else:
+                pnp_balance = sampling_mode == "localization_aware_pnp"
+                use_spatial_sampling = sampling_mode != "localization_aware_global"
+                sampled_idx, landmark_meta = localization_aware_sample(
+                    gaussian_localization_xyz(gaussians),
+                    score_avg,
+                    utility,
+                    num=landmark_num,
+                    k=landmark_k,
+                    min_observations=observed,
+                    utility_weight=utility_weight,
+                    spatial=use_spatial_sampling,
+                    pnp_balance=pnp_balance,
+                    pnp_voxel_size=pnp_voxel_size,
+                    pnp_max_per_voxel=pnp_max_per_voxel,
+                    pnp_preserve_ratio=pnp_preserve_ratio,
+                )
             sampled_idx = validate_detector_sampled_indices(
                 sampled_idx,
                 sampling_mode=sampling_mode,
@@ -744,7 +1387,15 @@ def training_detector(
             landmark_meta["repeatability"] = gaussians.loc_repeatability_ema[sampled_idx]
             landmark_meta["margin"] = gaussians.loc_margin_ema[sampled_idx]
             landmark_meta["information"] = gaussians.loc_information_ema[sampled_idx]
+            landmark_meta["reproj_error"] = gaussians.loc_reproj_error_ema[sampled_idx]
             landmark_meta["prototype"] = gaussians.loc_prototype[sampled_idx]
+            landmark_meta["legacy_utility"] = candidate_components["legacy_utility"][sampled_idx]
+            for key, value in candidate_components.items():
+                if key == "legacy_utility":
+                    continue
+                landmark_meta[key] = value[sampled_idx]
+            landmark_meta["full_candidate_quality"] = candidate_quality.detach().clone()
+            landmark_meta["landmark_indices"] = sampled_idx.detach().clone()
             save_landmark_meta(os.path.join(save_path, "landmark_meta.pt"), landmark_meta)
         elif sampling_mode != "baseline":
             raise ValueError(f"Unknown sampling_mode: {sampling_mode}")
@@ -865,7 +1516,7 @@ def training_detector(
                 ).squeeze(0)
                 > 0.5
             )
-            gt_map *= gt_map_mask
+            gt_map = gt_map * gt_map_mask
             if weight_map is not None:
                 weight_map = torch.where(gt_map_mask, weight_map, torch.ones_like(weight_map))
 
@@ -1002,6 +1653,7 @@ def build_arg_parser(with_components=False):
             "localization_aware_spatial",
             "localization_aware_global",
             "localization_aware_pnp",
+            "coverage_preserving",
         ],
     )
     parser.add_argument("--utility_weight", type=float, default=1.0)
@@ -1009,8 +1661,22 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--pnp_max_per_voxel", type=int, default=8)
     parser.add_argument("--pnp_preserve_ratio", type=float, default=0.5)
     parser.add_argument("--min_loc_observations", type=int, default=1)
-    parser.add_argument("--detector_target_mode", type=str, default="hard", choices=["hard", "soft"])
+    parser.add_argument("--detector_target_mode", type=str, default="hard", choices=["hard", "soft", "weighted_hard"])
     parser.add_argument("--soft_sigma", type=float, default=1.5)
+    parser.add_argument("--coverage_preserve_ratio", type=float, default=0.5)
+    parser.add_argument("--coverage_utility_ratio", type=float, default=0.25)
+    parser.add_argument("--coverage_high_confidence_ratio", type=float, default=0.0)
+    parser.add_argument("--coverage_grid_size", type=int, default=0)
+    parser.add_argument("--coverage_max_per_grid", type=int, default=0)
+    parser.add_argument("--coverage_depth_bins", type=int, default=0)
+    parser.add_argument("--coverage_max_per_depth_bin", type=int, default=0)
+    parser.add_argument("--coverage_allow_unbalanced_fallback", action="store_true")
+    parser.add_argument("--candidate_reprojection_error_scale", type=float, default=4.0)
+    parser.add_argument("--candidate_cleanliness_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_pose_info_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_balance_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_reliability_weight", type=float, default=0.25)
+    parser.add_argument("--candidate_utility_weight", type=float, default=0.0)
     parser.add_argument("--landmark_only", action="store_true", default=False)
     parser.add_argument("--precomputed_landmark_path", type=str, default="")
     if with_components:
@@ -1076,6 +1742,20 @@ if __name__ == "__main__":
         min_loc_observations=args.min_loc_observations,
         detector_target_mode=args.detector_target_mode,
         soft_sigma=args.soft_sigma,
+        coverage_preserve_ratio=args.coverage_preserve_ratio,
+        coverage_utility_ratio=args.coverage_utility_ratio,
+        coverage_high_confidence_ratio=args.coverage_high_confidence_ratio,
+        coverage_grid_size=args.coverage_grid_size,
+        coverage_max_per_grid=args.coverage_max_per_grid,
+        coverage_depth_bins=args.coverage_depth_bins,
+        coverage_max_per_depth_bin=args.coverage_max_per_depth_bin,
+        coverage_allow_unbalanced_fallback=args.coverage_allow_unbalanced_fallback,
+        candidate_reprojection_error_scale=args.candidate_reprojection_error_scale,
+        candidate_cleanliness_weight=args.candidate_cleanliness_weight,
+        candidate_pose_info_weight=args.candidate_pose_info_weight,
+        candidate_balance_weight=args.candidate_balance_weight,
+        candidate_reliability_weight=args.candidate_reliability_weight,
+        candidate_utility_weight=args.candidate_utility_weight,
         landmark_only=args.landmark_only,
         precomputed_landmark_path=args.precomputed_landmark_path,
     )

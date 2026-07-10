@@ -16,6 +16,7 @@ class DirectLandmarkTeacherOutput:
     full_bank_loss: torch.Tensor
     anchor_loss: torch.Tensor
     reproj_loss: torch.Tensor
+    clean_hard_negative_loss: torch.Tensor
     stats: dict
     loc_visible_idx: torch.Tensor
     target_uv: torch.Tensor
@@ -388,6 +389,150 @@ def descriptor_anchor_loss(current_features, baseline_features, weights=None):
     return (per_item * weights).sum() / weights.sum().clamp_min(1e-6)
 
 
+def _bin_ids(values, bins, valid=None):
+    values = torch.as_tensor(values, dtype=torch.float32)
+    ids = torch.full(values.shape, -1, dtype=torch.long, device=values.device)
+    bins = int(bins)
+    if bins <= 1 or values.numel() == 0:
+        return ids
+    finite = torch.isfinite(values)
+    if valid is not None:
+        finite = finite & torch.as_tensor(valid, dtype=torch.bool, device=values.device).reshape(-1)
+    if not bool(finite.any().item()):
+        return ids
+    selected = values[finite]
+    span = (selected.max() - selected.min()).clamp_min(1e-6)
+    ids[finite] = torch.floor((selected - selected.min()) / span * bins).to(dtype=torch.long).clamp(0, bins - 1)
+    return ids
+
+
+def _count_inverse_weights(ids, eps=1e-6):
+    ids = torch.as_tensor(ids, dtype=torch.long)
+    weights = torch.ones(ids.shape, dtype=torch.float32, device=ids.device)
+    valid = ids >= 0
+    if not bool(valid.any().item()):
+        return weights
+    unique, counts = torch.unique(ids[valid], return_counts=True)
+    count_map = torch.zeros(int(unique.max().item()) + 1, dtype=torch.float32, device=ids.device)
+    count_map[unique] = counts.to(dtype=torch.float32)
+    weights[valid] = torch.rsqrt(count_map[ids[valid]].clamp_min(float(eps)))
+    return weights
+
+
+def geometry_balance_weights(
+    uv,
+    depth=None,
+    image_size=None,
+    grid_size=0,
+    depth_bins=0,
+    max_weight=4.0,
+):
+    """Return mean-normalized weights that reduce repeated 2D/depth concentration."""
+    uv = torch.as_tensor(uv, dtype=torch.float32)
+    if uv.numel() == 0:
+        return uv.new_zeros((0,))
+    uv = uv.reshape(-1, 2)
+    device = uv.device
+    weights = torch.ones(uv.shape[0], dtype=torch.float32, device=device)
+
+    if image_size is not None and int(grid_size) > 1:
+        height, width = int(image_size[0]), int(image_size[1])
+        if height > 0 and width > 0:
+            cell_x = torch.floor(uv[:, 0].clamp(0, width - 1) / max(float(width), 1.0) * int(grid_size))
+            cell_y = torch.floor(uv[:, 1].clamp(0, height - 1) / max(float(height), 1.0) * int(grid_size))
+            cell_x = cell_x.to(dtype=torch.long).clamp(0, int(grid_size) - 1)
+            cell_y = cell_y.to(dtype=torch.long).clamp(0, int(grid_size) - 1)
+            grid_ids = cell_y * int(grid_size) + cell_x
+            weights = weights * _count_inverse_weights(grid_ids).to(device=device)
+
+    if depth is not None and int(depth_bins) > 1:
+        depth = torch.as_tensor(depth, dtype=torch.float32, device=device).reshape(-1)
+        if depth.numel() == uv.shape[0]:
+            depth_ids = _bin_ids(depth, int(depth_bins), valid=torch.isfinite(depth))
+            weights = weights * _count_inverse_weights(depth_ids).to(device=device)
+
+    weights = torch.where(torch.isfinite(weights), weights, torch.ones_like(weights))
+    weights = weights / weights.mean().clamp_min(1e-6)
+    max_weight = max(float(max_weight), 1.0)
+    weights = weights.clamp(1.0 / max_weight, max_weight)
+    return weights / weights.mean().clamp_min(1e-6)
+
+
+def clean_reprojection_hard_negative_loss(
+    query_features,
+    bank_features,
+    positive_bank_indices,
+    query_uv,
+    bank_uv,
+    bank_valid=None,
+    reprojection_radius=4.0,
+    hard_negative_topk=16,
+    margin=0.2,
+    weights=None,
+    ignore_bank_mask=None,
+    positive_bank_mask=None,
+):
+    """Penalize feature-similar negatives whose GT reprojection is far from the query anchor."""
+    query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
+    bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
+    positive_bank_indices = torch.as_tensor(
+        positive_bank_indices,
+        dtype=torch.long,
+        device=query.device,
+    ).reshape(-1)
+    if query.numel() == 0 or bank.numel() == 0 or positive_bank_indices.numel() == 0:
+        return query_features.new_tensor(0.0)
+    valid = (positive_bank_indices >= 0) & (positive_bank_indices < bank.shape[0])
+    if not bool(valid.any().item()):
+        return query_features.new_tensor(0.0)
+
+    query = query[valid]
+    positive_bank_indices = positive_bank_indices[valid]
+    query_uv = torch.as_tensor(query_uv, dtype=torch.float32, device=query.device).reshape(-1, 2)[valid]
+    bank_uv = torch.as_tensor(bank_uv, dtype=torch.float32, device=query.device).reshape(-1, 2)
+    if bank_uv.shape[0] != bank.shape[0]:
+        raise ValueError(f"bank_uv must have one row per bank feature, got {bank_uv.shape[0]} and {bank.shape[0]}.")
+
+    if bank_valid is None:
+        bank_valid = torch.isfinite(bank_uv).all(dim=1)
+    else:
+        bank_valid = torch.as_tensor(bank_valid, dtype=torch.bool, device=query.device).reshape(-1)
+    if bank_valid.shape[0] != bank.shape[0]:
+        raise ValueError(
+            f"bank_valid must have one value per bank feature, got {bank_valid.shape[0]} and {bank.shape[0]}."
+        )
+
+    positive_mask = torch.zeros((query.shape[0], bank.shape[0]), dtype=torch.bool, device=query.device)
+    query_ids = torch.arange(query.shape[0], dtype=torch.long, device=query.device)
+    positive_mask[query_ids, positive_bank_indices] = True
+    if positive_bank_mask is not None:
+        extra_positive = torch.as_tensor(positive_bank_mask, dtype=torch.bool, device=query.device)
+        extra_positive = extra_positive.reshape(-1, bank.shape[0])[valid]
+        positive_mask = positive_mask | extra_positive
+
+    uv_dist = torch.cdist(query_uv, bank_uv)
+    clean_negative_mask = (uv_dist > float(reprojection_radius)) & bank_valid[None, :] & ~positive_mask
+    if ignore_bank_mask is not None:
+        ignore_bank_mask = torch.as_tensor(ignore_bank_mask, dtype=torch.bool, device=query.device)
+        ignore_bank_mask = ignore_bank_mask.reshape(-1, bank.shape[0])[valid]
+        clean_negative_mask = clean_negative_mask & ~ignore_bank_mask
+    has_negative = clean_negative_mask.any(dim=1)
+    if not bool(has_negative.any().item()):
+        return query_features.new_tensor(0.0)
+
+    scores = query @ bank.T
+    positive_scores = scores.masked_fill(~positive_mask, -torch.inf).max(dim=1).values
+    negative_scores = scores.masked_fill(~clean_negative_mask, -torch.inf)
+    topk = min(max(int(hard_negative_topk), 1), bank.shape[0])
+    hard_negatives = torch.topk(negative_scores, k=topk, dim=1).values
+    hard_loss = F.relu(float(margin) + hard_negatives - positive_scores[:, None]).mean(dim=1)
+    hard_loss = hard_loss[has_negative]
+    if weights is not None:
+        weights = torch.as_tensor(weights, dtype=hard_loss.dtype, device=hard_loss.device).reshape(-1)[valid][has_negative]
+        return (hard_loss * weights).sum() / weights.sum().clamp_min(1e-6)
+    return hard_loss.mean()
+
+
 def full_bank_bimnn_loss(
     query_features,
     bank_features,
@@ -715,49 +860,79 @@ def full_bank_descriptor_stats(
     temperature=0.07,
     ignore_bank_mask=None,
     positive_bank_mask=None,
+    chunk_size=None,
 ):
-    query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
-    bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
-    positive_bank_indices = torch.as_tensor(positive_bank_indices, dtype=torch.long, device=query.device).reshape(-1)
-    if query.numel() == 0 or bank.numel() == 0:
-        zero = query.new_zeros((positive_bank_indices.numel(),))
-        return zero, zero, zero
-    valid = (positive_bank_indices >= 0) & (positive_bank_indices < bank.shape[0])
-    positive_prob = query.new_zeros((positive_bank_indices.numel(),))
-    margin = query.new_zeros((positive_bank_indices.numel(),))
-    entropy = query.new_zeros((positive_bank_indices.numel(),))
-    if not valid.any():
+    with torch.no_grad():
+        query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
+        bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
+        positive_bank_indices = torch.as_tensor(
+            positive_bank_indices,
+            dtype=torch.long,
+            device=query.device,
+        ).reshape(-1)
+        if query.numel() == 0 or bank.numel() == 0:
+            zero = query.new_zeros((positive_bank_indices.numel(),))
+            return zero, zero, zero
+        valid = (positive_bank_indices >= 0) & (positive_bank_indices < bank.shape[0])
+        positive_prob = query.new_zeros((positive_bank_indices.numel(),))
+        margin = query.new_zeros((positive_bank_indices.numel(),))
+        entropy = query.new_zeros((positive_bank_indices.numel(),))
+        if not valid.any():
+            return positive_prob, margin, entropy
+
+        bank_count = int(bank.shape[0])
+        valid_rows = torch.nonzero(valid, as_tuple=False).squeeze(1)
+        if chunk_size is None or int(chunk_size) <= 0:
+            chunk_size = int(valid_rows.numel())
+        chunk_size = max(1, int(chunk_size))
+        temperature = max(float(temperature), 1e-6)
+        normalizer = torch.log(query.new_tensor(float(max(2, bank_count))))
+        full_positive_mask = None
+        full_ignore_mask = None
+        if positive_bank_mask is not None:
+            full_positive_mask = torch.as_tensor(
+                positive_bank_mask,
+                dtype=torch.bool,
+                device=query.device,
+            ).reshape(-1, bank_count)
+        if ignore_bank_mask is not None:
+            full_ignore_mask = torch.as_tensor(
+                ignore_bank_mask,
+                dtype=torch.bool,
+                device=query.device,
+            ).reshape(-1, bank_count)
+
+        for rows in valid_rows.split(chunk_size):
+            logits = query[rows] @ bank.T / temperature
+            if full_positive_mask is not None:
+                positive_mask = full_positive_mask[rows].clone()
+            else:
+                positive_mask = torch.zeros(
+                    (int(rows.numel()), bank_count),
+                    dtype=torch.bool,
+                    device=query.device,
+                )
+            query_ids = torch.arange(rows.numel(), dtype=torch.long, device=query.device)
+            row_positive_indices = positive_bank_indices[rows]
+            positive_mask[query_ids, row_positive_indices] = True
+            if full_ignore_mask is not None:
+                ignore_mask = full_ignore_mask[rows].clone() & ~positive_mask
+                logits = logits.masked_fill(ignore_mask, -torch.inf)
+
+            probs = torch.softmax(logits, dim=1)
+            pos_prob = probs.masked_fill(~positive_mask, 0.0).sum(dim=1)
+            negative_logits = logits.masked_fill(positive_mask, -torch.inf)
+            positive_logits = logits.masked_fill(~positive_mask, -torch.inf)
+            has_negative = torch.isfinite(negative_logits).any(dim=1)
+            hard_negative = negative_logits.max(dim=1).values
+            margin_valid = positive_logits.max(dim=1).values - hard_negative
+            margin_valid = torch.where(has_negative, margin_valid, torch.ones_like(margin_valid))
+            entropy_valid = -(probs * probs.clamp_min(1e-8).log()).sum(dim=1) / normalizer
+
+            positive_prob[rows] = pos_prob
+            margin[rows] = margin_valid
+            entropy[rows] = entropy_valid
         return positive_prob, margin, entropy
-    temperature = max(float(temperature), 1e-6)
-    logits = query[valid] @ bank.T / temperature
-    if positive_bank_mask is not None:
-        positive_bank_mask = torch.as_tensor(positive_bank_mask, dtype=torch.bool, device=query.device)
-        positive_bank_mask = positive_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
-    else:
-        positive_bank_mask = torch.zeros((int(valid.sum().item()), bank.shape[0]), dtype=torch.bool, device=query.device)
-    query_ids = torch.arange(positive_bank_mask.shape[0], dtype=torch.long, device=query.device)
-    positive_bank_mask[query_ids, positive_bank_indices[valid]] = True
-    if ignore_bank_mask is not None:
-        ignore_bank_mask = torch.as_tensor(ignore_bank_mask, dtype=torch.bool, device=query.device)
-        ignore_bank_mask = ignore_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
-        ignore_bank_mask = ignore_bank_mask & ~positive_bank_mask
-        logits = logits.masked_fill(ignore_bank_mask, -torch.inf)
-    probs = torch.softmax(logits, dim=1)
-    pos = positive_bank_indices[valid]
-    pos_prob = probs.masked_fill(~positive_bank_mask, 0.0).sum(dim=1)
-    negative_logits = logits.clone()
-    negative_logits = negative_logits.masked_fill(positive_bank_mask, -torch.inf)
-    positive_logits = logits.masked_fill(~positive_bank_mask, -torch.inf)
-    has_negative = torch.isfinite(negative_logits).any(dim=1)
-    hard_negative = negative_logits.max(dim=1).values
-    margin_valid = positive_logits.max(dim=1).values - hard_negative
-    margin_valid = torch.where(has_negative, margin_valid, torch.ones_like(margin_valid))
-    entropy_valid = -(probs * probs.clamp_min(1e-8).log()).sum(dim=1)
-    entropy_valid = entropy_valid / torch.log(query.new_tensor(float(max(2, bank.shape[0]))))
-    positive_prob[valid] = pos_prob.detach()
-    margin[valid] = margin_valid.detach()
-    entropy[valid] = entropy_valid.detach()
-    return positive_prob, margin, entropy
 
 
 def direct_landmark_teacher(
@@ -785,8 +960,16 @@ def direct_landmark_teacher(
     full_bank_ignore_uv_radius=0.0,
     full_bank_source_mode="ignore",
     full_bank_nearby_as_positive=False,
+    full_bank_stats_chunk_size=256,
     full_bank_pose_information_weight=0.0,
     full_bank_pose_information_floor=0.0,
+    full_bank_balance_weight=0.0,
+    full_bank_balance_grid_size=0,
+    full_bank_balance_depth_bins=0,
+    full_bank_balance_max_weight=4.0,
+    full_bank_clean_hard_negative_weight=0.0,
+    full_bank_clean_reproj_radius=4.0,
+    full_bank_clean_hard_negatives=16,
     sampling_grid_size=8,
     anchor_features=None,
     child_responsibility_mode="none",
@@ -884,6 +1067,7 @@ def direct_landmark_teacher(
             zero,
             zero,
             zero,
+            zero,
             {},
             landmark_indices.new_empty(0),
             uv.new_zeros((0, 2)),
@@ -894,6 +1078,7 @@ def direct_landmark_teacher(
     selected_full_idx = landmark_indices[keep].to(device=loc_xyz_all.device)
     selected_uv = uv[keep]
     selected_xyz = xyz[keep]
+    selected_depth = depth[keep]
     query_features = bilinear_sample_features(query_feature_map.detach(), selected_uv)
     gaussian_features = gaussians.get_loc_feature[selected_full_idx].reshape(keep.numel(), -1)
     artifact_region_weights = None
@@ -953,6 +1138,7 @@ def direct_landmark_teacher(
     )
     multiview_loss = zero
     full_bank_loss = zero
+    clean_hn_loss = zero
     anchor_loss = zero
     desc_loss = direct_landmark_feature_loss(gaussian_features, query_features, weights=artifact_weights)
     selected_count = selected_full_idx.numel()
@@ -975,6 +1161,26 @@ def direct_landmark_teacher(
                 "pose_information_weight_max": float(pose_info_weight.max().detach().item()),
                 "pose_information_weight_blend": pose_info_blend,
                 "pose_information_weight_floor": float(max(0.0, min(float(full_bank_pose_information_floor), 1.0))),
+            }
+        )
+    balance_blend = max(0.0, min(float(full_bank_balance_weight), 1.0))
+    if balance_blend > 0.0:
+        balance = geometry_balance_weights(
+            selected_uv,
+            depth=selected_depth,
+            image_size=(height, width),
+            grid_size=full_bank_balance_grid_size,
+            depth_bins=full_bank_balance_depth_bins,
+            max_weight=full_bank_balance_max_weight,
+        ).to(device=query_feature_map.device, dtype=query_feature_map.dtype)
+        balance_scale = (1.0 - balance_blend) + balance_blend * balance
+        full_bank_weights = full_bank_weights * balance_scale.detach()
+        diagnostics.update(
+            {
+                "full_bank_balance_weight_blend": balance_blend,
+                "full_bank_balance_weight_min": float(balance.min().detach().item()),
+                "full_bank_balance_weight_mean": float(balance.mean().detach().item()),
+                "full_bank_balance_weight_max": float(balance.max().detach().item()),
             }
         )
     if multiview_memory is not None:
@@ -1004,6 +1210,8 @@ def direct_landmark_teacher(
         ).reshape(-1)
         bank_features = gaussians.get_loc_feature[full_bank_indices].reshape(full_bank_indices.numel(), -1)
         bank_xyz = None
+        bank_uv = None
+        bank_valid = None
         positive_bank_indices = _compact_positions(
             selected_full_idx.to(device=full_bank_indices.device),
             full_bank_indices,
@@ -1057,6 +1265,34 @@ def direct_landmark_teacher(
             ignore_bank_mask=ignore_bank_mask,
             positive_bank_mask=positive_bank_mask,
         )
+        clean_hn_weight = max(0.0, float(full_bank_clean_hard_negative_weight))
+        if clean_hn_weight > 0.0:
+            if bank_xyz is None:
+                bank_xyz = loc_xyz_all[full_bank_indices].to(device=device, dtype=dtype)
+            if bank_uv is None or bank_valid is None:
+                bank_uv, _, bank_valid = project_landmarks_to_query(bank_xyz, K, pose_gt_w2c, height, width)
+            clean_hn_loss = clean_reprojection_hard_negative_loss(
+                query_features,
+                bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
+                positive_bank_indices,
+                selected_uv,
+                bank_uv,
+                bank_valid=bank_valid,
+                reprojection_radius=full_bank_clean_reproj_radius,
+                hard_negative_topk=full_bank_clean_hard_negatives,
+                margin=full_bank_hard_negative_margin,
+                weights=full_bank_weights,
+                ignore_bank_mask=ignore_bank_mask,
+                positive_bank_mask=positive_bank_mask,
+            )
+        diagnostics.update(
+            {
+                "full_bank_clean_hard_negative_loss": float(clean_hn_loss.detach().item()),
+                "full_bank_clean_hard_negative_weight": clean_hn_weight,
+                "full_bank_clean_reproj_radius": float(full_bank_clean_reproj_radius),
+                "full_bank_clean_hard_negatives": int(full_bank_clean_hard_negatives),
+            }
+        )
         diagnostics.update(
             _full_bank_ignore_diagnostics(
                 positive_bank_indices,
@@ -1081,6 +1317,7 @@ def direct_landmark_teacher(
             temperature=full_bank_temperature,
             ignore_bank_mask=ignore_bank_mask,
             positive_bank_mask=positive_bank_mask,
+            chunk_size=full_bank_stats_chunk_size,
         )
     if anchor_features is not None:
         anchor_selected, anchor_valid = _select_reference_features(
@@ -1131,12 +1368,13 @@ def direct_landmark_teacher(
         ),
     }
     return DirectLandmarkTeacherOutput(
-        desc_loss + full_bank_loss + anchor_loss,
+        desc_loss + full_bank_loss + clean_hn_loss + anchor_loss,
         desc_loss,
         multiview_loss,
         full_bank_loss,
         anchor_loss,
         zero,
+        clean_hn_loss,
         stats,
         selected_full_idx,
         selected_uv.detach(),

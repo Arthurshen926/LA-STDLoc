@@ -69,7 +69,15 @@ def _add_matcha_to_path(matcha_root):
     gs_root = root / "2d-gaussian-splatting"
     if not gs_root.exists():
         raise FileNotFoundError(f"MAtCha 2DGS root not found: {gs_root}")
-    sys.path.insert(0, os.fspath(gs_root))
+    paths = [
+        gs_root,
+        gs_root / "submodules" / "diff-surfel-rasterization",
+        gs_root / "submodules" / "simple-knn",
+        gs_root / "submodules" / "tetra-triangulation",
+    ]
+    for path in reversed(paths):
+        if path.exists() and os.fspath(path) not in sys.path:
+            sys.path.insert(0, os.fspath(path))
 
 
 def _make_minicam(record, resolution=None):

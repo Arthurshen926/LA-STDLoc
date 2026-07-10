@@ -136,6 +136,25 @@ def test_2dgs_localization_anchor_is_surface_bounded_on_cpu():
     assert torch.allclose(model.get_loc_xyz, torch.tensor([[0.1, 0.0, 1.975]]), atol=1e-6)
 
 
+def test_2dgs_localization_anchor_radius_floor_keeps_world_scale_motion_on_cpu():
+    from scene.gaussian_model import GaussianModel_2dgs
+
+    model = GaussianModel_2dgs(3)
+    model._xyz = nn.Parameter(torch.tensor([[0.0, 0.0, 2.0]]))
+    model._opacity = nn.Parameter(torch.zeros(1, 1))
+    model._loc_feature = nn.Parameter(torch.zeros(1, 1, 4))
+    model._scaling = nn.Parameter(torch.log(torch.tensor([[1e-3, 1e-3]])))
+    model._rotation = nn.Parameter(torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
+    model.init_localization_state(from_rgb_opacity=True)
+
+    model.surfel_loc_tangent_bound = 0.2
+    model.surfel_loc_normal_bound = 0.1
+    model.surfel_loc_radius_floor = 1.0
+    model._loc_anchor_offset.data[:] = torch.tensor([[math.atanh(0.5), 0.0, math.atanh(-0.25)]])
+
+    assert torch.allclose(model.get_loc_xyz, torch.tensor([[0.1, 0.0, 1.975]]), atol=1e-6)
+
+
 def test_2dgs_localization_anchor_can_detach_surface_base_grad_on_cpu():
     from scene.gaussian_model import GaussianModel_2dgs
 
@@ -538,6 +557,43 @@ def test_apply_multiview_initialization_keeps_unobserved_features():
     assert torch.equal(gaussians.loc_observation_count, torch.tensor([2, 0]))
 
 
+def test_apply_multiview_localization_stats_does_not_change_gaussian_features():
+    from localization_training.lafgs_reconstruction import (
+        MultiViewInitResult,
+        apply_multiview_localization_stats,
+    )
+
+    class DummyGaussians:
+        def __init__(self):
+            self._loc_feature = nn.Parameter(
+                torch.tensor([[[0.0, 1.0, 0.0]], [[0.0, 0.0, 1.0]]])
+            )
+            self.loc_prototype = torch.zeros(2, 3)
+            self.loc_prototype_count = torch.zeros(2)
+            self.loc_observation_count = torch.zeros(2, dtype=torch.long)
+            self.loc_repeatability_ema = torch.zeros(2)
+
+    gaussians = DummyGaussians()
+    original_feature = gaussians._loc_feature.detach().clone()
+    result = MultiViewInitResult(
+        features=torch.tensor([[2.0, 0.0, 0.0], [0.0, 3.0, 0.0]]),
+        reliability=torch.tensor([0.75, 0.25]),
+        observation_count=torch.tensor([4, 1]),
+        weight_sum=torch.tensor([4.0, 1.0]),
+    )
+
+    apply_multiview_localization_stats(gaussians, result)
+
+    assert torch.allclose(gaussians._loc_feature.detach(), original_feature)
+    assert torch.equal(gaussians.loc_observation_count, torch.tensor([4, 1]))
+    assert torch.allclose(gaussians.loc_repeatability_ema, torch.tensor([0.75, 0.25]))
+    assert torch.allclose(
+        gaussians.loc_prototype,
+        torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        atol=1e-6,
+    )
+
+
 def test_soft_3d_to_2d_correspondence_selects_matching_pixel():
     from localization_training.lafgs_reconstruction import soft_3d_to_2d_correspondences
 
@@ -555,6 +611,40 @@ def test_soft_3d_to_2d_correspondence_selects_matching_pixel():
 
     assert torch.allclose(out.uv[0], torch.tensor([2.0, 3.0]), atol=1e-2)
     assert out.confidence[0] > 0.95
+
+
+def test_lafgs_static_config_records_surface_anchor_state_without_nameerror():
+    from argparse import Namespace
+
+    from train_locaware import _record_lafgs_static_config
+
+    summary = {}
+    args = Namespace(
+        gaussian_type="2dgs",
+        loc_anchor_lr=5e-7,
+        surfel_loc_tangent_bound=0.03,
+        surfel_loc_normal_bound=0.005,
+        surfel_loc_anchor_reg_weight=0.0,
+        allow_raw_xyz_geometry_grad=False,
+        lafgs_diff_pnp_geometry_xyz_lr=0.0,
+        lafgs_diff_pnp_local_window_radius=1.25,
+        lafgs_diff_pnp_geometry_local_window_radius=1.5,
+        lafgs_diff_pnp_point_weight_floor=0.05,
+        lafgs_diff_pnp_max_condition_number=100000.0,
+        lafgs_diff_pnp_detach_pnp_points=True,
+        lafgs_diff_pnp_allow_geometry_grad=True,
+        lafgs_diff_pnp_geometry_reproj_weight=0.01,
+        lafgs_diff_pnp_geometry_depth_anchor_weight=0.1,
+        lafgs_diff_pnp_geometry_match_reproj_weight=0.0,
+        lafgs_diff_pnp_geometry_use_all_correspondences=False,
+    )
+    gaussians = Namespace(detach_loc_anchor_base=True)
+
+    _record_lafgs_static_config(summary, args, gaussians)
+
+    assert summary["detach_loc_anchor_base"] is True
+    assert summary["loc_anchor_active"] is True
+    assert summary["diff_pnp_geometry_depth_anchor_weight_config"] == 0.1
 
 
 def test_soft_3d_to_2d_correspondence_reports_probability_margin():
@@ -2249,6 +2339,78 @@ def test_train_lafgs_defaults_enable_direct_lafgs_mainline():
     assert defaults.lafgs_mvinit_chunk_size > 0
     assert defaults.lafgs_mvinit_view_selection == "uniform"
     assert defaults.lafgs_diff_pnp_start_iter > defaults.lafgs_locrec_start_iter
+    assert defaults.loc_full_bank_nearby_as_positive is True
+    assert defaults.loc_full_bank_nearby_as_positive_until > defaults.lafgs_locrec_start_iter
+    assert defaults.loc_full_bank_ignore_3d_radius > 0.0
+    assert defaults.loc_full_bank_ignore_uv_radius > 0.0
+    assert defaults.loc_full_bank_pose_information_weight > 0.0
+    assert defaults.loc_full_bank_pose_information_floor > 0.0
+    assert defaults.surfel_loc_radius_floor >= 1.0
+    assert defaults.lafgs_diff_pnp_geometry_match_reproj_weight > 0.0
+    assert defaults.lafgs_diff_pnp_geometry_match_max_reproj_error > 0.0
+    assert defaults.loc_full_checkpoint_mode == "none"
+
+
+def test_train_lafgs_preserves_explicit_full_checkpoint_mode():
+    import train_lafgs
+
+    parser = train_lafgs.build_parser()
+    argv = ["--loc_full_checkpoint_mode", "final"]
+    defaults = train_lafgs.lafgs_defaults(
+        parser.parse_args(argv),
+        explicit_overrides=train_lafgs._explicit_lafgs_overrides(argv),
+    )
+
+    assert defaults.loc_full_checkpoint_mode == "final"
+
+
+def test_train_lafgs_sfm_from_zero_defaults_enable_staged_reconstruction():
+    import train_lafgs
+
+    parser = train_lafgs.build_parser()
+    argv = ["--lafgs_stage_schedule", "sfm_from_zero"]
+    defaults = train_lafgs.lafgs_defaults(
+        parser.parse_args(argv),
+        explicit_overrides=train_lafgs._explicit_lafgs_overrides(argv),
+    )
+
+    assert defaults.lafgs_stage_schedule == "sfm_from_zero"
+    assert defaults.lafgs_stage_bootstrap_until == 3000
+    assert defaults.lafgs_stage_joint_until == 15000
+    assert defaults.lafgs_locrec_start_iter < defaults.lafgs_diff_pnp_start_iter
+    assert defaults.lafgs_diff_pnp_start_iter <= defaults.lafgs_stage_bootstrap_until
+    assert defaults.lafgs_geometry_start_iter <= defaults.lafgs_stage_bootstrap_until
+    assert defaults.lafgs_topology_start_iter == defaults.lafgs_stage_joint_until
+    assert defaults.lafgs_rgb_densify is True
+    assert defaults.lafgs_rgb_densify_until_iter == defaults.lafgs_stage_joint_until
+    assert defaults.landmark_path == "__all__"
+    assert defaults.allow_raw_xyz_geometry_grad is True
+    assert defaults.lafgs_diff_pnp_geometry_xyz_lr > 0.0
+    assert defaults.lafgs_stage_refine_loc_weight > defaults.lafgs_stage_refine_base_weight
+
+
+def test_train_lafgs_defaults_do_not_enable_geometry_residual_without_flag():
+    import train_lafgs
+
+    parser = train_lafgs.build_parser()
+    defaults = train_lafgs.lafgs_defaults(parser.parse_args([]))
+
+    assert defaults.lafgs_geometry_residual is False
+    assert defaults.lafgs_geometry_residual_weight == 0.0
+
+
+def test_train_lafgs_geometry_residual_flag_enables_default_weight():
+    import train_lafgs
+
+    parser = train_lafgs.build_parser()
+    args = parser.parse_args(["--lafgs_geometry_residual"])
+    defaults = train_lafgs.lafgs_defaults(
+        args,
+        explicit_overrides={"lafgs_geometry_residual"},
+    )
+
+    assert defaults.lafgs_geometry_residual is True
+    assert defaults.lafgs_geometry_residual_weight == 1.0
 
 
 def test_select_multiview_init_cameras_uniformly_spreads_support_views():

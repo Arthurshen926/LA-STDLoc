@@ -25,6 +25,25 @@ class LocalizationUtilityTest(unittest.TestCase):
 
         self.assertTrue(torch.allclose(utility, torch.zeros_like(utility)))
 
+    def test_2dgs_exposes_localization_utility_for_detector_sampling(self):
+        from scene.gaussian_model import GaussianModel_2dgs
+
+        gaussians = GaussianModel_2dgs(3)
+        gaussians._xyz = torch.zeros(3, 3)
+        gaussians._opacity = torch.zeros(3, 1)
+        gaussians._loc_feature = torch.zeros(3, 1, 4)
+        gaussians.init_localization_state(from_rgb_opacity=True)
+        gaussians.loc_observation_count[:] = torch.tensor([10, 10, 0])
+        gaussians.loc_repeatability_ema[:] = torch.tensor([0.2, 0.9, 0.9])
+        gaussians.loc_positive_prob_ema[:] = torch.tensor([0.2, 0.9, 0.9])
+        gaussians.loc_margin_ema[:] = torch.tensor([0.1, 0.8, 0.8])
+        gaussians.loc_information_ema[:] = torch.tensor([0.1, 0.8, 0.8])
+
+        utility = gaussians.compute_localization_utility(min_observations=4)
+
+        self.assertGreater(utility[1].item(), utility[0].item())
+        self.assertEqual(utility[2].item(), 0.0)
+
     def test_split_necessity_uses_gradient_ambiguity_repeatability_and_radius(self):
         gaussians = self._model_with_stats()
         gaussians.loc_grad_accum[:] = torch.tensor([[1.0], [8.0], [8.0]])
@@ -129,6 +148,38 @@ class LocalizationUtilityTest(unittest.TestCase):
         self.assertEqual(len(set(gaussians.loc_node_id.tolist())), 4)
         self.assertGreater(min(gaussians.loc_node_id[2:].tolist()), 12)
 
+    def test_2dgs_localization_lineage_tracks_rgb_densify_children(self):
+        from scene.gaussian_model import GaussianModel_2dgs
+
+        gaussians = GaussianModel_2dgs(3)
+        gaussians._xyz = torch.zeros(3, 3)
+        gaussians._opacity = torch.zeros(3, 1)
+        gaussians._loc_feature = torch.zeros(3, 1, 4)
+        gaussians._scaling = torch.zeros(3, 2)
+        gaussians._rotation = torch.tensor(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0],
+            ]
+        )
+        gaussians.init_localization_state(from_rgb_opacity=True)
+        gaussians.loc_node_id[:] = torch.tensor([10, 11, 12])
+
+        gaussians._prune_localization_buffers(torch.tensor([False, True, True]))
+        gaussians._cat_localization_buffers(
+            torch.tensor([True, False]),
+            repeat=2,
+            birth_iteration=5000,
+        )
+
+        self.assertEqual(gaussians.loc_source_index.tolist(), [1, 2, 1, 1])
+        self.assertEqual(gaussians.loc_node_id[:2].tolist(), [11, 12])
+        self.assertEqual(gaussians.loc_parent_node_id.tolist(), [-1, -1, 11, 11])
+        self.assertEqual(gaussians.loc_birth_iteration.tolist(), [0, 0, 5000, 5000])
+        self.assertEqual(gaussians.last_topology_iteration.tolist(), [0, 0, 5000, 5000])
+        self.assertEqual(len(set(gaussians.loc_node_id.tolist())), 4)
+
     def test_localization_source_xyz_tracks_original_parent_geometry(self):
         gaussians = self._model_with_stats()
         gaussians._xyz = torch.tensor(
@@ -229,6 +280,20 @@ class LocalizationUtilityTest(unittest.TestCase):
         prior = landmark_prior_from_meta(
             {
                 "full_score": torch.tensor([0.1, 0.2, 0.3, 0.4]),
+                "landmark_indices": torch.tensor([2, 0]),
+            },
+            landmark_count=2,
+        )
+
+        self.assertTrue(torch.allclose(prior, torch.tensor([0.3, 0.1])))
+
+    def test_landmark_prior_from_meta_prefers_final_candidate_quality(self):
+        from stdloc import landmark_prior_from_meta
+
+        prior = landmark_prior_from_meta(
+            {
+                "full_score": torch.tensor([10.0, 10.0, 10.0, 10.0]),
+                "full_candidate_quality": torch.tensor([0.1, 0.2, 0.3, 0.4]),
                 "landmark_indices": torch.tensor([2, 0]),
             },
             landmark_count=2,

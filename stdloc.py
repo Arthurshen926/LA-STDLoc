@@ -121,6 +121,200 @@ def get_intrinsic(fovx, fovy, width, height):
     return K
 
 
+def _project_points_np(p3d, K, pose_w2c, eps=1e-8):
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    pose_w2c = np.asarray(pose_w2c, dtype=np.float64).reshape(4, 4)
+    if p3d.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float64), np.zeros((0,), dtype=np.float64)
+    p3d_h = np.concatenate([p3d, np.ones((p3d.shape[0], 1), dtype=np.float64)], axis=1)
+    cam = (pose_w2c @ p3d_h.T)[:3].T
+    depth = cam[:, 2]
+    safe_depth = np.maximum(depth, eps)
+    uv = np.empty((p3d.shape[0], 2), dtype=np.float64)
+    uv[:, 0] = K[0, 0] * cam[:, 0] / safe_depth + K[0, 2]
+    uv[:, 1] = K[1, 1] * cam[:, 1] / safe_depth + K[1, 2]
+    return uv, depth
+
+
+def _residual_stats(prefix, residual):
+    residual = np.asarray(residual, dtype=np.float64).reshape(-1)
+    residual = residual[np.isfinite(residual)]
+    if residual.size == 0:
+        return {}
+    return {
+        f"{prefix}_mean": float(np.mean(residual)),
+        f"{prefix}_median": float(np.median(residual)),
+        f"{prefix}_p95": float(np.percentile(residual, 95)),
+        f"{prefix}_max": float(np.max(residual)),
+    }
+
+
+def _occupancy_stats_2d(prefix, p2d, width, height, grid_rows=4, grid_cols=4):
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    if p2d.shape[0] == 0:
+        return {}
+    width = max(float(width), 1.0)
+    height = max(float(height), 1.0)
+    grid_rows = max(int(grid_rows), 1)
+    grid_cols = max(int(grid_cols), 1)
+    x = np.clip(np.floor(p2d[:, 0] / width * grid_cols).astype(np.int64), 0, grid_cols - 1)
+    y = np.clip(np.floor(p2d[:, 1] / height * grid_rows).astype(np.int64), 0, grid_rows - 1)
+    cell = y * grid_cols + x
+    counts = np.bincount(cell, minlength=grid_rows * grid_cols).astype(np.float64)
+    occupied = int(np.count_nonzero(counts))
+    prob = counts[counts > 0] / max(float(p2d.shape[0]), 1.0)
+    entropy = -float(np.sum(prob * np.log(prob + 1e-12))) if prob.size else 0.0
+    entropy_norm = entropy / np.log(grid_rows * grid_cols) if grid_rows * grid_cols > 1 else 0.0
+    return {
+        f"{prefix}_2d_occupied_cells": occupied,
+        f"{prefix}_2d_occupancy_frac": float(occupied / float(grid_rows * grid_cols)),
+        f"{prefix}_2d_max_cell_frac": float(np.max(counts) / max(float(p2d.shape[0]), 1.0)),
+        f"{prefix}_2d_entropy_norm": float(entropy_norm),
+    }
+
+
+def _occupancy_stats_3d(prefix, p3d, voxel_size=0.25):
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    if p3d.shape[0] == 0:
+        return {}
+    voxel_size = float(voxel_size or 0.0)
+    if voxel_size <= 0.0:
+        return {}
+    voxels = np.floor(p3d / voxel_size).astype(np.int64)
+    _, counts = np.unique(voxels, axis=0, return_counts=True)
+    counts = counts.astype(np.float64)
+    return {
+        f"{prefix}_3d_voxels": int(counts.shape[0]),
+        f"{prefix}_3d_voxel_per_match": float(counts.shape[0] / max(float(p3d.shape[0]), 1.0)),
+        f"{prefix}_3d_max_voxel_frac": float(np.max(counts) / max(float(p3d.shape[0]), 1.0)),
+    }
+
+
+def _pose_information_stats(prefix, p3d, K, pose_w2c, regularization=1e-6):
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    if p3d.shape[0] < 6:
+        return {}
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    pose_w2c = np.asarray(pose_w2c, dtype=np.float64).reshape(4, 4)
+    p3d_h = np.concatenate([p3d, np.ones((p3d.shape[0], 1), dtype=np.float64)], axis=1)
+    cam = (pose_w2c @ p3d_h.T)[:3].T
+    z = cam[:, 2]
+    valid = np.isfinite(cam).all(axis=1) & (z > 1e-8)
+    cam = cam[valid]
+    if cam.shape[0] < 6:
+        return {}
+    fx = float(K[0, 0])
+    fy = float(K[1, 1])
+    H = np.zeros((6, 6), dtype=np.float64)
+    for x, y, z in cam:
+        dproj = np.array(
+            [
+                [fx / z, 0.0, -fx * x / (z * z)],
+                [0.0, fy / z, -fy * y / (z * z)],
+            ],
+            dtype=np.float64,
+        )
+        skew = np.array(
+            [
+                [0.0, -z, y],
+                [z, 0.0, -x],
+                [-y, x, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        jac = dproj @ np.concatenate([np.eye(3, dtype=np.float64), -skew], axis=1)
+        H += jac.T @ jac
+    H_reg = H + float(regularization) * np.eye(6, dtype=np.float64)
+    eigvals = np.linalg.eigvalsh(H_reg)
+    eigvals = eigvals[np.isfinite(eigvals)]
+    if eigvals.size == 0:
+        return {}
+    eigvals = np.clip(eigvals, 1e-12, None)
+    sign, logdet = np.linalg.slogdet(H_reg)
+    return {
+        f"{prefix}_pose_info_condition": float(eigvals.max() / eigvals.min()),
+        f"{prefix}_pose_info_logdet": float(logdet if sign > 0 else np.nan),
+        f"{prefix}_pose_info_min_eig": float(eigvals.min()),
+    }
+
+
+def sparse_correspondence_diagnostics(
+    p2d,
+    p3d,
+    K,
+    pose_w2c,
+    inliers,
+    width,
+    height,
+    *,
+    gt_pose_w2c=None,
+    grid_rows=4,
+    grid_cols=4,
+    voxel_size=0.25,
+):
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    inliers = np.asarray(inliers, dtype=np.int64).reshape(-1)
+    inliers = inliers[(inliers >= 0) & (inliers < p2d.shape[0])]
+    diagnostics = {
+        "sparse_diag_match_count": int(p2d.shape[0]),
+        "sparse_diag_inlier_count": int(inliers.shape[0]),
+        "sparse_diag_inlier_ratio": float(inliers.shape[0] / max(float(p2d.shape[0]), 1.0)),
+    }
+    if p2d.shape[0] == 0:
+        return diagnostics
+    observed = p2d + 0.5
+    projected, depth = _project_points_np(p3d, K, pose_w2c)
+    residual = np.linalg.norm(projected - observed, axis=1)
+    diagnostics.update(_residual_stats("sparse_diag_all_est_reproj_px", residual))
+    diagnostics.update(_occupancy_stats_2d("sparse_diag_all", p2d, width, height, grid_rows, grid_cols))
+    diagnostics.update(_occupancy_stats_3d("sparse_diag_all", p3d, voxel_size))
+    finite_depth = depth[np.isfinite(depth)]
+    if finite_depth.size:
+        diagnostics.update(
+            {
+                "sparse_diag_all_depth_mean": float(np.mean(finite_depth)),
+                "sparse_diag_all_depth_std": float(np.std(finite_depth)),
+                "sparse_diag_all_depth_range": float(np.max(finite_depth) - np.min(finite_depth)),
+            }
+        )
+    if inliers.shape[0] > 0:
+        inlier_p2d = p2d[inliers]
+        inlier_p3d = p3d[inliers]
+        inlier_depth = depth[inliers]
+        diagnostics.update(_residual_stats("sparse_diag_inlier_est_reproj_px", residual[inliers]))
+        diagnostics.update(_occupancy_stats_2d("sparse_diag_inlier", inlier_p2d, width, height, grid_rows, grid_cols))
+        diagnostics.update(_occupancy_stats_3d("sparse_diag_inlier", inlier_p3d, voxel_size))
+        diagnostics.update(_pose_information_stats("sparse_diag_inlier", inlier_p3d, K, pose_w2c))
+        finite_inlier_depth = inlier_depth[np.isfinite(inlier_depth)]
+        if finite_inlier_depth.size:
+            diagnostics.update(
+                {
+                    "sparse_diag_inlier_depth_mean": float(np.mean(finite_inlier_depth)),
+                    "sparse_diag_inlier_depth_std": float(np.std(finite_inlier_depth)),
+                    "sparse_diag_inlier_depth_range": float(
+                        np.max(finite_inlier_depth) - np.min(finite_inlier_depth)
+                    ),
+                }
+            )
+    if gt_pose_w2c is not None:
+        gt_projected, _ = _project_points_np(p3d, K, gt_pose_w2c)
+        gt_residual = np.linalg.norm(gt_projected - observed, axis=1)
+        diagnostics.update(_residual_stats("sparse_diag_all_gt_reproj_px", gt_residual))
+        for threshold in (2.0, 4.0, 6.0):
+            diagnostics[f"sparse_diag_all_gt_precision_{int(threshold)}px"] = float(
+                np.mean(gt_residual <= threshold)
+            )
+        if inliers.shape[0] > 0:
+            diagnostics.update(_residual_stats("sparse_diag_inlier_gt_reproj_px", gt_residual[inliers]))
+            for threshold in (2.0, 4.0, 6.0):
+                diagnostics[f"sparse_diag_inlier_gt_precision_{int(threshold)}px"] = float(
+                    np.mean(gt_residual[inliers] <= threshold)
+                )
+    return diagnostics
+
+
 def resize_sparse_valid_mask_to_feature_grid(valid_mask, height, width, min_fraction=0.5):
     if valid_mask is None:
         return None
@@ -477,8 +671,8 @@ def landmark_prior_from_meta(meta, landmark_count, sampled_indices=None):
     if meta is None:
         return None
     landmark_count = int(landmark_count)
-    score = meta.get("score", meta.get("utility", None))
-    full_score = meta.get("full_score", None)
+    score = meta.get("candidate_quality", meta.get("score", meta.get("utility", None)))
+    full_score = meta.get("full_candidate_quality", meta.get("full_score", None))
     meta_indices = meta.get("landmark_indices", None)
     if sampled_indices is not None:
         sampled_indices = torch.as_tensor(sampled_indices, dtype=torch.long).reshape(-1).cpu()
@@ -739,6 +933,7 @@ class STDLoc:
 
         p2d = p2d.numpy()
         p3d = p3d.numpy()
+        scores = val.detach().cpu().float().numpy() if torch.is_tensor(val) else np.asarray(val, dtype=np.float32)
 
         K = get_intrinsic(fovx, fovy, W, H)
 
@@ -783,6 +978,32 @@ class STDLoc:
             "matches": match_count,
             "matches_before_selector": match_count_before_selector,
         }
+        diag_cfg = self.config["sparse"].get("diagnostics", {})
+        if bool(diag_cfg.get("enabled", True)):
+            result.update(
+                sparse_correspondence_diagnostics(
+                    p2d,
+                    p3d,
+                    K,
+                    pose_w2c,
+                    inliers.reshape(-1),
+                    W,
+                    H,
+                    grid_rows=diag_cfg.get("grid_rows", 4),
+                    grid_cols=diag_cfg.get("grid_cols", 4),
+                    voxel_size=diag_cfg.get("voxel_size", 0.25),
+                )
+            )
+        if bool(diag_cfg.get("gt_metrics", True)) or bool(diag_cfg.get("dump_correspondences", False)):
+            result["_debug_sparse_matches"] = {
+                "p2d": p2d,
+                "p3d": p3d,
+                "scores": scores,
+                "inliers": inliers.reshape(-1).copy(),
+                "K": K,
+                "width": int(W),
+                "height": int(H),
+            }
         result.update(support_diagnostics)
         result.update(mask_diagnostics)
         return result
@@ -1037,6 +1258,11 @@ if __name__ == "__main__":
     dense_aes = []
     dense_tes = []
     dense_inliers = []
+    sparse_diag_values = {}
+    sparse_diag_cfg = config.get("sparse", {}).get("diagnostics", {})
+    corr_dump_file = None
+    if bool(sparse_diag_cfg.get("dump_correspondences", False)):
+        corr_dump_file = open(os.path.join(output_path, "sparse_correspondences.jsonl"), "w")
 
     for idx, camera_info in enumerate(tqdm(test_cameras, desc="STDLoc")):
         print("\nLocalize image:", camera_info.image_name)
@@ -1047,6 +1273,46 @@ if __name__ == "__main__":
 
         # localization
         loc_res = stdloc.localize(query_image, fovx, fovy)
+        sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
+        if sparse_debug is not None:
+            loc_res["sparse"].update(
+                sparse_correspondence_diagnostics(
+                    sparse_debug["p2d"],
+                    sparse_debug["p3d"],
+                    sparse_debug["K"],
+                    loc_res["sparse"]["pose_w2c"],
+                    sparse_debug["inliers"],
+                    sparse_debug["width"],
+                    sparse_debug["height"],
+                    gt_pose_w2c=gt_w2c,
+                    grid_rows=sparse_diag_cfg.get("grid_rows", 4),
+                    grid_cols=sparse_diag_cfg.get("grid_cols", 4),
+                    voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+                )
+            )
+            if corr_dump_file is not None:
+                inliers_only = bool(sparse_diag_cfg.get("dump_inliers_only", True))
+                max_dump = int(sparse_diag_cfg.get("dump_max_correspondences", 0) or 0)
+                if inliers_only:
+                    dump_idx = np.asarray(sparse_debug["inliers"], dtype=np.int64).reshape(-1)
+                else:
+                    dump_idx = np.arange(np.asarray(sparse_debug["p2d"]).shape[0], dtype=np.int64)
+                dump_idx = dump_idx[(dump_idx >= 0) & (dump_idx < np.asarray(sparse_debug["p2d"]).shape[0])]
+                if max_dump > 0:
+                    dump_idx = dump_idx[:max_dump]
+                corr_dump_file.write(
+                    json.dumps(
+                        {
+                            "image_name": camera_info.image_name,
+                            "indices": dump_idx.tolist(),
+                            "p2d": np.asarray(sparse_debug["p2d"])[dump_idx].tolist(),
+                            "p3d": np.asarray(sparse_debug["p3d"])[dump_idx].tolist(),
+                            "scores": np.asarray(sparse_debug["scores"])[dump_idx].tolist(),
+                            "inliers": np.asarray(sparse_debug["inliers"], dtype=np.int64).reshape(-1).tolist(),
+                        }
+                    )
+                    + "\n"
+                )
 
         # evaluation
         sparse_ae, sparse_te = cal_pose_error(loc_res["sparse"]["pose_w2c"], gt_w2c)
@@ -1067,8 +1333,15 @@ if __name__ == "__main__":
         loc_res["dense_AE"] = dense_ae
         loc_res["dense_TE"] = dense_te
         loc_res["image_name"] = camera_info.image_name
+        for key, value in loc_res["sparse"].items():
+            if key.startswith("sparse_diag_") and isinstance(value, (int, float, np.integer, np.floating)):
+                if np.isfinite(float(value)):
+                    sparse_diag_values.setdefault(key, []).append(float(value))
 
         results.append(loc_res)
+
+    if corr_dump_file is not None:
+        corr_dump_file.close()
 
     # get summary
     sparse_aes = np.array(sparse_aes)
@@ -1105,6 +1378,12 @@ if __name__ == "__main__":
             "avg_inliers": np.array(dense_inliers).mean(),
         },
     }
+    if sparse_diag_values:
+        results_summary["sparse_diagnostics"] = {}
+        for key, values in sorted(sparse_diag_values.items()):
+            arr = np.asarray(values, dtype=np.float64)
+            results_summary["sparse_diagnostics"][f"{key}_mean"] = float(np.mean(arr))
+            results_summary["sparse_diagnostics"][f"{key}_median"] = float(np.median(arr))
 
     print("Result Summary:")
     print(json.dumps(results_summary, indent=4))

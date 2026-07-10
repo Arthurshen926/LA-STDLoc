@@ -648,6 +648,55 @@ def apply_multiview_initialization(gaussians, result: MultiViewInitResult, updat
         )
 
 
+@torch.no_grad()
+def apply_multiview_localization_stats(gaussians, result: MultiViewInitResult, update_prototype=True):
+    """Write MVInit observation stats without changing the Gaussian descriptor field."""
+    if not hasattr(gaussians, "loc_observation_count") or not torch.is_tensor(gaussians.loc_observation_count):
+        raise ValueError("gaussians must expose loc_observation_count")
+
+    device = gaussians.loc_observation_count.device
+    observed_count = result.observation_count.to(device=device, dtype=gaussians.loc_observation_count.dtype).reshape(-1)
+    if observed_count.numel() != gaussians.loc_observation_count.numel():
+        raise ValueError(
+            "MVInit observation count does not match Gaussian localization rows: "
+            f"{observed_count.numel()} vs {gaussians.loc_observation_count.numel()}"
+        )
+    gaussians.loc_observation_count.copy_(observed_count)
+
+    if hasattr(gaussians, "loc_repeatability_ema") and torch.is_tensor(gaussians.loc_repeatability_ema):
+        gaussians.loc_repeatability_ema.copy_(
+            result.reliability.to(
+                device=gaussians.loc_repeatability_ema.device,
+                dtype=gaussians.loc_repeatability_ema.dtype,
+            ).reshape_as(gaussians.loc_repeatability_ema)
+        )
+
+    if hasattr(gaussians, "loc_prototype_count") and torch.is_tensor(gaussians.loc_prototype_count):
+        gaussians.loc_prototype_count.copy_(
+            result.observation_count.to(
+                device=gaussians.loc_prototype_count.device,
+                dtype=gaussians.loc_prototype_count.dtype,
+            ).reshape_as(gaussians.loc_prototype_count)
+        )
+
+    if not update_prototype:
+        return
+    if hasattr(gaussians, "loc_prototype") and torch.is_tensor(gaussians.loc_prototype):
+        features = F.normalize(
+            result.features.to(device=gaussians.loc_prototype.device, dtype=gaussians.loc_prototype.dtype),
+            p=2,
+            dim=-1,
+        )
+        if features.shape != gaussians.loc_prototype.shape:
+            raise ValueError(
+                "MVInit prototype shape does not match Gaussian localization prototype: "
+                f"{tuple(features.shape)} vs {tuple(gaussians.loc_prototype.shape)}"
+            )
+        observed = result.observation_count.to(device=gaussians.loc_prototype.device).reshape(-1) > 0
+        if bool(observed.any()):
+            gaussians.loc_prototype[observed] = features[observed]
+
+
 def _feature_grid(feature_map):
     if feature_map.dim() != 3:
         raise ValueError("query feature map must have shape [channels, height, width]")

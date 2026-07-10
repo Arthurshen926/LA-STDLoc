@@ -35,8 +35,6 @@ class GeometryBalancedSelector:
                 raise ValueError(f"scores must have one value per correspondence, got {scores.shape[0]} for {p2d.shape[0]}.")
 
         order = torch.argsort(scores, descending=True)
-        if int(self.max_matches) <= 0:
-            return order
 
         grid_counts = {}
         voxel_counts = {}
@@ -49,6 +47,8 @@ class GeometryBalancedSelector:
         max_per_voxel = max(int(self.max_per_voxel), 1)
         voxel_size = max(float(self.voxel_size), 1e-8)
         max_matches = int(self.max_matches)
+        if max_matches <= 0:
+            max_matches = int(p2d.shape[0])
 
         for idx in order.tolist():
             x = float(p2d[idx, 0].item())

@@ -56,6 +56,138 @@ class TrainLocawareMaskTest(unittest.TestCase):
         same = _refresh_geometry_anchor_if_point_count_changed(FakeGaussians(3), refreshed)
         self.assertIs(same, refreshed)
 
+    def test_geometry_step_delta_skips_point_count_changes(self):
+        from train_locaware import _record_geometry_optimizer_diagnostics
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor([[1000.0, 0.0, 0.0], [1001.0, 0.0, 0.0]])
+                self.optimizer = SimpleNamespace(param_groups=[{"name": "xyz", "lr": 0.0}])
+
+        summary = {}
+        _record_geometry_optimizer_diagnostics(
+            summary,
+            FakeGaussians(),
+            phase="full",
+            xyz_before=torch.tensor([[0.0, 0.0, 0.0]]),
+            record_lr_grad=False,
+        )
+
+        self.assertEqual(summary["geometry_xyz_step_point_count_changed"], 1)
+        self.assertEqual(summary["geometry_xyz_step_delta_skipped_point_count_changed"], 1)
+        self.assertNotIn("geometry_xyz_step_delta_max", summary)
+
+    def test_lafgs_geometry_residual_diagnostics_are_recorded_to_summary(self):
+        from train_locaware import _record_lafgs_geometry_residual_diagnostics
+
+        teacher_out = SimpleNamespace(diagnostics={})
+        summary = {}
+
+        _record_lafgs_geometry_residual_diagnostics(
+            summary,
+            teacher_out,
+            torch.tensor(0.25),
+            {
+                "over_limit_count": 3,
+                "max_residual_norm": 1.5,
+                "max_allowed_norm": 0.4,
+            },
+        )
+
+        self.assertEqual(teacher_out.diagnostics["lafgs_geometry_residual_loss"], 0.25)
+        self.assertEqual(summary["direct_diag_lafgs_geometry_residual_loss_total"], 0.25)
+        self.assertEqual(summary["direct_diag_lafgs_geometry_residual_over_limit_count_total"], 3.0)
+        self.assertEqual(summary["direct_diag_lafgs_geometry_residual_max_norm_max"], 1.5)
+        self.assertEqual(summary["direct_diag_lafgs_geometry_residual_max_allowed_min"], 0.4)
+
+    def test_rgb_densify_child_outlier_prune_removes_only_far_children(self):
+        from train_locaware import _prune_lafgs_rgb_densify_child_outliers
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [10.0, 0.0, 0.0],
+                        [0.2, 0.0, 0.0],
+                        [5.0, 0.0, 0.0],
+                        [1.0, 0.0, 0.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self.loc_source_xyz = torch.zeros(4, 3)
+                self.loc_birth_iteration = torch.tensor([0, 100, 100, 100])
+                self.loc_source_index = torch.tensor([0, 0, 0, 0])
+                self.pruned_mask = None
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            def prune_points(self, mask):
+                self.pruned_mask = mask.detach().cpu()
+                keep = ~mask.cpu()
+                self._xyz = self._xyz[keep]
+                self.loc_source_xyz = self.loc_source_xyz[keep]
+                self.loc_birth_iteration = self.loc_birth_iteration[keep]
+                self.loc_source_index = self.loc_source_index[keep]
+
+        gaussians = FakeGaussians()
+
+        stats = _prune_lafgs_rgb_densify_child_outliers(gaussians, max_source_drift=2.0)
+
+        self.assertEqual(stats["pruned"], 1)
+        self.assertEqual(stats["child_count"], 3)
+        self.assertTrue(torch.equal(gaussians.pruned_mask, torch.tensor([False, False, True, False])))
+        self.assertEqual(gaussians.get_xyz.shape[0], 3)
+        self.assertTrue(torch.equal(gaussians.loc_birth_iteration, torch.tensor([0, 100, 100])))
+
+    def test_final_geometry_delta_aligns_by_source_index_and_birth(self):
+        from train_locaware import _record_final_geometry_delta_summary
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [10.1, 0.0, 0.0],
+                        [20.2, 0.0, 0.0],
+                        [99.0, 0.0, 0.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self.loc_source_index = torch.tensor([1, 0, 0])
+                self.loc_birth_iteration = torch.tensor([0, 0, 500])
+                self.loc_source_xyz = torch.tensor(
+                    [
+                        [10.0, 0.0, 0.0],
+                        [20.0, 0.0, 0.0],
+                        [20.0, 0.0, 0.0],
+                    ],
+                    dtype=torch.float32,
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            def get_localization_xyz(self):
+                return self._xyz
+
+        reference = {
+            "raw_xyz": torch.tensor([[20.0, 0.0, 0.0], [10.0, 0.0, 0.0]], dtype=torch.float32),
+            "loc_xyz": torch.tensor([[20.0, 0.0, 0.0], [10.0, 0.0, 0.0]], dtype=torch.float32),
+        }
+        summary = {}
+
+        _record_final_geometry_delta_summary(summary, FakeGaussians(), reference)
+
+        self.assertEqual(summary["geometry_point_count_changed"], True)
+        self.assertEqual(summary["geometry_source_aligned_delta_count"], 3)
+        self.assertEqual(summary["geometry_birth0_delta_count"], 2)
+        self.assertEqual(summary["geometry_child_delta_count"], 1)
+        self.assertAlmostEqual(summary["raw_xyz_delta_from_initial_max"], 0.2, places=5)
+        self.assertAlmostEqual(summary["loc_xyz_delta_from_initial_max"], 0.2, places=5)
+        self.assertAlmostEqual(summary["raw_xyz_child_delta_from_source_max"], 79.0, places=5)
+
     def test_feature_anchor_refresh_aligns_by_stable_node_id_not_row_order(self):
         from train_locaware import (
             _capture_feature_anchor,
@@ -191,6 +323,170 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.topology_max_mutation_events, 1)
         self.assertEqual(args.loc_child_feature_freeze_steps, 100)
         self.assertEqual(args.loc_full_bank_nearby_as_positive_until, 30625)
+
+    def test_lafgs_nearby_positive_until_uses_relative_step_for_checkpoint_resume(self):
+        from argparse import Namespace
+
+        from train_locaware import full_bank_nearby_as_positive_active
+
+        args = Namespace(
+            loc_full_bank_nearby_as_positive=True,
+            loc_full_bank_nearby_as_positive_until=10000,
+        )
+
+        self.assertTrue(
+            full_bank_nearby_as_positive_active(args, iteration=30001, lafgs_step=1)
+        )
+        self.assertFalse(
+            full_bank_nearby_as_positive_active(args, iteration=40001, lafgs_step=10001)
+        )
+
+        args.loc_full_bank_nearby_as_positive_until = 0
+        self.assertTrue(
+            full_bank_nearby_as_positive_active(args, iteration=50000, lafgs_step=20000)
+        )
+
+    def test_sfm_from_zero_resume_uses_absolute_training_step(self):
+        from argparse import Namespace
+
+        from train_locaware import (
+            lafgs_curriculum_base_iteration,
+            lafgs_curriculum_step,
+            lafgs_stage_loss_weights,
+        )
+
+        args = Namespace(
+            lafgs_stage_schedule="sfm_from_zero",
+            lafgs_stage_bootstrap_until=3000,
+            lafgs_stage_joint_until=15000,
+            lafgs_stage_bootstrap_base_weight=1.0,
+            lafgs_stage_bootstrap_loc_weight=0.15,
+            lafgs_stage_bootstrap_geometry_anchor_weight=0.05,
+            lafgs_stage_joint_base_weight=0.5,
+            lafgs_stage_joint_loc_weight=1.0,
+            lafgs_stage_joint_geometry_anchor_weight=0.05,
+            lafgs_stage_refine_base_weight=0.15,
+            lafgs_stage_refine_loc_weight=1.5,
+            lafgs_stage_refine_geometry_anchor_weight=0.02,
+            base_loss_weight=1.0,
+            loc_loss_weight=1.0,
+            geometry_anchor_weight=0.0,
+        )
+
+        base_iteration = lafgs_curriculum_base_iteration(args, scene_loaded_iter=5000)
+        resumed_step = lafgs_curriculum_step(iteration=5001, base_iteration=base_iteration)
+
+        self.assertEqual(base_iteration, 0)
+        self.assertEqual(resumed_step, 5001)
+        self.assertEqual(lafgs_stage_loss_weights(args, resumed_step)["stage"], "joint")
+
+    def test_sfm_from_zero_resume_skips_multiview_initialization(self):
+        from argparse import Namespace
+
+        from train_locaware import lafgs_should_run_multiview_initialization
+
+        sfm_args = Namespace(
+            lafgs_stage_schedule="sfm_from_zero",
+            lafgs_mvinit_enabled=True,
+            lafgs_mvinit_max_views=64,
+        )
+        legacy_args = Namespace(
+            lafgs_stage_schedule="none",
+            lafgs_mvinit_enabled=True,
+            lafgs_mvinit_max_views=64,
+        )
+
+        self.assertTrue(lafgs_should_run_multiview_initialization(sfm_args, first_iter=0))
+        self.assertFalse(lafgs_should_run_multiview_initialization(sfm_args, first_iter=5000))
+        self.assertTrue(lafgs_should_run_multiview_initialization(legacy_args, first_iter=30000))
+
+    def test_locaware_parser_accepts_sfm_from_zero_stage_and_rgb_densify_controls(self):
+        from train_locaware import add_locaware_training_args, lafgs_stage_loss_weights
+
+        parser = ArgumentParser()
+        add_locaware_training_args(parser)
+
+        defaults = parser.parse_args([])
+        self.assertEqual(defaults.lafgs_stage_schedule, "none")
+        self.assertFalse(defaults.lafgs_rgb_densify)
+
+        args = parser.parse_args(
+            [
+                "--lafgs_stage_schedule",
+                "sfm_from_zero",
+                "--lafgs_stage_bootstrap_until",
+                "3000",
+                "--lafgs_stage_joint_until",
+                "15000",
+                "--lafgs_rgb_densify",
+                "--lafgs_rgb_densify_until_iter",
+                "15000",
+                "--lafgs_rgb_densify_child_max_source_drift",
+                "2.5",
+            ]
+        )
+
+        self.assertEqual(args.lafgs_stage_schedule, "sfm_from_zero")
+        self.assertTrue(args.lafgs_rgb_densify)
+        self.assertEqual(args.lafgs_rgb_densify_until_iter, 15000)
+        self.assertEqual(args.lafgs_rgb_densify_child_max_source_drift, 2.5)
+        self.assertEqual(lafgs_stage_loss_weights(args, 1000)["stage"], "bootstrap")
+        self.assertGreater(
+            lafgs_stage_loss_weights(args, 20000)["loc"],
+            lafgs_stage_loss_weights(args, 20000)["base"],
+        )
+
+    def test_landmark_indices_can_bootstrap_from_all_current_points(self):
+        from train_locaware import _load_landmark_indices
+
+        indices = _load_landmark_indices("/unused", "__all__", point_count=5)
+
+        self.assertEqual(indices.tolist(), [0, 1, 2, 3, 4])
+
+    def test_sfm_from_zero_phase_lrs_keep_rgb_scaffold_trainable(self):
+        from argparse import Namespace
+
+        from train_locaware import _set_phase_lrs
+
+        class FakeGaussians:
+            def __init__(self):
+                self.optimizer = SimpleNamespace(
+                    param_groups=[
+                        {"name": "xyz", "lr": 0.1},
+                        {"name": "f_dc", "lr": 0.2},
+                        {"name": "f_rest", "lr": 0.3},
+                        {"name": "opacity", "lr": 0.4},
+                        {"name": "scaling", "lr": 0.5},
+                        {"name": "rotation", "lr": 0.6},
+                        {"name": "loc_feature", "lr": 0.7},
+                        {"name": "loc_opacity", "lr": 0.8},
+                    ]
+                )
+
+        gaussians = FakeGaussians()
+        args = Namespace(
+            gaussian_type="2dgs",
+            lafgs_stage_schedule="sfm_from_zero",
+            allow_raw_xyz_geometry_grad=True,
+            loc_overlay_mode="none",
+            loc_anchor_lr=0.0,
+            surfel_loc_tangent_bound=0.0,
+            surfel_loc_normal_bound=0.0,
+            use_loc_opacity=True,
+            lafgs_diff_pnp_allow_geometry_grad=False,
+            lafgs_diff_pnp_geometry_xyz_lr=0.0,
+            geometry_xyz_lr_mult=1.0,
+            geometry_scale_lr_mult=1.0,
+            geometry_rotation_lr_mult=1.0,
+        )
+
+        _set_phase_lrs(gaussians, "locrec", args)
+        lr_by_name = {group["name"]: group["lr"] for group in gaussians.optimizer.param_groups}
+
+        self.assertGreater(lr_by_name["xyz"], 0.0)
+        self.assertGreater(lr_by_name["f_dc"], 0.0)
+        self.assertGreater(lr_by_name["scaling"], 0.0)
+        self.assertGreater(lr_by_name["loc_feature"], 0.0)
 
     def test_locaware_pseudo_query_defaults_are_train_rgb_mainline(self):
         from train_locaware import add_locaware_training_args
@@ -1203,6 +1499,35 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertAlmostEqual(summary["geometry_xyz_full_grad_abs_max"], 23.0)
         self.assertAlmostEqual(summary["geometry_xyz_isolated_grad_abs_max"], 16.0)
 
+    def test_lafgs_geometry_gradient_clip_clamps_geometry_params(self):
+        from train_locaware import _clip_lafgs_geometry_gradients
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.nn.Parameter(torch.zeros(2))
+                self._loc_anchor_offset = torch.nn.Parameter(torch.zeros(2))
+                self._scaling = torch.nn.Parameter(torch.zeros(2))
+                self._rotation = torch.nn.Parameter(torch.zeros(2))
+                self._xyz.grad = torch.tensor([0.5, -2.0])
+                self._loc_anchor_offset.grad = torch.tensor([100.0, -0.25])
+                self._scaling.grad = torch.tensor([0.1, 0.2])
+                self._rotation.grad = None
+
+        gaussians = FakeGaussians()
+        summary = {}
+
+        clipped = _clip_lafgs_geometry_gradients(gaussians, max_abs=1.0, summary=summary)
+
+        self.assertEqual(clipped, 2)
+        self.assertTrue(torch.equal(gaussians._xyz.grad, torch.tensor([0.5, -1.0])))
+        self.assertTrue(torch.equal(gaussians._loc_anchor_offset.grad, torch.tensor([1.0, -0.25])))
+        self.assertTrue(torch.equal(gaussians._scaling.grad, torch.tensor([0.1, 0.2])))
+        self.assertEqual(summary["geometry_grad_clip_events"], 1)
+        self.assertEqual(summary["geometry_grad_clip_param_events"], 2)
+        self.assertEqual(summary["geometry_grad_clip_xyz_events"], 1)
+        self.assertEqual(summary["geometry_grad_clip_loc_anchor_offset_events"], 1)
+        self.assertEqual(summary["geometry_grad_clip_loc_anchor_offset_before_abs_max"], 100.0)
+
     def test_locaware_parser_accepts_diff_pnp_isolated_geometry_grad(self):
         from train_locaware import add_locaware_training_args
 
@@ -1539,6 +1864,96 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.loc_full_bank_ignore_uv_radius, 2.5)
         self.assertTrue(args.loc_full_bank_nearby_as_positive)
         self.assertEqual(args.loc_anchor_weight, 0.02)
+
+    def test_locaware_parser_accepts_clean_full_bank_controls(self):
+        from train_locaware import add_locaware_training_args
+
+        parser = ArgumentParser()
+        add_locaware_training_args(parser)
+        args = parser.parse_args(
+            [
+                "--loc_full_bank_balance_weight",
+                "0.75",
+                "--loc_full_bank_balance_grid_size",
+                "4",
+                "--loc_full_bank_balance_depth_bins",
+                "3",
+                "--loc_full_bank_balance_max_weight",
+                "5.0",
+                "--loc_full_bank_clean_hard_negative_weight",
+                "0.5",
+                "--loc_clean_hard_negative_weight",
+                "0.6",
+                "--loc_full_bank_clean_reproj_radius",
+                "3.0",
+                "--loc_full_bank_clean_hard_negatives",
+                "8",
+                "--loc_clean_field_start_iter",
+                "500",
+                "--loc_clean_field_full_bank_weight_scale",
+                "0.25",
+                "--loc_clean_field_clean_hn_weight_scale",
+                "8.0",
+                "--loc_clean_field_balance_weight",
+                "0.9",
+                "--loc_clean_field_pose_information_weight",
+                "0.8",
+                "--loc_clean_field_diff_pnp_weight_scale",
+                "4.0",
+            ]
+        )
+
+        self.assertEqual(args.loc_full_bank_balance_weight, 0.75)
+        self.assertEqual(args.loc_full_bank_balance_grid_size, 4)
+        self.assertEqual(args.loc_full_bank_balance_depth_bins, 3)
+        self.assertEqual(args.loc_full_bank_balance_max_weight, 5.0)
+        self.assertEqual(args.loc_full_bank_clean_hard_negative_weight, 0.5)
+        self.assertEqual(args.loc_clean_hard_negative_weight, 0.6)
+        self.assertEqual(args.loc_full_bank_clean_reproj_radius, 3.0)
+        self.assertEqual(args.loc_full_bank_clean_hard_negatives, 8)
+        self.assertEqual(args.loc_clean_field_start_iter, 500)
+        self.assertEqual(args.loc_clean_field_full_bank_weight_scale, 0.25)
+        self.assertEqual(args.loc_clean_field_clean_hn_weight_scale, 8.0)
+        self.assertEqual(args.loc_clean_field_balance_weight, 0.9)
+        self.assertEqual(args.loc_clean_field_pose_information_weight, 0.8)
+        self.assertEqual(args.loc_clean_field_diff_pnp_weight_scale, 4.0)
+
+    def test_clean_field_stage_controls_apply_after_start_iter(self):
+        from train_locaware import _clean_field_stage_controls
+
+        args = SimpleNamespace(
+            loc_full_bank_clean_hard_negative_weight=0.5,
+            loc_clean_hard_negative_weight=-1.0,
+            loc_full_bank_balance_weight=0.25,
+            loc_full_bank_pose_information_weight=0.2,
+            lafgs_diff_pnp_weight=0.05,
+            loc_clean_field_start_iter=100,
+            loc_clean_field_full_bank_weight_scale=0.2,
+            loc_clean_field_clean_hn_weight_scale=6.0,
+            loc_clean_field_balance_weight=0.9,
+            loc_clean_field_pose_information_weight=0.8,
+            loc_clean_field_diff_pnp_weight_scale=4.0,
+        )
+
+        early = _clean_field_stage_controls(args, 50)
+        late = _clean_field_stage_controls(args, 100)
+
+        self.assertFalse(early["active"])
+        self.assertEqual(early["full_bank_weight_scale"], 1.0)
+        self.assertEqual(early["clean_hn_weight"], 0.5)
+        self.assertEqual(early["balance_weight"], 0.25)
+        self.assertEqual(early["pose_information_weight"], 0.2)
+        self.assertEqual(early["diff_pnp_weight"], 0.05)
+        self.assertTrue(late["active"])
+        self.assertEqual(late["full_bank_weight_scale"], 0.2)
+        self.assertEqual(late["clean_hn_weight"], 3.0)
+        self.assertEqual(late["balance_weight"], 0.9)
+        self.assertEqual(late["pose_information_weight"], 0.8)
+        self.assertEqual(late["diff_pnp_weight"], 0.2)
+
+        args.loc_clean_hard_negative_weight = 0.7
+        overridden = _clean_field_stage_controls(args, 100)
+        self.assertAlmostEqual(overridden["clean_hn_weight"], 4.2)
 
     def test_locaware_parser_accepts_dense_responsibility_kl_controls(self):
         from train_locaware import add_locaware_training_args
@@ -1897,6 +2312,33 @@ class TrainLocawareMaskTest(unittest.TestCase):
 
         self.assertFalse(disabled_policy["enabled"])
         self.assertTrue(torch.allclose(disabled_loss, torch.tensor(4.0)))
+
+    def test_clean_hard_negative_loss_is_not_scaled_by_full_bank_stage_scale(self):
+        from train_locaware import _compose_direct_loc_loss
+
+        args = SimpleNamespace(
+            loc_direct_weight=0.0,
+            loc_multiview_weight=0.0,
+            loc_full_bank_weight=10.0,
+            loc_clean_hard_negative_weight=3.0,
+            loc_anchor_weight=0.0,
+            pseudo_query_stage_objective_mode="none",
+        )
+
+        loss, _ = _compose_direct_loc_loss(
+            torch.tensor(0.0),
+            torch.tensor(0.0),
+            torch.tensor(2.0),
+            torch.tensor(0.0),
+            None,
+            args,
+            full_bank_weight_scale=0.1,
+            loc_clean_hard_negative_loss=torch.tensor(5.0),
+            clean_hard_negative_weight=3.0,
+        )
+
+        # Full-bank is scaled: 10 * 0.1 * 2 = 2. Clean HN remains independent: 3 * 5 = 15.
+        self.assertTrue(torch.allclose(loss, torch.tensor(17.0)))
 
     def test_pseudo_query_stage_source_diagnostics_are_one_hot(self):
         from la_artifacts.pseudo_query import PseudoQueryRecord

@@ -213,6 +213,180 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         aligned.backward()
         self.assertIsNotNone(aligned_bank.grad)
 
+    def test_clean_reprojection_hard_negative_penalizes_far_repeated_matches(self):
+        from localization_training.direct_landmark_teacher import clean_reprojection_hard_negative_loss
+
+        query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        confused_bank = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+        clean_bank = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+        positive = torch.tensor([0])
+        query_uv = torch.tensor([[8.0, 8.0]], dtype=torch.float32)
+        bank_uv = torch.tensor(
+            [
+                [8.0, 8.0],
+                [30.0, 30.0],
+                [32.0, 32.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        confused = clean_reprojection_hard_negative_loss(
+            query,
+            confused_bank,
+            positive,
+            query_uv,
+            bank_uv,
+            reprojection_radius=4.0,
+            hard_negative_topk=1,
+            margin=0.2,
+        )
+        clean = clean_reprojection_hard_negative_loss(
+            query,
+            clean_bank,
+            positive,
+            query_uv,
+            bank_uv,
+            reprojection_radius=4.0,
+            hard_negative_topk=1,
+            margin=0.2,
+        )
+
+        self.assertGreater(confused.item(), clean.item() + 0.1)
+        confused.backward()
+        self.assertIsNotNone(confused_bank.grad)
+
+    def test_clean_reprojection_hard_negative_ignores_nearby_projected_aliases(self):
+        from localization_training.direct_landmark_teacher import clean_reprojection_hard_negative_loss
+
+        query = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+        bank = torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.99, 0.01],
+                [0.0, 1.0],
+            ],
+            dtype=torch.float32,
+        )
+        query_uv = torch.tensor([[8.0, 8.0]], dtype=torch.float32)
+        bank_uv = torch.tensor(
+            [
+                [8.0, 8.0],
+                [9.0, 8.0],
+                [30.0, 30.0],
+            ],
+            dtype=torch.float32,
+        )
+
+        loss = clean_reprojection_hard_negative_loss(
+            query,
+            bank,
+            torch.tensor([0]),
+            query_uv,
+            bank_uv,
+            reprojection_radius=4.0,
+            hard_negative_topk=1,
+            margin=0.2,
+        )
+
+        self.assertLess(loss.item(), 0.05)
+
+    def test_geometry_balance_weights_downweight_repeated_cells_and_depth_bins(self):
+        from localization_training.direct_landmark_teacher import geometry_balance_weights
+
+        uv = torch.tensor(
+            [
+                [4.0, 4.0],
+                [5.0, 4.0],
+                [6.0, 4.0],
+                [28.0, 28.0],
+            ],
+            dtype=torch.float32,
+        )
+        depth = torch.tensor([4.0, 4.1, 4.2, 20.0], dtype=torch.float32)
+
+        weights = geometry_balance_weights(
+            uv,
+            depth=depth,
+            image_size=(32, 32),
+            grid_size=4,
+            depth_bins=2,
+            max_weight=4.0,
+        )
+
+        self.assertGreater(weights[-1].item(), weights[:3].mean().item())
+        self.assertAlmostEqual(float(weights.mean().item()), 1.0, places=5)
+
+    def test_direct_teacher_reports_clean_hard_negative_separate_from_full_bank_loss(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [0.0, 0.0, 4.0],
+                        [1.4, 1.4, 4.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [
+                            [[1.0, 0.0]],
+                            [[0.99, 0.01]],
+                        ],
+                        dtype=torch.float32,
+                    )
+                )
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        query_feature_map = torch.zeros(2, 64, 64, dtype=torch.float32)
+        query_feature_map[:, 32, 32] = torch.tensor([1.0, 0.0])
+        query_feature_map[:, 54, 54] = torch.tensor([0.99, 0.01])
+        kwargs = dict(
+            gaussians=FakeGaussians(),
+            query_feature_map=query_feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.9272952180016123,
+            fovy=0.9272952180016123,
+            landmark_indices=torch.tensor([0]),
+            full_bank_indices=torch.tensor([0, 1]),
+            max_landmarks=1,
+            full_bank_hard_negative_topk=1,
+            full_bank_hard_negative_margin=0.2,
+            full_bank_clean_reproj_radius=4.0,
+            full_bank_clean_hard_negatives=1,
+        )
+
+        base = direct_landmark_teacher(**kwargs, full_bank_clean_hard_negative_weight=0.0)
+        clean = direct_landmark_teacher(**kwargs, full_bank_clean_hard_negative_weight=1.0)
+
+        self.assertTrue(torch.allclose(clean.full_bank_loss, base.full_bank_loss, atol=1e-6))
+        self.assertGreater(clean.clean_hard_negative_loss.item(), 0.0)
+        self.assertGreater(clean.diagnostics["full_bank_clean_hard_negative_loss"], 0.0)
+
     def test_full_bank_bimnn_loss_ignores_sibling_source_false_negatives(self):
         from localization_training.direct_landmark_teacher import full_bank_bimnn_loss
 
@@ -307,6 +481,42 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         self.assertLess(multi_positive.item(), single_positive.item())
         self.assertGreater(multi_prob.item(), single_prob.item())
         self.assertGreater(multi_margin.item(), single_margin.item())
+
+    def test_full_bank_descriptor_stats_chunking_matches_full_matrix(self):
+        from localization_training.direct_landmark_teacher import full_bank_descriptor_stats
+
+        torch.manual_seed(7)
+        query = torch.randn(5, 4)
+        bank = torch.randn(17, 4)
+        positives = torch.tensor([0, 3, 8, 12, 16])
+        ignore_mask = torch.zeros((5, 17), dtype=torch.bool)
+        ignore_mask[0, 1:4] = True
+        ignore_mask[2, 7] = True
+        positive_mask = torch.zeros((5, 17), dtype=torch.bool)
+        positive_mask[1, 3] = True
+        positive_mask[1, 4] = True
+        positive_mask[4, 15] = True
+
+        full = full_bank_descriptor_stats(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            ignore_bank_mask=ignore_mask,
+            positive_bank_mask=positive_mask,
+        )
+        chunked = full_bank_descriptor_stats(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            ignore_bank_mask=ignore_mask,
+            positive_bank_mask=positive_mask,
+            chunk_size=6,
+        )
+
+        for full_value, chunked_value in zip(full, chunked):
+            self.assertTrue(torch.allclose(full_value, chunked_value, atol=1e-6))
 
     def test_direct_teacher_can_ignore_full_bank_3d_and_uv_nearby_false_negatives(self):
         from localization_training.direct_landmark_teacher import direct_landmark_teacher

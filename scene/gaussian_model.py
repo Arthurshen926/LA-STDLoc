@@ -112,6 +112,7 @@ class GaussianModel_2dgs(nn.Module):
         self._loc_anchor_offset = torch.empty(0)
         self.surfel_loc_tangent_bound = 0.0
         self.surfel_loc_normal_bound = 0.0
+        self.surfel_loc_radius_floor = 0.0
         self.detach_loc_anchor_base = False
 
     def capture(self):
@@ -133,6 +134,7 @@ class GaussianModel_2dgs(nn.Module):
             self._loc_anchor_offset,
             float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0),
             float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0),
+            float(getattr(self, "surfel_loc_radius_floor", 0.0) or 0.0),
         )
     
     def restore(self, model_args, training_args):
@@ -160,6 +162,8 @@ class GaussianModel_2dgs(nn.Module):
             self.surfel_loc_tangent_bound = float(loc_extra[2] or 0.0)
         if len(loc_extra) >= 4:
             self.surfel_loc_normal_bound = float(loc_extra[3] or 0.0)
+        if len(loc_extra) >= 5:
+            self.surfel_loc_radius_floor = float(loc_extra[4] or 0.0)
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -208,6 +212,9 @@ class GaussianModel_2dgs(nn.Module):
             radius = tangent_scales.mean(dim=1, keepdim=True).clamp_min(1e-8)
         else:
             radius = scales.reshape(scales.shape[0], -1).mean(dim=1, keepdim=True).clamp_min(1e-8)
+        radius_floor = float(getattr(self, "surfel_loc_radius_floor", 0.0) or 0.0)
+        if radius_floor > 0.0:
+            radius = radius.clamp_min(radius_floor)
         tangent_delta = torch.tanh(raw[:, :2]) * (tangent_bound * radius)
         normal_delta = torch.tanh(raw[:, 2:3]) * (normal_bound * radius)
         return (
@@ -445,15 +452,65 @@ class GaussianModel_2dgs(nn.Module):
             )
             self.loc_prototype_count[target_idx] += 1
 
+    def _robust_z(self, value, mask):
+        out = torch.zeros_like(value, dtype=torch.float32)
+        if mask.sum() == 0:
+            return out
+        data = value[mask].float()
+        median = data.median()
+        mad = (data - median).abs().median().clamp_min(1e-6)
+        out[mask] = ((value[mask].float() - median) / (1.4826 * mad)).clamp(-5.0, 5.0)
+        return out
+
+    def _observed_localization_mask(self, min_observations=8):
+        self._ensure_localization_state()
+        return self.loc_observation_count >= min_observations
+
+    def compute_landmark_reliability(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        reliability = (
+            self._robust_z(self.loc_repeatability_ema, observed)
+            + self._robust_z(self.loc_positive_prob_ema, observed)
+            + self._robust_z(self.loc_margin_ema, observed)
+            - self._robust_z(self.loc_entropy_ema, observed)
+            - self._robust_z(self.loc_outlier_ema, observed)
+            - self._robust_z(self.loc_reproj_error_ema, observed)
+        )
+        reliability[~torch.isfinite(reliability)] = 0.0
+        reliability[~observed] = 0.0
+        return reliability
+
+    def compute_pose_geometry_value(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        geometry = self._robust_z(self.loc_information_ema, observed)
+        geometry[~torch.isfinite(geometry)] = 0.0
+        geometry[~observed] = 0.0
+        return geometry
+
+    def compute_localization_utility(self, min_observations=8):
+        self._ensure_localization_state()
+        observed = self._observed_localization_mask(min_observations)
+        utility = (
+            self.compute_landmark_reliability(min_observations)
+            + self.compute_pose_geometry_value(min_observations)
+            - self._robust_z(self.loc_redundancy_ema, observed)
+        )
+        utility[~torch.isfinite(utility)] = 0.0
+        utility[~observed] = 0.0
+        return utility
+
     def capture_localization_state(self):
         self._ensure_localization_state()
         state = {
-            "version": 3,
+            "version": 4,
             "loc_opacity": self._loc_opacity.detach(),
-            "loc_current_xyz": self.get_xyz.detach(),
+            "loc_current_xyz": self.get_loc_xyz.detach(),
             "loc_anchor_offset": self._loc_anchor_offset.detach(),
             "surfel_loc_tangent_bound": float(getattr(self, "surfel_loc_tangent_bound", 0.0) or 0.0),
             "surfel_loc_normal_bound": float(getattr(self, "surfel_loc_normal_bound", 0.0) or 0.0),
+            "surfel_loc_radius_floor": float(getattr(self, "surfel_loc_radius_floor", 0.0) or 0.0),
             "detach_loc_anchor_base": bool(getattr(self, "detach_loc_anchor_base", False)),
         }
         for name in self._localization_buffer_names():
@@ -477,6 +534,7 @@ class GaussianModel_2dgs(nn.Module):
                 setattr(self, name, state[name].to(device=device).detach().clone())
         self.surfel_loc_tangent_bound = float(state.get("surfel_loc_tangent_bound", getattr(self, "surfel_loc_tangent_bound", 0.0)) or 0.0)
         self.surfel_loc_normal_bound = float(state.get("surfel_loc_normal_bound", getattr(self, "surfel_loc_normal_bound", 0.0)) or 0.0)
+        self.surfel_loc_radius_floor = float(state.get("surfel_loc_radius_floor", getattr(self, "surfel_loc_radius_floor", 0.0)) or 0.0)
         self.detach_loc_anchor_base = bool(state.get("detach_loc_anchor_base", getattr(self, "detach_loc_anchor_base", False)))
         loc_anchor_offset = state.get("loc_anchor_offset", None)
         if loc_anchor_offset is not None:
@@ -732,6 +790,58 @@ class GaussianModel_2dgs(nn.Module):
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        self._prune_localization_buffers(valid_points_mask)
+
+    def _new_localization_node_ids(self, count, existing_node_ids=None):
+        count = int(count)
+        device = self.get_xyz.device
+        if count <= 0:
+            return torch.empty((0,), dtype=torch.long, device=device)
+        if existing_node_ids is None:
+            existing_node_ids = getattr(self, "loc_node_id", None)
+        if torch.is_tensor(existing_node_ids) and existing_node_ids.numel() > 0:
+            start = int(existing_node_ids.to(dtype=torch.long).max().item()) + 1
+        else:
+            start = 0
+        return torch.arange(start, start + count, dtype=torch.long, device=device)
+
+    def _cat_localization_buffers(self, parent_mask, repeat=1, birth_iteration=None):
+        if parent_mask is None:
+            n = self.get_xyz.shape[0]
+            self.init_localization_state(from_rgb_opacity=True)
+            assert self.get_xyz.shape[0] == n
+            return
+        parent_mask = torch.as_tensor(parent_mask, device=self.get_xyz.device, dtype=torch.bool)
+        originals = {name: getattr(self, name) for name in self._localization_buffer_names()}
+        for name in self._localization_buffer_names():
+            value = originals[name]
+            if value.shape[0] != parent_mask.shape[0]:
+                raise RuntimeError(
+                    f"Cannot extend localization buffer {name}: "
+                    f"buffer has {value.shape[0]} rows, parent mask has {parent_mask.shape[0]}."
+                )
+            if name == "loc_node_id":
+                parent_count = int(parent_mask.sum().item())
+                extension = self._new_localization_node_ids(
+                    parent_count * int(repeat),
+                    existing_node_ids=originals.get("loc_node_id"),
+                )
+            elif name == "loc_parent_node_id":
+                parent_node_id = originals.get("loc_node_id")
+                if not torch.is_tensor(parent_node_id) or parent_node_id.shape[0] != parent_mask.shape[0]:
+                    parent_node_id = torch.arange(parent_mask.shape[0], dtype=torch.long, device=value.device)
+                extension = parent_node_id[parent_mask].to(device=value.device, dtype=value.dtype)
+                if int(repeat) != 1:
+                    extension = extension.repeat(int(repeat))
+            else:
+                extension = value[parent_mask]
+                if int(repeat) != 1:
+                    extension = extension.repeat(*([int(repeat)] + [1] * (extension.dim() - 1)))
+                if birth_iteration is not None and name in ("loc_birth_iteration", "last_topology_iteration"):
+                    extension = torch.full_like(extension, int(birth_iteration))
+            setattr(self, name, torch.cat([value, extension], dim=0))
+
+    def _prune_localization_buffers(self, valid_points_mask):
         for name in self._localization_buffer_names():
             value = getattr(self, name, None)
             if torch.is_tensor(value) and value.shape[0] == valid_points_mask.shape[0]:
@@ -772,6 +882,7 @@ class GaussianModel_2dgs(nn.Module):
         new_loc_anchor_offset=None,
         loc_parent_mask=None,
         loc_repeat=1,
+        loc_birth_iteration=None,
     ):
         if new_loc_opacity is None:
             new_loc_opacity = new_opacities.detach().clone()
@@ -797,22 +908,17 @@ class GaussianModel_2dgs(nn.Module):
         self._loc_feature = optimizable_tensors["loc_feature"] 
         self._loc_opacity = optimizable_tensors["loc_opacity"]
         self._loc_anchor_offset = optimizable_tensors["loc_anchor_offset"]
-        if loc_parent_mask is not None:
-            parent_mask = torch.as_tensor(loc_parent_mask, device=self.get_xyz.device, dtype=torch.bool)
-            for name in self._localization_buffer_names():
-                value = getattr(self, name, None)
-                if not torch.is_tensor(value) or value.shape[0] != parent_mask.shape[0]:
-                    continue
-                extension = value[parent_mask]
-                if int(loc_repeat) != 1:
-                    extension = extension.repeat(*([int(loc_repeat)] + [1] * (extension.dim() - 1)))
-                setattr(self, name, torch.cat([value, extension], dim=0))
+        self._cat_localization_buffers(
+            loc_parent_mask,
+            repeat=loc_repeat,
+            birth_iteration=loc_birth_iteration,
+        )
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
+    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2, loc_birth_iteration=None):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -848,11 +954,12 @@ class GaussianModel_2dgs(nn.Module):
             new_loc_anchor_offset,
             selected_pts_mask,
             N,
+            loc_birth_iteration,
         ) 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
+    def densify_and_clone(self, grads, grad_threshold, scene_extent, loc_birth_iteration=None):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(selected_pts_mask,
@@ -880,14 +987,15 @@ class GaussianModel_2dgs(nn.Module):
             new_loc_anchor_offset,
             selected_pts_mask,
             1,
+            loc_birth_iteration,
         ) 
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, loc_birth_iteration=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_clone(grads, max_grad, extent, loc_birth_iteration=loc_birth_iteration)
+        self.densify_and_split(grads, max_grad, extent, loc_birth_iteration=loc_birth_iteration)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -1228,7 +1336,7 @@ class GaussianModel(nn.Module):
             start = 0
         return torch.arange(start, start + count, dtype=torch.long, device=device)
 
-    def _cat_localization_buffers(self, parent_mask, repeat=1):
+    def _cat_localization_buffers(self, parent_mask, repeat=1, birth_iteration=None):
         if parent_mask is None:
             n = self.get_xyz.shape[0]
             self.init_localization_state(from_rgb_opacity=True)
@@ -1260,6 +1368,8 @@ class GaussianModel(nn.Module):
             if repeat != 1 and name not in ("loc_node_id", "loc_parent_node_id"):
                 reps = [repeat] + [1] * (extension.dim() - 1)
                 extension = extension.repeat(*reps)
+            if birth_iteration is not None and name in ("loc_birth_iteration", "last_topology_iteration"):
+                extension = torch.full_like(extension, int(birth_iteration))
             setattr(self, name, torch.cat([value, extension], dim=0))
 
     def _prune_localization_buffers(self, valid_points_mask):
@@ -1495,7 +1605,7 @@ class GaussianModel(nn.Module):
         state = {
             "version": 2,
             "loc_opacity": self._loc_opacity.detach(),
-            "loc_current_xyz": self.get_xyz.detach(),
+            "loc_current_xyz": self.get_loc_xyz.detach(),
         }
         for name in self._localization_buffer_names():
             state[name] = getattr(self, name).detach()
@@ -1975,12 +2085,12 @@ class GaussianModel(nn.Module):
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_loc_feature) 
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, loc_birth_iteration=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_clone(grads, max_grad, extent, loc_birth_iteration=loc_birth_iteration)
+        self.densify_and_split(grads, max_grad, extent, loc_birth_iteration=loc_birth_iteration)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -2029,6 +2139,7 @@ class GaussianModel(nn.Module):
         new_loc_opacity=None,
         loc_parent_mask=None,
         loc_repeat=1,
+        loc_birth_iteration=None,
     ):
         if new_loc_opacity is None:
             new_loc_opacity = new_opacities.detach().clone()
@@ -2052,13 +2163,17 @@ class GaussianModel(nn.Module):
         self._rotation = optimizable_tensors["rotation"]
         self._loc_feature = optimizable_tensors["loc_feature"]
         self._loc_opacity = optimizable_tensors["loc_opacity"]
-        self._cat_localization_buffers(loc_parent_mask, repeat=loc_repeat)
+        self._cat_localization_buffers(
+            loc_parent_mask,
+            repeat=loc_repeat,
+            birth_iteration=loc_birth_iteration,
+        )
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def densify_and_split_selected(self, selected_mask, scene_extent, N=2):
+    def densify_and_split_selected(self, selected_mask, scene_extent, N=2, loc_birth_iteration=None):
         selected_pts_mask = torch.as_tensor(
             selected_mask,
             device=self.get_xyz.device,
@@ -2102,6 +2217,7 @@ class GaussianModel(nn.Module):
             new_loc_opacity,
             selected_pts_mask,
             N,
+            loc_birth_iteration,
         )
         prune_filter = torch.cat(
             (
@@ -2112,7 +2228,7 @@ class GaussianModel(nn.Module):
         self.prune_points(prune_filter)
         return split_count
 
-    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
+    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2, loc_birth_iteration=None):
         n_init_points = self.get_xyz.shape[0]
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
@@ -2146,11 +2262,12 @@ class GaussianModel(nn.Module):
             new_loc_opacity,
             selected_pts_mask,
             N,
+            loc_birth_iteration,
         )
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
+    def densify_and_clone(self, grads, grad_threshold, scene_extent, loc_birth_iteration=None):
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
         selected_pts_mask = torch.logical_and(
             selected_pts_mask,
@@ -2177,4 +2294,5 @@ class GaussianModel(nn.Module):
             new_loc_opacity,
             selected_pts_mask,
             1,
+            loc_birth_iteration,
         )

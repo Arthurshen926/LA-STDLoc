@@ -50,6 +50,17 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "8.0",
                     "--nms",
                     "2",
+                    "--geometry_balance",
+                    "--geometry_balance_max_per_cell",
+                    "8",
+                    "--geometry_balance_max_matches",
+                    "512",
+                    "--diagnostics_grid_rows",
+                    "3",
+                    "--diagnostics_grid_cols",
+                    "5",
+                    "--diagnostics_voxel_size",
+                    "0.5",
                     "--summary_json",
                     str(tmp / "summary.json"),
                 ],
@@ -73,11 +84,24 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             self.assertEqual(float(sparse["reprojection_error"]), 8.0)
             self.assertEqual(sparse["nms"], 2)
             self.assertFalse(sparse["use_landmark_prior"])
+            self.assertTrue(sparse["diagnostics"]["enabled"])
+            self.assertTrue(sparse["diagnostics"]["gt_metrics"])
+            self.assertEqual(sparse["diagnostics"]["grid_rows"], 3)
+            self.assertEqual(sparse["diagnostics"]["grid_cols"], 5)
+            self.assertEqual(float(sparse["diagnostics"]["voxel_size"]), 0.5)
+            self.assertTrue(sparse["geometry_balance"]["enabled"])
+            self.assertEqual(sparse["geometry_balance"]["max_per_cell"], 8)
+            self.assertEqual(sparse["geometry_balance"]["max_matches"], 512)
 
             summary = json.loads((tmp / "summary.json").read_text())
             self.assertEqual(summary["output"], str(out_cfg))
             self.assertEqual(summary["detector_path"], "detector_la/123_detector.pth")
             self.assertEqual(summary["nms"], 2)
+            self.assertTrue(summary["diagnostics"]["enabled"])
+            self.assertEqual(summary["diagnostics"]["grid_rows"], 3)
+            self.assertEqual(summary["diagnostics"]["grid_cols"], 5)
+            self.assertEqual(float(summary["diagnostics"]["voxel_size"]), 0.5)
+            self.assertTrue(summary["geometry_balance"]["enabled"])
 
 
 if __name__ == "__main__":
