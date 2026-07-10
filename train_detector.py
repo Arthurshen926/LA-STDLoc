@@ -47,9 +47,16 @@ from localization_training.landmark_distill import (
     localization_aware_sample,
     save_landmark_meta,
 )
+from localization_training.pair_scorer import SparsePairScorer
 from localization_training.sparse_candidate_teacher import (
     build_sparse_candidate_batch,
+    calibrate_binary_threshold,
     sparse_candidate_losses,
+)
+from localization_training.sparse_frontend import (
+    SparseMatchResult,
+    limit_matches_per_keypoint,
+    rank_keypoint_proposals,
 )
 from scene.kpdetector import KpDetector
 
@@ -1244,12 +1251,15 @@ def save_sparse_candidate_teacher_state(
     iteration,
     config,
     diagnostics=None,
+    dustbin_score=None,
+    pair_scorer=None,
+    pair_scorer_threshold=None,
 ):
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
     state = {
-        "version": 1,
+        "version": 3,
         "iteration": int(iteration),
         "landmark_indices": torch.as_tensor(sampled_idx, dtype=torch.long).detach().cpu(),
         "landmark_features": F.normalize(
@@ -1259,6 +1269,15 @@ def save_sparse_candidate_teacher_state(
         "config": dict(config),
         "diagnostics": dict(diagnostics or {}),
     }
+    if dustbin_score is not None:
+        state["dustbin_score"] = float(torch.as_tensor(dustbin_score).detach().item())
+    if pair_scorer is not None:
+        state["pair_scorer_config"] = pair_scorer.export_config()
+        state["pair_scorer_state_dict"] = {
+            key: value.detach().cpu() for key, value in pair_scorer.state_dict().items()
+        }
+    if pair_scorer_threshold is not None:
+        state["pair_scorer_threshold"] = float(pair_scorer_threshold)
     torch.save(state, path)
     return state
 
@@ -1294,6 +1313,209 @@ def _numeric_teacher_diagnostics(diagnostics):
             result[key] = float(value)
         elif torch.is_tensor(value) and value.numel() == 1:
             result[key] = float(value.detach().item())
+    return result
+
+
+@torch.no_grad()
+def evaluate_sparse_candidate_teacher(
+    detector,
+    feature_extractor,
+    gaussians,
+    sampled_idx,
+    landmark_features,
+    landmark_xyz,
+    dustbin_score,
+    pair_scorer,
+    cameras,
+    render_visible_masks,
+    masks,
+    scene,
+    candidate_kwargs,
+    assignment_temperature,
+    assignment_margin,
+    reprojection_sigma_px=1.0,
+    scorer_min_recall=0.75,
+    scorer_max_matches_per_keypoint=1,
+):
+    if not cameras:
+        return {}
+    was_training = detector.training
+    detector.eval()
+    records = []
+    scorer_logits = []
+    scorer_labels = []
+    scorer_valid = []
+    reranked_correct_count = 0
+    reranked_valid_count = 0
+    for camera in cameras:
+        fine_resolution = get_resolution_from_longest_edge(
+            camera.original_image.shape[1],
+            camera.original_image.shape[2],
+            scene.longest_edge,
+        )
+        feature_map = extract_normalized_feature_map(
+            feature_extractor,
+            camera.original_image.cuda(),
+            size=(fine_resolution[0], fine_resolution[1]),
+        )
+        pose_w2c = camera.world_view_transform.transpose(0, 1).cuda()
+        focal_x = fov2focal(camera.FoVx, feature_map.shape[2])
+        focal_y = fov2focal(camera.FoVy, feature_map.shape[1])
+        K = torch.tensor(
+            [
+                [focal_x, 0.0, feature_map.shape[2] / 2],
+                [0.0, focal_y, feature_map.shape[1] / 2],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=torch.float32,
+            device=feature_map.device,
+        )
+        visible_mask = render_visible_mask_from_cache(
+            render_visible_masks,
+            camera.image_name,
+            feature_map.device,
+        )
+        if visible_mask is None:
+            with torch.enable_grad():
+                visible_mask = get_render_visible_mask(
+                    gaussians,
+                    camera,
+                    feature_map.shape[2],
+                    feature_map.shape[1],
+                )
+            store_render_visible_mask(
+                render_visible_masks,
+                camera.image_name,
+                visible_mask,
+            )
+        keypoint_heatmap, matchability_heatmap, offset_heatmap = detector.forward_all(
+            feature_map
+        )
+        heatmap = rank_keypoint_proposals(
+            keypoint_heatmap,
+            matchability_heatmap,
+            candidate_kwargs["nms_radius"],
+        )
+        if masks is not None:
+            valid_mask = masks[camera.image_name][0].cuda()[None] & masks[camera.image_name][2].cuda()[None]
+            valid_mask = F.interpolate(
+                valid_mask[None].float(),
+                size=feature_map.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0) > 0.5
+            heatmap = heatmap * valid_mask
+            matchability_heatmap = matchability_heatmap * valid_mask
+        validation_candidate_kwargs = dict(candidate_kwargs)
+        validation_candidate_kwargs["nms_radius"] = 0
+        batch = build_sparse_candidate_batch(
+            feature_map,
+            heatmap,
+            landmark_features,
+            landmark_xyz,
+            K,
+            pose_w2c,
+            visible_mask=visible_mask[sampled_idx],
+            dustbin_score=dustbin_score,
+            pair_scorer=pair_scorer,
+            detector_supervision_heatmap=matchability_heatmap,
+            keypoint_offset_map=offset_heatmap,
+            **validation_candidate_kwargs,
+        )
+        losses = sparse_candidate_losses(
+            batch,
+            assignment_temperature=assignment_temperature,
+            assignment_margin=assignment_margin,
+            reprojection_sigma_px=reprojection_sigma_px,
+        )
+        record = _numeric_teacher_diagnostics(batch.diagnostics)
+        record.update(
+            {
+                "loss_pair": float(losses.pair.item()),
+                "loss_hard_negative": float(losses.hard_negative.item()),
+                "loss_assignment": float(losses.assignment.item()),
+                "loss_dustbin_assignment": float(losses.dustbin_assignment.item()),
+                "loss_matcher_assignment": float(losses.matcher_assignment.item()),
+                "loss_matcher_reprojection_assignment": float(
+                    losses.matcher_reprojection_assignment.item()
+                ),
+                "loss_pair_scorer": float(losses.pair_scorer.item()),
+                "loss_pair_scorer_assignment": float(
+                    losses.pair_scorer_assignment.item()
+                ),
+                "loss_matcher_translation_info": float(
+                    losses.matcher_translation_info.item()
+                ),
+                "loss_translation_info": float(losses.translation_info.item()),
+                "loss_detector_match": float(losses.detector_match.item()),
+                "loss_detector_offset": float(losses.detector_offset.item()),
+                "loss_geometry_set": float(losses.geometry_set.item()),
+                "loss_coverage": float(losses.coverage.item()),
+            }
+        )
+        records.append(record)
+        if batch.pair_scorer_logits.numel() > 0:
+            hypothesis_ids = torch.arange(
+                batch.pair_scorer_logits.numel(),
+                device=batch.pair_scorer_logits.device,
+            )
+            calibrated_matches = limit_matches_per_keypoint(
+                SparseMatchResult(
+                    batch.pair_scorer_keypoint_idx,
+                    hypothesis_ids,
+                    batch.pair_scorer_logits,
+                ),
+                scorer_max_matches_per_keypoint,
+            )
+            selected = calibrated_matches.landmark_idx
+            selected_valid = batch.pair_scorer_valid_mask[selected]
+            selected_correct = (
+                (batch.pair_scorer_labels[selected] > 0.5) & selected_valid
+            )
+            reranked_correct_count += int(selected_correct.sum().item())
+            reranked_valid_count += int(selected_valid.sum().item())
+            scorer_logits.append(batch.pair_scorer_logits[selected].detach().cpu())
+            scorer_labels.append(batch.pair_scorer_labels[selected].detach().cpu())
+            scorer_valid.append(batch.pair_scorer_valid_mask[selected].detach().cpu())
+    if was_training:
+        detector.train()
+    keys = sorted({key for record in records for key in record})
+    result = {"camera_count": float(len(records))}
+    for key in keys:
+        values = [record[key] for record in records if key in record]
+        if values:
+            tensor = torch.as_tensor(values, dtype=torch.float64)
+            result[f"{key}_mean"] = float(tensor.mean().item())
+            result[f"{key}_median"] = float(tensor.median().item())
+    if scorer_logits:
+        result["pair_scorer_reranked_correct_count_mean"] = float(
+            reranked_correct_count / len(records)
+        )
+        result["pair_scorer_reranked_valid_count_mean"] = float(
+            reranked_valid_count / len(records)
+        )
+        result["pair_scorer_reranked_gt_precision"] = float(
+            reranked_correct_count / max(reranked_valid_count, 1)
+        )
+        calibrated = calibrate_binary_threshold(
+            torch.cat(scorer_logits),
+            torch.cat(scorer_labels),
+            torch.cat(scorer_valid),
+            min_recall=scorer_min_recall,
+        )
+        result.update(
+            {
+                "pair_scorer_calibrated_threshold": calibrated["threshold"],
+                "pair_scorer_calibrated_precision": calibrated["precision"],
+                "pair_scorer_calibrated_recall": calibrated["recall"],
+                "pair_scorer_calibrated_accepted_count": float(
+                    calibrated["accepted_count"]
+                ),
+                "pair_scorer_calibrated_correct_count": float(
+                    calibrated["correct_count"]
+                ),
+            }
+        )
     return result
 
 
@@ -1335,10 +1557,14 @@ def training_detector(
     sparse_candidate_teacher=False,
     candidate_teacher_detector_init_path="",
     candidate_teacher_state_init_path="",
+    candidate_teacher_pair_scorer_init_path="",
     candidate_teacher_optimize_features=False,
     candidate_teacher_freeze_detector=False,
     candidate_teacher_detector_lr=1e-4,
     candidate_teacher_feature_lr=5e-5,
+    candidate_teacher_dustbin_lr=0.0,
+    candidate_teacher_pair_scorer_lr=1e-3,
+    candidate_teacher_pair_scorer_architecture="auto",
     candidate_teacher_detect_num=2048,
     candidate_teacher_nms_radius=2,
     candidate_teacher_match_mode="topk",
@@ -1347,6 +1573,8 @@ def training_detector(
     candidate_teacher_dual_softmax=False,
     candidate_teacher_dual_softmax_temperature=0.1,
     candidate_teacher_positive_radius_px=2.0,
+    candidate_teacher_negative_radius_px=2.0,
+    candidate_teacher_max_positives=1,
     candidate_teacher_hard_negatives=8,
     candidate_teacher_match_temperature=0.1,
     candidate_teacher_match_margin=0.5,
@@ -1358,13 +1586,37 @@ def training_detector(
     candidate_teacher_pair_weight=1.0,
     candidate_teacher_hard_negative_weight=0.5,
     candidate_teacher_assignment_weight=1.0,
+    candidate_teacher_dustbin_weight=0.0,
+    candidate_teacher_matcher_assignment_weight=0.0,
+    candidate_teacher_matcher_reprojection_weight=0.0,
+    candidate_teacher_reprojection_sigma_px=1.0,
+    candidate_teacher_dustbin_init=0.5,
+    candidate_teacher_pair_scorer_weight=0.0,
+    candidate_teacher_pair_scorer_assignment_weight=0.0,
+    candidate_teacher_matcher_translation_info_weight=0.0,
+    candidate_teacher_translation_info_weight=0.0,
+    candidate_teacher_pair_scorer_hidden_dim=16,
+    candidate_teacher_pair_context_topk=8,
+    candidate_teacher_scorer_min_recall=0.75,
+    candidate_teacher_scorer_max_matches_per_keypoint=1,
+    candidate_teacher_matchability_head=False,
+    candidate_teacher_matchability_only=False,
+    candidate_teacher_offset_head=False,
+    candidate_teacher_offset_only=False,
+    candidate_teacher_max_offset=2.0,
+    candidate_teacher_offset_target_source="geometric_nearest",
+    candidate_teacher_selection_source="combined",
+    candidate_teacher_detector_target_source="geometric",
+    candidate_teacher_detector_binary_target=False,
     candidate_teacher_detector_match_weight=1.0,
+    candidate_teacher_detector_offset_weight=0.0,
     candidate_teacher_geometry_weight=0.1,
     candidate_teacher_coverage_weight=0.1,
     candidate_teacher_base_detector_weight=0.1,
     candidate_teacher_feature_anchor_weight=0.01,
     candidate_teacher_support_query_split=False,
     candidate_teacher_query_ratio=0.2,
+    candidate_teacher_validation_ratio=0.0,
     candidate_teacher_split_mode="temporal_block",
     candidate_teacher_split_seed=2026,
 ):
@@ -1378,6 +1630,10 @@ def training_detector(
     os.makedirs(save_path, exist_ok=True)
     landmark_meta = None
     if precomputed_landmark_path:
+        precomputed_landmark_path = _resolve_detector_artifact_path(
+            scene.model_path,
+            precomputed_landmark_path,
+        )
         print(f"Loading precomputed detector landmarks from {precomputed_landmark_path}")
         sampled_idx = validate_detector_sampled_indices(
             load_precomputed_detector_landmarks(
@@ -1545,6 +1801,7 @@ def training_detector(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     training_cameras = scene.getTrainCameras().copy()
+    validation_cameras = []
     support_camera_count = len(training_cameras)
     if sparse_candidate_teacher and candidate_teacher_support_query_split:
         support_cameras, query_cameras = split_support_query_cameras(
@@ -1554,10 +1811,18 @@ def training_detector(
             mode=candidate_teacher_split_mode,
         )
         training_cameras = query_cameras
+        if float(candidate_teacher_validation_ratio) > 0.0:
+            training_cameras, validation_cameras = split_support_query_cameras(
+                training_cameras,
+                query_ratio=candidate_teacher_validation_ratio,
+                seed=candidate_teacher_split_seed + 1,
+                mode=candidate_teacher_split_mode,
+            )
         support_camera_count = len(support_cameras)
         print(
             "Sparse candidate teacher support/query split: "
-            f"support={len(support_cameras)} query={len(query_cameras)} "
+            f"support={len(support_cameras)} candidate_train={len(training_cameras)} "
+            f"candidate_val={len(validation_cameras)} "
             f"mode={candidate_teacher_split_mode}"
         )
 
@@ -1565,20 +1830,53 @@ def training_detector(
     progress_bar = tqdm(range(0, train_iteration), desc="Scene-Specific Detector")
     first_iter = 1
 
-    detector = KpDetector(feature_extractor.feature_dim).cuda().train()
+    detector = KpDetector(
+        feature_extractor.feature_dim,
+        matchability_head=candidate_teacher_matchability_head,
+        offset_head=candidate_teacher_offset_head,
+        max_offset=candidate_teacher_max_offset,
+    ).cuda().train()
     detector_init_path = _resolve_detector_artifact_path(
         scene.model_path,
         candidate_teacher_detector_init_path,
     )
     if detector_init_path:
         print(f"Loading detector initialization from {detector_init_path}")
-        detector.load_state_dict(torch.load(detector_init_path, map_location="cuda"))
+        detector_state = torch.load(detector_init_path, map_location="cuda")
+        has_optional_head = bool(
+            candidate_teacher_matchability_head or candidate_teacher_offset_head
+        )
+        incompatible = detector.load_state_dict(
+            detector_state,
+            strict=not has_optional_head,
+        )
+        if has_optional_head:
+            allowed_missing = set()
+            if candidate_teacher_matchability_head:
+                allowed_missing.update(
+                    {"matchability_head.weight", "matchability_head.bias"}
+                )
+            if candidate_teacher_offset_head:
+                allowed_missing.update({"offset_head.weight", "offset_head.bias"})
+            unexpected = set(incompatible.unexpected_keys)
+            missing = set(incompatible.missing_keys)
+            if unexpected or not missing.issubset(allowed_missing):
+                raise ValueError(
+                    "detector initialization is incompatible with optional heads: "
+                    f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
+                )
+            if missing & {"matchability_head.weight", "matchability_head.bias"}:
+                detector.initialize_matchability_from_keypoint()
+            if missing & {"offset_head.weight", "offset_head.bias"}:
+                detector.initialize_offset_to_zero()
 
     teacher_landmark_features = None
     teacher_initial_features = None
     teacher_landmark_xyz = None
     teacher_history = []
+    teacher_validation_history = []
     teacher_last_diagnostics = {}
+    calibrated_pair_scorer_threshold = None
     grad_accum = 8
     grad_clip_norm = 10.0
     teacher_config = {
@@ -1587,8 +1885,14 @@ def training_detector(
         "freeze_detector": bool(candidate_teacher_freeze_detector),
         "detector_init_path": detector_init_path,
         "state_init_path": candidate_teacher_state_init_path,
+        "pair_scorer_init_path": candidate_teacher_pair_scorer_init_path,
         "detector_lr": float(candidate_teacher_detector_lr),
         "feature_lr": float(candidate_teacher_feature_lr),
+        "dustbin_lr": float(
+            candidate_teacher_dustbin_lr
+            if float(candidate_teacher_dustbin_lr) > 0.0
+            else candidate_teacher_feature_lr
+        ),
         "optimizer": "AdamW",
         "optimizer_weight_decay": 1e-4,
         "gradient_accumulation": int(grad_accum),
@@ -1606,6 +1910,8 @@ def training_detector(
         "dual_softmax": bool(candidate_teacher_dual_softmax),
         "dual_softmax_temperature": float(candidate_teacher_dual_softmax_temperature),
         "positive_radius_px": float(candidate_teacher_positive_radius_px),
+        "negative_radius_px": float(candidate_teacher_negative_radius_px),
+        "max_positives": int(candidate_teacher_max_positives),
         "hard_negatives": int(candidate_teacher_hard_negatives),
         "match_temperature": float(candidate_teacher_match_temperature),
         "match_margin": float(candidate_teacher_match_margin),
@@ -1617,7 +1923,42 @@ def training_detector(
         "pair_weight": float(candidate_teacher_pair_weight),
         "hard_negative_weight": float(candidate_teacher_hard_negative_weight),
         "assignment_weight": float(candidate_teacher_assignment_weight),
+        "dustbin_weight": float(candidate_teacher_dustbin_weight),
+        "matcher_assignment_weight": float(
+            candidate_teacher_matcher_assignment_weight
+        ),
+        "matcher_reprojection_weight": float(
+            candidate_teacher_matcher_reprojection_weight
+        ),
+        "reprojection_sigma_px": float(candidate_teacher_reprojection_sigma_px),
+        "dustbin_init": float(candidate_teacher_dustbin_init),
+        "pair_scorer_weight": float(candidate_teacher_pair_scorer_weight),
+        "pair_scorer_assignment_weight": float(
+            candidate_teacher_pair_scorer_assignment_weight
+        ),
+        "matcher_translation_info_weight": float(
+            candidate_teacher_matcher_translation_info_weight
+        ),
+        "translation_info_weight": float(candidate_teacher_translation_info_weight),
+        "pair_scorer_lr": float(candidate_teacher_pair_scorer_lr),
+        "pair_scorer_architecture": str(candidate_teacher_pair_scorer_architecture),
+        "pair_scorer_hidden_dim": int(candidate_teacher_pair_scorer_hidden_dim),
+        "pair_context_topk": int(candidate_teacher_pair_context_topk),
+        "scorer_min_recall": float(candidate_teacher_scorer_min_recall),
+        "scorer_max_matches_per_keypoint": int(
+            candidate_teacher_scorer_max_matches_per_keypoint
+        ),
+        "matchability_head": bool(candidate_teacher_matchability_head),
+        "matchability_only": bool(candidate_teacher_matchability_only),
+        "offset_head": bool(candidate_teacher_offset_head),
+        "offset_only": bool(candidate_teacher_offset_only),
+        "max_offset": float(candidate_teacher_max_offset),
+        "offset_target_source": str(candidate_teacher_offset_target_source),
+        "selection_source": str(candidate_teacher_selection_source),
+        "detector_target_source": str(candidate_teacher_detector_target_source),
+        "detector_binary_target": bool(candidate_teacher_detector_binary_target),
         "detector_match_weight": float(candidate_teacher_detector_match_weight),
+        "detector_offset_weight": float(candidate_teacher_detector_offset_weight),
         "geometry_weight": float(candidate_teacher_geometry_weight),
         "coverage_weight": float(candidate_teacher_coverage_weight),
         "base_detector_weight": float(candidate_teacher_base_detector_weight),
@@ -1625,7 +1966,9 @@ def training_detector(
         "support_query_split": bool(candidate_teacher_support_query_split),
         "support_camera_count": int(support_camera_count),
         "query_camera_count": int(len(training_cameras)),
+        "validation_camera_count": int(len(validation_cameras)),
         "query_ratio": float(candidate_teacher_query_ratio),
+        "validation_ratio": float(candidate_teacher_validation_ratio),
         "split_mode": str(candidate_teacher_split_mode),
         "split_seed": int(candidate_teacher_split_seed),
     }
@@ -1638,8 +1981,10 @@ def training_detector(
             scene.model_path,
             candidate_teacher_state_init_path,
         )
+        teacher_init_state = None
         if state_init_path:
             print(f"Loading sparse candidate teacher feature initialization from {state_init_path}")
+            teacher_init_state = torch.load(state_init_path, map_location="cpu")
             teacher_initial_features = load_sparse_candidate_teacher_features(
                 state_init_path,
                 sampled_idx,
@@ -1651,10 +1996,112 @@ def training_detector(
             requires_grad=bool(candidate_teacher_optimize_features),
         )
         teacher_landmark_xyz = gaussian_localization_xyz(gaussians)[sampled_idx].detach().float()
+        initial_dustbin_score = float(candidate_teacher_dustbin_init)
+        if isinstance(teacher_init_state, dict) and "dustbin_score" in teacher_init_state:
+            initial_dustbin_score = float(teacher_init_state["dustbin_score"])
+        teacher_dustbin_score = torch.nn.Parameter(
+            teacher_initial_features.new_tensor(initial_dustbin_score),
+            requires_grad=float(candidate_teacher_dustbin_weight) > 0.0,
+        )
+        scorer_init_state = teacher_init_state
+        scorer_init_path = _resolve_detector_artifact_path(
+            scene.model_path,
+            candidate_teacher_pair_scorer_init_path,
+        )
+        if scorer_init_path:
+            print(f"Loading pair scorer initialization from {scorer_init_path}")
+            scorer_init_state = torch.load(scorer_init_path, map_location="cpu")
+        scorer_state = (
+            scorer_init_state.get("pair_scorer_state_dict")
+            if isinstance(scorer_init_state, dict)
+            else None
+        )
+        scorer_config = (
+            scorer_init_state.get("pair_scorer_config", {})
+            if isinstance(scorer_init_state, dict)
+            else {}
+        )
+        optimize_pair_scorer = (
+            float(candidate_teacher_pair_scorer_weight) > 0.0
+            or float(candidate_teacher_pair_scorer_assignment_weight) > 0.0
+        )
+        if optimize_pair_scorer or scorer_state is not None:
+            source_architecture = scorer_config.get(
+                "architecture", "cosine_residual_v1"
+            )
+            scorer_architecture = str(candidate_teacher_pair_scorer_architecture)
+            if scorer_architecture == "auto":
+                scorer_architecture = source_architecture
+            descriptor_dim = (
+                int(teacher_initial_features.shape[1])
+                if scorer_architecture == "descriptor_set_residual_v2"
+                else 0
+            )
+            teacher_pair_scorer = SparsePairScorer(
+                input_dim=int(scorer_config.get("input_dim", 6)),
+                hidden_dim=int(
+                    scorer_config.get(
+                        "hidden_dim",
+                        candidate_teacher_pair_scorer_hidden_dim,
+                    )
+                ),
+                cosine_bias=float(candidate_teacher_dustbin_init),
+                architecture=scorer_architecture,
+                descriptor_dim=descriptor_dim,
+            ).to(device=teacher_initial_features.device)
+            if scorer_state is not None:
+                upgrading_to_descriptor = (
+                    source_architecture == "cosine_residual_v1"
+                    and scorer_architecture == "descriptor_set_residual_v2"
+                )
+                incompatible = teacher_pair_scorer.load_state_dict(
+                    scorer_state,
+                    strict=not upgrading_to_descriptor,
+                )
+                if upgrading_to_descriptor:
+                    allowed_missing = {
+                        "descriptor_network.0.weight",
+                        "descriptor_network.0.bias",
+                        "descriptor_network.2.weight",
+                        "descriptor_network.2.bias",
+                    }
+                    if (
+                        set(incompatible.missing_keys) != allowed_missing
+                        or incompatible.unexpected_keys
+                    ):
+                        raise ValueError(
+                            "incompatible v1-to-v2 pair scorer upgrade: "
+                            f"missing={incompatible.missing_keys} "
+                            f"unexpected={incompatible.unexpected_keys}"
+                        )
+            teacher_pair_scorer.requires_grad_(
+                optimize_pair_scorer
+            )
+        else:
+            teacher_pair_scorer = None
+    else:
+        teacher_dustbin_score = None
+        teacher_pair_scorer = None
 
+    if candidate_teacher_matchability_only and candidate_teacher_offset_only:
+        raise ValueError("matchability-only and offset-only training are mutually exclusive")
     if sparse_candidate_teacher and candidate_teacher_freeze_detector:
         for parameter in detector.parameters():
             parameter.requires_grad_(False)
+    elif sparse_candidate_teacher and candidate_teacher_offset_only:
+        if detector.offset_head is None:
+            raise ValueError("offset-only training requires --candidate_teacher_offset_head")
+        for parameter in detector.parameters():
+            parameter.requires_grad_(False)
+        for parameter in detector.offset_head.parameters():
+            parameter.requires_grad_(True)
+    elif sparse_candidate_teacher and candidate_teacher_matchability_only:
+        if detector.matchability_head is None:
+            raise ValueError("matchability-only training requires --candidate_teacher_matchability_head")
+        for parameter in detector.parameters():
+            parameter.requires_grad_(False)
+        for parameter in detector.matchability_head.parameters():
+            parameter.requires_grad_(True)
 
     if sparse_candidate_teacher:
         parameter_groups = []
@@ -1672,6 +2119,32 @@ def training_detector(
                     "name": "landmark_features",
                 }
             )
+        if teacher_dustbin_score is not None and teacher_dustbin_score.requires_grad:
+            parameter_groups.append(
+                {
+                    "params": [teacher_dustbin_score],
+                    "lr": float(
+                        candidate_teacher_dustbin_lr
+                        if float(candidate_teacher_dustbin_lr) > 0.0
+                        else candidate_teacher_feature_lr
+                    ),
+                    "weight_decay": 0.0,
+                    "name": "dustbin_score",
+                }
+            )
+        if teacher_pair_scorer is not None:
+            scorer_parameters = [
+                parameter for parameter in teacher_pair_scorer.parameters() if parameter.requires_grad
+            ]
+            if scorer_parameters:
+                parameter_groups.append(
+                    {
+                        "params": scorer_parameters,
+                        "lr": float(candidate_teacher_pair_scorer_lr),
+                        "weight_decay": 1e-4,
+                        "name": "pair_scorer",
+                    }
+                )
         if not parameter_groups:
             raise ValueError(
                 "sparse candidate teacher has no trainable parameters; enable detector training or "
@@ -1777,7 +2250,13 @@ def training_detector(
                     weight_map = torch.where(gt_map_mask, weight_map, torch.ones_like(weight_map))
 
         # Loss
-        heat_map = detector(gt_feature_map)
+        keypoint_heat_map, matchability_heat_map, offset_heat_map = detector.forward_all(
+            gt_feature_map
+        )
+        heat_map = keypoint_heat_map
+        candidate_heat_map = torch.sqrt(
+            (keypoint_heat_map * matchability_heat_map).clamp_min(0.0)
+        )
         base_detector_loss = (
             detector_target_loss(
                 heat_map,
@@ -1791,7 +2270,29 @@ def training_detector(
         teacher_losses = None
         feature_anchor_loss = heat_map.sum() * 0.0
         if sparse_candidate_teacher:
-            teacher_heat_map = heat_map if gt_map_mask is None else heat_map * gt_map_mask
+            if candidate_teacher_selection_source == "keypoint_teacher":
+                # Phase-D labels must come from a fixed proposal distribution.  The
+                # keypoint head is frozen in matchability-only training, so detach it
+                # here while retaining gradients through the sampled matchability
+                # scores below.
+                candidate_selection_heat_map = keypoint_heat_map.detach()
+            elif candidate_teacher_selection_source == "combined":
+                candidate_selection_heat_map = candidate_heat_map
+            else:
+                raise ValueError(
+                    "candidate_teacher_selection_source must be 'combined' or "
+                    f"'keypoint_teacher', got {candidate_teacher_selection_source!r}"
+                )
+            teacher_heat_map = (
+                candidate_selection_heat_map
+                if gt_map_mask is None
+                else candidate_selection_heat_map * gt_map_mask
+            )
+            detector_supervision_heatmap = (
+                matchability_heat_map
+                if gt_map_mask is None
+                else matchability_heat_map * gt_map_mask
+            )
             candidate_batch = build_sparse_candidate_batch(
                 gt_feature_map,
                 teacher_heat_map,
@@ -1808,17 +2309,30 @@ def training_detector(
                 dual_softmax=candidate_teacher_dual_softmax,
                 dual_softmax_temperature=candidate_teacher_dual_softmax_temperature,
                 positive_radius_px=candidate_teacher_positive_radius_px,
+                negative_radius_px=candidate_teacher_negative_radius_px,
+                max_positives=candidate_teacher_max_positives,
                 hard_negatives=candidate_teacher_hard_negatives,
                 match_temperature=candidate_teacher_match_temperature,
                 match_margin=candidate_teacher_match_margin,
                 grid_rows=candidate_teacher_grid_rows,
                 grid_cols=candidate_teacher_grid_cols,
                 depth_bins=candidate_teacher_depth_bins,
+                dustbin_score=teacher_dustbin_score,
+                pair_scorer=teacher_pair_scorer,
+                pair_context_topk=candidate_teacher_pair_context_topk,
+                detector_supervision_heatmap=detector_supervision_heatmap,
+                keypoint_offset_map=offset_heat_map,
+                detector_offset_target_source=(
+                    candidate_teacher_offset_target_source
+                ),
+                detector_target_source=candidate_teacher_detector_target_source,
+                detector_binary_target=candidate_teacher_detector_binary_target,
             )
             teacher_losses = sparse_candidate_losses(
                 candidate_batch,
                 assignment_temperature=candidate_teacher_assignment_temperature,
                 assignment_margin=candidate_teacher_assignment_margin,
+                reprojection_sigma_px=candidate_teacher_reprojection_sigma_px,
             )
             if candidate_teacher_optimize_features:
                 feature_anchor_loss = (
@@ -1832,7 +2346,20 @@ def training_detector(
                 float(candidate_teacher_pair_weight) * teacher_losses.pair
                 + float(candidate_teacher_hard_negative_weight) * teacher_losses.hard_negative
                 + float(candidate_teacher_assignment_weight) * teacher_losses.assignment
+                + float(candidate_teacher_dustbin_weight) * teacher_losses.dustbin_assignment
+                + float(candidate_teacher_matcher_assignment_weight)
+                * teacher_losses.matcher_assignment
+                + float(candidate_teacher_matcher_reprojection_weight)
+                * teacher_losses.matcher_reprojection_assignment
+                + float(candidate_teacher_pair_scorer_weight) * teacher_losses.pair_scorer
+                + float(candidate_teacher_pair_scorer_assignment_weight)
+                * teacher_losses.pair_scorer_assignment
+                + float(candidate_teacher_matcher_translation_info_weight)
+                * teacher_losses.matcher_translation_info
+                + float(candidate_teacher_translation_info_weight) * teacher_losses.translation_info
                 + float(candidate_teacher_detector_match_weight) * teacher_losses.detector_match
+                + float(candidate_teacher_detector_offset_weight)
+                * teacher_losses.detector_offset
                 + float(candidate_teacher_geometry_weight) * teacher_losses.geometry_set
                 + float(candidate_teacher_coverage_weight) * teacher_losses.coverage
                 + float(candidate_teacher_base_detector_weight) * base_detector_loss
@@ -1876,6 +2403,11 @@ def training_detector(
                         {
                             "Pair": f"{float(teacher_losses.pair.detach().item()):.4f}",
                             "Rank": f"{float(teacher_losses.assignment.detach().item()):.4f}",
+                            "Reproj": f"{float(teacher_losses.matcher_reprojection_assignment.detach().item()):.4f}",
+                            "Dust": f"{float(teacher_losses.dustbin_assignment.detach().item()):.4f}",
+                            "Score": f"{float(teacher_losses.pair_scorer.detach().item()):.4f}",
+                            "Trans": f"{float(teacher_losses.translation_info.detach().item()):.4f}",
+                            "Offset": f"{float(teacher_losses.detector_offset.detach().item()):.4f}",
                             "Prec": f"{teacher_last_diagnostics.get('predicted_gt_precision', 0.0):.3f}",
                             "FN": f"{teacher_last_diagnostics.get('false_negative_rate', 0.0):.3f}",
                         }
@@ -1900,7 +2432,17 @@ def training_detector(
                         "pair": teacher_losses.pair,
                         "hard_negative": teacher_losses.hard_negative,
                         "assignment": teacher_losses.assignment,
+                        "dustbin_assignment": teacher_losses.dustbin_assignment,
+                        "matcher_assignment": teacher_losses.matcher_assignment,
+                        "matcher_reprojection_assignment": (
+                            teacher_losses.matcher_reprojection_assignment
+                        ),
+                        "pair_scorer": teacher_losses.pair_scorer,
+                        "pair_scorer_assignment": teacher_losses.pair_scorer_assignment,
+                        "matcher_translation_info": teacher_losses.matcher_translation_info,
+                        "translation_info": teacher_losses.translation_info,
                         "detector_match": teacher_losses.detector_match,
+                        "detector_offset": teacher_losses.detector_offset,
                         "geometry_set": teacher_losses.geometry_set,
                         "coverage": teacher_losses.coverage,
                         "base_detector": base_detector_loss,
@@ -1928,7 +2470,29 @@ def training_detector(
                     "loss_pair": float(teacher_losses.pair.detach().item()),
                     "loss_hard_negative": float(teacher_losses.hard_negative.detach().item()),
                     "loss_assignment": float(teacher_losses.assignment.detach().item()),
+                    "loss_dustbin_assignment": float(
+                        teacher_losses.dustbin_assignment.detach().item()
+                    ),
+                    "loss_matcher_assignment": float(
+                        teacher_losses.matcher_assignment.detach().item()
+                    ),
+                    "loss_matcher_reprojection_assignment": float(
+                        teacher_losses.matcher_reprojection_assignment.detach().item()
+                    ),
+                    "loss_pair_scorer": float(teacher_losses.pair_scorer.detach().item()),
+                    "loss_pair_scorer_assignment": float(
+                        teacher_losses.pair_scorer_assignment.detach().item()
+                    ),
+                    "loss_matcher_translation_info": float(
+                        teacher_losses.matcher_translation_info.detach().item()
+                    ),
+                    "loss_translation_info": float(
+                        teacher_losses.translation_info.detach().item()
+                    ),
                     "loss_detector_match": float(teacher_losses.detector_match.detach().item()),
+                    "loss_detector_offset": float(
+                        teacher_losses.detector_offset.detach().item()
+                    ),
                     "loss_geometry_set": float(teacher_losses.geometry_set.detach().item()),
                     "loss_coverage": float(teacher_losses.coverage.detach().item()),
                     "loss_base_detector": float(base_detector_loss.detach().item()),
@@ -1955,6 +2519,66 @@ def training_detector(
 
         if iteration in saving_iterations:
             print("\n[ITER {}] Saving detector".format(iteration))
+            if sparse_candidate_teacher and validation_cameras:
+                validation_metrics = evaluate_sparse_candidate_teacher(
+                    detector,
+                    feature_extractor,
+                    gaussians,
+                    sampled_idx,
+                    teacher_landmark_features,
+                    teacher_landmark_xyz,
+                    teacher_dustbin_score,
+                    teacher_pair_scorer,
+                    validation_cameras,
+                    render_visible_masks,
+                    masks,
+                    scene,
+                    candidate_kwargs={
+                        "detect_num": candidate_teacher_detect_num,
+                        "nms_radius": candidate_teacher_nms_radius,
+                        "match_mode": candidate_teacher_match_mode,
+                        "match_topk": candidate_teacher_match_topk,
+                        "match_threshold": candidate_teacher_match_threshold,
+                        "dual_softmax": candidate_teacher_dual_softmax,
+                        "dual_softmax_temperature": candidate_teacher_dual_softmax_temperature,
+                        "positive_radius_px": candidate_teacher_positive_radius_px,
+                        "negative_radius_px": candidate_teacher_negative_radius_px,
+                        "max_positives": candidate_teacher_max_positives,
+                        "hard_negatives": candidate_teacher_hard_negatives,
+                        "match_temperature": candidate_teacher_match_temperature,
+                        "match_margin": candidate_teacher_match_margin,
+                        "grid_rows": candidate_teacher_grid_rows,
+                        "grid_cols": candidate_teacher_grid_cols,
+                        "depth_bins": candidate_teacher_depth_bins,
+                        "pair_context_topk": candidate_teacher_pair_context_topk,
+                        "detector_offset_target_source": (
+                            candidate_teacher_offset_target_source
+                        ),
+                        "detector_target_source": candidate_teacher_detector_target_source,
+                        "detector_binary_target": candidate_teacher_detector_binary_target,
+                    },
+                    assignment_temperature=candidate_teacher_assignment_temperature,
+                    assignment_margin=candidate_teacher_assignment_margin,
+                    reprojection_sigma_px=candidate_teacher_reprojection_sigma_px,
+                    scorer_min_recall=candidate_teacher_scorer_min_recall,
+                    scorer_max_matches_per_keypoint=(
+                        candidate_teacher_scorer_max_matches_per_keypoint
+                    ),
+                )
+                calibrated_pair_scorer_threshold = validation_metrics.get(
+                    "pair_scorer_calibrated_threshold"
+                )
+                validation_item = {"iteration": int(iteration)}
+                validation_item.update(validation_metrics)
+                teacher_validation_history.append(validation_item)
+                print(
+                    "Sparse candidate validation: "
+                    f"AP={validation_metrics.get('pair_ap_mean', 0.0):.4f} "
+                    f"scorer_AP={validation_metrics.get('pair_scorer_ap_mean', 0.0):.4f} "
+                    f"scorer_thr={validation_metrics.get('pair_scorer_calibrated_threshold', 0.0):.4f} "
+                    f"accepted_precision={validation_metrics.get('dustbin_accepted_gt_precision_mean', 0.0):.4f} "
+                    f"reject={validation_metrics.get('dustbin_unmatched_reject_accuracy_mean', 0.0):.4f}"
+                )
             torch.save(detector.state_dict(), save_path + f"/{iteration}_detector.pth")
             if sparse_candidate_teacher:
                 state_path = os.path.join(
@@ -1968,6 +2592,9 @@ def training_detector(
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
+                    teacher_dustbin_score,
+                    teacher_pair_scorer,
+                    calibrated_pair_scorer_threshold,
                 )
                 save_sparse_candidate_teacher_state(
                     os.path.join(save_path, "candidate_teacher_state.pt"),
@@ -1976,16 +2603,20 @@ def training_detector(
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
+                    teacher_dustbin_score,
+                    teacher_pair_scorer,
+                    calibrated_pair_scorer_threshold,
                 )
 
     if sparse_candidate_teacher:
         summary = {
-            "version": 1,
+            "version": 3,
             "iterations": int(train_iteration),
             "landmark_count": int(sampled_idx.numel()),
             "config": teacher_config,
             "final": teacher_history[-1] if teacher_history else teacher_last_diagnostics,
             "history": teacher_history,
+            "validation_history": teacher_validation_history,
         }
         summary_path = os.path.join(save_path, "candidate_teacher_training_summary.json")
         with open(summary_path, "w") as handle:
@@ -2097,10 +2728,18 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--sparse_candidate_teacher", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_detector_init_path", type=str, default="")
     parser.add_argument("--candidate_teacher_state_init_path", type=str, default="")
+    parser.add_argument("--candidate_teacher_pair_scorer_init_path", type=str, default="")
     parser.add_argument("--candidate_teacher_optimize_features", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_freeze_detector", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_detector_lr", type=float, default=1e-4)
     parser.add_argument("--candidate_teacher_feature_lr", type=float, default=5e-5)
+    parser.add_argument("--candidate_teacher_dustbin_lr", type=float, default=0.0)
+    parser.add_argument("--candidate_teacher_pair_scorer_lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--candidate_teacher_pair_scorer_architecture",
+        choices=["auto", "cosine_residual_v1", "descriptor_set_residual_v2"],
+        default="auto",
+    )
     parser.add_argument("--candidate_teacher_detect_num", type=int, default=2048)
     parser.add_argument("--candidate_teacher_nms_radius", type=int, default=2)
     parser.add_argument(
@@ -2113,6 +2752,8 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_dual_softmax", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_dual_softmax_temperature", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_positive_radius_px", type=float, default=2.0)
+    parser.add_argument("--candidate_teacher_negative_radius_px", type=float, default=2.0)
+    parser.add_argument("--candidate_teacher_max_positives", type=int, default=1)
     parser.add_argument("--candidate_teacher_hard_negatives", type=int, default=8)
     parser.add_argument("--candidate_teacher_match_temperature", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_match_margin", type=float, default=0.5)
@@ -2124,13 +2765,61 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_pair_weight", type=float, default=1.0)
     parser.add_argument("--candidate_teacher_hard_negative_weight", type=float, default=0.5)
     parser.add_argument("--candidate_teacher_assignment_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_teacher_dustbin_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_teacher_matcher_assignment_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_matcher_reprojection_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_reprojection_sigma_px", type=float, default=1.0
+    )
+    parser.add_argument("--candidate_teacher_dustbin_init", type=float, default=0.5)
+    parser.add_argument("--candidate_teacher_pair_scorer_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_teacher_pair_scorer_assignment_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_matcher_translation_info_weight", type=float, default=0.0
+    )
+    parser.add_argument("--candidate_teacher_translation_info_weight", type=float, default=0.0)
+    parser.add_argument("--candidate_teacher_pair_scorer_hidden_dim", type=int, default=16)
+    parser.add_argument("--candidate_teacher_pair_context_topk", type=int, default=8)
+    parser.add_argument("--candidate_teacher_scorer_min_recall", type=float, default=0.75)
+    parser.add_argument(
+        "--candidate_teacher_scorer_max_matches_per_keypoint", type=int, default=1
+    )
+    parser.add_argument("--candidate_teacher_matchability_head", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_matchability_only", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_offset_head", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_offset_only", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_max_offset", type=float, default=2.0)
+    parser.add_argument(
+        "--candidate_teacher_offset_target_source",
+        choices=["geometric_nearest", "matched_top1"],
+        default="geometric_nearest",
+    )
+    parser.add_argument(
+        "--candidate_teacher_selection_source",
+        choices=["combined", "keypoint_teacher"],
+        default="combined",
+    )
+    parser.add_argument(
+        "--candidate_teacher_detector_target_source",
+        choices=["geometric", "predicted_correct", "scorer_accepted_correct"],
+        default="geometric",
+    )
+    parser.add_argument("--candidate_teacher_detector_binary_target", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_detector_match_weight", type=float, default=1.0)
+    parser.add_argument("--candidate_teacher_detector_offset_weight", type=float, default=0.0)
     parser.add_argument("--candidate_teacher_geometry_weight", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_coverage_weight", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_base_detector_weight", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_feature_anchor_weight", type=float, default=0.01)
     parser.add_argument("--candidate_teacher_support_query_split", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_query_ratio", type=float, default=0.2)
+    parser.add_argument("--candidate_teacher_validation_ratio", type=float, default=0.0)
     parser.add_argument(
         "--candidate_teacher_split_mode",
         choices=["random", "sequence_block", "temporal_block"],
@@ -2219,10 +2908,18 @@ if __name__ == "__main__":
         sparse_candidate_teacher=args.sparse_candidate_teacher,
         candidate_teacher_detector_init_path=args.candidate_teacher_detector_init_path,
         candidate_teacher_state_init_path=args.candidate_teacher_state_init_path,
+        candidate_teacher_pair_scorer_init_path=(
+            args.candidate_teacher_pair_scorer_init_path
+        ),
         candidate_teacher_optimize_features=args.candidate_teacher_optimize_features,
         candidate_teacher_freeze_detector=args.candidate_teacher_freeze_detector,
         candidate_teacher_detector_lr=args.candidate_teacher_detector_lr,
         candidate_teacher_feature_lr=args.candidate_teacher_feature_lr,
+        candidate_teacher_dustbin_lr=args.candidate_teacher_dustbin_lr,
+        candidate_teacher_pair_scorer_lr=args.candidate_teacher_pair_scorer_lr,
+        candidate_teacher_pair_scorer_architecture=(
+            args.candidate_teacher_pair_scorer_architecture
+        ),
         candidate_teacher_detect_num=args.candidate_teacher_detect_num,
         candidate_teacher_nms_radius=args.candidate_teacher_nms_radius,
         candidate_teacher_match_mode=args.candidate_teacher_match_mode,
@@ -2231,6 +2928,8 @@ if __name__ == "__main__":
         candidate_teacher_dual_softmax=args.candidate_teacher_dual_softmax,
         candidate_teacher_dual_softmax_temperature=args.candidate_teacher_dual_softmax_temperature,
         candidate_teacher_positive_radius_px=args.candidate_teacher_positive_radius_px,
+        candidate_teacher_negative_radius_px=args.candidate_teacher_negative_radius_px,
+        candidate_teacher_max_positives=args.candidate_teacher_max_positives,
         candidate_teacher_hard_negatives=args.candidate_teacher_hard_negatives,
         candidate_teacher_match_temperature=args.candidate_teacher_match_temperature,
         candidate_teacher_match_margin=args.candidate_teacher_match_margin,
@@ -2242,13 +2941,53 @@ if __name__ == "__main__":
         candidate_teacher_pair_weight=args.candidate_teacher_pair_weight,
         candidate_teacher_hard_negative_weight=args.candidate_teacher_hard_negative_weight,
         candidate_teacher_assignment_weight=args.candidate_teacher_assignment_weight,
+        candidate_teacher_dustbin_weight=args.candidate_teacher_dustbin_weight,
+        candidate_teacher_matcher_assignment_weight=(
+            args.candidate_teacher_matcher_assignment_weight
+        ),
+        candidate_teacher_matcher_reprojection_weight=(
+            args.candidate_teacher_matcher_reprojection_weight
+        ),
+        candidate_teacher_reprojection_sigma_px=(
+            args.candidate_teacher_reprojection_sigma_px
+        ),
+        candidate_teacher_dustbin_init=args.candidate_teacher_dustbin_init,
+        candidate_teacher_pair_scorer_weight=args.candidate_teacher_pair_scorer_weight,
+        candidate_teacher_pair_scorer_assignment_weight=(
+            args.candidate_teacher_pair_scorer_assignment_weight
+        ),
+        candidate_teacher_matcher_translation_info_weight=(
+            args.candidate_teacher_matcher_translation_info_weight
+        ),
+        candidate_teacher_translation_info_weight=args.candidate_teacher_translation_info_weight,
+        candidate_teacher_pair_scorer_hidden_dim=args.candidate_teacher_pair_scorer_hidden_dim,
+        candidate_teacher_pair_context_topk=args.candidate_teacher_pair_context_topk,
+        candidate_teacher_scorer_min_recall=args.candidate_teacher_scorer_min_recall,
+        candidate_teacher_scorer_max_matches_per_keypoint=(
+            args.candidate_teacher_scorer_max_matches_per_keypoint
+        ),
+        candidate_teacher_matchability_head=args.candidate_teacher_matchability_head,
+        candidate_teacher_matchability_only=args.candidate_teacher_matchability_only,
+        candidate_teacher_offset_head=args.candidate_teacher_offset_head,
+        candidate_teacher_offset_only=args.candidate_teacher_offset_only,
+        candidate_teacher_max_offset=args.candidate_teacher_max_offset,
+        candidate_teacher_offset_target_source=(
+            args.candidate_teacher_offset_target_source
+        ),
+        candidate_teacher_selection_source=args.candidate_teacher_selection_source,
+        candidate_teacher_detector_target_source=args.candidate_teacher_detector_target_source,
+        candidate_teacher_detector_binary_target=args.candidate_teacher_detector_binary_target,
         candidate_teacher_detector_match_weight=args.candidate_teacher_detector_match_weight,
+        candidate_teacher_detector_offset_weight=(
+            args.candidate_teacher_detector_offset_weight
+        ),
         candidate_teacher_geometry_weight=args.candidate_teacher_geometry_weight,
         candidate_teacher_coverage_weight=args.candidate_teacher_coverage_weight,
         candidate_teacher_base_detector_weight=args.candidate_teacher_base_detector_weight,
         candidate_teacher_feature_anchor_weight=args.candidate_teacher_feature_anchor_weight,
         candidate_teacher_support_query_split=args.candidate_teacher_support_query_split,
         candidate_teacher_query_ratio=args.candidate_teacher_query_ratio,
+        candidate_teacher_validation_ratio=args.candidate_teacher_validation_ratio,
         candidate_teacher_split_mode=args.candidate_teacher_split_mode,
         candidate_teacher_split_seed=args.candidate_teacher_split_seed,
     )

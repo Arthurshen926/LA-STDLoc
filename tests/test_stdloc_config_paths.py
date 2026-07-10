@@ -2,6 +2,42 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_candidate_frontend_mismatch_can_fail_strictly(self):
+        from stdloc import candidate_frontend_mismatches
+        from stdloc import validate_candidate_frontend_compatibility
+
+        trained = {
+            "detect_num": 4096,
+            "nms_radius": 2,
+            "match_mode": "topk",
+            "match_topk": 1,
+            "match_threshold": 0.0,
+            "dual_softmax": False,
+            "dual_softmax_temperature": 0.1,
+            "pair_context_topk": 8,
+        }
+        evaluated = {
+            "detect_num": 8192,
+            "nms": 2,
+            "mnn_match": False,
+            "topk": 1,
+            "threshold": 0.0,
+            "dual_softmax": False,
+            "dual_softmax_temp": 0.1,
+            "pair_context_topk": 8,
+            "candidate_frontend_match_policy": "error",
+        }
+
+        self.assertEqual(
+            candidate_frontend_mismatches(trained, evaluated),
+            [("detect_num", 4096, 8192)],
+        )
+        with self.assertRaisesRegex(ValueError, "detect_num.*4096.*8192"):
+            validate_candidate_frontend_compatibility(trained, evaluated)
+
+        evaluated["detect_num"] = 4096
+        self.assertEqual(validate_candidate_frontend_compatibility(trained, evaluated), [])
+
     def test_candidate_teacher_features_require_exact_landmark_alignment(self):
         import tempfile
         from pathlib import Path

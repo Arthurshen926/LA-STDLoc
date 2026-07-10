@@ -16,8 +16,25 @@ def make_stdloc_eval_cfg(
     detect_num=None,
     reprojection_error=None,
     nms=None,
+    match_threshold=None,
+    match_topk=None,
+    unique_landmark_matches=False,
+    max_matches_per_keypoint=0,
+    max_matches_per_landmark=0,
+    use_candidate_dustbin=False,
+    use_candidate_pair_scorer=False,
+    pair_scorer_threshold=0.0,
+    use_candidate_pair_scorer_calibrated_threshold=False,
+    min_candidate_matches=0,
+    candidate_refill_trigger_count=0,
+    use_detector_matchability=False,
+    detector_matchability_mode="combined_nms",
+    use_detector_offset=False,
+    detector_max_offset=2.0,
+    candidate_frontend_match_policy="warn",
     diagnostics=True,
     diagnostics_dump_correspondences=False,
+    diagnostics_dump_inliers_only=True,
     diagnostics_grid_rows=4,
     diagnostics_grid_cols=4,
     diagnostics_voxel_size=0.25,
@@ -51,11 +68,32 @@ def make_stdloc_eval_cfg(
         sparse["reprojection_error"] = float(reprojection_error)
     if nms is not None:
         sparse["nms"] = int(nms)
+    if match_threshold is not None:
+        sparse["threshold"] = float(match_threshold)
+    if match_topk is not None:
+        sparse["topk"] = int(match_topk)
+    sparse["unique_landmark_matches"] = bool(unique_landmark_matches)
+    sparse["max_matches_per_keypoint"] = int(max_matches_per_keypoint)
+    sparse["max_matches_per_landmark"] = int(max_matches_per_landmark)
+    sparse["use_candidate_dustbin"] = bool(use_candidate_dustbin)
+    sparse["use_candidate_pair_scorer"] = bool(use_candidate_pair_scorer)
+    sparse["pair_scorer_threshold"] = float(pair_scorer_threshold)
+    sparse["use_candidate_pair_scorer_calibrated_threshold"] = bool(
+        use_candidate_pair_scorer_calibrated_threshold
+    )
+    sparse["min_candidate_matches"] = int(min_candidate_matches)
+    sparse["candidate_refill_trigger_count"] = int(candidate_refill_trigger_count)
+    sparse["use_detector_matchability"] = bool(use_detector_matchability)
+    sparse["detector_matchability_mode"] = str(detector_matchability_mode)
+    sparse["use_detector_offset"] = bool(use_detector_offset)
+    sparse["detector_max_offset"] = float(detector_max_offset)
+    sparse["candidate_frontend_match_policy"] = str(candidate_frontend_match_policy)
     sparse["diagnostics"] = {
         "enabled": bool(diagnostics),
         "gt_metrics": bool(diagnostics),
         "dump_correspondences": bool(diagnostics_dump_correspondences),
-        "dump_inliers_only": True,
+        "dump_inliers_only": bool(diagnostics_dump_inliers_only),
+        "dump_pre_selector": True,
         "grid_rows": int(diagnostics_grid_rows),
         "grid_cols": int(diagnostics_grid_cols),
         "voxel_size": float(diagnostics_voxel_size),
@@ -83,6 +121,28 @@ def make_stdloc_eval_cfg(
         "detect_num": sparse.get("detect_num"),
         "reprojection_error": sparse.get("reprojection_error"),
         "nms": sparse.get("nms"),
+        "match_threshold": sparse.get("threshold"),
+        "match_topk": sparse.get("topk"),
+        "unique_landmark_matches": sparse.get("unique_landmark_matches", False),
+        "max_matches_per_keypoint": sparse.get("max_matches_per_keypoint", 0),
+        "max_matches_per_landmark": sparse.get("max_matches_per_landmark", 0),
+        "use_candidate_dustbin": sparse.get("use_candidate_dustbin", False),
+        "use_candidate_pair_scorer": sparse.get("use_candidate_pair_scorer", False),
+        "pair_scorer_threshold": sparse.get("pair_scorer_threshold", 0.0),
+        "use_candidate_pair_scorer_calibrated_threshold": sparse.get(
+            "use_candidate_pair_scorer_calibrated_threshold", False
+        ),
+        "min_candidate_matches": sparse.get("min_candidate_matches", 0),
+        "candidate_refill_trigger_count": sparse.get("candidate_refill_trigger_count", 0),
+        "use_detector_matchability": sparse.get("use_detector_matchability", False),
+        "detector_matchability_mode": sparse.get(
+            "detector_matchability_mode", "combined_nms"
+        ),
+        "use_detector_offset": sparse.get("use_detector_offset", False),
+        "detector_max_offset": sparse.get("detector_max_offset", 2.0),
+        "candidate_frontend_match_policy": sparse.get(
+            "candidate_frontend_match_policy", "warn"
+        ),
         "diagnostics": sparse.get("diagnostics"),
         "geometry_balance": sparse.get("geometry_balance"),
     }
@@ -99,8 +159,35 @@ def main():
     parser.add_argument("--detect_num", type=int, default=None)
     parser.add_argument("--reprojection_error", type=float, default=None)
     parser.add_argument("--nms", type=int, default=None)
+    parser.add_argument("--match_threshold", type=float, default=None)
+    parser.add_argument("--match_topk", type=int, default=None)
+    parser.add_argument("--unique_landmark_matches", action="store_true")
+    parser.add_argument("--max_matches_per_keypoint", type=int, default=0)
+    parser.add_argument("--max_matches_per_landmark", type=int, default=0)
+    parser.add_argument("--use_candidate_dustbin", action="store_true")
+    parser.add_argument("--use_candidate_pair_scorer", action="store_true")
+    parser.add_argument("--pair_scorer_threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--use_candidate_pair_scorer_calibrated_threshold", action="store_true"
+    )
+    parser.add_argument("--min_candidate_matches", type=int, default=0)
+    parser.add_argument("--candidate_refill_trigger_count", type=int, default=0)
+    parser.add_argument("--use_detector_matchability", action="store_true")
+    parser.add_argument(
+        "--detector_matchability_mode",
+        choices=["combined_nms", "proposal_rerank"],
+        default="combined_nms",
+    )
+    parser.add_argument("--use_detector_offset", action="store_true")
+    parser.add_argument("--detector_max_offset", type=float, default=2.0)
+    parser.add_argument(
+        "--candidate_frontend_match_policy",
+        choices=["error", "warn", "ignore"],
+        default="warn",
+    )
     parser.add_argument("--no_diagnostics", action="store_true")
     parser.add_argument("--diagnostics_dump_correspondences", action="store_true")
+    parser.add_argument("--diagnostics_dump_all", action="store_true")
     parser.add_argument("--diagnostics_grid_rows", type=int, default=4)
     parser.add_argument("--diagnostics_grid_cols", type=int, default=4)
     parser.add_argument("--diagnostics_voxel_size", type=float, default=0.25)
@@ -124,8 +211,27 @@ def main():
         detect_num=args.detect_num,
         reprojection_error=args.reprojection_error,
         nms=args.nms,
+        match_threshold=args.match_threshold,
+        match_topk=args.match_topk,
+        unique_landmark_matches=args.unique_landmark_matches,
+        max_matches_per_keypoint=args.max_matches_per_keypoint,
+        max_matches_per_landmark=args.max_matches_per_landmark,
+        use_candidate_dustbin=args.use_candidate_dustbin,
+        use_candidate_pair_scorer=args.use_candidate_pair_scorer,
+        pair_scorer_threshold=args.pair_scorer_threshold,
+        use_candidate_pair_scorer_calibrated_threshold=(
+            args.use_candidate_pair_scorer_calibrated_threshold
+        ),
+        min_candidate_matches=args.min_candidate_matches,
+        candidate_refill_trigger_count=args.candidate_refill_trigger_count,
+        use_detector_matchability=args.use_detector_matchability,
+        detector_matchability_mode=args.detector_matchability_mode,
+        use_detector_offset=args.use_detector_offset,
+        detector_max_offset=args.detector_max_offset,
+        candidate_frontend_match_policy=args.candidate_frontend_match_policy,
         diagnostics=not args.no_diagnostics,
         diagnostics_dump_correspondences=args.diagnostics_dump_correspondences,
+        diagnostics_dump_inliers_only=not args.diagnostics_dump_all,
         diagnostics_grid_rows=args.diagnostics_grid_rows,
         diagnostics_grid_cols=args.diagnostics_grid_cols,
         diagnostics_voxel_size=args.diagnostics_voxel_size,

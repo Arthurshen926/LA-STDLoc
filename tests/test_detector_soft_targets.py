@@ -924,6 +924,37 @@ class DetectorSoftTargetsTest(unittest.TestCase):
 
         self.assertEqual(args.precomputed_landmark_path, "/tmp/sample.pkl")
 
+    def test_detector_parser_accepts_independent_pair_scorer_initialization(self):
+        from train_detector import build_arg_parser
+
+        args = build_arg_parser().parse_args(
+            ["--candidate_teacher_pair_scorer_init_path", "/tmp/scorer.pt"]
+        )
+
+        self.assertEqual(
+            args.candidate_teacher_pair_scorer_init_path,
+            "/tmp/scorer.pt",
+        )
+
+    def test_detector_artifact_path_resolves_relative_to_model_root(self):
+        import tempfile
+        from pathlib import Path
+
+        from train_detector import _resolve_detector_artifact_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_root = Path(tmp) / "model"
+            artifact = model_root / "detector" / "sampled_idx.pkl"
+            artifact.parent.mkdir(parents=True)
+            artifact.touch()
+
+            self.assertEqual(
+                _resolve_detector_artifact_path(
+                    str(model_root), "detector/sampled_idx.pkl"
+                ),
+                str(artifact),
+            )
+
     def test_detector_parser_accepts_sparse_candidate_teacher_controls(self):
         from train_detector import build_arg_parser
 
@@ -940,9 +971,44 @@ class DetectorSoftTargetsTest(unittest.TestCase):
                 "1.5",
                 "--candidate_teacher_assignment_margin",
                 "0.08",
+                "--candidate_teacher_matcher_reprojection_weight",
+                "1.25",
+                "--candidate_teacher_reprojection_sigma_px",
+                "0.75",
+                "--candidate_teacher_negative_radius_px",
+                "6.0",
+                "--candidate_teacher_max_positives",
+                "4",
+                "--candidate_teacher_dustbin_weight",
+                "1.25",
+                "--candidate_teacher_dustbin_lr",
+                "0.002",
+                "--candidate_teacher_pair_scorer_weight",
+                "1.0",
+                "--candidate_teacher_translation_info_weight",
+                "0.2",
+                "--candidate_teacher_pair_scorer_lr",
+                "0.003",
+                "--candidate_teacher_matchability_head",
+                "--candidate_teacher_matchability_only",
+                "--candidate_teacher_offset_head",
+                "--candidate_teacher_offset_only",
+                "--candidate_teacher_max_offset",
+                "1.75",
+                "--candidate_teacher_offset_target_source",
+                "matched_top1",
+                "--candidate_teacher_selection_source",
+                "keypoint_teacher",
+                "--candidate_teacher_detector_target_source",
+                "scorer_accepted_correct",
+                "--candidate_teacher_detector_binary_target",
+                "--candidate_teacher_detector_offset_weight",
+                "0.8",
                 "--candidate_teacher_geometry_weight",
                 "0.2",
                 "--candidate_teacher_support_query_split",
+                "--candidate_teacher_validation_ratio",
+                "0.25",
                 "--candidate_teacher_split_mode",
                 "temporal_block",
             ]
@@ -953,8 +1019,28 @@ class DetectorSoftTargetsTest(unittest.TestCase):
         self.assertEqual(args.candidate_teacher_detect_num, 4096)
         self.assertEqual(args.candidate_teacher_assignment_weight, 1.5)
         self.assertEqual(args.candidate_teacher_assignment_margin, 0.08)
+        self.assertEqual(args.candidate_teacher_matcher_reprojection_weight, 1.25)
+        self.assertEqual(args.candidate_teacher_reprojection_sigma_px, 0.75)
+        self.assertEqual(args.candidate_teacher_negative_radius_px, 6.0)
+        self.assertEqual(args.candidate_teacher_max_positives, 4)
+        self.assertEqual(args.candidate_teacher_dustbin_weight, 1.25)
+        self.assertEqual(args.candidate_teacher_dustbin_lr, 0.002)
+        self.assertEqual(args.candidate_teacher_pair_scorer_weight, 1.0)
+        self.assertEqual(args.candidate_teacher_translation_info_weight, 0.2)
+        self.assertEqual(args.candidate_teacher_pair_scorer_lr, 0.003)
+        self.assertTrue(args.candidate_teacher_matchability_head)
+        self.assertTrue(args.candidate_teacher_matchability_only)
+        self.assertTrue(args.candidate_teacher_offset_head)
+        self.assertTrue(args.candidate_teacher_offset_only)
+        self.assertEqual(args.candidate_teacher_max_offset, 1.75)
+        self.assertEqual(args.candidate_teacher_offset_target_source, "matched_top1")
+        self.assertEqual(args.candidate_teacher_selection_source, "keypoint_teacher")
+        self.assertEqual(args.candidate_teacher_detector_target_source, "scorer_accepted_correct")
+        self.assertTrue(args.candidate_teacher_detector_binary_target)
+        self.assertEqual(args.candidate_teacher_detector_offset_weight, 0.8)
         self.assertEqual(args.candidate_teacher_geometry_weight, 0.2)
         self.assertTrue(args.candidate_teacher_support_query_split)
+        self.assertEqual(args.candidate_teacher_validation_ratio, 0.25)
 
     def test_precomputed_detector_landmarks_are_loaded_and_validated(self):
         import pickle

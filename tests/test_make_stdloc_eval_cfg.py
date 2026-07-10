@@ -52,6 +52,32 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "8.0",
                     "--nms",
                     "2",
+                    "--match_threshold",
+                    "0.65",
+                    "--match_topk",
+                    "4",
+                    "--unique_landmark_matches",
+                    "--max_matches_per_landmark",
+                    "3",
+                    "--max_matches_per_keypoint",
+                    "1",
+                    "--use_candidate_dustbin",
+                    "--use_candidate_pair_scorer",
+                    "--pair_scorer_threshold",
+                    "0.2",
+                    "--use_candidate_pair_scorer_calibrated_threshold",
+                    "--min_candidate_matches",
+                    "1200",
+                    "--candidate_refill_trigger_count",
+                    "800",
+                    "--use_detector_matchability",
+                    "--detector_matchability_mode",
+                    "proposal_rerank",
+                    "--use_detector_offset",
+                    "--detector_max_offset",
+                    "1.5",
+                    "--candidate_frontend_match_policy",
+                    "error",
                     "--geometry_balance",
                     "--geometry_balance_max_per_cell",
                     "8",
@@ -63,6 +89,8 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "5",
                     "--diagnostics_voxel_size",
                     "0.5",
+                    "--diagnostics_dump_correspondences",
+                    "--diagnostics_dump_all",
                     "--summary_json",
                     str(tmp / "summary.json"),
                 ],
@@ -90,9 +118,30 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             self.assertEqual(sparse["detect_num"], 4096)
             self.assertEqual(float(sparse["reprojection_error"]), 8.0)
             self.assertEqual(sparse["nms"], 2)
+            self.assertEqual(float(sparse["threshold"]), 0.65)
+            self.assertEqual(sparse["topk"], 4)
+            self.assertTrue(sparse["unique_landmark_matches"])
+            self.assertEqual(sparse["max_matches_per_landmark"], 3)
+            self.assertEqual(sparse["max_matches_per_keypoint"], 1)
+            self.assertTrue(sparse["use_candidate_dustbin"])
+            self.assertTrue(sparse["use_candidate_pair_scorer"])
+            self.assertEqual(float(sparse["pair_scorer_threshold"]), 0.2)
+            self.assertTrue(
+                sparse["use_candidate_pair_scorer_calibrated_threshold"]
+            )
+            self.assertEqual(sparse["min_candidate_matches"], 1200)
+            self.assertEqual(sparse["candidate_refill_trigger_count"], 800)
+            self.assertTrue(sparse["use_detector_matchability"])
+            self.assertEqual(sparse["detector_matchability_mode"], "proposal_rerank")
+            self.assertTrue(sparse["use_detector_offset"])
+            self.assertEqual(float(sparse["detector_max_offset"]), 1.5)
+            self.assertEqual(sparse["candidate_frontend_match_policy"], "error")
             self.assertFalse(sparse["use_landmark_prior"])
             self.assertTrue(sparse["diagnostics"]["enabled"])
             self.assertTrue(sparse["diagnostics"]["gt_metrics"])
+            self.assertTrue(sparse["diagnostics"]["dump_correspondences"])
+            self.assertFalse(sparse["diagnostics"]["dump_inliers_only"])
+            self.assertTrue(sparse["diagnostics"]["dump_pre_selector"])
             self.assertEqual(sparse["diagnostics"]["grid_rows"], 3)
             self.assertEqual(sparse["diagnostics"]["grid_cols"], 5)
             self.assertEqual(float(sparse["diagnostics"]["voxel_size"]), 0.5)
@@ -108,6 +157,24 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                 "detector_la/candidate_teacher_state.pt",
             )
             self.assertEqual(summary["nms"], 2)
+            self.assertEqual(float(summary["match_threshold"]), 0.65)
+            self.assertEqual(summary["match_topk"], 4)
+            self.assertTrue(summary["unique_landmark_matches"])
+            self.assertEqual(summary["max_matches_per_landmark"], 3)
+            self.assertEqual(summary["max_matches_per_keypoint"], 1)
+            self.assertTrue(summary["use_candidate_dustbin"])
+            self.assertTrue(summary["use_candidate_pair_scorer"])
+            self.assertEqual(float(summary["pair_scorer_threshold"]), 0.2)
+            self.assertTrue(
+                summary["use_candidate_pair_scorer_calibrated_threshold"]
+            )
+            self.assertEqual(summary["min_candidate_matches"], 1200)
+            self.assertEqual(summary["candidate_refill_trigger_count"], 800)
+            self.assertTrue(summary["use_detector_matchability"])
+            self.assertEqual(summary["detector_matchability_mode"], "proposal_rerank")
+            self.assertTrue(summary["use_detector_offset"])
+            self.assertEqual(float(summary["detector_max_offset"]), 1.5)
+            self.assertEqual(summary["candidate_frontend_match_policy"], "error")
             self.assertTrue(summary["diagnostics"]["enabled"])
             self.assertEqual(summary["diagnostics"]["grid_rows"], 3)
             self.assertEqual(summary["diagnostics"]["grid_cols"], 5)

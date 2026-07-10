@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import pickle
+import warnings
 from argparse import ArgumentParser
 
 import numpy as np
@@ -15,12 +16,86 @@ from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
 from localization_training.geometry_selector import GeometryBalancedSelector
+from localization_training.pair_scorer import SparsePairScorer
+from localization_training.sparse_frontend import (
+    SparseMatchResult,
+    build_pair_context_features,
+    build_score_matrix,
+    dual_softmax as shared_dual_softmax,
+    match_score_matrix,
+    rank_keypoint_proposals,
+    select_match_candidates,
+)
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scene.kpdetector import KpDetector, simple_nms
 from utils.graphics_utils import fov2focal
 from utils.image_utils import get_resolution_from_longest_edge
 from utils.pose_utils import cal_pose_error, solve_pose
+
+
+def candidate_frontend_mismatches(state_config, sparse_config):
+    """Report train/eval sparse-frontend settings that change candidate context."""
+    if not isinstance(state_config, dict):
+        return []
+    eval_mode = "mnn" if bool(sparse_config.get("mnn_match", False)) else "topk"
+    checks = (
+        ("detect_num", state_config.get("detect_num"), sparse_config.get("detect_num")),
+        ("nms_radius", state_config.get("nms_radius"), sparse_config.get("nms")),
+        ("match_mode", state_config.get("match_mode"), eval_mode),
+        ("match_topk", state_config.get("match_topk"), sparse_config.get("topk")),
+        (
+            "match_threshold",
+            state_config.get("match_threshold"),
+            sparse_config.get("threshold"),
+        ),
+        (
+            "dual_softmax",
+            state_config.get("dual_softmax"),
+            sparse_config.get("dual_softmax"),
+        ),
+        (
+            "dual_softmax_temperature",
+            state_config.get("dual_softmax_temperature"),
+            sparse_config.get("dual_softmax_temp"),
+        ),
+        (
+            "pair_context_topk",
+            state_config.get("pair_context_topk"),
+            sparse_config.get("pair_context_topk", 8),
+        ),
+    )
+    mismatches = []
+    for name, trained, evaluated in checks:
+        if trained is None or evaluated is None:
+            continue
+        if isinstance(trained, (float, int)) and isinstance(evaluated, (float, int)):
+            equal = abs(float(trained) - float(evaluated)) <= 1e-8
+        else:
+            equal = trained == evaluated
+        if not equal:
+            mismatches.append((name, trained, evaluated))
+    return mismatches
+
+
+def validate_candidate_frontend_compatibility(state_config, sparse_config):
+    policy = str(sparse_config.get("candidate_frontend_match_policy", "warn")).lower()
+    if policy not in {"error", "warn", "ignore"}:
+        raise ValueError(
+            "candidate_frontend_match_policy must be one of: error, warn, ignore"
+        )
+    mismatches = candidate_frontend_mismatches(state_config, sparse_config)
+    if not mismatches or policy == "ignore":
+        return mismatches
+    details = ", ".join(
+        f"{name}: trained={trained!r} eval={evaluated!r}"
+        for name, trained, evaluated in mismatches
+    )
+    message = f"candidate scorer train/eval frontend mismatch: {details}"
+    if policy == "error":
+        raise ValueError(message)
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
+    return mismatches
 
 # TODO use interpolate
 def lift_2d_to_3d(points2d, intrinsic, Twc, depth_map):
@@ -105,9 +180,7 @@ def topk_match(corr_matrix, topk, thr=-1):
 
 
 def dual_softmax(corr_matrix, temp=1):
-    corr_matrix = corr_matrix / temp
-    corr_matrix = F.softmax(corr_matrix, dim=-2) * F.softmax(corr_matrix, dim=-1)
-    return corr_matrix
+    return shared_dual_softmax(corr_matrix, temp)
 
 
 def get_intrinsic(fovx, fovy, width, height):
@@ -818,10 +891,50 @@ class STDLoc:
         )
         self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
 
+        self.pair_scorer = None
+        self.pair_scorer_threshold = float(
+            config["sparse"].get("pair_scorer_threshold", 0.0)
+        )
+        if config["sparse"].get("use_candidate_pair_scorer", False):
+            if not isinstance(self.candidate_teacher_state, dict):
+                raise ValueError("candidate pair scorer requires a candidate teacher state")
+            validate_candidate_frontend_compatibility(
+                self.candidate_teacher_state.get("config", {}),
+                config["sparse"],
+            )
+            scorer_config = self.candidate_teacher_state.get("pair_scorer_config")
+            scorer_state = self.candidate_teacher_state.get("pair_scorer_state_dict")
+            if not isinstance(scorer_config, dict) or not isinstance(scorer_state, dict):
+                raise ValueError("candidate teacher state does not contain a trained pair scorer")
+            architecture = scorer_config.get("architecture", "cosine_residual_v1")
+            self.pair_scorer = SparsePairScorer(
+                input_dim=int(scorer_config.get("input_dim", 6)),
+                hidden_dim=int(scorer_config.get("hidden_dim", 16)),
+                architecture=architecture,
+                descriptor_dim=int(scorer_config.get("descriptor_dim", 0)),
+            )
+            self.pair_scorer.load_state_dict(scorer_state)
+            self.pair_scorer.eval().cuda()
+            if config["sparse"].get(
+                "use_candidate_pair_scorer_calibrated_threshold", False
+            ):
+                if "pair_scorer_threshold" not in self.candidate_teacher_state:
+                    raise ValueError(
+                        "candidate state does not contain a held-out calibrated pair scorer threshold"
+                    )
+                self.pair_scorer_threshold = float(
+                    self.candidate_teacher_state["pair_scorer_threshold"]
+                )
+
         self.feature_extractor = FeatureExtractor(config["feature_type"]).cuda().eval()
         self.longest_edge = config["longest_edge"]
 
-        self.detector = KpDetector(self.feature_extractor.feature_dim)
+        self.detector = KpDetector(
+            self.feature_extractor.feature_dim,
+            matchability_head=config["sparse"].get("use_detector_matchability", False),
+            offset_head=config["sparse"].get("use_detector_offset", False),
+            max_offset=config["sparse"].get("detector_max_offset", 2.0),
+        )
         self.detector.load_state_dict(
             torch.load(
                 resolve_artifact_path(
@@ -881,11 +994,46 @@ class STDLoc:
         # detect
         H, W = query_feature_map.shape[-2:]
 
-        heat_map = self.detector(query_feature_map)
-
-        kp_scores_after_nms = simple_nms(
-            heat_map, self.config["sparse"].get("nms", 4)
-        )
+        nms_radius = self.config["sparse"].get("nms", 4)
+        offset_heatmap = None
+        if self.config["sparse"].get("use_detector_matchability", False):
+            matchability_mode = self.config["sparse"].get(
+                "detector_matchability_mode", "combined_nms"
+            )
+            if matchability_mode == "proposal_rerank":
+                (
+                    keypoint_heatmap,
+                    matchability_heatmap,
+                    offset_heatmap,
+                ) = self.detector.forward_all(query_feature_map)
+                kp_scores_after_nms = rank_keypoint_proposals(
+                    keypoint_heatmap,
+                    matchability_heatmap,
+                    nms_radius,
+                )
+            elif matchability_mode == "combined_nms":
+                if self.config["sparse"].get("use_detector_offset", False):
+                    _, _, offset_heatmap = self.detector.forward_all(query_feature_map)
+                kp_scores_after_nms = simple_nms(
+                    self.detector.forward_combined(query_feature_map),
+                    nms_radius,
+                )
+            else:
+                raise ValueError(
+                    "detector_matchability_mode must be 'combined_nms' or "
+                    f"'proposal_rerank', got {matchability_mode!r}"
+                )
+        else:
+            if self.config["sparse"].get("use_detector_offset", False):
+                keypoint_heatmap, _, offset_heatmap = self.detector.forward_all(
+                    query_feature_map
+                )
+            else:
+                keypoint_heatmap = self.detector(query_feature_map)
+            kp_scores_after_nms = simple_nms(
+                keypoint_heatmap,
+                nms_radius,
+            )
         support_diagnostics = {}
         if support_score is not None:
             support_grid = resize_sparse_score_to_feature_grid(support_score, H, W)
@@ -943,14 +1091,13 @@ class STDLoc:
             self.landmarks.get_loc_feature.squeeze(), dim=-1
         )
 
-        # sparse match
-        corr_matrix = torch.matmul(sampled_features.T, landmark_features.T)
-
-        # dual softmax
-        if self.config["sparse"]["dual_softmax"] is True:
-            corr_matrix = dual_softmax(
-                corr_matrix=corr_matrix, temp=self.config["sparse"]["dual_softmax_temp"]
-            )
+        similarity, corr_matrix = build_score_matrix(
+            sampled_features.T,
+            landmark_features,
+            normalize=True,
+            use_dual_softmax=self.config["sparse"]["dual_softmax"],
+            dual_softmax_temperature=self.config["sparse"]["dual_softmax_temp"],
+        )
 
         if self.landmark_meta is not None and self.config["sparse"].get("use_landmark_prior", False):
             prior = landmark_prior_from_meta(
@@ -963,19 +1110,105 @@ class STDLoc:
                 prior = (prior - prior.mean()) / prior.std().clamp_min(1e-6)
                 corr_matrix = corr_matrix + self.config["sparse"].get("landmark_prior_weight", 0.05) * prior[None]
 
-        if self.config["sparse"]["mnn_match"] is True:
-            # mnn match
-            b_ids, im_idx, gs_ids = mnn_match(
-                corr_matrix[None], thr=self.config["sparse"]["threshold"]
+        match_threshold = float(self.config["sparse"]["threshold"])
+        candidate_dustbin_threshold = None
+        if self.config["sparse"].get("use_candidate_dustbin", False):
+            if not isinstance(self.candidate_teacher_state, dict) or "dustbin_score" not in self.candidate_teacher_state:
+                raise ValueError(
+                    "use_candidate_dustbin requires a candidate teacher state with dustbin_score"
+                )
+            state_config = self.candidate_teacher_state.get("config", {})
+            trained_dual_softmax = bool(state_config.get("dual_softmax", False))
+            eval_dual_softmax = bool(self.config["sparse"]["dual_softmax"])
+            if trained_dual_softmax != eval_dual_softmax:
+                raise ValueError(
+                    "candidate dustbin score space does not match eval matcher: "
+                    f"trained_dual_softmax={trained_dual_softmax} "
+                    f"eval_dual_softmax={eval_dual_softmax}"
+                )
+            candidate_dustbin_threshold = float(self.candidate_teacher_state["dustbin_score"])
+            if not np.isfinite(candidate_dustbin_threshold):
+                raise ValueError("candidate dustbin score must be finite")
+            match_threshold = max(match_threshold, candidate_dustbin_threshold)
+
+        matches = match_score_matrix(
+            corr_matrix,
+            mode="mnn" if self.config["sparse"]["mnn_match"] else "topk",
+            topk=self.config["sparse"]["topk"],
+            threshold=-float("inf"),
+        )
+        matcher_raw_matches = SparseMatchResult(
+            matches.keypoint_idx.clone(),
+            matches.landmark_idx.clone(),
+            matches.scores.clone(),
+        )
+        raw_match_count = int(matches.keypoint_idx.numel())
+        max_matches_per_landmark = int(
+            self.config["sparse"].get("max_matches_per_landmark", 0) or 0
+        )
+        max_matches_per_keypoint = int(
+            self.config["sparse"].get("max_matches_per_keypoint", 0) or 0
+        )
+        if self.config["sparse"].get("unique_landmark_matches", False):
+            max_matches_per_landmark = 1
+        min_candidate_matches = int(
+            self.config["sparse"].get("min_candidate_matches", 0) or 0
+        )
+        candidate_refill_trigger_count = int(
+            self.config["sparse"].get("candidate_refill_trigger_count", 0) or 0
+        )
+        if self.pair_scorer is not None:
+            matches = select_match_candidates(matches, threshold=match_threshold)
+            pair_scorer_match_count_before = int(matches.keypoint_idx.numel())
+            pair_features = build_pair_context_features(
+                similarity,
+                kp_scores_after_nms[kp_mask],
+                matches,
+                context_topk=self.config["sparse"].get("pair_context_topk", 8),
+                entropy_temperature=self.config["sparse"].get(
+                    "pair_context_entropy_temperature",
+                    0.1,
+                ),
             )
-            val = corr_matrix[im_idx, gs_ids] if im_idx.numel() > 0 else corr_matrix.new_empty(0)
+            sampled_query_features = sampled_features.T
+            global_query_descriptor = F.normalize(
+                sampled_query_features.mean(dim=0),
+                dim=0,
+            )
+            pair_logits = self.pair_scorer(
+                pair_features,
+                sampled_query_features[matches.keypoint_idx],
+                landmark_features[matches.landmark_idx],
+                global_query_descriptor,
+            )
+            matches = select_match_candidates(
+                SparseMatchResult(
+                    matches.keypoint_idx,
+                    matches.landmark_idx,
+                    pair_logits,
+                ),
+                threshold=self.pair_scorer_threshold,
+                max_matches_per_keypoint=max_matches_per_keypoint,
+                max_matches_per_landmark=max_matches_per_landmark,
+                min_match_count=min_candidate_matches,
+                refill_trigger_count=candidate_refill_trigger_count,
+            )
         else:
-            # topk match
-            im_idx, gs_ids, val = topk_match(
-                corr_matrix[None],
-                self.config["sparse"]["topk"],
-                thr=self.config["sparse"]["threshold"],
+            pair_scorer_match_count_before = raw_match_count
+            matches = select_match_candidates(
+                matches,
+                threshold=match_threshold,
+                max_matches_per_keypoint=max_matches_per_keypoint,
+                max_matches_per_landmark=max_matches_per_landmark,
+                min_match_count=min_candidate_matches,
+                refill_trigger_count=candidate_refill_trigger_count,
             )
+        pair_scorer_match_count_after = int(matches.keypoint_idx.numel())
+        match_count_before_landmark_dedup = raw_match_count
+        match_count_after_landmark_dedup = int(matches.landmark_idx.numel())
+        im_idx = matches.keypoint_idx
+        gs_ids = matches.landmark_idx
+        val = matches.scores
         if im_idx.numel() == 0:
             result = {
                 "pose_w2c": np.eye(4, dtype=np.float32),
@@ -986,9 +1219,25 @@ class STDLoc:
             result.update(mask_diagnostics)
             return result
 
-        p2d = torch.stack([torch.arange(H * W) % W, torch.arange(H * W) // W], dim=1)
+        p2d_grid = torch.stack(
+            [torch.arange(H * W) % W, torch.arange(H * W) // W], dim=1
+        ).float()
+        sampled_p2d_grid = p2d_grid[kp_mask.cpu()]
+        sampled_offsets = torch.zeros_like(sampled_p2d_grid)
+        if offset_heatmap is not None:
+            sampled_offsets = (
+                offset_heatmap.reshape(2, -1)[:, kp_mask].T.detach().cpu().float()
+            )
+            sampled_p2d_grid = sampled_p2d_grid + sampled_offsets
+        p2d_matcher_raw = sampled_p2d_grid[
+            matcher_raw_matches.keypoint_idx.cpu()
+        ].float()
+        p3d_matcher_raw = self.landmarks.get_xyz[
+            matcher_raw_matches.landmark_idx
+        ].detach().cpu().float()
+        scores_matcher_raw = matcher_raw_matches.scores.detach().cpu().float()
 
-        p2d = p2d[kp_mask.cpu()][im_idx.cpu()].float()
+        p2d = sampled_p2d_grid[im_idx.cpu()].float()
         p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
         p2d_pre_selector = p2d.clone()
         p3d_pre_selector = p3d.clone()
@@ -1050,6 +1299,27 @@ class STDLoc:
             "inliers": inliers.shape[0],
             "matches": match_count,
             "matches_before_selector": match_count_before_selector,
+            "sparse_diag_matches_before_landmark_limit": match_count_before_landmark_dedup,
+            "sparse_diag_matches_after_landmark_limit": match_count_after_landmark_dedup,
+            "sparse_diag_max_matches_per_keypoint": max_matches_per_keypoint,
+            "sparse_diag_landmark_limit_removed_ratio": (
+                1.0 - match_count_after_landmark_dedup / max(match_count_before_landmark_dedup, 1)
+            ),
+            "sparse_diag_candidate_match_threshold": match_threshold,
+            "sparse_diag_candidate_dustbin_enabled": float(
+                candidate_dustbin_threshold is not None
+            ),
+            "sparse_diag_pair_scorer_enabled": float(self.pair_scorer is not None),
+            "sparse_diag_pair_scorer_matches_before": pair_scorer_match_count_before,
+            "sparse_diag_pair_scorer_matches_after": pair_scorer_match_count_after,
+            "sparse_diag_min_candidate_matches": min_candidate_matches,
+            "sparse_diag_candidate_refill_trigger_count": candidate_refill_trigger_count,
+            "sparse_diag_detector_offset_enabled": float(offset_heatmap is not None),
+            "sparse_diag_detector_offset_norm_mean": float(
+                torch.linalg.norm(sampled_offsets, dim=1).mean().item()
+                if sampled_offsets.numel() > 0
+                else 0.0
+            ),
         }
         diag_cfg = self.config["sparse"].get("diagnostics", {})
         if bool(diag_cfg.get("enabled", True)):
@@ -1086,6 +1356,9 @@ class STDLoc:
                 "p3d_pre_selector": p3d_pre_selector.numpy(),
                 "scores_pre_selector": scores_pre_selector.numpy(),
                 "inliers_pre_selector": pre_selector_inliers,
+                "p2d_matcher_raw": p2d_matcher_raw.numpy(),
+                "p3d_matcher_raw": p3d_matcher_raw.numpy(),
+                "scores_matcher_raw": scores_matcher_raw.numpy(),
                 "K": K,
                 "width": int(W),
                 "height": int(H),
@@ -1406,25 +1679,69 @@ if __name__ == "__main__":
                 loc_res["sparse"]["raw_post_selector_gt_precision_2px"] = post_selector_diagnostics.get(
                     "sparse_diag_all_gt_precision_2px", 0.0
                 )
+            if "p2d_matcher_raw" in sparse_debug:
+                matcher_raw_diagnostics = sparse_correspondence_diagnostics(
+                    sparse_debug["p2d_matcher_raw"],
+                    sparse_debug["p3d_matcher_raw"],
+                    sparse_debug["K"],
+                    loc_res["sparse"]["pose_w2c"],
+                    [],
+                    sparse_debug["width"],
+                    sparse_debug["height"],
+                    gt_pose_w2c=gt_w2c,
+                    grid_rows=sparse_diag_cfg.get("grid_rows", 4),
+                    grid_cols=sparse_diag_cfg.get("grid_cols", 4),
+                    voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+                )
+                for key, value in matcher_raw_diagnostics.items():
+                    if key.startswith("sparse_diag_all_") or key == "sparse_diag_match_count":
+                        loc_res["sparse"][
+                            "sparse_diag_matcher_raw_" + key[len("sparse_diag_") :]
+                        ] = value
+                loc_res["sparse"]["matcher_raw_gt_precision_2px"] = (
+                    matcher_raw_diagnostics.get("sparse_diag_all_gt_precision_2px", 0.0)
+                )
             if corr_dump_file is not None:
                 inliers_only = bool(sparse_diag_cfg.get("dump_inliers_only", True))
                 max_dump = int(sparse_diag_cfg.get("dump_max_correspondences", 0) or 0)
-                if inliers_only:
-                    dump_idx = np.asarray(sparse_debug["inliers"], dtype=np.int64).reshape(-1)
+                dump_pre_selector = bool(sparse_diag_cfg.get("dump_pre_selector", True))
+                if dump_pre_selector and "p2d_pre_selector" in sparse_debug:
+                    dump_p2d = np.asarray(sparse_debug["p2d_pre_selector"])
+                    dump_p3d = np.asarray(sparse_debug["p3d_pre_selector"])
+                    dump_scores = np.asarray(sparse_debug["scores_pre_selector"])
+                    dump_inliers = np.asarray(
+                        sparse_debug.get("inliers_pre_selector", []), dtype=np.int64
+                    ).reshape(-1)
+                    candidate_stage = "pre_selector"
                 else:
-                    dump_idx = np.arange(np.asarray(sparse_debug["p2d"]).shape[0], dtype=np.int64)
-                dump_idx = dump_idx[(dump_idx >= 0) & (dump_idx < np.asarray(sparse_debug["p2d"]).shape[0])]
+                    dump_p2d = np.asarray(sparse_debug["p2d"])
+                    dump_p3d = np.asarray(sparse_debug["p3d"])
+                    dump_scores = np.asarray(sparse_debug["scores"])
+                    dump_inliers = np.asarray(
+                        sparse_debug["inliers"], dtype=np.int64
+                    ).reshape(-1)
+                    candidate_stage = "post_selector"
+                if inliers_only:
+                    dump_idx = dump_inliers
+                else:
+                    dump_idx = np.arange(dump_p2d.shape[0], dtype=np.int64)
+                dump_idx = dump_idx[(dump_idx >= 0) & (dump_idx < dump_p2d.shape[0])]
                 if max_dump > 0:
                     dump_idx = dump_idx[:max_dump]
                 corr_dump_file.write(
                     json.dumps(
                         {
                             "image_name": camera_info.image_name,
+                            "candidate_stage": candidate_stage,
                             "indices": dump_idx.tolist(),
-                            "p2d": np.asarray(sparse_debug["p2d"])[dump_idx].tolist(),
-                            "p3d": np.asarray(sparse_debug["p3d"])[dump_idx].tolist(),
-                            "scores": np.asarray(sparse_debug["scores"])[dump_idx].tolist(),
-                            "inliers": np.asarray(sparse_debug["inliers"], dtype=np.int64).reshape(-1).tolist(),
+                            "p2d": dump_p2d[dump_idx].tolist(),
+                            "p3d": dump_p3d[dump_idx].tolist(),
+                            "scores": dump_scores[dump_idx].tolist(),
+                            "inliers": dump_inliers.tolist(),
+                            "K": np.asarray(sparse_debug["K"]).tolist(),
+                            "width": int(sparse_debug["width"]),
+                            "height": int(sparse_debug["height"]),
+                            "gt_pose_w2c": np.asarray(gt_w2c).tolist(),
                         }
                     )
                     + "\n"
