@@ -48,6 +48,7 @@ from localization_training.landmark_distill import (
     save_landmark_meta,
 )
 from localization_training.pair_scorer import SparsePairScorer
+from localization_training.pair_measurement import PairMeasurementHead
 from localization_training.sparse_candidate_teacher import (
     build_sparse_candidate_batch,
     calibrate_binary_threshold,
@@ -1254,6 +1255,8 @@ def save_sparse_candidate_teacher_state(
     dustbin_score=None,
     pair_scorer=None,
     pair_scorer_threshold=None,
+    pair_measurement_head=None,
+    pair_measurement_threshold=None,
 ):
     directory = os.path.dirname(path)
     if directory:
@@ -1278,6 +1281,14 @@ def save_sparse_candidate_teacher_state(
         }
     if pair_scorer_threshold is not None:
         state["pair_scorer_threshold"] = float(pair_scorer_threshold)
+    if pair_measurement_head is not None:
+        state["pair_measurement_config"] = pair_measurement_head.export_config()
+        state["pair_measurement_state_dict"] = {
+            key: value.detach().cpu()
+            for key, value in pair_measurement_head.state_dict().items()
+        }
+    if pair_measurement_threshold is not None:
+        state["pair_measurement_threshold"] = float(pair_measurement_threshold)
     torch.save(state, path)
     return state
 
@@ -1326,6 +1337,7 @@ def evaluate_sparse_candidate_teacher(
     landmark_xyz,
     dustbin_score,
     pair_scorer,
+    pair_measurement_head,
     cameras,
     render_visible_masks,
     masks,
@@ -1336,15 +1348,29 @@ def evaluate_sparse_candidate_teacher(
     reprojection_sigma_px=1.0,
     scorer_min_recall=0.75,
     scorer_max_matches_per_keypoint=1,
+    set_risk_residual_clip_px=32.0,
+    set_risk_reference_translation_m=0.01,
 ):
     if not cameras:
         return {}
     was_training = detector.training
     detector.eval()
+    measurement_was_training = (
+        pair_measurement_head.training
+        if pair_measurement_head is not None
+        else False
+    )
+    if pair_measurement_head is not None:
+        pair_measurement_head.eval()
     records = []
     scorer_logits = []
     scorer_labels = []
     scorer_valid = []
+    measurement_logits = []
+    measurement_labels = []
+    measurement_valid = []
+    measurement_reranked_correct_count = 0
+    measurement_reranked_valid_count = 0
     reranked_correct_count = 0
     reranked_valid_count = 0
     for camera in cameras:
@@ -1418,6 +1444,7 @@ def evaluate_sparse_candidate_teacher(
             visible_mask=visible_mask[sampled_idx],
             dustbin_score=dustbin_score,
             pair_scorer=pair_scorer,
+            pair_measurement_head=pair_measurement_head,
             detector_supervision_heatmap=matchability_heatmap,
             keypoint_offset_map=offset_heatmap,
             **validation_candidate_kwargs,
@@ -1427,6 +1454,8 @@ def evaluate_sparse_candidate_teacher(
             assignment_temperature=assignment_temperature,
             assignment_margin=assignment_margin,
             reprojection_sigma_px=reprojection_sigma_px,
+            set_risk_residual_clip_px=set_risk_residual_clip_px,
+            set_risk_reference_translation_m=set_risk_reference_translation_m,
         )
         record = _numeric_teacher_diagnostics(batch.diagnostics)
         record.update(
@@ -1442,6 +1471,18 @@ def evaluate_sparse_candidate_teacher(
                 "loss_pair_scorer": float(losses.pair_scorer.item()),
                 "loss_pair_scorer_assignment": float(
                     losses.pair_scorer_assignment.item()
+                ),
+                "loss_pair_measurement_inlier": float(
+                    losses.pair_measurement_inlier.item()
+                ),
+                "loss_pair_measurement_nll": float(
+                    losses.pair_measurement_nll.item()
+                ),
+                "loss_pair_measurement_translation_bias": float(
+                    losses.pair_measurement_translation_bias.item()
+                ),
+                "loss_pair_measurement_translation_covariance": float(
+                    losses.pair_measurement_translation_covariance.item()
                 ),
                 "loss_matcher_translation_info": float(
                     losses.matcher_translation_info.item()
@@ -1477,8 +1518,37 @@ def evaluate_sparse_candidate_teacher(
             scorer_logits.append(batch.pair_scorer_logits[selected].detach().cpu())
             scorer_labels.append(batch.pair_scorer_labels[selected].detach().cpu())
             scorer_valid.append(batch.pair_scorer_valid_mask[selected].detach().cpu())
+        if batch.pair_measurement_inlier_logits.numel() > 0:
+            hypothesis_ids = torch.arange(
+                batch.pair_measurement_inlier_logits.numel(),
+                device=batch.pair_measurement_inlier_logits.device,
+            )
+            calibrated_matches = limit_matches_per_keypoint(
+                SparseMatchResult(
+                    batch.pair_scorer_keypoint_idx,
+                    hypothesis_ids,
+                    batch.pair_measurement_inlier_logits,
+                ),
+                scorer_max_matches_per_keypoint,
+            )
+            selected = calibrated_matches.landmark_idx
+            selected_valid = batch.pair_scorer_valid_mask[selected]
+            selected_correct = (
+                (batch.pair_scorer_labels[selected] > 0.5) & selected_valid
+            )
+            measurement_reranked_correct_count += int(selected_correct.sum().item())
+            measurement_reranked_valid_count += int(selected_valid.sum().item())
+            measurement_logits.append(
+                batch.pair_measurement_inlier_logits[selected].detach().cpu()
+            )
+            measurement_labels.append(
+                batch.pair_scorer_labels[selected].detach().cpu()
+            )
+            measurement_valid.append(selected_valid.detach().cpu())
     if was_training:
         detector.train()
+    if pair_measurement_head is not None and measurement_was_training:
+        pair_measurement_head.train()
     keys = sorted({key for record in records for key in record})
     result = {"camera_count": float(len(records))}
     for key in keys:
@@ -1512,6 +1582,36 @@ def evaluate_sparse_candidate_teacher(
                     calibrated["accepted_count"]
                 ),
                 "pair_scorer_calibrated_correct_count": float(
+                    calibrated["correct_count"]
+                ),
+            }
+        )
+    if measurement_logits:
+        result["pair_measurement_reranked_correct_count_mean"] = float(
+            measurement_reranked_correct_count / len(records)
+        )
+        result["pair_measurement_reranked_valid_count_mean"] = float(
+            measurement_reranked_valid_count / len(records)
+        )
+        result["pair_measurement_reranked_gt_precision"] = float(
+            measurement_reranked_correct_count
+            / max(measurement_reranked_valid_count, 1)
+        )
+        calibrated = calibrate_binary_threshold(
+            torch.cat(measurement_logits),
+            torch.cat(measurement_labels),
+            torch.cat(measurement_valid),
+            min_recall=scorer_min_recall,
+        )
+        result.update(
+            {
+                "pair_measurement_calibrated_threshold": calibrated["threshold"],
+                "pair_measurement_calibrated_precision": calibrated["precision"],
+                "pair_measurement_calibrated_recall": calibrated["recall"],
+                "pair_measurement_calibrated_accepted_count": float(
+                    calibrated["accepted_count"]
+                ),
+                "pair_measurement_calibrated_correct_count": float(
                     calibrated["correct_count"]
                 ),
             }
@@ -1558,12 +1658,14 @@ def training_detector(
     candidate_teacher_detector_init_path="",
     candidate_teacher_state_init_path="",
     candidate_teacher_pair_scorer_init_path="",
+    candidate_teacher_pair_measurement_init_path="",
     candidate_teacher_optimize_features=False,
     candidate_teacher_freeze_detector=False,
     candidate_teacher_detector_lr=1e-4,
     candidate_teacher_feature_lr=5e-5,
     candidate_teacher_dustbin_lr=0.0,
     candidate_teacher_pair_scorer_lr=1e-3,
+    candidate_teacher_pair_measurement_lr=1e-3,
     candidate_teacher_pair_scorer_architecture="auto",
     candidate_teacher_detect_num=2048,
     candidate_teacher_nms_radius=2,
@@ -1573,8 +1675,8 @@ def training_detector(
     candidate_teacher_dual_softmax=False,
     candidate_teacher_dual_softmax_temperature=0.1,
     candidate_teacher_positive_radius_px=2.0,
-    candidate_teacher_negative_radius_px=2.0,
-    candidate_teacher_max_positives=1,
+    candidate_teacher_negative_radius_px=6.0,
+    candidate_teacher_max_positives=4,
     candidate_teacher_hard_negatives=8,
     candidate_teacher_match_temperature=0.1,
     candidate_teacher_match_margin=0.5,
@@ -1593,9 +1695,22 @@ def training_detector(
     candidate_teacher_dustbin_init=0.5,
     candidate_teacher_pair_scorer_weight=0.0,
     candidate_teacher_pair_scorer_assignment_weight=0.0,
+    candidate_teacher_pair_measurement_inlier_weight=0.0,
+    candidate_teacher_pair_measurement_nll_weight=0.0,
+    candidate_teacher_pair_measurement_bias_weight=0.0,
+    candidate_teacher_pair_measurement_covariance_weight=0.0,
+    candidate_teacher_pair_measurement_residual_clip_px=32.0,
+    candidate_teacher_pair_measurement_reference_translation_m=0.01,
     candidate_teacher_matcher_translation_info_weight=0.0,
     candidate_teacher_translation_info_weight=0.0,
     candidate_teacher_pair_scorer_hidden_dim=16,
+    candidate_teacher_pair_measurement_hidden_dim=64,
+    candidate_teacher_pair_measurement_patch_radius=2,
+    candidate_teacher_pair_measurement_max_offset=2.0,
+    candidate_teacher_pair_measurement_covariance_floor=0.1,
+    candidate_teacher_pair_measurement_set_context=False,
+    candidate_teacher_pair_measurement_geometry_context=False,
+    candidate_teacher_freeze_pair_measurement=False,
     candidate_teacher_pair_context_topk=8,
     candidate_teacher_scorer_min_recall=0.75,
     candidate_teacher_scorer_max_matches_per_keypoint=1,
@@ -1877,6 +1992,7 @@ def training_detector(
     teacher_validation_history = []
     teacher_last_diagnostics = {}
     calibrated_pair_scorer_threshold = None
+    calibrated_pair_measurement_threshold = None
     grad_accum = 8
     grad_clip_norm = 10.0
     teacher_config = {
@@ -1886,6 +2002,7 @@ def training_detector(
         "detector_init_path": detector_init_path,
         "state_init_path": candidate_teacher_state_init_path,
         "pair_scorer_init_path": candidate_teacher_pair_scorer_init_path,
+        "pair_measurement_init_path": candidate_teacher_pair_measurement_init_path,
         "detector_lr": float(candidate_teacher_detector_lr),
         "feature_lr": float(candidate_teacher_feature_lr),
         "dustbin_lr": float(
@@ -1936,13 +2053,53 @@ def training_detector(
         "pair_scorer_assignment_weight": float(
             candidate_teacher_pair_scorer_assignment_weight
         ),
+        "pair_measurement_inlier_weight": float(
+            candidate_teacher_pair_measurement_inlier_weight
+        ),
+        "pair_measurement_nll_weight": float(
+            candidate_teacher_pair_measurement_nll_weight
+        ),
+        "pair_measurement_bias_weight": float(
+            candidate_teacher_pair_measurement_bias_weight
+        ),
+        "pair_measurement_covariance_weight": float(
+            candidate_teacher_pair_measurement_covariance_weight
+        ),
+        "pair_measurement_residual_clip_px": float(
+            candidate_teacher_pair_measurement_residual_clip_px
+        ),
+        "pair_measurement_reference_translation_m": float(
+            candidate_teacher_pair_measurement_reference_translation_m
+        ),
         "matcher_translation_info_weight": float(
             candidate_teacher_matcher_translation_info_weight
         ),
         "translation_info_weight": float(candidate_teacher_translation_info_weight),
         "pair_scorer_lr": float(candidate_teacher_pair_scorer_lr),
+        "pair_measurement_lr": float(candidate_teacher_pair_measurement_lr),
         "pair_scorer_architecture": str(candidate_teacher_pair_scorer_architecture),
         "pair_scorer_hidden_dim": int(candidate_teacher_pair_scorer_hidden_dim),
+        "pair_measurement_hidden_dim": int(
+            candidate_teacher_pair_measurement_hidden_dim
+        ),
+        "pair_measurement_patch_radius": int(
+            candidate_teacher_pair_measurement_patch_radius
+        ),
+        "pair_measurement_max_offset": float(
+            candidate_teacher_pair_measurement_max_offset
+        ),
+        "pair_measurement_covariance_floor": float(
+            candidate_teacher_pair_measurement_covariance_floor
+        ),
+        "pair_measurement_set_context": bool(
+            candidate_teacher_pair_measurement_set_context
+        ),
+        "pair_measurement_geometry_context": bool(
+            candidate_teacher_pair_measurement_geometry_context
+        ),
+        "freeze_pair_measurement": bool(
+            candidate_teacher_freeze_pair_measurement
+        ),
         "pair_context_topk": int(candidate_teacher_pair_context_topk),
         "scorer_min_recall": float(candidate_teacher_scorer_min_recall),
         "scorer_max_matches_per_keypoint": int(
@@ -2079,9 +2236,154 @@ def training_detector(
             )
         else:
             teacher_pair_scorer = None
+
+        measurement_init_state = teacher_init_state
+        measurement_init_path = _resolve_detector_artifact_path(
+            scene.model_path,
+            candidate_teacher_pair_measurement_init_path,
+        )
+        if measurement_init_path:
+            print(
+                "Loading pair measurement initialization from "
+                f"{measurement_init_path}"
+            )
+            measurement_init_state = torch.load(
+                measurement_init_path, map_location="cpu"
+            )
+        measurement_state = (
+            measurement_init_state.get("pair_measurement_state_dict")
+            if isinstance(measurement_init_state, dict)
+            else None
+        )
+        measurement_config = (
+            measurement_init_state.get("pair_measurement_config", {})
+            if isinstance(measurement_init_state, dict)
+            else {}
+        )
+        teacher_pair_measurement_accept_threshold = float(
+            measurement_init_state.get("pair_measurement_threshold", 0.0)
+            if isinstance(measurement_init_state, dict)
+            else 0.0
+        )
+        teacher_config["pair_measurement_accept_threshold"] = (
+            teacher_pair_measurement_accept_threshold
+        )
+        optimize_pair_measurement = (
+            float(candidate_teacher_pair_measurement_inlier_weight) > 0.0
+            or float(candidate_teacher_pair_measurement_nll_weight) > 0.0
+            or float(candidate_teacher_pair_measurement_bias_weight) > 0.0
+            or float(candidate_teacher_pair_measurement_covariance_weight) > 0.0
+        )
+        if optimize_pair_measurement or measurement_state is not None:
+            descriptor_dim = int(teacher_initial_features.shape[1])
+            configured_descriptor_dim = int(
+                measurement_config.get("descriptor_dim", descriptor_dim)
+            )
+            if configured_descriptor_dim != descriptor_dim:
+                raise ValueError(
+                    "pair measurement descriptor dimension does not match map: "
+                    f"state={configured_descriptor_dim} map={descriptor_dim}"
+                )
+            teacher_pair_measurement_head = PairMeasurementHead(
+                descriptor_dim=descriptor_dim,
+                pair_feature_dim=int(
+                    measurement_config.get("pair_feature_dim", 6)
+                ),
+                patch_radius=int(
+                    measurement_config.get(
+                        "patch_radius",
+                        candidate_teacher_pair_measurement_patch_radius,
+                    )
+                ),
+                hidden_dim=int(
+                    measurement_config.get(
+                        "hidden_dim",
+                        candidate_teacher_pair_measurement_hidden_dim,
+                    )
+                ),
+                max_offset=float(
+                    measurement_config.get(
+                        "max_offset",
+                        candidate_teacher_pair_measurement_max_offset,
+                    )
+                ),
+                covariance_floor=float(
+                    measurement_config.get(
+                        "covariance_floor",
+                        candidate_teacher_pair_measurement_covariance_floor,
+                    )
+                ),
+                cosine_bias=float(candidate_teacher_dustbin_init),
+                use_set_context=bool(
+                    measurement_config.get("use_set_context", False)
+                    or candidate_teacher_pair_measurement_set_context
+                    or candidate_teacher_pair_measurement_geometry_context
+                ),
+                use_geometry_context=bool(
+                    measurement_config.get("use_geometry_context", False)
+                    or candidate_teacher_pair_measurement_geometry_context
+                ),
+            ).to(device=teacher_initial_features.device)
+            if measurement_state is not None:
+                upgrading_set_context = (
+                    teacher_pair_measurement_head.use_set_context
+                    and not bool(measurement_config.get("use_set_context", False))
+                )
+                upgrading_geometry_context = (
+                    teacher_pair_measurement_head.use_geometry_context
+                    and not bool(
+                        measurement_config.get("use_geometry_context", False)
+                    )
+                )
+                incompatible = teacher_pair_measurement_head.load_state_dict(
+                    measurement_state,
+                    strict=not (
+                        upgrading_set_context or upgrading_geometry_context
+                    ),
+                )
+                if upgrading_set_context or upgrading_geometry_context:
+                    allowed_missing = set()
+                    if upgrading_set_context:
+                        allowed_missing.update(
+                            {
+                                "set_network.0.weight",
+                                "set_network.0.bias",
+                                "set_network.2.weight",
+                                "set_network.2.bias",
+                            }
+                        )
+                    if upgrading_geometry_context:
+                        allowed_missing.update(
+                            {
+                                "geometry_token_network.0.weight",
+                                "geometry_token_network.0.bias",
+                                "geometry_token_network.2.weight",
+                                "geometry_token_network.2.bias",
+                                "geometry_set_network.0.weight",
+                                "geometry_set_network.0.bias",
+                                "geometry_set_network.2.weight",
+                                "geometry_set_network.2.bias",
+                            }
+                        )
+                    if (
+                        set(incompatible.missing_keys) != allowed_missing
+                        or incompatible.unexpected_keys
+                    ):
+                        raise ValueError(
+                            "incompatible pair measurement set-context upgrade: "
+                            f"missing={incompatible.missing_keys} "
+                            f"unexpected={incompatible.unexpected_keys}"
+                        )
+            teacher_pair_measurement_head.requires_grad_(
+                optimize_pair_measurement
+                and not candidate_teacher_freeze_pair_measurement
+            )
+        else:
+            teacher_pair_measurement_head = None
     else:
         teacher_dustbin_score = None
         teacher_pair_scorer = None
+        teacher_pair_measurement_head = None
 
     if candidate_teacher_matchability_only and candidate_teacher_offset_only:
         raise ValueError("matchability-only and offset-only training are mutually exclusive")
@@ -2143,6 +2445,21 @@ def training_detector(
                         "lr": float(candidate_teacher_pair_scorer_lr),
                         "weight_decay": 1e-4,
                         "name": "pair_scorer",
+                    }
+                )
+        if teacher_pair_measurement_head is not None:
+            measurement_parameters = [
+                parameter
+                for parameter in teacher_pair_measurement_head.parameters()
+                if parameter.requires_grad
+            ]
+            if measurement_parameters:
+                parameter_groups.append(
+                    {
+                        "params": measurement_parameters,
+                        "lr": float(candidate_teacher_pair_measurement_lr),
+                        "weight_decay": 1e-4,
+                        "name": "pair_measurement",
                     }
                 )
         if not parameter_groups:
@@ -2319,9 +2636,13 @@ def training_detector(
                 depth_bins=candidate_teacher_depth_bins,
                 dustbin_score=teacher_dustbin_score,
                 pair_scorer=teacher_pair_scorer,
+                pair_measurement_head=teacher_pair_measurement_head,
                 pair_context_topk=candidate_teacher_pair_context_topk,
                 detector_supervision_heatmap=detector_supervision_heatmap,
                 keypoint_offset_map=offset_heat_map,
+                pair_measurement_accept_threshold=(
+                    teacher_pair_measurement_accept_threshold
+                ),
                 detector_offset_target_source=(
                     candidate_teacher_offset_target_source
                 ),
@@ -2333,6 +2654,12 @@ def training_detector(
                 assignment_temperature=candidate_teacher_assignment_temperature,
                 assignment_margin=candidate_teacher_assignment_margin,
                 reprojection_sigma_px=candidate_teacher_reprojection_sigma_px,
+                set_risk_residual_clip_px=(
+                    candidate_teacher_pair_measurement_residual_clip_px
+                ),
+                set_risk_reference_translation_m=(
+                    candidate_teacher_pair_measurement_reference_translation_m
+                ),
             )
             if candidate_teacher_optimize_features:
                 feature_anchor_loss = (
@@ -2354,6 +2681,14 @@ def training_detector(
                 + float(candidate_teacher_pair_scorer_weight) * teacher_losses.pair_scorer
                 + float(candidate_teacher_pair_scorer_assignment_weight)
                 * teacher_losses.pair_scorer_assignment
+                + float(candidate_teacher_pair_measurement_inlier_weight)
+                * teacher_losses.pair_measurement_inlier
+                + float(candidate_teacher_pair_measurement_nll_weight)
+                * teacher_losses.pair_measurement_nll
+                + float(candidate_teacher_pair_measurement_bias_weight)
+                * teacher_losses.pair_measurement_translation_bias
+                + float(candidate_teacher_pair_measurement_covariance_weight)
+                * teacher_losses.pair_measurement_translation_covariance
                 + float(candidate_teacher_matcher_translation_info_weight)
                 * teacher_losses.matcher_translation_info
                 + float(candidate_teacher_translation_info_weight) * teacher_losses.translation_info
@@ -2439,6 +2774,14 @@ def training_detector(
                         ),
                         "pair_scorer": teacher_losses.pair_scorer,
                         "pair_scorer_assignment": teacher_losses.pair_scorer_assignment,
+                        "pair_measurement_inlier": teacher_losses.pair_measurement_inlier,
+                        "pair_measurement_nll": teacher_losses.pair_measurement_nll,
+                        "pair_measurement_translation_bias": (
+                            teacher_losses.pair_measurement_translation_bias
+                        ),
+                        "pair_measurement_translation_covariance": (
+                            teacher_losses.pair_measurement_translation_covariance
+                        ),
                         "matcher_translation_info": teacher_losses.matcher_translation_info,
                         "translation_info": teacher_losses.translation_info,
                         "detector_match": teacher_losses.detector_match,
@@ -2482,6 +2825,18 @@ def training_detector(
                     "loss_pair_scorer": float(teacher_losses.pair_scorer.detach().item()),
                     "loss_pair_scorer_assignment": float(
                         teacher_losses.pair_scorer_assignment.detach().item()
+                    ),
+                    "loss_pair_measurement_inlier": float(
+                        teacher_losses.pair_measurement_inlier.detach().item()
+                    ),
+                    "loss_pair_measurement_nll": float(
+                        teacher_losses.pair_measurement_nll.detach().item()
+                    ),
+                    "loss_pair_measurement_translation_bias": float(
+                        teacher_losses.pair_measurement_translation_bias.detach().item()
+                    ),
+                    "loss_pair_measurement_translation_covariance": float(
+                        teacher_losses.pair_measurement_translation_covariance.detach().item()
                     ),
                     "loss_matcher_translation_info": float(
                         teacher_losses.matcher_translation_info.detach().item()
@@ -2529,6 +2884,7 @@ def training_detector(
                     teacher_landmark_xyz,
                     teacher_dustbin_score,
                     teacher_pair_scorer,
+                    teacher_pair_measurement_head,
                     validation_cameras,
                     render_visible_masks,
                     masks,
@@ -2551,6 +2907,9 @@ def training_detector(
                         "grid_cols": candidate_teacher_grid_cols,
                         "depth_bins": candidate_teacher_depth_bins,
                         "pair_context_topk": candidate_teacher_pair_context_topk,
+                        "pair_measurement_accept_threshold": (
+                            teacher_pair_measurement_accept_threshold
+                        ),
                         "detector_offset_target_source": (
                             candidate_teacher_offset_target_source
                         ),
@@ -2564,9 +2923,18 @@ def training_detector(
                     scorer_max_matches_per_keypoint=(
                         candidate_teacher_scorer_max_matches_per_keypoint
                     ),
+                    set_risk_residual_clip_px=(
+                        candidate_teacher_pair_measurement_residual_clip_px
+                    ),
+                    set_risk_reference_translation_m=(
+                        candidate_teacher_pair_measurement_reference_translation_m
+                    ),
                 )
                 calibrated_pair_scorer_threshold = validation_metrics.get(
                     "pair_scorer_calibrated_threshold"
+                )
+                calibrated_pair_measurement_threshold = validation_metrics.get(
+                    "pair_measurement_calibrated_threshold"
                 )
                 validation_item = {"iteration": int(iteration)}
                 validation_item.update(validation_metrics)
@@ -2576,6 +2944,8 @@ def training_detector(
                     f"AP={validation_metrics.get('pair_ap_mean', 0.0):.4f} "
                     f"scorer_AP={validation_metrics.get('pair_scorer_ap_mean', 0.0):.4f} "
                     f"scorer_thr={validation_metrics.get('pair_scorer_calibrated_threshold', 0.0):.4f} "
+                    f"measurement_AP={validation_metrics.get('pair_measurement_ap_mean', 0.0):.4f} "
+                    f"measurement_EPE={validation_metrics.get('pair_measurement_offset_epe_mean_mean', 0.0):.4f} "
                     f"accepted_precision={validation_metrics.get('dustbin_accepted_gt_precision_mean', 0.0):.4f} "
                     f"reject={validation_metrics.get('dustbin_unmatched_reject_accuracy_mean', 0.0):.4f}"
                 )
@@ -2592,9 +2962,13 @@ def training_detector(
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
-                    teacher_dustbin_score,
-                    teacher_pair_scorer,
-                    calibrated_pair_scorer_threshold,
+                    dustbin_score=teacher_dustbin_score,
+                    pair_scorer=teacher_pair_scorer,
+                    pair_scorer_threshold=calibrated_pair_scorer_threshold,
+                    pair_measurement_head=teacher_pair_measurement_head,
+                    pair_measurement_threshold=(
+                        calibrated_pair_measurement_threshold
+                    ),
                 )
                 save_sparse_candidate_teacher_state(
                     os.path.join(save_path, "candidate_teacher_state.pt"),
@@ -2603,9 +2977,13 @@ def training_detector(
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
-                    teacher_dustbin_score,
-                    teacher_pair_scorer,
-                    calibrated_pair_scorer_threshold,
+                    dustbin_score=teacher_dustbin_score,
+                    pair_scorer=teacher_pair_scorer,
+                    pair_scorer_threshold=calibrated_pair_scorer_threshold,
+                    pair_measurement_head=teacher_pair_measurement_head,
+                    pair_measurement_threshold=(
+                        calibrated_pair_measurement_threshold
+                    ),
                 )
 
     if sparse_candidate_teacher:
@@ -2729,12 +3107,18 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_detector_init_path", type=str, default="")
     parser.add_argument("--candidate_teacher_state_init_path", type=str, default="")
     parser.add_argument("--candidate_teacher_pair_scorer_init_path", type=str, default="")
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_init_path", type=str, default=""
+    )
     parser.add_argument("--candidate_teacher_optimize_features", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_freeze_detector", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_detector_lr", type=float, default=1e-4)
     parser.add_argument("--candidate_teacher_feature_lr", type=float, default=5e-5)
     parser.add_argument("--candidate_teacher_dustbin_lr", type=float, default=0.0)
     parser.add_argument("--candidate_teacher_pair_scorer_lr", type=float, default=1e-3)
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_lr", type=float, default=1e-3
+    )
     parser.add_argument(
         "--candidate_teacher_pair_scorer_architecture",
         choices=["auto", "cosine_residual_v1", "descriptor_set_residual_v2"],
@@ -2752,8 +3136,8 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_dual_softmax", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_dual_softmax_temperature", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_positive_radius_px", type=float, default=2.0)
-    parser.add_argument("--candidate_teacher_negative_radius_px", type=float, default=2.0)
-    parser.add_argument("--candidate_teacher_max_positives", type=int, default=1)
+    parser.add_argument("--candidate_teacher_negative_radius_px", type=float, default=6.0)
+    parser.add_argument("--candidate_teacher_max_positives", type=int, default=4)
     parser.add_argument("--candidate_teacher_hard_negatives", type=int, default=8)
     parser.add_argument("--candidate_teacher_match_temperature", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_match_margin", type=float, default=0.5)
@@ -2781,10 +3165,66 @@ def build_arg_parser(with_components=False):
         "--candidate_teacher_pair_scorer_assignment_weight", type=float, default=0.0
     )
     parser.add_argument(
+        "--candidate_teacher_pair_measurement_inlier_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_nll_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_bias_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_covariance_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_residual_clip_px",
+        type=float,
+        default=32.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_reference_translation_m",
+        type=float,
+        default=0.01,
+    )
+    parser.add_argument(
         "--candidate_teacher_matcher_translation_info_weight", type=float, default=0.0
     )
     parser.add_argument("--candidate_teacher_translation_info_weight", type=float, default=0.0)
     parser.add_argument("--candidate_teacher_pair_scorer_hidden_dim", type=int, default=16)
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_hidden_dim", type=int, default=64
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_patch_radius", type=int, default=2
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_max_offset", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_covariance_floor",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_set_context",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_teacher_pair_measurement_geometry_context",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_teacher_freeze_pair_measurement",
+        action="store_true",
+    )
     parser.add_argument("--candidate_teacher_pair_context_topk", type=int, default=8)
     parser.add_argument("--candidate_teacher_scorer_min_recall", type=float, default=0.75)
     parser.add_argument(
@@ -2807,7 +3247,12 @@ def build_arg_parser(with_components=False):
     )
     parser.add_argument(
         "--candidate_teacher_detector_target_source",
-        choices=["geometric", "predicted_correct", "scorer_accepted_correct"],
+        choices=[
+            "geometric",
+            "predicted_correct",
+            "scorer_accepted_correct",
+            "measurement_accepted_correct",
+        ],
         default="geometric",
     )
     parser.add_argument("--candidate_teacher_detector_binary_target", action="store_true", default=False)
@@ -2911,12 +3356,18 @@ if __name__ == "__main__":
         candidate_teacher_pair_scorer_init_path=(
             args.candidate_teacher_pair_scorer_init_path
         ),
+        candidate_teacher_pair_measurement_init_path=(
+            args.candidate_teacher_pair_measurement_init_path
+        ),
         candidate_teacher_optimize_features=args.candidate_teacher_optimize_features,
         candidate_teacher_freeze_detector=args.candidate_teacher_freeze_detector,
         candidate_teacher_detector_lr=args.candidate_teacher_detector_lr,
         candidate_teacher_feature_lr=args.candidate_teacher_feature_lr,
         candidate_teacher_dustbin_lr=args.candidate_teacher_dustbin_lr,
         candidate_teacher_pair_scorer_lr=args.candidate_teacher_pair_scorer_lr,
+        candidate_teacher_pair_measurement_lr=(
+            args.candidate_teacher_pair_measurement_lr
+        ),
         candidate_teacher_pair_scorer_architecture=(
             args.candidate_teacher_pair_scorer_architecture
         ),
@@ -2956,11 +3407,50 @@ if __name__ == "__main__":
         candidate_teacher_pair_scorer_assignment_weight=(
             args.candidate_teacher_pair_scorer_assignment_weight
         ),
+        candidate_teacher_pair_measurement_inlier_weight=(
+            args.candidate_teacher_pair_measurement_inlier_weight
+        ),
+        candidate_teacher_pair_measurement_nll_weight=(
+            args.candidate_teacher_pair_measurement_nll_weight
+        ),
+        candidate_teacher_pair_measurement_bias_weight=(
+            args.candidate_teacher_pair_measurement_bias_weight
+        ),
+        candidate_teacher_pair_measurement_covariance_weight=(
+            args.candidate_teacher_pair_measurement_covariance_weight
+        ),
+        candidate_teacher_pair_measurement_residual_clip_px=(
+            args.candidate_teacher_pair_measurement_residual_clip_px
+        ),
+        candidate_teacher_pair_measurement_reference_translation_m=(
+            args.candidate_teacher_pair_measurement_reference_translation_m
+        ),
         candidate_teacher_matcher_translation_info_weight=(
             args.candidate_teacher_matcher_translation_info_weight
         ),
         candidate_teacher_translation_info_weight=args.candidate_teacher_translation_info_weight,
         candidate_teacher_pair_scorer_hidden_dim=args.candidate_teacher_pair_scorer_hidden_dim,
+        candidate_teacher_pair_measurement_hidden_dim=(
+            args.candidate_teacher_pair_measurement_hidden_dim
+        ),
+        candidate_teacher_pair_measurement_patch_radius=(
+            args.candidate_teacher_pair_measurement_patch_radius
+        ),
+        candidate_teacher_pair_measurement_max_offset=(
+            args.candidate_teacher_pair_measurement_max_offset
+        ),
+        candidate_teacher_pair_measurement_covariance_floor=(
+            args.candidate_teacher_pair_measurement_covariance_floor
+        ),
+        candidate_teacher_pair_measurement_set_context=(
+            args.candidate_teacher_pair_measurement_set_context
+        ),
+        candidate_teacher_pair_measurement_geometry_context=(
+            args.candidate_teacher_pair_measurement_geometry_context
+        ),
+        candidate_teacher_freeze_pair_measurement=(
+            args.candidate_teacher_freeze_pair_measurement
+        ),
         candidate_teacher_pair_context_topk=args.candidate_teacher_pair_context_topk,
         candidate_teacher_scorer_min_recall=args.candidate_teacher_scorer_min_recall,
         candidate_teacher_scorer_max_matches_per_keypoint=(

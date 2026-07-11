@@ -19,6 +19,38 @@ def pose_jacobian_numeric(points_world, K, pose_w2c, eps=1e-4):
     return jac
 
 
+def pose_jacobian_analytic(points_world, K, pose_w2c):
+    """Pixel Jacobian for a left SE(3) update ordered as [t, rotation]."""
+    points_world = points_world.to(dtype=K.dtype, device=K.device)
+    pose_w2c = pose_w2c.to(dtype=K.dtype, device=K.device)
+    ones = torch.ones(
+        points_world.shape[0], 1, dtype=points_world.dtype, device=points_world.device
+    )
+    camera = (pose_w2c @ torch.cat([points_world, ones], dim=1).T)[:3].T
+    x, y, z = camera.unbind(dim=1)
+    z = z.clamp_min(1e-8)
+    fx, fy = K[0, 0], K[1, 1]
+    dproj = camera.new_zeros((camera.shape[0], 2, 3))
+    dproj[:, 0, 0] = fx / z
+    dproj[:, 0, 2] = -fx * x / z.square()
+    dproj[:, 1, 1] = fy / z
+    dproj[:, 1, 2] = -fy * y / z.square()
+    skew = camera.new_zeros((camera.shape[0], 3, 3))
+    skew[:, 0, 1] = -camera[:, 2]
+    skew[:, 0, 2] = camera[:, 1]
+    skew[:, 1, 0] = camera[:, 2]
+    skew[:, 1, 2] = -camera[:, 0]
+    skew[:, 2, 0] = -camera[:, 1]
+    skew[:, 2, 1] = camera[:, 0]
+    identity = torch.eye(3, dtype=camera.dtype, device=camera.device)
+    camera_jacobian = torch.cat(
+        [identity[None].expand(camera.shape[0], -1, -1), -skew], dim=2
+    )
+    jacobian = dproj @ camera_jacobian
+    jacobian[~torch.isfinite(jacobian)] = 0
+    return jacobian
+
+
 @dataclass
 class PoseInformation:
     scores: torch.Tensor

@@ -13,6 +13,10 @@ def make_stdloc_eval_cfg(
     detector_folder="detector",
     detector_iters=30000,
     candidate_teacher_state_path=None,
+    pair_scorer_state_path=None,
+    landmark_feature_override_path=None,
+    override_landmark_features=False,
+    pair_measurement_state_path=None,
     detect_num=None,
     reprojection_error=None,
     nms=None,
@@ -25,6 +29,24 @@ def make_stdloc_eval_cfg(
     use_candidate_pair_scorer=False,
     pair_scorer_threshold=0.0,
     use_candidate_pair_scorer_calibrated_threshold=False,
+    use_pair_measurement=False,
+    pair_measurement_threshold=0.0,
+    use_pair_measurement_calibrated_threshold=False,
+    use_pair_measurement_offset=True,
+    use_pair_measurement_covariance_refinement=False,
+    pair_measurement_refinement_iterations=10,
+    pair_measurement_mahalanobis_threshold=3.0,
+    pair_measurement_robust_delta=2.5,
+    pair_measurement_covariance_model_floor_px=1.0,
+    use_pair_measurement_progressive_sampling=False,
+    pair_measurement_max_prosac_iterations=100000,
+    pair_measurement_fixed_candidate_count=0,
+    pair_measurement_refill_mode="score",
+    pair_measurement_refill_grid_rows=4,
+    pair_measurement_refill_grid_cols=4,
+    pair_measurement_refill_voxel_size=0.25,
+    pair_measurement_refill_spatial_weight=0.25,
+    pair_measurement_refill_voxel_weight=0.25,
     min_candidate_matches=0,
     candidate_refill_trigger_count=0,
     use_detector_matchability=False,
@@ -62,6 +84,20 @@ def make_stdloc_eval_cfg(
     if candidate_teacher_state_path:
         sparse["candidate_teacher_state_path"] = str(candidate_teacher_state_path)
         sparse["candidate_teacher_state_model_path"] = artifact_model_path
+    if pair_scorer_state_path:
+        sparse["pair_scorer_state_path"] = str(pair_scorer_state_path)
+        sparse["pair_scorer_state_model_path"] = artifact_model_path
+    if landmark_feature_override_path:
+        sparse["landmark_feature_override_path"] = str(
+            landmark_feature_override_path
+        )
+        sparse["landmark_feature_override_model_path"] = artifact_model_path
+    sparse["override_landmark_features"] = bool(override_landmark_features)
+    if pair_measurement_state_path:
+        sparse["pair_measurement_state_path"] = str(
+            pair_measurement_state_path
+        )
+        sparse["pair_measurement_state_model_path"] = artifact_model_path
     if detect_num is not None:
         sparse["detect_num"] = int(detect_num)
     if reprojection_error is not None:
@@ -80,6 +116,52 @@ def make_stdloc_eval_cfg(
     sparse["pair_scorer_threshold"] = float(pair_scorer_threshold)
     sparse["use_candidate_pair_scorer_calibrated_threshold"] = bool(
         use_candidate_pair_scorer_calibrated_threshold
+    )
+    sparse["use_pair_measurement"] = bool(use_pair_measurement)
+    sparse["pair_measurement_threshold"] = float(pair_measurement_threshold)
+    sparse["use_pair_measurement_calibrated_threshold"] = bool(
+        use_pair_measurement_calibrated_threshold
+    )
+    sparse["use_pair_measurement_offset"] = bool(use_pair_measurement_offset)
+    sparse["use_pair_measurement_covariance_refinement"] = bool(
+        use_pair_measurement_covariance_refinement
+    )
+    sparse["pair_measurement_refinement_iterations"] = int(
+        pair_measurement_refinement_iterations
+    )
+    sparse["pair_measurement_mahalanobis_threshold"] = float(
+        pair_measurement_mahalanobis_threshold
+    )
+    sparse["pair_measurement_robust_delta"] = float(
+        pair_measurement_robust_delta
+    )
+    sparse["pair_measurement_covariance_model_floor_px"] = float(
+        pair_measurement_covariance_model_floor_px
+    )
+    sparse["use_pair_measurement_progressive_sampling"] = bool(
+        use_pair_measurement_progressive_sampling
+    )
+    sparse["pair_measurement_max_prosac_iterations"] = int(
+        pair_measurement_max_prosac_iterations
+    )
+    sparse["pair_measurement_fixed_candidate_count"] = int(
+        pair_measurement_fixed_candidate_count
+    )
+    sparse["pair_measurement_refill_mode"] = str(pair_measurement_refill_mode)
+    sparse["pair_measurement_refill_grid_rows"] = int(
+        pair_measurement_refill_grid_rows
+    )
+    sparse["pair_measurement_refill_grid_cols"] = int(
+        pair_measurement_refill_grid_cols
+    )
+    sparse["pair_measurement_refill_voxel_size"] = float(
+        pair_measurement_refill_voxel_size
+    )
+    sparse["pair_measurement_refill_spatial_weight"] = float(
+        pair_measurement_refill_spatial_weight
+    )
+    sparse["pair_measurement_refill_voxel_weight"] = float(
+        pair_measurement_refill_voxel_weight
     )
     sparse["min_candidate_matches"] = int(min_candidate_matches)
     sparse["candidate_refill_trigger_count"] = int(candidate_refill_trigger_count)
@@ -118,6 +200,16 @@ def make_stdloc_eval_cfg(
         "detector_path": sparse["detector_path"],
         "landmark_path": sparse["landmark_path"],
         "candidate_teacher_state_path": sparse.get("candidate_teacher_state_path"),
+        "pair_scorer_state_path": sparse.get("pair_scorer_state_path"),
+        "landmark_feature_override_path": sparse.get(
+            "landmark_feature_override_path"
+        ),
+        "override_landmark_features": sparse.get(
+            "override_landmark_features", False
+        ),
+        "pair_measurement_state_path": sparse.get(
+            "pair_measurement_state_path"
+        ),
         "detect_num": sparse.get("detect_num"),
         "reprojection_error": sparse.get("reprojection_error"),
         "nms": sparse.get("nms"),
@@ -131,6 +223,49 @@ def make_stdloc_eval_cfg(
         "pair_scorer_threshold": sparse.get("pair_scorer_threshold", 0.0),
         "use_candidate_pair_scorer_calibrated_threshold": sparse.get(
             "use_candidate_pair_scorer_calibrated_threshold", False
+        ),
+        "use_pair_measurement": sparse.get("use_pair_measurement", False),
+        "pair_measurement_threshold": sparse.get(
+            "pair_measurement_threshold", 0.0
+        ),
+        "use_pair_measurement_calibrated_threshold": sparse.get(
+            "use_pair_measurement_calibrated_threshold", False
+        ),
+        "use_pair_measurement_offset": sparse.get(
+            "use_pair_measurement_offset", True
+        ),
+        "use_pair_measurement_covariance_refinement": sparse.get(
+            "use_pair_measurement_covariance_refinement", False
+        ),
+        "pair_measurement_covariance_model_floor_px": sparse.get(
+            "pair_measurement_covariance_model_floor_px", 1.0
+        ),
+        "use_pair_measurement_progressive_sampling": sparse.get(
+            "use_pair_measurement_progressive_sampling", False
+        ),
+        "pair_measurement_max_prosac_iterations": sparse.get(
+            "pair_measurement_max_prosac_iterations", 100000
+        ),
+        "pair_measurement_fixed_candidate_count": sparse.get(
+            "pair_measurement_fixed_candidate_count", 0
+        ),
+        "pair_measurement_refill_mode": sparse.get(
+            "pair_measurement_refill_mode", "score"
+        ),
+        "pair_measurement_refill_grid_rows": sparse.get(
+            "pair_measurement_refill_grid_rows", 4
+        ),
+        "pair_measurement_refill_grid_cols": sparse.get(
+            "pair_measurement_refill_grid_cols", 4
+        ),
+        "pair_measurement_refill_voxel_size": sparse.get(
+            "pair_measurement_refill_voxel_size", 0.25
+        ),
+        "pair_measurement_refill_spatial_weight": sparse.get(
+            "pair_measurement_refill_spatial_weight", 0.25
+        ),
+        "pair_measurement_refill_voxel_weight": sparse.get(
+            "pair_measurement_refill_voxel_weight", 0.25
         ),
         "min_candidate_matches": sparse.get("min_candidate_matches", 0),
         "candidate_refill_trigger_count": sparse.get("candidate_refill_trigger_count", 0),
@@ -156,6 +291,10 @@ def main():
     parser.add_argument("--detector_folder", default="detector")
     parser.add_argument("--detector_iters", type=int, default=30000)
     parser.add_argument("--candidate_teacher_state_path", default="")
+    parser.add_argument("--pair_scorer_state_path", default="")
+    parser.add_argument("--landmark_feature_override_path", default="")
+    parser.add_argument("--override_landmark_features", action="store_true")
+    parser.add_argument("--pair_measurement_state_path", default="")
     parser.add_argument("--detect_num", type=int, default=None)
     parser.add_argument("--reprojection_error", type=float, default=None)
     parser.add_argument("--nms", type=int, default=None)
@@ -169,6 +308,54 @@ def main():
     parser.add_argument("--pair_scorer_threshold", type=float, default=0.0)
     parser.add_argument(
         "--use_candidate_pair_scorer_calibrated_threshold", action="store_true"
+    )
+    parser.add_argument("--use_pair_measurement", action="store_true")
+    parser.add_argument("--pair_measurement_threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--use_pair_measurement_calibrated_threshold", action="store_true"
+    )
+    parser.add_argument(
+        "--disable_pair_measurement_offset", action="store_true"
+    )
+    parser.add_argument(
+        "--use_pair_measurement_covariance_refinement", action="store_true"
+    )
+    parser.add_argument(
+        "--pair_measurement_refinement_iterations", type=int, default=10
+    )
+    parser.add_argument(
+        "--pair_measurement_mahalanobis_threshold", type=float, default=3.0
+    )
+    parser.add_argument(
+        "--pair_measurement_robust_delta", type=float, default=2.5
+    )
+    parser.add_argument(
+        "--pair_measurement_covariance_model_floor_px", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--use_pair_measurement_progressive_sampling", action="store_true"
+    )
+    parser.add_argument(
+        "--pair_measurement_max_prosac_iterations", type=int, default=100000
+    )
+    parser.add_argument(
+        "--pair_measurement_fixed_candidate_count", type=int, default=0
+    )
+    parser.add_argument(
+        "--pair_measurement_refill_mode",
+        choices=["score", "geometry"],
+        default="score",
+    )
+    parser.add_argument("--pair_measurement_refill_grid_rows", type=int, default=4)
+    parser.add_argument("--pair_measurement_refill_grid_cols", type=int, default=4)
+    parser.add_argument(
+        "--pair_measurement_refill_voxel_size", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--pair_measurement_refill_spatial_weight", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--pair_measurement_refill_voxel_weight", type=float, default=0.25
     )
     parser.add_argument("--min_candidate_matches", type=int, default=0)
     parser.add_argument("--candidate_refill_trigger_count", type=int, default=0)
@@ -208,6 +395,10 @@ def main():
         detector_folder=args.detector_folder,
         detector_iters=args.detector_iters,
         candidate_teacher_state_path=args.candidate_teacher_state_path,
+        pair_scorer_state_path=args.pair_scorer_state_path,
+        landmark_feature_override_path=args.landmark_feature_override_path,
+        override_landmark_features=args.override_landmark_features,
+        pair_measurement_state_path=args.pair_measurement_state_path,
         detect_num=args.detect_num,
         reprojection_error=args.reprojection_error,
         nms=args.nms,
@@ -221,6 +412,50 @@ def main():
         pair_scorer_threshold=args.pair_scorer_threshold,
         use_candidate_pair_scorer_calibrated_threshold=(
             args.use_candidate_pair_scorer_calibrated_threshold
+        ),
+        use_pair_measurement=args.use_pair_measurement,
+        pair_measurement_threshold=args.pair_measurement_threshold,
+        use_pair_measurement_calibrated_threshold=(
+            args.use_pair_measurement_calibrated_threshold
+        ),
+        use_pair_measurement_offset=not args.disable_pair_measurement_offset,
+        use_pair_measurement_covariance_refinement=(
+            args.use_pair_measurement_covariance_refinement
+        ),
+        pair_measurement_refinement_iterations=(
+            args.pair_measurement_refinement_iterations
+        ),
+        pair_measurement_mahalanobis_threshold=(
+            args.pair_measurement_mahalanobis_threshold
+        ),
+        pair_measurement_robust_delta=args.pair_measurement_robust_delta,
+        pair_measurement_covariance_model_floor_px=(
+            args.pair_measurement_covariance_model_floor_px
+        ),
+        use_pair_measurement_progressive_sampling=(
+            args.use_pair_measurement_progressive_sampling
+        ),
+        pair_measurement_max_prosac_iterations=(
+            args.pair_measurement_max_prosac_iterations
+        ),
+        pair_measurement_fixed_candidate_count=(
+            args.pair_measurement_fixed_candidate_count
+        ),
+        pair_measurement_refill_mode=args.pair_measurement_refill_mode,
+        pair_measurement_refill_grid_rows=(
+            args.pair_measurement_refill_grid_rows
+        ),
+        pair_measurement_refill_grid_cols=(
+            args.pair_measurement_refill_grid_cols
+        ),
+        pair_measurement_refill_voxel_size=(
+            args.pair_measurement_refill_voxel_size
+        ),
+        pair_measurement_refill_spatial_weight=(
+            args.pair_measurement_refill_spatial_weight
+        ),
+        pair_measurement_refill_voxel_weight=(
+            args.pair_measurement_refill_voxel_weight
         ),
         min_candidate_matches=args.min_candidate_matches,
         candidate_refill_trigger_count=args.candidate_refill_trigger_count,

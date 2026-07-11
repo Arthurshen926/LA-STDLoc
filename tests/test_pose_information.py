@@ -7,6 +7,7 @@ class PoseInformationTest(unittest.TestCase):
     def test_information_scores_are_positive_and_report_condition(self):
         from localization_training.pose_information import (
             compute_pose_information,
+            pose_jacobian_analytic,
             pose_jacobian_numeric,
         )
 
@@ -28,8 +29,10 @@ class PoseInformationTest(unittest.TestCase):
         pose = torch.eye(4, dtype=dtype)
 
         J = pose_jacobian_numeric(points, K, pose)
+        analytic = pose_jacobian_analytic(points, K, pose)
         self.assertEqual(J.shape, (5, 2, 6))
         self.assertTrue(torch.isfinite(J).all())
+        self.assertTrue(torch.allclose(analytic, J, rtol=2e-3, atol=2e-3))
 
         info = compute_pose_information(points, K, pose, weights=torch.ones(5, dtype=dtype))
         self.assertEqual(info.scores.shape, (5,))

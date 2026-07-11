@@ -608,3 +608,46 @@ def test_binary_detector_targets_keep_correct_matches_at_probability_one():
     assert batch.detector_targets.tolist() == [1.0]
     assert batch.detector_loss_weights[0] > 0
     assert batch.diagnostics["detector_positive_target_mean"] == 1.0
+
+
+def test_measurement_accepted_detector_targets_use_calibrated_pair_threshold():
+    from localization_training.pair_measurement import PairMeasurementHead
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    landmark_xyz = torch.tensor([_point_at_pixel(1.5, 1.5)])
+    K, pose = _camera()
+    measurement = PairMeasurementHead(
+        descriptor_dim=2,
+        patch_radius=0,
+        hidden_dim=4,
+    )
+    common = dict(
+        query_feature_map=feature_map,
+        detector_heatmap=heatmap,
+        landmark_features=torch.tensor([[1.0, 0.0]]),
+        landmark_xyz=landmark_xyz,
+        K=K,
+        pose_gt_w2c=pose,
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+        detector_target_source="measurement_accepted_correct",
+        detector_binary_target=True,
+        pair_measurement_head=measurement,
+    )
+
+    accepted = build_sparse_candidate_batch(
+        **common,
+        pair_measurement_accept_threshold=0.0,
+    )
+    rejected = build_sparse_candidate_batch(
+        **common,
+        pair_measurement_accept_threshold=100.0,
+    )
+
+    assert accepted.detector_targets.tolist() == [1.0]
+    assert rejected.detector_targets.tolist() == [0.0]

@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import os
 import pickle
@@ -15,23 +16,58 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
+from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.geometry_selector import GeometryBalancedSelector
 from localization_training.pair_scorer import SparsePairScorer
+from localization_training.pair_measurement import (
+    PairMeasurementHead,
+    build_pair_geometry_features,
+    sample_local_correlation_patch,
+)
 from localization_training.sparse_frontend import (
     SparseMatchResult,
     build_pair_context_features,
     build_score_matrix,
     dual_softmax as shared_dual_softmax,
+    gather_aligned_pair_values,
     match_score_matrix,
     rank_keypoint_proposals,
     select_match_candidates,
+    select_match_candidates_with_geometry_refill,
 )
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scene.kpdetector import KpDetector, simple_nms
 from utils.graphics_utils import fov2focal
 from utils.image_utils import get_resolution_from_longest_edge
-from utils.pose_utils import cal_pose_error, solve_pose
+from utils.pose_utils import (
+    cal_pose_error,
+    covariance_weighted_pose_refinement,
+    solve_pose,
+)
+
+
+def select_candidate_validation_cameras(
+    cameras,
+    *,
+    query_ratio=0.2,
+    validation_ratio=0.25,
+    split_mode="temporal_block",
+    split_seed=2026,
+):
+    _, query_cameras = split_support_query_cameras(
+        list(cameras),
+        query_ratio=query_ratio,
+        seed=split_seed,
+        mode=split_mode,
+    )
+    _, validation_cameras = split_support_query_cameras(
+        query_cameras,
+        query_ratio=validation_ratio,
+        seed=split_seed + 1,
+        mode=split_mode,
+    )
+    return validation_cameras
 
 
 def candidate_frontend_mismatches(state_config, sparse_config):
@@ -629,6 +665,50 @@ def resolve_artifact_path(model_path, artifact_path, artifact_model_path=None):
     return os.path.join(root, artifact_path)
 
 
+def file_sha256(path, chunk_size=1024 * 1024):
+    if not path or not os.path.isfile(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(int(chunk_size)), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tensor_sha256(value):
+    tensor = torch.as_tensor(value).detach().contiguous().cpu()
+    digest = hashlib.sha256()
+    digest.update(str(tensor.dtype).encode("ascii"))
+    digest.update(str(tuple(tensor.shape)).encode("ascii"))
+    digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def landmark_feature_delta(reference, candidate):
+    reference = F.normalize(torch.as_tensor(reference).detach().float().reshape(reference.shape[0], -1), dim=1)
+    candidate = F.normalize(torch.as_tensor(candidate).detach().float().reshape(candidate.shape[0], -1), dim=1)
+    if reference.shape != candidate.shape:
+        raise ValueError(
+            "landmark feature tensors must have identical shapes: "
+            f"reference={tuple(reference.shape)} candidate={tuple(candidate.shape)}"
+        )
+    delta = torch.linalg.norm(candidate - reference, dim=1)
+    cosine = torch.sum(candidate * reference, dim=1)
+    return {
+        "l2_mean": float(delta.mean().item()) if delta.numel() else 0.0,
+        "l2_p95": float(torch.quantile(delta, 0.95).item()) if delta.numel() else 0.0,
+        "l2_max": float(delta.max().item()) if delta.numel() else 0.0,
+        "cosine_mean": float(cosine.mean().item()) if cosine.numel() else 1.0,
+    }
+
+
+def load_sparse_candidate_state(path):
+    state = torch.load(path, map_location="cpu")
+    if not isinstance(state, dict):
+        raise ValueError(f"Invalid sparse candidate state: {path}")
+    return state
+
+
 def validate_sampled_indices(sampled_idx, point_count):
     if isinstance(sampled_idx, torch.Tensor):
         idx = sampled_idx.detach().reshape(-1).to(dtype=torch.long)
@@ -656,7 +736,7 @@ def load_candidate_teacher_landmark_features(
     device=None,
     dtype=torch.float32,
 ):
-    state = torch.load(path, map_location="cpu")
+    state = load_sparse_candidate_state(path)
     if not isinstance(state, dict) or "landmark_features" not in state:
         raise ValueError(f"Invalid sparse candidate teacher state: {path}")
     expected_indices = torch.as_tensor(landmark_indices, dtype=torch.long).reshape(-1).cpu()
@@ -846,61 +926,128 @@ class STDLoc:
     def __init__(self, gaussians, config):
         self.gaussians = gaussians
         self.config = config
-
-        sampled_idx = pickle.load(
-            open(
-                resolve_artifact_path(
-                    config["model_path"],
-                    config["sparse"]["landmark_path"],
-                    config["sparse"].get("landmark_model_path"),
-                ),
-                "rb",
-            )
+        sparse_config = config["sparse"]
+        sampled_idx_path = resolve_artifact_path(
+            config["model_path"],
+            sparse_config["landmark_path"],
+            sparse_config.get("landmark_model_path"),
         )
+        with open(sampled_idx_path, "rb") as handle:
+            sampled_idx = pickle.load(handle)
         self.landmark_indices = validate_sampled_indices(sampled_idx, gaussians.get_xyz.shape[0]).detach().cpu()
         self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
-        candidate_state_path = config["sparse"].get(
-            "candidate_teacher_state_path",
-            config["sparse"].get("landmark_feature_path", ""),
+        map_features = self.landmarks.get_loc_feature.detach().clone()
+        map_features_flat = map_features.reshape(map_features.shape[0], -1)
+        legacy_state_path = sparse_config.get("candidate_teacher_state_path", "")
+        feature_override_path = sparse_config.get(
+            "landmark_feature_override_path",
+            sparse_config.get("landmark_feature_path", ""),
         )
+        override_landmark_features = bool(
+            sparse_config.get("override_landmark_features", False)
+        )
+        if override_landmark_features and not feature_override_path:
+            if legacy_state_path:
+                feature_override_path = legacy_state_path
+                warnings.warn(
+                    "Using legacy candidate_teacher_state_path as an explicit landmark "
+                    "feature override. Set landmark_feature_override_path instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            else:
+                raise ValueError(
+                    "override_landmark_features=true requires "
+                    "landmark_feature_override_path"
+                )
+        elif feature_override_path and not override_landmark_features:
+            warnings.warn(
+                "landmark feature override path is configured but "
+                "override_landmark_features=false; map checkpoint features remain active",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
         self.candidate_teacher_state = None
-        if candidate_state_path:
-            full_candidate_state_path = resolve_artifact_path(
+        self.landmark_feature_override_state = None
+        full_feature_override_path = None
+        if override_landmark_features:
+            full_feature_override_path = resolve_artifact_path(
                 config["model_path"],
-                candidate_state_path,
-                config["sparse"].get(
-                    "candidate_teacher_state_model_path",
-                    config["sparse"].get("landmark_model_path"),
+                feature_override_path,
+                sparse_config.get(
+                    "landmark_feature_override_model_path",
+                    sparse_config.get(
+                        "candidate_teacher_state_model_path",
+                        sparse_config.get("landmark_model_path"),
+                    ),
                 ),
             )
             current_features = self.landmarks.get_loc_feature
             current_flat = current_features.reshape(current_features.shape[0], -1)
-            override, self.candidate_teacher_state = load_candidate_teacher_landmark_features(
-                full_candidate_state_path,
+            override, self.landmark_feature_override_state = load_candidate_teacher_landmark_features(
+                full_feature_override_path,
                 self.landmark_indices,
                 expected_feature_dim=current_flat.shape[1],
                 device=current_features.device,
                 dtype=current_features.dtype,
             )
             self.landmarks._loc_feature = override.reshape_as(current_features)
-        landmark_meta_path = config["sparse"].get("landmark_meta_path", "detector/landmark_meta.pt")
+
+        landmark_meta_path = sparse_config.get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
             config["model_path"],
             landmark_meta_path,
-            config["sparse"].get("landmark_meta_model_path", config["sparse"].get("landmark_model_path")),
+            sparse_config.get("landmark_meta_model_path", sparse_config.get("landmark_model_path")),
         )
         self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
 
         self.pair_scorer = None
         self.pair_scorer_threshold = float(
-            config["sparse"].get("pair_scorer_threshold", 0.0)
+            sparse_config.get("pair_scorer_threshold", 0.0)
         )
-        if config["sparse"].get("use_candidate_pair_scorer", False):
+        pair_scorer_state_path = sparse_config.get("pair_scorer_state_path", "")
+        need_candidate_state = bool(
+            sparse_config.get("use_candidate_pair_scorer", False)
+            or sparse_config.get("use_candidate_dustbin", False)
+        )
+        if need_candidate_state:
+            if not pair_scorer_state_path:
+                pair_scorer_state_path = legacy_state_path
+                if pair_scorer_state_path:
+                    warnings.warn(
+                        "candidate_teacher_state_path is deprecated for scorer loading; "
+                        "set pair_scorer_state_path explicitly",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+            if not pair_scorer_state_path:
+                raise ValueError(
+                    "candidate scorer/dustbin requires pair_scorer_state_path"
+                )
+            full_pair_scorer_state_path = resolve_artifact_path(
+                config["model_path"],
+                pair_scorer_state_path,
+                sparse_config.get(
+                    "pair_scorer_state_model_path",
+                    sparse_config.get(
+                        "candidate_teacher_state_model_path",
+                        sparse_config.get("landmark_model_path"),
+                    ),
+                ),
+            )
+            self.candidate_teacher_state = load_sparse_candidate_state(
+                full_pair_scorer_state_path
+            )
+        else:
+            full_pair_scorer_state_path = None
+
+        if sparse_config.get("use_candidate_pair_scorer", False):
             if not isinstance(self.candidate_teacher_state, dict):
-                raise ValueError("candidate pair scorer requires a candidate teacher state")
+                raise ValueError("candidate pair scorer requires a pair scorer state")
             validate_candidate_frontend_compatibility(
                 self.candidate_teacher_state.get("config", {}),
-                config["sparse"],
+                sparse_config,
             )
             scorer_config = self.candidate_teacher_state.get("pair_scorer_config")
             scorer_state = self.candidate_teacher_state.get("pair_scorer_state_dict")
@@ -915,7 +1062,7 @@ class STDLoc:
             )
             self.pair_scorer.load_state_dict(scorer_state)
             self.pair_scorer.eval().cuda()
-            if config["sparse"].get(
+            if sparse_config.get(
                 "use_candidate_pair_scorer_calibrated_threshold", False
             ):
                 if "pair_scorer_threshold" not in self.candidate_teacher_state:
@@ -925,6 +1072,175 @@ class STDLoc:
                 self.pair_scorer_threshold = float(
                     self.candidate_teacher_state["pair_scorer_threshold"]
                 )
+
+        self.pair_measurement_head = None
+        self.pair_measurement_state = None
+        self.pair_measurement_threshold = float(
+            sparse_config.get("pair_measurement_threshold", 0.0)
+        )
+        full_pair_measurement_state_path = None
+        if sparse_config.get("use_pair_measurement", False):
+            if self.pair_scorer is not None:
+                raise ValueError(
+                    "pair measurement and legacy pair scorer cannot be enabled together"
+                )
+            pair_measurement_state_path = sparse_config.get(
+                "pair_measurement_state_path", ""
+            )
+            if not pair_measurement_state_path:
+                raise ValueError(
+                    "use_pair_measurement=true requires pair_measurement_state_path"
+                )
+            full_pair_measurement_state_path = resolve_artifact_path(
+                config["model_path"],
+                pair_measurement_state_path,
+                sparse_config.get(
+                    "pair_measurement_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            self.pair_measurement_state = load_sparse_candidate_state(
+                full_pair_measurement_state_path
+            )
+            validate_candidate_frontend_compatibility(
+                self.pair_measurement_state.get("config", {}),
+                sparse_config,
+            )
+            measurement_config = self.pair_measurement_state.get(
+                "pair_measurement_config"
+            )
+            measurement_state = self.pair_measurement_state.get(
+                "pair_measurement_state_dict"
+            )
+            if not isinstance(measurement_config, dict) or not isinstance(
+                measurement_state, dict
+            ):
+                raise ValueError(
+                    "pair measurement state does not contain a trained measurement head"
+                )
+            self.pair_measurement_head = PairMeasurementHead(
+                descriptor_dim=int(measurement_config["descriptor_dim"]),
+                pair_feature_dim=int(
+                    measurement_config.get("pair_feature_dim", 6)
+                ),
+                patch_radius=int(measurement_config.get("patch_radius", 2)),
+                hidden_dim=int(measurement_config.get("hidden_dim", 64)),
+                max_offset=float(measurement_config.get("max_offset", 2.0)),
+                covariance_floor=float(
+                    measurement_config.get("covariance_floor", 0.1)
+                ),
+                use_set_context=bool(
+                    measurement_config.get("use_set_context", False)
+                ),
+                use_geometry_context=bool(
+                    measurement_config.get("use_geometry_context", False)
+                ),
+            )
+            current_feature_dim = self.landmarks.get_loc_feature.reshape(
+                self.landmarks.get_loc_feature.shape[0], -1
+            ).shape[1]
+            if self.pair_measurement_head.descriptor_dim != current_feature_dim:
+                raise ValueError(
+                    "pair measurement descriptor dimension does not match map: "
+                    f"state={self.pair_measurement_head.descriptor_dim} "
+                    f"map={current_feature_dim}"
+                )
+            self.pair_measurement_head.load_state_dict(measurement_state)
+            self.pair_measurement_head.eval().cuda()
+            if sparse_config.get(
+                "use_pair_measurement_calibrated_threshold", False
+            ):
+                if "pair_measurement_threshold" not in self.pair_measurement_state:
+                    raise ValueError(
+                        "measurement state does not contain a held-out calibrated threshold"
+                    )
+                self.pair_measurement_threshold = float(
+                    self.pair_measurement_state["pair_measurement_threshold"]
+                )
+
+        active_features_flat = self.landmarks.get_loc_feature.detach().reshape(
+            self.landmarks.get_loc_feature.shape[0], -1
+        )
+        scorer_training_features = None
+        if isinstance(self.candidate_teacher_state, dict):
+            candidate_features = self.candidate_teacher_state.get("landmark_features")
+            if candidate_features is not None:
+                candidate_features = torch.as_tensor(candidate_features)
+                if candidate_features.numel() == active_features_flat.numel():
+                    scorer_training_features = candidate_features.reshape_as(
+                        active_features_flat.cpu()
+                    )
+        measurement_training_features = None
+        if isinstance(self.pair_measurement_state, dict):
+            candidate_features = self.pair_measurement_state.get(
+                "landmark_features"
+            )
+            if candidate_features is not None:
+                candidate_features = torch.as_tensor(candidate_features)
+                if candidate_features.numel() == active_features_flat.numel():
+                    measurement_training_features = candidate_features.reshape_as(
+                        active_features_flat.cpu()
+                    )
+        detector_path = resolve_artifact_path(
+            config["model_path"],
+            sparse_config["detector_path"],
+            sparse_config.get("detector_model_path"),
+        )
+        self.artifact_provenance = {
+            "map_model_path": str(config["model_path"]),
+            "map_checkpoint_path": config.get("_map_checkpoint_path"),
+            "map_checkpoint_sha256": file_sha256(config.get("_map_checkpoint_path")),
+            "sampled_idx_path": sampled_idx_path,
+            "sampled_idx_sha256": file_sha256(sampled_idx_path),
+            "landmark_indices_sha256": tensor_sha256(self.landmark_indices),
+            "map_landmark_features_sha256": tensor_sha256(map_features_flat),
+            "active_landmark_features_sha256": tensor_sha256(active_features_flat),
+            "override_landmark_features": override_landmark_features,
+            "landmark_feature_override_path": full_feature_override_path,
+            "landmark_feature_override_file_sha256": file_sha256(full_feature_override_path),
+            "pair_scorer_state_path": full_pair_scorer_state_path,
+            "pair_scorer_state_file_sha256": file_sha256(full_pair_scorer_state_path),
+            "pair_measurement_state_path": full_pair_measurement_state_path,
+            "pair_measurement_state_file_sha256": file_sha256(
+                full_pair_measurement_state_path
+            ),
+            "detector_path": detector_path,
+            "detector_file_sha256": file_sha256(detector_path),
+            "active_vs_map_feature_delta": landmark_feature_delta(
+                map_features_flat, active_features_flat
+            ),
+        }
+        if self.landmark_feature_override_state is not None:
+            override_state_features = self.landmark_feature_override_state.get(
+                "landmark_features"
+            )
+            if override_state_features is not None:
+                self.artifact_provenance["override_landmark_features_sha256"] = tensor_sha256(
+                    override_state_features
+                )
+        if scorer_training_features is not None:
+            self.artifact_provenance.update(
+                {
+                    "scorer_training_landmark_features_sha256": tensor_sha256(
+                        scorer_training_features
+                    ),
+                    "active_vs_scorer_training_feature_delta": landmark_feature_delta(
+                        scorer_training_features, active_features_flat.cpu()
+                    ),
+                }
+            )
+        if measurement_training_features is not None:
+            self.artifact_provenance.update(
+                {
+                    "measurement_training_landmark_features_sha256": tensor_sha256(
+                        measurement_training_features
+                    ),
+                    "active_vs_measurement_training_feature_delta": landmark_feature_delta(
+                        measurement_training_features,
+                        active_features_flat.cpu(),
+                    ),
+                }
+            )
 
         self.feature_extractor = FeatureExtractor(config["feature_type"]).cuda().eval()
         self.longest_edge = config["longest_edge"]
@@ -939,8 +1255,8 @@ class STDLoc:
             torch.load(
                 resolve_artifact_path(
                     config["model_path"],
-                    config["sparse"]["detector_path"],
-                    config["sparse"].get("detector_model_path"),
+                    sparse_config["detector_path"],
+                    sparse_config.get("detector_model_path"),
                 )
             )
         )
@@ -1157,7 +1473,123 @@ class STDLoc:
         candidate_refill_trigger_count = int(
             self.config["sparse"].get("candidate_refill_trigger_count", 0) or 0
         )
-        if self.pair_scorer is not None:
+        pair_measurement_fixed_candidate_count = int(
+            self.config["sparse"].get(
+                "pair_measurement_fixed_candidate_count", 0
+            )
+            or 0
+        )
+        selected_measurement_offsets = None
+        selected_measurement_covariance = None
+        pair_measurement_match_count_before = raw_match_count
+        if self.pair_measurement_head is not None:
+            matches = select_match_candidates(matches, threshold=match_threshold)
+            pair_measurement_match_count_before = int(matches.keypoint_idx.numel())
+            pair_features = build_pair_context_features(
+                similarity,
+                kp_scores_after_nms[kp_mask],
+                matches,
+                context_topk=self.config["sparse"].get("pair_context_topk", 8),
+                entropy_temperature=self.config["sparse"].get(
+                    "pair_context_entropy_temperature", 0.1
+                ),
+            )
+            sampled_query_features = sampled_features.T
+            sampled_flat_ids = torch.nonzero(kp_mask, as_tuple=False).reshape(-1)
+            sampled_keypoint_xy = torch.stack(
+                [sampled_flat_ids % W, sampled_flat_ids // W], dim=1
+            ).to(device=query_feature_map.device, dtype=query_feature_map.dtype)
+            local_patch = sample_local_correlation_patch(
+                query_feature_map,
+                sampled_keypoint_xy[matches.keypoint_idx],
+                landmark_features[matches.landmark_idx],
+                radius=self.pair_measurement_head.patch_radius,
+            )
+            measurement_output = self.pair_measurement_head(
+                pair_features,
+                local_patch,
+                sampled_query_features[matches.keypoint_idx],
+                landmark_features[matches.landmark_idx],
+                geometry_features=(
+                    build_pair_geometry_features(
+                        sampled_keypoint_xy[matches.keypoint_idx] + 0.5,
+                        self.landmarks.get_xyz[matches.landmark_idx],
+                        self.landmarks.get_xyz,
+                        (H, W),
+                    )
+                    if self.pair_measurement_head.use_geometry_context
+                    else None
+                ),
+            )
+            measurement_source_matches = SparseMatchResult(
+                matches.keypoint_idx,
+                matches.landmark_idx,
+                measurement_output.inlier_logits,
+            )
+            pair_measurement_refill_mode = self.config["sparse"].get(
+                "pair_measurement_refill_mode", "score"
+            )
+            selection_threshold = (
+                -float("inf")
+                if pair_measurement_fixed_candidate_count > 0
+                else self.pair_measurement_threshold
+            )
+            if pair_measurement_refill_mode == "geometry":
+                matches = select_match_candidates_with_geometry_refill(
+                    measurement_source_matches,
+                    sampled_keypoint_xy,
+                    self.landmarks.get_xyz,
+                    (H, W),
+                    threshold=selection_threshold,
+                    max_matches_per_keypoint=max_matches_per_keypoint,
+                    max_matches_per_landmark=max_matches_per_landmark,
+                    min_match_count=min_candidate_matches,
+                    refill_trigger_count=candidate_refill_trigger_count,
+                    grid_rows=self.config["sparse"].get(
+                        "pair_measurement_refill_grid_rows", 4
+                    ),
+                    grid_cols=self.config["sparse"].get(
+                        "pair_measurement_refill_grid_cols", 4
+                    ),
+                    voxel_size=self.config["sparse"].get(
+                        "pair_measurement_refill_voxel_size", 0.25
+                    ),
+                    spatial_weight=self.config["sparse"].get(
+                        "pair_measurement_refill_spatial_weight", 0.25
+                    ),
+                    voxel_weight=self.config["sparse"].get(
+                        "pair_measurement_refill_voxel_weight", 0.25
+                    ),
+                )
+            elif pair_measurement_refill_mode == "score":
+                matches = select_match_candidates(
+                    measurement_source_matches,
+                    threshold=selection_threshold,
+                    max_matches_per_keypoint=max_matches_per_keypoint,
+                    max_matches_per_landmark=max_matches_per_landmark,
+                    min_match_count=min_candidate_matches,
+                    refill_trigger_count=candidate_refill_trigger_count,
+                    max_match_count=pair_measurement_fixed_candidate_count,
+                )
+            else:
+                raise ValueError(
+                    "pair_measurement_refill_mode must be 'score' or 'geometry', "
+                    f"got {pair_measurement_refill_mode!r}"
+                )
+            selected_measurement_offsets = gather_aligned_pair_values(
+                measurement_source_matches,
+                matches,
+                measurement_output.offset,
+                landmark_features.shape[0],
+            )
+            selected_measurement_covariance = gather_aligned_pair_values(
+                measurement_source_matches,
+                matches,
+                measurement_output.covariance,
+                landmark_features.shape[0],
+            )
+            pair_scorer_match_count_before = raw_match_count
+        elif self.pair_scorer is not None:
             matches = select_match_candidates(matches, threshold=match_threshold)
             pair_scorer_match_count_before = int(matches.keypoint_idx.numel())
             pair_features = build_pair_context_features(
@@ -1204,6 +1636,7 @@ class STDLoc:
                 refill_trigger_count=candidate_refill_trigger_count,
             )
         pair_scorer_match_count_after = int(matches.keypoint_idx.numel())
+        pair_measurement_match_count_after = int(matches.keypoint_idx.numel())
         match_count_before_landmark_dedup = raw_match_count
         match_count_after_landmark_dedup = int(matches.landmark_idx.numel())
         im_idx = matches.keypoint_idx
@@ -1238,10 +1671,34 @@ class STDLoc:
         scores_matcher_raw = matcher_raw_matches.scores.detach().cpu().float()
 
         p2d = sampled_p2d_grid[im_idx.cpu()].float()
+        measurement_offset_norm_mean = 0.0
+        if selected_measurement_offsets is not None:
+            selected_measurement_offsets = (
+                selected_measurement_offsets.detach().cpu().float()
+            )
+            if selected_measurement_offsets.numel() > 0:
+                measurement_offset_norm_mean = float(
+                    torch.linalg.norm(selected_measurement_offsets, dim=1)
+                    .mean()
+                    .item()
+                )
+            if self.config["sparse"].get(
+                "use_pair_measurement_offset", True
+            ):
+                p2d = p2d + selected_measurement_offsets
+        if selected_measurement_covariance is not None:
+            selected_measurement_covariance = (
+                selected_measurement_covariance.detach().cpu().float()
+            )
         p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
         p2d_pre_selector = p2d.clone()
         p3d_pre_selector = p3d.clone()
         scores_pre_selector = val.detach().cpu().float().clone()
+        measurement_covariance_pre_selector = (
+            selected_measurement_covariance.clone()
+            if selected_measurement_covariance is not None
+            else None
+        )
         selector_indices = torch.arange(p2d.shape[0], dtype=torch.long)
         match_count_before_selector = int(p2d.shape[0])
         selector = _geometry_selector_from_config(self.config["sparse"], W, H)
@@ -1251,11 +1708,20 @@ class STDLoc:
             p2d = p2d[selected]
             p3d = p3d[selected]
             val = val.detach().cpu().float()[selected]
+            if selected_measurement_covariance is not None:
+                selected_measurement_covariance = selected_measurement_covariance[
+                    selected
+                ]
         match_count = int(p2d.shape[0])
 
         p2d = p2d.numpy()
         p3d = p3d.numpy()
         scores = val.detach().cpu().float().numpy() if torch.is_tensor(val) else np.asarray(val, dtype=np.float32)
+        measurement_covariance = (
+            selected_measurement_covariance.numpy()
+            if selected_measurement_covariance is not None
+            else None
+        )
 
         K = get_intrinsic(fovx, fovy, W, H)
 
@@ -1268,7 +1734,47 @@ class STDLoc:
             self.config["sparse"]["confidence"],
             self.config["sparse"]["max_iterations"],
             self.config["sparse"]["min_iterations"],
+            scores=scores,
+            progressive_sampling=(
+                self.pair_measurement_head is not None
+                and self.config["sparse"].get(
+                    "use_pair_measurement_progressive_sampling", False
+                )
+            ),
+            max_prosac_iterations=self.config["sparse"].get(
+                "pair_measurement_max_prosac_iterations", 100000
+            ),
         )
+        covariance_refinement_inliers = 0
+        if (
+            measurement_covariance is not None
+            and self.config["sparse"].get(
+                "use_pair_measurement_covariance_refinement", False
+            )
+            and inliers.shape[0] >= 4
+        ):
+            pose_w2c, covariance_inliers = covariance_weighted_pose_refinement(
+                p2d + 0.5,
+                p3d,
+                K,
+                pose_w2c,
+                measurement_covariance,
+                inliers,
+                iterations=self.config["sparse"].get(
+                    "pair_measurement_refinement_iterations", 10
+                ),
+                mahalanobis_threshold=self.config["sparse"].get(
+                    "pair_measurement_mahalanobis_threshold", 3.0
+                ),
+                robust_delta=self.config["sparse"].get(
+                    "pair_measurement_robust_delta", 2.5
+                ),
+                model_mismatch_floor_px=self.config["sparse"].get(
+                    "pair_measurement_covariance_model_floor_px", 1.0
+                ),
+            )
+            inliers = np.asarray(covariance_inliers, dtype=np.int64)
+            covariance_refinement_inliers = int(inliers.shape[0])
 
         if selector is not None and inliers.shape[0] >= 4:
             selected_inliers = selector.select_pose_informative_inliers(
@@ -1312,6 +1818,53 @@ class STDLoc:
             "sparse_diag_pair_scorer_enabled": float(self.pair_scorer is not None),
             "sparse_diag_pair_scorer_matches_before": pair_scorer_match_count_before,
             "sparse_diag_pair_scorer_matches_after": pair_scorer_match_count_after,
+            "sparse_diag_pair_measurement_enabled": float(
+                self.pair_measurement_head is not None
+            ),
+            "sparse_diag_pair_measurement_matches_before": (
+                pair_measurement_match_count_before
+            ),
+            "sparse_diag_pair_measurement_matches_after": (
+                pair_measurement_match_count_after
+            ),
+            "sparse_diag_pair_measurement_fixed_candidate_count": (
+                pair_measurement_fixed_candidate_count
+            ),
+            "sparse_diag_pair_measurement_geometry_refill_enabled": float(
+                self.config["sparse"].get(
+                    "pair_measurement_refill_mode", "score"
+                )
+                == "geometry"
+            ),
+            "sparse_diag_pair_measurement_offset_enabled": float(
+                self.pair_measurement_head is not None
+                and self.config["sparse"].get(
+                    "use_pair_measurement_offset", True
+                )
+            ),
+            "sparse_diag_pair_measurement_offset_norm_mean": (
+                measurement_offset_norm_mean
+            ),
+            "sparse_diag_pair_measurement_covariance_refinement_enabled": float(
+                measurement_covariance is not None
+                and self.config["sparse"].get(
+                    "use_pair_measurement_covariance_refinement", False
+                )
+            ),
+            "sparse_diag_pair_measurement_covariance_refinement_inliers": (
+                covariance_refinement_inliers
+            ),
+            "sparse_diag_pair_measurement_covariance_model_floor_px": float(
+                self.config["sparse"].get(
+                    "pair_measurement_covariance_model_floor_px", 1.0
+                )
+            ),
+            "sparse_diag_pair_measurement_progressive_sampling_enabled": float(
+                self.pair_measurement_head is not None
+                and self.config["sparse"].get(
+                    "use_pair_measurement_progressive_sampling", False
+                )
+            ),
             "sparse_diag_min_candidate_matches": min_candidate_matches,
             "sparse_diag_candidate_refill_trigger_count": candidate_refill_trigger_count,
             "sparse_diag_detector_offset_enabled": float(offset_heatmap is not None),
@@ -1359,6 +1912,12 @@ class STDLoc:
                 "p2d_matcher_raw": p2d_matcher_raw.numpy(),
                 "p3d_matcher_raw": p3d_matcher_raw.numpy(),
                 "scores_matcher_raw": scores_matcher_raw.numpy(),
+                "measurement_covariance": measurement_covariance,
+                "measurement_covariance_pre_selector": (
+                    measurement_covariance_pre_selector.numpy()
+                    if measurement_covariance_pre_selector is not None
+                    else None
+                ),
                 "K": K,
                 "width": int(W),
                 "height": int(H),
@@ -1566,8 +2125,21 @@ if __name__ == "__main__":
     parser.add_argument("--cfg", default=None, type=str)
     parser.add_argument("--prefix", default=None, type=str)
     parser.add_argument("--sparse_only", action="store_true")
+    parser.add_argument(
+        "--evaluation_camera_subset",
+        choices=["test", "candidate_validation"],
+        default="test",
+    )
+    parser.add_argument("--candidate_query_ratio", type=float, default=0.2)
+    parser.add_argument("--candidate_validation_ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--candidate_split_mode",
+        choices=["random", "sequence_block", "temporal_block"],
+        default="temporal_block",
+    )
+    parser.add_argument("--candidate_split_seed", type=int, default=2026)
     args = get_combined_args(parser)
-    args.eval = True
+    args.eval = args.evaluation_camera_subset == "test"
 
     if hasattr(args, "prefix"):
         output_path = f"results/{args.prefix}-{args.model_path.replace('/', '_')}-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -1602,13 +2174,34 @@ if __name__ == "__main__":
     config["feature_type"] = dataset.feature_type
     config["longest_edge"] = dataset.longest_edge
     config["model_path"] = dataset.model_path
+    if scene.loaded_iter:
+        config["_map_checkpoint_path"] = os.path.join(
+            dataset.model_path,
+            "point_cloud",
+            f"iteration_{scene.loaded_iter}",
+            "point_cloud.ply",
+        )
 
     yaml.dump(config, open(os.path.join(output_path, os.path.basename(args.cfg)), "w"))
 
     # loc main
     stdloc = STDLoc(gaussians, config)
 
-    test_cameras = scene.getTestCameras()
+    if args.evaluation_camera_subset == "candidate_validation":
+        test_cameras = select_candidate_validation_cameras(
+            scene.getTrainCameras(),
+            query_ratio=args.candidate_query_ratio,
+            validation_ratio=args.candidate_validation_ratio,
+            split_mode=args.candidate_split_mode,
+            split_seed=args.candidate_split_seed,
+        )
+        print(
+            "Candidate validation cameras: "
+            f"{len(test_cameras)} mode={args.candidate_split_mode} "
+            f"seed={args.candidate_split_seed}"
+        )
+    else:
+        test_cameras = scene.getTestCameras()
 
     results = []
     sparse_aes = []
@@ -1709,6 +2302,9 @@ if __name__ == "__main__":
                     dump_p2d = np.asarray(sparse_debug["p2d_pre_selector"])
                     dump_p3d = np.asarray(sparse_debug["p3d_pre_selector"])
                     dump_scores = np.asarray(sparse_debug["scores_pre_selector"])
+                    dump_covariance = sparse_debug.get(
+                        "measurement_covariance_pre_selector"
+                    )
                     dump_inliers = np.asarray(
                         sparse_debug.get("inliers_pre_selector", []), dtype=np.int64
                     ).reshape(-1)
@@ -1717,6 +2313,7 @@ if __name__ == "__main__":
                     dump_p2d = np.asarray(sparse_debug["p2d"])
                     dump_p3d = np.asarray(sparse_debug["p3d"])
                     dump_scores = np.asarray(sparse_debug["scores"])
+                    dump_covariance = sparse_debug.get("measurement_covariance")
                     dump_inliers = np.asarray(
                         sparse_debug["inliers"], dtype=np.int64
                     ).reshape(-1)
@@ -1737,6 +2334,11 @@ if __name__ == "__main__":
                             "p2d": dump_p2d[dump_idx].tolist(),
                             "p3d": dump_p3d[dump_idx].tolist(),
                             "scores": dump_scores[dump_idx].tolist(),
+                            "measurement_covariance": (
+                                np.asarray(dump_covariance)[dump_idx].tolist()
+                                if dump_covariance is not None
+                                else None
+                            ),
                             "inliers": dump_inliers.tolist(),
                             "K": np.asarray(sparse_debug["K"]).tolist(),
                             "width": int(sparse_debug["width"]),
@@ -1784,6 +2386,9 @@ if __name__ == "__main__":
 
     results_summary = {
         "model_path": dataset.model_path,
+        "evaluation_camera_subset": args.evaluation_camera_subset,
+        "evaluation_camera_count": len(test_cameras),
+        "artifact_provenance": stdloc.artifact_provenance,
         "sparse": {
             "median_ae": np.median(sparse_aes),
             "median_te": np.median(sparse_tes),

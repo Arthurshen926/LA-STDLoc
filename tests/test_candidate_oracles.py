@@ -84,3 +84,25 @@ def test_candidate_oracle_balanced_subset_respects_budget():
 
     assert selected.shape == (32,)
     assert np.unique(selected).shape[0] == 32
+
+
+def test_signed_residual_bias_detects_systematic_measurement_shift():
+    from scripts.eval_candidate_oracles import linearized_pose_bias, project_points
+
+    points = np.array(
+        [
+            [x, y, z]
+            for x in (-1.0, 0.0, 1.0)
+            for y in (-0.8, 0.2, 1.0)
+            for z in (4.0, 6.0)
+        ]
+    )
+    K = _camera()
+    pose = np.eye(4)
+    projected, _, valid = project_points(points, K, pose)
+    shifted = projected[valid] + np.array([1.0, 0.0])
+    bias = linearized_pose_bias(shifted, points[valid], K, pose)
+
+    assert bias["success"]
+    assert bias["translation_cm"] > 0.1
+    assert np.isfinite(bias["condition"])

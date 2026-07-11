@@ -936,6 +936,43 @@ class DetectorSoftTargetsTest(unittest.TestCase):
             "/tmp/scorer.pt",
         )
 
+    def test_detector_parser_accepts_pair_measurement_training_options(self):
+        from train_detector import build_arg_parser
+
+        parser = build_arg_parser()
+        args = parser.parse_args(
+            [
+                "--candidate_teacher_pair_measurement_init_path",
+                "/tmp/measurement.pt",
+                "--candidate_teacher_pair_measurement_lr",
+                "0.002",
+                "--candidate_teacher_pair_measurement_inlier_weight",
+                "1.0",
+                "--candidate_teacher_pair_measurement_nll_weight",
+                "0.5",
+                "--candidate_teacher_pair_measurement_hidden_dim",
+                "48",
+                "--candidate_teacher_pair_measurement_patch_radius",
+                "3",
+                "--candidate_teacher_pair_measurement_set_context",
+                "--candidate_teacher_pair_measurement_geometry_context",
+                "--candidate_teacher_freeze_pair_measurement",
+            ]
+        )
+
+        self.assertEqual(
+            args.candidate_teacher_pair_measurement_init_path,
+            "/tmp/measurement.pt",
+        )
+        self.assertEqual(args.candidate_teacher_pair_measurement_lr, 0.002)
+        self.assertEqual(args.candidate_teacher_pair_measurement_inlier_weight, 1.0)
+        self.assertEqual(args.candidate_teacher_pair_measurement_nll_weight, 0.5)
+        self.assertEqual(args.candidate_teacher_pair_measurement_hidden_dim, 48)
+        self.assertEqual(args.candidate_teacher_pair_measurement_patch_radius, 3)
+        self.assertTrue(args.candidate_teacher_pair_measurement_set_context)
+        self.assertTrue(args.candidate_teacher_pair_measurement_geometry_context)
+        self.assertTrue(args.candidate_teacher_freeze_pair_measurement)
+
     def test_detector_artifact_path_resolves_relative_to_model_root(self):
         import tempfile
         from pathlib import Path

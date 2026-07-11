@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 
@@ -198,3 +199,82 @@ def test_sparse_candidate_selection_only_refills_below_trigger():
 
     assert untouched.keypoint_idx.tolist() == [0, 1, 2]
     assert refilled.keypoint_idx.tolist() == [0, 1, 2, 3, 4]
+
+
+def test_sparse_candidate_selection_applies_fixed_top_count_after_quota():
+    from localization_training.sparse_frontend import (
+        SparseMatchResult,
+        select_match_candidates,
+    )
+
+    matches = SparseMatchResult(
+        keypoint_idx=torch.arange(6),
+        landmark_idx=torch.tensor([0, 0, 0, 1, 2, 3]),
+        scores=torch.tensor([0.2, 0.9, 0.8, 0.7, 0.6, 0.5]),
+    )
+    selected = select_match_candidates(
+        matches,
+        threshold=-float("inf"),
+        max_matches_per_landmark=2,
+        max_match_count=3,
+    )
+
+    assert selected.keypoint_idx.tolist() == [1, 2, 3]
+    assert selected.scores.tolist() == pytest.approx([0.9, 0.8, 0.7])
+
+
+def test_geometry_refill_prefers_new_image_and_voxel_support():
+    from localization_training.sparse_frontend import (
+        SparseMatchResult,
+        select_match_candidates_with_geometry_refill,
+    )
+
+    matches = SparseMatchResult(
+        keypoint_idx=torch.tensor([0, 1, 2]),
+        landmark_idx=torch.tensor([0, 1, 2]),
+        scores=torch.tensor([0.9, 0.8, 0.7]),
+    )
+    keypoint_xy = torch.tensor([[1.0, 1.0], [2.0, 2.0], [18.0, 18.0]])
+    landmark_xyz = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.01, 0.01, 0.01], [2.0, 2.0, 2.0]]
+    )
+
+    selected = select_match_candidates_with_geometry_refill(
+        matches,
+        keypoint_xy,
+        landmark_xyz,
+        (20, 20),
+        threshold=0.85,
+        min_match_count=2,
+        refill_trigger_count=2,
+        grid_rows=2,
+        grid_cols=2,
+        voxel_size=0.25,
+        spatial_weight=1.0,
+        voxel_weight=1.0,
+    )
+
+    assert selected.keypoint_idx.tolist() == [0, 2]
+
+
+def test_gather_aligned_pair_values_tracks_filtered_pairs():
+    from localization_training.sparse_frontend import (
+        SparseMatchResult,
+        gather_aligned_pair_values,
+    )
+
+    source = SparseMatchResult(
+        keypoint_idx=torch.tensor([2, 0, 1]),
+        landmark_idx=torch.tensor([3, 4, 2]),
+        scores=torch.tensor([0.2, 0.9, 0.7]),
+    )
+    target = SparseMatchResult(
+        keypoint_idx=torch.tensor([0, 2]),
+        landmark_idx=torch.tensor([4, 3]),
+        scores=torch.tensor([0.9, 0.2]),
+    )
+    values = torch.tensor([[20.0], [40.0], [12.0]])
+
+    gathered = gather_aligned_pair_values(source, target, values, landmark_count=8)
+
+    assert gathered[:, 0].tolist() == [40.0, 20.0]

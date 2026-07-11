@@ -190,6 +190,7 @@ def select_match_candidates(
     max_matches_per_landmark=0,
     min_match_count=0,
     refill_trigger_count=0,
+    max_match_count=0,
 ):
     """Apply score rejection and a landmark quota with an optional count floor."""
     limited = limit_matches_per_keypoint(matches, max_matches_per_keypoint)
@@ -204,11 +205,151 @@ def select_match_candidates(
         refill = torch.topk(limited.scores, target_count).indices
         keep = keep.clone()
         keep[refill] = True
+    max_match_count = max(int(max_match_count), 0)
+    accepted_count = int(keep.sum().item())
+    if max_match_count > 0 and accepted_count > max_match_count:
+        accepted_idx = torch.nonzero(keep, as_tuple=False).reshape(-1)
+        top_idx = torch.topk(
+            limited.scores[accepted_idx], max_match_count
+        ).indices
+        capped_keep = torch.zeros_like(keep)
+        capped_keep[accepted_idx[top_idx]] = True
+        keep = capped_keep
     return SparseMatchResult(
         limited.keypoint_idx[keep],
         limited.landmark_idx[keep],
         limited.scores[keep],
     )
+
+
+def select_match_candidates_with_geometry_refill(
+    matches,
+    keypoint_xy,
+    landmark_xyz,
+    image_size,
+    *,
+    threshold=-float("inf"),
+    max_matches_per_keypoint=0,
+    max_matches_per_landmark=0,
+    min_match_count=0,
+    refill_trigger_count=0,
+    grid_rows=4,
+    grid_cols=4,
+    voxel_size=0.25,
+    spatial_weight=0.25,
+    voxel_weight=0.25,
+):
+    """Refill a confidence-filtered set while preserving 2D/3D diversity."""
+    limited = limit_matches_per_keypoint(matches, max_matches_per_keypoint)
+    limited = limit_matches_per_landmark(limited, max_matches_per_landmark)
+    if limited.scores.numel() == 0:
+        return limited
+
+    keep = limited.scores > float(threshold)
+    target_count = min(max(int(min_match_count), 0), int(limited.scores.numel()))
+    accepted_count = int(keep.sum().item())
+    trigger_count = max(int(refill_trigger_count), 0) or target_count
+    if accepted_count >= trigger_count or accepted_count >= target_count:
+        return SparseMatchResult(
+            limited.keypoint_idx[keep],
+            limited.landmark_idx[keep],
+            limited.scores[keep],
+        )
+
+    keypoint_xy = torch.as_tensor(
+        keypoint_xy, device=limited.scores.device, dtype=limited.scores.dtype
+    ).reshape(-1, 2)
+    landmark_xyz = torch.as_tensor(
+        landmark_xyz, device=limited.scores.device, dtype=limited.scores.dtype
+    ).reshape(-1, 3)
+    if int(limited.keypoint_idx.max().item()) >= keypoint_xy.shape[0]:
+        raise ValueError("geometry refill keypoint index is out of range")
+    if int(limited.landmark_idx.max().item()) >= landmark_xyz.shape[0]:
+        raise ValueError("geometry refill landmark index is out of range")
+
+    height, width = (int(image_size[0]), int(image_size[1]))
+    grid_rows = max(int(grid_rows), 1)
+    grid_cols = max(int(grid_cols), 1)
+    pair_xy = keypoint_xy[limited.keypoint_idx]
+    grid_x = torch.floor(pair_xy[:, 0] * grid_cols / max(width, 1)).long()
+    grid_y = torch.floor(pair_xy[:, 1] * grid_rows / max(height, 1)).long()
+    grid_x = grid_x.clamp(0, grid_cols - 1)
+    grid_y = grid_y.clamp(0, grid_rows - 1)
+    grid_ids = grid_y * grid_cols + grid_x
+
+    voxel_size = max(float(voxel_size), 1e-6)
+    voxel_coordinates = torch.floor(
+        landmark_xyz[limited.landmark_idx] / voxel_size
+    ).long()
+    _, voxel_ids = torch.unique(
+        voxel_coordinates, dim=0, return_inverse=True
+    )
+    grid_counts = torch.bincount(
+        grid_ids[keep], minlength=grid_rows * grid_cols
+    ).to(dtype=limited.scores.dtype)
+    voxel_counts = torch.bincount(
+        voxel_ids[keep], minlength=int(voxel_ids.max().item()) + 1
+    ).to(dtype=limited.scores.dtype)
+
+    finite_scores = torch.isfinite(limited.scores)
+    normalized_scores = torch.zeros_like(limited.scores)
+    if bool(finite_scores.any()):
+        finite_values = limited.scores[finite_scores]
+        score_min = finite_values.min()
+        score_range = (finite_values.max() - score_min).clamp_min(1e-6)
+        normalized_scores[finite_scores] = (
+            limited.scores[finite_scores] - score_min
+        ) / score_range
+
+    refill_count = target_count - accepted_count
+    for _ in range(refill_count):
+        priority = (
+            normalized_scores
+            + float(spatial_weight)
+            / torch.sqrt(1.0 + grid_counts[grid_ids])
+            + float(voxel_weight)
+            / torch.sqrt(1.0 + voxel_counts[voxel_ids])
+        )
+        priority = priority.masked_fill(keep | ~finite_scores, -torch.inf)
+        selected = int(torch.argmax(priority).item())
+        if not bool(torch.isfinite(priority[selected]).item()):
+            break
+        keep[selected] = True
+        grid_counts[grid_ids[selected]] += 1.0
+        voxel_counts[voxel_ids[selected]] += 1.0
+
+    return SparseMatchResult(
+        limited.keypoint_idx[keep],
+        limited.landmark_idx[keep],
+        limited.scores[keep],
+    )
+
+
+def gather_aligned_pair_values(source_matches, target_matches, values, landmark_count):
+    """Gather per-pair values after score filtering/quota selection."""
+    if values.shape[0] != source_matches.keypoint_idx.numel():
+        raise ValueError("pair value count must match source matches")
+    if target_matches.keypoint_idx.numel() == 0:
+        return values[:0]
+    if source_matches.keypoint_idx.numel() == 0:
+        raise ValueError("target matches are not a subset of empty source matches")
+    landmark_count = int(landmark_count)
+    if landmark_count <= 0:
+        raise ValueError("landmark_count must be positive")
+    source_ids = source_matches.keypoint_idx.long() * landmark_count
+    source_ids = source_ids + source_matches.landmark_idx.long()
+    if torch.unique(source_ids).numel() != source_ids.numel():
+        raise ValueError("source matches contain duplicate query-landmark pairs")
+    target_ids = target_matches.keypoint_idx.long() * landmark_count
+    target_ids = target_ids + target_matches.landmark_idx.long()
+    sorted_ids, order = torch.sort(source_ids)
+    positions = torch.searchsorted(sorted_ids, target_ids)
+    valid = positions < sorted_ids.numel()
+    safe_positions = positions.clamp_max(max(sorted_ids.numel() - 1, 0))
+    valid = valid & (sorted_ids[safe_positions] == target_ids)
+    if not bool(valid.all()):
+        raise ValueError("target matches are not a subset of source matches")
+    return values[order[safe_positions]]
 
 
 def build_pair_context_features(

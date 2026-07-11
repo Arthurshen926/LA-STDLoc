@@ -80,6 +80,28 @@ class STDLocConfigPathTest(unittest.TestCase):
                     expected_feature_dim=2,
                 )
 
+    def test_artifact_hash_and_feature_delta_are_deterministic(self):
+        import tempfile
+        from pathlib import Path
+
+        import torch
+
+        from stdloc import file_sha256, landmark_feature_delta, tensor_sha256
+
+        features = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        changed = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+        self.assertEqual(tensor_sha256(features), tensor_sha256(features.clone()))
+        self.assertNotEqual(tensor_sha256(features), tensor_sha256(changed))
+        delta = landmark_feature_delta(features, changed)
+        self.assertAlmostEqual(delta["l2_mean"], 2 ** 0.5 / 2.0)
+        self.assertAlmostEqual(delta["cosine_mean"], 0.5)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.bin"
+            path.write_bytes(b"artifact")
+            self.assertEqual(file_sha256(path), file_sha256(path))
+            self.assertIsNone(file_sha256(Path(tmp) / "missing"))
+
     def test_topk_match_preserves_keypoint_ids_for_multiple_matches_per_row(self):
         import torch
 

@@ -4,7 +4,17 @@ import torch
 import torch.nn.functional as F
 
 from localization_training.correspondence import project_world_to_pixels
-from localization_training.pose_information import pose_jacobian_numeric
+from localization_training.absolute_set_risk import absolute_pose_set_risk
+from localization_training.pair_measurement import (
+    PairMeasurementOutput,
+    build_pair_geometry_features,
+    gaussian_measurement_nll,
+    sample_local_correlation_patch,
+)
+from localization_training.pose_information import (
+    pose_jacobian_analytic,
+    pose_jacobian_numeric,
+)
 from localization_training.sparse_frontend import (
     build_pair_context_features,
     build_score_matrix,
@@ -39,6 +49,12 @@ class SparseCandidateBatch:
     pair_scorer_valid_mask: torch.Tensor
     pair_scorer_reprojection_error: torch.Tensor
     pair_scorer_positive_jacobian: torch.Tensor
+    pair_measurement_inlier_logits: torch.Tensor
+    pair_measurement_offsets: torch.Tensor
+    pair_measurement_cholesky: torch.Tensor
+    pair_measurement_target_offsets: torch.Tensor
+    pair_measurement_jacobian: torch.Tensor
+    pair_measurement_geometry_valid_mask: torch.Tensor
     hard_negative_logits: torch.Tensor
     assignment_positive_similarity: torch.Tensor
     assignment_negative_similarity: torch.Tensor
@@ -65,6 +81,10 @@ class SparseCandidateLosses:
     matcher_reprojection_assignment: torch.Tensor
     pair_scorer: torch.Tensor
     pair_scorer_assignment: torch.Tensor
+    pair_measurement_inlier: torch.Tensor
+    pair_measurement_nll: torch.Tensor
+    pair_measurement_translation_bias: torch.Tensor
+    pair_measurement_translation_covariance: torch.Tensor
     matcher_translation_info: torch.Tensor
     translation_info: torch.Tensor
     detector_match: torch.Tensor
@@ -630,9 +650,11 @@ def build_sparse_candidate_batch(
     pose_damping=1e-4,
     dustbin_score=None,
     pair_scorer=None,
+    pair_measurement_head=None,
     pair_context_topk=8,
     detector_supervision_heatmap=None,
     keypoint_offset_map=None,
+    pair_measurement_accept_threshold=0.0,
     detector_offset_target_source="geometric_nearest",
     detector_target_source="geometric",
     detector_binary_target=False,
@@ -857,6 +879,39 @@ def build_sparse_candidate_batch(
         if pair_scorer is not None
         else similarity.new_empty(0)
     )
+    if pair_measurement_head is not None and predicted_keypoint_idx.numel() > 0:
+        pair_measurement_patch = sample_local_correlation_patch(
+            query_feature_map,
+            keypoint_xy[predicted_keypoint_idx],
+            scorer_landmark_features[predicted_landmark_idx],
+            radius=pair_measurement_head.patch_radius,
+        )
+        pair_measurement_output = pair_measurement_head(
+            pair_scorer_features,
+            pair_measurement_patch,
+            scorer_query_features[predicted_keypoint_idx],
+            scorer_landmark_features[predicted_landmark_idx],
+            geometry_features=(
+                build_pair_geometry_features(
+                    observed_xy[predicted_keypoint_idx],
+                    landmark_xyz[predicted_landmark_idx],
+                    landmark_xyz,
+                    (height, width),
+                )
+                if pair_measurement_head.use_geometry_context
+                else None
+            ),
+        )
+    else:
+        pair_measurement_output = PairMeasurementOutput(
+            similarity.new_empty(0),
+            similarity.new_empty((0, 2)),
+            similarity.new_empty((0, 2, 2)),
+        )
+    pair_measurement_target_offsets = (
+        projected_xy[predicted_landmark_idx]
+        - observed_xy[predicted_keypoint_idx]
+    )
     matcher_assignment_logits = _match_logits(
         similarity[predicted_keypoint_idx, predicted_landmark_idx],
         temperature=match_temperature,
@@ -974,6 +1029,24 @@ def build_sparse_candidate_batch(
         detector_positive = torch.zeros_like(keypoint_has_gt)
         scorer_correct = predicted_label & (pair_scorer_logits.detach() > 0.0)
         detector_positive[predicted_keypoint_idx[scorer_correct]] = True
+    elif detector_target_source == "measurement_accepted_correct":
+        if pair_measurement_output.inlier_logits.numel() == 0:
+            raise ValueError(
+                "measurement_accepted_correct detector targets require an active "
+                "pair measurement head"
+            )
+        detector_positive = torch.zeros_like(keypoint_has_gt)
+        measurement_correct = (
+            predicted_label
+            & predicted_valid
+            & (
+                pair_measurement_output.inlier_logits.detach()
+                > float(pair_measurement_accept_threshold)
+            )
+        )
+        detector_positive[
+            predicted_keypoint_idx[measurement_correct]
+        ] = True
     elif detector_target_source != "geometric":
         raise ValueError(f"Unknown detector target source: {detector_target_source}")
 
@@ -1076,10 +1149,90 @@ def build_sparse_candidate_batch(
                 "pair_scorer_ece": scorer_metrics["pair_ece"],
                 "pair_scorer_accepted_count": int(scorer_accepted.sum().item()),
                 "pair_scorer_accepted_gt_precision": float(
-                    scorer_correct.sum().item() / max(int(scorer_accepted.sum().item()), 1)
+                    scorer_correct.sum().item()
+                    / max(int(scorer_accepted.sum().item()), 1)
                 ),
                 "pair_scorer_correct_accept_recall": float(
                     scorer_correct.sum().item() / max(predicted_correct, 1)
+                ),
+            }
+        )
+    if pair_measurement_output.inlier_logits.numel() > 0:
+        measurement_metrics = _binary_classification_metrics(
+            pair_measurement_output.inlier_logits.detach(),
+            predicted_label,
+            predicted_valid,
+        )
+        positive_measurement = predicted_label & predicted_valid
+        measurement_endpoint_error = torch.linalg.norm(
+            pair_measurement_output.offset.detach()[positive_measurement]
+            - pair_measurement_target_offsets[positive_measurement],
+            dim=1,
+        )
+        measurement_residual = (
+            pair_measurement_output.offset.detach()[positive_measurement]
+            - pair_measurement_target_offsets[positive_measurement]
+        )
+        measurement_cholesky = pair_measurement_output.cholesky.detach()[
+            positive_measurement
+        ]
+        if measurement_residual.numel() > 0:
+            whitened = torch.linalg.solve_triangular(
+                measurement_cholesky,
+                measurement_residual.unsqueeze(-1),
+                upper=False,
+            ).squeeze(-1)
+            whitened_squared = whitened.square().sum(dim=1)
+            covariance = measurement_cholesky @ measurement_cholesky.transpose(
+                -1, -2
+            )
+            sigma = torch.diagonal(covariance, dim1=-2, dim2=-1).sqrt()
+            signed_bias = measurement_residual.mean(dim=0)
+        else:
+            whitened_squared = measurement_endpoint_error
+            sigma = measurement_residual
+            signed_bias = measurement_residual.new_zeros(2)
+        pair_metrics.update(
+            {
+                "pair_measurement_ap": measurement_metrics["pair_ap"],
+                "pair_measurement_auroc": measurement_metrics["pair_auroc"],
+                "pair_measurement_ece": measurement_metrics["pair_ece"],
+                "pair_measurement_offset_epe_mean": float(
+                    measurement_endpoint_error.mean().item()
+                    if measurement_endpoint_error.numel()
+                    else 0.0
+                ),
+                "pair_measurement_offset_epe_p95": float(
+                    torch.quantile(measurement_endpoint_error, 0.95).item()
+                    if measurement_endpoint_error.numel()
+                    else 0.0
+                ),
+                "pair_measurement_corrected_signed_bias_x_px": float(
+                    signed_bias[0].item()
+                ),
+                "pair_measurement_corrected_signed_bias_y_px": float(
+                    signed_bias[1].item()
+                ),
+                "pair_measurement_corrected_signed_bias_norm_px": float(
+                    torch.linalg.norm(signed_bias).item()
+                ),
+                "pair_measurement_whitened_squared_mean": float(
+                    whitened_squared.mean().item()
+                    if whitened_squared.numel()
+                    else 0.0
+                ),
+                "pair_measurement_coverage_68": float(
+                    (whitened_squared <= 2.30).float().mean().item()
+                    if whitened_squared.numel()
+                    else 0.0
+                ),
+                "pair_measurement_coverage_95": float(
+                    (whitened_squared <= 5.99).float().mean().item()
+                    if whitened_squared.numel()
+                    else 0.0
+                ),
+                "pair_measurement_sigma_mean_px": float(
+                    sigma.mean().item() if sigma.numel() else 0.0
                 ),
             }
         )
@@ -1113,6 +1266,20 @@ def build_sparse_candidate_batch(
             ).detach()
             if bool(predicted_label.any())
             else similarity.new_zeros((0, 2, 6))
+        )
+        pair_measurement_jacobian = (
+            pose_jacobian_analytic(
+                landmark_xyz[predicted_landmark_idx],
+                K,
+                pose_gt_w2c,
+            ).detach()
+            if predicted_landmark_idx.numel() > 0
+            else similarity.new_zeros((0, 2, 6))
+        )
+        pair_measurement_geometry_valid_mask = (
+            predicted_valid
+            & visible[predicted_landmark_idx]
+            & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
         )
 
     diagnostics = {
@@ -1242,6 +1409,14 @@ def build_sparse_candidate_batch(
         pair_scorer_valid_mask=predicted_valid,
         pair_scorer_reprojection_error=predicted_error,
         pair_scorer_positive_jacobian=pair_scorer_positive_jacobian,
+        pair_measurement_inlier_logits=pair_measurement_output.inlier_logits,
+        pair_measurement_offsets=pair_measurement_output.offset,
+        pair_measurement_cholesky=pair_measurement_output.cholesky,
+        pair_measurement_target_offsets=pair_measurement_target_offsets,
+        pair_measurement_jacobian=pair_measurement_jacobian,
+        pair_measurement_geometry_valid_mask=(
+            pair_measurement_geometry_valid_mask
+        ),
         hard_negative_logits=hard_negative_logits,
         assignment_positive_similarity=assignment_positive_similarity,
         assignment_negative_similarity=assignment_negative_similarity,
@@ -1265,6 +1440,8 @@ def sparse_candidate_losses(
     assignment_temperature=0.05,
     assignment_margin=0.05,
     reprojection_sigma_px=1.0,
+    set_risk_residual_clip_px=32.0,
+    set_risk_reference_translation_m=0.01,
 ):
     pair_loss = _balanced_focal_bce(
         batch.pair_logits,
@@ -1316,6 +1493,47 @@ def sparse_candidate_losses(
         batch.pair_scorer_labels,
         batch.pair_scorer_valid_mask,
         batch.pair_scorer_keypoint_idx,
+    )
+    pair_measurement_inlier_loss = _balanced_focal_bce(
+        batch.pair_measurement_inlier_logits,
+        batch.pair_scorer_labels,
+        valid_mask=batch.pair_scorer_valid_mask,
+    )
+    pair_measurement_positive = (
+        (batch.pair_scorer_labels > 0.5) & batch.pair_scorer_valid_mask
+    )
+    pair_measurement_nll_loss = gaussian_measurement_nll(
+        batch.pair_measurement_target_offsets,
+        PairMeasurementOutput(
+            batch.pair_measurement_inlier_logits,
+            batch.pair_measurement_offsets,
+            batch.pair_measurement_cholesky,
+        ),
+        valid_mask=pair_measurement_positive,
+    )
+    pair_measurement_residual = (
+        batch.pair_measurement_offsets - batch.pair_measurement_target_offsets
+        if batch.pair_measurement_offsets.numel() > 0
+        else batch.pair_measurement_offsets
+    )
+    if pair_measurement_residual.numel() > 0:
+        residual_norm = torch.linalg.norm(
+            pair_measurement_residual, dim=1, keepdim=True
+        ).clamp_min(1e-8)
+        residual_scale = (
+            float(set_risk_residual_clip_px) / residual_norm
+        ).clamp_max(1.0)
+        pair_measurement_residual = pair_measurement_residual * residual_scale
+    set_risk_pair_count = pair_measurement_residual.shape[0]
+    set_risk = absolute_pose_set_risk(
+        batch.pair_measurement_jacobian[:set_risk_pair_count],
+        pair_measurement_residual,
+        batch.pair_measurement_cholesky,
+        batch.pair_measurement_inlier_logits,
+        valid_mask=batch.pair_measurement_geometry_valid_mask[
+            :set_risk_pair_count
+        ],
+        reference_translation_m=set_risk_reference_translation_m,
     )
     matcher_positive = batch.pair_scorer_labels > 0.5
     matcher_translation_weights = torch.sigmoid(
@@ -1384,6 +1602,25 @@ def sparse_candidate_losses(
             for key, value in matcher_translation_diagnostics.items()
         }
     )
+    batch.diagnostics.update(
+        {
+            "pair_measurement_set_bias_m": float(
+                set_risk.translation_bias_m.detach().item()
+            ),
+            "pair_measurement_set_covariance_trace_m2": float(
+                set_risk.translation_covariance_trace_m2.detach().item()
+            ),
+            "pair_measurement_set_covariance_logdet": float(
+                set_risk.translation_covariance_logdet.detach().item()
+            ),
+            "pair_measurement_set_condition": float(
+                set_risk.condition_number.detach().item()
+            ),
+            "pair_measurement_set_effective_count": float(
+                set_risk.effective_pair_count.detach().item()
+            ),
+        }
+    )
     return SparseCandidateLosses(
         pair=pair_loss,
         hard_negative=hard_negative_loss,
@@ -1393,6 +1630,10 @@ def sparse_candidate_losses(
         matcher_reprojection_assignment=matcher_reprojection_assignment_loss,
         pair_scorer=pair_scorer_loss,
         pair_scorer_assignment=pair_scorer_assignment_loss,
+        pair_measurement_inlier=pair_measurement_inlier_loss,
+        pair_measurement_nll=pair_measurement_nll_loss,
+        pair_measurement_translation_bias=set_risk.translation_bias_loss,
+        pair_measurement_translation_covariance=set_risk.translation_trace_loss,
         matcher_translation_info=matcher_translation_info_loss,
         translation_info=translation_info_loss,
         detector_match=detector_loss,

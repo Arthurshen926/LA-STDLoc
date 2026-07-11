@@ -46,6 +46,11 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "123",
                     "--candidate_teacher_state_path",
                     "detector_la/candidate_teacher_state.pt",
+                    "--pair_scorer_state_path",
+                    "detector_la/pair_scorer_state.pt",
+                    "--landmark_feature_override_path",
+                    "detector_la/map_feature_state.pt",
+                    "--override_landmark_features",
                     "--detect_num",
                     "4096",
                     "--reprojection_error",
@@ -115,6 +120,19 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                 "detector_la/candidate_teacher_state.pt",
             )
             self.assertEqual(sparse["candidate_teacher_state_model_path"], "/tmp/model")
+            self.assertEqual(
+                sparse["pair_scorer_state_path"],
+                "detector_la/pair_scorer_state.pt",
+            )
+            self.assertEqual(sparse["pair_scorer_state_model_path"], "/tmp/model")
+            self.assertEqual(
+                sparse["landmark_feature_override_path"],
+                "detector_la/map_feature_state.pt",
+            )
+            self.assertEqual(
+                sparse["landmark_feature_override_model_path"], "/tmp/model"
+            )
+            self.assertTrue(sparse["override_landmark_features"])
             self.assertEqual(sparse["detect_num"], 4096)
             self.assertEqual(float(sparse["reprojection_error"]), 8.0)
             self.assertEqual(sparse["nms"], 2)
@@ -156,6 +174,15 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                 summary["candidate_teacher_state_path"],
                 "detector_la/candidate_teacher_state.pt",
             )
+            self.assertEqual(
+                summary["pair_scorer_state_path"],
+                "detector_la/pair_scorer_state.pt",
+            )
+            self.assertEqual(
+                summary["landmark_feature_override_path"],
+                "detector_la/map_feature_state.pt",
+            )
+            self.assertTrue(summary["override_landmark_features"])
             self.assertEqual(summary["nms"], 2)
             self.assertEqual(float(summary["match_threshold"]), 0.65)
             self.assertEqual(summary["match_topk"], 4)

@@ -13,11 +13,28 @@ def solve_pose(
     confidence=0.9999,
     max_iterations=100000,
     min_iterations=1000,
+    scores=None,
+    progressive_sampling=False,
+    max_prosac_iterations=100000,
 ):
+    p2d = np.asarray(p2d)
+    p3d = np.asarray(p3d)
     match_num = p2d.shape[0]
     if match_num < 4:
         print("[SKIP] No enough matches")
         return np.eye(4, dtype=np.float32), np.array([])
+
+    solver_to_input = np.arange(match_num, dtype=np.int64)
+    if progressive_sampling:
+        if scores is None:
+            raise ValueError("progressive pose sampling requires correspondence scores")
+        scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+        if scores.shape[0] != match_num:
+            raise ValueError("pose scores must match the correspondence count")
+        ranking_scores = np.where(np.isfinite(scores), scores, -np.inf)
+        solver_to_input = np.argsort(-ranking_scores, kind="stable")
+        p2d = p2d[solver_to_input]
+        p3d = p3d[solver_to_input]
 
     if solver == "opencv":
         success, rvec, tvec, inliers = cv2.solvePnPRansac(
@@ -34,7 +51,7 @@ def solve_pose(
             cv2.Rodrigues(rvec, w2c[:3, :3])
             w2c[:3, -1] = tvec.flatten()
             w2c = w2c.astype(np.float32)
-            inliers = np.array(inliers.flatten())
+            inliers = solver_to_input[np.asarray(inliers).reshape(-1)]
             return w2c, inliers
 
     elif solver == "poselib":
@@ -57,6 +74,8 @@ def solve_pose(
                 "min_iterations": min_iterations,
                 "max_reproj_error": max_reproj_error,
                 "success_prob": confidence,
+                "progressive_sampling": bool(progressive_sampling),
+                "max_prosac_iterations": int(max_prosac_iterations),
             },
             {
                 "verbose": False,
@@ -70,10 +89,104 @@ def solve_pose(
             )
             inliers = info["inliers"]
             indices = np.where(inliers)[0]
-            inliers = indices.reshape(-1, 1).astype(np.int32)
+            inliers = solver_to_input[indices].reshape(-1, 1).astype(np.int32)
             return w2c, inliers.flatten()
 
     return np.eye(4, dtype=np.float32), np.array([])
+
+
+def covariance_weighted_pose_refinement(
+    p2d,
+    p3d,
+    K,
+    initial_pose_w2c,
+    covariance,
+    inliers,
+    iterations=10,
+    mahalanobis_threshold=3.0,
+    robust_delta=2.5,
+    model_mismatch_floor_px=1.0,
+    damping=1e-6,
+):
+    """Refine a robust PnP hypothesis using pair-specific 2D covariance."""
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    covariance = np.asarray(covariance, dtype=np.float64).reshape(-1, 2, 2)
+    inliers = np.asarray(inliers, dtype=np.int64).reshape(-1)
+    valid_inliers = inliers[(inliers >= 0) & (inliers < p2d.shape[0])]
+    if p2d.shape[0] != p3d.shape[0] or covariance.shape[0] != p2d.shape[0]:
+        raise ValueError("p2d, p3d, and covariance must have the same count")
+    if valid_inliers.shape[0] < 4:
+        return np.asarray(initial_pose_w2c, dtype=np.float64), valid_inliers
+
+    covariance = 0.5 * (covariance + covariance.transpose(0, 2, 1))
+    model_mismatch_variance = max(float(model_mismatch_floor_px), 0.0) ** 2
+    covariance = covariance + np.eye(2, dtype=np.float64)[None] * (
+        model_mismatch_variance + 1e-8
+    )
+    pose = np.asarray(initial_pose_w2c, dtype=np.float64).reshape(4, 4)
+    rvec = cv2.Rodrigues(pose[:3, :3])[0].reshape(3)
+    tvec = pose[:3, 3].copy()
+
+    def project_and_whiten(indices):
+        projected, jacobian = cv2.projectPoints(
+            p3d[indices],
+            rvec,
+            tvec,
+            K,
+            np.zeros((4, 1), dtype=np.float64),
+        )
+        residual = p2d[indices] - projected.reshape(-1, 2)
+        jacobian = jacobian[:, :6].reshape(-1, 2, 6)
+        cholesky = np.linalg.cholesky(covariance[indices])
+        whitened_residual = np.linalg.solve(
+            cholesky, residual[..., None]
+        )[..., 0]
+        whitened_jacobian = np.linalg.solve(cholesky, jacobian)
+        return whitened_residual, whitened_jacobian
+
+    threshold = float(mahalanobis_threshold)
+    if np.isfinite(threshold) and threshold > 0.0:
+        residual, _ = project_and_whiten(valid_inliers)
+        mahalanobis = np.linalg.norm(residual, axis=1)
+        selected = valid_inliers[
+            np.isfinite(mahalanobis) & (mahalanobis <= threshold)
+        ]
+        if selected.shape[0] < 4:
+            selected = valid_inliers
+    else:
+        selected = valid_inliers
+
+    for _ in range(max(int(iterations), 0)):
+        residual, jacobian = project_and_whiten(selected)
+        radial = np.linalg.norm(residual, axis=1)
+        delta = float(robust_delta)
+        robust = (
+            np.minimum(1.0, delta / np.maximum(radial, 1e-8))
+            if delta > 0.0
+            else np.ones_like(radial)
+        )
+        scale = np.sqrt(robust)[:, None]
+        design = (jacobian * scale[:, :, None]).reshape(-1, 6)
+        target = (residual * scale).reshape(-1)
+        information = design.T @ design
+        information += np.eye(6, dtype=np.float64) * float(damping)
+        try:
+            step = np.linalg.solve(information, design.T @ target)
+        except np.linalg.LinAlgError:
+            step = np.linalg.pinv(information) @ (design.T @ target)
+        rvec += step[:3]
+        tvec += step[3:]
+        if np.linalg.norm(step) < 1e-9:
+            break
+
+    refined = np.eye(4, dtype=np.float64)
+    refined[:3, :3] = cv2.Rodrigues(rvec)[0]
+    refined[:3, 3] = tvec
+    if not np.isfinite(refined).all():
+        return pose, valid_inliers
+    return refined, selected
 
 
 def cal_pose_error(pred_w2c, gt_w2c):

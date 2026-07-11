@@ -4,9 +4,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy.stats import spearmanr
 from scipy.spatial import cKDTree
 
-from utils.pose_utils import cal_pose_error
+from utils.pose_utils import cal_pose_error, solve_pose
 
 
 def project_points(points, K, pose_w2c):
@@ -52,6 +53,138 @@ def deterministic_pnp(p2d, p3d, K):
     pose[:3, :3] = cv2.Rodrigues(rvec)[0]
     pose[:3, 3] = tvec.reshape(3)
     return pose, True
+
+
+def robust_pnp(
+    p2d,
+    p3d,
+    K,
+    solver="poselib",
+    reprojection_error=8.0,
+    confidence=0.9999,
+    max_iterations=100000,
+    min_iterations=1000,
+):
+    pose, inliers = solve_pose(
+        np.asarray(p2d, dtype=np.float64).reshape(-1, 2),
+        np.asarray(p3d, dtype=np.float64).reshape(-1, 3),
+        np.asarray(K, dtype=np.float64).reshape(3, 3),
+        solver,
+        float(reprojection_error),
+        float(confidence),
+        int(max_iterations),
+        int(min_iterations),
+    )
+    return np.asarray(pose, dtype=np.float64), np.asarray(inliers).reshape(-1)
+
+
+def covariance_weighted_refine(
+    initial_pose,
+    p2d,
+    p3d,
+    K,
+    gt_residual,
+    sigma_floor=0.25,
+    iterations=10,
+):
+    """Oracle refinement using GT residual magnitude as diagonal covariance."""
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    gt_residual = np.asarray(gt_residual, dtype=np.float64).reshape(-1, 2)
+    pose = np.asarray(initial_pose, dtype=np.float64).reshape(4, 4)
+    if p2d.shape[0] < 4:
+        return pose, False
+    rvec = cv2.Rodrigues(pose[:3, :3])[0].reshape(3)
+    tvec = pose[:3, 3].copy()
+    sigma = np.maximum(np.abs(gt_residual), float(sigma_floor))
+    inv_sigma = 1.0 / sigma
+    for _ in range(int(iterations)):
+        projected, jacobian = cv2.projectPoints(
+            p3d,
+            rvec,
+            tvec,
+            np.asarray(K, dtype=np.float64),
+            np.zeros((4, 1), dtype=np.float64),
+        )
+        projected = projected.reshape(-1, 2)
+        residual = p2d - projected
+        jacobian = jacobian[:, :6].reshape(-1, 2, 6)
+        radial = np.linalg.norm(residual * inv_sigma, axis=1)
+        robust = np.minimum(1.0, 2.5 / np.maximum(radial, 1e-8))
+        whiten = inv_sigma * np.sqrt(robust[:, None])
+        design = (jacobian * whiten[:, :, None]).reshape(-1, 6)
+        target = (residual * whiten).reshape(-1)
+        H = design.T @ design + np.eye(6, dtype=np.float64) * 1e-6
+        step = np.linalg.solve(H, design.T @ target)
+        rvec += step[:3]
+        tvec += step[3:]
+        if np.linalg.norm(step) < 1e-9:
+            break
+    refined = np.eye(4, dtype=np.float64)
+    refined[:3, :3] = cv2.Rodrigues(rvec)[0]
+    refined[:3, 3] = tvec
+    return refined, bool(np.isfinite(refined).all())
+
+
+def linearized_pose_bias(p2d, p3d, K, pose_w2c, weights=None, damping=1e-6):
+    """Estimate the physical pose bias induced by signed 2D residuals at GT."""
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    pose_w2c = np.asarray(pose_w2c, dtype=np.float64).reshape(4, 4)
+    projected, _, valid = project_points(p3d, K, pose_w2c)
+    valid &= np.isfinite(p2d).all(axis=1)
+    p2d = p2d[valid]
+    p3d = p3d[valid]
+    projected = projected[valid]
+    if weights is None:
+        weights = np.ones(p2d.shape[0], dtype=np.float64)
+    else:
+        weights = np.asarray(weights, dtype=np.float64).reshape(-1)[valid]
+    if p2d.shape[0] < 4:
+        return {
+            "success": False,
+            "translation_cm": float("nan"),
+            "rotation_deg": float("nan"),
+            "condition": float("nan"),
+        }
+
+    points_h = np.concatenate([p3d, np.ones((p3d.shape[0], 1))], axis=1)
+    camera = (pose_w2c @ points_h.T)[:3].T
+    residual = p2d - projected
+    H = np.eye(6, dtype=np.float64) * float(damping)
+    b = np.zeros(6, dtype=np.float64)
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    for (x, y, z), r, weight in zip(camera, residual, weights):
+        if z <= 1e-8 or not np.isfinite([x, y, z, weight]).all():
+            continue
+        dproj = np.array(
+            [[fx / z, 0.0, -fx * x / (z * z)], [0.0, fy / z, -fy * y / (z * z)]],
+            dtype=np.float64,
+        )
+        skew = np.array(
+            [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64
+        )
+        jacobian = dproj @ np.concatenate([np.eye(3), -skew], axis=1)
+        H += float(weight) * jacobian.T @ jacobian
+        b += float(weight) * jacobian.T @ r
+    try:
+        delta = np.linalg.solve(H, b)
+    except np.linalg.LinAlgError:
+        delta = np.linalg.pinv(H) @ b
+    update = np.eye(4, dtype=np.float64)
+    update[:3, :3] = cv2.Rodrigues(delta[3:])[0]
+    update[:3, 3] = delta[:3]
+    biased_pose = update @ pose_w2c
+    ae, te = cal_pose_error(biased_pose, pose_w2c)
+    eig = np.linalg.eigvalsh(0.5 * (H + H.T)).clip(1e-12, None)
+    return {
+        "success": bool(np.isfinite(delta).all()),
+        "translation_cm": float(te),
+        "rotation_deg": float(ae),
+        "condition": float(eig[-1] / eig[0]),
+        "delta": delta.tolist(),
+    }
 
 
 def pose_information(points, K, pose_w2c, damping=1e-6):
@@ -190,6 +323,38 @@ def pose_result(prefix, p2d, p3d, K, pose_gt):
     return result
 
 
+def robust_pose_result(prefix, p2d, p3d, K, pose_gt, args):
+    pose, inliers = robust_pnp(
+        np.asarray(p2d) + 0.5,
+        p3d,
+        K,
+        solver=args.solver,
+        reprojection_error=args.reprojection_error,
+        confidence=args.confidence,
+        max_iterations=args.max_iterations,
+        min_iterations=args.min_iterations,
+    )
+    success = inliers.shape[0] >= 4
+    ae, te = cal_pose_error(pose, pose_gt) if success else (float("inf"), float("inf"))
+    result = {
+        f"{prefix}_count": int(np.asarray(p2d).shape[0]),
+        f"{prefix}_inliers": int(inliers.shape[0]),
+        f"{prefix}_success": bool(success),
+        f"{prefix}_ae_deg": float(ae),
+        f"{prefix}_te_cm": float(te),
+    }
+    if inliers.shape[0] >= 4:
+        result.update(
+            {
+                f"{prefix}_{key}": value
+                for key, value in pose_information(
+                    np.asarray(p3d)[inliers], K, pose_gt
+                ).items()
+            }
+        )
+    return result
+
+
 def summarize(per_query):
     summary = {"query_count": len(per_query)}
     keys = sorted({key for item in per_query for key in item if key != "image_name"})
@@ -200,11 +365,31 @@ def summarize(per_query):
         if finite.size:
             summary[f"{key}_mean"] = float(finite.mean())
             summary[f"{key}_median"] = float(np.median(finite))
-    for prefix in ("o2_detector_oracle", "o3_clean", "o4_balanced"):
+    pose_prefixes = sorted(
+        {
+            key[: -len("_te_cm")]
+            for item in per_query
+            for key in item
+            if key.endswith("_te_cm")
+        }
+    )
+    for prefix in pose_prefixes:
         te = np.asarray([item.get(f"{prefix}_te_cm", np.inf) for item in per_query])
         ae = np.asarray([item.get(f"{prefix}_ae_deg", np.inf) for item in per_query])
         summary[f"{prefix}_r2"] = float(np.mean((te <= 2.0) & (ae <= 2.0)))
         summary[f"{prefix}_r5"] = float(np.mean((te <= 5.0) & (ae <= 5.0)))
+    bias = np.asarray(
+        [item.get("o6_linearized_bias_te_cm", np.nan) for item in per_query],
+        dtype=np.float64,
+    )
+    actual = np.asarray(
+        [item.get("actual_te_cm", np.nan) for item in per_query], dtype=np.float64
+    )
+    valid = np.isfinite(bias) & np.isfinite(actual)
+    if valid.sum() >= 3:
+        correlation = spearmanr(bias[valid], actual[valid])
+        summary["o6_bias_actual_te_spearman"] = float(correlation.statistic)
+        summary["o6_bias_actual_te_spearman_pvalue"] = float(correlation.pvalue)
     return summary
 
 
@@ -216,6 +401,13 @@ def evaluate(args):
         np.concatenate([np.asarray(record["p3d"], dtype=np.float32) for record in records], axis=0),
         axis=0,
     ).astype(np.float64)
+    result_by_name = {}
+    if args.results:
+        for item in json.loads(Path(args.results).read_text()):
+            result_by_name[item["image_name"]] = item
+    fixed_budgets = sorted(
+        {int(value) for value in str(args.fixed_budgets).split(",") if value.strip()}
+    )
     per_query = []
     for record in records:
         p2d = np.asarray(record["p2d"], dtype=np.float64)
@@ -240,8 +432,103 @@ def evaluate(args):
                 1.0 - np.unique(p3d, axis=0).shape[0] / max(p3d.shape[0], 1)
             ),
         }
+        actual = result_by_name.get(record["image_name"])
+        if actual is not None:
+            query["actual_te_cm"] = float(actual.get("sparse_TE", np.nan))
+            query["actual_ae_deg"] = float(actual.get("sparse_AE", np.nan))
+
         clean_p2d, clean_p3d, clean_scores = p2d[positive], p3d[positive], scores[positive]
+        query.update(pose_result("o1_delete_wrong", clean_p2d, clean_p3d, K, pose_gt))
         query.update(pose_result("o3_clean", clean_p2d, clean_p3d, K, pose_gt))
+
+        signed_corrected_p2d = p2d.copy()
+        signed_corrected_p2d[positive] = projected[positive] - 0.5
+        query.update(
+            robust_pose_result(
+                "o2_signed_residual",
+                signed_corrected_p2d,
+                p3d,
+                K,
+                pose_gt,
+                args,
+            )
+        )
+
+        initial_pose, initial_inliers = robust_pnp(
+            p2d + 0.5,
+            p3d,
+            K,
+            solver=args.solver,
+            reprojection_error=args.reprojection_error,
+            confidence=args.confidence,
+            max_iterations=args.max_iterations,
+            min_iterations=args.min_iterations,
+        )
+        covariance_pose, covariance_success = covariance_weighted_refine(
+            initial_pose,
+            clean_p2d + 0.5,
+            clean_p3d,
+            K,
+            (clean_p2d + 0.5) - projected[positive],
+            sigma_floor=args.covariance_floor_px,
+        )
+        covariance_ae, covariance_te = (
+            cal_pose_error(covariance_pose, pose_gt)
+            if covariance_success and initial_inliers.shape[0] >= 4
+            else (float("inf"), float("inf"))
+        )
+        query.update(
+            {
+                "o3_covariance_count": int(clean_p2d.shape[0]),
+                "o3_covariance_success": bool(covariance_success),
+                "o3_covariance_ae_deg": float(covariance_ae),
+                "o3_covariance_te_cm": float(covariance_te),
+            }
+        )
+
+        clean_residual = (clean_p2d + 0.5) - projected[positive]
+        if clean_residual.shape[0] > 0:
+            query.update(
+                {
+                    "o6_signed_residual_x_mean_px": float(clean_residual[:, 0].mean()),
+                    "o6_signed_residual_y_mean_px": float(clean_residual[:, 1].mean()),
+                    "o6_signed_residual_mean_norm_px": float(
+                        np.linalg.norm(clean_residual.mean(axis=0))
+                    ),
+                    "o6_residual_radial_mean_px": float(
+                        np.linalg.norm(clean_residual, axis=1).mean()
+                    ),
+                }
+            )
+        score_weights = 1.0 / (1.0 + np.exp(-np.clip(clean_scores, -20.0, 20.0)))
+        bias = linearized_pose_bias(
+            clean_p2d + 0.5,
+            clean_p3d,
+            K,
+            pose_gt,
+            weights=score_weights,
+        )
+        query.update(
+            {
+                "o6_linearized_bias_te_cm": bias["translation_cm"],
+                "o6_linearized_bias_ae_deg": bias["rotation_deg"],
+                "o6_linearized_bias_condition": bias["condition"],
+            }
+        )
+
+        score_order = np.argsort(-scores, kind="stable")
+        for budget in fixed_budgets:
+            fixed = score_order[: min(int(budget), score_order.shape[0])]
+            query.update(
+                robust_pose_result(
+                    f"o4_fixed_k{budget}",
+                    p2d[fixed],
+                    p3d[fixed],
+                    K,
+                    pose_gt,
+                    args,
+                )
+            )
         selected = balanced_subset(
             clean_p2d,
             clean_p3d,
@@ -284,7 +571,11 @@ def evaluate(args):
             "positive_radius_px": float(args.positive_radius_px),
             "negative_radius_px": float(args.negative_radius_px),
             "balanced_count": int(args.balanced_count),
+            "fixed_budgets": fixed_budgets,
             "oracle_bank_count": int(bank_xyz.shape[0]),
+            "solver": args.solver,
+            "reprojection_error": float(args.reprojection_error),
+            "covariance_floor_px": float(args.covariance_floor_px),
         },
         "summary": summarize(per_query),
         "queries": per_query,
@@ -302,6 +593,14 @@ def main():
     parser.add_argument("--positive_radius_px", type=float, default=2.0)
     parser.add_argument("--negative_radius_px", type=float, default=6.0)
     parser.add_argument("--balanced_count", type=int, default=512)
+    parser.add_argument("--fixed_budgets", default="256,512,1024,2048,4096")
+    parser.add_argument("--results", default="")
+    parser.add_argument("--solver", choices=["poselib", "opencv"], default="poselib")
+    parser.add_argument("--reprojection_error", type=float, default=8.0)
+    parser.add_argument("--confidence", type=float, default=0.9999)
+    parser.add_argument("--max_iterations", type=int, default=100000)
+    parser.add_argument("--min_iterations", type=int, default=1000)
+    parser.add_argument("--covariance_floor_px", type=float, default=0.25)
     evaluate(parser.parse_args())
 
 
