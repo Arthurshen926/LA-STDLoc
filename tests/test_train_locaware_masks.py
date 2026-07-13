@@ -56,6 +56,56 @@ class TrainLocawareMaskTest(unittest.TestCase):
         same = _refresh_geometry_anchor_if_point_count_changed(FakeGaussians(3), refreshed)
         self.assertIs(same, refreshed)
 
+    def test_geometry_anchor_refreshes_equal_count_mutation_by_node_id(self):
+        from train_locaware import (
+            _capture_geometry_anchor,
+            _refresh_geometry_anchor_if_point_count_changed,
+        )
+
+        class FakeGaussians:
+            def __init__(self, xyz, node_ids):
+                self._xyz = xyz
+                self._scaling = xyz + 100.0
+                self._rotation = torch.stack(
+                    [
+                        torch.tensor([float(value), 1.0, 0.0, 0.0])
+                        for value in xyz[:, 0]
+                    ]
+                )
+                self.loc_node_id = node_ids
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+        anchor = _capture_geometry_anchor(
+            FakeGaussians(
+                torch.tensor([[10.0, 0.0, 0.0], [20.0, 0.0, 0.0], [30.0, 0.0, 0.0]]),
+                torch.tensor([100, 101, 102]),
+            )
+        )
+        refreshed = _refresh_geometry_anchor_if_point_count_changed(
+            FakeGaussians(
+                torch.tensor([[200.0, 0.0, 0.0], [300.0, 0.0, 0.0], [400.0, 0.0, 0.0]]),
+                torch.tensor([101, 102, 103]),
+            ),
+            anchor,
+        )
+
+        self.assertEqual(refreshed["node_ids"].tolist(), [101, 102, 103])
+        self.assertTrue(
+            torch.equal(
+                refreshed["xyz"],
+                torch.tensor([[200.0, 0.0, 0.0], [300.0, 0.0, 0.0], [400.0, 0.0, 0.0]]),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                refreshed["scaling"],
+                torch.tensor([[300.0, 100.0, 100.0], [400.0, 100.0, 100.0], [500.0, 100.0, 100.0]]),
+            )
+        )
+
     def test_geometry_step_delta_skips_point_count_changes(self):
         from train_locaware import _record_geometry_optimizer_diagnostics
 
@@ -1498,6 +1548,33 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertTrue(torch.allclose(rgb_feature.grad, torch.tensor([11.0])))
         self.assertAlmostEqual(summary["geometry_xyz_full_grad_abs_max"], 23.0)
         self.assertAlmostEqual(summary["geometry_xyz_isolated_grad_abs_max"], 16.0)
+
+    def test_isolated_diff_pnp_geometry_backward_keeps_rgb_scaffold_and_drops_other_xyz_grad(self):
+        from train_locaware import _backward_with_optional_isolated_xyz_grad
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.nn.Parameter(torch.tensor([1.0]))
+
+        gaussians = FakeGaussians()
+        rgb_feature = torch.nn.Parameter(torch.tensor([2.0]))
+        loc_feature = torch.nn.Parameter(torch.tensor([3.0]))
+        rgb_scaffold = 7.0 * gaussians._xyz + 11.0 * rgb_feature
+        direct_feature_loss = 13.0 * gaussians._xyz + 17.0 * loc_feature
+        diff_pnp_loss = 3.0 * gaussians._xyz + 5.0 * loc_feature
+        total_loss = rgb_scaffold + direct_feature_loss + diff_pnp_loss
+
+        _backward_with_optional_isolated_xyz_grad(
+            total_loss,
+            diff_pnp_loss,
+            gaussians,
+            isolate_xyz_grad=True,
+            isolated_xyz_scaffold_loss=rgb_scaffold,
+        )
+
+        self.assertTrue(torch.allclose(gaussians._xyz.grad, torch.tensor([10.0])))
+        self.assertTrue(torch.allclose(rgb_feature.grad, torch.tensor([11.0])))
+        self.assertTrue(torch.allclose(loc_feature.grad, torch.tensor([22.0])))
 
     def test_lafgs_geometry_gradient_clip_clamps_geometry_params(self):
         from train_locaware import _clip_lafgs_geometry_gradients

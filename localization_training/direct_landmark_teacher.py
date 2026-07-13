@@ -55,6 +55,25 @@ def gaussian_localization_xyz(gaussians):
     return gaussians.get_xyz
 
 
+def stable_landmark_memory_indices(gaussians, full_indices):
+    """Map mutable Gaussian rows to stable source keys for multi-view memory."""
+    full_indices = torch.as_tensor(full_indices, dtype=torch.long).reshape(-1)
+    source_index = getattr(gaussians, "loc_source_index", None)
+    if not torch.is_tensor(source_index) or source_index.numel() == 0:
+        return full_indices
+    source_index = source_index.detach().to(dtype=torch.long)
+    full_indices = full_indices.to(device=source_index.device)
+    in_range = (full_indices >= 0) & (full_indices < source_index.numel())
+    stable = full_indices.clone()
+    mapped = source_index[full_indices[in_range]]
+    stable[in_range] = torch.where(
+        mapped >= 0,
+        mapped,
+        full_indices[in_range],
+    )
+    return stable
+
+
 def project_landmarks_to_query(xyz, K, pose_w2c, height, width, eps=1e-8):
     if xyz.numel() == 0:
         empty_uv = xyz.new_zeros((0, 2))
@@ -543,6 +562,7 @@ def full_bank_bimnn_loss(
     weights=None,
     ignore_bank_mask=None,
     positive_bank_mask=None,
+    chunk_size=None,
 ):
     query = F.normalize(query_features.reshape(query_features.shape[0], -1), p=2, dim=-1)
     bank = F.normalize(bank_features.reshape(bank_features.shape[0], -1), p=2, dim=-1)
@@ -554,49 +574,79 @@ def full_bank_bimnn_loss(
     if query.numel() == 0 or bank.numel() == 0 or positive_bank_indices.numel() == 0:
         return query_features.new_tensor(0.0)
     valid = (positive_bank_indices >= 0) & (positive_bank_indices < bank.shape[0])
-    if not valid.any():
+    if not bool(valid.any().item()):
         return query_features.new_tensor(0.0)
-    query = query[valid]
-    positive_bank_indices = positive_bank_indices[valid]
+    valid_rows = torch.nonzero(valid, as_tuple=False).squeeze(1)
+    query = query[valid_rows]
+    positive_bank_indices = positive_bank_indices[valid_rows]
+    bank_count = int(bank.shape[0])
     if ignore_bank_mask is not None:
-        ignore_bank_mask = torch.as_tensor(ignore_bank_mask, dtype=torch.bool, device=query.device)
-        ignore_bank_mask = ignore_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
-    else:
-        ignore_bank_mask = None
+        ignore_bank_mask = torch.as_tensor(
+            ignore_bank_mask,
+            dtype=torch.bool,
+            device=query.device,
+        ).reshape(-1, bank_count)
     if positive_bank_mask is not None:
-        positive_bank_mask = torch.as_tensor(positive_bank_mask, dtype=torch.bool, device=query.device)
-        positive_bank_mask = positive_bank_mask.reshape(-1, bank.shape[0])[valid].clone()
-    else:
-        positive_bank_mask = torch.zeros((query.shape[0], bank.shape[0]), dtype=torch.bool, device=query.device)
+        positive_bank_mask = torch.as_tensor(
+            positive_bank_mask,
+            dtype=torch.bool,
+            device=query.device,
+        ).reshape(-1, bank_count)
     temperature = max(float(temperature), 1e-6)
+    if chunk_size is None or int(chunk_size) <= 0:
+        chunk_size = int(query.shape[0])
+    chunk_size = max(1, int(chunk_size))
 
-    query_to_bank = query @ bank.T / temperature
     query_ids = torch.arange(query.shape[0], dtype=torch.long, device=query.device)
-    positive_bank_mask[query_ids, positive_bank_indices] = True
-    if ignore_bank_mask is not None:
-        ignore_bank_mask = ignore_bank_mask & ~positive_bank_mask
-        query_to_bank = query_to_bank.masked_fill(ignore_bank_mask, -torch.inf)
-    positive_logits = query_to_bank.masked_fill(~positive_bank_mask, -torch.inf)
-    query_loss = -(torch.logsumexp(positive_logits, dim=1) - torch.logsumexp(query_to_bank, dim=1))
-
     positive_bank = bank[positive_bank_indices]
     bank_to_query = positive_bank @ query.T / temperature
     bank_loss = F.cross_entropy(bank_to_query, query_ids, reduction="none")
-    per_item = query_loss + bank_loss
 
-    if int(hard_negative_topk) > 0 and bank.shape[0] > 1:
-        raw_scores = query @ bank.T
-        scores = raw_scores.masked_fill(positive_bank_mask, -torch.inf)
+    query_losses = []
+    for local_rows in query_ids.split(chunk_size):
+        source_rows = valid_rows[local_rows]
+        if positive_bank_mask is None:
+            positive_mask = torch.zeros(
+                (int(local_rows.numel()), bank_count),
+                dtype=torch.bool,
+                device=query.device,
+            )
+        else:
+            positive_mask = positive_bank_mask[source_rows].clone()
+        chunk_ids = torch.arange(local_rows.numel(), dtype=torch.long, device=query.device)
+        positive_mask[chunk_ids, positive_bank_indices[local_rows]] = True
+
+        query_to_bank = query[local_rows] @ bank.T / temperature
+        ignore_mask = None
         if ignore_bank_mask is not None:
-            scores = scores.masked_fill(ignore_bank_mask, -torch.inf)
-        topk = min(int(hard_negative_topk), max(1, bank.shape[0] - 1))
-        hard_neg = torch.topk(scores, k=topk, dim=1).values
-        pos = raw_scores.masked_fill(~positive_bank_mask, -torch.inf).max(dim=1, keepdim=True).values
-        hard_loss = F.relu(float(hard_negative_margin) + hard_neg - pos).mean(dim=1)
-        per_item = per_item + hard_loss
+            ignore_mask = ignore_bank_mask[source_rows] & ~positive_mask
+            query_to_bank = query_to_bank.masked_fill(ignore_mask, -torch.inf)
+        positive_logits = query_to_bank.masked_fill(~positive_mask, -torch.inf)
+        chunk_loss = -(
+            torch.logsumexp(positive_logits, dim=1)
+            - torch.logsumexp(query_to_bank, dim=1)
+        )
+
+        if int(hard_negative_topk) > 0 and bank_count > 1:
+            raw_scores = query[local_rows] @ bank.T
+            scores = raw_scores.masked_fill(positive_mask, -torch.inf)
+            if ignore_mask is not None:
+                scores = scores.masked_fill(ignore_mask, -torch.inf)
+            topk = min(int(hard_negative_topk), max(1, bank_count - 1))
+            hard_neg = torch.topk(scores, k=topk, dim=1).values
+            pos = raw_scores.masked_fill(~positive_mask, -torch.inf).max(
+                dim=1,
+                keepdim=True,
+            ).values
+            chunk_loss = chunk_loss + F.relu(
+                float(hard_negative_margin) + hard_neg - pos
+            ).mean(dim=1)
+        query_losses.append(chunk_loss)
+
+    per_item = torch.cat(query_losses, dim=0) + bank_loss
 
     if weights is not None:
-        weights = weights.to(device=per_item.device, dtype=per_item.dtype).reshape(-1)[valid]
+        weights = weights.to(device=per_item.device, dtype=per_item.dtype).reshape(-1)[valid_rows]
         return (per_item * weights).sum() / weights.sum().clamp_min(1e-6)
     return per_item.mean()
 
@@ -1184,14 +1234,31 @@ def direct_landmark_teacher(
             }
         )
     if multiview_memory is not None:
-        multiview_positive_count = multiview_memory.positive_count(selected_full_idx).to(
+        memory_landmark_indices = stable_landmark_memory_indices(
+            gaussians,
+            selected_full_idx,
+        )
+        multiview_positive_count = multiview_memory.positive_count(
+            memory_landmark_indices
+        ).to(
             device=query_feature_map.device,
             dtype=torch.float32,
+        )
+        unique_memory_sources = torch.unique(memory_landmark_indices)
+        diagnostics.update(
+            {
+                "multiview_memory_key_count": int(memory_landmark_indices.numel()),
+                "multiview_memory_unique_source_count": int(unique_memory_sources.numel()),
+                "multiview_memory_shared_source_count": int(
+                    memory_landmark_indices.numel()
+                    - unique_memory_sources.numel()
+                ),
+            }
         )
         multiview_loss = multiview_contrastive_landmark_loss(
             gaussian_features,
             query_features,
-            selected_full_idx,
+            memory_landmark_indices,
             target_uv=selected_uv,
             memory=multiview_memory,
             temperature=multiview_temperature,
@@ -1264,6 +1331,7 @@ def direct_landmark_teacher(
             weights=full_bank_weights,
             ignore_bank_mask=ignore_bank_mask,
             positive_bank_mask=positive_bank_mask,
+            chunk_size=full_bank_stats_chunk_size,
         )
         clean_hn_weight = max(0.0, float(full_bank_clean_hard_negative_weight))
         if clean_hn_weight > 0.0:
@@ -1344,7 +1412,7 @@ def direct_landmark_teacher(
         camera_distances = view_delta.norm(dim=-1)
         view_directions = F.normalize(view_delta, p=2, dim=-1)
         multiview_memory.update(
-            selected_full_idx,
+            memory_landmark_indices,
             query_features.detach(),
             view_directions=view_directions.detach(),
             confidences=positive_prob.detach(),

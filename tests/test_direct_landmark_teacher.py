@@ -4,6 +4,85 @@ import torch
 
 
 class DirectLandmarkTeacherTest(unittest.TestCase):
+    def test_multiview_memory_indices_follow_source_lineage_after_row_reorder(self):
+        from localization_training.direct_landmark_teacher import (
+            stable_landmark_memory_indices,
+        )
+
+        gaussians = type(
+            "FakeGaussians",
+            (),
+            {"loc_source_index": torch.tensor([10, 20, 20, 30])},
+        )()
+
+        stable = stable_landmark_memory_indices(
+            gaussians,
+            torch.tensor([2, 0, 3, 1]),
+        )
+
+        self.assertEqual(stable.tolist(), [20, 10, 30, 20])
+
+        partial = stable_landmark_memory_indices(
+            gaussians,
+            torch.tensor([0, 9]),
+        )
+        self.assertEqual(partial.tolist(), [10, 9])
+
+    def test_direct_teacher_updates_multiview_memory_by_source_not_current_row(self):
+        from localization_training.direct_landmark_teacher import (
+            LandmarkObservationMemory,
+            direct_landmark_teacher,
+        )
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [[0.0, 0.0, 4.0], [0.5, 0.0, 4.0], [-0.5, 0.0, 4.0]],
+                    dtype=torch.float32,
+                )
+                self._loc_feature = torch.nn.Parameter(
+                    torch.tensor(
+                        [[[1.0, 0.0]], [[0.0, 1.0]], [[1.0, 1.0]]],
+                        dtype=torch.float32,
+                    )
+                )
+                self.loc_source_index = torch.tensor([10, 20, 20])
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        memory = LandmarkObservationMemory(
+            torch.tensor([10, 20]),
+            feature_dim=2,
+            slots=2,
+            device="cpu",
+        )
+        output = direct_landmark_teacher(
+            FakeGaussians(),
+            torch.ones(2, 16, 16),
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.tensor([0, 1, 2]),
+            target_depth=torch.full((16, 16), 4.0),
+            alpha_threshold=0.0,
+            depth_abs_tolerance=0.05,
+            depth_rel_tolerance=0.01,
+            max_landmarks=None,
+            multiview_memory=memory,
+            multiview_temperature=0.1,
+        )
+
+        self.assertEqual(output.diagnostics["multiview_memory_key_count"], 3)
+        self.assertEqual(output.diagnostics["multiview_memory_unique_source_count"], 2)
+        self.assertEqual(output.diagnostics["multiview_memory_shared_source_count"], 1)
+        self.assertEqual(memory.positive_count(torch.tensor([10, 20])).tolist(), [1, 1])
+
     def test_depth_consistency_filters_occluded_landmarks(self):
         from localization_training.direct_landmark_teacher import (
             filter_depth_consistent_landmarks,
@@ -517,6 +596,46 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
 
         for full_value, chunked_value in zip(full, chunked):
             self.assertTrue(torch.allclose(full_value, chunked_value, atol=1e-6))
+
+    def test_full_bank_bimnn_loss_chunking_matches_loss_and_gradients(self):
+        from localization_training.direct_landmark_teacher import full_bank_bimnn_loss
+
+        torch.manual_seed(19)
+        query = torch.randn(5, 4)
+        bank = torch.randn(17, 4)
+        positives = torch.tensor([0, -1, 8, 12, 16])
+        ignore_mask = torch.zeros((5, 17), dtype=torch.bool)
+        ignore_mask[0, 1:4] = True
+        ignore_mask[2, 7] = True
+        positive_mask = torch.zeros((5, 17), dtype=torch.bool)
+        positive_mask[0, 1] = True
+        positive_mask[3, 13] = True
+        weights = torch.tensor([1.0, 3.0, 0.5, 1.5, 2.0])
+
+        def loss_and_gradients(chunk_size):
+            current_query = query.clone().requires_grad_(True)
+            current_bank = bank.clone().requires_grad_(True)
+            loss = full_bank_bimnn_loss(
+                current_query,
+                current_bank,
+                positives,
+                temperature=0.2,
+                hard_negative_topk=3,
+                hard_negative_margin=0.15,
+                weights=weights,
+                ignore_bank_mask=ignore_mask,
+                positive_bank_mask=positive_mask,
+                chunk_size=chunk_size,
+            )
+            gradients = torch.autograd.grad(loss, (current_query, current_bank))
+            return loss, gradients
+
+        full_loss, full_gradients = loss_and_gradients(None)
+        chunked_loss, chunked_gradients = loss_and_gradients(2)
+
+        torch.testing.assert_close(chunked_loss, full_loss, atol=1e-6, rtol=1e-6)
+        for chunked, full in zip(chunked_gradients, full_gradients):
+            torch.testing.assert_close(chunked, full, atol=2e-6, rtol=2e-5)
 
     def test_direct_teacher_can_ignore_full_bank_3d_and_uv_nearby_false_negatives(self):
         from localization_training.direct_landmark_teacher import direct_landmark_teacher

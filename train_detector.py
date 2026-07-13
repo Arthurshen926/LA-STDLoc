@@ -1012,6 +1012,28 @@ def load_precomputed_detector_landmarks(path, point_count=None, device=None):
     return sampled_idx
 
 
+def save_detector_sampled_indices(path, sampled_idx):
+    sampled_idx = torch.as_tensor(sampled_idx, dtype=torch.long).detach().cpu()
+    with open(path, "wb") as handle:
+        pickle.dump(sampled_idx, handle)
+
+
+def validation_hypothesis_indices_per_keypoint(
+    keypoint_idx,
+    scores,
+    max_matches_per_keypoint,
+):
+    """Apply validation-only keypoint quotas on CPU to avoid CUDA peak memory."""
+    keypoint_idx = keypoint_idx.detach().to(device="cpu", dtype=torch.long)
+    scores = scores.detach().to(device="cpu")
+    hypothesis_ids = torch.arange(scores.numel(), dtype=torch.long)
+    limited = limit_matches_per_keypoint(
+        SparseMatchResult(keypoint_idx, hypothesis_ids, scores),
+        max_matches_per_keypoint,
+    )
+    return limited.landmark_idx
+
+
 def load_precomputed_landmark_meta(path, device="cuda"):
     meta_path = os.path.join(os.path.dirname(path), "landmark_meta.pt")
     if not os.path.exists(meta_path):
@@ -1496,55 +1518,41 @@ def evaluate_sparse_candidate_teacher(
         )
         records.append(record)
         if batch.pair_scorer_logits.numel() > 0:
-            hypothesis_ids = torch.arange(
-                batch.pair_scorer_logits.numel(),
-                device=batch.pair_scorer_logits.device,
-            )
-            calibrated_matches = limit_matches_per_keypoint(
-                SparseMatchResult(
-                    batch.pair_scorer_keypoint_idx,
-                    hypothesis_ids,
-                    batch.pair_scorer_logits,
-                ),
+            selected = validation_hypothesis_indices_per_keypoint(
+                batch.pair_scorer_keypoint_idx,
+                batch.pair_scorer_logits,
                 scorer_max_matches_per_keypoint,
             )
-            selected = calibrated_matches.landmark_idx
-            selected_valid = batch.pair_scorer_valid_mask[selected]
+            selected_valid = batch.pair_scorer_valid_mask.detach().cpu()[selected]
             selected_correct = (
-                (batch.pair_scorer_labels[selected] > 0.5) & selected_valid
+                (batch.pair_scorer_labels.detach().cpu()[selected] > 0.5)
+                & selected_valid
             )
             reranked_correct_count += int(selected_correct.sum().item())
             reranked_valid_count += int(selected_valid.sum().item())
-            scorer_logits.append(batch.pair_scorer_logits[selected].detach().cpu())
-            scorer_labels.append(batch.pair_scorer_labels[selected].detach().cpu())
-            scorer_valid.append(batch.pair_scorer_valid_mask[selected].detach().cpu())
+            scorer_logits.append(batch.pair_scorer_logits.detach().cpu()[selected])
+            scorer_labels.append(batch.pair_scorer_labels.detach().cpu()[selected])
+            scorer_valid.append(selected_valid)
         if batch.pair_measurement_inlier_logits.numel() > 0:
-            hypothesis_ids = torch.arange(
-                batch.pair_measurement_inlier_logits.numel(),
-                device=batch.pair_measurement_inlier_logits.device,
-            )
-            calibrated_matches = limit_matches_per_keypoint(
-                SparseMatchResult(
-                    batch.pair_scorer_keypoint_idx,
-                    hypothesis_ids,
-                    batch.pair_measurement_inlier_logits,
-                ),
+            selected = validation_hypothesis_indices_per_keypoint(
+                batch.pair_scorer_keypoint_idx,
+                batch.pair_measurement_inlier_logits,
                 scorer_max_matches_per_keypoint,
             )
-            selected = calibrated_matches.landmark_idx
-            selected_valid = batch.pair_scorer_valid_mask[selected]
+            selected_valid = batch.pair_scorer_valid_mask.detach().cpu()[selected]
             selected_correct = (
-                (batch.pair_scorer_labels[selected] > 0.5) & selected_valid
+                (batch.pair_scorer_labels.detach().cpu()[selected] > 0.5)
+                & selected_valid
             )
             measurement_reranked_correct_count += int(selected_correct.sum().item())
             measurement_reranked_valid_count += int(selected_valid.sum().item())
             measurement_logits.append(
-                batch.pair_measurement_inlier_logits[selected].detach().cpu()
+                batch.pair_measurement_inlier_logits.detach().cpu()[selected]
             )
             measurement_labels.append(
-                batch.pair_scorer_labels[selected].detach().cpu()
+                batch.pair_scorer_labels.detach().cpu()[selected]
             )
-            measurement_valid.append(selected_valid.detach().cpu())
+            measurement_valid.append(selected_valid)
     if was_training:
         detector.train()
     if pair_measurement_head is not None and measurement_was_training:
@@ -1887,7 +1895,10 @@ def training_detector(
                 min_loc_observations=min_loc_observations,
                 point_count=gaussians.get_xyz.shape[0],
             )
-    pickle.dump(sampled_idx, open(os.path.join(save_path, "sampled_idx.pkl"), "wb"))
+    save_detector_sampled_indices(
+        os.path.join(save_path, "sampled_idx.pkl"),
+        sampled_idx,
+    )
     if sparse_candidate_teacher:
         requested_landmarks = int(landmark_num)
         unique_landmarks = int(torch.unique(sampled_idx).numel())
@@ -2797,6 +2808,7 @@ def training_detector(
                             float(value.detach().item()),
                             iteration,
                         )
+                    del component_values
                     for name, value in teacher_last_diagnostics.items():
                         tb_writer.add_scalar(
                             f"sparse_candidate_teacher/{name}",
@@ -2855,6 +2867,29 @@ def training_detector(
                 }
                 history_item.update(teacher_last_diagnostics)
                 teacher_history.append(history_item)
+
+        checkpoint_iteration = (
+            iteration in testing_iterations or iteration in saving_iterations
+        )
+        if checkpoint_iteration:
+            # Validation builds another full candidate matrix. Release the completed
+            # training graph first so both matrices never coexist on CUDA.
+            if sparse_candidate_teacher:
+                del candidate_batch
+                del candidate_selection_heat_map
+                del teacher_heat_map
+                del detector_supervision_heatmap
+            del loss
+            del teacher_losses
+            del base_detector_loss
+            del feature_anchor_loss
+            del keypoint_heat_map
+            del matchability_heat_map
+            del offset_heat_map
+            del heat_map
+            del candidate_heat_map
+            del gt_feature_map
+            torch.cuda.empty_cache()
 
         if iteration in testing_iterations:
             print("\n[ITER {}] Evaluating detector".format(iteration))

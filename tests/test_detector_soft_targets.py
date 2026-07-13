@@ -1117,6 +1117,35 @@ class DetectorSoftTargetsTest(unittest.TestCase):
         self.assertEqual(sampled.device.type, "cpu")
         self.assertEqual(sampled.tolist(), [1, 3])
 
+    def test_detector_sampled_indices_are_saved_as_portable_cpu_tensor(self):
+        import pickle
+        import tempfile
+        from pathlib import Path
+
+        from train_detector import save_detector_sampled_indices
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sampled_idx.pkl"
+            save_detector_sampled_indices(path, torch.tensor([4, 1, 3]))
+            with path.open("rb") as handle:
+                sampled = pickle.load(handle)
+
+        self.assertEqual(sampled.device.type, "cpu")
+        self.assertEqual(sampled.dtype, torch.long)
+        self.assertEqual(sampled.tolist(), [4, 1, 3])
+
+    def test_validation_hypothesis_quota_runs_on_cpu_and_preserves_ties(self):
+        from train_detector import validation_hypothesis_indices_per_keypoint
+
+        selected = validation_hypothesis_indices_per_keypoint(
+            torch.tensor([3, 3, 3, 8, 8]),
+            torch.tensor([0.2, 0.9, 0.9, 0.4, 0.7]),
+            max_matches_per_keypoint=2,
+        )
+
+        self.assertEqual(selected.device.type, "cpu")
+        self.assertEqual(selected.tolist(), [1, 2, 3, 4])
+
     def test_detector_model_defaults_are_filled_for_new_model_without_cfg(self):
         from argparse import Namespace
 

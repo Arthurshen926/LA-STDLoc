@@ -32,6 +32,7 @@ from localization_training.direct_landmark_teacher import (
     direct_landmark_teacher,
     gaussian_localization_xyz,
     make_intrinsics_from_fov,
+    stable_landmark_memory_indices,
 )
 from localization_training.episode_sampler import (
     EpisodeSampler,
@@ -509,7 +510,14 @@ def _align_pseudo_manifest_to_teacher_cache(pseudo_manifest, sparse_pose_cache, 
 
 
 def _capture_geometry_anchor(gaussians):
+    xyz = gaussians._xyz.detach()
+    node_ids = getattr(gaussians, "loc_node_id", None)
+    if torch.is_tensor(node_ids) and node_ids.numel() == xyz.shape[0]:
+        node_ids = node_ids.detach().clone().to(dtype=torch.long, device=xyz.device)
+    else:
+        node_ids = torch.arange(xyz.shape[0], dtype=torch.long, device=xyz.device)
     return {
+        "node_ids": node_ids,
         "xyz": gaussians._xyz.detach().clone(),
         "scaling": gaussians._scaling.detach().clone(),
         "rotation": gaussians._rotation.detach().clone(),
@@ -517,9 +525,34 @@ def _capture_geometry_anchor(gaussians):
 
 
 def _refresh_geometry_anchor_if_point_count_changed(gaussians, geometry_anchor):
-    if geometry_anchor["xyz"].shape[0] != gaussians.get_xyz.shape[0]:
+    current = _current_geometry_state(gaussians)
+    if "node_ids" not in geometry_anchor:
+        if geometry_anchor["xyz"].shape[0] == current["xyz"].shape[0]:
+            return geometry_anchor
         return _capture_geometry_anchor(gaussians)
-    return geometry_anchor
+
+    anchor_node_ids = geometry_anchor["node_ids"].detach().to(
+        dtype=torch.long,
+        device=current["xyz"].device,
+    ).reshape(-1)
+    current_node_ids = getattr(gaussians, "loc_node_id", None)
+    if torch.is_tensor(current_node_ids) and current_node_ids.numel() == current["xyz"].shape[0]:
+        current_node_ids = current_node_ids.detach().to(
+            dtype=torch.long,
+            device=current["xyz"].device,
+        ).reshape(-1)
+    else:
+        current_node_ids = torch.arange(
+            current["xyz"].shape[0],
+            dtype=torch.long,
+            device=current["xyz"].device,
+        )
+    if (
+        anchor_node_ids.shape == current_node_ids.shape
+        and torch.equal(anchor_node_ids, current_node_ids)
+    ):
+        return geometry_anchor
+    return _capture_geometry_anchor(gaussians)
 
 
 def _current_geometry_state(gaussians):
@@ -1436,6 +1469,7 @@ def _backward_with_optional_isolated_xyz_grad(
     xyz_only_loss,
     gaussians,
     isolate_xyz_grad=False,
+    isolated_xyz_scaffold_loss=None,
     isolated_xyz_regularizer_loss=None,
     summary=None,
 ):
@@ -1449,6 +1483,8 @@ def _backward_with_optional_isolated_xyz_grad(
         return
 
     isolated_xyz_terms = []
+    if torch.is_tensor(isolated_xyz_scaffold_loss) and bool(isolated_xyz_scaffold_loss.requires_grad):
+        isolated_xyz_terms.append(isolated_xyz_scaffold_loss)
     if torch.is_tensor(xyz_only_loss) and bool(xyz_only_loss.requires_grad):
         isolated_xyz_terms.append(xyz_only_loss)
     if torch.is_tensor(isolated_xyz_regularizer_loss) and bool(isolated_xyz_regularizer_loss.requires_grad):
@@ -3046,15 +3082,21 @@ def training(dataset, opt, args):
         print(f"Loaded {direct_landmark_indices.numel()} direct teacher landmarks from {args.landmark_path}")
         if args.loc_multiview_weight > 0:
             feature_dim = gaussians.get_loc_feature.reshape(gaussians.get_xyz.shape[0], -1).shape[1]
+            memory_landmark_indices = torch.unique(
+                stable_landmark_memory_indices(gaussians, direct_landmark_indices),
+                sorted=True,
+            )
             direct_observation_memory = LandmarkObservationMemory(
-                direct_landmark_indices,
+                memory_landmark_indices,
                 feature_dim=feature_dim,
                 slots=args.loc_multiview_slots,
                 device=gaussians.get_xyz.device,
             )
             print(
                 "Initialized direct multi-view memory: "
-                f"landmarks={direct_landmark_indices.numel()} slots={args.loc_multiview_slots}"
+                f"landmarks={direct_landmark_indices.numel()} "
+                f"stable_sources={memory_landmark_indices.numel()} "
+                f"slots={args.loc_multiview_slots}"
             )
     if args.loc_overlay_mode == "descriptor":
         if direct_landmark_indices is None:
@@ -3525,11 +3567,11 @@ def training(dataset, opt, args):
         )
         losses = _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=masks)
         image = losses["image"]
-        base_loss = (
+        base_rgb_loss = (
             (1.0 - opt.lambda_dssim) * losses["Ll1"]
             + opt.lambda_dssim * (1.0 - ssim(image, losses["gt_image"]))
-            + args.base_feature_weight * losses["Ll1_feature"]
         )
+        base_loss = base_rgb_loss + args.base_feature_weight * losses["Ll1_feature"]
 
         loc_loss = image.new_tensor(0.0)
         loc_desc_loss = image.new_tensor(0.0)
@@ -4333,11 +4375,21 @@ def training(dataset, opt, args):
             + stage_loss_weights["geometry_anchor"] * geom_anchor_loss
             + geometry_residual_weight * loc_geometry_residual_loss
         )
-        isolate_diff_pnp_geometry_grad = (
-            bool(getattr(args, "lafgs_diff_pnp_isolate_geometry_grad", False))
-            and _diff_pnp_allows_geometry_grad(args, phase)
+        sfm_from_zero_raw_xyz = (
+            str(getattr(args, "lafgs_stage_schedule", "none") or "none") == "sfm_from_zero"
+            and _allow_raw_xyz_geometry_grad(args)
         )
-        isolated_xyz_loss = stage_loss_weights["loc"] * effective_pnp_weight * loc_pnp_loss
+        isolate_diff_pnp_geometry_grad = bool(
+            getattr(args, "lafgs_diff_pnp_isolate_geometry_grad", False)
+        ) and (sfm_from_zero_raw_xyz or _diff_pnp_allows_geometry_grad(args, phase))
+        isolated_xyz_scaffold_loss = (
+            stage_loss_weights["base"] * base_rgb_loss if sfm_from_zero_raw_xyz else None
+        )
+        isolated_xyz_loss = (
+            stage_loss_weights["loc"] * effective_pnp_weight * loc_pnp_loss
+            if _diff_pnp_allows_geometry_grad(args, phase)
+            else None
+        )
         isolated_xyz_regularizer_loss = (
             stage_loss_weights["geometry_anchor"] * geom_anchor_loss
             + geometry_residual_weight * loc_geometry_residual_loss
@@ -4347,6 +4399,7 @@ def training(dataset, opt, args):
             isolated_xyz_loss,
             gaussians,
             isolate_xyz_grad=isolate_diff_pnp_geometry_grad,
+            isolated_xyz_scaffold_loss=isolated_xyz_scaffold_loss,
             isolated_xyz_regularizer_loss=isolated_xyz_regularizer_loss,
             summary=loc_training_summary,
         )
@@ -4383,6 +4436,7 @@ def training(dataset, opt, args):
 
             if tb_writer:
                 tb_writer.add_scalar("train_loss/base", base_loss.item(), iteration)
+                tb_writer.add_scalar("train_loss/base_rgb", base_rgb_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/loc", loc_loss.item(), iteration)
                 tb_writer.add_scalar("train_loss/base_weight", stage_loss_weights["base"], iteration)
                 tb_writer.add_scalar("train_loss/loc_weight", stage_loss_weights["loc"], iteration)
