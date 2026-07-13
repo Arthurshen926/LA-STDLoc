@@ -62,6 +62,37 @@ from localization_training.sparse_frontend import (
 from scene.kpdetector import KpDetector
 
 
+def partition_candidate_teacher_cameras(
+    cameras,
+    *,
+    support_query_split=False,
+    query_ratio=0.2,
+    validation_ratio=0.0,
+    split_mode="temporal_block",
+    split_seed=2026,
+):
+    """Build candidate-train and held-out validation camera sets."""
+    training_cameras = list(cameras)
+    validation_cameras = []
+    support_camera_count = len(training_cameras)
+    if bool(support_query_split):
+        support_cameras, training_cameras = split_support_query_cameras(
+            training_cameras,
+            query_ratio=query_ratio,
+            seed=split_seed,
+            mode=split_mode,
+        )
+        support_camera_count = len(support_cameras)
+    if float(validation_ratio) > 0.0:
+        training_cameras, validation_cameras = split_support_query_cameras(
+            training_cameras,
+            query_ratio=validation_ratio,
+            seed=split_seed + 1,
+            mode=split_mode,
+        )
+    return training_cameras, validation_cameras, support_camera_count
+
+
 def extract_normalized_feature_map(feature_extractor, image, size):
     """Run the fixed image encoder without keeping gradients for detector targets."""
     with torch.no_grad():
@@ -1365,6 +1396,7 @@ def evaluate_sparse_candidate_teacher(
     masks,
     scene,
     candidate_kwargs,
+    assignment_mode,
     assignment_temperature,
     assignment_margin,
     reprojection_sigma_px=1.0,
@@ -1372,6 +1404,16 @@ def evaluate_sparse_candidate_teacher(
     scorer_max_matches_per_keypoint=1,
     set_risk_residual_clip_px=32.0,
     set_risk_reference_translation_m=0.01,
+    map_fisher_translation_scale=0.02,
+    map_fisher_rotation_scale_degrees=2.0,
+    map_fisher_measurement_sigma_px=1.0,
+    map_fisher_residual_clip_px=12.0,
+    map_fisher_inlier_sigma_px=4.0,
+    map_fisher_condition_target=100.0,
+    map_directional_temperature=0.05,
+    map_directional_residual_clip_px=24.0,
+    map_directional_robust_scale_px=12.0,
+    map_directional_robust_quality_floor=0.01,
 ):
     if not cameras:
         return {}
@@ -1473,11 +1515,26 @@ def evaluate_sparse_candidate_teacher(
         )
         losses = sparse_candidate_losses(
             batch,
+            assignment_mode=assignment_mode,
             assignment_temperature=assignment_temperature,
             assignment_margin=assignment_margin,
             reprojection_sigma_px=reprojection_sigma_px,
             set_risk_residual_clip_px=set_risk_residual_clip_px,
             set_risk_reference_translation_m=set_risk_reference_translation_m,
+            map_fisher_translation_scale=map_fisher_translation_scale,
+            map_fisher_rotation_scale_degrees=map_fisher_rotation_scale_degrees,
+            map_fisher_measurement_sigma_px=map_fisher_measurement_sigma_px,
+            map_fisher_residual_clip_px=map_fisher_residual_clip_px,
+            map_fisher_inlier_sigma_px=map_fisher_inlier_sigma_px,
+            map_fisher_condition_target=map_fisher_condition_target,
+            map_directional_temperature=map_directional_temperature,
+            map_directional_residual_clip_px=(
+                map_directional_residual_clip_px
+            ),
+            map_directional_robust_scale_px=map_directional_robust_scale_px,
+            map_directional_robust_quality_floor=(
+                map_directional_robust_quality_floor
+            ),
         )
         record = _numeric_teacher_diagnostics(batch.diagnostics)
         record.update(
@@ -1485,6 +1542,9 @@ def evaluate_sparse_candidate_teacher(
                 "loss_pair": float(losses.pair.item()),
                 "loss_hard_negative": float(losses.hard_negative.item()),
                 "loss_assignment": float(losses.assignment.item()),
+                "loss_counterfactual_assignment": float(
+                    losses.counterfactual_assignment.item()
+                ),
                 "loss_dustbin_assignment": float(losses.dustbin_assignment.item()),
                 "loss_matcher_assignment": float(losses.matcher_assignment.item()),
                 "loss_matcher_reprojection_assignment": float(
@@ -1514,6 +1574,24 @@ def evaluate_sparse_candidate_teacher(
                 "loss_detector_offset": float(losses.detector_offset.item()),
                 "loss_geometry_set": float(losses.geometry_set.item()),
                 "loss_coverage": float(losses.coverage.item()),
+                "loss_map_cleanliness": float(losses.map_cleanliness.item()),
+                "loss_map_full_information": float(
+                    losses.map_full_information.item()
+                ),
+                "loss_map_translation_information": float(
+                    losses.map_translation_information.item()
+                ),
+                "loss_map_translation_trace": float(
+                    losses.map_translation_trace.item()
+                ),
+                "loss_map_translation_condition": float(
+                    losses.map_translation_condition.item()
+                ),
+                "loss_map_bias": float(losses.map_bias.item()),
+                "loss_map_directional_bias": float(
+                    losses.map_directional_bias.item()
+                ),
+                "loss_map_capacity": float(losses.map_capacity.item()),
             }
         )
         records.append(record)
@@ -1688,14 +1766,54 @@ def training_detector(
     candidate_teacher_hard_negatives=8,
     candidate_teacher_match_temperature=0.1,
     candidate_teacher_match_margin=0.5,
+    candidate_teacher_assignment_mode="single_nearest",
     candidate_teacher_assignment_temperature=0.05,
     candidate_teacher_assignment_margin=0.05,
+    candidate_teacher_assignment_pose_information_mode="none",
+    candidate_teacher_assignment_pose_information_weight=0.0,
+    candidate_teacher_assignment_pose_information_floor=0.05,
+    candidate_teacher_assignment_pose_information_normalization="quantile",
+    candidate_teacher_assignment_fisher_translation_scale=0.02,
+    candidate_teacher_assignment_fisher_rotation_scale_degrees=2.0,
+    candidate_teacher_assignment_fisher_measurement_sigma=1.0,
+    candidate_teacher_assignment_fisher_use_matchability=False,
+    candidate_teacher_assignment_fisher_matchability_floor=0.05,
+    candidate_teacher_assignment_fisher_matchability_power=1.0,
+    candidate_teacher_assignment_fisher_uncertainty_entropy_scale=0.0,
+    candidate_teacher_map_cleanliness_weight=0.0,
+    candidate_teacher_map_full_information_weight=0.0,
+    candidate_teacher_map_translation_information_weight=0.0,
+    candidate_teacher_map_translation_trace_weight=0.0,
+    candidate_teacher_map_translation_condition_weight=0.0,
+    candidate_teacher_map_bias_weight=0.0,
+    candidate_teacher_map_directional_bias_weight=0.0,
+    candidate_teacher_map_capacity_weight=0.0,
+    candidate_teacher_map_fisher_translation_scale=0.02,
+    candidate_teacher_map_fisher_rotation_scale_degrees=2.0,
+    candidate_teacher_map_fisher_measurement_sigma_px=1.0,
+    candidate_teacher_map_fisher_residual_clip_px=12.0,
+    candidate_teacher_map_fisher_inlier_sigma_px=4.0,
+    candidate_teacher_map_fisher_condition_target=100.0,
+    candidate_teacher_map_max_matches_per_landmark=0,
+    candidate_teacher_map_directional_topk=0,
+    candidate_teacher_map_directional_temperature=0.05,
+    candidate_teacher_map_directional_residual_clip_px=24.0,
+    candidate_teacher_map_directional_robust_scale_px=12.0,
+    candidate_teacher_map_directional_robust_quality_floor=0.01,
+    candidate_teacher_counterfactual_bias_utility_weight=1.0,
+    candidate_teacher_counterfactual_translation_utility_weight=0.0,
+    candidate_teacher_counterfactual_utility_floor=0.1,
+    candidate_teacher_counterfactual_target_mode="all_false",
+    candidate_teacher_counterfactual_require_current_retained=False,
+    candidate_teacher_counterfactual_require_positive_bias_gain=False,
+    candidate_teacher_counterfactual_require_nonnegative_translation_gain=False,
     candidate_teacher_grid_rows=4,
     candidate_teacher_grid_cols=4,
     candidate_teacher_depth_bins=4,
     candidate_teacher_pair_weight=1.0,
     candidate_teacher_hard_negative_weight=0.5,
     candidate_teacher_assignment_weight=1.0,
+    candidate_teacher_counterfactual_assignment_weight=0.0,
     candidate_teacher_dustbin_weight=0.0,
     candidate_teacher_matcher_assignment_weight=0.0,
     candidate_teacher_matcher_reprojection_weight=0.0,
@@ -1929,25 +2047,23 @@ def training_detector(
     training_cameras = scene.getTrainCameras().copy()
     validation_cameras = []
     support_camera_count = len(training_cameras)
-    if sparse_candidate_teacher and candidate_teacher_support_query_split:
-        support_cameras, query_cameras = split_support_query_cameras(
-            training_cameras,
-            query_ratio=candidate_teacher_query_ratio,
-            seed=candidate_teacher_split_seed,
-            mode=candidate_teacher_split_mode,
-        )
-        training_cameras = query_cameras
-        if float(candidate_teacher_validation_ratio) > 0.0:
-            training_cameras, validation_cameras = split_support_query_cameras(
+    if sparse_candidate_teacher:
+        training_cameras, validation_cameras, support_camera_count = (
+            partition_candidate_teacher_cameras(
                 training_cameras,
-                query_ratio=candidate_teacher_validation_ratio,
-                seed=candidate_teacher_split_seed + 1,
-                mode=candidate_teacher_split_mode,
+                support_query_split=candidate_teacher_support_query_split,
+                query_ratio=candidate_teacher_query_ratio,
+                validation_ratio=candidate_teacher_validation_ratio,
+                split_mode=candidate_teacher_split_mode,
+                split_seed=candidate_teacher_split_seed,
             )
-        support_camera_count = len(support_cameras)
+        )
+    if sparse_candidate_teacher and (
+        candidate_teacher_support_query_split or validation_cameras
+    ):
         print(
-            "Sparse candidate teacher support/query split: "
-            f"support={len(support_cameras)} candidate_train={len(training_cameras)} "
+            "Sparse candidate teacher camera partition: "
+            f"support={support_camera_count} candidate_train={len(training_cameras)} "
             f"candidate_val={len(validation_cameras)} "
             f"mode={candidate_teacher_split_mode}"
         )
@@ -2043,14 +2159,127 @@ def training_detector(
         "hard_negatives": int(candidate_teacher_hard_negatives),
         "match_temperature": float(candidate_teacher_match_temperature),
         "match_margin": float(candidate_teacher_match_margin),
+        "assignment_mode": str(candidate_teacher_assignment_mode),
         "assignment_temperature": float(candidate_teacher_assignment_temperature),
         "assignment_margin": float(candidate_teacher_assignment_margin),
+        "assignment_pose_information_mode": str(
+            candidate_teacher_assignment_pose_information_mode
+        ),
+        "assignment_pose_information_weight": float(
+            candidate_teacher_assignment_pose_information_weight
+        ),
+        "assignment_pose_information_floor": float(
+            candidate_teacher_assignment_pose_information_floor
+        ),
+        "assignment_pose_information_normalization": str(
+            candidate_teacher_assignment_pose_information_normalization
+        ),
+        "assignment_fisher_translation_scale": float(
+            candidate_teacher_assignment_fisher_translation_scale
+        ),
+        "assignment_fisher_rotation_scale_degrees": float(
+            candidate_teacher_assignment_fisher_rotation_scale_degrees
+        ),
+        "assignment_fisher_measurement_sigma": float(
+            candidate_teacher_assignment_fisher_measurement_sigma
+        ),
+        "assignment_fisher_use_matchability": bool(
+            candidate_teacher_assignment_fisher_use_matchability
+        ),
+        "assignment_fisher_matchability_floor": float(
+            candidate_teacher_assignment_fisher_matchability_floor
+        ),
+        "assignment_fisher_matchability_power": float(
+            candidate_teacher_assignment_fisher_matchability_power
+        ),
+        "assignment_fisher_uncertainty_entropy_scale": float(
+            candidate_teacher_assignment_fisher_uncertainty_entropy_scale
+        ),
+        "map_cleanliness_weight": float(candidate_teacher_map_cleanliness_weight),
+        "map_full_information_weight": float(
+            candidate_teacher_map_full_information_weight
+        ),
+        "map_translation_information_weight": float(
+            candidate_teacher_map_translation_information_weight
+        ),
+        "map_translation_trace_weight": float(
+            candidate_teacher_map_translation_trace_weight
+        ),
+        "map_translation_condition_weight": float(
+            candidate_teacher_map_translation_condition_weight
+        ),
+        "map_bias_weight": float(candidate_teacher_map_bias_weight),
+        "map_directional_bias_weight": float(
+            candidate_teacher_map_directional_bias_weight
+        ),
+        "map_capacity_weight": float(candidate_teacher_map_capacity_weight),
+        "map_fisher_translation_scale": float(
+            candidate_teacher_map_fisher_translation_scale
+        ),
+        "map_fisher_rotation_scale_degrees": float(
+            candidate_teacher_map_fisher_rotation_scale_degrees
+        ),
+        "map_fisher_measurement_sigma_px": float(
+            candidate_teacher_map_fisher_measurement_sigma_px
+        ),
+        "map_fisher_residual_clip_px": float(
+            candidate_teacher_map_fisher_residual_clip_px
+        ),
+        "map_fisher_inlier_sigma_px": float(
+            candidate_teacher_map_fisher_inlier_sigma_px
+        ),
+        "map_fisher_condition_target": float(
+            candidate_teacher_map_fisher_condition_target
+        ),
+        "map_max_matches_per_landmark": int(
+            candidate_teacher_map_max_matches_per_landmark
+        ),
+        "map_directional_topk": int(candidate_teacher_map_directional_topk),
+        "map_directional_temperature": float(
+            candidate_teacher_map_directional_temperature
+        ),
+        "map_directional_residual_clip_px": float(
+            candidate_teacher_map_directional_residual_clip_px
+        ),
+        "map_directional_robust_scale_px": float(
+            candidate_teacher_map_directional_robust_scale_px
+        ),
+        "map_directional_robust_quality_floor": float(
+            candidate_teacher_map_directional_robust_quality_floor
+        ),
+        "counterfactual_bias_utility_weight": float(
+            candidate_teacher_counterfactual_bias_utility_weight
+        ),
+        "counterfactual_enabled": bool(
+            float(candidate_teacher_counterfactual_assignment_weight) > 0.0
+        ),
+        "counterfactual_translation_utility_weight": float(
+            candidate_teacher_counterfactual_translation_utility_weight
+        ),
+        "counterfactual_utility_floor": float(
+            candidate_teacher_counterfactual_utility_floor
+        ),
+        "counterfactual_target_mode": str(
+            candidate_teacher_counterfactual_target_mode
+        ),
+        "counterfactual_require_current_retained": bool(
+            candidate_teacher_counterfactual_require_current_retained
+        ),
+        "counterfactual_require_positive_bias_gain": bool(
+            candidate_teacher_counterfactual_require_positive_bias_gain
+        ),
+        "counterfactual_require_nonnegative_translation_gain": bool(
+            candidate_teacher_counterfactual_require_nonnegative_translation_gain
+        ),
         "grid_rows": int(candidate_teacher_grid_rows),
         "grid_cols": int(candidate_teacher_grid_cols),
         "depth_bins": int(candidate_teacher_depth_bins),
         "pair_weight": float(candidate_teacher_pair_weight),
         "hard_negative_weight": float(candidate_teacher_hard_negative_weight),
         "assignment_weight": float(candidate_teacher_assignment_weight),
+        "counterfactual_assignment_weight": float(
+            candidate_teacher_counterfactual_assignment_weight
+        ),
         "dustbin_weight": float(candidate_teacher_dustbin_weight),
         "matcher_assignment_weight": float(
             candidate_teacher_matcher_assignment_weight
@@ -2642,6 +2871,39 @@ def training_detector(
                 hard_negatives=candidate_teacher_hard_negatives,
                 match_temperature=candidate_teacher_match_temperature,
                 match_margin=candidate_teacher_match_margin,
+                assignment_pose_information_mode=(
+                    candidate_teacher_assignment_pose_information_mode
+                ),
+                assignment_pose_information_weight=(
+                    candidate_teacher_assignment_pose_information_weight
+                ),
+                assignment_pose_information_floor=(
+                    candidate_teacher_assignment_pose_information_floor
+                ),
+                assignment_pose_information_normalization=(
+                    candidate_teacher_assignment_pose_information_normalization
+                ),
+                assignment_fisher_translation_scale=(
+                    candidate_teacher_assignment_fisher_translation_scale
+                ),
+                assignment_fisher_rotation_scale_degrees=(
+                    candidate_teacher_assignment_fisher_rotation_scale_degrees
+                ),
+                assignment_fisher_measurement_sigma=(
+                    candidate_teacher_assignment_fisher_measurement_sigma
+                ),
+                assignment_fisher_use_matchability=(
+                    candidate_teacher_assignment_fisher_use_matchability
+                ),
+                assignment_fisher_matchability_floor=(
+                    candidate_teacher_assignment_fisher_matchability_floor
+                ),
+                assignment_fisher_matchability_power=(
+                    candidate_teacher_assignment_fisher_matchability_power
+                ),
+                assignment_fisher_uncertainty_entropy_scale=(
+                    candidate_teacher_assignment_fisher_uncertainty_entropy_scale
+                ),
                 grid_rows=candidate_teacher_grid_rows,
                 grid_cols=candidate_teacher_grid_cols,
                 depth_bins=candidate_teacher_depth_bins,
@@ -2659,9 +2921,55 @@ def training_detector(
                 ),
                 detector_target_source=candidate_teacher_detector_target_source,
                 detector_binary_target=candidate_teacher_detector_binary_target,
+                map_max_matches_per_landmark=(
+                    candidate_teacher_map_max_matches_per_landmark
+                ),
+                directional_candidate_topk=(
+                    candidate_teacher_map_directional_topk
+                ),
+                counterfactual_enabled=(
+                    float(candidate_teacher_counterfactual_assignment_weight) > 0.0
+                ),
+                counterfactual_bias_utility_weight=(
+                    candidate_teacher_counterfactual_bias_utility_weight
+                ),
+                counterfactual_translation_utility_weight=(
+                    candidate_teacher_counterfactual_translation_utility_weight
+                ),
+                counterfactual_utility_floor=(
+                    candidate_teacher_counterfactual_utility_floor
+                ),
+                counterfactual_target_mode=(
+                    candidate_teacher_counterfactual_target_mode
+                ),
+                counterfactual_require_current_retained=(
+                    candidate_teacher_counterfactual_require_current_retained
+                ),
+                counterfactual_require_positive_bias_gain=(
+                    candidate_teacher_counterfactual_require_positive_bias_gain
+                ),
+                counterfactual_require_nonnegative_translation_gain=(
+                    candidate_teacher_counterfactual_require_nonnegative_translation_gain
+                ),
+                counterfactual_translation_scale=(
+                    candidate_teacher_map_fisher_translation_scale
+                ),
+                counterfactual_rotation_scale_degrees=(
+                    candidate_teacher_map_fisher_rotation_scale_degrees
+                ),
+                counterfactual_measurement_sigma_px=(
+                    candidate_teacher_map_fisher_measurement_sigma_px
+                ),
+                counterfactual_residual_clip_px=(
+                    candidate_teacher_map_fisher_residual_clip_px
+                ),
+                counterfactual_inlier_sigma_px=(
+                    candidate_teacher_map_fisher_inlier_sigma_px
+                ),
             )
             teacher_losses = sparse_candidate_losses(
                 candidate_batch,
+                assignment_mode=candidate_teacher_assignment_mode,
                 assignment_temperature=candidate_teacher_assignment_temperature,
                 assignment_margin=candidate_teacher_assignment_margin,
                 reprojection_sigma_px=candidate_teacher_reprojection_sigma_px,
@@ -2670,6 +2978,36 @@ def training_detector(
                 ),
                 set_risk_reference_translation_m=(
                     candidate_teacher_pair_measurement_reference_translation_m
+                ),
+                map_fisher_translation_scale=(
+                    candidate_teacher_map_fisher_translation_scale
+                ),
+                map_fisher_rotation_scale_degrees=(
+                    candidate_teacher_map_fisher_rotation_scale_degrees
+                ),
+                map_fisher_measurement_sigma_px=(
+                    candidate_teacher_map_fisher_measurement_sigma_px
+                ),
+                map_fisher_residual_clip_px=(
+                    candidate_teacher_map_fisher_residual_clip_px
+                ),
+                map_fisher_inlier_sigma_px=(
+                    candidate_teacher_map_fisher_inlier_sigma_px
+                ),
+                map_fisher_condition_target=(
+                    candidate_teacher_map_fisher_condition_target
+                ),
+                map_directional_temperature=(
+                    candidate_teacher_map_directional_temperature
+                ),
+                map_directional_residual_clip_px=(
+                    candidate_teacher_map_directional_residual_clip_px
+                ),
+                map_directional_robust_scale_px=(
+                    candidate_teacher_map_directional_robust_scale_px
+                ),
+                map_directional_robust_quality_floor=(
+                    candidate_teacher_map_directional_robust_quality_floor
                 ),
             )
             if candidate_teacher_optimize_features:
@@ -2684,6 +3022,8 @@ def training_detector(
                 float(candidate_teacher_pair_weight) * teacher_losses.pair
                 + float(candidate_teacher_hard_negative_weight) * teacher_losses.hard_negative
                 + float(candidate_teacher_assignment_weight) * teacher_losses.assignment
+                + float(candidate_teacher_counterfactual_assignment_weight)
+                * teacher_losses.counterfactual_assignment
                 + float(candidate_teacher_dustbin_weight) * teacher_losses.dustbin_assignment
                 + float(candidate_teacher_matcher_assignment_weight)
                 * teacher_losses.matcher_assignment
@@ -2708,6 +3048,21 @@ def training_detector(
                 * teacher_losses.detector_offset
                 + float(candidate_teacher_geometry_weight) * teacher_losses.geometry_set
                 + float(candidate_teacher_coverage_weight) * teacher_losses.coverage
+                + float(candidate_teacher_map_cleanliness_weight)
+                * teacher_losses.map_cleanliness
+                + float(candidate_teacher_map_full_information_weight)
+                * teacher_losses.map_full_information
+                + float(candidate_teacher_map_translation_information_weight)
+                * teacher_losses.map_translation_information
+                + float(candidate_teacher_map_translation_trace_weight)
+                * teacher_losses.map_translation_trace
+                + float(candidate_teacher_map_translation_condition_weight)
+                * teacher_losses.map_translation_condition
+                + float(candidate_teacher_map_bias_weight) * teacher_losses.map_bias
+                + float(candidate_teacher_map_directional_bias_weight)
+                * teacher_losses.map_directional_bias
+                + float(candidate_teacher_map_capacity_weight)
+                * teacher_losses.map_capacity
                 + float(candidate_teacher_base_detector_weight) * base_detector_loss
                 + float(candidate_teacher_feature_anchor_weight) * feature_anchor_loss
             )
@@ -2749,10 +3104,13 @@ def training_detector(
                         {
                             "Pair": f"{float(teacher_losses.pair.detach().item()):.4f}",
                             "Rank": f"{float(teacher_losses.assignment.detach().item()):.4f}",
+                            "Swap": f"{float(teacher_losses.counterfactual_assignment.detach().item()):.4f}",
                             "Reproj": f"{float(teacher_losses.matcher_reprojection_assignment.detach().item()):.4f}",
                             "Dust": f"{float(teacher_losses.dustbin_assignment.detach().item()):.4f}",
                             "Score": f"{float(teacher_losses.pair_scorer.detach().item()):.4f}",
                             "Trans": f"{float(teacher_losses.translation_info.detach().item()):.4f}",
+                            "MapB": f"{float(teacher_losses.map_bias.detach().item()):.4f}",
+                            "DirB": f"{float(teacher_losses.map_directional_bias.detach().item()):.4f}",
                             "Offset": f"{float(teacher_losses.detector_offset.detach().item()):.4f}",
                             "Prec": f"{teacher_last_diagnostics.get('predicted_gt_precision', 0.0):.3f}",
                             "FN": f"{teacher_last_diagnostics.get('false_negative_rate', 0.0):.3f}",
@@ -2778,6 +3136,9 @@ def training_detector(
                         "pair": teacher_losses.pair,
                         "hard_negative": teacher_losses.hard_negative,
                         "assignment": teacher_losses.assignment,
+                        "counterfactual_assignment": (
+                            teacher_losses.counterfactual_assignment
+                        ),
                         "dustbin_assignment": teacher_losses.dustbin_assignment,
                         "matcher_assignment": teacher_losses.matcher_assignment,
                         "matcher_reprojection_assignment": (
@@ -2799,6 +3160,18 @@ def training_detector(
                         "detector_offset": teacher_losses.detector_offset,
                         "geometry_set": teacher_losses.geometry_set,
                         "coverage": teacher_losses.coverage,
+                        "map_cleanliness": teacher_losses.map_cleanliness,
+                        "map_full_information": teacher_losses.map_full_information,
+                        "map_translation_information": (
+                            teacher_losses.map_translation_information
+                        ),
+                        "map_translation_trace": teacher_losses.map_translation_trace,
+                        "map_translation_condition": (
+                            teacher_losses.map_translation_condition
+                        ),
+                        "map_bias": teacher_losses.map_bias,
+                        "map_directional_bias": teacher_losses.map_directional_bias,
+                        "map_capacity": teacher_losses.map_capacity,
                         "base_detector": base_detector_loss,
                         "feature_anchor": feature_anchor_loss,
                     }
@@ -2825,6 +3198,9 @@ def training_detector(
                     "loss_pair": float(teacher_losses.pair.detach().item()),
                     "loss_hard_negative": float(teacher_losses.hard_negative.detach().item()),
                     "loss_assignment": float(teacher_losses.assignment.detach().item()),
+                    "loss_counterfactual_assignment": float(
+                        teacher_losses.counterfactual_assignment.detach().item()
+                    ),
                     "loss_dustbin_assignment": float(
                         teacher_losses.dustbin_assignment.detach().item()
                     ),
@@ -2862,6 +3238,28 @@ def training_detector(
                     ),
                     "loss_geometry_set": float(teacher_losses.geometry_set.detach().item()),
                     "loss_coverage": float(teacher_losses.coverage.detach().item()),
+                    "loss_map_cleanliness": float(
+                        teacher_losses.map_cleanliness.detach().item()
+                    ),
+                    "loss_map_full_information": float(
+                        teacher_losses.map_full_information.detach().item()
+                    ),
+                    "loss_map_translation_information": float(
+                        teacher_losses.map_translation_information.detach().item()
+                    ),
+                    "loss_map_translation_trace": float(
+                        teacher_losses.map_translation_trace.detach().item()
+                    ),
+                    "loss_map_translation_condition": float(
+                        teacher_losses.map_translation_condition.detach().item()
+                    ),
+                    "loss_map_bias": float(teacher_losses.map_bias.detach().item()),
+                    "loss_map_directional_bias": float(
+                        teacher_losses.map_directional_bias.detach().item()
+                    ),
+                    "loss_map_capacity": float(
+                        teacher_losses.map_capacity.detach().item()
+                    ),
                     "loss_base_detector": float(base_detector_loss.detach().item()),
                     "loss_feature_anchor": float(feature_anchor_loss.detach().item()),
                 }
@@ -2938,6 +3336,39 @@ def training_detector(
                         "hard_negatives": candidate_teacher_hard_negatives,
                         "match_temperature": candidate_teacher_match_temperature,
                         "match_margin": candidate_teacher_match_margin,
+                        "assignment_pose_information_mode": (
+                            candidate_teacher_assignment_pose_information_mode
+                        ),
+                        "assignment_pose_information_weight": (
+                            candidate_teacher_assignment_pose_information_weight
+                        ),
+                        "assignment_pose_information_floor": (
+                            candidate_teacher_assignment_pose_information_floor
+                        ),
+                        "assignment_pose_information_normalization": (
+                            candidate_teacher_assignment_pose_information_normalization
+                        ),
+                        "assignment_fisher_translation_scale": (
+                            candidate_teacher_assignment_fisher_translation_scale
+                        ),
+                        "assignment_fisher_rotation_scale_degrees": (
+                            candidate_teacher_assignment_fisher_rotation_scale_degrees
+                        ),
+                        "assignment_fisher_measurement_sigma": (
+                            candidate_teacher_assignment_fisher_measurement_sigma
+                        ),
+                        "assignment_fisher_use_matchability": (
+                            candidate_teacher_assignment_fisher_use_matchability
+                        ),
+                        "assignment_fisher_matchability_floor": (
+                            candidate_teacher_assignment_fisher_matchability_floor
+                        ),
+                        "assignment_fisher_matchability_power": (
+                            candidate_teacher_assignment_fisher_matchability_power
+                        ),
+                        "assignment_fisher_uncertainty_entropy_scale": (
+                            candidate_teacher_assignment_fisher_uncertainty_entropy_scale
+                        ),
                         "grid_rows": candidate_teacher_grid_rows,
                         "grid_cols": candidate_teacher_grid_cols,
                         "depth_bins": candidate_teacher_depth_bins,
@@ -2950,7 +3381,54 @@ def training_detector(
                         ),
                         "detector_target_source": candidate_teacher_detector_target_source,
                         "detector_binary_target": candidate_teacher_detector_binary_target,
+                        "map_max_matches_per_landmark": (
+                            candidate_teacher_map_max_matches_per_landmark
+                        ),
+                        "directional_candidate_topk": (
+                            candidate_teacher_map_directional_topk
+                        ),
+                        "counterfactual_enabled": (
+                            float(candidate_teacher_counterfactual_assignment_weight)
+                            > 0.0
+                        ),
+                        "counterfactual_bias_utility_weight": (
+                            candidate_teacher_counterfactual_bias_utility_weight
+                        ),
+                        "counterfactual_translation_utility_weight": (
+                            candidate_teacher_counterfactual_translation_utility_weight
+                        ),
+                        "counterfactual_utility_floor": (
+                            candidate_teacher_counterfactual_utility_floor
+                        ),
+                        "counterfactual_target_mode": (
+                            candidate_teacher_counterfactual_target_mode
+                        ),
+                        "counterfactual_require_current_retained": (
+                            candidate_teacher_counterfactual_require_current_retained
+                        ),
+                        "counterfactual_require_positive_bias_gain": (
+                            candidate_teacher_counterfactual_require_positive_bias_gain
+                        ),
+                        "counterfactual_require_nonnegative_translation_gain": (
+                            candidate_teacher_counterfactual_require_nonnegative_translation_gain
+                        ),
+                        "counterfactual_translation_scale": (
+                            candidate_teacher_map_fisher_translation_scale
+                        ),
+                        "counterfactual_rotation_scale_degrees": (
+                            candidate_teacher_map_fisher_rotation_scale_degrees
+                        ),
+                        "counterfactual_measurement_sigma_px": (
+                            candidate_teacher_map_fisher_measurement_sigma_px
+                        ),
+                        "counterfactual_residual_clip_px": (
+                            candidate_teacher_map_fisher_residual_clip_px
+                        ),
+                        "counterfactual_inlier_sigma_px": (
+                            candidate_teacher_map_fisher_inlier_sigma_px
+                        ),
                     },
+                    assignment_mode=candidate_teacher_assignment_mode,
                     assignment_temperature=candidate_teacher_assignment_temperature,
                     assignment_margin=candidate_teacher_assignment_margin,
                     reprojection_sigma_px=candidate_teacher_reprojection_sigma_px,
@@ -2963,6 +3441,36 @@ def training_detector(
                     ),
                     set_risk_reference_translation_m=(
                         candidate_teacher_pair_measurement_reference_translation_m
+                    ),
+                    map_fisher_translation_scale=(
+                        candidate_teacher_map_fisher_translation_scale
+                    ),
+                    map_fisher_rotation_scale_degrees=(
+                        candidate_teacher_map_fisher_rotation_scale_degrees
+                    ),
+                    map_fisher_measurement_sigma_px=(
+                        candidate_teacher_map_fisher_measurement_sigma_px
+                    ),
+                    map_fisher_residual_clip_px=(
+                        candidate_teacher_map_fisher_residual_clip_px
+                    ),
+                    map_fisher_inlier_sigma_px=(
+                        candidate_teacher_map_fisher_inlier_sigma_px
+                    ),
+                    map_fisher_condition_target=(
+                        candidate_teacher_map_fisher_condition_target
+                    ),
+                    map_directional_temperature=(
+                        candidate_teacher_map_directional_temperature
+                    ),
+                    map_directional_residual_clip_px=(
+                        candidate_teacher_map_directional_residual_clip_px
+                    ),
+                    map_directional_robust_scale_px=(
+                        candidate_teacher_map_directional_robust_scale_px
+                    ),
+                    map_directional_robust_quality_floor=(
+                        candidate_teacher_map_directional_robust_quality_floor
                     ),
                 )
                 calibrated_pair_scorer_threshold = validation_metrics.get(
@@ -3176,14 +3684,191 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_hard_negatives", type=int, default=8)
     parser.add_argument("--candidate_teacher_match_temperature", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_match_margin", type=float, default=0.5)
+    parser.add_argument(
+        "--candidate_teacher_assignment_mode",
+        choices=["single_nearest", "multi_positive"],
+        default="single_nearest",
+    )
     parser.add_argument("--candidate_teacher_assignment_temperature", type=float, default=0.05)
     parser.add_argument("--candidate_teacher_assignment_margin", type=float, default=0.05)
+    parser.add_argument(
+        "--candidate_teacher_assignment_pose_information_mode",
+        type=str,
+        default="none",
+        choices=[
+            "none",
+            "point_jacobian",
+            "full_set_leverage",
+            "conditional_full",
+            "conditional_translation",
+        ],
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_pose_information_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_pose_information_floor",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_pose_information_normalization",
+        type=str,
+        default="quantile",
+        choices=["max", "quantile", "rank"],
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_translation_scale",
+        type=float,
+        default=0.02,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_rotation_scale_degrees",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_measurement_sigma",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_use_matchability",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_matchability_floor",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_matchability_power",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_assignment_fisher_uncertainty_entropy_scale",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--candidate_teacher_map_cleanliness_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_teacher_map_full_information_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_translation_information_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_translation_trace_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_translation_condition_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--candidate_teacher_map_bias_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_teacher_map_directional_bias_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument("--candidate_teacher_map_capacity_weight", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_translation_scale", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_rotation_scale_degrees",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_measurement_sigma_px",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_residual_clip_px", type=float, default=12.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_inlier_sigma_px", type=float, default=4.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_fisher_condition_target", type=float, default=100.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_max_matches_per_landmark", type=int, default=0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_directional_topk", type=int, default=0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_directional_temperature",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_directional_residual_clip_px",
+        type=float,
+        default=24.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_directional_robust_scale_px",
+        type=float,
+        default=12.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_directional_robust_quality_floor",
+        type=float,
+        default=0.01,
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_bias_utility_weight",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_translation_utility_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_utility_floor",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_target_mode",
+        choices=("all_false", "assignment_missed"),
+        default="all_false",
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_require_current_retained",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_require_positive_bias_gain",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_require_nonnegative_translation_gain",
+        action="store_true",
+    )
     parser.add_argument("--candidate_teacher_grid_rows", type=int, default=4)
     parser.add_argument("--candidate_teacher_grid_cols", type=int, default=4)
     parser.add_argument("--candidate_teacher_depth_bins", type=int, default=4)
     parser.add_argument("--candidate_teacher_pair_weight", type=float, default=1.0)
     parser.add_argument("--candidate_teacher_hard_negative_weight", type=float, default=0.5)
     parser.add_argument("--candidate_teacher_assignment_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_assignment_weight",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--candidate_teacher_dustbin_weight", type=float, default=0.0)
     parser.add_argument(
         "--candidate_teacher_matcher_assignment_weight", type=float, default=0.0
@@ -3419,14 +4104,130 @@ if __name__ == "__main__":
         candidate_teacher_hard_negatives=args.candidate_teacher_hard_negatives,
         candidate_teacher_match_temperature=args.candidate_teacher_match_temperature,
         candidate_teacher_match_margin=args.candidate_teacher_match_margin,
+        candidate_teacher_assignment_mode=args.candidate_teacher_assignment_mode,
         candidate_teacher_assignment_temperature=args.candidate_teacher_assignment_temperature,
         candidate_teacher_assignment_margin=args.candidate_teacher_assignment_margin,
+        candidate_teacher_assignment_pose_information_mode=(
+            args.candidate_teacher_assignment_pose_information_mode
+        ),
+        candidate_teacher_assignment_pose_information_weight=(
+            args.candidate_teacher_assignment_pose_information_weight
+        ),
+        candidate_teacher_assignment_pose_information_floor=(
+            args.candidate_teacher_assignment_pose_information_floor
+        ),
+        candidate_teacher_assignment_pose_information_normalization=(
+            args.candidate_teacher_assignment_pose_information_normalization
+        ),
+        candidate_teacher_assignment_fisher_translation_scale=(
+            args.candidate_teacher_assignment_fisher_translation_scale
+        ),
+        candidate_teacher_assignment_fisher_rotation_scale_degrees=(
+            args.candidate_teacher_assignment_fisher_rotation_scale_degrees
+        ),
+        candidate_teacher_assignment_fisher_measurement_sigma=(
+            args.candidate_teacher_assignment_fisher_measurement_sigma
+        ),
+        candidate_teacher_assignment_fisher_use_matchability=(
+            args.candidate_teacher_assignment_fisher_use_matchability
+        ),
+        candidate_teacher_assignment_fisher_matchability_floor=(
+            args.candidate_teacher_assignment_fisher_matchability_floor
+        ),
+        candidate_teacher_assignment_fisher_matchability_power=(
+            args.candidate_teacher_assignment_fisher_matchability_power
+        ),
+        candidate_teacher_assignment_fisher_uncertainty_entropy_scale=(
+            args.candidate_teacher_assignment_fisher_uncertainty_entropy_scale
+        ),
+        candidate_teacher_map_cleanliness_weight=(
+            args.candidate_teacher_map_cleanliness_weight
+        ),
+        candidate_teacher_map_full_information_weight=(
+            args.candidate_teacher_map_full_information_weight
+        ),
+        candidate_teacher_map_translation_information_weight=(
+            args.candidate_teacher_map_translation_information_weight
+        ),
+        candidate_teacher_map_translation_trace_weight=(
+            args.candidate_teacher_map_translation_trace_weight
+        ),
+        candidate_teacher_map_translation_condition_weight=(
+            args.candidate_teacher_map_translation_condition_weight
+        ),
+        candidate_teacher_map_bias_weight=args.candidate_teacher_map_bias_weight,
+        candidate_teacher_map_directional_bias_weight=(
+            args.candidate_teacher_map_directional_bias_weight
+        ),
+        candidate_teacher_map_capacity_weight=(
+            args.candidate_teacher_map_capacity_weight
+        ),
+        candidate_teacher_map_fisher_translation_scale=(
+            args.candidate_teacher_map_fisher_translation_scale
+        ),
+        candidate_teacher_map_fisher_rotation_scale_degrees=(
+            args.candidate_teacher_map_fisher_rotation_scale_degrees
+        ),
+        candidate_teacher_map_fisher_measurement_sigma_px=(
+            args.candidate_teacher_map_fisher_measurement_sigma_px
+        ),
+        candidate_teacher_map_fisher_residual_clip_px=(
+            args.candidate_teacher_map_fisher_residual_clip_px
+        ),
+        candidate_teacher_map_fisher_inlier_sigma_px=(
+            args.candidate_teacher_map_fisher_inlier_sigma_px
+        ),
+        candidate_teacher_map_fisher_condition_target=(
+            args.candidate_teacher_map_fisher_condition_target
+        ),
+        candidate_teacher_map_max_matches_per_landmark=(
+            args.candidate_teacher_map_max_matches_per_landmark
+        ),
+        candidate_teacher_map_directional_topk=(
+            args.candidate_teacher_map_directional_topk
+        ),
+        candidate_teacher_map_directional_temperature=(
+            args.candidate_teacher_map_directional_temperature
+        ),
+        candidate_teacher_map_directional_residual_clip_px=(
+            args.candidate_teacher_map_directional_residual_clip_px
+        ),
+        candidate_teacher_map_directional_robust_scale_px=(
+            args.candidate_teacher_map_directional_robust_scale_px
+        ),
+        candidate_teacher_map_directional_robust_quality_floor=(
+            args.candidate_teacher_map_directional_robust_quality_floor
+        ),
+        candidate_teacher_counterfactual_bias_utility_weight=(
+            args.candidate_teacher_counterfactual_bias_utility_weight
+        ),
+        candidate_teacher_counterfactual_translation_utility_weight=(
+            args.candidate_teacher_counterfactual_translation_utility_weight
+        ),
+        candidate_teacher_counterfactual_utility_floor=(
+            args.candidate_teacher_counterfactual_utility_floor
+        ),
+        candidate_teacher_counterfactual_target_mode=(
+            args.candidate_teacher_counterfactual_target_mode
+        ),
+        candidate_teacher_counterfactual_require_current_retained=(
+            args.candidate_teacher_counterfactual_require_current_retained
+        ),
+        candidate_teacher_counterfactual_require_positive_bias_gain=(
+            args.candidate_teacher_counterfactual_require_positive_bias_gain
+        ),
+        candidate_teacher_counterfactual_require_nonnegative_translation_gain=(
+            args.candidate_teacher_counterfactual_require_nonnegative_translation_gain
+        ),
         candidate_teacher_grid_rows=args.candidate_teacher_grid_rows,
         candidate_teacher_grid_cols=args.candidate_teacher_grid_cols,
         candidate_teacher_depth_bins=args.candidate_teacher_depth_bins,
         candidate_teacher_pair_weight=args.candidate_teacher_pair_weight,
         candidate_teacher_hard_negative_weight=args.candidate_teacher_hard_negative_weight,
         candidate_teacher_assignment_weight=args.candidate_teacher_assignment_weight,
+        candidate_teacher_counterfactual_assignment_weight=(
+            args.candidate_teacher_counterfactual_assignment_weight
+        ),
         candidate_teacher_dustbin_weight=args.candidate_teacher_dustbin_weight,
         candidate_teacher_matcher_assignment_weight=(
             args.candidate_teacher_matcher_assignment_weight

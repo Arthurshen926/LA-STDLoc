@@ -5,6 +5,11 @@ import torch.nn.functional as F
 
 from localization_training.correspondence import project_world_to_pixels
 from localization_training.absolute_set_risk import absolute_pose_set_risk
+from localization_training.map_information_bias import (
+    counterfactual_pose_swap_utility,
+    directional_candidate_set_risk,
+    map_information_and_bias_risk,
+)
 from localization_training.pair_measurement import (
     PairMeasurementOutput,
     build_pair_geometry_features,
@@ -12,6 +17,8 @@ from localization_training.pair_measurement import (
     sample_local_correlation_patch,
 )
 from localization_training.pose_information import (
+    compute_pose_information,
+    normalize_information_scores,
     pose_jacobian_analytic,
     pose_jacobian_numeric,
 )
@@ -19,6 +26,7 @@ from localization_training.sparse_frontend import (
     build_pair_context_features,
     build_score_matrix,
     match_score_matrix,
+    matches_per_landmark_mask,
     select_keypoints,
 )
 
@@ -55,10 +63,21 @@ class SparseCandidateBatch:
     pair_measurement_target_offsets: torch.Tensor
     pair_measurement_jacobian: torch.Tensor
     pair_measurement_geometry_valid_mask: torch.Tensor
+    map_candidate_geometry_valid_mask: torch.Tensor
+    directional_candidate_similarity: torch.Tensor
+    directional_candidate_residual: torch.Tensor
+    directional_candidate_jacobian: torch.Tensor
+    directional_candidate_valid_mask: torch.Tensor
+    directional_candidate_clean_labels: torch.Tensor
     hard_negative_logits: torch.Tensor
     assignment_positive_similarity: torch.Tensor
     assignment_negative_similarity: torch.Tensor
     assignment_negative_mask: torch.Tensor
+    assignment_loss_weights: torch.Tensor
+    counterfactual_positive_similarity: torch.Tensor
+    counterfactual_negative_similarity: torch.Tensor
+    counterfactual_assignment_weights: torch.Tensor
+    counterfactual_assignment_valid_mask: torch.Tensor
     multi_positive_similarity: torch.Tensor
     multi_positive_mask: torch.Tensor
     multi_negative_similarity: torch.Tensor
@@ -76,6 +95,7 @@ class SparseCandidateLosses:
     pair: torch.Tensor
     hard_negative: torch.Tensor
     assignment: torch.Tensor
+    counterfactual_assignment: torch.Tensor
     dustbin_assignment: torch.Tensor
     matcher_assignment: torch.Tensor
     matcher_reprojection_assignment: torch.Tensor
@@ -91,6 +111,14 @@ class SparseCandidateLosses:
     detector_offset: torch.Tensor
     geometry_set: torch.Tensor
     coverage: torch.Tensor
+    map_cleanliness: torch.Tensor
+    map_full_information: torch.Tensor
+    map_translation_information: torch.Tensor
+    map_translation_trace: torch.Tensor
+    map_translation_condition: torch.Tensor
+    map_bias: torch.Tensor
+    map_directional_bias: torch.Tensor
+    map_capacity: torch.Tensor
 
 
 def _zero(reference):
@@ -159,6 +187,7 @@ def _row_assignment_loss(
     *,
     temperature=0.05,
     margin=0.05,
+    weights=None,
 ):
     """Rank one GT-valid landmark above the hardest false matches in each query row."""
     if positive_similarity.numel() == 0 or negative_similarity.numel() == 0:
@@ -182,7 +211,122 @@ def _row_assignment_loss(
     )
     logits = torch.cat([positive_logit[:, None], negative_logit], dim=1)
     target = torch.zeros(logits.shape[0], dtype=torch.long, device=logits.device)
-    return F.cross_entropy(logits, target)
+    per_row = F.cross_entropy(logits, target, reduction="none")
+    if weights is None:
+        return per_row.mean()
+    weights = torch.as_tensor(
+        weights, device=per_row.device, dtype=per_row.dtype
+    ).reshape(-1)
+    if weights.numel() != valid_row.numel():
+        raise ValueError(
+            f"assignment weights must have {valid_row.numel()} rows, got {weights.numel()}"
+        )
+    weights = weights[valid_row].clamp_min(0.0)
+    return (per_row * weights).sum() / weights.sum().clamp_min(1e-8)
+
+
+def _multi_positive_assignment_loss(
+    positive_similarity,
+    positive_mask,
+    negative_similarity,
+    negative_mask,
+    *,
+    temperature=0.05,
+    margin=0.05,
+    weights=None,
+):
+    """Rank any geometrically valid landmark above the hard-negative set."""
+    if positive_similarity.shape != positive_mask.shape:
+        raise ValueError(
+            "multi-positive similarities and mask must have identical shapes"
+        )
+    if negative_similarity.shape != negative_mask.shape:
+        raise ValueError(
+            "multi-negative similarities and mask must have identical shapes"
+        )
+    if positive_similarity.shape[0] != negative_similarity.shape[0]:
+        raise ValueError(
+            "multi-positive and multi-negative tensors must have the same row count"
+        )
+    if positive_similarity.shape[0] == 0:
+        return _zero(positive_similarity)
+
+    valid_row = positive_mask.any(dim=1) & negative_mask.any(dim=1)
+    if not bool(valid_row.any().item()):
+        return _zero(positive_similarity)
+
+    temperature = max(float(temperature), 1e-6)
+    minimum = torch.finfo(positive_similarity.dtype).min
+    positive_logits = (
+        (positive_similarity[valid_row] - float(margin)) / temperature
+    ).masked_fill(~positive_mask[valid_row], minimum)
+    negative_logits = (
+        negative_similarity[valid_row] / temperature
+    ).masked_fill(~negative_mask[valid_row], minimum)
+    denominator = torch.logsumexp(
+        torch.cat([positive_logits, negative_logits], dim=1), dim=1
+    )
+    numerator = torch.logsumexp(positive_logits, dim=1)
+    per_row = denominator - numerator
+    if weights is None:
+        return per_row.mean()
+    weights = torch.as_tensor(
+        weights, device=per_row.device, dtype=per_row.dtype
+    ).reshape(-1)
+    positive_rows = positive_mask.any(dim=1)
+    if weights.numel() == int(positive_rows.sum().item()):
+        expanded_weights = per_row.new_zeros(positive_rows.shape)
+        expanded_weights[positive_rows] = weights
+        weights = expanded_weights
+    elif weights.numel() != positive_rows.numel():
+        raise ValueError(
+            "multi-positive assignment weights must have one value per row or "
+            "per positive row"
+        )
+    weights = weights[valid_row].clamp_min(0.0)
+    return (per_row * weights).sum() / weights.sum().clamp_min(1e-8)
+
+
+def _counterfactual_pairwise_assignment_loss(
+    positive_similarity,
+    negative_similarity,
+    valid_mask,
+    weights,
+    *,
+    temperature=0.05,
+    margin=0.05,
+):
+    """Promote the GT candidate over the actual false top1 candidate."""
+    if positive_similarity.numel() == 0:
+        return _zero(positive_similarity)
+    if not (
+        positive_similarity.shape
+        == negative_similarity.shape
+        == valid_mask.shape
+        == weights.shape
+    ):
+        raise ValueError(
+            "Counterfactual assignment tensors must have identical shapes"
+        )
+    valid_mask = valid_mask.to(device=positive_similarity.device, dtype=torch.bool)
+    weights = weights.to(
+        device=positive_similarity.device, dtype=positive_similarity.dtype
+    ).clamp_min(0.0)
+    valid_mask = valid_mask & torch.isfinite(positive_similarity)
+    valid_mask = valid_mask & torch.isfinite(negative_similarity) & (weights > 0)
+    if not bool(valid_mask.any().item()):
+        return _zero(positive_similarity)
+    temperature = max(float(temperature), 1e-6)
+    per_row = F.softplus(
+        (
+            negative_similarity[valid_mask]
+            - positive_similarity[valid_mask]
+            + float(margin)
+        )
+        / temperature
+    )
+    valid_weights = weights[valid_mask]
+    return (per_row * valid_weights).sum() / valid_weights.sum().clamp_min(1e-8)
 
 
 def _grouped_multi_positive_assignment_loss(
@@ -543,6 +687,158 @@ def _pose_scores(points_world, K, pose_w2c, damping=1e-4):
     return score, jacobian
 
 
+@torch.no_grad()
+def _assignment_information_weights(
+    points_world,
+    K,
+    pose_w2c,
+    positive_similarity,
+    negative_similarity,
+    negative_mask,
+    *,
+    mode="none",
+    blend=0.0,
+    floor=0.05,
+    normalization="quantile",
+    damping=1e-4,
+    translation_scale=0.02,
+    rotation_scale_degrees=2.0,
+    measurement_sigma=1.0,
+    use_matchability=False,
+    matchability_floor=0.05,
+    matchability_power=1.0,
+    uncertainty_entropy_scale=0.0,
+    match_temperature=0.1,
+):
+    count = int(points_world.shape[0])
+    ones = points_world.new_ones((count,))
+    mode = str(mode).strip().lower()
+    blend = max(0.0, min(float(blend), 1.0))
+    if count == 0 or mode == "none" or blend <= 0.0:
+        return ones, {
+            "assignment_pose_information_mode_id": 0.0,
+            "assignment_pose_information_weight_blend": blend,
+        }
+    aliases = {
+        "current": "point_jacobian",
+        "exact_conditional_full": "conditional_full",
+        "exact_conditional_translation": "conditional_translation",
+    }
+    mode = aliases.get(mode, mode)
+    supported = {
+        "point_jacobian",
+        "full_set_leverage",
+        "conditional_full",
+        "conditional_translation",
+    }
+    if mode not in supported:
+        raise ValueError(f"Unsupported assignment pose information mode: {mode}")
+
+    matchability = ones
+    entropy = points_world.new_zeros((count,))
+    if bool(use_matchability):
+        temperature = max(float(match_temperature), 1e-6)
+        positive_logits = positive_similarity.detach().reshape(-1, 1) / temperature
+        if negative_similarity.numel() > 0:
+            negative_logits = negative_similarity.detach() / temperature
+            negative_logits = negative_logits.masked_fill(
+                ~negative_mask,
+                torch.finfo(negative_logits.dtype).min,
+            )
+            logits = torch.cat([positive_logits, negative_logits], dim=1)
+            probability = torch.softmax(logits, dim=1)
+            matchability = probability[:, 0]
+            valid_count = negative_mask.sum(dim=1).to(dtype=probability.dtype) + 1.0
+            entropy = -(probability * probability.clamp_min(1e-8).log()).sum(dim=1)
+            entropy = entropy / valid_count.clamp_min(2.0).log()
+        else:
+            matchability = torch.ones_like(positive_similarity)
+        matchability = matchability.clamp(0.0, 1.0).pow(
+            max(float(matchability_power), 0.0)
+        )
+        probability_floor = max(0.0, min(float(matchability_floor), 1.0))
+        matchability = probability_floor + (1.0 - probability_floor) * matchability
+
+    base_sigma = max(float(measurement_sigma), 1e-4)
+    entropy_scale = max(float(uncertainty_entropy_scale), 0.0)
+    sigma = base_sigma * (1.0 + entropy_scale * entropy)
+    if mode == "point_jacobian":
+        jacobian = pose_jacobian_analytic(points_world, K, pose_w2c)
+        raw_scores = jacobian.square().sum(dim=(1, 2))
+        raw_scores = raw_scores * matchability / sigma.square().clamp_min(1e-8)
+        information = None
+    else:
+        information = compute_pose_information(
+            points_world,
+            K,
+            pose_w2c,
+            weights=matchability,
+            damping=damping,
+            measurement_covariance=sigma.square(),
+            translation_scale=translation_scale,
+            rotation_scale=float(rotation_scale_degrees) * torch.pi / 180.0,
+            use_analytic_jacobian=True,
+        )
+        if mode == "full_set_leverage":
+            raw_scores = information.full_set_leverage_scores
+        elif mode == "conditional_full":
+            raw_scores = information.scores
+        else:
+            raw_scores = information.translation_scores
+    normalized = normalize_information_scores(
+        raw_scores,
+        floor=floor,
+        mode=normalization,
+    )
+    weights = (1.0 - blend) + blend * normalized
+    diagnostics = {
+        "assignment_pose_information_mode_id": float(
+            {
+                "point_jacobian": 1,
+                "full_set_leverage": 2,
+                "conditional_full": 3,
+                "conditional_translation": 4,
+            }[mode]
+        ),
+        "assignment_pose_information_weight_blend": blend,
+        "assignment_pose_information_weight_min": float(weights.min().item()),
+        "assignment_pose_information_weight_mean": float(weights.mean().item()),
+        "assignment_pose_information_weight_max": float(weights.max().item()),
+        "assignment_pose_information_raw_gain_min": float(raw_scores.min().item()),
+        "assignment_pose_information_raw_gain_mean": float(raw_scores.mean().item()),
+        "assignment_pose_information_raw_gain_max": float(raw_scores.max().item()),
+        "assignment_pose_information_uses_matchability": float(bool(use_matchability)),
+        "assignment_pose_information_matchability_mean": float(matchability.mean().item()),
+        "assignment_pose_information_entropy_mean": float(entropy.mean().item()),
+        "assignment_pose_information_sigma_mean": float(sigma.mean().item()),
+    }
+    if information is not None:
+        diagnostics.update(
+            {
+                "assignment_fisher_full_logdet": float(information.logdet.item()),
+                "assignment_fisher_full_condition": float(
+                    information.condition_number.item()
+                ),
+                "assignment_fisher_translation_logdet": float(
+                    information.translation_logdet.item()
+                ),
+                "assignment_fisher_translation_condition": float(
+                    information.translation_condition_number.item()
+                ),
+                "assignment_fisher_translation_min_eigenvalue": float(
+                    information.translation_min_eigenvalue.item()
+                ),
+                "assignment_fisher_translation_worst_std": float(
+                    information.translation_worst_std.item()
+                ),
+                "assignment_fisher_effective_count": float(
+                    information.effective_count.item()
+                ),
+            }
+        )
+    return weights.detach(), diagnostics
+
+
 def _inverse_frequency(ids, valid, bin_count):
     result = torch.zeros(ids.shape[0], dtype=torch.float32, device=ids.device)
     if not bool(valid.any().item()) or int(bin_count) <= 0:
@@ -620,6 +916,79 @@ def _translation_schur_loss(jacobian, weights, damping=1e-4):
     }
 
 
+@torch.no_grad()
+def _quota_displaced_candidate_indices(
+    candidate_landmark_idx,
+    candidate_scores,
+    retained_mask,
+    target_landmark_idx,
+    max_matches_per_landmark,
+):
+    """Return the retained pair displaced when a target landmark is inserted."""
+    target_landmark_idx = target_landmark_idx.to(dtype=torch.long)
+    displaced = target_landmark_idx.new_full(target_landmark_idx.shape, -1)
+    limit = int(max_matches_per_landmark)
+    if limit <= 0 or target_landmark_idx.numel() == 0:
+        return displaced
+    candidate_landmark_idx = candidate_landmark_idx.to(
+        device=target_landmark_idx.device, dtype=torch.long
+    ).reshape(-1)
+    candidate_scores = candidate_scores.to(
+        device=target_landmark_idx.device
+    ).reshape(-1)
+    retained_mask = retained_mask.to(
+        device=target_landmark_idx.device, dtype=torch.bool
+    ).reshape(-1)
+    if not (
+        candidate_landmark_idx.shape
+        == candidate_scores.shape
+        == retained_mask.shape
+    ):
+        raise ValueError("Quota candidate tensors must have identical shapes")
+    if candidate_landmark_idx.numel() == 0 or not bool(retained_mask.any().item()):
+        return displaced
+    landmark_count = (
+        int(torch.cat([candidate_landmark_idx, target_landmark_idx]).max().item())
+        + 1
+    )
+    selected_count = torch.bincount(
+        candidate_landmark_idx[retained_mask], minlength=landmark_count
+    )
+    full_target = selected_count[target_landmark_idx] >= limit
+    if not bool(full_target.any().item()):
+        return displaced
+
+    minimum_score = candidate_scores.new_full((landmark_count,), torch.inf)
+    minimum_score.scatter_reduce_(
+        0,
+        candidate_landmark_idx[retained_mask],
+        candidate_scores[retained_mask],
+        reduce="amin",
+        include_self=True,
+    )
+    pair_indices = torch.arange(
+        candidate_landmark_idx.numel(),
+        device=candidate_landmark_idx.device,
+        dtype=torch.long,
+    )
+    is_worst = retained_mask & (
+        candidate_scores == minimum_score[candidate_landmark_idx]
+    )
+    worst_index = candidate_landmark_idx.new_full(
+        (landmark_count,), candidate_landmark_idx.numel()
+    )
+    worst_index.scatter_reduce_(
+        0,
+        candidate_landmark_idx[is_worst],
+        pair_indices[is_worst],
+        reduce="amin",
+        include_self=True,
+    )
+    target_worst = worst_index[target_landmark_idx]
+    valid_worst = full_target & (target_worst < candidate_landmark_idx.numel())
+    return torch.where(valid_worst, target_worst, displaced)
+
+
 def build_sparse_candidate_batch(
     query_feature_map,
     detector_heatmap,
@@ -648,6 +1017,17 @@ def build_sparse_candidate_batch(
     depth_bins=4,
     detector_positive_floor=0.25,
     pose_damping=1e-4,
+    assignment_pose_information_mode="none",
+    assignment_pose_information_weight=0.0,
+    assignment_pose_information_floor=0.05,
+    assignment_pose_information_normalization="quantile",
+    assignment_fisher_translation_scale=0.02,
+    assignment_fisher_rotation_scale_degrees=2.0,
+    assignment_fisher_measurement_sigma=1.0,
+    assignment_fisher_use_matchability=False,
+    assignment_fisher_matchability_floor=0.05,
+    assignment_fisher_matchability_power=1.0,
+    assignment_fisher_uncertainty_entropy_scale=0.0,
     dustbin_score=None,
     pair_scorer=None,
     pair_measurement_head=None,
@@ -658,6 +1038,21 @@ def build_sparse_candidate_batch(
     detector_offset_target_source="geometric_nearest",
     detector_target_source="geometric",
     detector_binary_target=False,
+    map_max_matches_per_landmark=0,
+    directional_candidate_topk=0,
+    counterfactual_enabled=False,
+    counterfactual_bias_utility_weight=1.0,
+    counterfactual_translation_utility_weight=0.0,
+    counterfactual_utility_floor=0.1,
+    counterfactual_target_mode="all_false",
+    counterfactual_require_current_retained=False,
+    counterfactual_require_positive_bias_gain=False,
+    counterfactual_require_nonnegative_translation_gain=False,
+    counterfactual_translation_scale=0.02,
+    counterfactual_rotation_scale_degrees=2.0,
+    counterfactual_measurement_sigma_px=1.0,
+    counterfactual_residual_clip_px=12.0,
+    counterfactual_inlier_sigma_px=4.0,
 ):
     """Build the actual query-keypoint/landmark candidates used by sparse localization."""
     if query_feature_map.dim() != 3:
@@ -933,6 +1328,7 @@ def build_sparse_candidate_batch(
     )
     hard_negative_logits = similarity.new_empty(0)
     hard_negative_count = 0
+    hard_idx = None
     if similarity.numel() > 0 and int(hard_negatives) > 0:
         pool_size = min(
             similarity.shape[1],
@@ -1003,6 +1399,91 @@ def build_sparse_candidate_batch(
         dustbin_score = similarity.new_tensor(float(match_margin))
     else:
         dustbin_score = dustbin_score.to(device=device, dtype=dtype)
+
+    directional_topk = min(
+        max(int(directional_candidate_topk), 0),
+        int(score_matrix.shape[1]),
+    )
+    if directional_topk > 0 and score_matrix.shape[0] > 0:
+        with torch.no_grad():
+            if hard_idx is not None and hard_idx.shape[1] >= directional_topk:
+                directional_top_idx = hard_idx[:, :directional_topk]
+            else:
+                directional_top_idx = torch.topk(
+                    score_matrix.detach(), directional_topk, dim=1
+                ).indices
+            safe_nearest_idx = nearest_landmark_idx.clamp_min(0)[:, None]
+            append_gt = keypoint_has_gt[:, None] & ~(
+                directional_top_idx == safe_nearest_idx
+            ).any(dim=1, keepdim=True)
+            directional_candidate_idx = torch.cat(
+                [directional_top_idx, safe_nearest_idx], dim=1
+            )
+            directional_source_mask = torch.cat(
+                [
+                    torch.ones_like(directional_top_idx, dtype=torch.bool),
+                    append_gt,
+                ],
+                dim=1,
+            )
+            directional_candidate_residual = (
+                projected_xy[directional_candidate_idx]
+                - observed_xy[:, None]
+            )
+            directional_candidate_valid_mask = (
+                directional_source_mask
+                & project_valid[directional_candidate_idx]
+                & torch.isfinite(
+                    projected_xy[directional_candidate_idx]
+                ).all(dim=2)
+                & torch.isfinite(directional_candidate_residual).all(dim=2)
+            )
+            directional_candidate_clean_labels = (
+                directional_source_mask
+                & visible[directional_candidate_idx]
+                & (
+                    torch.linalg.norm(
+                        directional_candidate_residual, dim=2
+                    )
+                    <= float(positive_radius_px)
+                )
+            )
+            directional_candidate_jacobian = pose_jacobian_analytic(
+                landmark_xyz[directional_candidate_idx.reshape(-1)],
+                K,
+                pose_gt_w2c,
+            ).reshape(
+                directional_candidate_idx.shape[0],
+                directional_candidate_idx.shape[1],
+                2,
+                6,
+            )
+            directional_candidate_valid_mask &= torch.isfinite(
+                directional_candidate_jacobian
+            ).reshape(
+                directional_candidate_idx.shape[0],
+                directional_candidate_idx.shape[1],
+                12,
+            ).all(dim=2)
+        directional_candidate_similarity = similarity.gather(
+            1, directional_candidate_idx
+        )
+    else:
+        directional_candidate_similarity = similarity.new_empty(
+            (score_matrix.shape[0], 0)
+        )
+        directional_candidate_residual = similarity.new_empty(
+            (score_matrix.shape[0], 0, 2)
+        )
+        directional_candidate_jacobian = similarity.new_empty(
+            (score_matrix.shape[0], 0, 2, 6)
+        )
+        directional_candidate_valid_mask = torch.empty(
+            score_matrix.shape[0], 0, dtype=torch.bool, device=device
+        )
+        directional_candidate_clean_labels = torch.empty(
+            score_matrix.shape[0], 0, dtype=torch.bool, device=device
+        )
 
     detector_targets = detector_scores.new_zeros(detector_scores.shape)
     detector_loss_weights = detector_scores.new_ones(detector_scores.shape)
@@ -1123,6 +1604,29 @@ def build_sparse_candidate_batch(
         assignment_top1_accuracy = 0.0
         assignment_margin_mean = 0.0
         assignment_margin_median = 0.0
+    assignment_loss_weights, assignment_information_diagnostics = (
+        _assignment_information_weights(
+            landmark_xyz[nearest_landmark_idx[assignment_keypoint_idx]],
+            K,
+            pose_gt_w2c,
+            assignment_positive_similarity,
+            assignment_negative_similarity,
+            assignment_negative_mask,
+            mode=assignment_pose_information_mode,
+            blend=assignment_pose_information_weight,
+            floor=assignment_pose_information_floor,
+            normalization=assignment_pose_information_normalization,
+            damping=pose_damping,
+            translation_scale=assignment_fisher_translation_scale,
+            rotation_scale_degrees=assignment_fisher_rotation_scale_degrees,
+            measurement_sigma=assignment_fisher_measurement_sigma,
+            use_matchability=assignment_fisher_use_matchability,
+            matchability_floor=assignment_fisher_matchability_floor,
+            matchability_power=assignment_fisher_matchability_power,
+            uncertainty_entropy_scale=assignment_fisher_uncertainty_entropy_scale,
+            match_temperature=match_temperature,
+        )
+    )
 
     predicted_logits = _match_logits(
         similarity[predicted_keypoint_idx, predicted_landmark_idx],
@@ -1281,6 +1785,166 @@ def build_sparse_candidate_batch(
             & visible[predicted_landmark_idx]
             & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
         )
+        map_candidate_geometry_valid_mask = (
+            visible[predicted_landmark_idx]
+            & torch.isfinite(projected_xy[predicted_landmark_idx]).all(dim=1)
+            & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
+        )
+        map_candidate_quota_mask = matches_per_landmark_mask(
+            predicted_landmark_idx,
+            predicted_matches.scores,
+            map_max_matches_per_landmark,
+        )
+        map_candidate_geometry_valid_mask &= map_candidate_quota_mask
+        map_candidate_projectable_mask = (
+            project_valid[predicted_landmark_idx]
+            & torch.isfinite(projected_xy[predicted_landmark_idx]).all(dim=1)
+            & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
+        )
+        map_candidate_invisible_projectable_mask = (
+            map_candidate_projectable_mask & ~visible[predicted_landmark_idx]
+        )
+        top1_pair_for_keypoint = torch.full(
+            (keypoint_ids.numel(),),
+            -1,
+            dtype=torch.long,
+            device=device,
+        )
+        predicted_pair_indices = torch.arange(
+            predicted_keypoint_idx.numel(), device=device, dtype=torch.long
+        )
+        predicted_is_top1 = (
+            predicted_landmark_idx
+            == top1_landmark_idx[predicted_keypoint_idx]
+        )
+        top1_pair_for_keypoint[
+            predicted_keypoint_idx[predicted_is_top1]
+        ] = predicted_pair_indices[predicted_is_top1]
+        counterfactual_remove_indices = top1_pair_for_keypoint[
+            assignment_keypoint_idx
+        ]
+        counterfactual_positive_landmark_idx = nearest_landmark_idx[
+            assignment_keypoint_idx
+        ]
+        counterfactual_valid_mask = (
+            (counterfactual_remove_indices >= 0)
+            & ~top1_correct_per_keypoint[assignment_keypoint_idx]
+        )
+        if counterfactual_target_mode == "assignment_missed":
+            counterfactual_valid_mask &= (
+                visible[top1_landmark_idx[assignment_keypoint_idx]]
+                & (
+                    top1_error[assignment_keypoint_idx]
+                    <= float(negative_radius_px)
+                )
+            )
+        elif counterfactual_target_mode != "all_false":
+            raise ValueError(
+                "counterfactual_target_mode must be 'all_false' or "
+                f"'assignment_missed', got {counterfactual_target_mode!r}"
+            )
+        counterfactual_positive_similarity = assignment_positive_similarity
+        counterfactual_negative_similarity = similarity[
+            assignment_keypoint_idx,
+            top1_landmark_idx[assignment_keypoint_idx],
+        ]
+        if bool(counterfactual_enabled):
+            counterfactual_positive_residual = (
+                projected_xy[counterfactual_positive_landmark_idx]
+                - observed_xy[assignment_keypoint_idx]
+            )
+            counterfactual_positive_jacobian = pose_jacobian_analytic(
+                landmark_xyz[counterfactual_positive_landmark_idx],
+                K,
+                pose_gt_w2c,
+            )
+            counterfactual_displaced_indices = _quota_displaced_candidate_indices(
+                predicted_landmark_idx,
+                predicted_matches.scores,
+                map_candidate_quota_mask,
+                counterfactual_positive_landmark_idx,
+                map_max_matches_per_landmark,
+            )
+            if bool(counterfactual_require_current_retained):
+                retained_remove = torch.zeros_like(counterfactual_valid_mask)
+                has_remove = counterfactual_remove_indices >= 0
+                retained_remove[has_remove] = map_candidate_quota_mask[
+                    counterfactual_remove_indices[has_remove]
+                ]
+                counterfactual_valid_mask &= retained_remove
+            counterfactual_eligible_target_count = int(
+                counterfactual_valid_mask.sum().item()
+            )
+            counterfactual_swap = counterfactual_pose_swap_utility(
+                pair_measurement_jacobian,
+                pair_measurement_target_offsets,
+                map_candidate_geometry_valid_mask,
+                counterfactual_remove_indices,
+                counterfactual_positive_jacobian,
+                counterfactual_positive_residual,
+                counterfactual_valid_mask,
+                displaced_indices=counterfactual_displaced_indices,
+                translation_scale=counterfactual_translation_scale,
+                rotation_scale_degrees=counterfactual_rotation_scale_degrees,
+                measurement_sigma_px=counterfactual_measurement_sigma_px,
+                damping=pose_damping,
+                residual_clip_px=counterfactual_residual_clip_px,
+                inlier_sigma_px=counterfactual_inlier_sigma_px,
+                bias_utility_weight=counterfactual_bias_utility_weight,
+                translation_utility_weight=(
+                    counterfactual_translation_utility_weight
+                ),
+                utility_floor=counterfactual_utility_floor,
+                require_positive_bias_gain=(
+                    counterfactual_require_positive_bias_gain
+                ),
+                require_nonnegative_translation_gain=(
+                    counterfactual_require_nonnegative_translation_gain
+                ),
+            )
+            counterfactual_assignment_weights = counterfactual_swap.weights
+            counterfactual_assignment_valid_mask = counterfactual_swap.valid_mask
+            counterfactual_current_translation_bias_m = (
+                counterfactual_swap.current_translation_bias_m
+            )
+            counterfactual_valid_gain = counterfactual_swap.bias_reduction_task2[
+                counterfactual_assignment_valid_mask
+            ]
+            counterfactual_valid_information_gain = (
+                counterfactual_swap.translation_logdet_gain[
+                    counterfactual_assignment_valid_mask
+                ]
+            )
+            counterfactual_valid_bias = (
+                counterfactual_swap.counterfactual_translation_bias_task[
+                    counterfactual_assignment_valid_mask
+                ]
+            )
+        else:
+            counterfactual_eligible_target_count = 0
+            counterfactual_displaced_indices = counterfactual_remove_indices.new_full(
+                counterfactual_remove_indices.shape, -1
+            )
+            counterfactual_assignment_weights = assignment_positive_similarity.new_zeros(
+                assignment_positive_similarity.shape
+            )
+            counterfactual_assignment_valid_mask = torch.zeros_like(
+                counterfactual_valid_mask
+            )
+            counterfactual_current_translation_bias_m = similarity.new_tensor(0.0)
+            counterfactual_valid_gain = similarity.new_empty(0)
+            counterfactual_valid_information_gain = similarity.new_empty(0)
+            counterfactual_valid_bias = similarity.new_empty(0)
+        counterfactual_current_quota_retained = torch.zeros_like(
+            counterfactual_assignment_valid_mask
+        )
+        counterfactual_has_current = counterfactual_remove_indices >= 0
+        if bool(counterfactual_has_current.any().item()):
+            counterfactual_current_quota_retained[
+                counterfactual_has_current
+            ] = map_candidate_quota_mask[
+                counterfactual_remove_indices[counterfactual_has_current]
+            ]
 
     diagnostics = {
         "keypoint_count": int(keypoint_ids.numel()),
@@ -1289,6 +1953,94 @@ def build_sparse_candidate_batch(
         "predicted_correct_count": predicted_correct,
         "predicted_ambiguous_count": int(predicted_ambiguous.sum().item()),
         "predicted_valid_count": int(predicted_valid.sum().item()),
+        "map_candidate_geometry_valid_count": int(
+            map_candidate_geometry_valid_mask.sum().item()
+        ),
+        "map_candidate_after_landmark_quota_count": int(
+            map_candidate_quota_mask.sum().item()
+        ),
+        "map_candidate_landmark_quota_removed_count": int(
+            (~map_candidate_quota_mask).sum().item()
+        ),
+        "map_candidate_invisible_projectable_count": int(
+            map_candidate_invisible_projectable_mask.sum().item()
+        ),
+        "map_candidate_invisible_projectable_under_4px_count": int(
+            (
+                map_candidate_invisible_projectable_mask
+                & (torch.linalg.norm(pair_measurement_target_offsets, dim=1) <= 4.0)
+            ).sum().item()
+        ),
+        "directional_candidate_topk": int(directional_topk),
+        "directional_candidate_valid_count": int(
+            directional_candidate_valid_mask.sum().item()
+        ),
+        "directional_candidate_clean_count": int(
+            directional_candidate_clean_labels.sum().item()
+        ),
+        "directional_candidate_clean_row_count": int(
+            directional_candidate_clean_labels.any(dim=1).sum().item()
+        ),
+        "counterfactual_swap_target_count": int(
+            counterfactual_assignment_valid_mask.sum().item()
+        ),
+        "counterfactual_swap_eligible_target_count": (
+            counterfactual_eligible_target_count
+        ),
+        "counterfactual_swap_ambiguous_top1_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & (
+                    top1_error[assignment_keypoint_idx]
+                    <= float(negative_radius_px)
+                )
+            ).sum().item()
+        ),
+        "counterfactual_swap_current_quota_retained_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & counterfactual_current_quota_retained
+            ).sum().item()
+        ),
+        "counterfactual_swap_displaced_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & (counterfactual_displaced_indices >= 0)
+            ).sum().item()
+        ),
+        "counterfactual_swap_positive_bias_gain_count": int(
+            (counterfactual_valid_gain > 0).sum().item()
+        ),
+        "counterfactual_swap_bias_gain_task2_mean": float(
+            counterfactual_valid_gain.mean().item()
+            if counterfactual_valid_gain.numel()
+            else 0.0
+        ),
+        "counterfactual_swap_bias_gain_task2_max": float(
+            counterfactual_valid_gain.max().item()
+            if counterfactual_valid_gain.numel()
+            else 0.0
+        ),
+        "counterfactual_swap_translation_logdet_gain_mean": float(
+            counterfactual_valid_information_gain.mean().item()
+            if counterfactual_valid_information_gain.numel()
+            else 0.0
+        ),
+        "counterfactual_swap_current_translation_bias_m": float(
+            counterfactual_current_translation_bias_m.item()
+        ),
+        "counterfactual_swap_counterfactual_bias_task_mean": float(
+            counterfactual_valid_bias.mean().item()
+            if counterfactual_valid_bias.numel()
+            else 0.0
+        ),
+        "counterfactual_swap_weight_mean": float(
+            counterfactual_assignment_weights[
+                counterfactual_assignment_valid_mask
+            ].mean().item()
+            if bool(counterfactual_assignment_valid_mask.any().item())
+            else 0.0
+        ),
         "predicted_gt_precision": float(predicted_correct / max(predicted_count, 1)),
         "predicted_correct_reprojection_error_mean": float(
             predicted_correct_error.mean().item()
@@ -1384,6 +2136,7 @@ def build_sparse_candidate_batch(
         "depth_bin_count": max(int(depth_bins), 1),
     }
     diagnostics.update(pair_metrics)
+    diagnostics.update(assignment_information_diagnostics)
     return SparseCandidateBatch(
         keypoint_ids=keypoint_ids,
         keypoint_xy=keypoint_xy,
@@ -1417,10 +2170,31 @@ def build_sparse_candidate_batch(
         pair_measurement_geometry_valid_mask=(
             pair_measurement_geometry_valid_mask
         ),
+        map_candidate_geometry_valid_mask=map_candidate_geometry_valid_mask,
+        directional_candidate_similarity=directional_candidate_similarity,
+        directional_candidate_residual=directional_candidate_residual,
+        directional_candidate_jacobian=directional_candidate_jacobian,
+        directional_candidate_valid_mask=directional_candidate_valid_mask,
+        directional_candidate_clean_labels=(
+            directional_candidate_clean_labels
+        ),
         hard_negative_logits=hard_negative_logits,
         assignment_positive_similarity=assignment_positive_similarity,
         assignment_negative_similarity=assignment_negative_similarity,
         assignment_negative_mask=assignment_negative_mask,
+        assignment_loss_weights=assignment_loss_weights,
+        counterfactual_positive_similarity=(
+            counterfactual_positive_similarity
+        ),
+        counterfactual_negative_similarity=(
+            counterfactual_negative_similarity
+        ),
+        counterfactual_assignment_weights=(
+            counterfactual_assignment_weights
+        ),
+        counterfactual_assignment_valid_mask=(
+            counterfactual_assignment_valid_mask
+        ),
         multi_positive_similarity=multi_positive_similarity,
         multi_positive_mask=positive_mask,
         multi_negative_similarity=multi_negative_similarity,
@@ -1437,11 +2211,22 @@ def build_sparse_candidate_batch(
 def sparse_candidate_losses(
     batch,
     pose_damping=1e-4,
+    assignment_mode="single_nearest",
     assignment_temperature=0.05,
     assignment_margin=0.05,
     reprojection_sigma_px=1.0,
     set_risk_residual_clip_px=32.0,
     set_risk_reference_translation_m=0.01,
+    map_fisher_translation_scale=0.02,
+    map_fisher_rotation_scale_degrees=2.0,
+    map_fisher_measurement_sigma_px=1.0,
+    map_fisher_residual_clip_px=12.0,
+    map_fisher_inlier_sigma_px=4.0,
+    map_fisher_condition_target=100.0,
+    map_directional_temperature=0.05,
+    map_directional_residual_clip_px=24.0,
+    map_directional_robust_scale_px=12.0,
+    map_directional_robust_quality_floor=0.01,
 ):
     pair_loss = _balanced_focal_bce(
         batch.pair_logits,
@@ -1453,10 +2238,33 @@ def sparse_candidate_losses(
         if batch.hard_negative_logits.numel() > 0
         else _zero(batch.pair_logits)
     )
-    assignment_loss = _row_assignment_loss(
-        batch.assignment_positive_similarity,
-        batch.assignment_negative_similarity,
-        batch.assignment_negative_mask,
+    assignment_mode = str(assignment_mode).strip().lower()
+    if assignment_mode == "single_nearest":
+        assignment_loss = _row_assignment_loss(
+            batch.assignment_positive_similarity,
+            batch.assignment_negative_similarity,
+            batch.assignment_negative_mask,
+            temperature=assignment_temperature,
+            margin=assignment_margin,
+            weights=batch.assignment_loss_weights,
+        )
+    elif assignment_mode == "multi_positive":
+        assignment_loss = _multi_positive_assignment_loss(
+            batch.multi_positive_similarity,
+            batch.multi_positive_mask,
+            batch.multi_negative_similarity,
+            batch.multi_negative_mask,
+            temperature=assignment_temperature,
+            margin=assignment_margin,
+            weights=batch.assignment_loss_weights,
+        )
+    else:
+        raise ValueError(f"Unknown sparse candidate assignment mode: {assignment_mode}")
+    counterfactual_assignment_loss = _counterfactual_pairwise_assignment_loss(
+        batch.counterfactual_positive_similarity,
+        batch.counterfactual_negative_similarity,
+        batch.counterfactual_assignment_valid_mask,
+        batch.counterfactual_assignment_weights,
         temperature=assignment_temperature,
         margin=assignment_margin,
     )
@@ -1534,6 +2342,36 @@ def sparse_candidate_losses(
             :set_risk_pair_count
         ],
         reference_translation_m=set_risk_reference_translation_m,
+    )
+    map_risk = map_information_and_bias_risk(
+        batch.pair_measurement_jacobian,
+        batch.pair_measurement_target_offsets,
+        batch.matcher_assignment_logits,
+        batch.pair_scorer_labels,
+        valid_mask=batch.map_candidate_geometry_valid_mask,
+        translation_scale=map_fisher_translation_scale,
+        rotation_scale_degrees=map_fisher_rotation_scale_degrees,
+        measurement_sigma_px=map_fisher_measurement_sigma_px,
+        damping=pose_damping,
+        residual_clip_px=map_fisher_residual_clip_px,
+        inlier_sigma_px=map_fisher_inlier_sigma_px,
+        condition_target=map_fisher_condition_target,
+    )
+    directional_risk = directional_candidate_set_risk(
+        batch.directional_candidate_jacobian,
+        batch.directional_candidate_residual,
+        batch.directional_candidate_similarity,
+        batch.directional_candidate_valid_mask,
+        batch.directional_candidate_clean_labels,
+        batch.dustbin_score,
+        temperature=map_directional_temperature,
+        translation_scale=map_fisher_translation_scale,
+        rotation_scale_degrees=map_fisher_rotation_scale_degrees,
+        measurement_sigma_px=map_fisher_measurement_sigma_px,
+        damping=pose_damping,
+        residual_clip_px=map_directional_residual_clip_px,
+        robust_scale_px=map_directional_robust_scale_px,
+        robust_quality_floor=map_directional_robust_quality_floor,
     )
     matcher_positive = batch.pair_scorer_labels > 0.5
     matcher_translation_weights = torch.sigmoid(
@@ -1619,12 +2457,97 @@ def sparse_candidate_losses(
             "pair_measurement_set_effective_count": float(
                 set_risk.effective_pair_count.detach().item()
             ),
+            "map_fisher_full_logdet_gain": float(
+                map_risk.full_logdet_gain.detach().item()
+            ),
+            "map_fisher_translation_logdet_gain": float(
+                map_risk.translation_logdet_gain.detach().item()
+            ),
+            "map_fisher_translation_condition": float(
+                map_risk.translation_condition.detach().item()
+            ),
+            "map_fisher_translation_trace_covariance": float(
+                map_risk.translation_trace_covariance.detach().item()
+            ),
+            "map_fisher_translation_bias_task": float(
+                map_risk.translation_bias_task.detach().item()
+            ),
+            "map_fisher_translation_bias_m": float(
+                map_risk.translation_bias_m.detach().item()
+            ),
+            "map_fisher_expected_match_count": float(
+                map_risk.expected_match_count.detach().item()
+            ),
+            "map_fisher_clean_expected_match_count": float(
+                map_risk.clean_expected_match_count.detach().item()
+            ),
+            "map_fisher_soft_inlier_expected_match_count": float(
+                map_risk.soft_inlier_expected_match_count.detach().item()
+            ),
+            "map_fisher_target_match_count": float(
+                map_risk.target_match_count.detach().item()
+            ),
+            "map_fisher_effective_clean_count": float(
+                map_risk.effective_clean_count.detach().item()
+            ),
+            "map_fisher_effective_soft_inlier_count": float(
+                map_risk.effective_soft_inlier_count.detach().item()
+            ),
+            "map_directional_bias_loss": float(
+                directional_risk.loss.detach().item()
+            ),
+            "map_directional_translation_bias_m": float(
+                directional_risk.translation_bias_m.detach().item()
+            ),
+            "map_directional_score_energy": float(
+                directional_risk.score_energy.detach().item()
+            ),
+            "map_directional_score_rms": float(
+                directional_risk.score_rms.detach().item()
+            ),
+            "map_directional_expected_match_count": float(
+                directional_risk.expected_match_count.detach().item()
+            ),
+            "map_directional_robust_match_count": float(
+                directional_risk.robust_match_count.detach().item()
+            ),
+            "map_directional_target_budget": float(
+                directional_risk.target_budget.detach().item()
+            ),
+            "map_directional_effective_count": float(
+                directional_risk.effective_count.detach().item()
+            ),
+            "map_directional_weighted_residual_px": float(
+                directional_risk.weighted_residual_px.detach().item()
+            ),
+            "map_directional_delta_x_m": float(
+                directional_risk.translation_delta_task[0].detach().item()
+                * float(map_fisher_translation_scale)
+            ),
+            "map_directional_delta_y_m": float(
+                directional_risk.translation_delta_task[1].detach().item()
+                * float(map_fisher_translation_scale)
+            ),
+            "map_directional_delta_z_m": float(
+                directional_risk.translation_delta_task[2].detach().item()
+                * float(map_fisher_translation_scale)
+            ),
+            "map_directional_score_x": float(
+                directional_risk.normalized_translation_score[0].detach().item()
+            ),
+            "map_directional_score_y": float(
+                directional_risk.normalized_translation_score[1].detach().item()
+            ),
+            "map_directional_score_z": float(
+                directional_risk.normalized_translation_score[2].detach().item()
+            ),
         }
     )
     return SparseCandidateLosses(
         pair=pair_loss,
         hard_negative=hard_negative_loss,
         assignment=assignment_loss,
+        counterfactual_assignment=counterfactual_assignment_loss,
         dustbin_assignment=dustbin_assignment_loss,
         matcher_assignment=matcher_assignment_loss,
         matcher_reprojection_assignment=matcher_reprojection_assignment_loss,
@@ -1640,4 +2563,12 @@ def sparse_candidate_losses(
         detector_offset=detector_offset_loss,
         geometry_set=geometry_loss,
         coverage=coverage_loss,
+        map_cleanliness=map_risk.cleanliness_loss,
+        map_full_information=map_risk.full_information_loss,
+        map_translation_information=map_risk.translation_information_loss,
+        map_translation_trace=map_risk.translation_trace_loss,
+        map_translation_condition=map_risk.translation_condition_loss,
+        map_bias=map_risk.bias_loss,
+        map_directional_bias=directional_risk.loss,
+        map_capacity=map_risk.capacity_loss,
     )

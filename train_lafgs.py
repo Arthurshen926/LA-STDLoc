@@ -114,6 +114,33 @@ def build_parser():
     parser.add_argument("--loc_full_bank_weight", type=float, default=None)
     parser.add_argument("--loc_full_bank_pose_information_weight", type=float, default=None)
     parser.add_argument("--loc_full_bank_pose_information_floor", type=float, default=None)
+    parser.add_argument(
+        "--loc_full_bank_pose_information_mode",
+        choices=[
+            "point_jacobian",
+            "full_set_leverage",
+            "conditional_full",
+            "conditional_translation",
+        ],
+        default=None,
+    )
+    parser.add_argument(
+        "--loc_full_bank_pose_information_normalization",
+        choices=["max", "quantile", "rank"],
+        default=None,
+    )
+    parser.add_argument("--loc_full_bank_fisher_translation_scale", type=float, default=None)
+    parser.add_argument("--loc_full_bank_fisher_rotation_scale_degrees", type=float, default=None)
+    parser.add_argument("--loc_full_bank_fisher_measurement_sigma", type=float, default=None)
+    parser.add_argument("--loc_full_bank_fisher_damping", type=float, default=None)
+    parser.add_argument("--loc_full_bank_fisher_use_matchability", action="store_true", default=None)
+    parser.add_argument("--loc_full_bank_fisher_matchability_floor", type=float, default=None)
+    parser.add_argument("--loc_full_bank_fisher_matchability_power", type=float, default=None)
+    parser.add_argument(
+        "--loc_full_bank_fisher_uncertainty_entropy_scale",
+        type=float,
+        default=None,
+    )
     parser.add_argument("--loc_full_bank_stats_chunk_size", type=int, default=None)
     parser.add_argument(
         "--loc_full_checkpoint_mode",
@@ -219,6 +246,16 @@ def lafgs_defaults(args, explicit_overrides=None):
         _setdefault(args, "loc_full_bank_pose_information_floor", 0.2)
     else:
         _setdefault(args, "loc_full_bank_pose_information_floor", 0.2)
+    _setdefault(args, "loc_full_bank_pose_information_mode", "point_jacobian")
+    _setdefault(args, "loc_full_bank_pose_information_normalization", "max")
+    _setdefault(args, "loc_full_bank_fisher_translation_scale", 0.02)
+    _setdefault(args, "loc_full_bank_fisher_rotation_scale_degrees", 2.0)
+    _setdefault(args, "loc_full_bank_fisher_measurement_sigma", 1.0)
+    _setdefault(args, "loc_full_bank_fisher_damping", 1e-4)
+    _setdefault(args, "loc_full_bank_fisher_use_matchability", False)
+    _setdefault(args, "loc_full_bank_fisher_matchability_floor", 0.05)
+    _setdefault(args, "loc_full_bank_fisher_matchability_power", 1.0)
+    _setdefault(args, "loc_full_bank_fisher_uncertainty_entropy_scale", 0.0)
     _setdefault(args, "loc_full_bank_stats_chunk_size", 256)
     if "loc_full_checkpoint_mode" not in explicit_overrides:
         _setdefault(args, "loc_full_checkpoint_mode", "none")

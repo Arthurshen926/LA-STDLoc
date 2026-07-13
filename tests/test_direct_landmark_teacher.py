@@ -1343,6 +1343,68 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         self.assertIn("full_bank_positive_prob", out.stats)
         self.assertIn("anchor_loss", out.stats)
 
+    def test_direct_teacher_supports_matchability_weighted_translation_fisher(self):
+        from localization_training.direct_landmark_teacher import direct_landmark_teacher
+
+        class FakeGaussians:
+            def __init__(self):
+                self._xyz = torch.tensor(
+                    [
+                        [-0.8, -0.5, 4.0],
+                        [0.8, -0.5, 4.5],
+                        [-0.7, 0.6, 5.0],
+                        [0.9, 0.7, 6.0],
+                        [0.0, 0.0, 7.0],
+                        [0.3, -0.8, 8.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                self._loc_feature = torch.nn.Parameter(torch.eye(6, dtype=torch.float32)[:, None])
+
+            @property
+            def get_xyz(self):
+                return self._xyz
+
+            @property
+            def get_loc_feature(self):
+                return self._loc_feature
+
+        gaussians = FakeGaussians()
+        feature_map = torch.zeros(6, 32, 32, dtype=torch.float32)
+        focal = 16.0 / torch.tan(torch.tensor(0.7610127542247298 / 2.0)).item()
+        for index, point in enumerate(gaussians.get_xyz):
+            x = int(round(focal * point[0].item() / point[2].item() + 16.0))
+            y = int(round(focal * point[1].item() / point[2].item() + 16.0))
+            feature_map[index, y, x] = 1.0
+
+        out = direct_landmark_teacher(
+            gaussians,
+            feature_map,
+            pose_gt_w2c=torch.eye(4),
+            fovx=0.7610127542247298,
+            fovy=0.7610127542247298,
+            landmark_indices=torch.arange(6),
+            max_landmarks=None,
+            full_bank_indices=torch.arange(6),
+            full_bank_temperature=0.1,
+            full_bank_pose_information_weight=1.0,
+            full_bank_pose_information_floor=0.1,
+            full_bank_pose_information_mode="conditional_translation",
+            full_bank_pose_information_normalization="quantile",
+            full_bank_fisher_use_matchability=True,
+            full_bank_fisher_matchability_floor=0.05,
+            full_bank_fisher_uncertainty_entropy_scale=2.0,
+        )
+
+        self.assertEqual(out.diagnostics["pose_information_mode_id"], 4.0)
+        self.assertEqual(out.diagnostics["pose_information_uses_matchability"], 1.0)
+        self.assertGreater(out.diagnostics["pose_information_translation_min_eigenvalue"], 0.0)
+        self.assertGreater(out.diagnostics["pose_information_effective_count"], 0.0)
+        self.assertGreaterEqual(out.diagnostics["pose_information_weight_min"], 0.1)
+        self.assertTrue(torch.isfinite(out.full_bank_loss))
+        out.full_bank_loss.backward()
+        self.assertTrue(torch.isfinite(gaussians._loc_feature.grad).all())
+
 
 if __name__ == "__main__":
     unittest.main()

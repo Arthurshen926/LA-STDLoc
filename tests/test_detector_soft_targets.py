@@ -5,6 +5,41 @@ import torch
 
 
 class DetectorSoftTargetsTest(unittest.TestCase):
+    def test_candidate_teacher_direct_validation_holdout_is_disjoint(self):
+        from train_detector import partition_candidate_teacher_cameras
+
+        cameras = list(range(10))
+        training, validation, support_count = partition_candidate_teacher_cameras(
+            cameras,
+            validation_ratio=0.2,
+            split_mode="temporal_block",
+            split_seed=2026,
+        )
+
+        self.assertEqual(len(training), 8)
+        self.assertEqual(len(validation), 2)
+        self.assertEqual(support_count, 10)
+        self.assertFalse(set(training) & set(validation))
+        self.assertEqual(set(training) | set(validation), set(cameras))
+
+    def test_candidate_teacher_support_query_and_validation_are_disjoint(self):
+        from train_detector import partition_candidate_teacher_cameras
+
+        cameras = list(range(10))
+        training, validation, support_count = partition_candidate_teacher_cameras(
+            cameras,
+            support_query_split=True,
+            query_ratio=0.4,
+            validation_ratio=0.25,
+            split_mode="temporal_block",
+            split_seed=2026,
+        )
+
+        self.assertEqual(support_count, 6)
+        self.assertEqual(len(training), 3)
+        self.assertEqual(len(validation), 1)
+        self.assertFalse(set(training) & set(validation))
+
     def test_weighted_hard_gt_map_uses_landmark_utility_only_as_loss_weight(self):
         from train_detector import generate_weighted_hard_gt_map, utility_weighted_detector_loss
 
@@ -1043,6 +1078,8 @@ class DetectorSoftTargetsTest(unittest.TestCase):
                 "0.8",
                 "--candidate_teacher_geometry_weight",
                 "0.2",
+                "--candidate_teacher_map_fisher_inlier_sigma_px",
+                "3.5",
                 "--candidate_teacher_support_query_split",
                 "--candidate_teacher_validation_ratio",
                 "0.25",
@@ -1076,6 +1113,7 @@ class DetectorSoftTargetsTest(unittest.TestCase):
         self.assertTrue(args.candidate_teacher_detector_binary_target)
         self.assertEqual(args.candidate_teacher_detector_offset_weight, 0.8)
         self.assertEqual(args.candidate_teacher_geometry_weight, 0.2)
+        self.assertEqual(args.candidate_teacher_map_fisher_inlier_sigma_px, 3.5)
         self.assertTrue(args.candidate_teacher_support_query_split)
         self.assertEqual(args.candidate_teacher_validation_ratio, 0.25)
 

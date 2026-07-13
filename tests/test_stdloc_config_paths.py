@@ -2,6 +2,27 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_direct_candidate_validation_matches_training_holdout(self):
+        from stdloc import select_candidate_validation_cameras
+        from train_detector import partition_candidate_teacher_cameras
+
+        cameras = list(range(20))
+        _, expected, _ = partition_candidate_teacher_cameras(
+            cameras,
+            validation_ratio=0.2,
+            split_mode="temporal_block",
+            split_seed=2026,
+        )
+        actual = select_candidate_validation_cameras(
+            cameras,
+            validation_ratio=0.2,
+            split_mode="temporal_block",
+            split_seed=2026,
+            direct_holdout=True,
+        )
+
+        self.assertEqual(actual, expected)
+
     def test_candidate_frontend_mismatch_can_fail_strictly(self):
         from stdloc import candidate_frontend_mismatches
         from stdloc import validate_candidate_frontend_compatibility
@@ -15,6 +36,7 @@ class STDLocConfigPathTest(unittest.TestCase):
             "dual_softmax": False,
             "dual_softmax_temperature": 0.1,
             "pair_context_topk": 8,
+            "map_max_matches_per_landmark": 2,
         }
         evaluated = {
             "detect_num": 8192,
@@ -25,6 +47,7 @@ class STDLocConfigPathTest(unittest.TestCase):
             "dual_softmax": False,
             "dual_softmax_temp": 0.1,
             "pair_context_topk": 8,
+            "max_matches_per_landmark": 2,
             "candidate_frontend_match_policy": "error",
         }
 
@@ -37,6 +60,11 @@ class STDLocConfigPathTest(unittest.TestCase):
 
         evaluated["detect_num"] = 4096
         self.assertEqual(validate_candidate_frontend_compatibility(trained, evaluated), [])
+        evaluated["max_matches_per_landmark"] = 1
+        self.assertEqual(
+            candidate_frontend_mismatches(trained, evaluated),
+            [("map_max_matches_per_landmark", 2, 1)],
+        )
 
     def test_candidate_teacher_features_require_exact_landmark_alignment(self):
         import tempfile
@@ -244,6 +272,166 @@ class STDLocConfigPathTest(unittest.TestCase):
         self.assertGreater(diagnostics["sparse_diag_inlier_2d_occupied_cells"], 1)
         self.assertGreater(diagnostics["sparse_diag_inlier_depth_range"], 0.0)
         self.assertIn("sparse_diag_inlier_pose_info_condition", diagnostics)
+        self.assertIn(
+            "sparse_diag_inlier_pose_info_translation_logdet",
+            diagnostics,
+        )
+        self.assertGreater(
+            diagnostics["sparse_diag_inlier_pose_info_translation_min_eig"],
+            0.0,
+        )
+        self.assertGreater(
+            diagnostics["sparse_diag_inlier_pose_info_translation_worst_std_m"],
+            0.0,
+        )
+        self.assertEqual(
+            diagnostics["sparse_diag_inlier_pose_info_effective_count"],
+            6.0,
+        )
+        self.assertEqual(diagnostics["sparse_diag_gt_clean4_count"], 6)
+        self.assertEqual(diagnostics["sparse_diag_inlier_gt_clean4_count"], 6)
+        self.assertAlmostEqual(
+            diagnostics["sparse_diag_inlier_gt_clean4_ratio"],
+            1.0,
+        )
+        self.assertIn(
+            "sparse_diag_gt_clean4_pose_info_translation_logdet",
+            diagnostics,
+        )
+        self.assertIn(
+            "sparse_diag_inlier_gt_clean4_pose_info_translation_logdet",
+            diagnostics,
+        )
+        self.assertAlmostEqual(
+            diagnostics["sparse_diag_all_gt_pose_bias_translation_norm_m"],
+            0.0,
+            places=8,
+        )
+        self.assertEqual(
+            diagnostics["sparse_diag_all_gt_pose_bias_effective_count"],
+            6.0,
+        )
+
+    def test_pose_bias_diagnostic_detects_systematic_reprojection_shift(self):
+        import numpy as np
+
+        from stdloc import _pose_bias_stats
+
+        K = np.array(
+            [[140.0, 0.0, 50.0], [0.0, 120.0, 40.0], [0.0, 0.0, 1.0]]
+        )
+        pose = np.eye(4, dtype=np.float64)
+        points = np.array(
+            [
+                [-0.8, -0.5, 2.0],
+                [0.6, -0.4, 2.4],
+                [0.9, 0.7, 3.0],
+                [-0.7, 0.8, 3.6],
+                [0.2, -0.9, 4.2],
+                [-0.3, 0.4, 5.0],
+                [1.0, 0.2, 5.8],
+            ],
+            dtype=np.float64,
+        )
+        projected = np.stack(
+            [
+                K[0, 0] * points[:, 0] / points[:, 2] + K[0, 2],
+                K[1, 1] * points[:, 1] / points[:, 2] + K[1, 2],
+            ],
+            axis=1,
+        )
+        shifted_observations = projected - 0.5 + np.array([1.0, 0.0])
+
+        diagnostics = _pose_bias_stats(
+            "shifted",
+            shifted_observations,
+            points,
+            K,
+            pose,
+        )
+
+        self.assertGreater(
+            diagnostics["shifted_pose_bias_translation_norm_m"],
+            0.0,
+        )
+        self.assertGreater(
+            diagnostics["shifted_pose_bias_soft_inlier_count"],
+            6.0,
+        )
+
+    def test_eval_translation_pose_information_matches_training_implementation(self):
+        import math
+
+        import numpy as np
+        import torch
+
+        from localization_training.pose_information import compute_pose_information
+        from stdloc import _pose_information_stats
+
+        K = np.array([[140.0, 0.0, 50.0], [0.0, 120.0, 40.0], [0.0, 0.0, 1.0]])
+        pose = np.eye(4, dtype=np.float64)
+        pose[:3, 3] = [0.1, -0.05, 0.2]
+        points = np.array(
+            [
+                [-0.8, -0.5, 2.0],
+                [0.6, -0.4, 2.4],
+                [0.9, 0.7, 3.0],
+                [-0.7, 0.8, 3.6],
+                [0.2, -0.9, 4.2],
+                [-0.3, 0.4, 5.0],
+                [1.0, 0.2, 5.8],
+            ],
+            dtype=np.float64,
+        )
+
+        diagnostics = _pose_information_stats(
+            "eval",
+            points,
+            K,
+            pose,
+            regularization=1e-6,
+            translation_task_scale_m=0.02,
+            rotation_task_scale_degrees=2.0,
+        )
+        expected = compute_pose_information(
+            torch.from_numpy(points),
+            torch.from_numpy(K),
+            torch.from_numpy(pose),
+            damping=1e-6,
+            translation_scale=0.02,
+            rotation_scale=math.radians(2.0),
+        )
+
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_translation_logdet"],
+            expected.translation_logdet.item(),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_translation_condition"],
+            expected.translation_condition_number.item(),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_translation_worst_std_task"],
+            expected.translation_worst_std.item(),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_full_delete_gain_mean"],
+            expected.scores.mean().item(),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_translation_delete_gain_mean"],
+            expected.translation_scores.mean().item(),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            diagnostics["eval_pose_info_full_set_leverage_mean"],
+            expected.full_set_leverage_scores.mean().item(),
+            places=5,
+        )
 
 
 if __name__ == "__main__":

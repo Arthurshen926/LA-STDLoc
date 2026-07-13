@@ -13,6 +13,146 @@ def _point_at_pixel(x, y, depth=10.0):
     return [x * depth / 10.0, y * depth / 10.0, depth]
 
 
+def test_candidate_assignment_translation_fisher_weights_are_finite_and_matchability_aware():
+    from localization_training.sparse_candidate_teacher import (
+        _assignment_information_weights,
+    )
+
+    points = torch.tensor(
+        [
+            [-1.0, -0.5, 4.0],
+            [1.0, -0.5, 4.5],
+            [-0.8, 0.7, 5.0],
+            [1.2, 0.8, 6.0],
+            [0.0, 0.0, 7.0],
+            [0.4, -1.0, 9.0],
+        ]
+    )
+    K = torch.tensor(
+        [[320.0, 0.0, 160.0], [0.0, 320.0, 120.0], [0.0, 0.0, 1.0]]
+    )
+    positive = torch.tensor([0.9, 0.7, 0.4, 0.2, 0.8, 0.5])
+    negatives = torch.tensor(
+        [
+            [0.1, 0.0],
+            [0.6, 0.5],
+            [0.5, 0.3],
+            [0.8, 0.7],
+            [0.2, 0.1],
+            [0.5, 0.4],
+        ]
+    )
+    negative_mask = torch.ones_like(negatives, dtype=torch.bool)
+
+    f4_weights, f4_diagnostics = _assignment_information_weights(
+        points,
+        K,
+        torch.eye(4),
+        positive,
+        negatives,
+        negative_mask,
+        mode="conditional_translation",
+        blend=1.0,
+        floor=0.1,
+        normalization="quantile",
+    )
+    f5_weights, f5_diagnostics = _assignment_information_weights(
+        points,
+        K,
+        torch.eye(4),
+        positive,
+        negatives,
+        negative_mask,
+        mode="conditional_translation",
+        blend=1.0,
+        floor=0.1,
+        normalization="quantile",
+        use_matchability=True,
+        matchability_floor=0.05,
+        uncertainty_entropy_scale=2.0,
+        match_temperature=0.1,
+    )
+
+    assert torch.isfinite(f4_weights).all()
+    assert torch.isfinite(f5_weights).all()
+    assert torch.all(f4_weights >= 0.1)
+    assert torch.all(f5_weights >= 0.1)
+    assert not torch.allclose(f4_weights, f5_weights)
+    assert f4_diagnostics["assignment_pose_information_mode_id"] == 4.0
+    assert f5_diagnostics["assignment_pose_information_uses_matchability"] == 1.0
+    assert f5_diagnostics["assignment_pose_information_matchability_mean"] < 1.0
+    assert f5_diagnostics["assignment_pose_information_sigma_mean"] > 1.0
+    assert f5_diagnostics["assignment_fisher_translation_min_eigenvalue"] > 0.0
+
+
+def test_candidate_assignment_row_weights_change_the_optimized_objective():
+    from localization_training.sparse_candidate_teacher import _row_assignment_loss
+
+    positive = torch.tensor([1.0, -1.0], requires_grad=True)
+    negative = torch.tensor([[0.0], [0.0]], requires_grad=True)
+    mask = torch.ones_like(negative, dtype=torch.bool)
+    unweighted = _row_assignment_loss(
+        positive,
+        negative,
+        mask,
+        temperature=1.0,
+        margin=0.0,
+    )
+    weighted = _row_assignment_loss(
+        positive,
+        negative,
+        mask,
+        temperature=1.0,
+        margin=0.0,
+        weights=torch.tensor([1.0, 0.1]),
+    )
+
+    assert weighted < unweighted
+    weighted.backward()
+    assert torch.isfinite(positive.grad).all()
+    assert torch.isfinite(negative.grad).all()
+
+
+def test_counterfactual_pairwise_loss_pushes_gt_above_actual_top1():
+    from localization_training.sparse_candidate_teacher import (
+        _counterfactual_pairwise_assignment_loss,
+    )
+
+    positive = torch.tensor([0.1, 0.4], requires_grad=True)
+    negative = torch.tensor([0.8, 0.2], requires_grad=True)
+    loss = _counterfactual_pairwise_assignment_loss(
+        positive,
+        negative,
+        torch.tensor([True, False]),
+        torch.tensor([1.0, 1.0]),
+        temperature=0.1,
+        margin=0.05,
+    )
+    loss.backward()
+
+    assert loss.item() > 0.0
+    assert positive.grad[0] < 0.0
+    assert negative.grad[0] > 0.0
+    assert positive.grad[1] == 0.0
+    assert negative.grad[1] == 0.0
+
+
+def test_quota_displacement_returns_lowest_retained_pair():
+    from localization_training.sparse_candidate_teacher import (
+        _quota_displaced_candidate_indices,
+    )
+
+    displaced = _quota_displaced_candidate_indices(
+        torch.tensor([0, 0, 0, 1]),
+        torch.tensor([0.9, 0.7, 0.2, 0.8]),
+        torch.tensor([True, True, False, True]),
+        torch.tensor([0, 1, 2]),
+        2,
+    )
+
+    assert displaced.tolist() == [1, -1, -1]
+
+
 def test_sparse_candidate_teacher_exposes_false_positive_and_recovers_false_negative():
     from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
 
@@ -42,6 +182,7 @@ def test_sparse_candidate_teacher_exposes_false_positive_and_recovers_false_nega
         positive_radius_px=0.25,
         hard_negatives=1,
         match_margin=0.0,
+        counterfactual_enabled=True,
     )
 
     assert batch.diagnostics["predicted_pair_count"] == 1
@@ -56,6 +197,124 @@ def test_sparse_candidate_teacher_exposes_false_positive_and_recovers_false_nega
     assert batch.assignment_negative_similarity.shape == (1, 1)
     assert batch.assignment_negative_mask.tolist() == [[True]]
     assert batch.diagnostics["assignment_top1_accuracy"] == 0.0
+    assert batch.counterfactual_assignment_valid_mask.tolist() == [True]
+    assert batch.counterfactual_positive_similarity.shape == (1,)
+    assert batch.counterfactual_negative_similarity.shape == (1,)
+    assert batch.counterfactual_assignment_weights.item() > 0.0
+    assert batch.diagnostics["counterfactual_swap_target_count"] == 1
+
+
+def test_counterfactual_assignment_missed_mode_only_repairs_ambiguity_band():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    landmark_xyz = torch.tensor(
+        [_point_at_pixel(1.5, 1.5), _point_at_pixel(3.5, 3.5)]
+    )
+    landmark_features = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+    K, pose = _camera()
+    common = dict(
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+        hard_negatives=1,
+        match_margin=0.0,
+        counterfactual_enabled=True,
+        counterfactual_target_mode="assignment_missed",
+    )
+
+    missed = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        negative_radius_px=4.0,
+        **common,
+    )
+    already_supervised = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        negative_radius_px=2.0,
+        **common,
+    )
+
+    assert missed.counterfactual_assignment_valid_mask.tolist() == [True]
+    assert missed.diagnostics["counterfactual_swap_eligible_target_count"] == 1
+    assert already_supervised.counterfactual_assignment_valid_mask.tolist() == [False]
+    assert already_supervised.diagnostics["counterfactual_swap_eligible_target_count"] == 0
+
+
+def test_map_information_geometry_mask_rejects_invisible_projectable_candidate():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    landmark_xyz = torch.tensor([_point_at_pixel(1.5, 1.5)])
+    landmark_features = torch.tensor([[1.0, 0.0]])
+    K, pose = _camera()
+
+    batch = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        visible_mask=torch.tensor([False]),
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+    )
+
+    assert batch.pair_scorer_labels.tolist() == [0.0]
+    assert batch.map_candidate_geometry_valid_mask.tolist() == [False]
+    assert batch.diagnostics["map_candidate_invisible_projectable_count"] == 1
+    assert (
+        batch.diagnostics["map_candidate_invisible_projectable_under_4px_count"]
+        == 1
+    )
+
+
+def test_map_information_geometry_mask_matches_final_landmark_quota():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    heatmap = torch.zeros(1, 5, 5)
+    for x in (0, 2, 4):
+        feature_map[:, 1, x] = torch.tensor([1.0, 0.0])
+        heatmap[0, 1, x] = 0.9
+    landmark_xyz = torch.tensor([_point_at_pixel(2.5, 1.5)])
+    landmark_features = torch.tensor([[1.0, 0.0]])
+    K, pose = _camera()
+
+    batch = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        detect_num=3,
+        nms_radius=0,
+        positive_radius_px=3.0,
+        map_max_matches_per_landmark=2,
+    )
+
+    assert batch.diagnostics["predicted_pair_count"] == 3
+    assert batch.diagnostics["map_candidate_after_landmark_quota_count"] == 2
+    assert batch.diagnostics["map_candidate_landmark_quota_removed_count"] == 1
+    assert int(batch.map_candidate_geometry_valid_mask.sum().item()) == 2
 
 
 def test_sparse_candidate_topk_exposes_and_recovers_second_rank_positive():
@@ -454,6 +713,39 @@ def test_multi_positive_dustbin_loss_trains_explicit_unmatched_score():
     assert torch.isfinite(loss)
     assert dustbin.grad is not None
     assert dustbin.grad.abs().item() > 0
+
+
+def test_multi_positive_assignment_accepts_any_geometric_positive():
+    from localization_training.sparse_candidate_teacher import (
+        _multi_positive_assignment_loss,
+    )
+
+    positive_similarity = torch.tensor([[0.4, 0.9]], requires_grad=True)
+    negative_similarity = torch.tensor([[0.7]], requires_grad=True)
+    both_positive = _multi_positive_assignment_loss(
+        positive_similarity,
+        torch.tensor([[True, True]]),
+        negative_similarity,
+        torch.tensor([[True]]),
+        temperature=0.1,
+        margin=0.0,
+        weights=torch.tensor([1.0]),
+    )
+    nearest_only = _multi_positive_assignment_loss(
+        positive_similarity,
+        torch.tensor([[True, False]]),
+        negative_similarity,
+        torch.tensor([[True]]),
+        temperature=0.1,
+        margin=0.0,
+        weights=torch.tensor([1.0]),
+    )
+    both_positive.backward()
+
+    assert both_positive.item() < nearest_only.item()
+    assert positive_similarity.grad is not None
+    assert negative_similarity.grad is not None
+    assert torch.isfinite(positive_similarity.grad).all()
 
 
 def test_sparse_candidate_pair_scorer_loss_backpropagates_to_scorer():

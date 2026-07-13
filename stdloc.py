@@ -54,7 +54,16 @@ def select_candidate_validation_cameras(
     validation_ratio=0.25,
     split_mode="temporal_block",
     split_seed=2026,
+    direct_holdout=False,
 ):
+    if bool(direct_holdout):
+        _, validation_cameras = split_support_query_cameras(
+            list(cameras),
+            query_ratio=validation_ratio,
+            seed=split_seed + 1,
+            mode=split_mode,
+        )
+        return validation_cameras
     _, query_cameras = split_support_query_cameras(
         list(cameras),
         query_ratio=query_ratio,
@@ -99,6 +108,11 @@ def candidate_frontend_mismatches(state_config, sparse_config):
             "pair_context_topk",
             state_config.get("pair_context_topk"),
             sparse_config.get("pair_context_topk", 8),
+        ),
+        (
+            "map_max_matches_per_landmark",
+            state_config.get("map_max_matches_per_landmark"),
+            sparse_config.get("max_matches_per_landmark"),
         ),
     )
     mismatches = []
@@ -303,7 +317,15 @@ def _occupancy_stats_3d(prefix, p3d, voxel_size=0.25):
     }
 
 
-def _pose_information_stats(prefix, p3d, K, pose_w2c, regularization=1e-6):
+def _pose_information_stats(
+    prefix,
+    p3d,
+    K,
+    pose_w2c,
+    regularization=1e-6,
+    translation_task_scale_m=0.02,
+    rotation_task_scale_degrees=2.0,
+):
     p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
     if p3d.shape[0] < 6:
         return {}
@@ -319,6 +341,7 @@ def _pose_information_stats(prefix, p3d, K, pose_w2c, regularization=1e-6):
     fx = float(K[0, 0])
     fy = float(K[1, 1])
     H = np.zeros((6, 6), dtype=np.float64)
+    jacobians = []
     for x, y, z in cam:
         dproj = np.array(
             [
@@ -336,6 +359,7 @@ def _pose_information_stats(prefix, p3d, K, pose_w2c, regularization=1e-6):
             dtype=np.float64,
         )
         jac = dproj @ np.concatenate([np.eye(3, dtype=np.float64), -skew], axis=1)
+        jacobians.append(jac)
         H += jac.T @ jac
     H_reg = H + float(regularization) * np.eye(6, dtype=np.float64)
     eigvals = np.linalg.eigvalsh(H_reg)
@@ -344,10 +368,240 @@ def _pose_information_stats(prefix, p3d, K, pose_w2c, regularization=1e-6):
         return {}
     eigvals = np.clip(eigvals, 1e-12, None)
     sign, logdet = np.linalg.slogdet(H_reg)
-    return {
+    translation_scale = max(float(translation_task_scale_m), 1e-12)
+    rotation_scale = max(
+        float(np.deg2rad(rotation_task_scale_degrees)),
+        1e-12,
+    )
+    task_scale = np.diag(
+        [translation_scale] * 3 + [rotation_scale] * 3
+    ).astype(np.float64)
+    jacobians = np.stack(jacobians, axis=0)
+    task_jacobians = jacobians @ task_scale
+    contributions = np.einsum(
+        "nki,nkj->nij",
+        task_jacobians,
+        task_jacobians,
+    )
+    task_H = contributions.sum(axis=0)
+    task_H += float(regularization) * np.eye(6, dtype=np.float64)
+    H_tt = task_H[:3, :3]
+    H_tr = task_H[:3, 3:]
+    H_rr = task_H[3:, 3:]
+    schur = H_tt - H_tr @ np.linalg.solve(
+        H_rr + 1e-12 * np.eye(3, dtype=np.float64),
+        H_tr.T,
+    )
+    schur = 0.5 * (schur + schur.T)
+    task_eigvals = np.clip(np.linalg.eigvalsh(task_H), 1e-12, None)
+    translation_eigvals = np.clip(np.linalg.eigvalsh(schur), 1e-12, None)
+    task_sign, task_logdet = np.linalg.slogdet(task_H)
+    translation_sign, translation_logdet = np.linalg.slogdet(schur)
+    translation_covariance = np.linalg.inv(schur)
+    translation_covariance_eigvals = np.clip(
+        np.linalg.eigvalsh(translation_covariance),
+        0.0,
+        None,
+    )
+    translation_worst_std_task = float(
+        np.sqrt(translation_covariance_eigvals.max())
+    )
+    full_inverse = np.linalg.inv(task_H)
+    leverage_matrix = np.eye(2, dtype=np.float64)[None] + (
+        task_jacobians @ full_inverse @ task_jacobians.transpose(0, 2, 1)
+    )
+    leverage_sign, leverage_scores = np.linalg.slogdet(leverage_matrix)
+    leverage_scores = np.where(leverage_sign > 0, leverage_scores, np.nan)
+    without = task_H[None] - contributions
+    without = 0.5 * (without + without.transpose(0, 2, 1))
+    without_sign, without_logdet = np.linalg.slogdet(without)
+    full_delete_gain = np.where(
+        without_sign > 0,
+        task_logdet - without_logdet,
+        np.nan,
+    )
+    without_tt = without[:, :3, :3]
+    without_tr = without[:, :3, 3:]
+    without_rr = without[:, 3:, 3:]
+    without_schur = without_tt - without_tr @ np.linalg.solve(
+        without_rr + 1e-12 * np.eye(3, dtype=np.float64)[None],
+        without_tr.transpose(0, 2, 1),
+    )
+    without_schur = 0.5 * (
+        without_schur + without_schur.transpose(0, 2, 1)
+    )
+    without_translation_sign, without_translation_logdet = np.linalg.slogdet(
+        without_schur
+    )
+    translation_delete_gain = np.where(
+        without_translation_sign > 0,
+        translation_logdet - without_translation_logdet,
+        np.nan,
+    )
+
+    def distribution_stats(name, values):
+        values = np.asarray(values, dtype=np.float64)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return {}
+        values = np.clip(values, 0.0, None)
+        return {
+            f"{prefix}_pose_info_{name}_mean": float(np.mean(values)),
+            f"{prefix}_pose_info_{name}_p95": float(np.percentile(values, 95)),
+            f"{prefix}_pose_info_{name}_max": float(np.max(values)),
+        }
+
+    result = {
         f"{prefix}_pose_info_condition": float(eigvals.max() / eigvals.min()),
         f"{prefix}_pose_info_logdet": float(logdet if sign > 0 else np.nan),
         f"{prefix}_pose_info_min_eig": float(eigvals.min()),
+        f"{prefix}_pose_info_task_condition": float(
+            task_eigvals.max() / task_eigvals.min()
+        ),
+        f"{prefix}_pose_info_task_logdet": float(
+            task_logdet if task_sign > 0 else np.nan
+        ),
+        f"{prefix}_pose_info_translation_condition": float(
+            translation_eigvals.max() / translation_eigvals.min()
+        ),
+        f"{prefix}_pose_info_translation_logdet": float(
+            translation_logdet if translation_sign > 0 else np.nan
+        ),
+        f"{prefix}_pose_info_translation_min_eig": float(
+            translation_eigvals.min()
+        ),
+        f"{prefix}_pose_info_translation_trace_covariance": float(
+            np.trace(translation_covariance)
+        ),
+        f"{prefix}_pose_info_translation_worst_std_task": (
+            translation_worst_std_task
+        ),
+        f"{prefix}_pose_info_translation_worst_std_m": float(
+            translation_worst_std_task * translation_scale
+        ),
+        f"{prefix}_pose_info_effective_count": float(cam.shape[0]),
+        f"{prefix}_pose_info_translation_task_scale_m": translation_scale,
+        f"{prefix}_pose_info_rotation_task_scale_degrees": float(
+            rotation_task_scale_degrees
+        ),
+    }
+    result.update(
+        distribution_stats(
+            "point_jacobian",
+            np.square(jacobians).sum(axis=(1, 2)),
+        )
+    )
+    result.update(distribution_stats("full_set_leverage", leverage_scores))
+    result.update(distribution_stats("full_delete_gain", full_delete_gain))
+    result.update(
+        distribution_stats("translation_delete_gain", translation_delete_gain)
+    )
+    return result
+
+
+def _pose_bias_stats(
+    prefix,
+    p2d,
+    p3d,
+    K,
+    pose_w2c,
+    *,
+    translation_task_scale_m=0.02,
+    rotation_task_scale_degrees=2.0,
+    measurement_sigma_px=1.0,
+    inlier_sigma_px=4.0,
+    residual_clip_px=12.0,
+    regularization=1e-4,
+):
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    if p2d.shape[0] != p3d.shape[0] or p3d.shape[0] < 6:
+        return {}
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    pose_w2c = np.asarray(pose_w2c, dtype=np.float64).reshape(4, 4)
+    projected, depth = _project_points_np(p3d, K, pose_w2c)
+    residual = projected - (p2d + 0.5)
+    valid = (
+        np.isfinite(p3d).all(axis=1)
+        & np.isfinite(residual).all(axis=1)
+        & np.isfinite(depth)
+        & (depth > 1e-8)
+    )
+    if np.count_nonzero(valid) < 6:
+        return {}
+    p3d = p3d[valid]
+    residual = residual[valid]
+    p3d_h = np.concatenate(
+        [p3d, np.ones((p3d.shape[0], 1), dtype=np.float64)], axis=1
+    )
+    cam = (pose_w2c @ p3d_h.T)[:3].T
+    fx = float(K[0, 0])
+    fy = float(K[1, 1])
+    jacobians = []
+    for x, y, z in cam:
+        dproj = np.array(
+            [[fx / z, 0.0, -fx * x / (z * z)], [0.0, fy / z, -fy * y / (z * z)]],
+            dtype=np.float64,
+        )
+        skew = np.array(
+            [[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]],
+            dtype=np.float64,
+        )
+        jacobians.append(
+            dproj @ np.concatenate([np.eye(3, dtype=np.float64), -skew], axis=1)
+        )
+    jacobians = np.stack(jacobians, axis=0)
+    translation_scale = max(float(translation_task_scale_m), 1e-12)
+    rotation_scale = max(float(np.deg2rad(rotation_task_scale_degrees)), 1e-12)
+    task_scale = np.diag(
+        [translation_scale] * 3 + [rotation_scale] * 3
+    ).astype(np.float64)
+    task_jacobians = jacobians @ task_scale
+    residual_norm = np.linalg.norm(residual, axis=1)
+    inlier_sigma = max(float(inlier_sigma_px), 1e-8)
+    weights = np.exp(-0.5 * np.square(residual_norm / inlier_sigma))
+    measurement_sigma = max(float(measurement_sigma_px), 1e-8)
+    information = float(regularization) * np.eye(6, dtype=np.float64)
+    information += np.einsum(
+        "n,nai,naj->ij",
+        weights / (measurement_sigma * measurement_sigma),
+        task_jacobians,
+        task_jacobians,
+    )
+    clip = max(float(residual_clip_px), 0.0)
+    residual_scale = np.minimum(
+        1.0,
+        clip / np.maximum(residual_norm, 1e-12),
+    )
+    clipped_residual = residual * residual_scale[:, None]
+    bias_gradient = np.einsum(
+        "n,nai,na->i",
+        weights / (measurement_sigma * measurement_sigma),
+        task_jacobians,
+        clipped_residual,
+    )
+    try:
+        delta_task = -np.linalg.solve(information, bias_gradient)
+    except np.linalg.LinAlgError:
+        return {}
+    translation_bias = delta_task[:3] * translation_scale
+    rotation_bias_degrees = np.rad2deg(
+        np.linalg.norm(delta_task[3:] * rotation_scale)
+    )
+    weight_sum = float(np.sum(weights))
+    effective_count = float(
+        weight_sum * weight_sum / max(float(np.sum(np.square(weights))), 1e-12)
+    )
+    return {
+        f"{prefix}_pose_bias_translation_x_m": float(translation_bias[0]),
+        f"{prefix}_pose_bias_translation_y_m": float(translation_bias[1]),
+        f"{prefix}_pose_bias_translation_z_m": float(translation_bias[2]),
+        f"{prefix}_pose_bias_translation_norm_m": float(
+            np.linalg.norm(translation_bias)
+        ),
+        f"{prefix}_pose_bias_rotation_norm_degrees": float(rotation_bias_degrees),
+        f"{prefix}_pose_bias_soft_inlier_count": weight_sum,
+        f"{prefix}_pose_bias_effective_count": effective_count,
     }
 
 
@@ -424,6 +678,71 @@ def sparse_correspondence_diagnostics(
                 diagnostics[f"sparse_diag_inlier_gt_precision_{int(threshold)}px"] = float(
                     np.mean(gt_residual[inliers] <= threshold)
                 )
+        diagnostics.update(
+            _pose_bias_stats(
+                "sparse_diag_all_gt",
+                p2d,
+                p3d,
+                K,
+                gt_pose_w2c,
+            )
+        )
+        if inliers.shape[0] > 0:
+            diagnostics.update(
+                _pose_bias_stats(
+                    "sparse_diag_inlier_gt",
+                    p2d[inliers],
+                    p3d[inliers],
+                    K,
+                    gt_pose_w2c,
+                )
+            )
+        clean_threshold = 4.0
+        gt_clean = np.isfinite(gt_residual) & (gt_residual <= clean_threshold)
+        gt_clean_inliers = inliers[gt_clean[inliers]] if inliers.size else inliers
+        diagnostics.update(
+            {
+                "sparse_diag_gt_clean4_count": int(gt_clean.sum()),
+                "sparse_diag_inlier_gt_clean4_count": int(gt_clean_inliers.size),
+                "sparse_diag_inlier_gt_clean4_ratio": float(
+                    gt_clean_inliers.size / max(float(inliers.size), 1.0)
+                ),
+            }
+        )
+        diagnostics.update(
+            _pose_information_stats(
+                "sparse_diag_gt_clean4",
+                p3d[gt_clean],
+                K,
+                gt_pose_w2c,
+            )
+        )
+        diagnostics.update(
+            _pose_information_stats(
+                "sparse_diag_inlier_gt_clean4",
+                p3d[gt_clean_inliers],
+                K,
+                gt_pose_w2c,
+            )
+        )
+        diagnostics.update(
+            _pose_bias_stats(
+                "sparse_diag_gt_clean4",
+                p2d[gt_clean],
+                p3d[gt_clean],
+                K,
+                gt_pose_w2c,
+            )
+        )
+        diagnostics.update(
+            _pose_bias_stats(
+                "sparse_diag_inlier_gt_clean4",
+                p2d[gt_clean_inliers],
+                p3d[gt_clean_inliers],
+                K,
+                gt_pose_w2c,
+            )
+        )
     return diagnostics
 
 
@@ -2138,6 +2457,10 @@ if __name__ == "__main__":
         default="temporal_block",
     )
     parser.add_argument("--candidate_split_seed", type=int, default=2026)
+    parser.add_argument(
+        "--candidate_direct_validation_holdout",
+        action="store_true",
+    )
     args = get_combined_args(parser)
     args.eval = args.evaluation_camera_subset == "test"
 
@@ -2194,6 +2517,7 @@ if __name__ == "__main__":
             validation_ratio=args.candidate_validation_ratio,
             split_mode=args.candidate_split_mode,
             split_seed=args.candidate_split_seed,
+            direct_holdout=args.candidate_direct_validation_holdout,
         )
         print(
             "Candidate validation cameras: "

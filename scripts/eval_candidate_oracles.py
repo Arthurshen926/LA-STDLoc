@@ -1,12 +1,18 @@
 import argparse
 import json
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 from scipy.stats import spearmanr
 from scipy.spatial import cKDTree
+import torch
 
+from localization_training.pose_information import (
+    compute_pose_information,
+    pose_jacobian_analytic,
+)
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -231,6 +237,144 @@ def pose_information(points, K, pose_w2c, damping=1e-6):
     }
 
 
+def fisher_candidate_scores(
+    points,
+    match_scores,
+    K,
+    pose_w2c,
+    *,
+    match_threshold=0.525,
+    match_temperature=0.05,
+    translation_scale=0.02,
+    rotation_scale_degrees=2.0,
+    measurement_sigma_px=1.0,
+    damping=1e-4,
+):
+    """Return controlled per-point geometry scores for one fixed candidate set."""
+    points_tensor = torch.as_tensor(points, dtype=torch.float64)
+    K_tensor = torch.as_tensor(K, dtype=torch.float64)
+    pose_tensor = torch.as_tensor(pose_w2c, dtype=torch.float64)
+    scores_tensor = torch.as_tensor(match_scores, dtype=torch.float64).reshape(-1)
+    if points_tensor.shape[0] != scores_tensor.shape[0]:
+        raise ValueError("Fisher points and match scores must have equal length")
+
+    jacobian = pose_jacobian_analytic(points_tensor, K_tensor, pose_tensor)
+    point_jacobian = jacobian.square().sum(dim=(1, 2))
+    common = {
+        "damping": float(damping),
+        "measurement_covariance": torch.full(
+            (points_tensor.shape[0],),
+            max(float(measurement_sigma_px), 1e-4) ** 2,
+            dtype=torch.float64,
+        ),
+        "translation_scale": float(translation_scale),
+        "rotation_scale": math.radians(float(rotation_scale_degrees)),
+        "use_analytic_jacobian": True,
+    }
+    unit_information = compute_pose_information(
+        points_tensor,
+        K_tensor,
+        pose_tensor,
+        weights=torch.ones(points_tensor.shape[0], dtype=torch.float64),
+        **common,
+    )
+    temperature = max(float(match_temperature), 1e-6)
+    match_probability = torch.sigmoid(
+        (scores_tensor - float(match_threshold)) / temperature
+    )
+    weighted_information = compute_pose_information(
+        points_tensor,
+        K_tensor,
+        pose_tensor,
+        weights=match_probability,
+        **common,
+    )
+    return {
+        "point_jacobian": point_jacobian.detach().cpu().numpy(),
+        "full_set_leverage": (
+            unit_information.full_set_leverage_scores.detach().cpu().numpy()
+        ),
+        "conditional_full": unit_information.scores.detach().cpu().numpy(),
+        "conditional_translation": (
+            unit_information.translation_scores.detach().cpu().numpy()
+        ),
+        "score_weighted_translation": (
+            weighted_information.translation_scores.detach().cpu().numpy()
+        ),
+        "set_translation_logdet": float(unit_information.translation_logdet.item()),
+        "set_translation_min_eig": float(
+            unit_information.translation_min_eigenvalue.item()
+        ),
+        "set_translation_worst_std_task": float(
+            unit_information.translation_worst_std.item()
+        ),
+        "set_effective_match_count": float(weighted_information.effective_count.item()),
+    }
+
+
+def fisher_retention_diagnostics(
+    p2d,
+    p3d,
+    match_scores,
+    K,
+    pose_gt,
+    args,
+):
+    """Compare equal-budget retention by legacy and conditional Fisher scores."""
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    match_scores = np.asarray(match_scores, dtype=np.float64).reshape(-1)
+    count = int(p2d.shape[0])
+    if count < 8:
+        return {"fisher_inlier_count": count}
+    retain_count = max(6, min(count, int(round(count * args.fisher_retain_fraction))))
+    scores = fisher_candidate_scores(
+        p3d,
+        match_scores,
+        K,
+        pose_gt,
+        match_threshold=args.fisher_match_threshold,
+        match_temperature=args.fisher_match_temperature,
+        translation_scale=args.fisher_translation_scale,
+        rotation_scale_degrees=args.fisher_rotation_scale_degrees,
+        measurement_sigma_px=args.fisher_measurement_sigma_px,
+    )
+    output = {
+        "fisher_inlier_count": count,
+        "fisher_retain_count": retain_count,
+        "fisher_set_translation_logdet": scores.pop("set_translation_logdet"),
+        "fisher_set_translation_min_eig": scores.pop("set_translation_min_eig"),
+        "fisher_set_translation_worst_std_task": scores.pop(
+            "set_translation_worst_std_task"
+        ),
+        "fisher_set_effective_match_count": scores.pop(
+            "set_effective_match_count"
+        ),
+    }
+    for name, values in scores.items():
+        values = np.asarray(values, dtype=np.float64)
+        descending = np.argsort(-values, kind="stable")
+        keep_high = descending[:retain_count]
+        keep_low = descending[-retain_count:]
+        high = pose_result(
+            f"fisher_{name}_keep_high", p2d[keep_high], p3d[keep_high], K, pose_gt
+        )
+        low = pose_result(
+            f"fisher_{name}_keep_low", p2d[keep_low], p3d[keep_low], K, pose_gt
+        )
+        output.update(high)
+        output.update(low)
+        output[f"fisher_{name}_high_vs_low_te_gain_cm"] = (
+            low[f"fisher_{name}_keep_low_te_cm"]
+            - high[f"fisher_{name}_keep_high_te_cm"]
+        )
+        output[f"fisher_{name}_high_vs_low_ae_gain_deg"] = (
+            low[f"fisher_{name}_keep_low_ae_deg"]
+            - high[f"fisher_{name}_keep_high_ae_deg"]
+        )
+    return output
+
+
 def visibility_filter(projected, depth, valid, width, height, abs_tol=0.25, rel_tol=0.02):
     in_image = (
         valid
@@ -390,6 +534,34 @@ def summarize(per_query):
         correlation = spearmanr(bias[valid], actual[valid])
         summary["o6_bias_actual_te_spearman"] = float(correlation.statistic)
         summary["o6_bias_actual_te_spearman_pvalue"] = float(correlation.pvalue)
+    for name in (
+        "point_jacobian",
+        "full_set_leverage",
+        "conditional_full",
+        "conditional_translation",
+        "score_weighted_translation",
+    ):
+        key = f"fisher_{name}_high_vs_low_te_gain_cm"
+        gains = np.asarray([item.get(key, np.nan) for item in per_query], dtype=np.float64)
+        gains = gains[np.isfinite(gains)]
+        if gains.size:
+            summary[f"{key}_positive_rate"] = float(np.mean(gains > 0.0))
+    for key in (
+        "fisher_set_translation_logdet",
+        "fisher_set_translation_min_eig",
+        "fisher_set_translation_worst_std_task",
+        "fisher_set_effective_match_count",
+    ):
+        values = np.asarray(
+            [item.get(key, np.nan) for item in per_query], dtype=np.float64
+        )
+        valid = np.isfinite(values) & np.isfinite(actual)
+        if valid.sum() >= 3:
+            correlation = spearmanr(values[valid], actual[valid])
+            summary[f"{key}_actual_te_spearman"] = float(correlation.statistic)
+            summary[f"{key}_actual_te_spearman_pvalue"] = float(
+                correlation.pvalue
+            )
     return summary
 
 
@@ -463,6 +635,20 @@ def evaluate(args):
             confidence=args.confidence,
             max_iterations=args.max_iterations,
             min_iterations=args.min_iterations,
+        )
+        recorded_inliers = np.asarray(record.get("inliers", []), dtype=np.int64)
+        recorded_inliers = recorded_inliers[
+            (recorded_inliers >= 0) & (recorded_inliers < p2d.shape[0])
+        ]
+        query.update(
+            fisher_retention_diagnostics(
+                p2d[recorded_inliers],
+                p3d[recorded_inliers],
+                scores[recorded_inliers],
+                K,
+                pose_gt,
+                args,
+            )
         )
         covariance_pose, covariance_success = covariance_weighted_refine(
             initial_pose,
@@ -576,6 +762,16 @@ def evaluate(args):
             "solver": args.solver,
             "reprojection_error": float(args.reprojection_error),
             "covariance_floor_px": float(args.covariance_floor_px),
+            "fisher_retain_fraction": float(args.fisher_retain_fraction),
+            "fisher_match_threshold": float(args.fisher_match_threshold),
+            "fisher_match_temperature": float(args.fisher_match_temperature),
+            "fisher_translation_scale": float(args.fisher_translation_scale),
+            "fisher_rotation_scale_degrees": float(
+                args.fisher_rotation_scale_degrees
+            ),
+            "fisher_measurement_sigma_px": float(
+                args.fisher_measurement_sigma_px
+            ),
         },
         "summary": summarize(per_query),
         "queries": per_query,
@@ -601,6 +797,16 @@ def main():
     parser.add_argument("--max_iterations", type=int, default=100000)
     parser.add_argument("--min_iterations", type=int, default=1000)
     parser.add_argument("--covariance_floor_px", type=float, default=0.25)
+    parser.add_argument("--fisher_retain_fraction", type=float, default=0.75)
+    parser.add_argument("--fisher_match_threshold", type=float, default=0.525)
+    parser.add_argument("--fisher_match_temperature", type=float, default=0.05)
+    parser.add_argument("--fisher_translation_scale", type=float, default=0.02)
+    parser.add_argument(
+        "--fisher_rotation_scale_degrees", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--fisher_measurement_sigma_px", type=float, default=1.0
+    )
     evaluate(parser.parse_args())
 
 

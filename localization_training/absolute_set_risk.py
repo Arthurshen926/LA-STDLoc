@@ -2,6 +2,11 @@ from dataclasses import dataclass
 
 import torch
 
+from localization_training.pose_information import (
+    effective_sample_size,
+    translation_schur_complement,
+)
+
 
 @dataclass
 class AbsolutePoseSetRisk:
@@ -22,7 +27,9 @@ def absolute_pose_set_risk(
     valid_mask=None,
     translation_prior_sigma_m=1.0,
     rotation_prior_sigma_rad=0.5,
-    reference_translation_m=0.01,
+    reference_translation_m=None,
+    translation_task_scale_m=0.02,
+    rotation_task_scale_rad=0.03490658503988659,
 ):
     """Absolute-scale pose bias and posterior uncertainty for one query set."""
     jacobian = jacobian.reshape(-1, 2, 6)
@@ -87,15 +94,34 @@ def absolute_pose_set_risk(
     information = 0.5 * (information + information.T)
     posterior = torch.linalg.inv(information)
     delta = posterior @ bias
-    translation_covariance = posterior[:3, :3]
+    translation_information = translation_schur_complement(information)
+    translation_covariance = torch.linalg.pinv(translation_information)
     translation_bias_m = torch.linalg.norm(delta[:3])
     translation_trace = torch.trace(translation_covariance)
-    reference = max(float(reference_translation_m), 1e-6)
+    reference = max(
+        float(
+            translation_task_scale_m
+            if reference_translation_m is None
+            else reference_translation_m
+        ),
+        1e-6,
+    )
     bias_loss = (translation_bias_m / reference).square()
     trace_loss = torch.log1p(translation_trace / (reference * reference))
     sign, logdet = torch.linalg.slogdet(translation_covariance)
     logdet = torch.where(sign > 0, logdet, logdet.new_tensor(float("inf")))
-    eigenvalues = torch.linalg.eigvalsh(information).clamp_min(1e-12)
+    task_scales = information.new_tensor(
+        [
+            float(translation_task_scale_m),
+            float(translation_task_scale_m),
+            float(translation_task_scale_m),
+            float(rotation_task_scale_rad),
+            float(rotation_task_scale_rad),
+            float(rotation_task_scale_rad),
+        ]
+    )
+    task_information = information * task_scales[:, None] * task_scales[None, :]
+    eigenvalues = torch.linalg.eigvalsh(task_information).clamp_min(1e-12)
     return AbsolutePoseSetRisk(
         translation_bias_loss=bias_loss,
         translation_trace_loss=trace_loss,
@@ -103,5 +129,5 @@ def absolute_pose_set_risk(
         translation_covariance_trace_m2=translation_trace,
         translation_covariance_logdet=logdet,
         condition_number=eigenvalues[-1] / eigenvalues[0],
-        effective_pair_count=probability.sum(),
+        effective_pair_count=effective_sample_size(probability),
     )

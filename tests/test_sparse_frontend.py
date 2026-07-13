@@ -88,6 +88,7 @@ def test_sparse_frontend_landmark_limit_keeps_two_best_per_landmark():
     from localization_training.sparse_frontend import (
         SparseMatchResult,
         limit_matches_per_landmark,
+        matches_per_landmark_mask,
     )
 
     matches = SparseMatchResult(
@@ -96,7 +97,9 @@ def test_sparse_frontend_landmark_limit_keeps_two_best_per_landmark():
         scores=torch.tensor([0.1, 0.2, 0.8, 0.7, 0.9, 0.6]),
     )
     limited = limit_matches_per_landmark(matches, 2)
+    keep = matches_per_landmark_mask(matches.landmark_idx, matches.scores, 2)
 
+    assert keep.tolist() == [False, True, True, True, True, False]
     assert limited.keypoint_idx.tolist() == [1, 2, 3, 4]
     assert limited.landmark_idx.tolist() == [1, 0, 0, 1]
     assert torch.allclose(limited.scores, torch.tensor([0.2, 0.8, 0.7, 0.9]))

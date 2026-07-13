@@ -1665,6 +1665,35 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_full_bank_nearby_as_positive_until", type=int, default=0)
     parser.add_argument("--loc_full_bank_pose_information_weight", type=float, default=0.0)
     parser.add_argument("--loc_full_bank_pose_information_floor", type=float, default=0.0)
+    parser.add_argument(
+        "--loc_full_bank_pose_information_mode",
+        type=str,
+        default="point_jacobian",
+        choices=[
+            "point_jacobian",
+            "full_set_leverage",
+            "conditional_full",
+            "conditional_translation",
+        ],
+    )
+    parser.add_argument(
+        "--loc_full_bank_pose_information_normalization",
+        type=str,
+        default="max",
+        choices=["max", "quantile", "rank"],
+    )
+    parser.add_argument("--loc_full_bank_fisher_translation_scale", type=float, default=0.02)
+    parser.add_argument("--loc_full_bank_fisher_rotation_scale_degrees", type=float, default=2.0)
+    parser.add_argument("--loc_full_bank_fisher_measurement_sigma", type=float, default=1.0)
+    parser.add_argument("--loc_full_bank_fisher_damping", type=float, default=1e-4)
+    parser.add_argument("--loc_full_bank_fisher_use_matchability", action="store_true", default=False)
+    parser.add_argument("--loc_full_bank_fisher_matchability_floor", type=float, default=0.05)
+    parser.add_argument("--loc_full_bank_fisher_matchability_power", type=float, default=1.0)
+    parser.add_argument(
+        "--loc_full_bank_fisher_uncertainty_entropy_scale",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--loc_full_bank_balance_weight", type=float, default=0.0)
     parser.add_argument("--loc_full_bank_balance_grid_size", type=int, default=0)
     parser.add_argument("--loc_full_bank_balance_depth_bins", type=int, default=0)
@@ -2356,6 +2385,36 @@ def _score_heldout_direct_descriptor_risk(
                 full_bank_stats_chunk_size=getattr(args, "loc_full_bank_stats_chunk_size", 256),
                 full_bank_pose_information_weight=args.loc_full_bank_pose_information_weight,
                 full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
+                full_bank_pose_information_mode=getattr(
+                    args, "loc_full_bank_pose_information_mode", "point_jacobian"
+                ),
+                full_bank_pose_information_normalization=getattr(
+                    args, "loc_full_bank_pose_information_normalization", "max"
+                ),
+                full_bank_fisher_translation_scale=getattr(
+                    args, "loc_full_bank_fisher_translation_scale", 0.02
+                ),
+                full_bank_fisher_rotation_scale_degrees=getattr(
+                    args, "loc_full_bank_fisher_rotation_scale_degrees", 2.0
+                ),
+                full_bank_fisher_measurement_sigma=getattr(
+                    args, "loc_full_bank_fisher_measurement_sigma", 1.0
+                ),
+                full_bank_fisher_damping=getattr(
+                    args, "loc_full_bank_fisher_damping", 1e-4
+                ),
+                full_bank_fisher_use_matchability=getattr(
+                    args, "loc_full_bank_fisher_use_matchability", False
+                ),
+                full_bank_fisher_matchability_floor=getattr(
+                    args, "loc_full_bank_fisher_matchability_floor", 0.05
+                ),
+                full_bank_fisher_matchability_power=getattr(
+                    args, "loc_full_bank_fisher_matchability_power", 1.0
+                ),
+                full_bank_fisher_uncertainty_entropy_scale=getattr(
+                    args, "loc_full_bank_fisher_uncertainty_entropy_scale", 0.0
+                ),
                 full_bank_balance_weight=args.loc_full_bank_balance_weight,
                 full_bank_balance_grid_size=args.loc_full_bank_balance_grid_size,
                 full_bank_balance_depth_bins=args.loc_full_bank_balance_depth_bins,
@@ -3857,6 +3916,16 @@ def training(dataset, opt, args):
                     full_bank_stats_chunk_size=getattr(args, "loc_full_bank_stats_chunk_size", 256),
                     full_bank_pose_information_weight=clean_field_controls["pose_information_weight"],
                     full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
+                    full_bank_pose_information_mode=args.loc_full_bank_pose_information_mode,
+                    full_bank_pose_information_normalization=args.loc_full_bank_pose_information_normalization,
+                    full_bank_fisher_translation_scale=args.loc_full_bank_fisher_translation_scale,
+                    full_bank_fisher_rotation_scale_degrees=args.loc_full_bank_fisher_rotation_scale_degrees,
+                    full_bank_fisher_measurement_sigma=args.loc_full_bank_fisher_measurement_sigma,
+                    full_bank_fisher_damping=args.loc_full_bank_fisher_damping,
+                    full_bank_fisher_use_matchability=args.loc_full_bank_fisher_use_matchability,
+                    full_bank_fisher_matchability_floor=args.loc_full_bank_fisher_matchability_floor,
+                    full_bank_fisher_matchability_power=args.loc_full_bank_fisher_matchability_power,
+                    full_bank_fisher_uncertainty_entropy_scale=args.loc_full_bank_fisher_uncertainty_entropy_scale,
                     full_bank_balance_weight=clean_field_controls["balance_weight"],
                     full_bank_balance_grid_size=args.loc_full_bank_balance_grid_size,
                     full_bank_balance_depth_bins=args.loc_full_bank_balance_depth_bins,

@@ -4,6 +4,11 @@ import torch
 import torch.nn.functional as F
 
 from localization_training.correspondence import bilinear_sample_features
+from localization_training.pose_information import (
+    compute_pose_information,
+    normalize_information_scores,
+    pose_jacobian_analytic,
+)
 from localization_training.render_artifacts import combine_artifact_confidence, sample_region_weight_map
 from utils.graphics_utils import fov2focal
 
@@ -344,56 +349,141 @@ def direct_landmark_feature_loss(gaussian_features, query_features, weights=None
     return (per_item * weights).sum() / weights.sum().clamp_min(1e-6)
 
 
-def pose_information_weights(points_world, K, pose_w2c, floor=0.0, eps=1e-8):
-    """Approximate per-anchor pose information from the projection Jacobian."""
-    points_world = torch.as_tensor(points_world)
+def _normalize_pose_information_scores(scores, floor=0.0, mode="max", eps=1e-8):
+    return normalize_information_scores(scores, floor=floor, mode=mode, eps=eps)
+
+
+def pose_information_weights(
+    points_world,
+    K,
+    pose_w2c,
+    floor=0.0,
+    eps=1e-8,
+    mode="point_jacobian",
+    normalization="max",
+    matchability=None,
+    measurement_covariance=None,
+    translation_scale=0.02,
+    rotation_scale_degrees=2.0,
+    damping=1e-4,
+    return_diagnostics=False,
+):
+    """Build bounded descriptor weights from an explicitly named pose metric."""
+    points_world = torch.as_tensor(points_world).detach()
     if points_world.numel() == 0:
-        return points_world.new_zeros((0,))
+        empty = points_world.new_zeros((0,))
+        return (empty, {}) if return_diagnostics else empty
     device = points_world.device
     dtype = points_world.dtype if points_world.is_floating_point() else torch.float32
     points_world = points_world.to(device=device, dtype=dtype).reshape(-1, 3)
     K = torch.as_tensor(K, device=device, dtype=dtype)
     pose_w2c = torch.as_tensor(pose_w2c, device=device, dtype=dtype)
-    xyz_h = torch.cat([points_world, torch.ones(points_world.shape[0], 1, device=device, dtype=dtype)], dim=1)
+    xyz_h = torch.cat(
+        [points_world, torch.ones(points_world.shape[0], 1, device=device, dtype=dtype)],
+        dim=1,
+    )
     xyz_cam = (pose_w2c @ xyz_h.T)[:3].T
-    x, y, z = xyz_cam[:, 0], xyz_cam[:, 1], xyz_cam[:, 2].clamp_min(float(eps))
-    fx = K[0, 0].clamp_min(float(eps))
-    fy = K[1, 1].clamp_min(float(eps))
-    z2 = z * z
+    valid = xyz_cam[:, 2] > float(eps)
+    mode = str(mode).strip().lower()
+    aliases = {
+        "current": "point_jacobian",
+        "single_point": "point_jacobian",
+        "exact_conditional_full": "conditional_full",
+        "exact_conditional_translation": "conditional_translation",
+    }
+    mode = aliases.get(mode, mode)
+    diagnostics = {"pose_information_valid_count": int(valid.sum().item())}
 
-    du = torch.stack(
-        [
-            fx / z,
-            torch.zeros_like(z),
-            -fx * x / z2,
-            -fx * x * y / z2,
-            fx * (1.0 + (x * x) / z2),
-            -fx * y / z,
-        ],
-        dim=1,
+    if mode == "point_jacobian":
+        jacobian = pose_jacobian_analytic(points_world, K, pose_w2c)
+        raw_scores = jacobian.square().sum(dim=(1, 2)).clamp_min(0.0)
+        raw_scores = torch.where(valid, raw_scores, torch.zeros_like(raw_scores))
+    elif mode in {
+        "full_set_leverage",
+        "conditional_full",
+        "conditional_translation",
+    }:
+        if matchability is None:
+            fisher_weights = points_world.new_ones((points_world.shape[0],))
+        else:
+            fisher_weights = torch.as_tensor(
+                matchability, device=device, dtype=dtype
+            ).reshape(-1)
+            if fisher_weights.numel() != points_world.shape[0]:
+                raise ValueError(
+                    f"Expected {points_world.shape[0]} matchability weights, "
+                    f"got {fisher_weights.numel()}"
+                )
+            fisher_weights = fisher_weights.clamp_min(0.0)
+        fisher_weights = torch.where(valid, fisher_weights, torch.zeros_like(fisher_weights))
+        information = compute_pose_information(
+            points_world,
+            K,
+            pose_w2c,
+            weights=fisher_weights,
+            damping=damping,
+            measurement_covariance=measurement_covariance,
+            translation_scale=translation_scale,
+            rotation_scale=torch.deg2rad(points_world.new_tensor(float(rotation_scale_degrees))).item(),
+            use_analytic_jacobian=True,
+            eps=max(float(eps), 1e-12),
+        )
+        if mode == "full_set_leverage":
+            raw_scores = information.full_set_leverage_scores
+        elif mode == "conditional_full":
+            raw_scores = information.scores
+        else:
+            raw_scores = information.translation_scores
+        raw_scores = torch.where(valid, raw_scores, torch.zeros_like(raw_scores))
+        diagnostics.update(
+            {
+                "pose_information_full_set_logdet": float(information.logdet.item()),
+                "pose_information_full_set_condition": float(information.condition_number.item()),
+                "pose_information_translation_logdet": float(information.translation_logdet.item()),
+                "pose_information_translation_condition": float(
+                    information.translation_condition_number.item()
+                ),
+                "pose_information_translation_min_eigenvalue": float(
+                    information.translation_min_eigenvalue.item()
+                ),
+                "pose_information_translation_trace_covariance": float(
+                    information.translation_trace_covariance.item()
+                ),
+                "pose_information_translation_worst_std": float(
+                    information.translation_worst_std.item()
+                ),
+                "pose_information_effective_count": float(information.effective_count.item()),
+            }
+        )
+    else:
+        raise ValueError(f"Unsupported pose information mode: {mode}")
+
+    finite_scores = raw_scores[torch.isfinite(raw_scores)]
+    if finite_scores.numel() > 0:
+        diagnostics.update(
+            {
+                "pose_information_raw_gain_min": float(finite_scores.min().item()),
+                "pose_information_raw_gain_mean": float(finite_scores.mean().item()),
+                "pose_information_raw_gain_max": float(finite_scores.max().item()),
+            }
+        )
+    weights = _normalize_pose_information_scores(
+        raw_scores,
+        floor=floor,
+        mode=normalization,
+        eps=eps,
     )
-    dv = torch.stack(
-        [
-            torch.zeros_like(z),
-            fy / z,
-            -fy * y / z2,
-            -fy * (1.0 + (y * y) / z2),
-            fy * x * y / z2,
-            fy * x / z,
-        ],
-        dim=1,
-    )
-    info = (du.square().sum(dim=1) + dv.square().sum(dim=1)).clamp_min(0.0)
-    finite = torch.isfinite(info) & (xyz_cam[:, 2] > float(eps))
-    if not bool(finite.any().item()):
-        return points_world.new_full((points_world.shape[0],), max(0.0, min(float(floor), 1.0)))
-    max_info = info[finite].max().clamp_min(float(eps))
-    weights = (info / max_info).clamp(0.0, 1.0)
-    weights = torch.where(finite, weights, torch.zeros_like(weights))
-    floor = max(0.0, min(float(floor), 1.0))
-    if floor > 0.0:
-        weights = floor + (1.0 - floor) * weights
-    return weights.clamp(0.0, 1.0)
+    if return_diagnostics:
+        diagnostics["pose_information_mode_id"] = float(
+            {
+                "point_jacobian": 1,
+                "full_set_leverage": 2,
+                "conditional_full": 3,
+                "conditional_translation": 4,
+            }[mode]
+        )
+        return weights, diagnostics
+    return weights
 
 
 def descriptor_anchor_loss(current_features, baseline_features, weights=None):
@@ -1013,6 +1103,16 @@ def direct_landmark_teacher(
     full_bank_stats_chunk_size=256,
     full_bank_pose_information_weight=0.0,
     full_bank_pose_information_floor=0.0,
+    full_bank_pose_information_mode="point_jacobian",
+    full_bank_pose_information_normalization="max",
+    full_bank_fisher_translation_scale=0.02,
+    full_bank_fisher_rotation_scale_degrees=2.0,
+    full_bank_fisher_measurement_sigma=1.0,
+    full_bank_fisher_damping=1e-4,
+    full_bank_fisher_use_matchability=False,
+    full_bank_fisher_matchability_floor=0.05,
+    full_bank_fisher_matchability_power=1.0,
+    full_bank_fisher_uncertainty_entropy_scale=0.0,
     full_bank_balance_weight=0.0,
     full_bank_balance_grid_size=0,
     full_bank_balance_depth_bins=0,
@@ -1193,17 +1293,31 @@ def direct_landmark_teacher(
     desc_loss = direct_landmark_feature_loss(gaussian_features, query_features, weights=artifact_weights)
     selected_count = selected_full_idx.numel()
     multiview_positive_count = torch.zeros(selected_count, dtype=torch.float32, device=query_feature_map.device)
-    pose_info_weight = pose_information_weights(
+    fisher_measurement_sigma = max(float(full_bank_fisher_measurement_sigma), 1e-4)
+    pose_info_weight, pose_info_diagnostics = pose_information_weights(
         selected_xyz,
         K,
         pose_gt_w2c,
         floor=full_bank_pose_information_floor,
-    ).to(device=query_feature_map.device, dtype=query_feature_map.dtype)
+        mode=full_bank_pose_information_mode,
+        normalization=full_bank_pose_information_normalization,
+        measurement_covariance=selected_xyz.new_tensor(fisher_measurement_sigma ** 2),
+        translation_scale=full_bank_fisher_translation_scale,
+        rotation_scale_degrees=full_bank_fisher_rotation_scale_degrees,
+        damping=full_bank_fisher_damping,
+        return_diagnostics=True,
+    )
+    pose_info_weight = pose_info_weight.to(
+        device=query_feature_map.device, dtype=query_feature_map.dtype
+    )
     full_bank_weights = artifact_weights
     pose_info_blend = max(0.0, min(float(full_bank_pose_information_weight), 1.0))
-    if pose_info_blend > 0.0:
+    fisher_use_matchability = bool(full_bank_fisher_use_matchability)
+    if pose_info_blend > 0.0 and not fisher_use_matchability:
         pose_info_scale = (1.0 - pose_info_blend) + pose_info_blend * pose_info_weight
         full_bank_weights = artifact_weights * pose_info_scale.detach()
+    if pose_info_blend > 0.0:
+        diagnostics.update(pose_info_diagnostics)
         diagnostics.update(
             {
                 "pose_information_weight_min": float(pose_info_weight.min().detach().item()),
@@ -1211,6 +1325,14 @@ def direct_landmark_teacher(
                 "pose_information_weight_max": float(pose_info_weight.max().detach().item()),
                 "pose_information_weight_blend": pose_info_blend,
                 "pose_information_weight_floor": float(max(0.0, min(float(full_bank_pose_information_floor), 1.0))),
+                "pose_information_uses_matchability": float(fisher_use_matchability),
+                "pose_information_translation_task_scale_m": float(
+                    full_bank_fisher_translation_scale
+                ),
+                "pose_information_rotation_task_scale_degrees": float(
+                    full_bank_fisher_rotation_scale_degrees
+                ),
+                "pose_information_measurement_sigma_px": fisher_measurement_sigma,
             }
         )
     balance_blend = max(0.0, min(float(full_bank_balance_weight), 1.0))
@@ -1321,6 +1443,63 @@ def direct_landmark_teacher(
                 ignore_bank_mask = _merge_ignore_bank_mask(ignore_bank_mask, source_bank_mask)
             elif full_bank_source_mode == "positive":
                 positive_bank_mask = source_bank_mask
+        positive_prob, margin, entropy = full_bank_descriptor_stats(
+            query_features,
+            bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
+            positive_bank_indices,
+            temperature=full_bank_temperature,
+            ignore_bank_mask=ignore_bank_mask,
+            positive_bank_mask=positive_bank_mask,
+            chunk_size=full_bank_stats_chunk_size,
+        )
+        if pose_info_blend > 0.0 and fisher_use_matchability:
+            matchability_floor = max(
+                0.0, min(float(full_bank_fisher_matchability_floor), 1.0)
+            )
+            matchability_power = max(float(full_bank_fisher_matchability_power), 0.0)
+            fisher_matchability = positive_prob.detach().clamp(0.0, 1.0)
+            fisher_matchability = fisher_matchability.pow(matchability_power)
+            fisher_matchability = matchability_floor + (
+                1.0 - matchability_floor
+            ) * fisher_matchability
+            entropy_scale = max(float(full_bank_fisher_uncertainty_entropy_scale), 0.0)
+            fisher_sigma = fisher_measurement_sigma * (
+                1.0 + entropy_scale * entropy.detach().clamp_min(0.0)
+            )
+            pose_info_weight, pose_info_diagnostics = pose_information_weights(
+                selected_xyz,
+                K,
+                pose_gt_w2c,
+                floor=full_bank_pose_information_floor,
+                mode=full_bank_pose_information_mode,
+                normalization=full_bank_pose_information_normalization,
+                matchability=fisher_matchability,
+                measurement_covariance=fisher_sigma.square(),
+                translation_scale=full_bank_fisher_translation_scale,
+                rotation_scale_degrees=full_bank_fisher_rotation_scale_degrees,
+                damping=full_bank_fisher_damping,
+                return_diagnostics=True,
+            )
+            pose_info_weight = pose_info_weight.to(
+                device=query_feature_map.device, dtype=query_feature_map.dtype
+            )
+            pose_info_scale = (
+                1.0 - pose_info_blend
+            ) + pose_info_blend * pose_info_weight
+            full_bank_weights = full_bank_weights * pose_info_scale.detach()
+            diagnostics.update(pose_info_diagnostics)
+            diagnostics.update(
+                {
+                    "pose_information_weight_min": float(pose_info_weight.min().item()),
+                    "pose_information_weight_mean": float(pose_info_weight.mean().item()),
+                    "pose_information_weight_max": float(pose_info_weight.max().item()),
+                    "pose_information_matchability_min": float(fisher_matchability.min().item()),
+                    "pose_information_matchability_mean": float(fisher_matchability.mean().item()),
+                    "pose_information_matchability_max": float(fisher_matchability.max().item()),
+                    "pose_information_measurement_sigma_mean": float(fisher_sigma.mean().item()),
+                    "pose_information_uncertainty_entropy_scale": entropy_scale,
+                }
+            )
         full_bank_loss = full_bank_bimnn_loss(
             query_features,
             bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
@@ -1377,15 +1556,6 @@ def direct_landmark_teacher(
                 ignore_bank_mask=ignore_bank_mask,
                 positive_bank_mask=positive_bank_mask,
             )
-        )
-        positive_prob, margin, entropy = full_bank_descriptor_stats(
-            query_features,
-            bank_features.to(device=query_feature_map.device, dtype=query_feature_map.dtype),
-            positive_bank_indices,
-            temperature=full_bank_temperature,
-            ignore_bank_mask=ignore_bank_mask,
-            positive_bank_mask=positive_bank_mask,
-            chunk_size=full_bank_stats_chunk_size,
         )
     if anchor_features is not None:
         anchor_selected, anchor_valid = _select_reference_features(

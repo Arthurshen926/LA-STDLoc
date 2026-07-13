@@ -112,12 +112,12 @@ def match_score_matrix(score_matrix, mode="topk", topk=1, threshold=0.0):
     return SparseMatchResult(keypoint_idx[keep], landmark_idx[keep], values[keep])
 
 
-def _limit_matches_per_group(matches, group_ids, max_matches, group_name):
+def _matches_per_group_mask(scores, group_ids, max_matches, group_name):
     max_matches = int(max_matches)
     if max_matches <= 0:
-        return matches
+        return torch.ones(group_ids.numel(), dtype=torch.bool, device=group_ids.device)
     if group_ids.numel() == 0:
-        return matches
+        return torch.zeros(0, dtype=torch.bool, device=group_ids.device)
     if bool((group_ids < 0).any()):
         raise ValueError(f"{group_name} indices must be non-negative")
 
@@ -125,20 +125,20 @@ def _limit_matches_per_group(matches, group_ids, max_matches, group_name):
     group_count = int(group_ids.max().item()) + 1
     positions = torch.arange(count, device=group_ids.device)
 
-    active = torch.ones(count, dtype=torch.bool, device=matches.landmark_idx.device)
+    active = torch.ones(count, dtype=torch.bool, device=group_ids.device)
     keep = torch.zeros_like(active)
     for _ in range(min(max_matches, count)):
         if not bool(active.any()):
             break
-        best_scores = matches.scores.new_full((group_count,), -torch.inf)
+        best_scores = scores.new_full((group_count,), -torch.inf)
         best_scores.scatter_reduce_(
             0,
             group_ids,
-            matches.scores.masked_fill(~active, -torch.inf),
+            scores.masked_fill(~active, -torch.inf),
             reduce="amax",
             include_self=True,
         )
-        has_best_score = active & (matches.scores == best_scores[group_ids])
+        has_best_score = active & (scores == best_scores[group_ids])
         first_best = positions.new_full((group_count,), count)
         first_best.scatter_reduce_(
             0,
@@ -150,6 +150,16 @@ def _limit_matches_per_group(matches, group_ids, max_matches, group_name):
         selected = has_best_score & (positions == first_best[group_ids])
         keep |= selected
         active &= ~selected
+    return keep
+
+
+def _limit_matches_per_group(matches, group_ids, max_matches, group_name):
+    keep = _matches_per_group_mask(
+        matches.scores,
+        group_ids,
+        max_matches,
+        group_name,
+    )
     return SparseMatchResult(
         matches.keypoint_idx[keep],
         matches.landmark_idx[keep],
@@ -162,6 +172,20 @@ def limit_matches_per_landmark(matches, max_matches):
     return _limit_matches_per_group(
         matches,
         matches.landmark_idx,
+        max_matches,
+        "landmark",
+    )
+
+
+def matches_per_landmark_mask(landmark_idx, scores, max_matches):
+    """Return the exact quota mask used by ``limit_matches_per_landmark``."""
+    scores = torch.as_tensor(scores)
+    landmark_idx = torch.as_tensor(landmark_idx, device=scores.device, dtype=torch.long)
+    if landmark_idx.numel() != scores.numel():
+        raise ValueError("landmark indices and scores must have equal lengths")
+    return _matches_per_group_mask(
+        scores,
+        landmark_idx,
         max_matches,
         "landmark",
     )
