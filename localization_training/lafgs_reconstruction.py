@@ -11,7 +11,11 @@ from localization_training.direct_landmark_teacher import (
     make_intrinsics_from_fov,
     project_landmarks_to_query,
 )
-from localization_training.pose_refiner import project_points, weighted_gauss_newton_refine
+from localization_training.pose_refiner import (
+    camera_center_from_w2c,
+    project_points,
+    weighted_gauss_newton_refine,
+)
 
 
 @dataclass
@@ -928,7 +932,10 @@ def _override_or_fallback(value, fallback):
 
 def _pose_l1_geodesic_loss(pose_w2c, pose_gt_w2c, translation_weight=1.0, rotation_weight=1.0):
     pose_gt_w2c = pose_gt_w2c.to(device=pose_w2c.device, dtype=pose_w2c.dtype)
-    translation = (pose_w2c[:3, 3] - pose_gt_w2c[:3, 3]).abs().mean()
+    translation = (
+        camera_center_from_w2c(pose_w2c)
+        - camera_center_from_w2c(pose_gt_w2c)
+    ).abs().mean()
     rel = pose_w2c[:3, :3] @ pose_gt_w2c[:3, :3].T
     cos = ((torch.trace(rel) - 1.0) * 0.5).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
     rotation = torch.acos(cos)
@@ -1100,11 +1107,15 @@ def differentiable_pnp_pose_loss(
     config = config or DifferentiablePnPConfig()
     feature_map = query_feature_map.detach() if config.detach_query_feature_map else query_feature_map
     if projected_uv is None and float(config.local_window_radius) > 0.0:
+        if pose_init_w2c is None:
+            raise ValueError(
+                "local-window Diff-PnP requires pose_init_w2c; GT pose must not center matching windows"
+            )
         points_for_projection = points_world.detach()
         projected_uv, _ = project_points(
             points_for_projection.to(device=feature_map.device, dtype=feature_map.dtype),
             K.to(device=feature_map.device, dtype=feature_map.dtype),
-            pose_gt_w2c.to(device=feature_map.device, dtype=feature_map.dtype),
+            pose_init_w2c.to(device=feature_map.device, dtype=feature_map.dtype),
         )
     correspondences = soft_3d_to_2d_correspondences(
         gaussian_features,

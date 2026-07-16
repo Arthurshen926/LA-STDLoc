@@ -18,6 +18,10 @@ from gaussian_renderer import get_render_visible_mask, render_from_pose_gsplat
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
 from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.geometry_selector import GeometryBalancedSelector
+from localization_training.full_primitive_retrieval import (
+    chunked_exact_topk,
+    suppress_redundant_hypotheses,
+)
 from localization_training.pair_scorer import SparsePairScorer
 from localization_training.pair_measurement import (
     PairMeasurementHead,
@@ -1276,8 +1280,18 @@ class STDLoc:
         )
         with open(sampled_idx_path, "rb") as handle:
             sampled_idx = pickle.load(handle)
-        self.landmark_indices = validate_sampled_indices(sampled_idx, gaussians.get_xyz.shape[0]).detach().cpu()
-        self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
+        sampled_idx = validate_sampled_indices(sampled_idx, gaussians.get_xyz.shape[0]).detach().cpu()
+        self.full_primitive_retrieval = bool(
+            sparse_config.get("full_primitive_retrieval", False)
+        )
+        if self.full_primitive_retrieval:
+            self.landmark_indices = torch.arange(
+                gaussians.get_xyz.shape[0], dtype=torch.long
+            )
+            self.landmarks = gaussians
+        else:
+            self.landmark_indices = sampled_idx
+            self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
         map_features = self.landmarks.get_loc_feature.detach().clone()
         map_features_flat = map_features.reshape(map_features.shape[0], -1)
         legacy_state_path = sparse_config.get("candidate_teacher_state_path", "")
@@ -1327,14 +1341,33 @@ class STDLoc:
             )
             current_features = self.landmarks.get_loc_feature
             current_flat = current_features.reshape(current_features.shape[0], -1)
-            override, self.landmark_feature_override_state = load_candidate_teacher_landmark_features(
-                full_feature_override_path,
-                self.landmark_indices,
-                expected_feature_dim=current_flat.shape[1],
-                device=current_features.device,
-                dtype=current_features.dtype,
-            )
-            self.landmarks._loc_feature = override.reshape_as(current_features)
+            if self.full_primitive_retrieval:
+                state = load_sparse_candidate_state(full_feature_override_path)
+                state_indices = validate_sampled_indices(
+                    state.get("landmark_indices", []), current_flat.shape[0]
+                ).to(current_flat.device)
+                override = torch.as_tensor(
+                    state["landmark_features"],
+                    device=current_flat.device,
+                    dtype=current_flat.dtype,
+                ).reshape(state_indices.numel(), -1)
+                if override.shape[1] != current_flat.shape[1]:
+                    raise ValueError("full-map feature override dimension mismatch")
+                merged = current_flat.clone()
+                merged[state_indices] = F.normalize(override, dim=1)
+                self.landmarks._loc_feature = torch.nn.Parameter(
+                    merged.reshape_as(current_features), requires_grad=False
+                )
+                self.landmark_feature_override_state = state
+            else:
+                override, self.landmark_feature_override_state = load_candidate_teacher_landmark_features(
+                    full_feature_override_path,
+                    self.landmark_indices,
+                    expected_feature_dim=current_flat.shape[1],
+                    device=current_features.device,
+                    dtype=current_features.dtype,
+                )
+                self.landmarks._loc_feature = override.reshape_as(current_features)
 
         landmark_meta_path = sparse_config.get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
@@ -1422,6 +1455,11 @@ class STDLoc:
         )
         full_pair_measurement_state_path = None
         if sparse_config.get("use_pair_measurement", False):
+            if self.full_primitive_retrieval:
+                raise ValueError(
+                    "full primitive retrieval currently requires PairMeasurement disabled; "
+                    "the existing head was trained on the fixed bank"
+                )
             if self.pair_scorer is not None:
                 raise ValueError(
                     "pair measurement and legacy pair scorer cannot be enabled together"
@@ -1751,15 +1789,83 @@ class STDLoc:
             self.landmarks.get_loc_feature.squeeze(), dim=-1
         )
 
-        similarity, corr_matrix = build_score_matrix(
-            sampled_features.T,
-            landmark_features,
-            normalize=True,
-            use_dual_softmax=self.config["sparse"]["dual_softmax"],
-            dual_softmax_temperature=self.config["sparse"]["dual_softmax_temp"],
-        )
+        retrieval_diagnostics = {}
+        retrieval_matches = None
+        if self.full_primitive_retrieval:
+            if self.config["sparse"]["dual_softmax"]:
+                raise ValueError("full primitive retrieval does not support dual-softmax")
+            retrieval_topk = int(
+                self.config["sparse"].get(
+                    "full_primitive_retrieval_topk",
+                    max(self.config["sparse"].get("topk", 1), 1),
+                )
+            )
+            result = chunked_exact_topk(
+                sampled_features.T,
+                landmark_features,
+                topk=retrieval_topk,
+                chunk_size=self.config["sparse"].get(
+                    "full_primitive_chunk_size", 8192
+                ),
+            )
+            retrieval_scores = result.scores
+            retrieval_indices = result.indices
+            suppression_ratio = 1.0
+            if self.config["sparse"].get(
+                "full_primitive_surface_suppression", False
+            ):
+                retrieval_scores, retrieval_indices, suppression_ratio = (
+                    suppress_redundant_hypotheses(
+                        retrieval_scores,
+                        retrieval_indices,
+                        self.landmarks.get_xyz,
+                        output_topk=self.config["sparse"].get("topk", 1),
+                        voxel_size=self.config["sparse"].get(
+                            "full_primitive_voxel_size", 0.05
+                        ),
+                        source_indices=getattr(
+                            self.landmarks, "loc_source_index", None
+                        ),
+                        max_per_group=self.config["sparse"].get(
+                            "full_primitive_max_per_surface", 1
+                        ),
+                    )
+                )
+            else:
+                keep = min(
+                    int(self.config["sparse"].get("topk", 1)),
+                    retrieval_scores.shape[1],
+                )
+                retrieval_scores = retrieval_scores[:, :keep]
+                retrieval_indices = retrieval_indices[:, :keep]
+            keypoint_idx = torch.arange(
+                retrieval_scores.shape[0], device=retrieval_scores.device
+            )[:, None].expand_as(retrieval_indices)
+            finite = torch.isfinite(retrieval_scores)
+            retrieval_matches = SparseMatchResult(
+                keypoint_idx[finite],
+                retrieval_indices[finite],
+                retrieval_scores[finite],
+            )
+            similarity = None
+            corr_matrix = None
+            retrieval_diagnostics = {
+                "sparse_diag_full_primitive_retrieval": 1.0,
+                "sparse_diag_full_primitive_count": int(landmark_features.shape[0]),
+                "sparse_diag_full_primitive_retrieval_ms": float(result.elapsed_ms),
+                "sparse_diag_full_primitive_chunks": int(result.chunks),
+                "sparse_diag_full_primitive_suppression_keep_ratio": float(suppression_ratio),
+            }
+        else:
+            similarity, corr_matrix = build_score_matrix(
+                sampled_features.T,
+                landmark_features,
+                normalize=True,
+                use_dual_softmax=self.config["sparse"]["dual_softmax"],
+                dual_softmax_temperature=self.config["sparse"]["dual_softmax_temp"],
+            )
 
-        if self.landmark_meta is not None and self.config["sparse"].get("use_landmark_prior", False):
+        if corr_matrix is not None and self.landmark_meta is not None and self.config["sparse"].get("use_landmark_prior", False):
             prior = landmark_prior_from_meta(
                 self.landmark_meta,
                 landmark_features.shape[0],
@@ -1772,7 +1878,7 @@ class STDLoc:
 
         oracle_topk_landmark_idx = None
         oracle_topk_scores = None
-        if dump_discrete_oracle:
+        if dump_discrete_oracle and corr_matrix is not None:
             oracle_topk = min(
                 max(int(diag_cfg.get("oracle_topk", 32)), 1),
                 int(corr_matrix.shape[1]),
@@ -1804,7 +1910,7 @@ class STDLoc:
                 raise ValueError("candidate dustbin score must be finite")
             match_threshold = max(match_threshold, candidate_dustbin_threshold)
 
-        matches = match_score_matrix(
+        matches = retrieval_matches or match_score_matrix(
             corr_matrix,
             mode="mnn" if self.config["sparse"]["mnn_match"] else "topk",
             topk=self.config["sparse"]["topk"],
@@ -2236,6 +2342,7 @@ class STDLoc:
                 else 0.0
             ),
         }
+        result.update(retrieval_diagnostics)
         if bool(diag_cfg.get("enabled", True)):
             result.update(
                 sparse_correspondence_diagnostics(

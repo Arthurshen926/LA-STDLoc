@@ -71,6 +71,12 @@ def make_stdloc_eval_cfg(
     geometry_balance_voxel_size=0.25,
     geometry_balance_max_per_voxel=64,
     geometry_balance_max_matches=0,
+    full_primitive_retrieval=False,
+    full_primitive_retrieval_topk=32,
+    full_primitive_chunk_size=8192,
+    full_primitive_surface_suppression=False,
+    full_primitive_voxel_size=0.05,
+    full_primitive_max_per_surface=1,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -174,6 +180,16 @@ def make_stdloc_eval_cfg(
     sparse["use_detector_offset"] = bool(use_detector_offset)
     sparse["detector_max_offset"] = float(detector_max_offset)
     sparse["candidate_frontend_match_policy"] = str(candidate_frontend_match_policy)
+    sparse["full_primitive_retrieval"] = bool(full_primitive_retrieval)
+    sparse["full_primitive_retrieval_topk"] = int(full_primitive_retrieval_topk)
+    sparse["full_primitive_chunk_size"] = int(full_primitive_chunk_size)
+    sparse["full_primitive_surface_suppression"] = bool(
+        full_primitive_surface_suppression
+    )
+    sparse["full_primitive_voxel_size"] = float(full_primitive_voxel_size)
+    sparse["full_primitive_max_per_surface"] = int(
+        full_primitive_max_per_surface
+    )
     sparse["diagnostics"] = {
         "enabled": bool(diagnostics),
         "gt_metrics": bool(diagnostics),
@@ -405,6 +421,14 @@ def main():
     parser.add_argument("--geometry_balance_voxel_size", type=float, default=0.25)
     parser.add_argument("--geometry_balance_max_per_voxel", type=int, default=64)
     parser.add_argument("--geometry_balance_max_matches", type=int, default=0)
+    parser.add_argument("--full_primitive_retrieval", action="store_true")
+    parser.add_argument("--full_primitive_retrieval_topk", type=int, default=32)
+    parser.add_argument("--full_primitive_chunk_size", type=int, default=8192)
+    parser.add_argument(
+        "--full_primitive_surface_suppression", action="store_true"
+    )
+    parser.add_argument("--full_primitive_voxel_size", type=float, default=0.05)
+    parser.add_argument("--full_primitive_max_per_surface", type=int, default=1)
     parser.add_argument("--summary_json", default="")
     args = parser.parse_args()
 
@@ -505,6 +529,14 @@ def main():
         geometry_balance_voxel_size=args.geometry_balance_voxel_size,
         geometry_balance_max_per_voxel=args.geometry_balance_max_per_voxel,
         geometry_balance_max_matches=args.geometry_balance_max_matches,
+        full_primitive_retrieval=args.full_primitive_retrieval,
+        full_primitive_retrieval_topk=args.full_primitive_retrieval_topk,
+        full_primitive_chunk_size=args.full_primitive_chunk_size,
+        full_primitive_surface_suppression=(
+            args.full_primitive_surface_suppression
+        ),
+        full_primitive_voxel_size=args.full_primitive_voxel_size,
+        full_primitive_max_per_surface=args.full_primitive_max_per_surface,
     )
     if args.summary_json:
         os.makedirs(os.path.dirname(os.path.abspath(args.summary_json)), exist_ok=True)

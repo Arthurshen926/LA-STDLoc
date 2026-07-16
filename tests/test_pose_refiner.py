@@ -2,6 +2,28 @@ import unittest
 
 import torch
 
+from localization_training.pose_refiner import (
+    camera_center_from_w2c,
+    se3_exp,
+)
+
+
+def test_se3_exp_uses_left_jacobian_for_translation():
+    xi = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, torch.pi / 2])
+    transform = se3_exp(xi)
+    expected = torch.tensor([2.0 / torch.pi, 2.0 / torch.pi, 0.0])
+    assert torch.allclose(transform[:3, 3], expected, atol=1e-5)
+
+
+def test_camera_center_from_w2c():
+    pose = torch.eye(4)
+    pose[:3, :3] = se3_exp(
+        torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.4])
+    )[:3, :3]
+    center = torch.tensor([1.0, 2.0, 3.0])
+    pose[:3, 3] = -(pose[:3, :3] @ center)
+    assert torch.allclose(camera_center_from_w2c(pose), center, atol=1e-6)
+
 
 class PoseRefinerTest(unittest.TestCase):
     def test_weighted_gauss_newton_reduces_reprojection_error(self):

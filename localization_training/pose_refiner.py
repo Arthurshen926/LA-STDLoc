@@ -15,23 +15,32 @@ def _skew(v):
 
 
 def se3_exp(xi):
-    """Small SE(3) exponential map for world-to-camera left updates."""
+    """SE(3) exponential map for world-to-camera left updates."""
     xi = xi.reshape(6)
     t = xi[:3]
     w = xi[3:]
     theta = torch.linalg.norm(w)
     W = _skew(w)
     eye = torch.eye(3, dtype=xi.dtype, device=xi.device)
-    if theta.item() < 1e-10:
-        R = eye + W
+    if theta.item() < 1e-8:
+        R = eye + W + 0.5 * (W @ W)
+        V = eye + 0.5 * W + (1.0 / 6.0) * (W @ W)
     else:
         A = torch.sin(theta) / theta
         B = (1.0 - torch.cos(theta)) / theta.square()
+        C = (theta - torch.sin(theta)) / theta.pow(3)
         R = eye + A * W + B * (W @ W)
+        V = eye + B * W + C * (W @ W)
     out = torch.eye(4, dtype=xi.dtype, device=xi.device)
     out[:3, :3] = R
-    out[:3, 3] = t
+    out[:3, 3] = V @ t
     return out
+
+
+def camera_center_from_w2c(pose_w2c):
+    rotation = pose_w2c[:3, :3]
+    translation = pose_w2c[:3, 3]
+    return -(rotation.transpose(0, 1) @ translation)
 
 
 def project_points(points_world, K, pose_w2c, eps=1e-8):

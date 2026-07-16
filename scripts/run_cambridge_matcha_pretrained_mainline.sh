@@ -70,6 +70,15 @@ ONLINE_RENDER_PROVENANCE_WEIGHT="${CAMBRIDGE_MATCHA_ONLINE_RENDER_PROVENANCE_WEI
 ONLINE_RENDER_SAMPLING_MODE="${CAMBRIDGE_MATCHA_ONLINE_RENDER_SAMPLING_MODE:-uniform}"
 USE_CALIBRATED_FINAL_FRONTEND="${CAMBRIDGE_MATCHA_USE_CALIBRATED_FINAL_FRONTEND:-1}"
 CANDIDATE_EVAL_TAG="${CAMBRIDGE_MATCHA_CANDIDATE_EVAL_TAG:-candidate_${CANDIDATE_OBJECTIVE}}"
+FULL_PRIMITIVE_RETRIEVAL="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_RETRIEVAL:-0}"
+FULL_PRIMITIVE_RETRIEVAL_TOPK="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_RETRIEVAL_TOPK:-32}"
+FULL_PRIMITIVE_CHUNK_SIZE="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_CHUNK_SIZE:-8192}"
+FULL_PRIMITIVE_SURFACE_SUPPRESSION="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_SURFACE_SUPPRESSION:-0}"
+FULL_PRIMITIVE_VOXEL_SIZE="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_VOXEL_SIZE:-0.05}"
+FULL_PRIMITIVE_MAX_PER_SURFACE="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_MAX_PER_SURFACE:-1}"
+EVAL_MATCH_TOPK="${CAMBRIDGE_MATCHA_EVAL_MATCH_TOPK:-1}"
+FULL_PRIMITIVE_GEOMETRY_BALANCE="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_GEOMETRY_BALANCE:-0}"
+FULL_PRIMITIVE_GEOMETRY_MAX_MATCHES="${CAMBRIDGE_MATCHA_FULL_PRIMITIVE_GEOMETRY_MAX_MATCHES:-512}"
 
 case "$CANDIDATE_OBJECTIVE" in
   f0|exact) ;;
@@ -459,6 +468,29 @@ make_eval_config() {
         extra+=(--disable_pair_measurement_offset)
       fi
     fi
+    if [[ "$FULL_PRIMITIVE_RETRIEVAL" == "1" ]]; then
+      extra+=(
+        --full_primitive_retrieval
+        --full_primitive_retrieval_topk "$FULL_PRIMITIVE_RETRIEVAL_TOPK"
+        --full_primitive_chunk_size "$FULL_PRIMITIVE_CHUNK_SIZE"
+        --full_primitive_voxel_size "$FULL_PRIMITIVE_VOXEL_SIZE"
+        --full_primitive_max_per_surface "$FULL_PRIMITIVE_MAX_PER_SURFACE"
+      )
+      if [[ "$FULL_PRIMITIVE_SURFACE_SUPPRESSION" == "1" ]]; then
+        extra+=(--full_primitive_surface_suppression)
+      fi
+      if [[ "$FULL_PRIMITIVE_GEOMETRY_BALANCE" == "1" ]]; then
+        extra+=(
+          --geometry_balance
+          --geometry_balance_grid_rows 4
+          --geometry_balance_grid_cols 4
+          --geometry_balance_max_per_cell 64
+          --geometry_balance_voxel_size "$PNP_VOXEL_SIZE_M"
+          --geometry_balance_max_per_voxel 8
+          --geometry_balance_max_matches "$FULL_PRIMITIVE_GEOMETRY_MAX_MATCHES"
+        )
+      fi
+    fi
   fi
   "$PYTHON" scripts/make_stdloc_eval_cfg.py \
     --base_cfg configs/stdloc_cambridge.yaml \
@@ -470,7 +502,7 @@ make_eval_config() {
     --reprojection_error "$reprojection_error_px" \
     --nms "$NMS_RADIUS_PX" \
     --match_threshold 0 \
-    --match_topk 1 \
+    --match_topk "$EVAL_MATCH_TOPK" \
     --max_matches_per_landmark 2 \
     --candidate_frontend_match_policy error \
     --diagnostics_grid_rows 4 \
