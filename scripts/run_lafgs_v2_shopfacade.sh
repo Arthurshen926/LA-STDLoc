@@ -21,6 +21,9 @@ STEPS="${LAFGS_V2_STEPS:-30000}"
 DETECTOR_STEPS="${LAFGS_V2_DETECTOR_STEPS:-10000}"
 FINAL_BUDGET="${LAFGS_V2_FINAL_BUDGET:-16384}"
 MVINIT_VIEWS="${LAFGS_V2_MVINIT_VIEWS:-16}"
+ATOM_DISCOVERY_VIEWS="${LAFGS_V2_ATOM_DISCOVERY_VIEWS:-0}"
+DEFAULT_STRONG_FEATURE_STATE="/mnt/pool/sqy/stdloc_matcha_pretrained_mainline_v1_20260714/lafgs_external_matcha/ShopFacade/point_cloud/iteration_60000/loc_state.pt"
+STRONG_FEATURE_STATE="${LAFGS_V2_STRONG_FEATURE_STATE:-$DEFAULT_STRONG_FEATURE_STATE}"
 
 export CUDA_VISIBLE_DEVICES=2
 export CUDA_HOME=/usr/local/cuda-11.8
@@ -51,6 +54,10 @@ run_coreset() {
     echo "[LaFGS V2] Reusing completed $name"
     return
   fi
+  local strong_args=()
+  if [[ -n "$STRONG_FEATURE_STATE" ]]; then
+    strong_args=(--strong_feature_state "$STRONG_FEATURE_STATE" --strong_feature_blend 0.75)
+  fi
   "$PYTHON" train_coreset_v2.py \
     --model_path "$MODEL_ROOT" \
     --source_path "$DATA_ROOT/ShopFacade" \
@@ -58,17 +65,25 @@ run_coreset() {
     --iteration "$SOURCE_ITERATION" --iterations "$STEPS" \
     --output_folder "$name" --proposal_detector "$PROPOSAL_DETECTOR" \
     --final_budget "$FINAL_BUDGET" \
-    --surface_voxel_size 0.05 --surface_normal_bins 0 \
-    --mvinit_views "$MVINIT_VIEWS" --mvinit_min_observations 1 \
+    --identity_voxel_size 0.02 --identity_normal_bins 8 \
+    --max_atoms 150000 \
+    --atom_discovery_views "$ATOM_DISCOVERY_VIEWS" \
+    --coverage_voxel_size 0.20 \
+    --redundancy_voxel_size 0.05 --redundancy_normal_bins 4 \
+    --mvinit_views "$MVINIT_VIEWS" --mvinit_min_observations 2 \
+    --mvinit_alpha_threshold 0.05 \
     --mvinit_chunk_size 32768 \
-    --detect_num 2048 --train_keypoints 512 --nms_radius 2 \
+    --detect_num 4096 --train_keypoints 512 --nms_radius 2 \
     --retrieval_topk 16 --retrieval_chunk_size 8192 \
-    --projection_interval 500 --hysteresis 0.05 \
-    --descriptor_lr 0.002 --gate_lr 0.01 --temperature 0.07 \
-    --coverage_weight 0.5 --budget_weight 1.0 \
-    --redundancy_weight 0.1 --redundancy_multiplier 2.0 \
+    --selection_interval 1000 --hysteresis 0.05 \
+    --stage_keep_ratio 0.75 --warmup_ratio 0.20 \
+    --coverage_fraction 0.50 --selection_redundancy_penalty 0.10 \
+    --utility_decay 0.995 --match_utility_weight 1.0 \
+    --observation_utility_weight 0.1 --negative_risk_weight 0.5 \
+    --descriptor_lr 0.002 --temperature 0.07 \
+    --miss_rejection_weight 0.25 --miss_negative_margin 0.40 \
     --trust_weight 0.01 --synthetic_ratio "$synthetic_ratio" \
-    --log_interval 500 --seed 2026 \
+    --log_interval 500 --seed 2026 "${strong_args[@]}" \
     2>&1 | tee "$EXPERIMENT_ROOT/logs/${name}.log"
 }
 
@@ -128,15 +143,15 @@ run_eval() {
 
 case "$MODE" in
   prepare) prepare ;;
-  smoke) LAFGS_V2_STEPS=5 run_coreset coreset_smoke 0 ;;
-  c0) run_coreset coreset_c0 0 ;;
-  c1) run_coreset coreset_c1 0.15 ;;
-  detector) run_detector coreset_c1 ;;
-  eval|eval_c1) run_eval coreset_c1 C2 ;;
-  eval_c0) run_eval coreset_c0 C0 ;;
+  smoke) LAFGS_V2_STEPS=5 run_coreset coreset_v21_smoke 0 ;;
+  c0) run_coreset coreset_v21_c0 0 ;;
+  c1) run_coreset coreset_v21_c1 0.15 ;;
+  detector) run_detector coreset_v21_c1 ;;
+  eval|eval_c1) run_eval coreset_v21_c1 C2 ;;
+  eval_c0) run_eval coreset_v21_c0 C0 ;;
   all)
-    run_coreset coreset_c0 0
-    run_coreset coreset_c1 0.15
-    run_eval coreset_c1 C2
+    run_coreset coreset_v21_c0 0
+    run_coreset coreset_v21_c1 0.15
+    run_eval coreset_v21_c1 C2
     ;;
 esac

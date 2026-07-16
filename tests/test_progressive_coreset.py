@@ -3,7 +3,11 @@ import pytest
 
 from localization_training.progressive_coreset import (
     active_group_representatives,
+    build_surface_patch_atoms,
     coreset_soft_matching_loss,
+    discrete_select_atoms,
+    deployment_soft_matching_loss,
+    make_gradual_budget_schedule,
     active_set_diagnostics,
     build_surface_groups,
     coreset_matching_loss,
@@ -11,6 +15,78 @@ from localization_training.progressive_coreset import (
     progressive_coreset_regularizers,
     project_active_set,
 )
+
+
+def test_surface_patch_atoms_separate_identity_coverage_and_redundancy():
+    xyz = torch.tensor(
+        [[0.000, 0.0, 0.0], [0.005, 0.0, 0.0], [0.060, 0.0, 0.0], [0.065, 0.0, 0.0]]
+    )
+    normals = torch.tensor([[0.0, 0.0, 1.0]]).repeat(4, 1)
+    atoms = build_surface_patch_atoms(
+        xyz,
+        normals,
+        torch.tensor([3, 2, 3, 0]),
+        identity_voxel_size=0.02,
+        coverage_voxel_size=0.20,
+        redundancy_voxel_size=0.05,
+        min_observations=2,
+    )
+    assert atoms.representative_raw_indices.tolist() == [0, 2]
+    assert atoms.raw_to_atom.tolist() == [0, 0, 1, 1]
+    assert atoms.coverage_cell_ids[0] == atoms.coverage_cell_ids[1]
+    assert atoms.diagnostics["identity_distance_m"]["max"] < 0.01
+
+
+def test_surface_patch_atom_cap_preserves_coarse_coverage():
+    xyz = torch.stack(
+        [torch.arange(20).float() * 0.03, torch.zeros(20), torch.zeros(20)], dim=1
+    )
+    normals = torch.tensor([[0.0, 0.0, 1.0]]).repeat(20, 1)
+    atoms = build_surface_patch_atoms(
+        xyz,
+        normals,
+        torch.ones(20) * 3,
+        identity_voxel_size=0.01,
+        coverage_voxel_size=0.20,
+        min_observations=2,
+        max_atoms=10,
+    )
+    assert atoms.representative_raw_indices.numel() == 10
+    assert torch.unique(atoms.coverage_cell_ids).numel() >= 3
+
+
+def test_discrete_selection_uses_utility_before_coverage_frequency():
+    selected = discrete_select_atoms(
+        torch.tensor([10.0, 1.0, 9.0, 0.5]),
+        torch.tensor([0, 0, 1, 2]),
+        torch.arange(4),
+        2,
+        coverage_priority=torch.tensor([1.0, 1.0, 1e6]),
+        coverage_fraction=1.0,
+    )
+    assert set(selected.tolist()) == {0, 2}
+
+
+def test_discrete_selection_reports_coverage_and_cutoff_attribution():
+    selected, diagnostics = discrete_select_atoms(
+        torch.tensor([4.0, 3.0, 2.0, 1.0]),
+        torch.tensor([0, 0, 1, 1]),
+        torch.arange(4),
+        2,
+        coverage_fraction=0.5,
+        return_diagnostics=True,
+    )
+    assert selected.numel() == 2
+    assert diagnostics["coverage_reserved_count"] == 1
+    assert diagnostics["utility_fill_count"] == 1
+
+
+def test_gradual_schedule_never_drops_more_than_keep_ratio_except_final_rounding():
+    schedule = make_gradual_budget_schedule(100, 1000, 20, keep_ratio=0.75)
+    assert schedule.budgets[0] == 100
+    assert schedule.budgets[-1] == 20
+    assert all(b < a for a, b in zip(schedule.budgets, schedule.budgets[1:]))
+    assert schedule.boundaries[-1] == 1000
 
 
 def test_active_group_representatives_use_active_members_only():
@@ -50,6 +126,20 @@ def test_soft_matching_prefers_provenance_positive_mass():
     loss.backward()
     assert torch.isfinite(loss)
     assert positives.grad.abs().sum() > 0
+
+
+def test_deployment_matching_uses_cosine_without_selection_prior():
+    loss = deployment_soft_matching_loss(
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([[[1.0, 0.0]]]),
+        torch.tensor([[1.0]]),
+        torch.tensor([[True]]),
+        torch.tensor([[[0.0, 1.0]]]),
+        torch.tensor([[True]]),
+        temperature=1.0,
+    )
+    expected = torch.log1p(torch.exp(torch.tensor(-1.0)))
+    assert torch.allclose(loss, expected)
 
 
 def test_progressive_schedule_is_monotonic_and_reaches_budget():
