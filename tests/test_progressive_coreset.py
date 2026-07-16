@@ -3,6 +3,8 @@ import pytest
 
 from localization_training.progressive_coreset import (
     active_group_representatives,
+    aggregate_atom_features,
+    append_reprojection_positive,
     build_surface_patch_atoms,
     coreset_soft_matching_loss,
     discrete_select_atoms,
@@ -14,6 +16,7 @@ from localization_training.progressive_coreset import (
     make_progressive_budget_schedule,
     progressive_coreset_regularizers,
     project_active_set,
+    provenance_mass_partition,
 )
 
 
@@ -53,6 +56,70 @@ def test_surface_patch_atom_cap_preserves_coarse_coverage():
     )
     assert atoms.representative_raw_indices.numel() == 10
     assert torch.unique(atoms.coverage_cell_ids).numel() >= 3
+
+
+def test_surface_patch_anchor_is_weighted_geometric_medoid():
+    xyz = torch.tensor([[0.001, 0.0, 0.0], [0.009, 0.0, 0.0], [0.018, 0.0, 0.0]])
+    normals = torch.tensor([[0.0, 0.0, 1.0]]).repeat(3, 1)
+    atoms = build_surface_patch_atoms(
+        xyz,
+        normals,
+        torch.tensor([1.0, 10.0, 1.0]),
+        identity_voxel_size=0.02,
+        min_observations=1,
+        max_atoms=0,
+    )
+    assert atoms.representative_raw_indices.tolist() == [1]
+    assert atoms.diagnostics["representative_mode"] == "weighted_geometric_medoid"
+
+
+def test_patch_feature_initialization_aggregates_members():
+    features = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
+    aggregated, mass = aggregate_atom_features(
+        features,
+        torch.tensor([0, 0, -1]),
+        1,
+        torch.tensor([3.0, 1.0, 1.0]),
+    )
+    assert mass.tolist() == [4.0]
+    torch.testing.assert_close(
+        aggregated[0], torch.nn.functional.normalize(torch.tensor([3.0, 1.0]), dim=0)
+    )
+
+
+def test_provenance_mass_keeps_missing_and_shadow_mass_separate():
+    result = provenance_mass_partition(
+        torch.tensor([[0, 1, -1], [1, -1, -1]]),
+        torch.tensor([[0.2, 0.3, 0.5], [0.4, 0.0, 0.0]]),
+        torch.tensor([True, False]),
+        atom_count=2,
+    )
+    torch.testing.assert_close(result["active_mass"], torch.tensor([0.2, 0.0]))
+    torch.testing.assert_close(result["shadow_mass"], torch.tensor([0.3, 0.4]))
+    torch.testing.assert_close(result["missing_mass"], torch.tensor([0.5, 0.0]))
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_reprojection_positive_keeps_fixed_schema_and_probability_mass(valid):
+    labels, primitive_ids, weights = append_reprojection_positive(
+        torch.tensor([[2, 3, -1, -1]]),
+        torch.tensor([[12, 13, -1, -1]]),
+        torch.tensor([[0.6, 0.4, 0.0, 0.0]]),
+        torch.tensor([7 if valid else -1]),
+        torch.tensor([17 if valid else -1]),
+        torch.tensor([valid]),
+        positive_weight=0.75,
+    )
+    assert labels.shape == primitive_ids.shape == weights.shape == (1, 5)
+    torch.testing.assert_close(weights.sum(dim=1), torch.ones(1))
+    if valid:
+        assert labels[0, -1].item() == 7
+        assert primitive_ids[0, -1].item() == 17
+        torch.testing.assert_close(weights[0, -1], torch.tensor(0.75))
+    else:
+        assert labels[0, -1].item() == -1
+        assert primitive_ids[0, -1].item() == -1
+        torch.testing.assert_close(weights[0, -1], torch.tensor(0.0))
 
 
 def test_discrete_selection_uses_utility_before_coverage_frequency():

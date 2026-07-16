@@ -16,7 +16,10 @@ MODEL_ROOT="$EXPERIMENT_ROOT/ShopFacade"
 SOURCE_RUN="$MATCHA_ROOT/ShopFacade_n20_long_masked_retrain/free_gaussians"
 SOURCE_ITERATION=30000
 SOURCE_POINT_CLOUD="$SOURCE_RUN/point_cloud/iteration_${SOURCE_ITERATION}"
-PROPOSAL_DETECTOR="${LAFGS_V2_PROPOSAL_DETECTOR:-/mnt/pool/sqy/stdloc_matcha_pretrained_mainline_v1_20260714/lafgs_external_matcha/ShopFacade/detector_covsoft_normalized_10000/10000_detector.pth}"
+STRONG_BANK_ROOT="/mnt/pool/sqy/stdloc_matcha_pretrained_mainline_v1_20260714/lafgs_external_matcha/ShopFacade/detector_queryjoint_exactset_fim_fixed_6000"
+PROPOSAL_DETECTOR="${LAFGS_V2_PROPOSAL_DETECTOR:-$STRONG_BANK_ROOT/6000_detector.pth}"
+SEED_LANDMARK_PATH="${LAFGS_V2_SEED_LANDMARK_PATH:-$STRONG_BANK_ROOT/sampled_idx.pkl}"
+SEED_FEATURE_STATE="${LAFGS_V2_SEED_FEATURE_STATE:-$STRONG_BANK_ROOT/6000_candidate_teacher_state.pt}"
 STEPS="${LAFGS_V2_STEPS:-30000}"
 DETECTOR_STEPS="${LAFGS_V2_DETECTOR_STEPS:-10000}"
 FINAL_BUDGET="${LAFGS_V2_FINAL_BUDGET:-16384}"
@@ -44,6 +47,8 @@ prepare() {
   fi
   cp "$SOURCE_RUN/cfg_args" "$MODEL_ROOT/cfg_args"
   test -f "$PROPOSAL_DETECTOR"
+  test -f "$SEED_LANDMARK_PATH"
+  test -f "$SEED_FEATURE_STATE"
 }
 
 run_coreset() {
@@ -64,9 +69,11 @@ run_coreset() {
     --images processed --data_device cpu --gaussian_type 2dgs --feature_type sp \
     --iteration "$SOURCE_ITERATION" --iterations "$STEPS" \
     --output_folder "$name" --proposal_detector "$PROPOSAL_DETECTOR" \
+    --seed_landmark_path "$SEED_LANDMARK_PATH" \
+    --seed_feature_state "$SEED_FEATURE_STATE" --selection_mode shadow_swap \
     --final_budget "$FINAL_BUDGET" \
     --identity_voxel_size 0.02 --identity_normal_bins 8 \
-    --max_atoms 150000 \
+    --max_atoms 0 --min_pool_mass 0.70 \
     --atom_discovery_views "$ATOM_DISCOVERY_VIEWS" \
     --coverage_voxel_size 0.20 \
     --redundancy_voxel_size 0.05 --redundancy_normal_bins 4 \
@@ -77,7 +84,8 @@ run_coreset() {
     --retrieval_topk 16 --retrieval_chunk_size 8192 \
     --selection_interval 1000 --hysteresis 0.05 \
     --stage_keep_ratio 0.75 --warmup_ratio 0.20 \
-    --coverage_fraction 0.50 --selection_redundancy_penalty 0.10 \
+    --coverage_fraction 0.0 --selection_redundancy_penalty 0.10 \
+    --swap_fraction 0.01 --swap_min_improvement 0.0 \
     --utility_decay 0.995 --match_utility_weight 1.0 \
     --observation_utility_weight 0.1 --negative_risk_weight 0.5 \
     --descriptor_lr 0.002 --temperature 0.07 \
@@ -143,15 +151,15 @@ run_eval() {
 
 case "$MODE" in
   prepare) prepare ;;
-  smoke) LAFGS_V2_STEPS=5 run_coreset coreset_v21_smoke 0 ;;
-  c0) run_coreset coreset_v21_c0 0 ;;
-  c1) run_coreset coreset_v21_c1 0.15 ;;
-  detector) run_detector coreset_v21_c1 ;;
-  eval|eval_c1) run_eval coreset_v21_c1 C2 ;;
-  eval_c0) run_eval coreset_v21_c0 C0 ;;
+  smoke) STEPS="${LAFGS_V2_SMOKE_STEPS:-5}"; run_coreset coreset_v22_smoke 0 ;;
+  c0) run_coreset coreset_v22_shadow_c0 0 ;;
+  c1) run_coreset coreset_v22_shadow_masked_c1 "${LAFGS_V2_SYNTHETIC_RATIO:-0.15}" ;;
+  detector) run_detector coreset_v22_shadow_masked_c1 ;;
+  eval|eval_c1) run_eval coreset_v22_shadow_masked_c1 C2 ;;
+  eval_c0) run_eval coreset_v22_shadow_c0 C0 ;;
   all)
-    run_coreset coreset_v21_c0 0
-    run_coreset coreset_v21_c1 0.15
-    run_eval coreset_v21_c1 C2
+    run_coreset coreset_v22_shadow_c0 0
+    run_coreset coreset_v22_shadow_masked_c1 "${LAFGS_V2_SYNTHETIC_RATIO:-0.15}"
+    run_eval coreset_v22_shadow_masked_c1 C2
     ;;
 esac

@@ -59,6 +59,95 @@ class SurfacePatchAtoms:
 
 
 @torch.no_grad()
+def aggregate_atom_features(raw_features, raw_to_atom, atom_count, raw_weights=None, chunk_size=65536):
+    """Aggregate primitive descriptors into normalized patch descriptors."""
+    raw_features = torch.as_tensor(raw_features).float()
+    raw_to_atom = torch.as_tensor(
+        raw_to_atom, device=raw_features.device, dtype=torch.long
+    ).reshape(-1)
+    if raw_features.shape[0] != raw_to_atom.numel():
+        raise ValueError("raw_features and raw_to_atom must have equal first dimensions")
+    if raw_weights is None:
+        raw_weights = raw_features.new_ones(raw_to_atom.shape)
+    else:
+        raw_weights = torch.as_tensor(
+            raw_weights, device=raw_features.device, dtype=raw_features.dtype
+        ).reshape(-1)
+    feature_sum = raw_features.new_zeros((int(atom_count), raw_features.shape[1]))
+    weight_sum = raw_features.new_zeros(int(atom_count))
+    for start in range(0, raw_to_atom.numel(), int(chunk_size)):
+        end = min(start + int(chunk_size), raw_to_atom.numel())
+        atom_ids = raw_to_atom[start:end]
+        valid = (atom_ids >= 0) & (raw_weights[start:end] > 0)
+        if not bool(valid.any()):
+            continue
+        atom_ids = atom_ids[valid]
+        weights = raw_weights[start:end][valid]
+        feature_sum.index_add_(
+            0, atom_ids, raw_features[start:end][valid] * weights[:, None]
+        )
+        weight_sum.index_add_(0, atom_ids, weights)
+    aggregated = feature_sum / weight_sum[:, None].clamp_min(1e-8)
+    return F.normalize(aggregated, dim=1), weight_sum
+
+
+def provenance_mass_partition(target_groups, target_weights, active_mask, atom_count):
+    """Keep active, shadow, and unrepresentable provenance mass distinct."""
+    target_groups = torch.as_tensor(target_groups, dtype=torch.long)
+    target_weights = torch.as_tensor(
+        target_weights, device=target_groups.device, dtype=torch.float32
+    )
+    active_mask = torch.as_tensor(active_mask, device=target_groups.device, dtype=torch.bool)
+    valid = (target_groups >= 0) & (target_groups < int(atom_count))
+    safe = target_groups.clamp(0, max(int(atom_count) - 1, 0))
+    active = valid & active_mask[safe]
+    pool_mass = (target_weights * valid).sum(dim=1)
+    active_mass = (target_weights * active).sum(dim=1)
+    shadow_mass = (pool_mass - active_mass).clamp_min(0.0)
+    missing_mass = (target_weights.sum(dim=1) - pool_mass).clamp_min(0.0)
+    return {
+        "valid_mask": valid,
+        "active_mask": active,
+        "pool_mass": pool_mass,
+        "active_mass": active_mass,
+        "shadow_mass": shadow_mass,
+        "missing_mass": missing_mass,
+    }
+
+
+def append_reprojection_positive(
+    labels,
+    primitive_ids,
+    provenance_weights,
+    reprojection_groups,
+    reprojection_ids,
+    reprojection_valid,
+    positive_weight=0.75,
+):
+    """Append a fixed GT-reprojection channel to a provenance distribution."""
+    mix = float(positive_weight)
+    reprojection_valid = torch.as_tensor(
+        reprojection_valid, device=provenance_weights.device, dtype=torch.bool
+    )
+    provenance_weights = provenance_weights * torch.where(
+        reprojection_valid[:, None],
+        provenance_weights.new_tensor(1.0 - mix),
+        provenance_weights.new_tensor(1.0),
+    )
+    return (
+        torch.cat([labels, reprojection_groups[:, None]], dim=1),
+        torch.cat([primitive_ids, reprojection_ids[:, None]], dim=1),
+        torch.cat(
+            [
+                provenance_weights,
+                reprojection_valid[:, None].to(provenance_weights.dtype) * mix,
+            ],
+            dim=1,
+        ),
+    )
+
+
+@torch.no_grad()
 def make_gradual_budget_schedule(atom_count, total_steps, final_budget, keep_ratio=0.75, warmup_ratio=0.2):
     atom_count = int(atom_count)
     final_budget = min(max(int(final_budget), 1), atom_count)
@@ -91,7 +180,7 @@ def build_surface_patch_atoms(
     redundancy_voxel_size=0.05,
     redundancy_normal_bins=4,
     min_observations=2,
-    max_atoms=150000,
+    max_atoms=0,
     identity_patch_priority=None,
 ):
     """Create observable localization atoms while retaining stable raw IDs."""
@@ -114,15 +203,23 @@ def build_surface_patch_atoms(
     observed = observation_count >= float(min_observations)
     observed_mass = observation_count.new_zeros(identity_count)
     observed_mass.scatter_add_(0, identity_ids, observation_count * observed)
-    representative_score = observation_count + identity_patch_priority[identity_ids]
+    # A patch anchor is a weighted geometric medoid, not merely its most
+    # frequently observed member. Query-only patches receive uniform weight.
+    member_weight = observation_count + (
+        identity_patch_priority[identity_ids] > 0
+    ).to(observation_count.dtype)
+    centroid_sum = xyz.new_zeros((identity_count, 3))
+    centroid_weight = observation_count.new_zeros(identity_count)
+    centroid_sum.index_add_(0, identity_ids, xyz * member_weight[:, None])
+    centroid_weight.index_add_(0, identity_ids, member_weight)
+    centroid = centroid_sum / centroid_weight[:, None].clamp_min(1e-8)
+    medoid_distance = torch.linalg.norm(xyz - centroid[identity_ids], dim=1)
     representative_score = torch.where(
-        observed | (identity_patch_priority[identity_ids] > 0),
-        representative_score,
+        member_weight > 0,
+        -medoid_distance,
         observation_count.new_full((), -torch.inf),
     )
-    representatives = group_representatives(
-        representative_score, identity_ids, identity_count
-    )
+    representatives = group_representatives(representative_score, identity_ids, identity_count)
     observable_patches = torch.nonzero(
         (observed_mass > 0) | (identity_patch_priority > 0), as_tuple=False
     ).reshape(-1)
@@ -218,6 +315,7 @@ def build_surface_patch_atoms(
             "mapped_raw_count": int(mapped.sum()),
             "identity_distance_m": quantiles(distance),
             "identity_normal_angle_deg": quantiles(normal_angle),
+            "representative_mode": "weighted_geometric_medoid",
             "coverage_cell_count": int(torch.unique(coverage_ids).numel()),
             "redundancy_group_count": int(torch.unique(redundancy_ids).numel()),
         },
