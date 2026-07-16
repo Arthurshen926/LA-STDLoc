@@ -207,6 +207,7 @@ def test_sparse_candidate_selection_only_refills_below_trigger():
 def test_sparse_candidate_selection_applies_fixed_top_count_after_quota():
     from localization_training.sparse_frontend import (
         SparseMatchResult,
+        match_candidate_selection_mask,
         select_match_candidates,
     )
 
@@ -224,6 +225,13 @@ def test_sparse_candidate_selection_applies_fixed_top_count_after_quota():
 
     assert selected.keypoint_idx.tolist() == [1, 2, 3]
     assert selected.scores.tolist() == pytest.approx([0.9, 0.8, 0.7])
+    keep = match_candidate_selection_mask(
+        matches,
+        threshold=-float("inf"),
+        max_matches_per_landmark=2,
+        max_match_count=3,
+    )
+    assert torch.equal(matches.keypoint_idx[keep], selected.keypoint_idx)
 
 
 def test_geometry_refill_prefers_new_image_and_voxel_support():
@@ -258,6 +266,37 @@ def test_geometry_refill_prefers_new_image_and_voxel_support():
     )
 
     assert selected.keypoint_idx.tolist() == [0, 2]
+
+
+def test_geometry_refill_fixed_budget_does_not_bypass_selection_at_negative_infinity():
+    from localization_training.sparse_frontend import (
+        SparseMatchResult,
+        select_match_candidates_with_geometry_refill,
+    )
+
+    matches = SparseMatchResult(
+        keypoint_idx=torch.arange(4),
+        landmark_idx=torch.arange(4),
+        scores=torch.tensor([1.0, 0.9, 0.8, 0.7]),
+    )
+    selected = select_match_candidates_with_geometry_refill(
+        matches,
+        torch.tensor([[1.0, 1.0], [2.0, 2.0], [18.0, 18.0], [17.0, 17.0]]),
+        torch.tensor(
+            [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [2.0, 0.0, 0.0], [2.01, 0.0, 0.0]]
+        ),
+        (20, 20),
+        threshold=-float("inf"),
+        max_match_count=2,
+        grid_rows=2,
+        grid_cols=2,
+        voxel_size=0.25,
+        spatial_weight=1.0,
+        voxel_weight=1.0,
+    )
+
+    assert selected.keypoint_idx.numel() == 2
+    assert set(selected.keypoint_idx.tolist()) == {0, 2}
 
 
 def test_gather_aligned_pair_values_tracks_filtered_pairs():

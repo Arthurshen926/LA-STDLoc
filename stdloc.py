@@ -14,7 +14,7 @@ from tqdm import tqdm
 
 from arguments import ModelParams, PipelineParams, get_combined_args
 from encoders.feature_extractor import FeatureExtractor
-from gaussian_renderer import render_from_pose_gsplat
+from gaussian_renderer import get_render_visible_mask, render_from_pose_gsplat
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
 from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.geometry_selector import GeometryBalancedSelector
@@ -618,6 +618,8 @@ def sparse_correspondence_diagnostics(
     grid_rows=4,
     grid_cols=4,
     voxel_size=0.25,
+    translation_task_scale_m=0.02,
+    rotation_task_scale_degrees=2.0,
 ):
     p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
     p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
@@ -652,7 +654,16 @@ def sparse_correspondence_diagnostics(
         diagnostics.update(_residual_stats("sparse_diag_inlier_est_reproj_px", residual[inliers]))
         diagnostics.update(_occupancy_stats_2d("sparse_diag_inlier", inlier_p2d, width, height, grid_rows, grid_cols))
         diagnostics.update(_occupancy_stats_3d("sparse_diag_inlier", inlier_p3d, voxel_size))
-        diagnostics.update(_pose_information_stats("sparse_diag_inlier", inlier_p3d, K, pose_w2c))
+        diagnostics.update(
+            _pose_information_stats(
+                "sparse_diag_inlier",
+                inlier_p3d,
+                K,
+                pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
+            )
+        )
         finite_inlier_depth = inlier_depth[np.isfinite(inlier_depth)]
         if finite_inlier_depth.size:
             diagnostics.update(
@@ -685,6 +696,8 @@ def sparse_correspondence_diagnostics(
                 p3d,
                 K,
                 gt_pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
         if inliers.shape[0] > 0:
@@ -695,6 +708,8 @@ def sparse_correspondence_diagnostics(
                     p3d[inliers],
                     K,
                     gt_pose_w2c,
+                    translation_task_scale_m=translation_task_scale_m,
+                    rotation_task_scale_degrees=rotation_task_scale_degrees,
                 )
             )
         clean_threshold = 4.0
@@ -715,6 +730,8 @@ def sparse_correspondence_diagnostics(
                 p3d[gt_clean],
                 K,
                 gt_pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
         diagnostics.update(
@@ -723,6 +740,8 @@ def sparse_correspondence_diagnostics(
                 p3d[gt_clean_inliers],
                 K,
                 gt_pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
         diagnostics.update(
@@ -732,6 +751,8 @@ def sparse_correspondence_diagnostics(
                 p3d[gt_clean],
                 K,
                 gt_pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
         diagnostics.update(
@@ -741,6 +762,8 @@ def sparse_correspondence_diagnostics(
                 p3d[gt_clean_inliers],
                 K,
                 gt_pose_w2c,
+                translation_task_scale_m=translation_task_scale_m,
+                rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
     return diagnostics
@@ -1628,6 +1651,8 @@ class STDLoc:
         """
         # detect
         H, W = query_feature_map.shape[-2:]
+        diag_cfg = self.config["sparse"].get("diagnostics", {})
+        dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
 
         nms_radius = self.config["sparse"].get("nms", 4)
         offset_heatmap = None
@@ -1744,6 +1769,19 @@ class STDLoc:
                 prior = prior.to(corr_matrix.device, dtype=corr_matrix.dtype)
                 prior = (prior - prior.mean()) / prior.std().clamp_min(1e-6)
                 corr_matrix = corr_matrix + self.config["sparse"].get("landmark_prior_weight", 0.05) * prior[None]
+
+        oracle_topk_landmark_idx = None
+        oracle_topk_scores = None
+        if dump_discrete_oracle:
+            oracle_topk = min(
+                max(int(diag_cfg.get("oracle_topk", 32)), 1),
+                int(corr_matrix.shape[1]),
+            )
+            oracle_topk_scores, oracle_topk_landmark_idx = torch.topk(
+                corr_matrix,
+                oracle_topk,
+                dim=1,
+            )
 
         match_threshold = float(self.config["sparse"]["threshold"])
         candidate_dustbin_threshold = None
@@ -1864,6 +1902,7 @@ class STDLoc:
                     max_matches_per_landmark=max_matches_per_landmark,
                     min_match_count=min_candidate_matches,
                     refill_trigger_count=candidate_refill_trigger_count,
+                    max_match_count=pair_measurement_fixed_candidate_count,
                     grid_rows=self.config["sparse"].get(
                         "pair_measurement_refill_grid_rows", 4
                     ),
@@ -2010,6 +2049,8 @@ class STDLoc:
                 selected_measurement_covariance.detach().cpu().float()
             )
         p3d = self.landmarks.get_xyz[gs_ids].detach().cpu().float()
+        pre_selector_keypoint_idx = im_idx.detach().cpu().long().clone()
+        pre_selector_landmark_idx = gs_ids.detach().cpu().long().clone()
         p2d_pre_selector = p2d.clone()
         p3d_pre_selector = p3d.clone()
         scores_pre_selector = val.detach().cpu().float().clone()
@@ -2031,6 +2072,8 @@ class STDLoc:
                 selected_measurement_covariance = selected_measurement_covariance[
                     selected
                 ]
+        post_selector_keypoint_idx = pre_selector_keypoint_idx[selector_indices]
+        post_selector_landmark_idx = pre_selector_landmark_idx[selector_indices]
         match_count = int(p2d.shape[0])
 
         p2d = p2d.numpy()
@@ -2193,7 +2236,6 @@ class STDLoc:
                 else 0.0
             ),
         }
-        diag_cfg = self.config["sparse"].get("diagnostics", {})
         if bool(diag_cfg.get("enabled", True)):
             result.update(
                 sparse_correspondence_diagnostics(
@@ -2207,9 +2249,19 @@ class STDLoc:
                     grid_rows=diag_cfg.get("grid_rows", 4),
                     grid_cols=diag_cfg.get("grid_cols", 4),
                     voxel_size=diag_cfg.get("voxel_size", 0.25),
+                    translation_task_scale_m=diag_cfg.get(
+                        "task_translation_scale_m", 0.02
+                    ),
+                    rotation_task_scale_degrees=diag_cfg.get(
+                        "task_rotation_scale_degrees", 2.0
+                    ),
                 )
             )
-        if bool(diag_cfg.get("gt_metrics", True)) or bool(diag_cfg.get("dump_correspondences", False)):
+        if (
+            bool(diag_cfg.get("gt_metrics", True))
+            or bool(diag_cfg.get("dump_correspondences", False))
+            or dump_discrete_oracle
+        ):
             inliers_flat = inliers.reshape(-1).copy()
             valid_post_inliers = inliers_flat[
                 (inliers_flat >= 0) & (inliers_flat < selector_indices.numel())
@@ -2241,6 +2293,56 @@ class STDLoc:
                 "width": int(W),
                 "height": int(H),
             }
+            if dump_discrete_oracle:
+                sampled_flat_ids = torch.nonzero(
+                    kp_mask, as_tuple=False
+                ).reshape(-1)
+                result["_debug_sparse_matches"]["discrete_oracle"] = {
+                    "keypoint_xy": sampled_p2d_grid.numpy(),
+                    "keypoint_flat_idx": sampled_flat_ids.detach().cpu().numpy(),
+                    "keypoint_detector_score": (
+                        kp_scores_after_nms[kp_mask].detach().cpu().float().numpy()
+                    ),
+                    "topk_landmark_idx": (
+                        oracle_topk_landmark_idx.detach().cpu().numpy()
+                    ),
+                    "topk_scores": oracle_topk_scores.detach().cpu().float().numpy(),
+                    "matcher_raw_keypoint_idx": (
+                        matcher_raw_matches.keypoint_idx.detach().cpu().numpy()
+                    ),
+                    "matcher_raw_landmark_idx": (
+                        matcher_raw_matches.landmark_idx.detach().cpu().numpy()
+                    ),
+                    "matcher_raw_scores": (
+                        matcher_raw_matches.scores.detach().cpu().float().numpy()
+                    ),
+                    "hard_pre_keypoint_idx": pre_selector_keypoint_idx.numpy(),
+                    "hard_pre_landmark_idx": pre_selector_landmark_idx.numpy(),
+                    "hard_pre_scores": scores_pre_selector.numpy(),
+                    "hard_post_keypoint_idx": post_selector_keypoint_idx.numpy(),
+                    "hard_post_landmark_idx": post_selector_landmark_idx.numpy(),
+                    "hard_post_scores": np.asarray(scores),
+                    "hard_post_inliers": inliers_flat,
+                    "selector_indices": selector_indices.numpy(),
+                    "candidate_threshold": np.asarray(match_threshold),
+                    "candidate_dustbin_threshold": np.asarray(
+                        candidate_dustbin_threshold
+                        if candidate_dustbin_threshold is not None
+                        else np.nan
+                    ),
+                    "match_topk": np.asarray(self.config["sparse"]["topk"]),
+                    "max_matches_per_keypoint": np.asarray(
+                        max_matches_per_keypoint
+                    ),
+                    "max_matches_per_landmark": np.asarray(
+                        max_matches_per_landmark
+                    ),
+                    "min_candidate_matches": np.asarray(min_candidate_matches),
+                    "candidate_refill_trigger_count": np.asarray(
+                        candidate_refill_trigger_count
+                    ),
+                    "geometry_selector_enabled": np.asarray(selector is not None),
+                }
         result.update(support_diagnostics)
         result.update(mask_diagnostics)
         return result
@@ -2510,6 +2612,26 @@ if __name__ == "__main__":
     # loc main
     stdloc = STDLoc(gaussians, config)
 
+    discrete_oracle_dump_dir = None
+    discrete_oracle_query_files = []
+    sparse_diag_cfg = config.get("sparse", {}).get("diagnostics", {})
+    if bool(sparse_diag_cfg.get("dump_discrete_oracle", False)):
+        discrete_oracle_dump_dir = os.path.join(
+            output_path, "discrete_oracle_dump"
+        )
+        os.makedirs(discrete_oracle_dump_dir, exist_ok=True)
+        bank_indices = torch.as_tensor(stdloc.landmark_indices).detach().cpu().long()
+        bank_loc_xyz = stdloc.landmarks.get_xyz.detach().cpu().float()
+        bank_render_xyz = gaussians.get_xyz[
+            bank_indices.to(device=gaussians.get_xyz.device)
+        ].detach().cpu().float()
+        np.savez_compressed(
+            os.path.join(discrete_oracle_dump_dir, "landmark_bank.npz"),
+            landmark_xyz=bank_loc_xyz.numpy(),
+            render_xyz=bank_render_xyz.numpy(),
+            source_gaussian_idx=bank_indices.numpy(),
+        )
+
     if args.evaluation_camera_subset == "candidate_validation":
         test_cameras = select_candidate_validation_cameras(
             scene.getTrainCameras(),
@@ -2535,7 +2657,6 @@ if __name__ == "__main__":
     dense_tes = []
     dense_inliers = []
     sparse_diag_values = {}
-    sparse_diag_cfg = config.get("sparse", {}).get("diagnostics", {})
     corr_dump_file = None
     if bool(sparse_diag_cfg.get("dump_correspondences", False)):
         corr_dump_file = open(os.path.join(output_path, "sparse_correspondences.jsonl"), "w")
@@ -2563,6 +2684,12 @@ if __name__ == "__main__":
                 grid_rows=sparse_diag_cfg.get("grid_rows", 4),
                 grid_cols=sparse_diag_cfg.get("grid_cols", 4),
                 voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+                translation_task_scale_m=sparse_diag_cfg.get(
+                    "task_translation_scale_m", 0.02
+                ),
+                rotation_task_scale_degrees=sparse_diag_cfg.get(
+                    "task_rotation_scale_degrees", 2.0
+                ),
             )
             loc_res["sparse"].update(post_selector_diagnostics)
             for key, value in post_selector_diagnostics.items():
@@ -2584,6 +2711,12 @@ if __name__ == "__main__":
                     grid_rows=sparse_diag_cfg.get("grid_rows", 4),
                     grid_cols=sparse_diag_cfg.get("grid_cols", 4),
                     voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+                    translation_task_scale_m=sparse_diag_cfg.get(
+                        "task_translation_scale_m", 0.02
+                    ),
+                    rotation_task_scale_degrees=sparse_diag_cfg.get(
+                        "task_rotation_scale_degrees", 2.0
+                    ),
                 )
                 for key, value in pre_selector_diagnostics.items():
                     if key.startswith("sparse_diag_"):
@@ -2609,6 +2742,12 @@ if __name__ == "__main__":
                     grid_rows=sparse_diag_cfg.get("grid_rows", 4),
                     grid_cols=sparse_diag_cfg.get("grid_cols", 4),
                     voxel_size=sparse_diag_cfg.get("voxel_size", 0.25),
+                    translation_task_scale_m=sparse_diag_cfg.get(
+                        "task_translation_scale_m", 0.02
+                    ),
+                    rotation_task_scale_degrees=sparse_diag_cfg.get(
+                        "task_rotation_scale_degrees", 2.0
+                    ),
                 )
                 for key, value in matcher_raw_diagnostics.items():
                     if key.startswith("sparse_diag_all_") or key == "sparse_diag_match_count":
@@ -2672,6 +2811,66 @@ if __name__ == "__main__":
                     )
                     + "\n"
                 )
+            if discrete_oracle_dump_dir is not None:
+                oracle_debug = sparse_debug.get("discrete_oracle")
+                if oracle_debug is None:
+                    raise RuntimeError(
+                        "discrete oracle dump requested but sparse debug payload is missing"
+                    )
+                if gaussians._xyz.grad is not None:
+                    gaussians._xyz.grad.zero_()
+                with torch.enable_grad():
+                    render_visible_mask = get_render_visible_mask(
+                        gaussians,
+                        camera_info,
+                        int(sparse_debug["width"]),
+                        int(sparse_debug["height"]),
+                    )
+                bank_indices_device = torch.as_tensor(
+                    stdloc.landmark_indices,
+                    device=render_visible_mask.device,
+                    dtype=torch.long,
+                )
+                bank_visible = render_visible_mask[bank_indices_device]
+                oracle_file = (
+                    f"query_{idx:04d}_"
+                    f"{hashlib.sha1(camera_info.image_name.encode()).hexdigest()[:10]}.npz"
+                )
+                oracle_payload = {
+                    key: np.asarray(value) for key, value in oracle_debug.items()
+                }
+                oracle_payload.update(
+                    {
+                        "image_name": np.asarray(camera_info.image_name),
+                        "gt_pose_w2c": np.asarray(gt_w2c, dtype=np.float64),
+                        "pred_pose_w2c": np.asarray(
+                            loc_res["sparse"]["pose_w2c"], dtype=np.float64
+                        ),
+                        "K": np.asarray(sparse_debug["K"], dtype=np.float64),
+                        "width": np.asarray(sparse_debug["width"]),
+                        "height": np.asarray(sparse_debug["height"]),
+                        "render_visible_bank": bank_visible.detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.uint8),
+                        "solver": np.asarray(config["sparse"]["solver"]),
+                        "reprojection_error": np.asarray(
+                            config["sparse"]["reprojection_error"]
+                        ),
+                        "confidence": np.asarray(config["sparse"]["confidence"]),
+                        "max_iterations": np.asarray(
+                            config["sparse"]["max_iterations"]
+                        ),
+                        "min_iterations": np.asarray(
+                            config["sparse"]["min_iterations"]
+                        ),
+                    }
+                )
+                np.savez_compressed(
+                    os.path.join(discrete_oracle_dump_dir, oracle_file),
+                    **oracle_payload,
+                )
+                discrete_oracle_query_files.append(oracle_file)
 
         # evaluation
         sparse_ae, sparse_te = cal_pose_error(loc_res["sparse"]["pose_w2c"], gt_w2c)
@@ -2701,6 +2900,30 @@ if __name__ == "__main__":
 
     if corr_dump_file is not None:
         corr_dump_file.close()
+    if discrete_oracle_dump_dir is not None:
+        with open(
+            os.path.join(discrete_oracle_dump_dir, "manifest.json"), "w"
+        ) as f:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "landmark_bank": "landmark_bank.npz",
+                    "query_files": discrete_oracle_query_files,
+                    "query_count": len(discrete_oracle_query_files),
+                    "oracle_topk": int(sparse_diag_cfg.get("oracle_topk", 32)),
+                    "task_translation_scale_m": float(
+                        sparse_diag_cfg.get("task_translation_scale_m", 0.02)
+                    ),
+                    "task_rotation_scale_degrees": float(
+                        sparse_diag_cfg.get("task_rotation_scale_degrees", 2.0)
+                    ),
+                    "evaluation_camera_subset": args.evaluation_camera_subset,
+                    "model_path": dataset.model_path,
+                },
+                f,
+                indent=2,
+            )
+            f.write("\n")
 
     # get summary
     sparse_aes = np.array(sparse_aes)
@@ -2750,9 +2973,9 @@ if __name__ == "__main__":
     print("Result Summary:")
     print(json.dumps(results_summary, indent=4))
 
-    json.dump(
-        results_summary, open(os.path.join(output_path, "summary.json"), "w"), indent=4
-    )
+    for summary_name in ("summary.json", "results_summary.json"):
+        with open(os.path.join(output_path, summary_name), "w") as summary_file:
+            json.dump(results_summary, summary_file, indent=4)
 
     for item in results:
         item["sparse"]["pose_w2c"] = item["sparse"]["pose_w2c"].tolist()

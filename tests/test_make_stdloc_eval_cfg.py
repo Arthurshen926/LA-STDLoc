@@ -96,6 +96,9 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                     "0.5",
                     "--diagnostics_dump_correspondences",
                     "--diagnostics_dump_all",
+                    "--diagnostics_dump_discrete_oracle",
+                    "--diagnostics_oracle_topk",
+                    "16",
                     "--summary_json",
                     str(tmp / "summary.json"),
                 ],
@@ -160,6 +163,8 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             self.assertTrue(sparse["diagnostics"]["dump_correspondences"])
             self.assertFalse(sparse["diagnostics"]["dump_inliers_only"])
             self.assertTrue(sparse["diagnostics"]["dump_pre_selector"])
+            self.assertTrue(sparse["diagnostics"]["dump_discrete_oracle"])
+            self.assertEqual(sparse["diagnostics"]["oracle_topk"], 16)
             self.assertEqual(sparse["diagnostics"]["grid_rows"], 3)
             self.assertEqual(sparse["diagnostics"]["grid_cols"], 5)
             self.assertEqual(float(sparse["diagnostics"]["voxel_size"]), 0.5)

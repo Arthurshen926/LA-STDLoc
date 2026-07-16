@@ -53,6 +53,30 @@ def test_signed_reprojection_bias_increases_translation_bias():
     assert biased.bias_loss.item() > clean.bias_loss.item()
 
 
+def test_map_bias_huber_and_smooth_clip_bound_large_query_outliers():
+    jacobian, _, logits, labels = _inputs()
+    residual = jacobian[:, :, 0] * 0.2
+    quadratic = map_information_and_bias_risk(
+        jacobian,
+        residual,
+        logits,
+        labels,
+        bias_huber_delta=0.0,
+        bias_clip=0.0,
+    )
+    robust = map_information_and_bias_risk(
+        jacobian,
+        residual,
+        logits,
+        labels,
+        bias_huber_delta=0.5,
+        bias_clip=1.0,
+    )
+
+    assert robust.bias_loss.item() < quadratic.bias_loss.item()
+    assert robust.bias_loss.item() <= 0.75
+
+
 def test_cleanliness_gradient_separates_correct_and_false_candidates():
     jacobian, residual, logits, labels = _inputs()
     risk = map_information_and_bias_risk(jacobian, residual, logits, labels)
@@ -78,6 +102,41 @@ def test_invalid_geometry_candidates_still_receive_cleanliness_supervision():
     assert logits.grad.abs().sum().item() > 0.0
     assert risk.full_logdet_gain.item() == 0.0
     assert risk.target_match_count.item() == labels.sum().item()
+
+
+def test_exact_acceptance_has_hard_forward_count_and_soft_gradient():
+    jacobian, residual, logits, labels = _inputs(count=4)
+    hard_acceptance = torch.tensor([True, False, False, False])
+    risk = map_information_and_bias_risk(
+        jacobian,
+        residual,
+        logits,
+        labels,
+        hard_acceptance_mask=hard_acceptance,
+    )
+    assert risk.expected_match_count.item() == 1.0
+    risk.capacity_loss.backward()
+    assert logits.grad is not None
+    assert logits.grad.abs().sum().item() > 0.0
+
+
+def test_classification_mask_removes_quota_rejected_pair_from_all_losses():
+    jacobian, residual, logits, labels = _inputs(count=4)
+    quota_mask = torch.tensor([True, False, True, False])
+    geometry_mask = quota_mask.clone()
+    risk = map_information_and_bias_risk(
+        jacobian,
+        residual,
+        logits,
+        labels,
+        valid_mask=geometry_mask,
+        classification_valid_mask=quota_mask,
+        hard_acceptance_mask=torch.tensor([True, False, False, False]),
+    )
+    loss = risk.cleanliness_loss + risk.capacity_loss + risk.bias_loss
+    loss.backward()
+    assert logits.grad is not None
+    assert logits.grad[~quota_mask].abs().sum().item() == 0.0
 
 
 def test_capacity_is_bounded_when_query_has_no_clean_candidates():
@@ -251,6 +310,83 @@ def test_counterfactual_swap_accounts_for_quota_displacement():
         without_displacement.translation_logdet_gain,
         with_displacement.translation_logdet_gain,
     )
+
+
+def test_counterfactual_swap_accounts_for_old_landmark_refill():
+    generator = torch.Generator().manual_seed(31)
+    jacobian = torch.randn(12, 2, 6, generator=generator)
+    residual = torch.randn(12, 2, generator=generator) * 0.5
+    add_jacobian = jacobian[0:1].clone()
+    add_residual = torch.zeros(1, 2)
+
+    without_refill = counterfactual_pose_swap_utility(
+        jacobian,
+        residual,
+        torch.ones(12, dtype=torch.bool),
+        torch.tensor([0]),
+        add_jacobian,
+        add_residual,
+        torch.tensor([True]),
+    )
+    with_refill = counterfactual_pose_swap_utility(
+        jacobian,
+        residual,
+        torch.ones(12, dtype=torch.bool),
+        torch.tensor([0]),
+        add_jacobian,
+        add_residual,
+        torch.tensor([True]),
+        refill_jacobian=jacobian[2:3],
+        refill_residual=residual[2:3],
+        refill_valid_mask=torch.tensor([True]),
+    )
+
+    assert not torch.allclose(
+        without_refill.counterfactual_translation_bias_task,
+        with_refill.counterfactual_translation_bias_task,
+    )
+    assert not torch.allclose(
+        without_refill.translation_logdet_gain,
+        with_refill.translation_logdet_gain,
+    )
+
+
+def test_counterfactual_invalid_nan_pair_cannot_pollute_set_terms():
+    jacobian = torch.randn(8, 2, 6)
+    residual = torch.randn(8, 2)
+    jacobian[3] = torch.nan
+    residual[3] = torch.nan
+    utility = counterfactual_pose_swap_utility(
+        jacobian,
+        residual,
+        torch.tensor([True, True, True, False, True, True, True, True]),
+        torch.tensor([0]),
+        jacobian[1:2],
+        torch.zeros(1, 2),
+        torch.tensor([True]),
+    )
+
+    assert torch.isfinite(utility.weights).all()
+    assert torch.isfinite(utility.bias_reduction_task2).all()
+    assert torch.isfinite(utility.translation_logdet_gain).all()
+
+
+def test_counterfactual_empty_swap_batch_is_zero_safe():
+    jacobian = torch.randn(8, 2, 6)
+    residual = torch.randn(8, 2)
+    utility = counterfactual_pose_swap_utility(
+        jacobian,
+        residual,
+        torch.ones(8, dtype=torch.bool),
+        torch.empty(0, dtype=torch.long),
+        torch.empty(0, 2, 6),
+        torch.empty(0, 2),
+        torch.empty(0, dtype=torch.bool),
+    )
+
+    assert utility.weights.shape == (0,)
+    assert utility.valid_mask.shape == (0,)
+    assert utility.bias_reduction_task2.shape == (0,)
 
 
 def test_counterfactual_swap_can_gate_to_joint_bias_and_information_gain():

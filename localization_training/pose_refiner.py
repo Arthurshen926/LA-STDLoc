@@ -89,8 +89,14 @@ def weighted_gauss_newton_refine(
     num_iterations=3,
     damping=1e-3,
     detach_points=True,
+    parameter_scale=None,
 ):
-    """Refine a world-to-camera pose with weighted reprojection residuals."""
+    """Refine a world-to-camera pose with weighted reprojection residuals.
+
+    ``parameter_scale`` defines one task unit for each se(3) coordinate. When
+    provided, Gauss-Newton is solved in those normalized coordinates. This
+    keeps damping and condition diagnostics comparable across scene scales.
+    """
     points = points_world.detach() if detach_points else points_world
     dtype = points.dtype
     device = points.device
@@ -100,9 +106,24 @@ def weighted_gauss_newton_refine(
     if weights is None:
         weights = torch.ones(points.shape[0], dtype=dtype, device=device)
     weights = weights.to(device=device, dtype=dtype).reshape(-1)
+    if parameter_scale is None:
+        parameter_scale = torch.ones(6, dtype=dtype, device=device)
+        task_scaled = False
+    else:
+        parameter_scale = torch.as_tensor(
+            parameter_scale, dtype=dtype, device=device
+        ).reshape(-1)
+        if parameter_scale.numel() != 6:
+            raise ValueError("parameter_scale must contain six positive values")
+        if not bool(
+            (torch.isfinite(parameter_scale) & (parameter_scale > 0)).all().item()
+        ):
+            raise ValueError("parameter_scale must contain six positive values")
+        task_scaled = True
 
     initial_rmse = reprojection_rmse(points, target_uv, K, pose, weights)
     cond = points.new_tensor(float("inf"))
+    raw_cond = points.new_tensor(float("inf"))
     for _ in range(num_iterations):
         jac, uv = _numeric_pose_jacobian(points, K, pose)
         residual = (uv - target_uv).reshape(-1)
@@ -112,12 +133,16 @@ def weighted_gauss_newton_refine(
             break
         J = jac.reshape(-1, 6)
         W = w.repeat_interleave(2)
-        H = J.T @ (J * W[:, None]) + damping * torch.eye(6, dtype=dtype, device=device)
-        b = J.T @ (residual * W)
+        eye = torch.eye(6, dtype=dtype, device=device)
+        raw_H = J.T @ (J * W[:, None]) + damping * eye
+        raw_cond = torch.linalg.cond(raw_H)
+        task_J = J * parameter_scale[None]
+        H = task_J.T @ (task_J * W[:, None]) + damping * eye
+        b = task_J.T @ (residual * W)
         cond = torch.linalg.cond(H)
         if not torch.isfinite(cond):
             break
-        delta = torch.linalg.solve(H, -b)
+        delta = parameter_scale * torch.linalg.solve(H, -b)
         if not torch.isfinite(delta).all():
             break
         pose = se3_exp(delta) @ pose
@@ -128,5 +153,8 @@ def weighted_gauss_newton_refine(
         "initial_rmse": initial_rmse.detach(),
         "final_rmse": final_rmse.detach(),
         "condition_number": cond.detach(),
+        "raw_condition_number": raw_cond.detach(),
+        "task_scaled": task_scaled,
+        "parameter_scale": parameter_scale.detach(),
     }
     return pose, info

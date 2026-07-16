@@ -4,6 +4,20 @@ import torch
 
 
 class DirectLandmarkTeacherTest(unittest.TestCase):
+    def test_stochastic_full_bank_is_bounded_and_keeps_all_positives(self):
+        from localization_training.direct_landmark_teacher import (
+            sample_stochastic_full_bank,
+        )
+
+        torch.manual_seed(7)
+        bank = torch.arange(10000)
+        positives = torch.tensor([9999, 17, 250, 17])
+        sampled = sample_stochastic_full_bank(bank, positives, max_landmarks=512)
+
+        self.assertLessEqual(sampled.numel(), 512)
+        self.assertEqual(torch.unique(sampled).numel(), sampled.numel())
+        self.assertTrue(torch.isin(torch.unique(positives), sampled).all())
+
     def test_multiview_memory_indices_follow_source_lineage_after_row_reorder(self):
         from localization_training.direct_landmark_teacher import (
             stable_landmark_memory_indices,
@@ -612,9 +626,14 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
         positive_mask[3, 13] = True
         weights = torch.tensor([1.0, 3.0, 0.5, 1.5, 2.0])
 
-        def loss_and_gradients(chunk_size):
+        def loss_and_gradients(chunk_size, precomputed=False):
             current_query = query.clone().requires_grad_(True)
             current_bank = bank.clone().requires_grad_(True)
+            shared_scores = None
+            if precomputed:
+                shared_scores = torch.nn.functional.normalize(current_query, dim=-1) @ (
+                    torch.nn.functional.normalize(current_bank, dim=-1).T
+                )
             loss = full_bank_bimnn_loss(
                 current_query,
                 current_bank,
@@ -626,16 +645,71 @@ class DirectLandmarkTeacherTest(unittest.TestCase):
                 ignore_bank_mask=ignore_mask,
                 positive_bank_mask=positive_mask,
                 chunk_size=chunk_size,
+                query_bank_scores=shared_scores,
             )
             gradients = torch.autograd.grad(loss, (current_query, current_bank))
             return loss, gradients
 
         full_loss, full_gradients = loss_and_gradients(None)
         chunked_loss, chunked_gradients = loss_and_gradients(2)
+        shared_loss, shared_gradients = loss_and_gradients(2, precomputed=True)
 
         torch.testing.assert_close(chunked_loss, full_loss, atol=1e-6, rtol=1e-6)
         for chunked, full in zip(chunked_gradients, full_gradients):
             torch.testing.assert_close(chunked, full, atol=2e-6, rtol=2e-5)
+        torch.testing.assert_close(shared_loss, full_loss, atol=1e-6, rtol=1e-6)
+        for shared, full in zip(shared_gradients, full_gradients):
+            torch.testing.assert_close(shared, full, atol=2e-6, rtol=2e-5)
+
+    def test_full_bank_precomputed_scores_and_uv_distances_are_equivalent(self):
+        from localization_training.direct_landmark_teacher import (
+            clean_reprojection_hard_negative_loss,
+            full_bank_descriptor_stats,
+        )
+
+        torch.manual_seed(23)
+        query = torch.randn(4, 8)
+        bank = torch.randn(13, 8)
+        positives = torch.tensor([0, -1, 7, 12])
+        query_uv = torch.randn(4, 2) * 5.0
+        bank_uv = torch.randn(13, 2) * 5.0
+        scores = torch.nn.functional.normalize(query, dim=-1) @ (
+            torch.nn.functional.normalize(bank, dim=-1).T
+        )
+        uv_distances = torch.cdist(query_uv, bank_uv)
+
+        baseline_stats = full_bank_descriptor_stats(query, bank, positives, temperature=0.2)
+        shared_stats = full_bank_descriptor_stats(
+            query,
+            bank,
+            positives,
+            temperature=0.2,
+            query_bank_scores=scores,
+        )
+        for baseline, shared in zip(baseline_stats, shared_stats):
+            torch.testing.assert_close(shared, baseline, atol=1e-6, rtol=1e-6)
+
+        baseline_clean = clean_reprojection_hard_negative_loss(
+            query,
+            bank,
+            positives,
+            query_uv,
+            bank_uv,
+            reprojection_radius=2.0,
+            hard_negative_topk=3,
+        )
+        shared_clean = clean_reprojection_hard_negative_loss(
+            query,
+            bank,
+            positives,
+            query_uv,
+            bank_uv,
+            reprojection_radius=2.0,
+            hard_negative_topk=3,
+            query_bank_scores=scores,
+            query_bank_uv_distances=uv_distances,
+        )
+        torch.testing.assert_close(shared_clean, baseline_clean, atol=1e-6, rtol=1e-6)
 
     def test_direct_teacher_can_ignore_full_bank_3d_and_uv_nearby_false_negatives(self):
         from localization_training.direct_landmark_teacher import direct_landmark_teacher

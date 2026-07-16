@@ -663,6 +663,14 @@ def _flatten_render_alpha(value):
     return value
 
 
+def _render_pkg_alpha(render_pkg):
+    """Return alpha for either the 3DGS or 2DGS renderer contract."""
+    value = render_pkg.get("alphas")
+    if value is None:
+        value = render_pkg.get("rend_alpha")
+    return value
+
+
 def _set_phase_lrs(gaussians, phase, args):
     for group in gaussians.optimizer.param_groups:
         group.setdefault("la_base_lr", group["lr"])
@@ -758,15 +766,24 @@ def full_bank_nearby_as_positive_active(args, iteration, lafgs_step=None):
 
 
 def lafgs_curriculum_base_iteration(args, scene_loaded_iter=0):
+    override = int(
+        getattr(args, "lafgs_curriculum_base_iter_override", -1) or -1
+    )
+    if override >= 0:
+        return override
     if str(getattr(args, "lafgs_stage_schedule", "none") or "none") == "sfm_from_zero":
         return 0
     return int(scene_loaded_iter or 0)
 
 
-def lafgs_should_run_multiview_initialization(args, first_iter=0):
+def lafgs_should_run_multiview_initialization(
+    args, first_iter=0, localization_state_initialized=False
+):
     if not bool(getattr(args, "lafgs_mvinit_enabled", False)):
         return False
     if int(getattr(args, "lafgs_mvinit_max_views", 0) or 0) == 0:
+        return False
+    if bool(localization_state_initialized):
         return False
     if str(getattr(args, "lafgs_stage_schedule", "none") or "none") == "sfm_from_zero" and int(first_iter) > 0:
         return False
@@ -778,7 +795,7 @@ def lafgs_stage_loss_weights(args, lafgs_step):
     loc = float(getattr(args, "loc_loss_weight", 1.0))
     geometry_anchor = float(getattr(args, "geometry_anchor_weight", 0.0))
     schedule = str(getattr(args, "lafgs_stage_schedule", "none") or "none")
-    if schedule != "sfm_from_zero":
+    if schedule not in {"sfm_from_zero", "pretrained_2dgs"}:
         return {
             "stage": "legacy",
             "base": base,
@@ -1048,6 +1065,40 @@ def _record_geometry_optimizer_diagnostics(
             )
 
 
+def _cap_raw_xyz_optimizer_step(gaussians, xyz_before, max_step_m, summary=None):
+    """Project an optimizer update into a metric per-point trust region."""
+    max_step_m = float(max_step_m or 0.0)
+    if max_step_m <= 0.0 or xyz_before is None:
+        return 0
+    with torch.no_grad():
+        xyz = gaussians._xyz
+        if xyz.shape != xyz_before.shape:
+            if summary is not None:
+                summary["geometry_xyz_step_cap_skipped_point_count_changed"] = (
+                    summary.get("geometry_xyz_step_cap_skipped_point_count_changed", 0) + 1
+                )
+            return 0
+        delta = xyz - xyz_before.to(device=xyz.device, dtype=xyz.dtype)
+        norm = torch.linalg.norm(delta, dim=-1, keepdim=True)
+        finite = torch.isfinite(norm) & torch.isfinite(delta).all(dim=-1, keepdim=True)
+        scale = torch.where(
+            finite,
+            (max_step_m / norm.clamp_min(1e-12)).clamp_max(1.0),
+            torch.zeros_like(norm),
+        )
+        capped = (norm > max_step_m) | (~finite)
+        xyz.copy_(xyz_before.to(device=xyz.device, dtype=xyz.dtype) + delta * scale)
+        capped_count = int(capped.sum().item())
+    if summary is not None:
+        summary["geometry_xyz_step_cap_events"] = summary.get(
+            "geometry_xyz_step_cap_events", 0
+        ) + int(capped_count > 0)
+        summary["geometry_xyz_step_capped_points_total"] = summary.get(
+            "geometry_xyz_step_capped_points_total", 0
+        ) + capped_count
+    return capped_count
+
+
 def _record_direct_teacher_diagnostics(summary, diagnostics, prefix="direct_diag"):
     if not diagnostics:
         return
@@ -1247,7 +1298,15 @@ def _record_lafgs_static_config(summary, args, gaussians):
                 "lafgs_diff_pnp_geometry_local_window_radius",
             ),
             "diff_pnp_point_weight_floor_config": _float_arg(args, "lafgs_diff_pnp_point_weight_floor"),
-            "diff_pnp_max_condition_number_config": _float_arg(args, "lafgs_diff_pnp_max_condition_number", -1.0),
+            "diff_pnp_max_condition_number_config": _float_arg(
+                args, "lafgs_diff_pnp_max_condition_number", -1.0
+            ),
+            "diff_pnp_translation_scale_m_config": _float_arg(
+                args, "lafgs_diff_pnp_translation_scale_m"
+            ),
+            "diff_pnp_rotation_scale_degrees_config": _float_arg(
+                args, "lafgs_diff_pnp_rotation_scale_degrees"
+            ),
             "diff_pnp_detach_pnp_points_config": bool(getattr(args, "lafgs_diff_pnp_detach_pnp_points", False)),
             "diff_pnp_allow_geometry_grad_config": bool(
                 getattr(args, "lafgs_diff_pnp_allow_geometry_grad", False)
@@ -1265,6 +1324,15 @@ def _record_lafgs_static_config(summary, args, gaussians):
                 "lafgs_diff_pnp_geometry_match_reproj_weight",
             ),
             "loc_full_bank_balance_weight_config": _float_arg(args, "loc_full_bank_balance_weight"),
+            "loc_multiview_memory_device_config": str(
+                getattr(args, "loc_multiview_memory_device", "cuda")
+            ),
+            "loc_full_bank_max_landmarks_config": int(
+                getattr(args, "loc_full_bank_max_landmarks", 0) or 0
+            ),
+            "lafgs_dense_feature_render_config": bool(
+                getattr(args, "lafgs_dense_feature_render", True)
+            ),
             "loc_full_bank_balance_grid_size_config": int(
                 getattr(args, "loc_full_bank_balance_grid_size", 0) or 0
             ),
@@ -1334,6 +1402,12 @@ def _record_lafgs_static_config(summary, args, gaussians):
             ),
         }
     )
+
+
+def _topology_controller_requested(args):
+    return bool(getattr(args, "enable_topology", False)) or str(
+        getattr(args, "train_phase", "")
+    ) in {"topology", "closed_loop"}
 
 
 def _capture_geometry_delta_reference(gaussians):
@@ -1647,12 +1721,18 @@ def add_locaware_training_args(parser):
     parser.add_argument("--loc_multiview_weight", type=float, default=0.05)
     parser.add_argument("--loc_multiview_temperature", type=float, default=0.07)
     parser.add_argument("--loc_multiview_slots", type=int, default=4)
+    parser.add_argument(
+        "--loc_multiview_memory_device",
+        choices=["cuda", "cpu"],
+        default="cuda",
+    )
     parser.add_argument("--loc_multiview_ignore_radius", type=float, default=2.0)
     parser.add_argument("--loc_full_bank_weight", type=float, default=0.0)
     parser.add_argument("--loc_full_bank_temperature", type=float, default=0.07)
     parser.add_argument("--loc_full_bank_hard_negatives", type=int, default=32)
     parser.add_argument("--loc_full_bank_margin", type=float, default=0.2)
     parser.add_argument("--loc_full_bank_stats_chunk_size", type=int, default=256)
+    parser.add_argument("--loc_full_bank_max_landmarks", type=int, default=0)
     parser.add_argument("--loc_full_bank_ignore_3d_radius", type=float, default=0.0)
     parser.add_argument("--loc_full_bank_ignore_uv_radius", type=float, default=0.0)
     parser.add_argument(
@@ -1743,6 +1823,10 @@ def add_locaware_training_args(parser):
     parser.add_argument("--lafgs_diff_pnp_reproj_weight", type=float, default=0.1)
     parser.add_argument("--lafgs_diff_pnp_gt_reproj_weight", type=float, default=1.0)
     parser.add_argument("--lafgs_diff_pnp_entropy_weight", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_translation_scale_m", type=float, default=0.0)
+    parser.add_argument(
+        "--lafgs_diff_pnp_rotation_scale_degrees", type=float, default=0.0
+    )
     parser.add_argument(
         "--lafgs_diff_pnp_reprojection_loss_type",
         choices=["smooth_l1", "huber", "cauchy"],
@@ -1763,6 +1847,7 @@ def add_locaware_training_args(parser):
     parser.set_defaults(allow_raw_xyz_geometry_grad=False)
     parser.add_argument("--lafgs_diff_pnp_isolate_geometry_grad", action="store_true", default=False)
     parser.add_argument("--lafgs_diff_pnp_geometry_xyz_lr", type=float, default=0.0)
+    parser.add_argument("--lafgs_diff_pnp_geometry_max_step_m", type=float, default=0.0)
     parser.add_argument("--lafgs_diff_pnp_geometry_reproj_weight", type=float, default=0.0)
     parser.add_argument("--lafgs_diff_pnp_geometry_depth_anchor_weight", type=float, default=0.0)
     parser.add_argument("--lafgs_diff_pnp_geometry_match_reproj_weight", type=float, default=0.0)
@@ -1824,11 +1909,34 @@ def add_locaware_training_args(parser):
     parser.add_argument("--lafgs_mvinit_min_observations", type=int, default=1)
     parser.add_argument("--lafgs_mvinit_chunk_size", type=int, default=0)
     parser.add_argument("--lafgs_mvinit_feature_scale", type=float, default=1.0)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument(
+            "--lafgs_dense_feature_render",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+        )
+    else:
+        parser.add_argument(
+            "--lafgs_dense_feature_render",
+            dest="lafgs_dense_feature_render",
+            action="store_true",
+        )
+        parser.add_argument(
+            "--no-lafgs_dense_feature_render",
+            dest="lafgs_dense_feature_render",
+            action="store_false",
+        )
+        parser.set_defaults(lafgs_dense_feature_render=True)
     parser.add_argument("--lafgs_curriculum", action="store_true", default=False)
+    parser.add_argument("--lafgs_curriculum_base_iter_override", type=int, default=-1)
     parser.add_argument("--lafgs_locrec_start_iter", type=int, default=1)
     parser.add_argument("--lafgs_geometry_start_iter", type=int, default=10000)
     parser.add_argument("--lafgs_topology_start_iter", type=int, default=15000)
-    parser.add_argument("--lafgs_stage_schedule", choices=["none", "sfm_from_zero"], default="none")
+    parser.add_argument(
+        "--lafgs_stage_schedule",
+        choices=["none", "sfm_from_zero", "pretrained_2dgs"],
+        default="none",
+    )
     parser.add_argument("--lafgs_stage_bootstrap_until", type=int, default=3000)
     parser.add_argument("--lafgs_stage_joint_until", type=int, default=15000)
     parser.add_argument("--lafgs_stage_bootstrap_base_weight", type=float, default=1.0)
@@ -2012,6 +2120,12 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_enable_soft_prune", action="store_true", default=False)
     parser.add_argument("--topology_enable_physical_prune", action="store_true", default=False)
     parser.add_argument("--topology_protect_landmarks", action="store_true", default=False)
+    parser.add_argument(
+        "--topology_restrict_split_to_landmarks",
+        action="store_true",
+        default=False,
+        help="Restrict topology changes to the final localization bank lineage.",
+    )
     parser.add_argument("--topology_soft_prune_threshold", type=float, default=-1.0)
     parser.add_argument("--topology_soft_prune_step", type=float, default=1.0)
     parser.add_argument("--topology_physical_rgb_threshold", type=float, default=0.005)
@@ -2019,6 +2133,8 @@ def add_locaware_training_args(parser):
     parser.add_argument("--topology_physical_utility_threshold", type=float, default=-3.0)
     parser.add_argument("--topology_allow_untrained_loc_opacity_prune", action="store_true", default=False)
     parser.add_argument("--topology_max_mutation_events", type=int, default=0)
+    parser.add_argument("--topology_pose_information_floor", type=float, default=0.0)
+    parser.add_argument("--topology_residual_score_floor", type=float, default=0.0)
     parser.add_argument(
         "--topology_risk_commit_policy",
         type=str,
@@ -2282,6 +2398,8 @@ class HeldoutRiskCommitEvaluator:
             _restore_rng_state(rng_state)
         delta = trial_risk - baseline_risk
         finite = math.isfinite(baseline_risk) and math.isfinite(trial_risk) and math.isfinite(delta)
+        numerical_tolerance = 1e-9 * max(1.0, abs(baseline_risk), abs(trial_risk))
+        required_improvement = max(self.epsilon, numerical_tolerance)
         if not finite:
             accepted = False
             reason = f"{self.reason_prefix}_nonfinite"
@@ -2293,11 +2411,11 @@ class HeldoutRiskCommitEvaluator:
                 accepted = False
                 reason = f"{self.reason_prefix}_ci_insufficient"
             else:
-                accepted = delta_ucb <= -self.epsilon
+                accepted = delta_ucb <= -required_improvement
                 reason = f"{self.reason_prefix}_{'ucb_decreased' if accepted else 'ucb_not_decreased'}"
         else:
             delta_ucb = float("nan")
-            accepted = delta <= -self.epsilon
+            accepted = delta <= -required_improvement
             reason = f"{self.reason_prefix}_{'decreased' if accepted else 'not_decreased'}"
         metric_details = {}
         if self.metric_gate_fn is not None:
@@ -2317,6 +2435,7 @@ class HeldoutRiskCommitEvaluator:
             "delta_risk": delta,
             "delta_risk_ucb": delta_ucb,
             "epsilon": self.epsilon,
+            "required_improvement": required_improvement,
             "ci_z": self.ci_z,
             "risk_sample_count": int(min(len(baseline_values), len(trial_values))),
             "candidate_count": int(getattr(proposal, "candidate_count", 0)),
@@ -2383,6 +2502,7 @@ def _score_heldout_direct_descriptor_risk(
                 full_bank_ignore_uv_radius=args.loc_full_bank_ignore_uv_radius,
                 full_bank_source_mode=args.loc_full_bank_source_mode,
                 full_bank_stats_chunk_size=getattr(args, "loc_full_bank_stats_chunk_size", 256),
+                full_bank_max_landmarks=getattr(args, "loc_full_bank_max_landmarks", 0),
                 full_bank_pose_information_weight=args.loc_full_bank_pose_information_weight,
                 full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
                 full_bank_pose_information_mode=getattr(
@@ -2827,7 +2947,14 @@ def _make_heldout_pose_risk_evaluator(
     )
 
 
-def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=None):
+def _base_losses(
+    viewpoint_cam,
+    render_pkg,
+    feature_extractor,
+    dataset,
+    masks=None,
+    compute_gt_feature_map=False,
+):
     image = render_pkg["render"]
     feature_map = render_pkg["feature_map"]
     original_image = viewpoint_cam.original_image.cuda()
@@ -2850,23 +2977,27 @@ def _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=No
         gt_image[sky_mask.repeat(3, 1, 1) == False] = 1
 
     Ll1 = l1_loss(image, gt_image)
-    if feature_map is None:
-        Ll1_feature = image.new_tensor(0.0)
-        gt_feature_map = None
-    else:
+    gt_feature_map = None
+    if feature_map is not None or compute_gt_feature_map:
+        target_hw = feature_map.shape[-2:] if feature_map is not None else image.shape[-2:]
         with torch.no_grad():
             gt_feature_map = feature_extractor(original_image[None])["feature_map"][0]
             gt_feature_map = F.interpolate(
                 gt_feature_map.unsqueeze(0),
-                size=(feature_map.shape[1], feature_map.shape[2]),
+                size=target_hw,
                 mode="bilinear",
                 align_corners=False,
             ).squeeze(0)
             gt_feature_map = F.normalize(gt_feature_map, p=2, dim=0)
         if mask is not None:
             feature_map_mask = _resize_bool_mask(mask, (gt_feature_map.shape[1], gt_feature_map.shape[2]))
-            feature_map = feature_map * feature_map_mask
             gt_feature_map = gt_feature_map * feature_map_mask
+            if feature_map is not None:
+                feature_map = feature_map * feature_map_mask
+
+    if feature_map is None:
+        Ll1_feature = image.new_tensor(0.0)
+    else:
         Ll1_feature = l1_loss(feature_map, gt_feature_map)
 
     return {
@@ -3036,7 +3167,7 @@ def _synthetic_query_feature_map(
             if feature_map is None:
                 return None, 0.0
             feature_map = _normalize_feature_map_inplace(feature_map.detach())
-        alpha = _flatten_render_alpha(render_pkg.get("alphas"))
+        alpha = _flatten_render_alpha(_render_pkg_alpha(render_pkg))
         if alpha is None:
             return feature_map, 1.0
         alpha = alpha.to(device=feature_map.device, dtype=feature_map.dtype)
@@ -3145,17 +3276,20 @@ def training(dataset, opt, args):
                 stable_landmark_memory_indices(gaussians, direct_landmark_indices),
                 sorted=True,
             )
+            memory_device = str(
+                getattr(args, "loc_multiview_memory_device", "cuda") or "cuda"
+            )
             direct_observation_memory = LandmarkObservationMemory(
                 memory_landmark_indices,
                 feature_dim=feature_dim,
                 slots=args.loc_multiview_slots,
-                device=gaussians.get_xyz.device,
+                device=(gaussians.get_xyz.device if memory_device == "cuda" else "cpu"),
             )
             print(
                 "Initialized direct multi-view memory: "
                 f"landmarks={direct_landmark_indices.numel()} "
                 f"stable_sources={memory_landmark_indices.numel()} "
-                f"slots={args.loc_multiview_slots}"
+                f"slots={args.loc_multiview_slots} device={memory_device}"
             )
     if args.loc_overlay_mode == "descriptor":
         if direct_landmark_indices is None:
@@ -3208,7 +3342,18 @@ def training(dataset, opt, args):
         "mvinit_mean_observations": 0.0,
         "mvinit_skipped_resume": 0,
     }
-    if lafgs_should_run_multiview_initialization(args, first_iter=first_iter):
+    localization_state_initialized = bool(
+        torch.is_tensor(getattr(gaussians, "loc_observation_count", None))
+        and int(gaussians.loc_observation_count.sum().item()) > 0
+    ) or bool(
+        torch.is_tensor(getattr(gaussians, "loc_prototype_count", None))
+        and int(gaussians.loc_prototype_count.sum().item()) > 0
+    )
+    if lafgs_should_run_multiview_initialization(
+        args,
+        first_iter=first_iter,
+        localization_state_initialized=localization_state_initialized,
+    ):
         mvinit_cameras = select_multiview_init_cameras(
             support_cameras,
             max_views=args.lafgs_mvinit_max_views,
@@ -3259,6 +3404,8 @@ def training(dataset, opt, args):
                 "mvinit_mean_observations": float(mvinit_result.diagnostics.get("mean_observations", 0.0)),
             }
         )
+        del mvinit_result
+        torch.cuda.empty_cache()
     elif (
         bool(getattr(args, "lafgs_mvinit_enabled", False))
         and int(getattr(args, "lafgs_mvinit_max_views", 0) or 0) != 0
@@ -3463,7 +3610,9 @@ def training(dataset, opt, args):
         else None
     )
     topology_controller = None
-    if args.enable_topology or args.train_phase in {"topology", "closed_loop"} or bool(getattr(args, "lafgs_curriculum", False)):
+    # Curriculum selects when an enabled topology phase becomes active; it must
+    # not silently enable map mutation when --enable_topology is absent.
+    if _topology_controller_requested(args):
         protected_source_indices = None
         if args.topology_protect_landmarks:
             protected_source_indices = _load_landmark_indices(
@@ -3546,9 +3695,16 @@ def training(dataset, opt, args):
                 require_loc_opacity_trained_for_physical_prune=not args.topology_allow_untrained_loc_opacity_prune,
                 max_mutation_events=args.topology_max_mutation_events,
                 risk_commit_policy=args.topology_risk_commit_policy,
+                pose_information_floor=args.topology_pose_information_floor,
+                residual_score_floor=args.topology_residual_score_floor,
             ),
             initial_points=gaussians.get_xyz.shape[0],
             protected_source_indices=protected_source_indices,
+            split_source_indices=(
+                direct_landmark_indices
+                if args.topology_restrict_split_to_landmarks
+                else None
+            ),
             risk_evaluator=risk_evaluator,
         )
     viewpoint_stack = None
@@ -3588,6 +3744,8 @@ def training(dataset, opt, args):
             f"scene_loaded_iter={int(scene.loaded_iter or 0)} "
             f"curriculum_base_iter={lafgs_curriculum_base_iter}"
         )
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="LA Feature Gaussian")
     first_iter += 1
 
@@ -3619,12 +3777,19 @@ def training(dataset, opt, args):
             viewpoint_cam,
             gaussians,
             background,
-            rgb_only=False,
+            rgb_only=not bool(getattr(args, "lafgs_dense_feature_render", True)),
             norm_feat_bf_render=dataset.norm_before_render,
             longest_edge=dataset.longest_edge,
             rasterize_mode="antialiased",
         )
-        losses = _base_losses(viewpoint_cam, render_pkg, feature_extractor, dataset, masks=masks)
+        losses = _base_losses(
+            viewpoint_cam,
+            render_pkg,
+            feature_extractor,
+            dataset,
+            masks=masks,
+            compute_gt_feature_map=bool(getattr(args, "localization_enabled", False)),
+        )
         image = losses["image"]
         base_rgb_loss = (
             (1.0 - opt.lambda_dssim) * losses["Ll1"]
@@ -3914,6 +4079,7 @@ def training(dataset, opt, args):
                         lafgs_step=lafgs_step,
                     ),
                     full_bank_stats_chunk_size=getattr(args, "loc_full_bank_stats_chunk_size", 256),
+                    full_bank_max_landmarks=getattr(args, "loc_full_bank_max_landmarks", 0),
                     full_bank_pose_information_weight=clean_field_controls["pose_information_weight"],
                     full_bank_pose_information_floor=args.loc_full_bank_pose_information_floor,
                     full_bank_pose_information_mode=args.loc_full_bank_pose_information_mode,
@@ -4039,6 +4205,10 @@ def training(dataset, opt, args):
                             reprojection_weight=args.lafgs_diff_pnp_reproj_weight,
                             gt_reprojection_weight=args.lafgs_diff_pnp_gt_reproj_weight,
                             entropy_weight=args.lafgs_diff_pnp_entropy_weight,
+                            translation_scale_m=args.lafgs_diff_pnp_translation_scale_m,
+                            rotation_scale_degrees=(
+                                args.lafgs_diff_pnp_rotation_scale_degrees
+                            ),
                             reprojection_loss_type=args.lafgs_diff_pnp_reprojection_loss_type,
                             reprojection_loss_delta=args.lafgs_diff_pnp_reprojection_loss_delta,
                             max_condition_number=args.lafgs_diff_pnp_max_condition_number,
@@ -4444,15 +4614,18 @@ def training(dataset, opt, args):
             + stage_loss_weights["geometry_anchor"] * geom_anchor_loss
             + geometry_residual_weight * loc_geometry_residual_loss
         )
-        sfm_from_zero_raw_xyz = (
-            str(getattr(args, "lafgs_stage_schedule", "none") or "none") == "sfm_from_zero"
+        raw_xyz_scaffold_active = (
+            str(getattr(args, "lafgs_stage_schedule", "none") or "none")
+            in {"sfm_from_zero", "pretrained_2dgs"}
             and _allow_raw_xyz_geometry_grad(args)
         )
         isolate_diff_pnp_geometry_grad = bool(
             getattr(args, "lafgs_diff_pnp_isolate_geometry_grad", False)
-        ) and (sfm_from_zero_raw_xyz or _diff_pnp_allows_geometry_grad(args, phase))
+        ) and (raw_xyz_scaffold_active or _diff_pnp_allows_geometry_grad(args, phase))
         isolated_xyz_scaffold_loss = (
-            stage_loss_weights["base"] * base_rgb_loss if sfm_from_zero_raw_xyz else None
+            stage_loss_weights["base"] * base_rgb_loss
+            if raw_xyz_scaffold_active
+            else None
         )
         isolated_xyz_loss = (
             stage_loss_weights["loc"] * effective_pnp_weight * loc_pnp_loss
@@ -4662,6 +4835,12 @@ def training(dataset, opt, args):
                 summary=loc_training_summary,
             )
             gaussians.optimizer.step()
+            _cap_raw_xyz_optimizer_step(
+                gaussians,
+                geometry_xyz_before,
+                getattr(args, "lafgs_diff_pnp_geometry_max_step_m", 0.0),
+                summary=loc_training_summary,
+            )
             _record_geometry_optimizer_diagnostics(
                 loc_training_summary,
                 gaussians,
@@ -4719,6 +4898,24 @@ def training(dataset, opt, args):
                 }
             )
         _record_final_geometry_delta_summary(loc_training_summary, gaussians, geometry_delta_reference)
+        if torch.cuda.is_available():
+            gib = float(1024 ** 3)
+            loc_training_summary.update(
+                {
+                    "cuda_peak_memory_allocated_gib": float(
+                        torch.cuda.max_memory_allocated() / gib
+                    ),
+                    "cuda_peak_memory_reserved_gib": float(
+                        torch.cuda.max_memory_reserved() / gib
+                    ),
+                    "cuda_final_memory_allocated_gib": float(
+                        torch.cuda.memory_allocated() / gib
+                    ),
+                    "cuda_final_memory_reserved_gib": float(
+                        torch.cuda.memory_reserved() / gib
+                    ),
+                }
+            )
     loc_summary_path = os.path.join(dataset.model_path, "loc_training_summary.json")
     with open(loc_summary_path, "w") as f:
         json.dump(loc_training_summary, f, indent=2, sort_keys=True)

@@ -57,9 +57,13 @@ def make_stdloc_eval_cfg(
     diagnostics=True,
     diagnostics_dump_correspondences=False,
     diagnostics_dump_inliers_only=True,
+    diagnostics_dump_discrete_oracle=False,
+    diagnostics_oracle_topk=32,
     diagnostics_grid_rows=4,
     diagnostics_grid_cols=4,
     diagnostics_voxel_size=0.25,
+    diagnostics_task_translation_scale_m=0.02,
+    diagnostics_task_rotation_scale_degrees=2.0,
     geometry_balance=False,
     geometry_balance_grid_rows=4,
     geometry_balance_grid_cols=4,
@@ -176,9 +180,17 @@ def make_stdloc_eval_cfg(
         "dump_correspondences": bool(diagnostics_dump_correspondences),
         "dump_inliers_only": bool(diagnostics_dump_inliers_only),
         "dump_pre_selector": True,
+        "dump_discrete_oracle": bool(diagnostics_dump_discrete_oracle),
+        "oracle_topk": int(diagnostics_oracle_topk),
         "grid_rows": int(diagnostics_grid_rows),
         "grid_cols": int(diagnostics_grid_cols),
         "voxel_size": float(diagnostics_voxel_size),
+        "task_translation_scale_m": float(
+            diagnostics_task_translation_scale_m
+        ),
+        "task_rotation_scale_degrees": float(
+            diagnostics_task_rotation_scale_degrees
+        ),
     }
     if geometry_balance:
         sparse["geometry_balance"] = {
@@ -375,9 +387,17 @@ def main():
     parser.add_argument("--no_diagnostics", action="store_true")
     parser.add_argument("--diagnostics_dump_correspondences", action="store_true")
     parser.add_argument("--diagnostics_dump_all", action="store_true")
+    parser.add_argument("--diagnostics_dump_discrete_oracle", action="store_true")
+    parser.add_argument("--diagnostics_oracle_topk", type=int, default=32)
     parser.add_argument("--diagnostics_grid_rows", type=int, default=4)
     parser.add_argument("--diagnostics_grid_cols", type=int, default=4)
     parser.add_argument("--diagnostics_voxel_size", type=float, default=0.25)
+    parser.add_argument(
+        "--diagnostics_task_translation_scale_m", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--diagnostics_task_rotation_scale_degrees", type=float, default=2.0
+    )
     parser.add_argument("--geometry_balance", action="store_true")
     parser.add_argument("--geometry_balance_grid_rows", type=int, default=4)
     parser.add_argument("--geometry_balance_grid_cols", type=int, default=4)
@@ -467,9 +487,17 @@ def main():
         diagnostics=not args.no_diagnostics,
         diagnostics_dump_correspondences=args.diagnostics_dump_correspondences,
         diagnostics_dump_inliers_only=not args.diagnostics_dump_all,
+        diagnostics_dump_discrete_oracle=args.diagnostics_dump_discrete_oracle,
+        diagnostics_oracle_topk=args.diagnostics_oracle_topk,
         diagnostics_grid_rows=args.diagnostics_grid_rows,
         diagnostics_grid_cols=args.diagnostics_grid_cols,
         diagnostics_voxel_size=args.diagnostics_voxel_size,
+        diagnostics_task_translation_scale_m=(
+            args.diagnostics_task_translation_scale_m
+        ),
+        diagnostics_task_rotation_scale_degrees=(
+            args.diagnostics_task_rotation_scale_degrees
+        ),
         geometry_balance=args.geometry_balance,
         geometry_balance_grid_rows=args.geometry_balance_grid_rows,
         geometry_balance_grid_cols=args.geometry_balance_grid_cols,

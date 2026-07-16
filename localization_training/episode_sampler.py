@@ -253,13 +253,28 @@ def interpolate_pose_w2c(pose_a_w2c, pose_b_w2c, alpha):
     return torch.linalg.inv(c2w)
 
 
-def sample_interpolated_novel_view(cameras, generator=None, alpha_min=0.35, alpha_max=0.65):
+def sample_interpolated_novel_view(
+    cameras,
+    generator=None,
+    alpha_min=0.35,
+    alpha_max=0.65,
+    pair_weights=None,
+):
     """Sample a low-risk synthetic pose between adjacent real cameras."""
     cameras = list(cameras)
     if len(cameras) < 2:
         raise ValueError("At least two cameras are required for interpolated novel views.")
     hi = max(1, len(cameras) - 1)
-    pair_idx = torch.randint(hi, (1,), generator=generator).item()
+    if pair_weights is None:
+        pair_idx = torch.randint(hi, (1,), generator=generator).item()
+    else:
+        weights = torch.as_tensor(pair_weights, dtype=torch.float32, device="cpu").reshape(-1)
+        if weights.numel() != hi:
+            raise ValueError(f"pair_weights has {weights.numel()} entries, expected {hi}")
+        weights = torch.where(torch.isfinite(weights), weights.clamp_min(0.0), torch.zeros_like(weights))
+        if float(weights.sum().item()) <= 0.0:
+            weights = torch.ones_like(weights)
+        pair_idx = int(torch.multinomial(weights, 1, generator=generator).item())
     cam_a = cameras[pair_idx]
     cam_b = cameras[pair_idx + 1]
     lo = float(max(0.0, min(1.0, alpha_min)))

@@ -206,6 +206,73 @@ def deduplicate_landmark_matches(matches):
     return limit_matches_per_landmark(matches, 1)
 
 
+def match_candidate_selection_mask(
+    matches,
+    *,
+    threshold=-float("inf"),
+    max_matches_per_keypoint=0,
+    max_matches_per_landmark=0,
+    min_match_count=0,
+    refill_trigger_count=0,
+    max_match_count=0,
+):
+    """Return the exact keep mask used by the final sparse frontend.
+
+    The mask indexes the input ``matches``. Quotas are applied sequentially in
+    the same order as evaluation, before score rejection and optional refill.
+    """
+    count = int(matches.scores.numel())
+    keep_after_quota = torch.ones(
+        count, dtype=torch.bool, device=matches.scores.device
+    )
+    keypoint_keep = _matches_per_group_mask(
+        matches.scores,
+        matches.keypoint_idx,
+        max_matches_per_keypoint,
+        "keypoint",
+    )
+    keep_after_quota &= keypoint_keep
+    keypoint_limited_idx = torch.nonzero(
+        keep_after_quota, as_tuple=False
+    ).reshape(-1)
+    landmark_keep = _matches_per_group_mask(
+        matches.scores[keypoint_limited_idx],
+        matches.landmark_idx[keypoint_limited_idx],
+        max_matches_per_landmark,
+        "landmark",
+    )
+    quota_mask = torch.zeros_like(keep_after_quota)
+    quota_mask[keypoint_limited_idx[landmark_keep]] = True
+
+    limited_idx = torch.nonzero(quota_mask, as_tuple=False).reshape(-1)
+    if limited_idx.numel() == 0:
+        return quota_mask
+    limited_scores = matches.scores[limited_idx]
+    limited_keep = limited_scores > float(threshold)
+    target_count = min(max(int(min_match_count), 0), int(limited_scores.numel()))
+    accepted_count = int(limited_keep.sum().item())
+    trigger_count = max(int(refill_trigger_count), 0) or target_count
+    if accepted_count < trigger_count and accepted_count < target_count:
+        refill = torch.topk(limited_scores, target_count).indices
+        limited_keep = limited_keep.clone()
+        limited_keep[refill] = True
+    max_match_count = max(int(max_match_count), 0)
+    accepted_count = int(limited_keep.sum().item())
+    if max_match_count > 0 and accepted_count > max_match_count:
+        accepted_idx = torch.nonzero(
+            limited_keep, as_tuple=False
+        ).reshape(-1)
+        top_idx = torch.topk(
+            limited_scores[accepted_idx], max_match_count
+        ).indices
+        capped_keep = torch.zeros_like(limited_keep)
+        capped_keep[accepted_idx[top_idx]] = True
+        limited_keep = capped_keep
+    result = torch.zeros_like(quota_mask)
+    result[limited_idx[limited_keep]] = True
+    return result
+
+
 def select_match_candidates(
     matches,
     *,
@@ -217,32 +284,19 @@ def select_match_candidates(
     max_match_count=0,
 ):
     """Apply score rejection and a landmark quota with an optional count floor."""
-    limited = limit_matches_per_keypoint(matches, max_matches_per_keypoint)
-    limited = limit_matches_per_landmark(limited, max_matches_per_landmark)
-    if limited.scores.numel() == 0:
-        return limited
-    keep = limited.scores > float(threshold)
-    target_count = min(max(int(min_match_count), 0), int(limited.scores.numel()))
-    accepted_count = int(keep.sum().item())
-    trigger_count = max(int(refill_trigger_count), 0) or target_count
-    if accepted_count < trigger_count and accepted_count < target_count:
-        refill = torch.topk(limited.scores, target_count).indices
-        keep = keep.clone()
-        keep[refill] = True
-    max_match_count = max(int(max_match_count), 0)
-    accepted_count = int(keep.sum().item())
-    if max_match_count > 0 and accepted_count > max_match_count:
-        accepted_idx = torch.nonzero(keep, as_tuple=False).reshape(-1)
-        top_idx = torch.topk(
-            limited.scores[accepted_idx], max_match_count
-        ).indices
-        capped_keep = torch.zeros_like(keep)
-        capped_keep[accepted_idx[top_idx]] = True
-        keep = capped_keep
+    keep = match_candidate_selection_mask(
+        matches,
+        threshold=threshold,
+        max_matches_per_keypoint=max_matches_per_keypoint,
+        max_matches_per_landmark=max_matches_per_landmark,
+        min_match_count=min_match_count,
+        refill_trigger_count=refill_trigger_count,
+        max_match_count=max_match_count,
+    )
     return SparseMatchResult(
-        limited.keypoint_idx[keep],
-        limited.landmark_idx[keep],
-        limited.scores[keep],
+        matches.keypoint_idx[keep],
+        matches.landmark_idx[keep],
+        matches.scores[keep],
     )
 
 
@@ -257,6 +311,7 @@ def select_match_candidates_with_geometry_refill(
     max_matches_per_landmark=0,
     min_match_count=0,
     refill_trigger_count=0,
+    max_match_count=0,
     grid_rows=4,
     grid_cols=4,
     voxel_size=0.25,
@@ -269,11 +324,21 @@ def select_match_candidates_with_geometry_refill(
     if limited.scores.numel() == 0:
         return limited
 
-    keep = limited.scores > float(threshold)
+    finite_scores = torch.isfinite(limited.scores)
+    keep = finite_scores & (limited.scores > float(threshold))
+    fixed_count = min(max(int(max_match_count), 0), int(finite_scores.sum().item()))
     target_count = min(max(int(min_match_count), 0), int(limited.scores.numel()))
+    if fixed_count > 0:
+        target_count = fixed_count
+        # Fixed-budget Pair selection is a fresh geometry-aware ranking over all
+        # finite candidates. Keeping every candidate at threshold=-inf would
+        # otherwise bypass both the budget and the diversity refill.
+        keep = torch.zeros_like(keep)
     accepted_count = int(keep.sum().item())
     trigger_count = max(int(refill_trigger_count), 0) or target_count
-    if accepted_count >= trigger_count or accepted_count >= target_count:
+    if fixed_count <= 0 and (
+        accepted_count >= trigger_count or accepted_count >= target_count
+    ):
         return SparseMatchResult(
             limited.keypoint_idx[keep],
             limited.landmark_idx[keep],
@@ -315,7 +380,6 @@ def select_match_candidates_with_geometry_refill(
         voxel_ids[keep], minlength=int(voxel_ids.max().item()) + 1
     ).to(dtype=limited.scores.dtype)
 
-    finite_scores = torch.isfinite(limited.scores)
     normalized_scores = torch.zeros_like(limited.scores)
     if bool(finite_scores.any()):
         finite_values = limited.scores[finite_scores]

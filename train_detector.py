@@ -10,17 +10,18 @@
 #
 
 import json
+import math
 import os
 import sys
 import uuid
 from argparse import ArgumentParser, Namespace
-from random import randint
+from random import randint, random
 
 import torch
 from tqdm import tqdm
 
 from arguments import ModelParams, OptimizationParams, get_combined_args
-from gaussian_renderer import get_render_visible_mask, render_gsplat
+from gaussian_renderer import get_render_visible_mask, render_from_pose_gsplat, render_gsplat
 from scene import Scene
 from scene.gaussian_model import GaussianModel
 from utils.general_utils import safe_state, seed_everything
@@ -41,7 +42,10 @@ import torch.nn.functional as F
 
 from encoders.feature_extractor import FeatureExtractor
 from localization_training.direct_landmark_teacher import gaussian_localization_xyz
-from localization_training.episode_sampler import split_support_query_cameras
+from localization_training.episode_sampler import (
+    sample_interpolated_novel_view,
+    split_support_query_cameras,
+)
 from localization_training.landmark_distill import (
     coverage_preserving_sample,
     localization_aware_sample,
@@ -59,7 +63,41 @@ from localization_training.sparse_frontend import (
     limit_matches_per_keypoint,
     rank_keypoint_proposals,
 )
+from localization_training.splat_provenance import compress_2dgs_rgb_meta_to_bank
 from scene.kpdetector import KpDetector
+
+
+def _parameter_gradient_norm(parameters):
+    squared = None
+    for parameter in parameters:
+        if parameter is None or parameter.grad is None:
+            continue
+        value = parameter.grad.detach().float().square().sum()
+        squared = value if squared is None else squared + value
+    return float(torch.sqrt(squared).item()) if squared is not None else 0.0
+
+
+def _isolated_loss_gradient_norm(loss, parameters):
+    parameters = [
+        parameter
+        for parameter in parameters
+        if parameter is not None and parameter.requires_grad
+    ]
+    if not parameters or not bool(loss.requires_grad):
+        return 0.0
+    gradients = torch.autograd.grad(
+        loss,
+        parameters,
+        retain_graph=True,
+        allow_unused=True,
+    )
+    squared = None
+    for gradient in gradients:
+        if gradient is None:
+            continue
+        value = gradient.detach().float().square().sum()
+        squared = value if squared is None else squared + value
+    return float(torch.sqrt(squared).item()) if squared is not None else 0.0
 
 
 def partition_candidate_teacher_cameras(
@@ -105,6 +143,117 @@ def extract_normalized_feature_map(feature_extractor, image, size):
         ).squeeze(0)
         gt_feature_map = F.normalize(gt_feature_map, p=2, dim=0)
     return gt_feature_map.detach()
+
+
+def scheduled_online_render_ratio(
+    iteration,
+    total_iterations,
+    ratio_start=0.0,
+    ratio_end=0.0,
+    ramp_start_fraction=0.0,
+    ramp_end_fraction=1.0,
+):
+    """Linear synthetic-query curriculum, expressed independently of scene size."""
+    total = max(int(total_iterations), 1)
+    progress = max(0.0, min(1.0, float(iteration) / float(total)))
+    start = max(0.0, min(1.0, float(ramp_start_fraction)))
+    end = max(start, min(1.0, float(ramp_end_fraction)))
+    if end <= start:
+        alpha = 1.0 if progress >= end else 0.0
+    else:
+        alpha = max(0.0, min(1.0, (progress - start) / (end - start)))
+    ratio = (1.0 - alpha) * float(ratio_start) + alpha * float(ratio_end)
+    return max(0.0, min(1.0, ratio))
+
+
+def failure_guided_pair_weights(camera_failure_scores, temperature=1.0, uniform_floor=0.1):
+    """Convert per-camera failure EMAs into adjacent-pair sampling weights."""
+    scores = torch.as_tensor(camera_failure_scores, dtype=torch.float32, device="cpu").reshape(-1)
+    if scores.numel() < 2:
+        return torch.empty(0, dtype=torch.float32)
+    scores = torch.where(torch.isfinite(scores), scores, torch.zeros_like(scores))
+    pair_scores = 0.5 * (scores[:-1] + scores[1:])
+    scale = pair_scores.std(unbiased=False).clamp_min(1e-6)
+    logits = (pair_scores - pair_scores.mean()) / (scale * max(float(temperature), 1e-3))
+    guided = torch.softmax(logits.clamp(-20.0, 20.0), dim=0)
+    floor = max(0.0, min(1.0, float(uniform_floor)))
+    uniform = torch.full_like(guided, 1.0 / max(guided.numel(), 1))
+    return (1.0 - floor) * guided + floor * uniform
+
+
+def update_camera_failure_ema(scores, index, failure, decay=0.9):
+    failure = float(max(0.0, min(20.0, failure)))
+    decay = max(0.0, min(1.0, float(decay)))
+    scores[index] = decay * scores[index] + (1.0 - decay) * failure
+
+
+def candidate_query_failure_score(teacher_losses):
+    """Detached query-level failure used only to choose future rendered views."""
+    terms = (
+        teacher_losses.assignment,
+        teacher_losses.hard_negative,
+        teacher_losses.map_cleanliness,
+        teacher_losses.map_bias,
+        teacher_losses.matcher_reprojection_assignment,
+        teacher_losses.map_directional_bias,
+    )
+    value = sum(float(term.detach().item()) for term in terms)
+    return math.log1p(max(value, 0.0))
+
+
+def render_online_candidate_query(
+    cameras,
+    gaussians,
+    feature_extractor,
+    longest_edge,
+    background,
+    *,
+    alpha_min=0.35,
+    alpha_max=0.65,
+    return_provenance=False,
+    provenance_landmark_indices=None,
+    pair_weights=None,
+):
+    """Render current RGB geometry and encode it without candidate-loss gradients."""
+    candidate = sample_interpolated_novel_view(
+        cameras,
+        alpha_min=alpha_min,
+        alpha_max=alpha_max,
+        pair_weights=pair_weights,
+    )
+    reference = cameras[max(0, int(candidate.train_index_a))]
+    fine_resolution = get_resolution_from_longest_edge(
+        reference.original_image.shape[1],
+        reference.original_image.shape[2],
+        longest_edge,
+    )
+    pose_w2c = candidate.world_view_transform.transpose(0, 1).cuda()
+    with torch.no_grad():
+        render_pkg = render_from_pose_gsplat(
+            gaussians,
+            pose_w2c,
+            candidate.FoVx,
+            candidate.FoVy,
+            fine_resolution[1],
+            fine_resolution[0],
+            bg_color=background,
+            render_mode="RGB+ED",
+            rgb_only=True,
+            return_rgb_meta=bool(return_provenance),
+            rasterize_mode="antialiased",
+        )
+        feature_map = extract_normalized_feature_map(
+            feature_extractor,
+            render_pkg["render"].clamp(0.0, 1.0),
+            size=fine_resolution,
+        )
+    if return_provenance:
+        render_pkg["rgb_meta"]["rendered_depth"] = render_pkg.get("depth")
+        if provenance_landmark_indices is not None:
+            render_pkg["rgb_meta"] = compress_2dgs_rgb_meta_to_bank(
+                render_pkg["rgb_meta"], provenance_landmark_indices
+            )
+    return candidate, feature_map, pose_w2c, render_pkg
 
 
 def store_render_visible_mask(render_visible_masks, image_name, visible_mask):
@@ -885,12 +1034,12 @@ def matching_oriented_sample(
     score_num = torch.zeros(loc_xyz.shape[0], dtype=torch.int, device="cuda")
     uv_sum = torch.zeros((loc_xyz.shape[0], 2), dtype=torch.float32, device="cuda")
     depth_sum = torch.zeros(loc_xyz.shape[0], dtype=torch.float32, device="cuda")
-    fine_resolution = (
-        viewpoint_stack[0].original_image.shape[1],
-        viewpoint_stack[0].original_image.shape[2],
-    )
-
     for viewpoint_cam in tqdm(viewpoint_stack, desc="Match Score"):
+        fine_resolution = get_resolution_from_longest_edge(
+            viewpoint_cam.original_image.shape[1],
+            viewpoint_cam.original_image.shape[2],
+            scene.longest_edge,
+        )
         gt_image = viewpoint_cam.original_image.cuda()
         gt_feature_map = extract_normalized_feature_map(
             feature_extractor,
@@ -1410,6 +1559,8 @@ def evaluate_sparse_candidate_teacher(
     map_fisher_residual_clip_px=12.0,
     map_fisher_inlier_sigma_px=4.0,
     map_fisher_condition_target=100.0,
+    map_bias_huber_delta=1.0,
+    map_bias_clip=4.0,
     map_directional_temperature=0.05,
     map_directional_residual_clip_px=24.0,
     map_directional_robust_scale_px=12.0,
@@ -1527,6 +1678,8 @@ def evaluate_sparse_candidate_teacher(
             map_fisher_residual_clip_px=map_fisher_residual_clip_px,
             map_fisher_inlier_sigma_px=map_fisher_inlier_sigma_px,
             map_fisher_condition_target=map_fisher_condition_target,
+            map_bias_huber_delta=map_bias_huber_delta,
+            map_bias_clip=map_bias_clip,
             map_directional_temperature=map_directional_temperature,
             map_directional_residual_clip_px=(
                 map_directional_residual_clip_px
@@ -1794,6 +1947,8 @@ def training_detector(
     candidate_teacher_map_fisher_residual_clip_px=12.0,
     candidate_teacher_map_fisher_inlier_sigma_px=4.0,
     candidate_teacher_map_fisher_condition_target=100.0,
+    candidate_teacher_map_bias_huber_delta=1.0,
+    candidate_teacher_map_bias_clip=4.0,
     candidate_teacher_map_max_matches_per_landmark=0,
     candidate_teacher_map_directional_topk=0,
     candidate_teacher_map_directional_temperature=0.05,
@@ -1805,6 +1960,7 @@ def training_detector(
     candidate_teacher_counterfactual_utility_floor=0.1,
     candidate_teacher_counterfactual_target_mode="all_false",
     candidate_teacher_counterfactual_require_current_retained=False,
+    candidate_teacher_counterfactual_exact_decision_set=False,
     candidate_teacher_counterfactual_require_positive_bias_gain=False,
     candidate_teacher_counterfactual_require_nonnegative_translation_gain=False,
     candidate_teacher_grid_rows=4,
@@ -1860,10 +2016,29 @@ def training_detector(
     candidate_teacher_validation_ratio=0.0,
     candidate_teacher_split_mode="temporal_block",
     candidate_teacher_split_seed=2026,
+    candidate_teacher_online_render_ratio_start=0.0,
+    candidate_teacher_online_render_ratio_end=0.0,
+    candidate_teacher_online_render_ramp_start=0.0,
+    candidate_teacher_online_render_ramp_end=1.0,
+    candidate_teacher_online_render_alpha_min=0.35,
+    candidate_teacher_online_render_alpha_max=0.65,
+    candidate_teacher_online_render_provenance_mode="none",
+    candidate_teacher_online_render_provenance_weight=0.0,
+    candidate_teacher_online_render_provenance_topk=4,
+    candidate_teacher_online_render_provenance_temperature=0.05,
+    candidate_teacher_online_render_sampling_mode="uniform",
+    candidate_teacher_online_render_failure_ema=0.9,
+    candidate_teacher_online_render_failure_temperature=1.0,
+    candidate_teacher_online_render_uniform_floor=0.1,
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
     feature_extractor = FeatureExtractor(scene.feature_type).cuda().eval()
+    background = torch.tensor(
+        [1.0, 1.0, 1.0] if scene.args.white_background else [0.0, 0.0, 0.0],
+        dtype=torch.float32,
+        device="cuda",
+    )
 
     render_visible_masks = {}
 
@@ -2141,6 +2316,34 @@ def training_detector(
         "optimizer_weight_decay": 1e-4,
         "gradient_accumulation": int(grad_accum),
         "gradient_clip_norm": float(grad_clip_norm),
+        "online_render_ratio_start": float(
+            candidate_teacher_online_render_ratio_start
+        ),
+        "online_render_ratio_end": float(candidate_teacher_online_render_ratio_end),
+        "online_render_ramp_start": float(
+            candidate_teacher_online_render_ramp_start
+        ),
+        "online_render_ramp_end": float(candidate_teacher_online_render_ramp_end),
+        "online_render_alpha_min": float(candidate_teacher_online_render_alpha_min),
+        "online_render_alpha_max": float(candidate_teacher_online_render_alpha_max),
+        "online_render_provenance_mode": str(
+            candidate_teacher_online_render_provenance_mode
+        ),
+        "online_render_provenance_weight": float(
+            candidate_teacher_online_render_provenance_weight
+        ),
+        "online_render_provenance_topk": int(
+            candidate_teacher_online_render_provenance_topk
+        ),
+        "online_render_provenance_temperature": float(
+            candidate_teacher_online_render_provenance_temperature
+        ),
+        "online_render_sampling_mode": str(candidate_teacher_online_render_sampling_mode),
+        "online_render_failure_ema": float(candidate_teacher_online_render_failure_ema),
+        "online_render_failure_temperature": float(
+            candidate_teacher_online_render_failure_temperature
+        ),
+        "online_render_uniform_floor": float(candidate_teacher_online_render_uniform_floor),
         "landmark_num": int(landmark_num),
         "sampling_mode": str(sampling_mode),
         "precomputed_landmark_path": str(precomputed_landmark_path),
@@ -2231,6 +2434,8 @@ def training_detector(
         "map_fisher_condition_target": float(
             candidate_teacher_map_fisher_condition_target
         ),
+        "map_bias_huber_delta": float(candidate_teacher_map_bias_huber_delta),
+        "map_bias_clip": float(candidate_teacher_map_bias_clip),
         "map_max_matches_per_landmark": int(
             candidate_teacher_map_max_matches_per_landmark
         ),
@@ -2264,6 +2469,9 @@ def training_detector(
         ),
         "counterfactual_require_current_retained": bool(
             candidate_teacher_counterfactual_require_current_retained
+        ),
+        "counterfactual_exact_decision_set": bool(
+            candidate_teacher_counterfactual_exact_decision_set
         ),
         "counterfactual_require_positive_bias_gain": bool(
             candidate_teacher_counterfactual_require_positive_bias_gain
@@ -2716,28 +2924,82 @@ def training_detector(
         eta_min=0.0 if sparse_candidate_teacher else 0.0005,
     )
     optimizer.zero_grad()
+    camera_failure_scores = torch.ones(len(training_cameras), dtype=torch.float32)
+    camera_failure_index = {
+        str(camera.image_name): index for index, camera in enumerate(training_cameras)
+    }
+    online_render_stats = {
+        "episodes": 0,
+        "failure_guided_episodes": 0,
+        "provenance_episodes": 0,
+        "provenance_valid_count_total": 0.0,
+        "provenance_effective_targets_total": 0.0,
+        "pair_weight_max": 0.0,
+    }
 
     for iteration in range(first_iter, train_iteration + 1):
+        teacher_gradient_diagnostics = {}
         iter_start.record()
         if not viewpoint_stack:
             viewpoint_stack = training_cameras.copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
-        fine_resolution = get_resolution_from_longest_edge(
-            viewpoint_cam.original_image.shape[1],
-            viewpoint_cam.original_image.shape[2],
-            scene.longest_edge,
+        online_render_ratio = scheduled_online_render_ratio(
+            iteration,
+            train_iteration,
+            candidate_teacher_online_render_ratio_start,
+            candidate_teacher_online_render_ratio_end,
+            candidate_teacher_online_render_ramp_start,
+            candidate_teacher_online_render_ramp_end,
         )
-
-        # generate gt_feature_map
-        gt_image = viewpoint_cam.original_image.cuda()
-        gt_feature_map = extract_normalized_feature_map(
-            feature_extractor,
-            gt_image,
-            size=(fine_resolution[0], fine_resolution[1]),
+        online_render_used = bool(
+            sparse_candidate_teacher
+            and len(training_cameras) >= 2
+            and online_render_ratio > 0.0
+            and random() < online_render_ratio
         )
+        online_render_pkg = None
+        pair_weights = None
+        if online_render_used:
+            if candidate_teacher_online_render_sampling_mode == "failure_guided":
+                pair_weights = failure_guided_pair_weights(
+                    camera_failure_scores,
+                    temperature=candidate_teacher_online_render_failure_temperature,
+                    uniform_floor=candidate_teacher_online_render_uniform_floor,
+                )
+            (
+                viewpoint_cam,
+                gt_feature_map,
+                viewmat,
+                online_render_pkg,
+            ) = render_online_candidate_query(
+                training_cameras,
+                gaussians,
+                feature_extractor,
+                scene.longest_edge,
+                background,
+                alpha_min=candidate_teacher_online_render_alpha_min,
+                alpha_max=candidate_teacher_online_render_alpha_max,
+                return_provenance=(
+                    candidate_teacher_online_render_provenance_mode != "none"
+                ),
+                provenance_landmark_indices=sampled_idx,
+                pair_weights=pair_weights,
+            )
+        else:
+            fine_resolution = get_resolution_from_longest_edge(
+                viewpoint_cam.original_image.shape[1],
+                viewpoint_cam.original_image.shape[2],
+                scene.longest_edge,
+            )
+            gt_image = viewpoint_cam.original_image.cuda()
+            gt_feature_map = extract_normalized_feature_map(
+                feature_extractor,
+                gt_image,
+                size=(fine_resolution[0], fine_resolution[1]),
+            )
+            viewmat = viewpoint_cam.world_view_transform.transpose(0, 1).cuda()
 
-        # get viewmat and K
-        viewmat = viewpoint_cam.world_view_transform.transpose(0, 1).cuda()  # [4, 4]
+        # get K for either a real or an online-rendered query
         focalX = fov2focal(viewpoint_cam.FoVx, gt_feature_map.shape[2])
         focalY = fov2focal(viewpoint_cam.FoVy, gt_feature_map.shape[1])
         K = torch.tensor(
@@ -2751,23 +3013,26 @@ def training_detector(
         )
 
         # get render visible mask
-        render_visible_mask = render_visible_mask_from_cache(
-            render_visible_masks,
-            viewpoint_cam.image_name,
-            gt_feature_map.device,
-        )
-        if render_visible_mask is None:
-            render_visible_mask = get_render_visible_mask(
-                gaussians,
-                viewpoint_cam,
-                gt_feature_map.shape[2],
-                gt_feature_map.shape[1],
-            )
-            store_render_visible_mask(
+        if online_render_pkg is not None:
+            render_visible_mask = online_render_pkg["visibility_filter"].detach()
+        else:
+            render_visible_mask = render_visible_mask_from_cache(
                 render_visible_masks,
                 viewpoint_cam.image_name,
-                render_visible_mask,
+                gt_feature_map.device,
             )
+            if render_visible_mask is None:
+                render_visible_mask = get_render_visible_mask(
+                    gaussians,
+                    viewpoint_cam,
+                    gt_feature_map.shape[2],
+                    gt_feature_map.shape[1],
+                )
+                store_render_visible_mask(
+                    render_visible_masks,
+                    viewpoint_cam.image_name,
+                    render_visible_mask,
+                )
 
         need_base_target = (not sparse_candidate_teacher) or float(candidate_teacher_base_detector_weight) > 0.0
         gt_map = None
@@ -2788,7 +3053,7 @@ def training_detector(
 
         # use mask to filter out object
         gt_map_mask = None
-        if masks is not None:
+        if masks is not None and not online_render_used:
             object_mask = masks[viewpoint_cam.image_name][0].cuda()[None]
             distort_mask = masks[viewpoint_cam.image_name][2].cuda()[None]
             mask = object_mask & distort_mask
@@ -2945,6 +3210,9 @@ def training_detector(
                 counterfactual_require_current_retained=(
                     candidate_teacher_counterfactual_require_current_retained
                 ),
+                counterfactual_exact_decision_set=(
+                    candidate_teacher_counterfactual_exact_decision_set
+                ),
                 counterfactual_require_positive_bias_gain=(
                     candidate_teacher_counterfactual_require_positive_bias_gain
                 ),
@@ -2965,6 +3233,33 @@ def training_detector(
                 ),
                 counterfactual_inlier_sigma_px=(
                     candidate_teacher_map_fisher_inlier_sigma_px
+                ),
+                splat_provenance_meta=(
+                    online_render_pkg.get("rgb_meta")
+                    if online_render_pkg is not None
+                    and candidate_teacher_online_render_provenance_mode != "none"
+                    else None
+                ),
+                landmark_global_indices=(
+                    torch.arange(
+                        sampled_idx.numel(),
+                        device=sampled_idx.device,
+                        dtype=torch.long,
+                    )
+                    if online_render_pkg is not None
+                    and candidate_teacher_online_render_provenance_mode != "none"
+                    else None
+                ),
+                splat_provenance_mode=(
+                    candidate_teacher_online_render_provenance_mode
+                    if online_render_pkg is not None
+                    else "none"
+                ),
+                splat_provenance_topk=(
+                    candidate_teacher_online_render_provenance_topk
+                ),
+                splat_provenance_temperature=(
+                    candidate_teacher_online_render_provenance_temperature
                 ),
             )
             teacher_losses = sparse_candidate_losses(
@@ -2997,6 +3292,8 @@ def training_detector(
                 map_fisher_condition_target=(
                     candidate_teacher_map_fisher_condition_target
                 ),
+                map_bias_huber_delta=candidate_teacher_map_bias_huber_delta,
+                map_bias_clip=candidate_teacher_map_bias_clip,
                 map_directional_temperature=(
                     candidate_teacher_map_directional_temperature
                 ),
@@ -3010,6 +3307,15 @@ def training_detector(
                     candidate_teacher_map_directional_robust_quality_floor
                 ),
             )
+            if not online_render_used:
+                failure_index = camera_failure_index.get(str(viewpoint_cam.image_name))
+                if failure_index is not None:
+                    update_camera_failure_ema(
+                        camera_failure_scores,
+                        failure_index,
+                        candidate_query_failure_score(teacher_losses),
+                        decay=candidate_teacher_online_render_failure_ema,
+                    )
             if candidate_teacher_optimize_features:
                 feature_anchor_loss = (
                     1.0
@@ -3022,6 +3328,8 @@ def training_detector(
                 float(candidate_teacher_pair_weight) * teacher_losses.pair
                 + float(candidate_teacher_hard_negative_weight) * teacher_losses.hard_negative
                 + float(candidate_teacher_assignment_weight) * teacher_losses.assignment
+                + float(candidate_teacher_online_render_provenance_weight)
+                * teacher_losses.provenance_assignment
                 + float(candidate_teacher_counterfactual_assignment_weight)
                 * teacher_losses.counterfactual_assignment
                 + float(candidate_teacher_dustbin_weight) * teacher_losses.dustbin_assignment
@@ -3067,6 +3375,40 @@ def training_detector(
                 + float(candidate_teacher_feature_anchor_weight) * feature_anchor_loss
             )
             teacher_last_diagnostics = _numeric_teacher_diagnostics(candidate_batch.diagnostics)
+            if online_render_used:
+                online_render_stats["episodes"] += 1
+                if pair_weights is not None:
+                    online_render_stats["failure_guided_episodes"] += 1
+                    online_render_stats["pair_weight_max"] = max(
+                        online_render_stats["pair_weight_max"],
+                        float(pair_weights.max().item()),
+                    )
+                provenance_valid = float(
+                    teacher_last_diagnostics.get("splat_provenance_valid_count", 0.0)
+                )
+                provenance_effective = float(
+                    teacher_last_diagnostics.get("splat_provenance_effective_targets", 0.0)
+                )
+                if provenance_valid > 0.0:
+                    online_render_stats["provenance_episodes"] += 1
+                online_render_stats["provenance_valid_count_total"] += provenance_valid
+                online_render_stats["provenance_effective_targets_total"] += provenance_effective
+            teacher_last_diagnostics.update(
+                {
+                    "online_render_used": 1.0 if online_render_used else 0.0,
+                    "online_render_ratio": float(online_render_ratio),
+                    "online_render_alpha": float(
+                        getattr(viewpoint_cam, "alpha", 0.0)
+                        if online_render_used
+                        else 0.0
+                    ),
+                    "online_render_failure_mean": float(camera_failure_scores.mean().item()),
+                    "online_render_failure_max": float(camera_failure_scores.max().item()),
+                    "online_render_pair_weight_max": float(
+                        pair_weights.max().item() if pair_weights is not None and pair_weights.numel() else 0.0
+                    ),
+                }
+            )
         else:
             loss = base_detector_loss
 
@@ -3075,7 +3417,79 @@ def training_detector(
                 f"non-finite detector loss at iteration {iteration}: {float(loss.detach().item())}"
             )
 
+        gradient_audit = sparse_candidate_teacher and (
+            iteration == 1 or iteration % 50 == 0 or iteration == train_iteration
+        )
+        if gradient_audit:
+            teacher_gradient_diagnostics.update(
+                {
+                    "grad_provenance_loc_feature": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_online_render_provenance_weight)
+                        * teacher_losses.provenance_assignment,
+                        [teacher_landmark_features],
+                    ),
+                    "grad_provenance_dustbin": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_online_render_provenance_weight)
+                        * teacher_losses.provenance_assignment,
+                        [teacher_dustbin_score],
+                    ),
+                    "grad_counterfactual_loc_feature": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_counterfactual_assignment_weight)
+                        * teacher_losses.counterfactual_assignment,
+                        [teacher_landmark_features],
+                    ),
+                    "grad_counterfactual_dustbin": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_counterfactual_assignment_weight)
+                        * teacher_losses.counterfactual_assignment,
+                        [teacher_dustbin_score],
+                    ),
+                    "grad_feature_anchor_loc_feature": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_feature_anchor_weight)
+                        * feature_anchor_loss,
+                        [teacher_landmark_features],
+                    ),
+                }
+            )
+
         loss.backward()
+        if gradient_audit:
+            teacher_gradient_diagnostics.update(
+                {
+                    "grad_total_loc_feature": _parameter_gradient_norm(
+                        [teacher_landmark_features]
+                    ),
+                    "grad_total_detector_trunk": _parameter_gradient_norm(
+                        detector.cnn.parameters()
+                    ),
+                    "grad_total_matchability": _parameter_gradient_norm(
+                        detector.matchability_head.parameters()
+                        if detector.matchability_head is not None
+                        else []
+                    ),
+                    "grad_total_detector_offset": _parameter_gradient_norm(
+                        detector.offset_head.parameters()
+                        if detector.offset_head is not None
+                        else []
+                    ),
+                    "grad_total_pair_scorer": _parameter_gradient_norm(
+                        teacher_pair_scorer.parameters()
+                        if teacher_pair_scorer is not None
+                        else []
+                    ),
+                    "grad_total_pair_measurement": _parameter_gradient_norm(
+                        teacher_pair_measurement_head.parameters()
+                        if teacher_pair_measurement_head is not None
+                        else []
+                    ),
+                    "grad_total_dustbin": _parameter_gradient_norm(
+                        [teacher_dustbin_score]
+                    ),
+                    "grad_total_geometry_anchor": _parameter_gradient_norm(
+                        [getattr(gaussians, "_loc_anchor_offset", None)]
+                    ),
+                }
+            )
+            teacher_last_diagnostics.update(teacher_gradient_diagnostics)
         if iteration % grad_accum == 0 or iteration == train_iteration:
             if sparse_candidate_teacher:
                 trainable_parameters = [
@@ -3136,6 +3550,9 @@ def training_detector(
                         "pair": teacher_losses.pair,
                         "hard_negative": teacher_losses.hard_negative,
                         "assignment": teacher_losses.assignment,
+                        "provenance_assignment": (
+                            teacher_losses.provenance_assignment
+                        ),
                         "counterfactual_assignment": (
                             teacher_losses.counterfactual_assignment
                         ),
@@ -3406,6 +3823,9 @@ def training_detector(
                         "counterfactual_require_current_retained": (
                             candidate_teacher_counterfactual_require_current_retained
                         ),
+                        "counterfactual_exact_decision_set": (
+                            candidate_teacher_counterfactual_exact_decision_set
+                        ),
                         "counterfactual_require_positive_bias_gain": (
                             candidate_teacher_counterfactual_require_positive_bias_gain
                         ),
@@ -3460,6 +3880,8 @@ def training_detector(
                     map_fisher_condition_target=(
                         candidate_teacher_map_fisher_condition_target
                     ),
+                    map_bias_huber_delta=candidate_teacher_map_bias_huber_delta,
+                    map_bias_clip=candidate_teacher_map_bias_clip,
                     map_directional_temperature=(
                         candidate_teacher_map_directional_temperature
                     ),
@@ -3530,6 +3952,24 @@ def training_detector(
                 )
 
     if sparse_candidate_teacher:
+        final_pair_weights = failure_guided_pair_weights(
+            camera_failure_scores,
+            temperature=candidate_teacher_online_render_failure_temperature,
+            uniform_floor=candidate_teacher_online_render_uniform_floor,
+        )
+        if final_pair_weights.numel() > 0:
+            pair_entropy = -(
+                final_pair_weights * final_pair_weights.clamp_min(1e-12).log()
+            ).sum()
+            online_render_stats.update(
+                {
+                    "failure_mean_final": float(camera_failure_scores.mean().item()),
+                    "failure_std_final": float(camera_failure_scores.std(unbiased=False).item()),
+                    "failure_max_final": float(camera_failure_scores.max().item()),
+                    "pair_weight_entropy_final": float(pair_entropy.item()),
+                    "pair_weight_effective_count_final": float(pair_entropy.exp().item()),
+                }
+            )
         summary = {
             "version": 3,
             "iterations": int(train_iteration),
@@ -3538,6 +3978,7 @@ def training_detector(
             "final": teacher_history[-1] if teacher_history else teacher_last_diagnostics,
             "history": teacher_history,
             "validation_history": teacher_validation_history,
+            "online_render_stats": online_render_stats,
         }
         summary_path = os.path.join(save_path, "candidate_teacher_training_summary.json")
         with open(summary_path, "w") as handle:
@@ -3801,6 +4242,12 @@ def build_arg_parser(with_components=False):
         "--candidate_teacher_map_fisher_condition_target", type=float, default=100.0
     )
     parser.add_argument(
+        "--candidate_teacher_map_bias_huber_delta", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_map_bias_clip", type=float, default=4.0
+    )
+    parser.add_argument(
         "--candidate_teacher_map_max_matches_per_landmark", type=int, default=0
     )
     parser.add_argument(
@@ -3848,6 +4295,10 @@ def build_arg_parser(with_components=False):
     )
     parser.add_argument(
         "--candidate_teacher_counterfactual_require_current_retained",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_teacher_counterfactual_exact_decision_set",
         action="store_true",
     )
     parser.add_argument(
@@ -3972,6 +4423,8 @@ def build_arg_parser(with_components=False):
             "predicted_correct",
             "scorer_accepted_correct",
             "measurement_accepted_correct",
+            "final_accepted_correct",
+            "final_or_geometric",
         ],
         default="geometric",
     )
@@ -3991,6 +4444,56 @@ def build_arg_parser(with_components=False):
         default="temporal_block",
     )
     parser.add_argument("--candidate_teacher_split_seed", type=int, default=2026)
+    parser.add_argument(
+        "--candidate_teacher_online_render_ratio_start", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_ratio_end", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_ramp_start", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_ramp_end", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_alpha_min", type=float, default=0.35
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_alpha_max", type=float, default=0.65
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_provenance_mode",
+        choices=["none", "hard", "soft"],
+        default="none",
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_provenance_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_provenance_topk", type=int, default=4
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_provenance_temperature",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_sampling_mode",
+        choices=["uniform", "failure_guided"],
+        default="uniform",
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_failure_ema", type=float, default=0.9
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_failure_temperature", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_online_render_uniform_floor", type=float, default=0.1
+    )
     if with_components:
         return parser, lp, op
     return parser
@@ -4180,6 +4683,10 @@ if __name__ == "__main__":
         candidate_teacher_map_fisher_condition_target=(
             args.candidate_teacher_map_fisher_condition_target
         ),
+        candidate_teacher_map_bias_huber_delta=(
+            args.candidate_teacher_map_bias_huber_delta
+        ),
+        candidate_teacher_map_bias_clip=args.candidate_teacher_map_bias_clip,
         candidate_teacher_map_max_matches_per_landmark=(
             args.candidate_teacher_map_max_matches_per_landmark
         ),
@@ -4212,6 +4719,9 @@ if __name__ == "__main__":
         ),
         candidate_teacher_counterfactual_require_current_retained=(
             args.candidate_teacher_counterfactual_require_current_retained
+        ),
+        candidate_teacher_counterfactual_exact_decision_set=(
+            args.candidate_teacher_counterfactual_exact_decision_set
         ),
         candidate_teacher_counterfactual_require_positive_bias_gain=(
             args.candidate_teacher_counterfactual_require_positive_bias_gain
@@ -4316,6 +4826,48 @@ if __name__ == "__main__":
         candidate_teacher_validation_ratio=args.candidate_teacher_validation_ratio,
         candidate_teacher_split_mode=args.candidate_teacher_split_mode,
         candidate_teacher_split_seed=args.candidate_teacher_split_seed,
+        candidate_teacher_online_render_ratio_start=(
+            args.candidate_teacher_online_render_ratio_start
+        ),
+        candidate_teacher_online_render_ratio_end=(
+            args.candidate_teacher_online_render_ratio_end
+        ),
+        candidate_teacher_online_render_ramp_start=(
+            args.candidate_teacher_online_render_ramp_start
+        ),
+        candidate_teacher_online_render_ramp_end=(
+            args.candidate_teacher_online_render_ramp_end
+        ),
+        candidate_teacher_online_render_alpha_min=(
+            args.candidate_teacher_online_render_alpha_min
+        ),
+        candidate_teacher_online_render_alpha_max=(
+            args.candidate_teacher_online_render_alpha_max
+        ),
+        candidate_teacher_online_render_provenance_mode=(
+            args.candidate_teacher_online_render_provenance_mode
+        ),
+        candidate_teacher_online_render_provenance_weight=(
+            args.candidate_teacher_online_render_provenance_weight
+        ),
+        candidate_teacher_online_render_provenance_topk=(
+            args.candidate_teacher_online_render_provenance_topk
+        ),
+        candidate_teacher_online_render_provenance_temperature=(
+            args.candidate_teacher_online_render_provenance_temperature
+        ),
+        candidate_teacher_online_render_sampling_mode=(
+            args.candidate_teacher_online_render_sampling_mode
+        ),
+        candidate_teacher_online_render_failure_ema=(
+            args.candidate_teacher_online_render_failure_ema
+        ),
+        candidate_teacher_online_render_failure_temperature=(
+            args.candidate_teacher_online_render_failure_temperature
+        ),
+        candidate_teacher_online_render_uniform_floor=(
+            args.candidate_teacher_online_render_uniform_floor
+        ),
     )
 
     # All done

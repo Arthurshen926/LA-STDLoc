@@ -7,6 +7,34 @@ from torch import nn
 
 
 class TopologyControllerTest(unittest.TestCase):
+    def test_2dgs_fallback_score_does_not_require_viewspace_feature_gradients(self):
+        from localization_training.topology_controller import (
+            TopologyConfig,
+            _localization_split_score,
+        )
+
+        class TwoDGSLike:
+            get_xyz = torch.zeros(2, 3)
+            loc_grad_accum = torch.zeros(2, 1)
+            loc_grad_denom = torch.zeros(2, 1)
+            loc_entropy_ema = torch.tensor([0.8, 0.2])
+            loc_repeatability_ema = torch.tensor([0.9, 0.9])
+            loc_positive_prob_ema = torch.tensor([0.0, 0.8])
+            loc_reproj_error_ema = torch.tensor([0.0, 2.0])
+            loc_information_ema = torch.tensor([0.0, 0.8])
+            max_radii2D = torch.zeros(2)
+
+        score = _localization_split_score(
+            TwoDGSLike(),
+            TopologyConfig(
+                min_radius=0.0,
+                pose_information_floor=0.05,
+                residual_score_floor=0.05,
+            ),
+        )
+
+        self.assertGreater(score[0].item(), 0.0)
+
     def test_split_child_features_use_observation_prototype_for_second_child(self):
         from scene.gaussian_model import split_localization_child_features
 
@@ -137,6 +165,43 @@ class TopologyControllerTest(unittest.TestCase):
         self.assertFalse(split[1].item())
         self.assertTrue(split[2].item())
         self.assertTrue(split[3].item())
+
+    def test_split_scope_excludes_primitives_outside_final_landmark_bank(self):
+        from localization_training.topology_controller import (
+            TopologyConfig,
+            select_localization_splits,
+        )
+
+        class FakeGaussians:
+            loc_observation_count = torch.full((4,), 10)
+            loc_entropy_ema = torch.ones(4)
+            loc_repeatability_ema = torch.ones(4)
+            last_topology_iteration = torch.zeros(4, dtype=torch.long)
+            max_radii2D = torch.full((4,), 10.0)
+
+            @property
+            def get_xyz(self):
+                return torch.zeros(4, 3)
+
+            def compute_split_necessity(self, **_kwargs):
+                return torch.tensor([4.0, 3.0, 2.0, 1.0])
+
+        split = select_localization_splits(
+            FakeGaussians(),
+            TopologyConfig(
+                min_observations=1,
+                split_quantile=0.0,
+                ambiguity_quantile=0.0,
+                growth_cap_per_event=1.0,
+                cooldown_iterations=0,
+                min_repeatability=0.0,
+                min_radius=0.0,
+            ),
+            iteration=10,
+            candidate_scope_mask=torch.tensor([False, True, False, True]),
+        )
+
+        self.assertEqual(split.tolist(), [False, True, False, True])
 
     def test_topology_update_caps_split_count_to_remaining_total_budget(self):
         from localization_training.topology_controller import LocalizationTopologyController, TopologyConfig

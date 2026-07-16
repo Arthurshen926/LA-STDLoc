@@ -102,6 +102,9 @@ COUNTERFACTUAL_ARGS=(
 if [[ "${SHOP_MAPFIM_COUNTERFACTUAL_REQUIRE_CURRENT_RETAINED:-0}" == "1" ]]; then
   COUNTERFACTUAL_ARGS+=(--candidate_teacher_counterfactual_require_current_retained)
 fi
+if [[ "${SHOP_MAPFIM_COUNTERFACTUAL_EXACT_DECISION_SET:-0}" == "1" ]]; then
+  COUNTERFACTUAL_ARGS+=(--candidate_teacher_counterfactual_exact_decision_set)
+fi
 if [[ "${SHOP_MAPFIM_COUNTERFACTUAL_REQUIRE_POSITIVE_BIAS_GAIN:-0}" == "1" ]]; then
   COUNTERFACTUAL_ARGS+=(--candidate_teacher_counterfactual_require_positive_bias_gain)
 fi

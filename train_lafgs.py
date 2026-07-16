@@ -10,12 +10,34 @@ def build_parser():
     parser.add_argument("--lafgs_mvinit_view_selection", choices=["first", "uniform"], default=None)
     parser.add_argument("--lafgs_mvinit_chunk_size", type=int, default=32768)
     parser.add_argument("--lafgs_mvinit_feature_scale", type=float, default=None)
+    if hasattr(argparse, "BooleanOptionalAction"):
+        parser.add_argument(
+            "--lafgs_dense_feature_render",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+        )
+    else:
+        parser.add_argument(
+            "--lafgs_dense_feature_render",
+            dest="lafgs_dense_feature_render",
+            action="store_true",
+        )
+        parser.add_argument(
+            "--no-lafgs_dense_feature_render",
+            dest="lafgs_dense_feature_render",
+            action="store_false",
+        )
+        parser.set_defaults(lafgs_dense_feature_render=None)
     parser.add_argument("--lafgs_curriculum", action="store_true", default=False)
     parser.add_argument("--lafgs_locrec_start_iter", type=int, default=1)
     parser.add_argument("--lafgs_diff_pnp_start_iter", type=int, default=5_000)
     parser.add_argument("--lafgs_geometry_start_iter", type=int, default=10_000)
     parser.add_argument("--lafgs_topology_start_iter", type=int, default=15_000)
-    parser.add_argument("--lafgs_stage_schedule", choices=["none", "sfm_from_zero"], default="none")
+    parser.add_argument(
+        "--lafgs_stage_schedule",
+        choices=["none", "sfm_from_zero", "pretrained_2dgs"],
+        default="none",
+    )
     parser.add_argument("--lafgs_stage_bootstrap_until", type=int, default=None)
     parser.add_argument("--lafgs_stage_joint_until", type=int, default=None)
     parser.add_argument("--lafgs_stage_bootstrap_base_weight", type=float, default=None)
@@ -39,6 +61,8 @@ def build_parser():
     parser.add_argument("--lafgs_diff_pnp_point_weight_floor", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_utility_pose_loss_scale", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_utility_reprojection_error_scale", type=float, default=None)
+    parser.add_argument("--lafgs_diff_pnp_translation_scale_m", type=float, default=None)
+    parser.add_argument("--lafgs_diff_pnp_rotation_scale_degrees", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_local_window_radius", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_geometry_xyz_lr", type=float, default=None)
     parser.add_argument("--lafgs_diff_pnp_isolate_geometry_grad", action="store_true", default=None)
@@ -322,6 +346,7 @@ def lafgs_defaults(args, explicit_overrides=None):
         _setdefault(args, "lafgs_mvinit_view_selection", "uniform")
     _set_if_missing_or_legacy(args, "lafgs_mvinit_chunk_size", 32768, {0})
     _setdefault(args, "lafgs_mvinit_feature_scale", 1.0)
+    _setdefault(args, "lafgs_dense_feature_render", True)
     _set_if_missing_or_legacy(args, "lafgs_curriculum", True, {False})
     _set_if_missing_or_legacy(args, "lafgs_locrec_start_iter", 1, {0})
     _set_if_missing_or_legacy(args, "lafgs_diff_pnp_start_iter", 5_000, {0})
@@ -370,6 +395,8 @@ def lafgs_defaults(args, explicit_overrides=None):
         _setdefault(args, "lafgs_diff_pnp_utility_reprojection_error_scale", 4.0)
     else:
         _setdefault(args, "lafgs_diff_pnp_utility_reprojection_error_scale", 4.0)
+    _setdefault(args, "lafgs_diff_pnp_translation_scale_m", 0.0)
+    _setdefault(args, "lafgs_diff_pnp_rotation_scale_degrees", 0.0)
     if "lafgs_diff_pnp_local_window_radius" not in explicit_overrides:
         _setdefault(args, "lafgs_diff_pnp_local_window_radius", 2.0)
     else:

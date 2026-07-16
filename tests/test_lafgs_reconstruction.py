@@ -1542,7 +1542,7 @@ def test_differentiable_pnp_geometry_guard_can_soft_scale_instead_of_zeroing():
     assert points.grad.norm() > 0.0
 
 
-def test_differentiable_pnp_geometry_match_loss_updates_descriptors_without_moving_xyz():
+def test_differentiable_pnp_geometry_match_loss_updates_xyz_from_frozen_match_teacher():
     from localization_training.lafgs_reconstruction import (
         DifferentiablePnPConfig,
         differentiable_pnp_pose_loss,
@@ -1597,9 +1597,9 @@ def test_differentiable_pnp_geometry_match_loss_updates_descriptors_without_movi
     assert out.used_correspondences == 4
     assert out.geometry_match_reprojection_loss > 0.0
     assert out.diagnostics["geometry_match_correspondences"] == 4.0
-    assert descriptors.grad is not None
-    assert descriptors.grad.abs().sum() > 0.0
-    assert points.grad is None or points.grad.abs().sum() == pytest.approx(0.0, abs=1e-9)
+    assert descriptors.grad is None or descriptors.grad.abs().sum() == pytest.approx(0.0, abs=1e-9)
+    assert points.grad is not None
+    assert points.grad.abs().sum() > 0.0
 
 
 def test_differentiable_pnp_geometry_match_loss_obeys_geometry_pose_guard():
@@ -1772,14 +1772,13 @@ def test_differentiable_pnp_geometry_match_loss_has_separate_peak_gate():
     )
     out.loss.backward()
 
-    grad_norm = descriptors.grad.norm(dim=-1)
     assert out.used_correspondences == 4
     assert out.diagnostics["geometry_match_peak_probability_threshold"] == pytest.approx(0.8)
     assert out.diagnostics["geometry_peak_probability_threshold"] == pytest.approx(0.0)
     assert out.diagnostics["geometry_match_correspondences"] == 3.0
-    assert grad_norm[0] == pytest.approx(0.0, abs=1e-9)
-    assert torch.all(grad_norm[1:] > 0.0)
-    assert points.grad is None or points.grad.abs().sum() == pytest.approx(0.0, abs=1e-9)
+    assert descriptors.grad is None or descriptors.grad.abs().sum() == pytest.approx(0.0, abs=1e-9)
+    assert points.grad is not None
+    assert points.grad.abs().sum() > 0.0
 
 
 def test_differentiable_pnp_loss_backpropagates_to_landmark_weights():
@@ -2161,6 +2160,8 @@ def test_diff_pnp_summary_records_usage_loss_and_geometry_grad():
             "condition_guard_max_condition_number": 100000.0,
             "condition_guard_scale": 1.0,
             "condition_guard_passed": 1.0,
+            "condition_number": float("inf"),
+            "raw_condition_number": 2500.0,
         }
 
     summary = {
@@ -2200,6 +2201,10 @@ def test_diff_pnp_summary_records_usage_loss_and_geometry_grad():
     assert summary["diff_pnp_condition_guard_max_condition_number_total"] == pytest.approx(100000.0)
     assert summary["diff_pnp_condition_guard_scale_total"] == pytest.approx(1.0)
     assert summary["diff_pnp_condition_guard_passed_total"] == pytest.approx(1.0)
+    assert summary["diff_pnp_condition_number_nonfinite_episodes"] == 1
+    assert "diff_pnp_condition_number_total" not in summary
+    assert summary["diff_pnp_raw_condition_number_total"] == pytest.approx(2500.0)
+    assert summary["diff_pnp_raw_condition_number_finite_episodes"] == 1
     assert summary["diff_pnp_loss_total"] == pytest.approx(0.25)
 
 
@@ -2252,6 +2257,35 @@ def test_pose_aware_split_score_requires_residual_ambiguity_repeatability_and_fo
     assert score[1] > score[0]
     assert score[2] == 0.0
     assert score[3] == 0.0
+
+
+def test_pose_aware_split_score_floor_keeps_zero_information_alias_repairable():
+    from localization_training.lafgs_reconstruction import pose_aware_split_score
+
+    score = pose_aware_split_score(
+        footprint=torch.tensor([12.0, 12.0]),
+        ambiguity=torch.tensor([0.8, 0.8]),
+        pnp_residual=torch.tensor([5.0, 5.0]),
+        repeatability=torch.tensor([0.9, 0.9]),
+        positive_prob=torch.tensor([0.9, 0.9]),
+        pose_information=torch.tensor([0.0, 0.8]),
+        pose_information_floor=0.05,
+        min_footprint=4.0,
+    )
+
+    assert score[0] > 0.0
+
+    missing_residual = pose_aware_split_score(
+        footprint=torch.tensor([12.0, 12.0]),
+        ambiguity=torch.tensor([0.8, 0.8]),
+        pnp_residual=torch.tensor([0.0, 5.0]),
+        repeatability=torch.tensor([0.9, 0.9]),
+        positive_prob=torch.tensor([0.9, 0.9]),
+        pose_information=torch.tensor([0.5, 0.5]),
+        residual_score_floor=0.05,
+        min_footprint=4.0,
+    )
+    assert missing_residual[0] > 0.0
 
 
 def test_geometry_residual_anchor_penalizes_motion_beyond_rgb_scale_radius():
@@ -2628,6 +2662,8 @@ def test_train_lafgs_exposes_gated_diff_pnp_geometry_reprojection_controls():
     assert defaults.lafgs_diff_pnp_local_window_radius == pytest.approx(2.0)
     assert defaults.lafgs_diff_pnp_geometry_local_window_radius == pytest.approx(2.0)
     assert defaults.lafgs_diff_pnp_max_condition_number == pytest.approx(1_000_000.0)
+    assert defaults.lafgs_diff_pnp_translation_scale_m == pytest.approx(0.0)
+    assert defaults.lafgs_diff_pnp_rotation_scale_degrees == pytest.approx(0.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_max_loss_increase == pytest.approx(-1.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_max_loss == pytest.approx(-1.0)
     assert defaults.lafgs_diff_pnp_geometry_pose_guard_softness == pytest.approx(0.0)
@@ -2660,6 +2696,10 @@ def test_train_lafgs_exposes_gated_diff_pnp_geometry_reprojection_controls():
         "1.5",
         "--lafgs_diff_pnp_max_condition_number",
         "100000",
+        "--lafgs_diff_pnp_translation_scale_m",
+        "0.08",
+        "--lafgs_diff_pnp_rotation_scale_degrees",
+        "2.0",
         "--lafgs_diff_pnp_geometry_pose_guard_max_loss_increase",
         "0.0",
         "--lafgs_diff_pnp_geometry_pose_guard_max_loss",
@@ -2695,6 +2735,8 @@ def test_train_lafgs_exposes_gated_diff_pnp_geometry_reprojection_controls():
     assert configured.lafgs_diff_pnp_local_window_radius == pytest.approx(1.25)
     assert configured.lafgs_diff_pnp_geometry_local_window_radius == pytest.approx(1.5)
     assert configured.lafgs_diff_pnp_max_condition_number == pytest.approx(100000.0)
+    assert configured.lafgs_diff_pnp_translation_scale_m == pytest.approx(0.08)
+    assert configured.lafgs_diff_pnp_rotation_scale_degrees == pytest.approx(2.0)
     assert configured.lafgs_diff_pnp_geometry_pose_guard_max_loss_increase == pytest.approx(0.0)
     assert configured.lafgs_diff_pnp_geometry_pose_guard_max_loss == pytest.approx(2.0)
     assert configured.lafgs_diff_pnp_geometry_pose_guard_softness == pytest.approx(10.0)
@@ -2728,3 +2770,9 @@ def test_train_lafgs_preserves_explicit_zero_full_bank_weight_as_disabled():
     defaults = train_lafgs.lafgs_defaults(args, explicit_overrides=explicit)
 
     assert defaults.loc_full_bank_weight == 0.0
+def test_render_pkg_alpha_supports_2dgs_contract():
+    from train_locaware import _render_pkg_alpha
+
+    alpha = torch.rand(1, 3, 4, 1)
+    assert _render_pkg_alpha({"rend_alpha": alpha}) is alpha
+    assert _render_pkg_alpha({"alphas": alpha}) is alpha

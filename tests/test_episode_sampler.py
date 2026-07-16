@@ -293,6 +293,29 @@ class EpisodeSamplerTest(unittest.TestCase):
         center = torch.linalg.inv(pose_w2c)[:3, 3]
         self.assertTrue(torch.allclose(center, torch.tensor([1.0, 0.0, 0.0]), atol=1e-5))
 
+    def test_interpolated_novel_view_respects_pair_weights(self):
+        from localization_training.episode_sampler import sample_interpolated_novel_view
+
+        class Camera:
+            def __init__(self, name, x):
+                self.image_name = name
+                self.FoVx = 0.7
+                self.FoVy = 0.6
+                self.world_view_transform = torch.eye(4)
+                self.world_view_transform[3, 0] = -x
+
+        cameras = [Camera(str(index), float(index)) for index in range(4)]
+        synthetic = sample_interpolated_novel_view(
+            cameras,
+            generator=torch.Generator().manual_seed(0),
+            alpha_min=0.5,
+            alpha_max=0.5,
+            pair_weights=torch.tensor([0.0, 1.0, 0.0]),
+        )
+
+        self.assertEqual(synthetic.train_index_a, 1)
+        self.assertEqual(synthetic.train_index_b, 2)
+
     def test_spatial_offset_novel_view_moves_off_train_trajectory(self):
         from localization_training.episode_sampler import sample_spatial_offset_novel_view
 

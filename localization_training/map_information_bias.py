@@ -94,6 +94,13 @@ def _soft_pose_terms(
     residual_clip_px,
     inlier_sigma_px,
 ):
+    finite = (
+        torch.as_tensor(valid_mask, device=jacobian.device, dtype=torch.bool)
+        & torch.isfinite(jacobian).flatten(start_dim=1).all(dim=1)
+        & torch.isfinite(residual).all(dim=1)
+    )
+    jacobian = torch.where(finite[:, None, None], jacobian, torch.zeros_like(jacobian))
+    residual = torch.where(finite[:, None], residual, torch.zeros_like(residual))
     scaled_jacobian = task_scaled_pose_jacobian(
         jacobian,
         translation_scale=float(translation_scale),
@@ -104,7 +111,7 @@ def _soft_pose_terms(
         -0.5
         * (residual_norm / max(float(inlier_sigma_px), 1e-4)).square()
     )
-    quality = quality * valid_mask.to(dtype=quality.dtype)
+    quality = quality * finite.to(dtype=quality.dtype)
     sigma2 = max(float(measurement_sigma_px), 1e-4) ** 2
     information = torch.einsum(
         "n,nai,naj->nij",
@@ -366,6 +373,9 @@ def counterfactual_pose_swap_utility(
     swap_valid_mask,
     *,
     displaced_indices=None,
+    refill_jacobian=None,
+    refill_residual=None,
+    refill_valid_mask=None,
     translation_scale=0.02,
     rotation_scale_degrees=2.0,
     measurement_sigma_px=1.0,
@@ -434,6 +444,27 @@ def counterfactual_pose_swap_utility(
         displaced_indices.new_full((), -1),
         displaced_indices,
     )
+    if refill_jacobian is None:
+        refill_jacobian = add_jacobian.new_zeros(add_jacobian.shape)
+        refill_residual = add_residual.new_zeros(add_residual.shape)
+        refill_valid_mask = torch.zeros_like(swap_valid_mask)
+    else:
+        refill_jacobian = torch.as_tensor(
+            refill_jacobian, device=device, dtype=dtype
+        ).reshape(-1, 2, 6)
+        refill_residual = torch.as_tensor(
+            refill_residual, device=device, dtype=dtype
+        ).reshape(-1, 2)
+        refill_valid_mask = torch.as_tensor(
+            refill_valid_mask, device=device, dtype=torch.bool
+        ).reshape(-1)
+        if not (
+            refill_jacobian.shape[0]
+            == refill_residual.shape[0]
+            == refill_valid_mask.shape[0]
+            == swap_count
+        ):
+            raise ValueError("Counterfactual refill tensors must match the swap count")
 
     current_finite = (
         torch.isfinite(current_jacobian).reshape(
@@ -468,6 +499,16 @@ def counterfactual_pose_swap_utility(
         residual_clip_px=residual_clip_px,
         inlier_sigma_px=inlier_sigma_px,
     )
+    refill_information, refill_gradient = _soft_pose_terms(
+        refill_jacobian,
+        refill_residual,
+        refill_valid_mask,
+        translation_scale=translation_scale,
+        rotation_scale=rotation_scale,
+        measurement_sigma_px=measurement_sigma_px,
+        residual_clip_px=residual_clip_px,
+        inlier_sigma_px=inlier_sigma_px,
+    )
     prior = torch.eye(6, dtype=dtype, device=device) * float(damping)
     full_information = prior + current_information.sum(dim=0)
     full_information = 0.5 * (full_information + full_information.T)
@@ -486,6 +527,7 @@ def counterfactual_pose_swap_utility(
         - removed_information
         - displaced_information
         + add_information
+        + refill_information
     )
     counterfactual_information = 0.5 * (
         counterfactual_information
@@ -496,6 +538,7 @@ def counterfactual_pose_swap_utility(
         - removed_gradient
         - displaced_gradient
         + add_gradient
+        + refill_gradient
     )
     counterfactual_delta = -torch.linalg.solve(
         counterfactual_information,
@@ -565,6 +608,8 @@ def map_information_and_bias_risk(
     clean_labels,
     *,
     valid_mask=None,
+    classification_valid_mask=None,
+    hard_acceptance_mask=None,
     translation_scale=0.02,
     rotation_scale_degrees=2.0,
     measurement_sigma_px=1.0,
@@ -573,6 +618,8 @@ def map_information_and_bias_risk(
     inlier_sigma_px=4.0,
     condition_target=100.0,
     probability_floor=1e-5,
+    bias_huber_delta=1.0,
+    bias_clip=4.0,
 ):
     """Differentiable set risk on the actual query/landmark candidate matrix.
 
@@ -592,6 +639,10 @@ def map_information_and_bias_risk(
         raise ValueError("Map information-and-bias inputs must have equal pair counts")
 
     classification_finite = torch.isfinite(logits) & torch.isfinite(labels)
+    if classification_valid_mask is not None:
+        classification_finite = classification_finite & torch.as_tensor(
+            classification_valid_mask, device=device, dtype=torch.bool
+        ).reshape(-1)
     geometry_finite = (
         torch.isfinite(jacobian).all(dim=2).all(dim=1)
         & torch.isfinite(residual).all(dim=1)
@@ -602,12 +653,25 @@ def map_information_and_bias_risk(
             valid_mask, device=device, dtype=torch.bool
         ).reshape(-1)
 
+    hard_acceptance = None
+    if hard_acceptance_mask is not None:
+        hard_acceptance = torch.as_tensor(
+            hard_acceptance_mask, device=device, dtype=torch.bool
+        ).reshape(-1)
+        if hard_acceptance.numel() != count:
+            raise ValueError("hard acceptance mask must match pair count")
     classification_logits = logits[classification_finite]
     classification_labels = labels[classification_finite].detach().clamp(0.0, 1.0)
     jacobian = jacobian[geometry_finite].detach()
     residual = residual[geometry_finite].detach()
     logits = logits[geometry_finite]
     labels = labels[geometry_finite].detach().clamp(0.0, 1.0)
+    classification_hard_acceptance = (
+        hard_acceptance[classification_finite] if hard_acceptance is not None else None
+    )
+    geometry_hard_acceptance = (
+        hard_acceptance[geometry_finite] if hard_acceptance is not None else None
+    )
 
     zero = match_logits.sum() * 0.0
     prior = torch.eye(6, dtype=dtype, device=device) * float(damping)
@@ -617,6 +681,13 @@ def map_information_and_bias_risk(
     classification_probability = probability_floor + (
         1.0 - 2.0 * probability_floor
     ) * classification_probability
+    if classification_hard_acceptance is not None:
+        hard = classification_hard_acceptance.to(dtype=dtype)
+        classification_probability = (
+            hard
+            + classification_probability
+            - classification_probability.detach()
+        )
     classification_clean_probability = (
         classification_probability * classification_labels
     )
@@ -659,6 +730,9 @@ def map_information_and_bias_risk(
 
     probability = torch.sigmoid(logits)
     probability = probability_floor + (1.0 - 2.0 * probability_floor) * probability
+    if geometry_hard_acceptance is not None:
+        hard = geometry_hard_acceptance.to(dtype=dtype)
+        probability = hard + probability - probability.detach()
     inlier_sigma_px = max(float(inlier_sigma_px), 1e-4)
     soft_inlier_quality = torch.exp(
         -0.5
@@ -718,6 +792,19 @@ def map_information_and_bias_risk(
     delta_task = -torch.linalg.solve(all_information, bias_gradient)
     translation_bias_task = torch.linalg.norm(delta_task[:3])
     translation_bias_m = translation_bias_task * float(translation_scale)
+    robust_bias = translation_bias_task
+    if float(bias_clip) > 0.0:
+        clip = robust_bias.new_tensor(float(bias_clip))
+        robust_bias = clip * torch.tanh(robust_bias / clip)
+    if float(bias_huber_delta) > 0.0:
+        bias_loss = 2.0 * F.huber_loss(
+            robust_bias,
+            torch.zeros_like(robust_bias),
+            delta=float(bias_huber_delta),
+            reduction="sum",
+        )
+    else:
+        bias_loss = robust_bias.square()
 
     condition_target = max(float(condition_target), 1.0)
     condition_loss = F.softplus(
@@ -729,7 +816,7 @@ def map_information_and_bias_risk(
         translation_information_loss=-translation_gain / 3.0,
         translation_trace_loss=torch.log1p(translation_trace),
         translation_condition_loss=condition_loss,
-        bias_loss=translation_bias_task.square(),
+        bias_loss=bias_loss,
         capacity_loss=capacity_loss,
         full_logdet_gain=full_gain,
         translation_logdet_gain=translation_gain,

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import math
 
 import torch
 import torch.nn.functional as F
@@ -76,6 +77,8 @@ class DifferentiablePnPConfig:
     entropy_weight: float = 0.0
     translation_weight: float = 1.0
     rotation_weight: float = 1.0
+    translation_scale_m: float = 0.0
+    rotation_scale_degrees: float = 0.0
     allow_geometry_grad: bool = False
     detach_query_feature_map: bool = True
     local_window_radius: float = 0.0
@@ -1237,18 +1240,42 @@ def differentiable_pnp_pose_loss(
         num_iterations=int(config.pnp_iterations),
         damping=float(config.damping),
         detach_points=(not allow_geometry_grad) or detach_pnp_points,
+        parameter_scale=(
+            selected_points.new_tensor(
+                [
+                    float(config.translation_scale_m),
+                    float(config.translation_scale_m),
+                    float(config.translation_scale_m),
+                    float(config.rotation_scale_degrees) * torch.pi / 180.0,
+                    float(config.rotation_scale_degrees) * torch.pi / 180.0,
+                    float(config.rotation_scale_degrees) * torch.pi / 180.0,
+                ]
+            )
+            if float(config.translation_scale_m) > 0.0
+            and float(config.rotation_scale_degrees) > 0.0
+            else None
+        ),
     )
+    task_scaled_pose = (
+        float(config.translation_scale_m) > 0.0
+        and float(config.rotation_scale_degrees) > 0.0
+    )
+    translation_weight = float(config.translation_weight)
+    rotation_weight = float(config.rotation_weight)
+    if task_scaled_pose:
+        translation_weight /= float(config.translation_scale_m)
+        rotation_weight /= float(config.rotation_scale_degrees) * torch.pi / 180.0
     pose_loss = _pose_l1_geodesic_loss(
         pose_pred,
         pose_gt_w2c,
-        translation_weight=config.translation_weight,
-        rotation_weight=config.rotation_weight,
+        translation_weight=translation_weight,
+        rotation_weight=rotation_weight,
     )
     init_pose_loss = _pose_l1_geodesic_loss(
         pose_init_w2c,
         pose_gt_w2c,
-        translation_weight=config.translation_weight,
-        rotation_weight=config.rotation_weight,
+        translation_weight=translation_weight,
+        rotation_weight=rotation_weight,
     )
     pose_guard_enabled, pose_guard_passed = _pose_guard_check(
         pose_loss,
@@ -1283,6 +1310,7 @@ def differentiable_pnp_pose_loss(
         min_scale=config.feedback_pose_guard_min_scale,
     )
     condition_number = info["condition_number"].detach()
+    raw_condition_number = info["raw_condition_number"].detach()
     max_condition_number = float(config.max_condition_number)
     condition_guard_enabled = max_condition_number >= 0.0
     condition_guard_passed = True
@@ -1471,15 +1499,14 @@ def differentiable_pnp_pose_loss(
             match_idx = valid_idx
         geometry_match_candidate_count = int(match_idx.numel())
         if geometry_match_candidate_count > 0:
-            points_detached = points.detach()
-            gt_uv_all, gt_valid_all = project_points(points_detached, K, pose_gt_w2c)
-            match_gt_uv = gt_uv_all[match_idx].detach()
+            gt_uv_all, gt_valid_all = project_points(points, K, pose_gt_w2c)
+            match_gt_uv = gt_uv_all[match_idx]
             match_gt_valid = gt_valid_all[match_idx].detach()
             match_local_window_radius = float(config.geometry_local_window_radius)
             if match_local_window_radius > 0.0:
                 gaussian_matrix = _as_feature_matrix(gaussian_features).to(device=device, dtype=dtype)
                 match_local = soft_3d_to_2d_correspondences(
-                    gaussian_matrix[match_idx],
+                    gaussian_matrix[match_idx].detach(),
                     feature_map.detach(),
                     temperature=config.temperature,
                     projected_uv=match_gt_uv,
@@ -1553,8 +1580,8 @@ def differentiable_pnp_pose_loss(
                 1.0,
             )
             geometry_match_reprojection_loss = _weighted_point_loss(
-                match_uv,
-                match_gt_uv.detach(),
+                match_gt_uv,
+                match_uv.detach(),
                 match_weights,
                 loss_type=config.reprojection_loss_type,
                 robust_delta=config.reprojection_loss_delta,
@@ -1682,6 +1709,10 @@ def differentiable_pnp_pose_loss(
         diagnostics={
             "skipped": 0.0,
             "condition_number": float(condition_number.item()),
+            "raw_condition_number": float(raw_condition_number.item()),
+            "condition_task_scaled": 1.0 if task_scaled_pose else 0.0,
+            "translation_scale_m": float(config.translation_scale_m),
+            "rotation_scale_degrees": float(config.rotation_scale_degrees),
             "condition_guard_max_condition_number": float(config.max_condition_number),
             "condition_guard_scale": float(condition_guard_scale.detach().item()),
             "condition_guard_enabled": 1.0 if condition_guard_enabled else 0.0,
@@ -1999,6 +2030,11 @@ def update_diff_pnp_training_summary(summary, pnp_output, loss, allow_geometry_g
         "condition_guard_scale",
         "condition_guard_enabled",
         "condition_guard_passed",
+        "condition_number",
+        "raw_condition_number",
+        "condition_task_scaled",
+        "translation_scale_m",
+        "rotation_scale_degrees",
         "pose_loss",
         "init_pose_loss",
         "pose_loss_delta",
@@ -2011,7 +2047,16 @@ def update_diff_pnp_training_summary(summary, pnp_output, loss, allow_geometry_g
             continue
         metric_key = f"diff_pnp_{key}"
         value = float(value)
+        if not math.isfinite(value):
+            summary[f"{metric_key}_nonfinite_episodes"] = (
+                summary.get(f"{metric_key}_nonfinite_episodes", 0) + 1
+            )
+            continue
         summary[f"{metric_key}_total"] = summary.get(f"{metric_key}_total", 0.0) + value
+        if key in {"condition_number", "raw_condition_number"}:
+            summary[f"{metric_key}_finite_episodes"] = (
+                summary.get(f"{metric_key}_finite_episodes", 0) + 1
+            )
         summary[f"{metric_key}_max"] = max(summary.get(f"{metric_key}_max", 0.0), value)
     return summary
 
@@ -2023,6 +2068,8 @@ def pose_aware_split_score(
     repeatability,
     positive_prob=None,
     pose_information=None,
+    pose_information_floor=0.0,
+    residual_score_floor=0.0,
     min_footprint=0.0,
     min_repeatability=0.25,
     eps=1e-6,
@@ -2043,8 +2090,15 @@ def pose_aware_split_score(
         pose_information = torch.as_tensor(pose_information, dtype=torch.float32, device=device).clamp(0.0, 1.0)
         if not bool((pose_information > 0).any()):
             pose_information = torch.ones_like(repeatability)
+        else:
+            pose_information = pose_information.clamp_min(
+                max(0.0, min(1.0, float(pose_information_floor)))
+            )
     eligible = (footprint >= float(min_footprint)) & (repeatability >= float(min_repeatability))
     residual_scale = pnp_residual / pnp_residual.detach().max().clamp_min(float(eps))
+    residual_scale = residual_scale.clamp_min(
+        max(0.0, min(1.0, float(residual_score_floor)))
+    )
     score = ambiguity * residual_scale * repeatability * positive_prob * pose_information
     score = torch.where(eligible & torch.isfinite(score), score, torch.zeros_like(score))
     return score

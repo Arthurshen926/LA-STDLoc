@@ -312,6 +312,54 @@ class STDLocConfigPathTest(unittest.TestCase):
             6.0,
         )
 
+    def test_sparse_correspondence_diagnostics_uses_explicit_task_scale(self):
+        import numpy as np
+
+        from stdloc import sparse_correspondence_diagnostics
+
+        K = np.array(
+            [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+        )
+        p3d = np.array(
+            [
+                [-1.0, -1.0, 5.0],
+                [0.0, -1.0, 5.0],
+                [1.0, -1.0, 5.0],
+                [-1.0, 1.0, 6.0],
+                [0.0, 1.0, 6.0],
+                [1.0, 1.0, 6.0],
+            ]
+        )
+        p2d = np.stack(
+            [
+                100.0 * p3d[:, 0] / p3d[:, 2] + 50.0,
+                100.0 * p3d[:, 1] / p3d[:, 2] + 50.0,
+            ],
+            axis=1,
+        ) - 0.5
+        diagnostics = sparse_correspondence_diagnostics(
+            p2d,
+            p3d,
+            K,
+            np.eye(4),
+            np.arange(6),
+            100,
+            100,
+            translation_task_scale_m=0.125,
+            rotation_task_scale_degrees=3.0,
+        )
+
+        self.assertEqual(
+            diagnostics["sparse_diag_inlier_pose_info_translation_task_scale_m"],
+            0.125,
+        )
+        self.assertEqual(
+            diagnostics[
+                "sparse_diag_inlier_pose_info_rotation_task_scale_degrees"
+            ],
+            3.0,
+        )
+
     def test_pose_bias_diagnostic_detects_systematic_reprojection_shift(self):
         import numpy as np
 

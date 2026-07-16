@@ -7,6 +7,24 @@ import torch
 
 
 class TrainLocawareMaskTest(unittest.TestCase):
+    def test_curriculum_does_not_implicitly_enable_topology(self):
+        from train_locaware import _topology_controller_requested
+
+        self.assertFalse(
+            _topology_controller_requested(
+                SimpleNamespace(
+                    enable_topology=False,
+                    train_phase="full",
+                    lafgs_curriculum=True,
+                )
+            )
+        )
+        self.assertTrue(
+            _topology_controller_requested(
+                SimpleNamespace(enable_topology=True, train_phase="full")
+            )
+        )
+
     def test_resize_bool_mask_matches_target_hw(self):
         from train_locaware import _resize_bool_mask
 
@@ -126,6 +144,30 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(summary["geometry_xyz_step_point_count_changed"], 1)
         self.assertEqual(summary["geometry_xyz_step_delta_skipped_point_count_changed"], 1)
         self.assertNotIn("geometry_xyz_step_delta_max", summary)
+
+    def test_raw_xyz_optimizer_step_is_metric_capped(self):
+        from train_locaware import _cap_raw_xyz_optimizer_step
+
+        gaussians = SimpleNamespace(
+            _xyz=torch.tensor([[3.0, 4.0, 0.0], [0.0, 0.0, 0.0]])
+        )
+        before = torch.zeros(2, 3)
+        summary = {}
+
+        capped = _cap_raw_xyz_optimizer_step(
+            gaussians, before, max_step_m=0.01, summary=summary
+        )
+
+        self.assertEqual(capped, 1)
+        self.assertTrue(
+            torch.allclose(
+                torch.linalg.norm(gaussians._xyz - before, dim=1),
+                torch.tensor([0.01, 0.0]),
+                atol=1e-7,
+            )
+        )
+        self.assertEqual(summary["geometry_xyz_step_cap_events"], 1)
+        self.assertEqual(summary["geometry_xyz_step_capped_points_total"], 1)
 
     def test_lafgs_geometry_residual_diagnostics_are_recorded_to_summary(self):
         from train_locaware import _record_lafgs_geometry_residual_diagnostics
@@ -449,6 +491,54 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertTrue(lafgs_should_run_multiview_initialization(sfm_args, first_iter=0))
         self.assertFalse(lafgs_should_run_multiview_initialization(sfm_args, first_iter=5000))
         self.assertTrue(lafgs_should_run_multiview_initialization(legacy_args, first_iter=30000))
+
+    def test_pretrained_2dgs_schedule_is_relative_and_runs_multiview_initialization(self):
+        from argparse import Namespace
+
+        from train_locaware import (
+            lafgs_curriculum_base_iteration,
+            lafgs_curriculum_step,
+            lafgs_should_run_multiview_initialization,
+            lafgs_stage_loss_weights,
+        )
+
+        args = Namespace(
+            lafgs_stage_schedule="pretrained_2dgs",
+            lafgs_mvinit_enabled=True,
+            lafgs_mvinit_max_views=64,
+            lafgs_stage_bootstrap_until=3000,
+            lafgs_stage_joint_until=15000,
+            lafgs_stage_bootstrap_base_weight=1.0,
+            lafgs_stage_bootstrap_loc_weight=0.15,
+            lafgs_stage_bootstrap_geometry_anchor_weight=0.05,
+            lafgs_stage_joint_base_weight=0.5,
+            lafgs_stage_joint_loc_weight=1.0,
+            lafgs_stage_joint_geometry_anchor_weight=0.05,
+            lafgs_stage_refine_base_weight=0.15,
+            lafgs_stage_refine_loc_weight=1.5,
+            lafgs_stage_refine_geometry_anchor_weight=0.02,
+            base_loss_weight=1.0,
+            loc_loss_weight=1.0,
+            geometry_anchor_weight=0.0,
+        )
+
+        base_iteration = lafgs_curriculum_base_iteration(args, scene_loaded_iter=30000)
+        self.assertEqual(base_iteration, 30000)
+        self.assertEqual(lafgs_curriculum_step(30001, base_iteration), 1)
+        self.assertEqual(lafgs_stage_loss_weights(args, 30001 - base_iteration)["stage"], "bootstrap")
+        self.assertTrue(lafgs_should_run_multiview_initialization(args, first_iter=30000))
+        self.assertFalse(
+            lafgs_should_run_multiview_initialization(
+                args,
+                first_iter=60000,
+                localization_state_initialized=True,
+            )
+        )
+        args.lafgs_curriculum_base_iter_override = 30000
+        self.assertEqual(
+            lafgs_curriculum_base_iteration(args, scene_loaded_iter=60000),
+            30000,
+        )
 
     def test_locaware_parser_accepts_sfm_from_zero_stage_and_rgb_densify_controls(self):
         from train_locaware import add_locaware_training_args, lafgs_stage_loss_weights
@@ -936,6 +1026,20 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertAlmostEqual(decision["delta_risk"], -0.2)
         self.assertEqual(gaussians.value, "baseline")
         self.assertTrue(gaussians.restored)
+
+        gaussians.restored = False
+        scores["trial"] = 1.0
+        decision = HeldoutRiskCommitEvaluator(
+            score_fn=lambda model: scores[model.value],
+            apply_trial_fn=apply_trial,
+            capture_state_fn=capture,
+            restore_state_fn=restore,
+            epsilon=0.0,
+            reason_prefix="unit",
+        )(proposal, gaussians)
+
+        self.assertFalse(decision["accepted"])
+        self.assertEqual(decision["reason"], "unit_not_decreased")
 
         gaussians.restored = False
         scores["trial"] = 0.98
@@ -1921,6 +2025,8 @@ class TrainLocawareMaskTest(unittest.TestCase):
                 "0.11",
                 "--loc_full_bank_hard_negatives",
                 "16",
+                "--loc_full_bank_max_landmarks",
+                "8192",
                 "--loc_full_bank_margin",
                 "0.4",
                 "--loc_full_bank_ignore_3d_radius",
@@ -1928,6 +2034,9 @@ class TrainLocawareMaskTest(unittest.TestCase):
                 "--loc_full_bank_ignore_uv_radius",
                 "2.5",
                 "--loc_full_bank_nearby_as_positive",
+                "--loc_multiview_memory_device",
+                "cpu",
+                "--no-lafgs_dense_feature_render",
                 "--loc_anchor_weight",
                 "0.02",
             ]
@@ -1936,10 +2045,13 @@ class TrainLocawareMaskTest(unittest.TestCase):
         self.assertEqual(args.loc_full_bank_weight, 0.3)
         self.assertEqual(args.loc_full_bank_temperature, 0.11)
         self.assertEqual(args.loc_full_bank_hard_negatives, 16)
+        self.assertEqual(args.loc_full_bank_max_landmarks, 8192)
         self.assertEqual(args.loc_full_bank_margin, 0.4)
         self.assertEqual(args.loc_full_bank_ignore_3d_radius, 0.25)
         self.assertEqual(args.loc_full_bank_ignore_uv_radius, 2.5)
         self.assertTrue(args.loc_full_bank_nearby_as_positive)
+        self.assertEqual(args.loc_multiview_memory_device, "cpu")
+        self.assertFalse(args.lafgs_dense_feature_render)
         self.assertEqual(args.loc_anchor_weight, 0.02)
 
     def test_locaware_parser_accepts_clean_full_bank_controls(self):

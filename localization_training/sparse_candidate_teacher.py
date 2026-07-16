@@ -26,9 +26,11 @@ from localization_training.sparse_frontend import (
     build_pair_context_features,
     build_score_matrix,
     match_score_matrix,
+    match_candidate_selection_mask,
     matches_per_landmark_mask,
     select_keypoints,
 )
+from localization_training.splat_provenance import bank_splat_provenance_2dgs
 
 
 @dataclass
@@ -64,6 +66,8 @@ class SparseCandidateBatch:
     pair_measurement_jacobian: torch.Tensor
     pair_measurement_geometry_valid_mask: torch.Tensor
     map_candidate_geometry_valid_mask: torch.Tensor
+    map_candidate_classification_valid_mask: torch.Tensor
+    map_candidate_accepted_mask: torch.Tensor
     directional_candidate_similarity: torch.Tensor
     directional_candidate_residual: torch.Tensor
     directional_candidate_jacobian: torch.Tensor
@@ -87,6 +91,7 @@ class SparseCandidateBatch:
     positive_pose_scores: torch.Tensor
     positive_grid_ids: torch.Tensor
     positive_depth_ids: torch.Tensor
+    provenance_assignment_loss: torch.Tensor
     diagnostics: dict
 
 
@@ -95,6 +100,7 @@ class SparseCandidateLosses:
     pair: torch.Tensor
     hard_negative: torch.Tensor
     assignment: torch.Tensor
+    provenance_assignment: torch.Tensor
     counterfactual_assignment: torch.Tensor
     dustbin_assignment: torch.Tensor
     matcher_assignment: torch.Tensor
@@ -989,6 +995,166 @@ def _quota_displaced_candidate_indices(
     return torch.where(valid_worst, target_worst, displaced)
 
 
+@torch.no_grad()
+def _quota_insertion_decision(
+    candidate_landmark_idx,
+    candidate_scores,
+    retained_mask,
+    target_landmark_idx,
+    insert_indices,
+    insert_scores,
+    max_matches_per_landmark,
+):
+    """Return whether a relabeled pair survives hardcap and what it displaces."""
+    target_landmark_idx = torch.as_tensor(target_landmark_idx, dtype=torch.long)
+    device = target_landmark_idx.device
+    insert_indices = torch.as_tensor(
+        insert_indices, device=device, dtype=torch.long
+    ).reshape(-1)
+    insert_scores = torch.as_tensor(insert_scores, device=device).reshape(-1)
+    if not (
+        target_landmark_idx.shape == insert_indices.shape == insert_scores.shape
+    ):
+        raise ValueError("Quota insertion tensors must have identical shapes")
+    displaced = target_landmark_idx.new_full(target_landmark_idx.shape, -1)
+    valid_insert = (target_landmark_idx >= 0) & (insert_indices >= 0)
+    limit = int(max_matches_per_landmark)
+    if limit <= 0:
+        return valid_insert, displaced
+
+    candidate_landmark_idx = torch.as_tensor(
+        candidate_landmark_idx, device=device, dtype=torch.long
+    ).reshape(-1)
+    candidate_scores = torch.as_tensor(
+        candidate_scores, device=device, dtype=insert_scores.dtype
+    ).reshape(-1)
+    retained_mask = torch.as_tensor(
+        retained_mask, device=device, dtype=torch.bool
+    ).reshape(-1)
+    if not (
+        candidate_landmark_idx.shape
+        == candidate_scores.shape
+        == retained_mask.shape
+    ):
+        raise ValueError("Quota candidate tensors must have identical shapes")
+    if candidate_landmark_idx.numel() == 0 or not bool(valid_insert.any().item()):
+        return valid_insert, displaced
+
+    landmark_count = int(
+        torch.cat(
+            [candidate_landmark_idx, target_landmark_idx[valid_insert]]
+        ).max().item()
+    ) + 1
+    selected_count = torch.bincount(
+        candidate_landmark_idx[retained_mask], minlength=landmark_count
+    )
+    safe_target = target_landmark_idx.clamp_min(0)
+    full_target = valid_insert & (selected_count[safe_target] >= limit)
+
+    minimum_score = candidate_scores.new_full((landmark_count,), torch.inf)
+    minimum_score.scatter_reduce_(
+        0,
+        candidate_landmark_idx[retained_mask],
+        candidate_scores[retained_mask],
+        reduce="amin",
+        include_self=True,
+    )
+    pair_indices = torch.arange(
+        candidate_landmark_idx.numel(), device=device, dtype=torch.long
+    )
+    is_worst = retained_mask & (
+        candidate_scores == minimum_score[candidate_landmark_idx]
+    )
+    worst_index = candidate_landmark_idx.new_full((landmark_count,), -1)
+    worst_index.scatter_reduce_(
+        0,
+        candidate_landmark_idx[is_worst],
+        pair_indices[is_worst],
+        reduce="amax",
+        include_self=True,
+    )
+    target_worst = worst_index[safe_target]
+    safe_worst = target_worst.clamp_min(0)
+    worst_score = candidate_scores[safe_worst]
+    outranks_worst = (insert_scores > worst_score) | (
+        (insert_scores == worst_score) & (insert_indices < target_worst)
+    )
+    survives = valid_insert & (~full_target | outranks_worst)
+    displaced = torch.where(full_target & survives, target_worst, displaced)
+    return survives, displaced
+
+
+@torch.no_grad()
+def _quota_refill_candidate_indices(
+    candidate_landmark_idx,
+    candidate_scores,
+    retained_mask,
+    remove_indices,
+    max_matches_per_landmark,
+):
+    """Return the next-ranked pair admitted after removing a retained pair."""
+    remove_indices = torch.as_tensor(remove_indices, dtype=torch.long).reshape(-1)
+    refill = remove_indices.new_full(remove_indices.shape, -1)
+    if int(max_matches_per_landmark) <= 0 or remove_indices.numel() == 0:
+        return refill
+    device = remove_indices.device
+    candidate_landmark_idx = torch.as_tensor(
+        candidate_landmark_idx, device=device, dtype=torch.long
+    ).reshape(-1)
+    candidate_scores = torch.as_tensor(
+        candidate_scores, device=device
+    ).reshape(-1)
+    retained_mask = torch.as_tensor(
+        retained_mask, device=device, dtype=torch.bool
+    ).reshape(-1)
+    if not (
+        candidate_landmark_idx.shape
+        == candidate_scores.shape
+        == retained_mask.shape
+    ):
+        raise ValueError("Quota candidate tensors must have identical shapes")
+    if candidate_landmark_idx.numel() == 0:
+        return refill
+    valid_remove = (remove_indices >= 0) & (
+        remove_indices < candidate_landmark_idx.numel()
+    )
+    safe_remove = remove_indices.clamp(0, candidate_landmark_idx.numel() - 1)
+    valid_remove &= retained_mask[safe_remove]
+    if not bool(valid_remove.any().item()):
+        return refill
+
+    landmark_count = int(candidate_landmark_idx.max().item()) + 1
+    non_retained = ~retained_mask
+    best_score = candidate_scores.new_full((landmark_count,), -torch.inf)
+    best_score.scatter_reduce_(
+        0,
+        candidate_landmark_idx[non_retained],
+        candidate_scores[non_retained],
+        reduce="amax",
+        include_self=True,
+    )
+    pair_indices = torch.arange(
+        candidate_landmark_idx.numel(), device=device, dtype=torch.long
+    )
+    is_best = non_retained & (
+        candidate_scores == best_score[candidate_landmark_idx]
+    )
+    first_best = candidate_landmark_idx.new_full(
+        (landmark_count,), candidate_landmark_idx.numel()
+    )
+    first_best.scatter_reduce_(
+        0,
+        candidate_landmark_idx[is_best],
+        pair_indices[is_best],
+        reduce="amin",
+        include_self=True,
+    )
+    old_landmark = candidate_landmark_idx[safe_remove]
+    candidate_refill = first_best[old_landmark]
+    has_refill = valid_remove & (candidate_refill < candidate_landmark_idx.numel())
+    return torch.where(has_refill, candidate_refill, refill)
+
+
 def build_sparse_candidate_batch(
     query_feature_map,
     detector_heatmap,
@@ -1046,6 +1212,7 @@ def build_sparse_candidate_batch(
     counterfactual_utility_floor=0.1,
     counterfactual_target_mode="all_false",
     counterfactual_require_current_retained=False,
+    counterfactual_exact_decision_set=False,
     counterfactual_require_positive_bias_gain=False,
     counterfactual_require_nonnegative_translation_gain=False,
     counterfactual_translation_scale=0.02,
@@ -1053,6 +1220,11 @@ def build_sparse_candidate_batch(
     counterfactual_measurement_sigma_px=1.0,
     counterfactual_residual_clip_px=12.0,
     counterfactual_inlier_sigma_px=4.0,
+    splat_provenance_meta=None,
+    landmark_global_indices=None,
+    splat_provenance_mode="none",
+    splat_provenance_topk=4,
+    splat_provenance_temperature=0.05,
 ):
     """Build the actual query-keypoint/landmark candidates used by sparse localization."""
     if query_feature_map.dim() != 3:
@@ -1111,6 +1283,46 @@ def build_sparse_candidate_batch(
         use_dual_softmax=dual_softmax,
         dual_softmax_temperature=dual_softmax_temperature,
     )
+    provenance_mode = str(splat_provenance_mode or "none").strip().lower()
+    if provenance_mode not in {"none", "hard", "soft"}:
+        raise ValueError("splat_provenance_mode must be 'none', 'hard', or 'soft'")
+    provenance_assignment_loss = similarity.sum() * 0.0
+    provenance_valid_count = 0
+    provenance_effective_targets = 0.0
+    if provenance_mode != "none":
+        if splat_provenance_meta is None or landmark_global_indices is None:
+            raise ValueError(
+                "splat provenance supervision requires renderer metadata and global landmark indices"
+            )
+        provenance_idx, provenance_weight, provenance_valid = (
+            bank_splat_provenance_2dgs(
+                keypoint_xy,
+                landmark_global_indices,
+                splat_provenance_meta,
+                rendered_depth=splat_provenance_meta.get("rendered_depth"),
+                topk=splat_provenance_topk,
+            )
+        )
+        if provenance_mode == "hard":
+            dominant = provenance_weight.argmax(dim=1, keepdim=True)
+            hard_weight = torch.zeros_like(provenance_weight)
+            hard_weight.scatter_(1, dominant, 1.0)
+            provenance_weight = hard_weight
+        if bool(provenance_valid.any()):
+            temperature = max(float(splat_provenance_temperature), 1e-6)
+            log_probability = F.log_softmax(score_matrix / temperature, dim=1)
+            selected_log_probability = log_probability.gather(1, provenance_idx)
+            provenance_assignment_loss = -(
+                provenance_weight[provenance_valid]
+                * selected_log_probability[provenance_valid]
+            ).sum(dim=1).mean()
+            provenance_valid_count = int(provenance_valid.sum().item())
+            provenance_effective_targets = float(
+                (provenance_weight > 0).sum(dim=1)[provenance_valid]
+                .float()
+                .mean()
+                .item()
+            )
 
     with torch.no_grad():
         projected_xy, project_valid = project_world_to_pixels(landmark_xyz, K, pose_gt_w2c)
@@ -1307,11 +1519,27 @@ def build_sparse_candidate_batch(
         projected_xy[predicted_landmark_idx]
         - observed_xy[predicted_keypoint_idx]
     )
-    matcher_assignment_logits = _match_logits(
-        similarity[predicted_keypoint_idx, predicted_landmark_idx],
-        temperature=match_temperature,
-        margin=match_margin,
-    )
+    if dustbin_score is None:
+        dustbin_score = similarity.new_tensor(float(match_margin))
+    else:
+        dustbin_score = dustbin_score.to(device=device, dtype=dtype)
+    matcher_assignment_logits = similarity[
+        predicted_keypoint_idx, predicted_landmark_idx
+    ]
+    matcher_assignment_logits = (
+        matcher_assignment_logits - dustbin_score
+    ) / max(float(match_temperature), 1e-6)
+    with torch.no_grad():
+        map_candidate_quota_mask = match_candidate_selection_mask(
+            predicted_matches,
+            threshold=-float("inf"),
+            max_matches_per_landmark=map_max_matches_per_landmark,
+        )
+        map_candidate_accepted_mask = match_candidate_selection_mask(
+            predicted_matches,
+            threshold=float(dustbin_score.detach().item()),
+            max_matches_per_landmark=map_max_matches_per_landmark,
+        )
 
     assignment_keypoint_idx = torch.nonzero(keypoint_has_gt, as_tuple=False).reshape(-1)
     assignment_positive_similarity = (
@@ -1395,11 +1623,6 @@ def build_sparse_candidate_batch(
         multi_negative_mask = torch.empty(
             similarity.shape[0], 0, dtype=torch.bool, device=device
         )
-    if dustbin_score is None:
-        dustbin_score = similarity.new_tensor(float(match_margin))
-    else:
-        dustbin_score = dustbin_score.to(device=device, dtype=dtype)
-
     directional_topk = min(
         max(int(directional_candidate_topk), 0),
         int(score_matrix.shape[1]),
@@ -1500,6 +1723,13 @@ def build_sparse_candidate_batch(
     keypoint_depth_ids = torch.zeros(keypoint_ids.shape[0], dtype=torch.long, device=device)
 
     detector_positive = keypoint_has_gt
+    detector_final_clean = torch.zeros_like(keypoint_has_gt)
+    final_correct = (
+        predicted_label
+        & predicted_valid
+        & map_candidate_accepted_mask
+    )
+    detector_final_clean[predicted_keypoint_idx[final_correct]] = True
     if detector_target_source == "predicted_correct":
         detector_positive = predicted_positive_per_keypoint
     elif detector_target_source == "scorer_accepted_correct":
@@ -1528,6 +1758,13 @@ def build_sparse_candidate_batch(
         detector_positive[
             predicted_keypoint_idx[measurement_correct]
         ] = True
+    elif detector_target_source == "final_accepted_correct":
+        detector_positive = torch.zeros_like(keypoint_has_gt)
+        detector_positive[predicted_keypoint_idx[final_correct]] = True
+    elif detector_target_source == "final_or_geometric":
+        # Sampling must retain currently missed but geometrically valid points
+        # long enough for the descriptor/counterfactual teacher to repair them.
+        detector_positive = keypoint_has_gt
     elif detector_target_source != "geometric":
         raise ValueError(f"Unknown detector target source: {detector_target_source}")
 
@@ -1571,6 +1808,12 @@ def build_sparse_candidate_batch(
             positive_utility = (
                 positive_floor + (1.0 - positive_floor) * keypoint_pose_score[detector_positive]
             ) * balance[detector_positive]
+            if detector_target_source == "final_or_geometric":
+                positive_utility = positive_utility * (
+                    0.5
+                    + 0.5
+                    * detector_final_clean[detector_positive].to(dtype=dtype)
+                )
             if detector_binary_target:
                 detector_targets[detector_positive] = 1.0
                 detector_loss_weights[detector_positive] = positive_utility.clamp_min(0.05)
@@ -1786,16 +2029,14 @@ def build_sparse_candidate_batch(
             & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
         )
         map_candidate_geometry_valid_mask = (
-            visible[predicted_landmark_idx]
+            project_valid[predicted_landmark_idx]
             & torch.isfinite(projected_xy[predicted_landmark_idx]).all(dim=1)
             & torch.isfinite(pair_measurement_target_offsets).all(dim=1)
         )
-        map_candidate_quota_mask = matches_per_landmark_mask(
-            predicted_landmark_idx,
-            predicted_matches.scores,
-            map_max_matches_per_landmark,
-        )
         map_candidate_geometry_valid_mask &= map_candidate_quota_mask
+        map_candidate_classification_valid_mask = (
+            predicted_valid & map_candidate_quota_mask
+        )
         map_candidate_projectable_mask = (
             project_valid[predicted_landmark_idx]
             & torch.isfinite(projected_xy[predicted_landmark_idx]).all(dim=1)
@@ -1858,32 +2099,121 @@ def build_sparse_candidate_batch(
                 K,
                 pose_gt_w2c,
             )
-            counterfactual_displaced_indices = _quota_displaced_candidate_indices(
-                predicted_landmark_idx,
-                predicted_matches.scores,
-                map_candidate_quota_mask,
-                counterfactual_positive_landmark_idx,
-                map_max_matches_per_landmark,
+            counterfactual_insert_scores = predicted_matches.scores.new_zeros(
+                counterfactual_remove_indices.shape
             )
-            if bool(counterfactual_require_current_retained):
+            counterfactual_has_current = counterfactual_remove_indices >= 0
+            if bool(counterfactual_has_current.any().item()):
+                counterfactual_insert_scores[counterfactual_has_current] = (
+                    predicted_matches.scores[
+                        counterfactual_remove_indices[counterfactual_has_current]
+                    ]
+                )
+            if bool(counterfactual_exact_decision_set):
+                (
+                    counterfactual_target_quota_retained,
+                    counterfactual_displaced_indices,
+                ) = _quota_insertion_decision(
+                    predicted_landmark_idx,
+                    predicted_matches.scores,
+                    map_candidate_quota_mask,
+                    counterfactual_positive_landmark_idx,
+                    counterfactual_remove_indices,
+                    counterfactual_insert_scores,
+                    map_max_matches_per_landmark,
+                )
+                counterfactual_refill_indices = _quota_refill_candidate_indices(
+                    predicted_landmark_idx,
+                    predicted_matches.scores,
+                    map_candidate_quota_mask,
+                    counterfactual_remove_indices,
+                    map_max_matches_per_landmark,
+                )
+            else:
+                counterfactual_target_quota_retained = torch.ones_like(
+                    counterfactual_valid_mask
+                )
+                counterfactual_displaced_indices = _quota_displaced_candidate_indices(
+                    predicted_landmark_idx,
+                    predicted_matches.scores,
+                    map_candidate_quota_mask,
+                    counterfactual_positive_landmark_idx,
+                    map_max_matches_per_landmark,
+                )
+                counterfactual_refill_indices = counterfactual_remove_indices.new_full(
+                    counterfactual_remove_indices.shape, -1
+                )
+            if bool(counterfactual_require_current_retained) or bool(
+                counterfactual_exact_decision_set
+            ):
                 retained_remove = torch.zeros_like(counterfactual_valid_mask)
                 has_remove = counterfactual_remove_indices >= 0
                 retained_remove[has_remove] = map_candidate_quota_mask[
                     counterfactual_remove_indices[has_remove]
                 ]
                 counterfactual_valid_mask &= retained_remove
+            if bool(counterfactual_exact_decision_set):
+                accepted_remove = torch.zeros_like(counterfactual_valid_mask)
+                has_remove = counterfactual_remove_indices >= 0
+                accepted_remove[has_remove] = map_candidate_accepted_mask[
+                    counterfactual_remove_indices[has_remove]
+                ]
+                current_landmark = counterfactual_positive_landmark_idx.new_full(
+                    counterfactual_positive_landmark_idx.shape, -1
+                )
+                current_landmark[has_remove] = predicted_landmark_idx[
+                    counterfactual_remove_indices[has_remove]
+                ]
+                counterfactual_valid_mask &= (
+                    accepted_remove
+                    & counterfactual_target_quota_retained
+                    & (current_landmark != counterfactual_positive_landmark_idx)
+                )
             counterfactual_eligible_target_count = int(
                 counterfactual_valid_mask.sum().item()
+            )
+            safe_refill_indices = counterfactual_refill_indices.clamp_min(0)
+            if predicted_keypoint_idx.numel() > 0:
+                counterfactual_refill_valid_mask = (
+                    (counterfactual_refill_indices >= 0)
+                    & map_candidate_accepted_mask[safe_refill_indices]
+                    & map_candidate_projectable_mask[safe_refill_indices]
+                )
+                counterfactual_refill_jacobian = pair_measurement_jacobian[
+                    safe_refill_indices
+                ]
+                counterfactual_refill_residual = pair_measurement_target_offsets[
+                    safe_refill_indices
+                ]
+            else:
+                counterfactual_refill_valid_mask = torch.zeros_like(
+                    counterfactual_valid_mask
+                )
+                counterfactual_refill_jacobian = similarity.new_zeros(
+                    (counterfactual_valid_mask.numel(), 2, 6)
+                )
+                counterfactual_refill_residual = similarity.new_zeros(
+                    (counterfactual_valid_mask.numel(), 2)
+                )
+            counterfactual_current_set_mask = (
+                map_candidate_projectable_mask
+                & map_candidate_quota_mask
+                & map_candidate_accepted_mask
+                if bool(counterfactual_exact_decision_set)
+                else map_candidate_geometry_valid_mask
             )
             counterfactual_swap = counterfactual_pose_swap_utility(
                 pair_measurement_jacobian,
                 pair_measurement_target_offsets,
-                map_candidate_geometry_valid_mask,
+                counterfactual_current_set_mask,
                 counterfactual_remove_indices,
                 counterfactual_positive_jacobian,
                 counterfactual_positive_residual,
                 counterfactual_valid_mask,
                 displaced_indices=counterfactual_displaced_indices,
+                refill_jacobian=counterfactual_refill_jacobian,
+                refill_residual=counterfactual_refill_residual,
+                refill_valid_mask=counterfactual_refill_valid_mask,
                 translation_scale=counterfactual_translation_scale,
                 rotation_scale_degrees=counterfactual_rotation_scale_degrees,
                 measurement_sigma_px=counterfactual_measurement_sigma_px,
@@ -1924,6 +2254,15 @@ def build_sparse_candidate_batch(
             counterfactual_eligible_target_count = 0
             counterfactual_displaced_indices = counterfactual_remove_indices.new_full(
                 counterfactual_remove_indices.shape, -1
+            )
+            counterfactual_refill_indices = counterfactual_remove_indices.new_full(
+                counterfactual_remove_indices.shape, -1
+            )
+            counterfactual_target_quota_retained = torch.zeros_like(
+                counterfactual_valid_mask
+            )
+            counterfactual_refill_valid_mask = torch.zeros_like(
+                counterfactual_valid_mask
             )
             counterfactual_assignment_weights = assignment_positive_similarity.new_zeros(
                 assignment_positive_similarity.shape
@@ -1986,6 +2325,32 @@ def build_sparse_candidate_batch(
         ),
         "counterfactual_swap_eligible_target_count": (
             counterfactual_eligible_target_count
+        ),
+        "counterfactual_exact_decision_set": float(
+            bool(counterfactual_exact_decision_set)
+        ),
+        "counterfactual_current_accepted_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & (
+                    counterfactual_insert_scores
+                    > dustbin_score.detach()
+                )
+            ).sum().item()
+            if bool(counterfactual_enabled)
+            else 0
+        ),
+        "counterfactual_target_quota_retained_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & counterfactual_target_quota_retained
+            ).sum().item()
+        ),
+        "counterfactual_refill_count": int(
+            (
+                counterfactual_assignment_valid_mask
+                & counterfactual_refill_valid_mask
+            ).sum().item()
         ),
         "counterfactual_swap_ambiguous_top1_count": int(
             (
@@ -2134,6 +2499,10 @@ def build_sparse_candidate_batch(
         "geometry_jacobian": geometry_jacobian,
         "grid_bin_count": int(grid_rows) * int(grid_cols),
         "depth_bin_count": max(int(depth_bins), 1),
+        "splat_provenance_enabled": 1.0 if provenance_mode != "none" else 0.0,
+        "splat_provenance_soft": 1.0 if provenance_mode == "soft" else 0.0,
+        "splat_provenance_valid_count": provenance_valid_count,
+        "splat_provenance_effective_targets": provenance_effective_targets,
     }
     diagnostics.update(pair_metrics)
     diagnostics.update(assignment_information_diagnostics)
@@ -2171,6 +2540,10 @@ def build_sparse_candidate_batch(
             pair_measurement_geometry_valid_mask
         ),
         map_candidate_geometry_valid_mask=map_candidate_geometry_valid_mask,
+        map_candidate_classification_valid_mask=(
+            map_candidate_classification_valid_mask
+        ),
+        map_candidate_accepted_mask=map_candidate_accepted_mask,
         directional_candidate_similarity=directional_candidate_similarity,
         directional_candidate_residual=directional_candidate_residual,
         directional_candidate_jacobian=directional_candidate_jacobian,
@@ -2204,6 +2577,7 @@ def build_sparse_candidate_batch(
         positive_pose_scores=positive_pose_scores,
         positive_grid_ids=positive_grid_ids,
         positive_depth_ids=positive_depth_ids,
+        provenance_assignment_loss=provenance_assignment_loss,
         diagnostics=diagnostics,
     )
 
@@ -2223,6 +2597,8 @@ def sparse_candidate_losses(
     map_fisher_residual_clip_px=12.0,
     map_fisher_inlier_sigma_px=4.0,
     map_fisher_condition_target=100.0,
+    map_bias_huber_delta=1.0,
+    map_bias_clip=4.0,
     map_directional_temperature=0.05,
     map_directional_residual_clip_px=24.0,
     map_directional_robust_scale_px=12.0,
@@ -2349,6 +2725,10 @@ def sparse_candidate_losses(
         batch.matcher_assignment_logits,
         batch.pair_scorer_labels,
         valid_mask=batch.map_candidate_geometry_valid_mask,
+        classification_valid_mask=(
+            batch.map_candidate_classification_valid_mask
+        ),
+        hard_acceptance_mask=batch.map_candidate_accepted_mask,
         translation_scale=map_fisher_translation_scale,
         rotation_scale_degrees=map_fisher_rotation_scale_degrees,
         measurement_sigma_px=map_fisher_measurement_sigma_px,
@@ -2356,6 +2736,8 @@ def sparse_candidate_losses(
         residual_clip_px=map_fisher_residual_clip_px,
         inlier_sigma_px=map_fisher_inlier_sigma_px,
         condition_target=map_fisher_condition_target,
+        bias_huber_delta=map_bias_huber_delta,
+        bias_clip=map_bias_clip,
     )
     directional_risk = directional_candidate_set_risk(
         batch.directional_candidate_jacobian,
@@ -2442,6 +2824,9 @@ def sparse_candidate_losses(
     )
     batch.diagnostics.update(
         {
+            "splat_provenance_loss": float(
+                batch.provenance_assignment_loss.detach().item()
+            ),
             "pair_measurement_set_bias_m": float(
                 set_risk.translation_bias_m.detach().item()
             ),
@@ -2547,6 +2932,7 @@ def sparse_candidate_losses(
         pair=pair_loss,
         hard_negative=hard_negative_loss,
         assignment=assignment_loss,
+        provenance_assignment=batch.provenance_assignment_loss,
         counterfactual_assignment=counterfactual_assignment_loss,
         dustbin_assignment=dustbin_assignment_loss,
         matcher_assignment=matcher_assignment_loss,

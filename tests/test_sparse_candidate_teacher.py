@@ -1,4 +1,45 @@
 import torch
+from types import SimpleNamespace
+
+
+def test_online_render_ratio_curriculum_is_scene_independent():
+    from train_detector import scheduled_online_render_ratio
+
+    assert scheduled_online_render_ratio(0, 1000, 0.1, 0.3) == 0.1
+    assert abs(scheduled_online_render_ratio(500, 1000, 0.1, 0.3) - 0.2) < 1e-8
+    assert scheduled_online_render_ratio(1000, 1000, 0.1, 0.3) == 0.3
+    assert scheduled_online_render_ratio(250, 1000, 0.1, 0.3, 0.25, 0.75) == 0.1
+
+
+def test_failure_guided_pair_weights_focus_failures_but_keep_exploration():
+    from train_detector import failure_guided_pair_weights, update_camera_failure_ema
+
+    scores = torch.ones(4)
+    update_camera_failure_ema(scores, 2, 10.0, decay=0.0)
+    weights = failure_guided_pair_weights(scores, temperature=0.5, uniform_floor=0.1)
+
+    assert weights.shape == (3,)
+    assert torch.isclose(weights.sum(), torch.tensor(1.0))
+    assert weights[1] > weights[0]
+    assert weights[2] > weights[0]
+    assert torch.all(weights > 0)
+    effective_count = torch.exp(-(weights * weights.log()).sum())
+    assert 1.0 < effective_count < 3.0
+
+
+def test_candidate_query_failure_score_uses_active_map_risk_terms():
+    from train_detector import candidate_query_failure_score
+
+    losses = SimpleNamespace(
+        assignment=torch.tensor(0.0),
+        hard_negative=torch.tensor(0.0),
+        map_cleanliness=torch.tensor(2.0),
+        map_bias=torch.tensor(1.0),
+        matcher_reprojection_assignment=torch.tensor(0.0),
+        map_directional_bias=torch.tensor(0.0),
+    )
+
+    assert candidate_query_failure_score(losses) > 1.0
 
 
 def _camera():
@@ -153,6 +194,37 @@ def test_quota_displacement_returns_lowest_retained_pair():
     assert displaced.tolist() == [1, -1, -1]
 
 
+def test_exact_quota_insertion_rejects_weak_target_and_tracks_refill():
+    from localization_training.sparse_candidate_teacher import (
+        _quota_insertion_decision,
+        _quota_refill_candidate_indices,
+    )
+
+    landmark_idx = torch.tensor([0, 1, 1, 1, 2])
+    scores = torch.tensor([0.9, 0.8, 0.7, 0.6, 0.5])
+    retained = torch.tensor([True, True, True, False, True])
+    survives, displaced = _quota_insertion_decision(
+        landmark_idx,
+        scores,
+        retained,
+        torch.tensor([1, 1, 2]),
+        torch.tensor([0, 3, 1]),
+        torch.tensor([0.9, 0.6, 0.8]),
+        2,
+    )
+    refill = _quota_refill_candidate_indices(
+        landmark_idx,
+        scores,
+        retained,
+        torch.tensor([1, 2, 4]),
+        2,
+    )
+
+    assert survives.tolist() == [True, False, True]
+    assert displaced.tolist() == [2, -1, -1]
+    assert refill.tolist() == [3, 3, -1]
+
+
 def test_sparse_candidate_teacher_exposes_false_positive_and_recovers_false_negative():
     from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
 
@@ -204,6 +276,100 @@ def test_sparse_candidate_teacher_exposes_false_positive_and_recovers_false_nega
     assert batch.diagnostics["counterfactual_swap_target_count"] == 1
 
 
+def test_exact_counterfactual_requires_current_top1_to_pass_dustbin():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    landmark_xyz = torch.tensor(
+        [_point_at_pixel(1.5, 1.5), _point_at_pixel(3.5, 3.5)]
+    )
+    landmark_features = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+    K, pose = _camera()
+
+    rejected = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+        hard_negatives=1,
+        match_margin=0.0,
+        dustbin_score=torch.tensor(1.1),
+        map_max_matches_per_landmark=2,
+        counterfactual_enabled=True,
+        counterfactual_exact_decision_set=True,
+    )
+    accepted = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+        hard_negatives=1,
+        match_margin=0.0,
+        dustbin_score=torch.tensor(0.5),
+        map_max_matches_per_landmark=2,
+        counterfactual_enabled=True,
+        counterfactual_exact_decision_set=True,
+    )
+
+    assert rejected.counterfactual_assignment_valid_mask.tolist() == [False]
+    assert accepted.counterfactual_assignment_valid_mask.tolist() == [True]
+    assert accepted.diagnostics["counterfactual_exact_decision_set"] == 1.0
+
+
+def test_detector_final_or_geometric_retains_missed_point_and_boosts_clean_acceptance():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    landmark_xyz = torch.tensor([_point_at_pixel(1.5, 1.5)])
+    landmark_features = torch.tensor([[1.0, 0.0]])
+    K, pose = _camera()
+    common = dict(
+        detect_num=1,
+        nms_radius=0,
+        positive_radius_px=0.25,
+        detector_target_source="final_or_geometric",
+    )
+    rejected = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        dustbin_score=torch.tensor(1.1),
+        **common,
+    )
+    accepted = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        landmark_features,
+        landmark_xyz,
+        K,
+        pose,
+        dustbin_score=torch.tensor(0.5),
+        **common,
+    )
+
+    assert rejected.detector_targets.item() > 0.0
+    assert accepted.detector_targets.item() > rejected.detector_targets.item()
+
+
 def test_counterfactual_assignment_missed_mode_only_repairs_ambiguity_band():
     from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
 
@@ -253,7 +419,7 @@ def test_counterfactual_assignment_missed_mode_only_repairs_ambiguity_band():
     assert already_supervised.diagnostics["counterfactual_swap_eligible_target_count"] == 0
 
 
-def test_map_information_geometry_mask_rejects_invisible_projectable_candidate():
+def test_map_information_geometry_mask_keeps_invisible_projectable_false_match():
     from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
 
     feature_map = torch.zeros(2, 5, 5)
@@ -278,7 +444,8 @@ def test_map_information_geometry_mask_rejects_invisible_projectable_candidate()
     )
 
     assert batch.pair_scorer_labels.tolist() == [0.0]
-    assert batch.map_candidate_geometry_valid_mask.tolist() == [False]
+    assert batch.map_candidate_geometry_valid_mask.tolist() == [True]
+    assert batch.map_candidate_classification_valid_mask.tolist() == [True]
     assert batch.diagnostics["map_candidate_invisible_projectable_count"] == 1
     assert (
         batch.diagnostics["map_candidate_invisible_projectable_under_4px_count"]

@@ -918,6 +918,70 @@ class GaussianModel_2dgs(nn.Module):
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+    def densify_and_split_selected(self, selected_mask, scene_extent, N=2, loc_birth_iteration=None):
+        """Split an explicit subset of 2D surfels for localization topology."""
+        selected_pts_mask = torch.as_tensor(
+            selected_mask,
+            device=self.get_xyz.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        if selected_pts_mask.numel() != self.get_xyz.shape[0]:
+            raise RuntimeError(
+                "Cannot split selected 2D Gaussians: "
+                f"mask has {selected_pts_mask.numel()} rows, model has {self.get_xyz.shape[0]} points."
+            )
+        split_count = int(selected_pts_mask.sum().item())
+        if split_count == 0:
+            return 0
+
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
+        # A 2DGS surfel has no extent along its local normal.
+        sample_stds = torch.cat([stds, torch.zeros_like(stds[:, :1])], dim=-1)
+        samples = torch.normal(mean=torch.zeros_like(sample_stds), std=sample_stds)
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+        new_xyz = (
+            torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
+            + self.get_xyz[selected_pts_mask].repeat(N, 1)
+        )
+        new_scaling = self.scaling_inverse_activation(
+            self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
+        )
+        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_loc_feature = split_localization_child_features(
+            self._loc_feature[selected_pts_mask],
+            self.loc_prototype[selected_pts_mask],
+            self.loc_prototype_count[selected_pts_mask],
+            repeat=N,
+        )
+        new_loc_opacity = self._loc_opacity[selected_pts_mask].repeat(N, 1)
+        new_loc_anchor_offset = self._loc_anchor_offset[selected_pts_mask].repeat(N, 1)
+
+        self.densification_postfix(
+            new_xyz,
+            new_features_dc,
+            new_features_rest,
+            new_opacity,
+            new_scaling,
+            new_rotation,
+            new_loc_feature,
+            new_loc_opacity,
+            new_loc_anchor_offset,
+            selected_pts_mask,
+            N,
+            loc_birth_iteration,
+        )
+        prune_filter = torch.cat(
+            (
+                selected_pts_mask,
+                torch.zeros(N * split_count, device=self.get_xyz.device, dtype=torch.bool),
+            )
+        )
+        self.prune_points(prune_filter)
+        return split_count
+
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2, loc_birth_iteration=None):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
@@ -1553,7 +1617,14 @@ class GaussianModel(nn.Module):
         geometry[~observed] = 0.0
         return geometry
 
-    def compute_split_necessity(self, min_observations=8, min_radius=0.0, min_repeatability=0.25):
+    def compute_split_necessity(
+        self,
+        min_observations=8,
+        min_radius=0.0,
+        min_repeatability=0.25,
+        pose_information_floor=0.0,
+        residual_score_floor=0.0,
+    ):
         self._ensure_localization_state()
         self._ensure_screen_radius_state()
         observed = self._observed_localization_mask(min_observations)
@@ -1581,6 +1652,8 @@ class GaussianModel(nn.Module):
             repeatability=repeatability,
             positive_prob=teacher_confidence,
             pose_information=pose_effective,
+            pose_information_floor=pose_information_floor,
+            residual_score_floor=residual_score_floor,
             min_footprint=min_radius,
             min_repeatability=min_repeatability,
         )

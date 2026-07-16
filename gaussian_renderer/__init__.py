@@ -524,6 +524,7 @@ def render_from_pose_gsplat(
     far_plane=10000,
     opacity_multiplier=None,
     loc_opacity_multiplier=None,
+    return_rgb_meta=False,
     **rasterize_args
 ):
     """
@@ -554,6 +555,7 @@ def render_from_pose_gsplat(
             far_plane,
             opacity_multiplier,
             loc_opacity_multiplier,
+            return_rgb_meta,
             **rasterize_args
         )
 
@@ -655,6 +657,19 @@ def render_from_pose_gsplat(
         "alphas": render_alphas,
         "depth": depth,
     }
+    if return_rgb_meta:
+        result["rgb_meta"] = {
+            key: info.get(key)
+            for key in (
+                "means2d",
+                "depths",
+                "conics",
+                "opacities",
+                "radii",
+                "width",
+                "height",
+            )
+        }
     if return_loc_meta and meta is not None:
         loc_radii, _ = _radii_to_visibility(meta)
         result.update({
@@ -689,6 +704,7 @@ def render_from_pose_gsplat_2dgs(
     far_plane=10000,
     opacity_multiplier=None,
     loc_opacity_multiplier=None,
+    return_rgb_meta=False,
     **rasterize_args
 ):
     """
@@ -816,6 +832,19 @@ def render_from_pose_gsplat_2dgs(
         "radii": radii,
         "depth": depth,
     }
+    if return_rgb_meta:
+        result["rgb_meta"] = {
+            key: info.get(key)
+            for key in (
+                "means2d",
+                "depths",
+                "ray_transforms",
+                "opacities",
+                "radii",
+                "width",
+                "height",
+            )
+        }
     if return_loc_meta and feat_meta is not None:
         loc_radii, _ = _radii_to_visibility(feat_meta)
         result.update({

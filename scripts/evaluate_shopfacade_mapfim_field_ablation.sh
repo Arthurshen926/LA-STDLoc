@@ -19,10 +19,12 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
+SCENE="${SHOP_MAPFIM_SCENE:-ShopFacade}"
 MODEL_ROOT="${SHOP_MAPFIM_MODEL_ROOT:-/mnt/pool/sqy/stdloc_lafgs_shop_strict_fresh_20260712/lafgs_from_sfm/ShopFacade}"
 MODEL_ITERATION="${SHOP_MAPFIM_MODEL_ITERATION:-30000}"
 BASE_DETECTOR_FOLDER="${SHOP_MAPFIM_BASE_DETECTOR_FOLDER:-detector_covsoft_fixlineage_30000}"
 OUTPUT_TAG="${SHOP_MAPFIM_OUTPUT_TAG:-holdout_v2}"
+RESULT_PREFIX_OVERRIDE="${SHOP_MAPFIM_RESULT_PREFIX:-}"
 SAFE_OUTPUT_TAG="${OUTPUT_TAG//\//_}"
 EVAL_FOLDER_OVERRIDE="${SHOP_MAPFIM_EVAL_FOLDER:-}"
 CONFIG_ROOT="${SHOP_MAPFIM_CONFIG_ROOT:-/mnt/pool/sqy/stdloc_lafgs_shop_strict_fresh_20260712/eval_configs/mapfim/ShopFacade}"
@@ -33,6 +35,8 @@ DETECTOR_MATCHABILITY_MODE="${SHOP_MAPFIM_DETECTOR_MATCHABILITY_MODE:-combined_n
 USE_DETECTOR_OFFSET="${SHOP_MAPFIM_USE_DETECTOR_OFFSET:-0}"
 DUMP_CORRESPONDENCES="${SHOP_MAPFIM_DUMP_CORRESPONDENCES:-0}"
 DUMP_ALL_CORRESPONDENCES="${SHOP_MAPFIM_DUMP_ALL_CORRESPONDENCES:-0}"
+DUMP_DISCRETE_ORACLE="${SHOP_MAPFIM_DUMP_DISCRETE_ORACLE:-0}"
+ORACLE_TOPK="${SHOP_MAPFIM_ORACLE_TOPK:-32}"
 VALIDATION_RATIO="${SHOP_MAPFIM_VALIDATION_RATIO:-0.2}"
 SPLIT_MODE="${SHOP_MAPFIM_SPLIT_MODE:-temporal_block}"
 SPLIT_SEED="${SHOP_MAPFIM_SPLIT_SEED:-2026}"
@@ -42,19 +46,23 @@ case "$MODE" in
     DETECTOR_FOLDER="$BASE_DETECTOR_FOLDER"
     DETECTOR_ITERATION=30000
     STATE_PATH=""
-    PREFIX="mapfim-baseline-ShopFacade"
+    PREFIX="mapfim-baseline-$SCENE"
     ;;
   F0|F1|F2|F3|F4|F5)
     DETECTOR_FOLDER="detector_mapfim_fieldonly_${MODE}_${TRAIN_ITERATIONS}_${OUTPUT_TAG}"
     DETECTOR_ITERATION="$CHECKPOINT"
     STATE_PATH="$DETECTOR_FOLDER/${CHECKPOINT}_candidate_teacher_state.pt"
-    PREFIX="mapfim-${MODE}-${OUTPUT_TAG}-${TRAIN_ITERATIONS}-ckpt${CHECKPOINT}-ShopFacade"
+    PREFIX="mapfim-${MODE}-${OUTPUT_TAG}-${TRAIN_ITERATIONS}-ckpt${CHECKPOINT}-${SCENE}"
     ;;
   *)
     echo "Unknown mode: $MODE" >&2
     exit 2
     ;;
 esac
+
+if [[ -n "$RESULT_PREFIX_OVERRIDE" ]]; then
+  PREFIX="$RESULT_PREFIX_OVERRIDE"
+fi
 
 if [[ -n "$EVAL_FOLDER_OVERRIDE" ]]; then
   if [[ "$MODE" == "BASELINE" ]]; then
@@ -94,6 +102,16 @@ if [[ "$DUMP_ALL_CORRESPONDENCES" == "1" ]]; then
   SAFE_OUTPUT_TAG="${SAFE_OUTPUT_TAG}_all"
 elif [[ "$DUMP_ALL_CORRESPONDENCES" != "0" ]]; then
   echo "SHOP_MAPFIM_DUMP_ALL_CORRESPONDENCES must be 0 or 1, got: $DUMP_ALL_CORRESPONDENCES" >&2
+  exit 2
+fi
+if [[ "$DUMP_DISCRETE_ORACLE" == "1" ]]; then
+  if ! [[ "$ORACLE_TOPK" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SHOP_MAPFIM_ORACLE_TOPK must be a positive integer, got: $ORACLE_TOPK" >&2
+    exit 2
+  fi
+  SAFE_OUTPUT_TAG="${SAFE_OUTPUT_TAG}_discreteoracle_k${ORACLE_TOPK}"
+elif [[ "$DUMP_DISCRETE_ORACLE" != "0" ]]; then
+  echo "SHOP_MAPFIM_DUMP_DISCRETE_ORACLE must be 0 or 1, got: $DUMP_DISCRETE_ORACLE" >&2
   exit 2
 fi
 
@@ -148,6 +166,13 @@ fi
 if [[ "$DUMP_ALL_CORRESPONDENCES" == "1" ]]; then
   EXTRA_ARGS+=(--diagnostics_dump_all)
   PREFIX="${PREFIX}-all"
+fi
+if [[ "$DUMP_DISCRETE_ORACLE" == "1" ]]; then
+  EXTRA_ARGS+=(
+    --diagnostics_dump_discrete_oracle
+    --diagnostics_oracle_topk "$ORACLE_TOPK"
+  )
+  PREFIX="${PREFIX}-discreteoracle-k${ORACLE_TOPK}"
 fi
 SUBSET_ARGS=()
 if [[ "$EVAL_SUBSET" == "validation" ]]; then

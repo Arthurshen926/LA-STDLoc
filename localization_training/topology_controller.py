@@ -27,6 +27,8 @@ class TopologyConfig:
     require_loc_opacity_trained_for_physical_prune: bool = True
     max_mutation_events: int = 0
     risk_commit_policy: str = "off"
+    pose_information_floor: float = 0.0
+    residual_score_floor: float = 0.0
 
 
 @dataclass
@@ -133,17 +135,57 @@ def _localization_split_ambiguity(gaussians):
 def _localization_split_score(gaussians, config: TopologyConfig):
     device = gaussians.get_xyz.device
     if hasattr(gaussians, "compute_split_necessity"):
-        return gaussians.compute_split_necessity(
+        kwargs = dict(
             min_observations=config.min_observations,
             min_radius=config.min_radius,
             min_repeatability=config.min_repeatability,
-        ).to(device=device)
+        )
+        if float(config.pose_information_floor) > 0.0:
+            kwargs["pose_information_floor"] = config.pose_information_floor
+        if float(config.residual_score_floor) > 0.0:
+            kwargs["residual_score_floor"] = config.residual_score_floor
+        return gaussians.compute_split_necessity(**kwargs).to(device=device)
     grad = (
         gaussians.loc_grad_accum.to(device=device).squeeze(-1)
         / gaussians.loc_grad_denom.to(device=device).squeeze(-1).clamp_min(1.0)
     )
     entropy = _localization_split_ambiguity(gaussians).to(device=device)
-    return grad.clamp_min(0.0) * entropy.clamp_min(0.0) * gaussians.loc_repeatability_ema.to(device=device).clamp(0.0, 1.0)
+    repeatability = gaussians.loc_repeatability_ema.to(device=device).clamp(0.0, 1.0)
+    reprojection = getattr(gaussians, "loc_reproj_error_ema", None)
+    if torch.is_tensor(reprojection):
+        reprojection = reprojection.to(device=device).float().clamp_min(0.0)
+        if bool((reprojection > 0).any()):
+            reprojection = reprojection * (1.0 + grad.clamp_min(0.0))
+        else:
+            reprojection = 1.0 + grad.clamp_min(0.0)
+    else:
+        reprojection = 1.0 + grad.clamp_min(0.0)
+    positive_prob = getattr(gaussians, "loc_positive_prob_ema", None)
+    if torch.is_tensor(positive_prob):
+        positive_prob = positive_prob.to(device=device).float()
+        positive_prob = torch.where(
+            positive_prob > 0,
+            positive_prob.clamp(0.0, 1.0),
+            torch.ones_like(positive_prob),
+        )
+    pose_information = getattr(gaussians, "loc_information_ema", None)
+    footprint = getattr(gaussians, "max_radii2D", None)
+    if not torch.is_tensor(footprint):
+        footprint = torch.zeros_like(entropy)
+    from localization_training.lafgs_reconstruction import pose_aware_split_score
+
+    return pose_aware_split_score(
+        footprint=footprint,
+        ambiguity=entropy,
+        pnp_residual=reprojection,
+        repeatability=repeatability,
+        positive_prob=positive_prob,
+        pose_information=pose_information,
+        pose_information_floor=config.pose_information_floor,
+        residual_score_floor=config.residual_score_floor,
+        min_footprint=config.min_radius,
+        min_repeatability=config.min_repeatability,
+    )
 
 
 def _cap_split_mask(split, score, cap):
@@ -158,10 +200,14 @@ def _cap_split_mask(split, score, cap):
     return capped
 
 
-def select_localization_splits(gaussians, config: TopologyConfig, iteration):
+def select_localization_splits(
+    gaussians, config: TopologyConfig, iteration, candidate_scope_mask=None
+):
     n = gaussians.get_xyz.shape[0]
     device = gaussians.get_xyz.device
     eligible = localization_split_eligible_mask(gaussians, config, iteration).to(device=device)
+    if candidate_scope_mask is not None:
+        eligible = eligible & candidate_scope_mask.to(device=device, dtype=torch.bool)
     if eligible.sum() == 0:
         return torch.zeros(n, dtype=torch.bool, device=device)
     ambiguity = _localization_split_ambiguity(gaussians).to(device=device)
@@ -220,11 +266,19 @@ def joint_physical_prune_mask(
 
 
 class LocalizationTopologyController:
-    def __init__(self, config: TopologyConfig, initial_points=None, protected_source_indices=None, risk_evaluator=None):
+    def __init__(
+        self,
+        config: TopologyConfig,
+        initial_points=None,
+        protected_source_indices=None,
+        split_source_indices=None,
+        risk_evaluator=None,
+    ):
         self.config = config
         self.initial_points = initial_points
         self.last_event = None
         self.protected_source_indices = protected_source_indices
+        self.split_source_indices = split_source_indices
         self.mutation_event_count = 0
         self.risk_evaluator = risk_evaluator
 
@@ -298,8 +352,34 @@ class LocalizationTopologyController:
             gaussians.prune_points(physical)
             _assert_localization_buffers_match_point_count(gaussians)
         if self.config.enable_split:
-            candidate_count = int(localization_split_eligible_mask(gaussians, self.config, iteration).sum().item())
-            split = select_localization_splits(gaussians, self.config, iteration)
+            split_scope = None
+            if self.split_source_indices is not None:
+                source_index = getattr(gaussians, "loc_source_index", None)
+                if not torch.is_tensor(source_index):
+                    raise RuntimeError(
+                        "bank-restricted topology requires loc_source_index lineage"
+                    )
+                split_scope = torch.isin(
+                    source_index.to(device=gaussians.get_xyz.device, dtype=torch.long),
+                    torch.as_tensor(
+                        self.split_source_indices,
+                        device=gaussians.get_xyz.device,
+                        dtype=torch.long,
+                    ).reshape(-1),
+                )
+            split_scope_count = int(split_scope.sum().item()) if split_scope is not None else point_count_start
+            eligible = localization_split_eligible_mask(
+                gaussians, self.config, iteration
+            )
+            if split_scope is not None:
+                eligible = eligible & split_scope
+            candidate_count = int(eligible.sum().item())
+            split = select_localization_splits(
+                gaussians,
+                self.config,
+                iteration,
+                candidate_scope_mask=split_scope,
+            )
             budget = int((self.initial_points or gaussians.get_xyz.shape[0]) * self.config.total_point_budget_ratio)
             num_children_per_parent = 2
             net_growth_per_split = max(1, num_children_per_parent - 1)
@@ -312,6 +392,7 @@ class LocalizationTopologyController:
                     max_splits_by_budget,
                 )
         else:
+            split_scope_count = 0
             candidate_count = 0
             split = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device=gaussians.get_xyz.device)
             budget = int(gaussians.get_xyz.shape[0])
@@ -346,10 +427,12 @@ class LocalizationTopologyController:
         event = {
             "iteration": int(iteration),
             "candidate_count": candidate_count,
+            "split_scope_count": split_scope_count,
             "requested_split_count": proposed_split_count,
             "actual_parent_removed": 0,
             "actual_children_added": 0,
             "physical_prune_count": physical_count,
+            "budget": int(budget),
             "point_count_start": point_count_start,
             "point_count_before": int(gaussians.get_xyz.shape[0]),
             "point_count_after": int(gaussians.get_xyz.shape[0]),
@@ -385,7 +468,7 @@ class LocalizationTopologyController:
                     "point_count_after": point_count_after,
                 }
             )
-        if self.config.enable_physical_prune or split.any() or event["requested_split_count"] > 0 or "risk_commit" in event:
+        if self.config.enable_split or self.config.enable_physical_prune or "risk_commit" in event:
             risk_text = ""
             if "risk_commit" in event:
                 risk_parts = [
@@ -420,7 +503,8 @@ class LocalizationTopologyController:
                 )
             print(
                 "[Topology] "
-                f"iter={iteration} candidates={event['candidate_count']} "
+                f"iter={iteration} scope={event['split_scope_count']} "
+                f"eligible={event['candidate_count']} budget={event['budget']} "
                 f"physical_prune={event['physical_prune_count']} "
                 f"requested_split={event['requested_split_count']} "
                 f"parent_removed={event['actual_parent_removed']} "
