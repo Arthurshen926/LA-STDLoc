@@ -1,7 +1,10 @@
+import pickle
+import tempfile
+
 import torch
 from types import SimpleNamespace
 
-from train_coreset_v2 import _detect_query, _nearest_reprojection_labels
+from train_coreset_v2 import _detect_query, _nearest_reprojection_labels, _save_atom_state
 
 
 class _FixedDetector(torch.nn.Module):
@@ -66,3 +69,28 @@ def test_reprojection_positive_rejects_occluded_landmark_by_rendered_depth():
     )
     assert valid.tolist() == [False]
     assert raw_ids.tolist() == [-1]
+
+
+def test_saved_candidate_quality_aligns_with_active_bank():
+    with tempfile.TemporaryDirectory() as output_dir:
+        _save_atom_state(
+            output_dir,
+            torch.nn.Parameter(torch.eye(4)),
+            torch.eye(4),
+            torch.tensor([10, 20, 30, 40]),
+            torch.arange(4),
+            torch.arange(4),
+            torch.arange(4),
+            torch.tensor([0.1, 0.2, 0.3, 0.4]),
+            torch.tensor([1, 3]),
+            {},
+            [],
+            {},
+        )
+        meta = torch.load(f"{output_dir}/landmark_meta.pt", map_location="cpu")
+        assert meta["landmark_indices"].tolist() == [20, 40]
+        torch.testing.assert_close(
+            meta["candidate_quality"].float(), torch.tensor([0.2, 0.4]), rtol=1e-3, atol=1e-3
+        )
+        with open(f"{output_dir}/sampled_idx.pkl", "rb") as handle:
+            assert pickle.load(handle).tolist() == [20, 40]

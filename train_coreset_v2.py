@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import pickle
@@ -12,7 +13,10 @@ from tqdm import tqdm
 from arguments import ModelParams, get_combined_args
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import render_from_pose_gsplat
-from localization_training.episode_sampler import sample_interpolated_novel_view
+from localization_training.episode_sampler import (
+    sample_interpolated_novel_view,
+    split_support_query_cameras,
+)
 from localization_training.correspondence import project_world_to_pixels
 from localization_training.full_primitive_retrieval import chunked_exact_topk
 from localization_training.lafgs_reconstruction import (
@@ -46,6 +50,25 @@ from valid_support_mask import (
 
 def _camera_pose(camera, device="cuda"):
     return camera.world_view_transform.transpose(0, 1).to(device)
+
+
+def _tensor_sha256(value):
+    tensor = torch.as_tensor(value).detach().cpu().contiguous()
+    digest = hashlib.sha256()
+    digest.update(str(tensor.dtype).encode("ascii"))
+    digest.update(str(tuple(tensor.shape)).encode("ascii"))
+    digest.update(tensor.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _file_sha256(path, chunk_size=8 * 1024 * 1024):
+    if not path or not os.path.isfile(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @torch.no_grad()
@@ -426,9 +449,25 @@ def _save_atom_state(
     active_features = F.normalize(
         atom_features.detach()[active_indices.to(atom_features.device)].float(), dim=1
     ).cpu()
+    active_quality = selection_utility.detach()[
+        active_indices.to(selection_utility.device)
+    ].float().cpu()
+    if active_quality.numel() != landmark_indices.numel():
+        raise RuntimeError("active candidate quality must align with active landmarks")
+    if landmark_indices.unique().numel() != landmark_indices.numel():
+        raise RuntimeError("active landmark raw IDs must be unique")
+    artifact_identity = {
+        "landmark_indices_sha256": _tensor_sha256(landmark_indices),
+        "landmark_features_sha256": _tensor_sha256(active_features),
+        "active_candidate_quality_sha256": _tensor_sha256(active_quality),
+        "proposal_detector_sha256": config.get("proposal_detector_sha256"),
+        "source_geometry_sha256": config.get("source_geometry_sha256"),
+        "seed_landmark_sha256": config.get("seed_landmark_sha256"),
+        "seed_feature_state_sha256": config.get("seed_feature_state_sha256"),
+    }
     state = {
-        "version": 21,
-        "architecture": "surface_patch_localization_coreset_v2_1",
+        "version": 30,
+        "architecture": "seeded_candidate_aligned_map_refinement_v3",
         "landmark_indices": landmark_indices,
         "landmark_features": active_features,
         "active_atom_indices": active_indices,
@@ -437,8 +476,10 @@ def _save_atom_state(
         "coverage_cell_ids": coverage_cell_ids.detach().int().cpu(),
         "redundancy_group_ids": redundancy_group_ids.detach().int().cpu(),
         "selection_utility": selection_utility.detach().half().cpu(),
+        "active_candidate_quality": active_quality.half(),
         "initial_active_features": initial_atom_features[active_indices].half().cpu(),
         "atom_diagnostics": atom_diagnostics,
+        "artifact_identity": artifact_identity,
         "config": config,
         "history": history,
     }
@@ -459,7 +500,8 @@ def _save_atom_state(
                 "active_atom_indices": active_indices,
                 "coverage_cell_ids": state["coverage_cell_ids"][active_indices],
                 "redundancy_group_ids": state["redundancy_group_ids"][active_indices],
-                "candidate_quality": state["selection_utility"],
+                "candidate_quality": state["active_candidate_quality"],
+                "artifact_identity": artifact_identity,
             },
             os.path.join(output_dir, "landmark_meta.pt"),
         )
@@ -478,9 +520,25 @@ def _save_atom_state(
 def train(args, dataset, scene, gaussians):
     output_dir = os.path.join(dataset.model_path, args.output_folder)
     os.makedirs(output_dir, exist_ok=True)
-    cameras = scene.getTrainCameras().copy()
-    if not cameras:
+    all_cameras = scene.getTrainCameras().copy()
+    if not all_cameras:
         raise ValueError("V2 coreset training requires training cameras")
+    probe_ratio = min(float(args.probe_views) / max(len(all_cameras), 1), 0.5)
+    cameras, probe_cameras = split_support_query_cameras(
+        all_cameras,
+        query_ratio=probe_ratio,
+        seed=args.probe_split_seed,
+        mode=args.probe_split_mode,
+    )
+    support_names = {camera.image_name for camera in cameras}
+    probe_names_set = {camera.image_name for camera in probe_cameras}
+    if support_names & probe_names_set:
+        raise RuntimeError("support/probe camera split must be disjoint")
+    print(
+        "[LaFGS V2] strict camera split: "
+        f"support={len(cameras)} probe={len(probe_cameras)} "
+        f"mode={args.probe_split_mode} seed={args.probe_split_seed}"
+    )
     feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
     detector = KpDetector(feature_extractor.feature_dim)
     detector.load_state_dict(torch.load(args.proposal_detector, map_location="cpu"))
@@ -797,11 +855,28 @@ def train(args, dataset, scene, gaussians):
         converted = dict(episode)
         converted["groups"] = atom_group.int()
         episode_cache[image_name] = converted
-    probe_names = sorted(episode_cache)
-    if len(probe_names) > args.probe_views:
-        probe_positions = torch.linspace(0, len(probe_names) - 1, args.probe_views).round().long()
-        probe_names = [probe_names[int(position)] for position in probe_positions]
-    probe_episodes = [episode_cache[name] for name in probe_names]
+    probe_episodes = []
+    for camera in tqdm(probe_cameras, desc="V2 held-out probe cache"):
+        probe_episodes.append(
+            _build_episode(
+                gaussians,
+                camera,
+                camera.original_image,
+                feature_extractor,
+                detector,
+                atoms.raw_to_atom,
+                background,
+                args.detect_num,
+                args.nms_radius,
+                dataset.longest_edge,
+                args.provenance_topk,
+                reprojection_landmark_ids=seed_raw_indices,
+                reprojection_radius=args.reprojection_positive_radius,
+                reprojection_positive_weight=args.reprojection_positive_weight,
+                reprojection_depth_abs_tolerance=args.reprojection_depth_abs_tolerance,
+                reprojection_depth_rel_tolerance=args.reprojection_depth_rel_tolerance,
+            )
+        )
     history = []
     running = {}
     stage_budget = int(active_indices.numel())
@@ -936,7 +1011,7 @@ def train(args, dataset, scene, gaussians):
         )
         real_camera = cameras[(iteration - 1) % len(cameras)]
         if real_camera.image_name not in episode_cache:
-                episode_cache[real_camera.image_name] = _build_episode(
+            episode_cache[real_camera.image_name] = _build_episode(
                 gaussians,
                 real_camera,
                 real_camera.original_image,
@@ -1289,6 +1364,12 @@ def train(args, dataset, scene, gaussians):
             return_diagnostics=True,
         )
     config = vars(args).copy()
+    source_geometry_path = os.path.join(
+        dataset.model_path,
+        "point_cloud",
+        f"iteration_{args.iteration}",
+        "point_cloud.ply",
+    )
     config.update(
         {
             "point_count": point_count,
@@ -1296,6 +1377,12 @@ def train(args, dataset, scene, gaussians):
             "schedule_budgets": list(schedule.budgets),
             "schedule_boundaries": list(schedule.boundaries),
             "mvinit_observed_count": int((~unobserved).sum().item()),
+            "support_camera_names": sorted(support_names),
+            "probe_camera_names": sorted(probe_names_set),
+            "proposal_detector_sha256": _file_sha256(args.proposal_detector),
+            "source_geometry_sha256": _file_sha256(source_geometry_path),
+            "seed_landmark_sha256": _file_sha256(args.seed_landmark_path),
+            "seed_feature_state_sha256": _file_sha256(args.seed_feature_state),
         }
     )
     _save_atom_state(
@@ -1358,6 +1445,12 @@ def main():
     parser.add_argument("--swap_min_improvement", type=float, default=0.0)
     parser.add_argument("--probe_views", type=int, default=8)
     parser.add_argument("--probe_keypoints", type=int, default=256)
+    parser.add_argument(
+        "--probe_split_mode",
+        choices=("random", "sequence_block", "temporal_block"),
+        default="temporal_block",
+    )
+    parser.add_argument("--probe_split_seed", type=int, default=2026)
     parser.add_argument("--hysteresis", type=float, default=0.05)
     parser.add_argument("--stage_keep_ratio", type=float, default=0.75)
     parser.add_argument("--warmup_ratio", type=float, default=0.20)

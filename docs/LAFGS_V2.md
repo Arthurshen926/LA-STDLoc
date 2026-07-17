@@ -112,3 +112,40 @@ utility and masked render branch do not yet improve the strong bank. More steps
 or scalar reweighting are not supported by this run; the next method change must
 improve query-specific visible-surface positives and final-set solvability before
 allowing deployment-set churn.
+
+## Candidate-aligned active Field mainline
+
+V2.3 no longer treats shadow utility as the primary optimizer. Training cameras
+are split into disjoint temporal support and probe blocks before MVInit, atom
+discovery, episode caching, or utility updates. Probe cameras are used only for
+accept/reject evaluation. Saved metadata uses schema version 30, stores only
+active-row `candidate_quality`, checks unique raw IDs, and records hashes for the
+active IDs, descriptors, detector, source geometry, and seed artifacts.
+
+`scripts/compare_sparse_identity.py` compares two discrete-oracle evaluation
+dumps at the bank, detector keypoint, top-K retrieval, pre-PnP pair, selector,
+RANSAC-inlier, and final-pose levels. The ShopFacade P0 comparison found the
+original strong bank and V2.2 C1 functionally identical on all 103 test queries.
+Their scores differ by at most 2.98e-7, but top-1 IDs, candidate sets, inliers,
+and poses are identical. The reproducible baseline is therefore 3.7571 cm; the
+historical approximately 3.1 cm result came from an unpinned frontend/runtime
+stack rather than from the V2.2 map transformation.
+
+The active-field P1 experiment freezes the detector and geometry and optimizes
+only the active 16k descriptors and dustbin with the query-specific exact
+decision-set teacher. It uses a 185/46 temporal support/validation split. Active
+descriptor gradient norms are nonzero (typically 2.3-6.6), while detector trunk
+gradients remain exactly zero.
+
+| Effective step | Median TE (cm) | Median AE (deg) | Raw GT P@4 | Inlier GT P@4 | Pose logdet | Translation min eig |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 3.757 | 0.184 | 13.97% | 77.63% | 88.48 | 21.54 |
+| 1500 | 3.315 | 0.164 | 16.92% | 78.99% | 89.45 | 26.49 |
+| 2250 | **3.228** | **0.155** | 17.66% | 79.21% | 89.66 | 27.66 |
+| 3000 | 3.285 | 0.158 | **17.79%** | **79.22%** | **89.70** | **27.87** |
+
+The 2250-step checkpoint is the current best. The 3000-step result demonstrates
+that cleanliness and scalar pose information can continue improving while pose
+error regresses, so checkpoint selection must use the held-out deployment
+frontend and pose metric. Shadow add/prune, Pair, Diff-PnP, and topology remain
+outside this result until the active Field baseline is fixed and reproducible.
