@@ -11,6 +11,7 @@ sparse:
   reprojection_error: 12.0
   max_iterations: 1000
   min_iterations: 100
+  ransac_seed: 0
   detector_path: detector/30000_detector.pth
   landmark_path: detector/sampled_idx.pkl
 
@@ -25,3 +26,4 @@ dense:
   reprojection_error: 12.0
   max_iterations: 100
   min_iterations: 10
+  ransac_seed: 0

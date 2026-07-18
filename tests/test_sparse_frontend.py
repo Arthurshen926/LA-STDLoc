@@ -234,6 +234,46 @@ def test_sparse_candidate_selection_applies_fixed_top_count_after_quota():
     assert torch.equal(matches.keypoint_idx[keep], selected.keypoint_idx)
 
 
+def test_offset_only_selection_keeps_deployed_cosine_candidate_graph():
+    from localization_training.sparse_frontend import (
+        SparseMatchResult,
+        select_match_candidates,
+        select_offset_only_candidates,
+    )
+
+    cosine_matches = SparseMatchResult(
+        keypoint_idx=torch.tensor([0, 1, 2]),
+        landmark_idx=torch.tensor([0, 0, 1]),
+        scores=torch.tensor([0.9, 0.8, 0.7]),
+    )
+    learned_measurement_scores = SparseMatchResult(
+        keypoint_idx=cosine_matches.keypoint_idx,
+        landmark_idx=cosine_matches.landmark_idx,
+        scores=torch.tensor([0.1, 0.95, 0.7]),
+    )
+    baseline = select_match_candidates(
+        cosine_matches,
+        threshold=0.0,
+        max_matches_per_landmark=1,
+    )
+    offset_only = select_offset_only_candidates(
+        cosine_matches,
+        threshold=0.0,
+        max_matches_per_landmark=1,
+    )
+    reranked = select_match_candidates(
+        learned_measurement_scores,
+        threshold=-float("inf"),
+        max_matches_per_landmark=1,
+    )
+
+    assert torch.equal(offset_only.keypoint_idx, baseline.keypoint_idx)
+    assert torch.equal(offset_only.landmark_idx, baseline.landmark_idx)
+    assert torch.equal(offset_only.scores, baseline.scores)
+    assert reranked.keypoint_idx.tolist() == [1, 2]
+    assert offset_only.keypoint_idx.tolist() == [0, 2]
+
+
 def test_geometry_refill_prefers_new_image_and_voxel_support():
     from localization_training.sparse_frontend import (
         SparseMatchResult,

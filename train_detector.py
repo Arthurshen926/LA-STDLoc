@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import copy
 import json
 import math
 import os
@@ -53,6 +54,10 @@ from localization_training.landmark_distill import (
 )
 from localization_training.pair_scorer import SparsePairScorer
 from localization_training.pair_measurement import PairMeasurementHead
+from localization_training.hard_candidate_teacher import (
+    HardCandidateTeacherCache,
+    hard_candidate_preservation_loss,
+)
 from localization_training.sparse_candidate_teacher import (
     build_sparse_candidate_batch,
     calibrate_binary_threshold,
@@ -164,6 +169,221 @@ def scheduled_online_render_ratio(
         alpha = max(0.0, min(1.0, (progress - start) / (end - start)))
     ratio = (1.0 - alpha) * float(ratio_start) + alpha * float(ratio_end)
     return max(0.0, min(1.0, ratio))
+
+
+def candidate_teacher_trust_alpha(
+    visible_count,
+    correct_count,
+    *,
+    alpha_min=0.25,
+    view_prior=3.0,
+    warmup_active=False,
+    warmup_blend=None,
+):
+    """Derive a bounded descriptor-update scale from deployment-edge evidence."""
+    visible_count = torch.as_tensor(visible_count)
+    correct_count = torch.as_tensor(correct_count, device=visible_count.device)
+    if visible_count.shape != correct_count.shape:
+        raise ValueError("visible_count and correct_count must have the same shape")
+    if visible_count.ndim != 1:
+        raise ValueError("candidate teacher trust counts must be one-dimensional")
+    alpha_min = max(0.0, min(1.0, float(alpha_min)))
+    view_prior = max(0.0, float(view_prior))
+    if bool(warmup_active) and warmup_blend is None:
+        return torch.ones_like(visible_count, dtype=torch.float32)
+    visible = visible_count.to(dtype=torch.float32).clamp_min(0.0)
+    correct = correct_count.to(dtype=torch.float32).clamp_min(0.0)
+    correct = torch.minimum(correct, visible)
+    reliability = correct / visible.clamp_min(1.0)
+    # ``visible`` is the number of *unique real cameras* that observed this
+    # landmark.  It is deliberately not the number of SGD visits: otherwise
+    # a camera sampled more often would make a descriptor look better
+    # supported than it is geometrically.
+    view_support = visible / (visible + view_prior).clamp_min(1e-6)
+    evidence_alpha = (reliability * view_support).clamp(
+        min=alpha_min,
+        max=1.0,
+    )
+    if warmup_blend is None:
+        return evidence_alpha
+    warmup_blend = max(0.0, min(1.0, float(warmup_blend)))
+    return evidence_alpha + warmup_blend * (1.0 - evidence_alpha)
+
+
+def candidate_teacher_effective_features(
+    initial_features,
+    raw_features,
+    trust_alpha,
+):
+    """Apply the frozen-bank residual parameterization used at inference time."""
+    if initial_features.shape != raw_features.shape:
+        raise ValueError("initial_features and raw_features must have the same shape")
+    trust_alpha = torch.as_tensor(
+        trust_alpha,
+        device=raw_features.device,
+        dtype=raw_features.dtype,
+    ).reshape(-1)
+    if trust_alpha.numel() != raw_features.shape[0]:
+        raise ValueError("trust_alpha must have one value per landmark")
+    return F.normalize(
+        initial_features + trust_alpha[:, None] * (raw_features - initial_features),
+        dim=1,
+    )
+
+
+@torch.no_grad()
+def update_candidate_teacher_trust_evidence(
+    visible_count,
+    correct_count,
+    visible_mask,
+    candidate_landmark_idx,
+    candidate_correct_mask,
+    candidate_retained_mask,
+    *,
+    camera_index=None,
+    visible_view_mask=None,
+    correct_view_mask=None,
+    report=True,
+    validate_indices=True,
+):
+    """Accumulate one visibility/correctness observation per landmark and query.
+
+    The caller supplies only candidates that survive the deployment-equivalent
+    top-k/threshold/quota frontend. Recovered training positives are deliberately
+    excluded, so they cannot make a landmark appear more trustworthy than it is
+    under inference.
+    """
+    visible_count = torch.as_tensor(visible_count)
+    correct_count = torch.as_tensor(correct_count, device=visible_count.device)
+    if visible_count.shape != correct_count.shape or visible_count.ndim != 1:
+        raise ValueError("candidate teacher trust counts must be matching one-dimensional tensors")
+    visible_mask = torch.as_tensor(
+        visible_mask,
+        device=visible_count.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    if visible_mask.numel() != visible_count.numel():
+        raise ValueError("visible_mask must have one value per landmark")
+    candidate_landmark_idx = torch.as_tensor(
+        candidate_landmark_idx,
+        device=visible_count.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    candidate_correct_mask = torch.as_tensor(
+        candidate_correct_mask,
+        device=visible_count.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    candidate_retained_mask = torch.as_tensor(
+        candidate_retained_mask,
+        device=visible_count.device,
+        dtype=torch.bool,
+    ).reshape(-1)
+    if not (
+        candidate_landmark_idx.numel()
+        == candidate_correct_mask.numel()
+        == candidate_retained_mask.numel()
+    ):
+        raise ValueError("candidate trust tensors must have matching lengths")
+    use_unique_camera_evidence = (
+        visible_view_mask is not None or correct_view_mask is not None
+    )
+    if use_unique_camera_evidence:
+        if visible_view_mask is None or correct_view_mask is None:
+            raise ValueError(
+                "unique trust evidence requires both visible_view_mask and "
+                "correct_view_mask"
+            )
+        visible_view_mask = torch.as_tensor(
+            visible_view_mask,
+            device=visible_count.device,
+            dtype=torch.bool,
+        )
+        correct_view_mask = torch.as_tensor(
+            correct_view_mask,
+            device=visible_count.device,
+            dtype=torch.bool,
+        )
+        if visible_view_mask.ndim != 2 or correct_view_mask.shape != visible_view_mask.shape:
+            raise ValueError(
+                "unique trust evidence masks must have matching "
+                "[landmark, camera] shapes"
+            )
+        if visible_view_mask.shape[0] != visible_count.numel():
+            raise ValueError(
+                "unique trust evidence masks must have one row per landmark"
+            )
+        if camera_index is None:
+            raise ValueError("unique trust evidence requires camera_index")
+        camera_index = int(camera_index)
+        if not 0 <= camera_index < visible_view_mask.shape[1]:
+            raise ValueError("camera_index is outside the trust evidence cameras")
+        visible_seen = visible_view_mask[:, camera_index]
+        visible_added_mask = visible_mask & ~visible_seen
+        visible_count.add_(visible_added_mask.to(dtype=visible_count.dtype))
+        visible_view_mask[visible_mask, camera_index] = True
+    else:
+        visible_added_mask = visible_mask
+        visible_count.add_(visible_mask.to(dtype=visible_count.dtype))
+    valid = candidate_correct_mask & candidate_retained_mask
+    correct_landmarks = candidate_landmark_idx[valid]
+    correct_observed_mask = torch.zeros_like(visible_mask)
+    if correct_landmarks.numel() > 0:
+        if bool(validate_indices) and (
+            int(correct_landmarks.min().item()) < 0
+            or int(correct_landmarks.max().item()) >= visible_count.numel()
+        ):
+            raise ValueError("candidate landmark index is outside the trust bank")
+        correct_observed_mask.index_fill_(0, correct_landmarks, True)
+        if use_unique_camera_evidence:
+            correct_seen = correct_view_mask[:, camera_index]
+            correct_added_mask = correct_observed_mask & ~correct_seen
+            correct_count.add_(correct_added_mask.to(dtype=correct_count.dtype))
+            correct_view_mask[correct_observed_mask, camera_index] = True
+        else:
+            correct_added_mask = correct_observed_mask
+            correct_count.add_(correct_observed_mask.to(dtype=correct_count.dtype))
+    else:
+        correct_added_mask = correct_observed_mask
+    if not bool(report):
+        return {}
+    return {
+        "trust_visible_added": float(visible_added_mask.sum().item()),
+        "trust_correct_landmarks_added": float(correct_added_mask.sum().item()),
+        "trust_unique_camera_evidence": 1.0 if use_unique_camera_evidence else 0.0,
+    }
+
+
+@torch.no_grad()
+def candidate_teacher_trust_diagnostics(
+    visible_count,
+    correct_count,
+    trust_alpha,
+    *,
+    warmup_active=False,
+):
+    """Summarize trust calibration without exposing per-landmark training state."""
+    visible = torch.as_tensor(visible_count, dtype=torch.float32).reshape(-1)
+    correct = torch.as_tensor(correct_count, dtype=torch.float32, device=visible.device).reshape(-1)
+    alpha = torch.as_tensor(trust_alpha, dtype=torch.float32, device=visible.device).reshape(-1)
+    if not (visible.numel() == correct.numel() == alpha.numel()):
+        raise ValueError("candidate teacher trust diagnostic tensors must have matching lengths")
+    observed = visible > 0
+    ratio = correct[observed] / visible[observed].clamp_min(1.0)
+    quantiles = torch.quantile(alpha, torch.tensor([0.1, 0.5, 0.9], device=alpha.device))
+    return {
+        "trust_enabled": 1.0,
+        "trust_warmup_active": 1.0 if warmup_active else 0.0,
+        "trust_observed_landmark_count": float(observed.sum().item()),
+        "trust_correct_landmark_count": float((correct > 0).sum().item()),
+        "trust_visible_count_mean": float(visible[observed].mean().item()) if bool(observed.any()) else 0.0,
+        "trust_correct_visible_ratio_mean": float(ratio.mean().item()) if ratio.numel() else 0.0,
+        "trust_alpha_min": float(alpha.min().item()) if alpha.numel() else 0.0,
+        "trust_alpha_p10": float(quantiles[0].item()) if alpha.numel() else 0.0,
+        "trust_alpha_median": float(quantiles[1].item()) if alpha.numel() else 0.0,
+        "trust_alpha_p90": float(quantiles[2].item()) if alpha.numel() else 0.0,
+        "trust_alpha_max": float(alpha.max().item()) if alpha.numel() else 0.0,
+    }
 
 
 def failure_guided_pair_weights(camera_failure_scores, temperature=1.0, uniform_floor=0.1):
@@ -957,6 +1177,87 @@ def detector_target_loss(heat_map, gt_map, soft_target=False, weight_map=None):
     return score_map_bce_loss(heat_map, gt_map)
 
 
+def detector_proposal_preservation_loss(
+    student_keypoint,
+    student_matchability,
+    teacher_keypoint,
+    teacher_matchability,
+    valid_mask=None,
+):
+    """Keep the deployed combined proposal map close to a frozen detector snapshot."""
+    if student_keypoint.shape != teacher_keypoint.shape:
+        raise ValueError("student and teacher keypoint heatmaps must have the same shape")
+    if student_matchability.shape != teacher_matchability.shape:
+        raise ValueError(
+            "student and teacher matchability heatmaps must have the same shape"
+        )
+    student = torch.sqrt((student_keypoint * student_matchability).clamp_min(0.0))
+    teacher = torch.sqrt(
+        (teacher_keypoint.detach() * teacher_matchability.detach()).clamp_min(0.0)
+    )
+    squared_error = (student - teacher).square()
+    if valid_mask is None:
+        return squared_error.mean()
+    mask = valid_mask.to(device=squared_error.device, dtype=squared_error.dtype)
+    try:
+        mask = torch.broadcast_to(mask, squared_error.shape)
+    except RuntimeError as exc:
+        raise ValueError(
+            "detector preservation mask is not broadcastable to the proposal map"
+        ) from exc
+    if not bool(torch.any(mask > 0).item()):
+        return squared_error.sum() * 0.0
+    return (squared_error * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def validate_detector_only_candidate_teacher_configuration(
+    *,
+    enabled,
+    sparse_candidate_teacher,
+    optimize_features=False,
+    freeze_detector=False,
+    dustbin_weight=0.0,
+    pair_scorer_weight=0.0,
+    pair_scorer_assignment_weight=0.0,
+    pair_measurement_inlier_weight=0.0,
+    pair_measurement_nll_weight=0.0,
+    pair_measurement_bias_weight=0.0,
+    pair_measurement_covariance_weight=0.0,
+):
+    """Reject ambiguous detector-only stages before optimizer construction."""
+    if not bool(enabled):
+        return
+    if not bool(sparse_candidate_teacher):
+        raise ValueError(
+            "candidate_teacher_detector_only requires --sparse_candidate_teacher"
+        )
+
+    conflicts = []
+    if bool(optimize_features):
+        conflicts.append("candidate_teacher_optimize_features")
+    if bool(freeze_detector):
+        conflicts.append("candidate_teacher_freeze_detector")
+    if float(dustbin_weight) != 0.0:
+        conflicts.append("candidate_teacher_dustbin_weight")
+    if float(pair_scorer_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_scorer_weight")
+    if float(pair_scorer_assignment_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_scorer_assignment_weight")
+    if float(pair_measurement_inlier_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_measurement_inlier_weight")
+    if float(pair_measurement_nll_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_measurement_nll_weight")
+    if float(pair_measurement_bias_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_measurement_bias_weight")
+    if float(pair_measurement_covariance_weight) != 0.0:
+        conflicts.append("candidate_teacher_pair_measurement_covariance_weight")
+    if conflicts:
+        raise ValueError(
+            "candidate_teacher_detector_only permits only detector parameters; "
+            "disable: " + ", ".join(conflicts)
+        )
+
+
 @torch.no_grad()
 def random_knn_score(points, npoints, score, k=32, query_chunk=512, point_chunk=65536):
     points = points.detach()
@@ -1459,18 +1760,22 @@ def save_sparse_candidate_teacher_state(
     pair_scorer_threshold=None,
     pair_measurement_head=None,
     pair_measurement_threshold=None,
+    adaptive_trust_state=None,
+    normalize_features=True,
 ):
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
+    exported_features = landmark_features.detach().reshape(
+        landmark_features.shape[0], -1
+    ).float()
+    if bool(normalize_features):
+        exported_features = F.normalize(exported_features, dim=1)
     state = {
-        "version": 3,
+        "version": 4,
         "iteration": int(iteration),
         "landmark_indices": torch.as_tensor(sampled_idx, dtype=torch.long).detach().cpu(),
-        "landmark_features": F.normalize(
-            landmark_features.detach().reshape(landmark_features.shape[0], -1).float(),
-            dim=1,
-        ).cpu(),
+        "landmark_features": exported_features.cpu(),
         "config": dict(config),
         "diagnostics": dict(diagnostics or {}),
     }
@@ -1491,6 +1796,121 @@ def save_sparse_candidate_teacher_state(
         }
     if pair_measurement_threshold is not None:
         state["pair_measurement_threshold"] = float(pair_measurement_threshold)
+    if adaptive_trust_state is not None:
+        trust_state = dict(adaptive_trust_state)
+        required_keys = (
+            "initial_features",
+            "raw_features",
+            "visible_count",
+            "correct_count",
+            "update_steps",
+        )
+        missing_keys = [key for key in required_keys if key not in trust_state]
+        if missing_keys:
+            raise ValueError(
+                "adaptive trust state is missing required keys: "
+                + ", ".join(missing_keys)
+            )
+        expected_shape = state["landmark_features"].shape
+        initial_features = torch.as_tensor(
+            trust_state["initial_features"], dtype=torch.float32
+        ).detach().cpu()
+        raw_features = torch.as_tensor(
+            trust_state["raw_features"], dtype=torch.float32
+        ).detach().cpu()
+        visible_count = torch.as_tensor(
+            trust_state["visible_count"], dtype=torch.float32
+        ).detach().cpu().reshape(-1)
+        correct_count = torch.as_tensor(
+            trust_state["correct_count"], dtype=torch.float32
+        ).detach().cpu().reshape(-1)
+        if initial_features.shape != expected_shape or raw_features.shape != expected_shape:
+            raise ValueError(
+                "adaptive trust feature shape does not match landmark features: "
+                f"initial={tuple(initial_features.shape)} raw={tuple(raw_features.shape)} "
+                f"expected={tuple(expected_shape)}"
+            )
+        if visible_count.numel() != expected_shape[0] or correct_count.numel() != expected_shape[0]:
+            raise ValueError("adaptive trust evidence count does not match landmark count")
+        if not bool(torch.isfinite(initial_features).all().item()) or not bool(torch.isfinite(raw_features).all().item()):
+            raise ValueError("adaptive trust features contain non-finite values")
+        if not bool(torch.isfinite(visible_count).all().item()) or not bool(torch.isfinite(correct_count).all().item()):
+            raise ValueError("adaptive trust evidence contains non-finite values")
+        if bool((visible_count < 0).any().item()) or bool((correct_count < 0).any().item()):
+            raise ValueError("adaptive trust evidence counts must be non-negative")
+        if bool((correct_count > visible_count).any().item()):
+            raise ValueError("adaptive trust correct count cannot exceed visible count")
+        update_steps = int(trust_state["update_steps"])
+        if update_steps < 0:
+            raise ValueError("adaptive trust update_steps must be non-negative")
+        unique_evidence_keys = (
+            "visible_view_mask",
+            "correct_view_mask",
+            "evidence_camera_names",
+        )
+        present_unique_evidence = [
+            key in trust_state for key in unique_evidence_keys
+        ]
+        if any(present_unique_evidence) and not all(present_unique_evidence):
+            raise ValueError(
+                "adaptive trust unique-camera evidence must provide "
+                + ", ".join(unique_evidence_keys)
+            )
+        serialized_trust_state = {
+            "version": 1,
+            "initial_features": F.normalize(initial_features, dim=1),
+            "raw_features": raw_features,
+            "visible_count": visible_count,
+            "correct_count": correct_count,
+            "update_steps": update_steps,
+        }
+        if all(present_unique_evidence):
+            visible_view_mask = torch.as_tensor(
+                trust_state["visible_view_mask"], dtype=torch.bool
+            ).detach().cpu()
+            correct_view_mask = torch.as_tensor(
+                trust_state["correct_view_mask"], dtype=torch.bool
+            ).detach().cpu()
+            evidence_camera_names = tuple(
+                str(name) for name in trust_state["evidence_camera_names"]
+            )
+            if (
+                visible_view_mask.ndim != 2
+                or correct_view_mask.shape != visible_view_mask.shape
+                or visible_view_mask.shape[0] != expected_shape[0]
+            ):
+                raise ValueError(
+                    "adaptive trust unique-camera masks must have matching "
+                    "[landmark, camera] shapes"
+                )
+            if visible_view_mask.shape[1] != len(evidence_camera_names):
+                raise ValueError(
+                    "adaptive trust evidence_camera_names does not match "
+                    "unique-camera mask width"
+                )
+            if len(set(evidence_camera_names)) != len(evidence_camera_names):
+                raise ValueError("adaptive trust evidence camera names must be unique")
+            visible_from_mask = visible_view_mask.sum(dim=1).to(torch.float32)
+            correct_from_mask = correct_view_mask.sum(dim=1).to(torch.float32)
+            if not torch.equal(visible_from_mask, visible_count):
+                raise ValueError(
+                    "adaptive trust visible_count must equal unique-camera "
+                    "evidence mask counts"
+                )
+            if not torch.equal(correct_from_mask, correct_count):
+                raise ValueError(
+                    "adaptive trust correct_count must equal unique-camera "
+                    "evidence mask counts"
+                )
+            serialized_trust_state.update(
+                {
+                    "version": 2,
+                    "visible_view_mask": visible_view_mask,
+                    "correct_view_mask": correct_view_mask,
+                    "evidence_camera_names": evidence_camera_names,
+                }
+            )
+        state["adaptive_trust_state"] = serialized_trust_state
     torch.save(state, path)
     return state
 
@@ -1515,6 +1935,137 @@ def load_sparse_candidate_teacher_features(path, sampled_idx, device="cuda"):
     if not bool(torch.isfinite(features).all().item()):
         raise ValueError("sparse candidate teacher features contain non-finite values")
     return features.to(device=device)
+
+
+def load_sparse_candidate_teacher_adaptive_trust_state(
+    state_or_path,
+    sampled_idx,
+    device="cuda",
+):
+    """Load resumable adaptive-trust state when a checkpoint provides it.
+
+    Older candidate-teacher checkpoints intentionally return ``None`` so they
+    remain valid initializations for a fresh adaptive-trust run.
+    """
+    if isinstance(state_or_path, (str, os.PathLike)):
+        state = torch.load(state_or_path, map_location="cpu")
+    else:
+        state = state_or_path
+    if not isinstance(state, dict) or "adaptive_trust_state" not in state:
+        return None
+    expected = torch.as_tensor(sampled_idx, dtype=torch.long).reshape(-1).cpu()
+    actual = torch.as_tensor(
+        state.get("landmark_indices"), dtype=torch.long
+    ).reshape(-1).cpu()
+    if not torch.equal(actual, expected):
+        raise ValueError("adaptive trust state landmark indices do not match sampled_idx")
+    trust_state = state["adaptive_trust_state"]
+    if not isinstance(trust_state, dict):
+        raise ValueError("adaptive trust state must be a dictionary")
+    required_keys = (
+        "initial_features",
+        "raw_features",
+        "visible_count",
+        "correct_count",
+        "update_steps",
+    )
+    missing_keys = [key for key in required_keys if key not in trust_state]
+    if missing_keys:
+        raise ValueError(
+            "adaptive trust state is missing required keys: " + ", ".join(missing_keys)
+        )
+    initial_features = torch.as_tensor(
+        trust_state["initial_features"], dtype=torch.float32
+    )
+    raw_features = torch.as_tensor(trust_state["raw_features"], dtype=torch.float32)
+    visible_count = torch.as_tensor(
+        trust_state["visible_count"], dtype=torch.float32
+    ).reshape(-1)
+    correct_count = torch.as_tensor(
+        trust_state["correct_count"], dtype=torch.float32
+    ).reshape(-1)
+    if initial_features.ndim != 2 or initial_features.shape[0] != expected.numel():
+        raise ValueError("adaptive trust initial feature count does not match sampled_idx")
+    if raw_features.shape != initial_features.shape:
+        raise ValueError("adaptive trust raw features do not match initial features")
+    if visible_count.numel() != expected.numel() or correct_count.numel() != expected.numel():
+        raise ValueError("adaptive trust evidence count does not match sampled_idx")
+    tensors = (initial_features, raw_features, visible_count, correct_count)
+    if not all(bool(torch.isfinite(tensor).all().item()) for tensor in tensors):
+        raise ValueError("adaptive trust state contains non-finite values")
+    if bool((visible_count < 0).any().item()) or bool((correct_count < 0).any().item()):
+        raise ValueError("adaptive trust evidence counts must be non-negative")
+    if bool((correct_count > visible_count).any().item()):
+        raise ValueError("adaptive trust correct count cannot exceed visible count")
+    update_steps = int(trust_state["update_steps"])
+    if update_steps < 0:
+        raise ValueError("adaptive trust update_steps must be non-negative")
+    resumed = {
+        "initial_features": F.normalize(initial_features, dim=1).to(device=device),
+        "raw_features": raw_features.to(device=device),
+        "visible_count": visible_count.to(device=device),
+        "correct_count": correct_count.to(device=device),
+        "update_steps": update_steps,
+    }
+    unique_evidence_keys = (
+        "visible_view_mask",
+        "correct_view_mask",
+        "evidence_camera_names",
+    )
+    present_unique_evidence = [key in trust_state for key in unique_evidence_keys]
+    if any(present_unique_evidence) and not all(present_unique_evidence):
+        raise ValueError(
+            "adaptive trust unique-camera evidence must provide "
+            + ", ".join(unique_evidence_keys)
+        )
+    if all(present_unique_evidence):
+        visible_view_mask = torch.as_tensor(
+            trust_state["visible_view_mask"], dtype=torch.bool
+        )
+        correct_view_mask = torch.as_tensor(
+            trust_state["correct_view_mask"], dtype=torch.bool
+        )
+        evidence_camera_names = tuple(
+            str(name) for name in trust_state["evidence_camera_names"]
+        )
+        if (
+            visible_view_mask.ndim != 2
+            or correct_view_mask.shape != visible_view_mask.shape
+            or visible_view_mask.shape[0] != expected.numel()
+        ):
+            raise ValueError(
+                "adaptive trust unique-camera masks must have matching "
+                "[landmark, camera] shapes"
+            )
+        if visible_view_mask.shape[1] != len(evidence_camera_names):
+            raise ValueError(
+                "adaptive trust evidence_camera_names does not match "
+                "unique-camera mask width"
+            )
+        if len(set(evidence_camera_names)) != len(evidence_camera_names):
+            raise ValueError("adaptive trust evidence camera names must be unique")
+        if not torch.equal(
+            visible_view_mask.sum(dim=1).to(torch.float32), visible_count
+        ):
+            raise ValueError(
+                "adaptive trust visible_count must equal unique-camera "
+                "evidence mask counts"
+            )
+        if not torch.equal(
+            correct_view_mask.sum(dim=1).to(torch.float32), correct_count
+        ):
+            raise ValueError(
+                "adaptive trust correct_count must equal unique-camera "
+                "evidence mask counts"
+            )
+        resumed.update(
+            {
+                "visible_view_mask": visible_view_mask.to(device=device),
+                "correct_view_mask": correct_view_mask.to(device=device),
+                "evidence_camera_names": evidence_camera_names,
+            }
+        )
+    return resumed
 
 
 def _numeric_teacher_diagnostics(diagnostics):
@@ -1900,6 +2451,7 @@ def training_detector(
     candidate_teacher_pair_measurement_init_path="",
     candidate_teacher_optimize_features=False,
     candidate_teacher_freeze_detector=False,
+    candidate_teacher_detector_only=False,
     candidate_teacher_detector_lr=1e-4,
     candidate_teacher_feature_lr=5e-5,
     candidate_teacher_dustbin_lr=0.0,
@@ -1963,6 +2515,22 @@ def training_detector(
     candidate_teacher_counterfactual_exact_decision_set=False,
     candidate_teacher_counterfactual_require_positive_bias_gain=False,
     candidate_teacher_counterfactual_require_nonnegative_translation_gain=False,
+    candidate_teacher_hard_preservation_weight=0.0,
+    candidate_teacher_hard_preservation_refresh_visits=2,
+    candidate_teacher_hard_preservation_solver="poselib",
+    candidate_teacher_hard_preservation_reprojection_error=8.0,
+    candidate_teacher_hard_preservation_ransac_seed=0,
+    candidate_teacher_hard_preservation_min_inliers=4,
+    candidate_teacher_hard_preservation_max_pose_error_cm=100.0,
+    candidate_teacher_hard_preservation_max_useful=96,
+    candidate_teacher_hard_preservation_max_harmful=96,
+    candidate_teacher_hard_preservation_temperature=0.05,
+    candidate_teacher_hard_preservation_margin=0.05,
+    candidate_teacher_hard_preservation_harmful_mode="all_false",
+    candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m=0.0,
+    candidate_teacher_hard_preservation_exact_replay_max_candidates=8,
+    candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm=0.0,
+    candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree=0.0,
     candidate_teacher_grid_rows=4,
     candidate_teacher_grid_cols=4,
     candidate_teacher_depth_bins=4,
@@ -2010,7 +2578,12 @@ def training_detector(
     candidate_teacher_geometry_weight=0.1,
     candidate_teacher_coverage_weight=0.1,
     candidate_teacher_base_detector_weight=0.1,
+    candidate_teacher_detector_preservation_weight=0.0,
     candidate_teacher_feature_anchor_weight=0.01,
+    candidate_teacher_adaptive_trust=False,
+    candidate_teacher_trust_alpha_min=0.25,
+    candidate_teacher_trust_view_prior=3.0,
+    candidate_teacher_trust_warmup_passes=1.0,
     candidate_teacher_support_query_split=False,
     candidate_teacher_query_ratio=0.2,
     candidate_teacher_validation_ratio=0.0,
@@ -2242,6 +2815,17 @@ def training_detector(
             f"candidate_val={len(validation_cameras)} "
             f"mode={candidate_teacher_split_mode}"
         )
+    teacher_trust_camera_names = tuple(
+        str(camera.image_name) for camera in training_cameras
+    )
+    if len(set(teacher_trust_camera_names)) != len(teacher_trust_camera_names):
+        raise ValueError(
+            "candidate-teacher training cameras must have unique image names "
+            "for adaptive-trust evidence"
+        )
+    teacher_trust_camera_index = {
+        name: index for index, name in enumerate(teacher_trust_camera_names)
+    }
 
     viewpoint_stack = None
     progress_bar = tqdm(range(0, train_iteration), desc="Scene-Specific Detector")
@@ -2287,9 +2871,22 @@ def training_detector(
             if missing & {"offset_head.weight", "offset_head.bias"}:
                 detector.initialize_offset_to_zero()
 
+    detector_preservation_teacher = None
+    if (
+        sparse_candidate_teacher
+        and float(candidate_teacher_detector_preservation_weight) > 0.0
+    ):
+        detector_preservation_teacher = copy.deepcopy(detector).eval()
+        detector_preservation_teacher.requires_grad_(False)
+
     teacher_landmark_features = None
     teacher_initial_features = None
     teacher_landmark_xyz = None
+    teacher_trust_visible_count = None
+    teacher_trust_correct_count = None
+    teacher_trust_visible_view_mask = None
+    teacher_trust_correct_view_mask = None
+    teacher_trust_update_steps = 0
     teacher_history = []
     teacher_validation_history = []
     teacher_last_diagnostics = {}
@@ -2297,10 +2894,104 @@ def training_detector(
     calibrated_pair_measurement_threshold = None
     grad_accum = 8
     grad_clip_norm = 10.0
+    if bool(candidate_teacher_adaptive_trust) and not bool(candidate_teacher_optimize_features):
+        raise ValueError("adaptive candidate-teacher trust requires feature optimization")
+    if not 0.0 <= float(candidate_teacher_trust_alpha_min) <= 1.0:
+        raise ValueError("candidate_teacher_trust_alpha_min must be in [0, 1]")
+    if float(candidate_teacher_trust_view_prior) < 0.0:
+        raise ValueError("candidate_teacher_trust_view_prior must be non-negative")
+    if float(candidate_teacher_detector_preservation_weight) < 0.0:
+        raise ValueError(
+            "candidate_teacher_detector_preservation_weight must be non-negative"
+        )
+    validate_detector_only_candidate_teacher_configuration(
+        enabled=candidate_teacher_detector_only,
+        sparse_candidate_teacher=sparse_candidate_teacher,
+        optimize_features=candidate_teacher_optimize_features,
+        freeze_detector=candidate_teacher_freeze_detector,
+        dustbin_weight=candidate_teacher_dustbin_weight,
+        pair_scorer_weight=candidate_teacher_pair_scorer_weight,
+        pair_scorer_assignment_weight=candidate_teacher_pair_scorer_assignment_weight,
+        pair_measurement_inlier_weight=candidate_teacher_pair_measurement_inlier_weight,
+        pair_measurement_nll_weight=candidate_teacher_pair_measurement_nll_weight,
+        pair_measurement_bias_weight=candidate_teacher_pair_measurement_bias_weight,
+        pair_measurement_covariance_weight=(
+            candidate_teacher_pair_measurement_covariance_weight
+        ),
+    )
+    if float(candidate_teacher_trust_warmup_passes) < 0.0:
+        raise ValueError("candidate_teacher_trust_warmup_passes must be non-negative")
+    if float(candidate_teacher_hard_preservation_weight) < 0.0:
+        raise ValueError("candidate_teacher_hard_preservation_weight must be non-negative")
+    if int(candidate_teacher_hard_preservation_refresh_visits) < 1:
+        raise ValueError("candidate_teacher_hard_preservation_refresh_visits must be >= 1")
+    if str(candidate_teacher_hard_preservation_solver) not in {"poselib", "opencv"}:
+        raise ValueError("candidate_teacher_hard_preservation_solver must be 'poselib' or 'opencv'")
+    if float(candidate_teacher_hard_preservation_reprojection_error) <= 0.0:
+        raise ValueError("candidate_teacher_hard_preservation_reprojection_error must be positive")
+    if int(candidate_teacher_hard_preservation_ransac_seed) < 0:
+        raise ValueError("candidate_teacher_hard_preservation_ransac_seed must be non-negative")
+    if int(candidate_teacher_hard_preservation_min_inliers) < 4:
+        raise ValueError("candidate_teacher_hard_preservation_min_inliers must be >= 4")
+    if float(candidate_teacher_hard_preservation_max_pose_error_cm) <= 0.0:
+        raise ValueError("candidate_teacher_hard_preservation_max_pose_error_cm must be positive")
+    if int(candidate_teacher_hard_preservation_max_useful) < 1:
+        raise ValueError("candidate_teacher_hard_preservation_max_useful must be >= 1")
+    if int(candidate_teacher_hard_preservation_max_harmful) < 1:
+        raise ValueError("candidate_teacher_hard_preservation_max_harmful must be >= 1")
+    if float(candidate_teacher_hard_preservation_temperature) <= 0.0:
+        raise ValueError("candidate_teacher_hard_preservation_temperature must be positive")
+    if candidate_teacher_hard_preservation_harmful_mode not in {
+        "all_false",
+        "translation_delete",
+        "exact_pose_delete",
+    }:
+        raise ValueError(
+            "candidate_teacher_hard_preservation_harmful_mode must be "
+            "'all_false', 'translation_delete', or 'exact_pose_delete'"
+        )
+    if (
+        float(
+            candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m
+        )
+        < 0.0
+    ):
+        raise ValueError(
+            "candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m "
+            "must be non-negative"
+        )
+    if int(candidate_teacher_hard_preservation_exact_replay_max_candidates) < 0:
+        raise ValueError(
+            "candidate_teacher_hard_preservation_exact_replay_max_candidates "
+            "must be non-negative"
+        )
+    if float(candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm) < 0.0:
+        raise ValueError(
+            "candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm "
+            "must be non-negative"
+        )
+    if (
+        float(
+            candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree
+        )
+        < 0.0
+    ):
+        raise ValueError(
+            "candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree "
+            "must be non-negative"
+        )
+    candidate_teacher_trust_warmup_steps = int(
+        math.ceil(
+            float(candidate_teacher_trust_warmup_passes)
+            * max(len(training_cameras), 1)
+        )
+    )
     teacher_config = {
         "enabled": bool(sparse_candidate_teacher),
         "optimize_features": bool(candidate_teacher_optimize_features),
+        "landmark_features_frozen": not bool(candidate_teacher_optimize_features),
         "freeze_detector": bool(candidate_teacher_freeze_detector),
+        "detector_only": bool(candidate_teacher_detector_only),
         "detector_init_path": detector_init_path,
         "state_init_path": candidate_teacher_state_init_path,
         "pair_scorer_init_path": candidate_teacher_pair_scorer_init_path,
@@ -2479,6 +3170,59 @@ def training_detector(
         "counterfactual_require_nonnegative_translation_gain": bool(
             candidate_teacher_counterfactual_require_nonnegative_translation_gain
         ),
+        "hard_preservation_enabled": bool(
+            float(candidate_teacher_hard_preservation_weight) > 0.0
+        ),
+        "hard_preservation_weight": float(candidate_teacher_hard_preservation_weight),
+        "hard_preservation_refresh_visits": int(
+            candidate_teacher_hard_preservation_refresh_visits
+        ),
+        "hard_preservation_solver": str(candidate_teacher_hard_preservation_solver),
+        "hard_preservation_reprojection_error": float(
+            candidate_teacher_hard_preservation_reprojection_error
+        ),
+        "hard_preservation_ransac_seed": int(
+            candidate_teacher_hard_preservation_ransac_seed
+        ),
+        "hard_preservation_confidence": 0.99999,
+        "hard_preservation_max_iterations": 100000,
+        "hard_preservation_min_iterations": 1000,
+        "hard_preservation_min_inliers": int(
+            candidate_teacher_hard_preservation_min_inliers
+        ),
+        "hard_preservation_max_pose_error_cm": float(
+            candidate_teacher_hard_preservation_max_pose_error_cm
+        ),
+        "hard_preservation_max_useful": int(
+            candidate_teacher_hard_preservation_max_useful
+        ),
+        "hard_preservation_max_harmful": int(
+            candidate_teacher_hard_preservation_max_harmful
+        ),
+        "hard_preservation_temperature": float(
+            candidate_teacher_hard_preservation_temperature
+        ),
+        "hard_preservation_margin": float(candidate_teacher_hard_preservation_margin),
+        "hard_preservation_harmful_mode": str(
+            candidate_teacher_hard_preservation_harmful_mode
+        ),
+        "hard_preservation_harmful_min_translation_delete_gain_m": float(
+            candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m
+        ),
+        "hard_preservation_exact_replay_max_candidates": int(
+            candidate_teacher_hard_preservation_exact_replay_max_candidates
+        ),
+        "hard_preservation_exact_replay_min_pose_gain_cm": float(
+            candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm
+        ),
+        "hard_preservation_exact_replay_rotation_weight_cm_per_degree": float(
+            candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree
+        ),
+        "hard_preservation_exact_replay_requires_harmful": bool(
+            candidate_teacher_hard_preservation_harmful_mode == "exact_pose_delete"
+        ),
+        "hard_preservation_score_target": float(candidate_teacher_match_margin),
+        "hard_preservation_deployment_graph": "match_score_threshold_plus_landmark_quota",
         "grid_rows": int(candidate_teacher_grid_rows),
         "grid_cols": int(candidate_teacher_grid_cols),
         "depth_bins": int(candidate_teacher_depth_bins),
@@ -2567,7 +3311,24 @@ def training_detector(
         "geometry_weight": float(candidate_teacher_geometry_weight),
         "coverage_weight": float(candidate_teacher_coverage_weight),
         "base_detector_weight": float(candidate_teacher_base_detector_weight),
+        "detector_preservation_weight": float(
+            candidate_teacher_detector_preservation_weight
+        ),
+        "detector_preservation_target": "frozen_combined_proposal_heatmap",
         "feature_anchor_weight": float(candidate_teacher_feature_anchor_weight),
+        "feature_parameterization": (
+            "adaptive_trust_residual"
+            if bool(candidate_teacher_adaptive_trust)
+            else "direct"
+        ),
+        "adaptive_trust": bool(candidate_teacher_adaptive_trust),
+        "trust_alpha_min": float(candidate_teacher_trust_alpha_min),
+        "trust_view_prior": float(candidate_teacher_trust_view_prior),
+        "trust_warmup_passes": float(candidate_teacher_trust_warmup_passes),
+        "trust_warmup_steps": int(candidate_teacher_trust_warmup_steps),
+        "trust_warmup_schedule": "linear_blend_to_evidence",
+        "trust_evidence": "unique_real_camera_deployment_predicted_gt_correct_after_quota",
+        "trust_resume_state_version": 2,
         "support_query_split": bool(candidate_teacher_support_query_split),
         "support_camera_count": int(support_camera_count),
         "query_camera_count": int(len(training_cameras)),
@@ -2595,9 +3356,70 @@ def training_detector(
                 sampled_idx,
                 device=teacher_initial_features.device,
             )
-        teacher_initial_features = F.normalize(teacher_initial_features, dim=1)
+        if bool(candidate_teacher_optimize_features):
+            teacher_initial_features = F.normalize(teacher_initial_features, dim=1)
+        teacher_raw_features = teacher_initial_features
+        if bool(candidate_teacher_adaptive_trust):
+            resumed_trust_state = load_sparse_candidate_teacher_adaptive_trust_state(
+                teacher_init_state,
+                sampled_idx,
+                device=teacher_initial_features.device,
+            )
+            if resumed_trust_state is not None:
+                if (
+                    "visible_view_mask" not in resumed_trust_state
+                    or "correct_view_mask" not in resumed_trust_state
+                    or "evidence_camera_names" not in resumed_trust_state
+                ):
+                    raise ValueError(
+                        "Cannot resume legacy visit-count adaptive trust. Start a "
+                        "fresh trust run from a non-trust candidate-teacher state."
+                    )
+                if tuple(resumed_trust_state["evidence_camera_names"]) != teacher_trust_camera_names:
+                    raise ValueError(
+                        "adaptive-trust resume cameras do not match the current "
+                        "candidate-training split"
+                    )
+                print(
+                    "Resuming sparse candidate adaptive-trust evidence: "
+                    f"updates={resumed_trust_state['update_steps']}"
+                )
+                teacher_initial_features = resumed_trust_state["initial_features"]
+                teacher_raw_features = resumed_trust_state["raw_features"]
+                teacher_trust_visible_count = resumed_trust_state["visible_count"]
+                teacher_trust_correct_count = resumed_trust_state["correct_count"]
+                teacher_trust_visible_view_mask = resumed_trust_state[
+                    "visible_view_mask"
+                ]
+                teacher_trust_correct_view_mask = resumed_trust_state[
+                    "correct_view_mask"
+                ]
+                teacher_trust_update_steps = int(
+                    resumed_trust_state["update_steps"]
+                )
+            else:
+                teacher_trust_visible_count = torch.zeros(
+                    sampled_idx.numel(),
+                    dtype=torch.float32,
+                    device=teacher_initial_features.device,
+                )
+                teacher_trust_correct_count = torch.zeros_like(
+                    teacher_trust_visible_count
+                )
+                evidence_shape = (
+                    sampled_idx.numel(),
+                    len(teacher_trust_camera_names),
+                )
+                teacher_trust_visible_view_mask = torch.zeros(
+                    evidence_shape,
+                    dtype=torch.bool,
+                    device=teacher_initial_features.device,
+                )
+                teacher_trust_correct_view_mask = torch.zeros_like(
+                    teacher_trust_visible_view_mask
+                )
         teacher_landmark_features = torch.nn.Parameter(
-            teacher_initial_features.clone(),
+            teacher_raw_features.clone(),
             requires_grad=bool(candidate_teacher_optimize_features),
         )
         teacher_landmark_xyz = gaussian_localization_xyz(gaussians)[sampled_idx].detach().float()
@@ -2835,6 +3657,15 @@ def training_detector(
 
     if candidate_teacher_matchability_only and candidate_teacher_offset_only:
         raise ValueError("matchability-only and offset-only training are mutually exclusive")
+    if sparse_candidate_teacher and candidate_teacher_detector_only:
+        # Keep descriptor/map-side objects immutable even when an initialized state
+        # contains optional pair modules.
+        teacher_landmark_features.requires_grad_(False)
+        teacher_dustbin_score.requires_grad_(False)
+        if teacher_pair_scorer is not None:
+            teacher_pair_scorer.requires_grad_(False)
+        if teacher_pair_measurement_head is not None:
+            teacher_pair_measurement_head.requires_grad_(False)
     if sparse_candidate_teacher and candidate_teacher_freeze_detector:
         for parameter in detector.parameters():
             parameter.requires_grad_(False)
@@ -2915,6 +3746,19 @@ def training_detector(
                 "sparse candidate teacher has no trainable parameters; enable detector training or "
                 "--candidate_teacher_optimize_features"
             )
+        if candidate_teacher_detector_only:
+            group_names = [group["name"] for group in parameter_groups]
+            if group_names != ["detector"]:
+                raise RuntimeError(
+                    "candidate_teacher_detector_only unexpectedly created "
+                    f"trainable groups: {group_names}"
+                )
+            teacher_config["trainable_parameter_groups"] = group_names
+            print(
+                "Sparse candidate teacher detector-only stage: "
+                f"{sum(parameter.numel() for parameter in detector_parameters)} "
+                "detector parameters"
+            )
         optimizer = torch.optim.AdamW(parameter_groups, weight_decay=1e-4)
     else:
         optimizer = torch.optim.AdamW(detector.parameters(), lr=0.001)
@@ -2924,6 +3768,49 @@ def training_detector(
         eta_min=0.0 if sparse_candidate_teacher else 0.0005,
     )
     optimizer.zero_grad()
+    hard_candidate_teacher = None
+    if (
+        sparse_candidate_teacher
+        and float(candidate_teacher_hard_preservation_weight) > 0.0
+    ):
+        hard_candidate_teacher = HardCandidateTeacherCache(
+            refresh_visits=candidate_teacher_hard_preservation_refresh_visits,
+            solver=candidate_teacher_hard_preservation_solver,
+            reprojection_error=candidate_teacher_hard_preservation_reprojection_error,
+            confidence=0.99999,
+            max_iterations=100000,
+            min_iterations=1000,
+            ransac_seed=candidate_teacher_hard_preservation_ransac_seed,
+            min_inliers=candidate_teacher_hard_preservation_min_inliers,
+            max_pose_error_cm=candidate_teacher_hard_preservation_max_pose_error_cm,
+            max_useful=candidate_teacher_hard_preservation_max_useful,
+            max_harmful=candidate_teacher_hard_preservation_max_harmful,
+            translation_scale=candidate_teacher_map_fisher_translation_scale,
+            rotation_scale_degrees=(
+                candidate_teacher_map_fisher_rotation_scale_degrees
+            ),
+            harmful_mode=candidate_teacher_hard_preservation_harmful_mode,
+            harmful_min_translation_delete_gain_m=(
+                candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m
+            ),
+            exact_replay_max_candidates=(
+                candidate_teacher_hard_preservation_exact_replay_max_candidates
+            ),
+            exact_replay_min_pose_gain_cm=(
+                candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm
+            ),
+            exact_replay_rotation_weight_cm_per_degree=(
+                candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree
+            ),
+            # ``match_score_matrix`` has already applied
+            # candidate_teacher_match_threshold before the candidate tensor is
+            # built. The deployed quota mask below therefore replays all
+            # remaining candidates with a -inf selector threshold.
+            exact_replay_selection_threshold=-float("inf"),
+            exact_replay_max_matches_per_landmark=(
+                candidate_teacher_map_max_matches_per_landmark
+            ),
+        )
     camera_failure_scores = torch.ones(len(training_cameras), dtype=torch.float32)
     camera_failure_index = {
         str(camera.image_name): index for index, camera in enumerate(training_cameras)
@@ -3089,6 +3976,19 @@ def training_detector(
             if gt_map is not None
             else heat_map.sum() * 0.0
         )
+        detector_preservation_loss = heat_map.sum() * 0.0
+        if detector_preservation_teacher is not None:
+            with torch.no_grad():
+                teacher_keypoint_heat_map, teacher_matchability_heat_map, _ = (
+                    detector_preservation_teacher.forward_all(gt_feature_map)
+                )
+            detector_preservation_loss = detector_proposal_preservation_loss(
+                keypoint_heat_map,
+                matchability_heat_map,
+                teacher_keypoint_heat_map,
+                teacher_matchability_heat_map,
+                valid_mask=gt_map_mask,
+            )
         teacher_losses = None
         feature_anchor_loss = heat_map.sum() * 0.0
         if sparse_candidate_teacher:
@@ -3115,10 +4015,40 @@ def training_detector(
                 if gt_map_mask is None
                 else matchability_heat_map * gt_map_mask
             )
+            teacher_features_for_matching = teacher_landmark_features
+            teacher_trust_alpha = None
+            teacher_trust_warmup_active = False
+            if bool(candidate_teacher_adaptive_trust):
+                teacher_trust_warmup_active = (
+                    teacher_trust_update_steps < candidate_teacher_trust_warmup_steps
+                )
+                teacher_trust_warmup_blend = (
+                    max(
+                        0.0,
+                        1.0
+                        - float(teacher_trust_update_steps)
+                        / float(max(candidate_teacher_trust_warmup_steps, 1)),
+                    )
+                    if candidate_teacher_trust_warmup_steps > 0
+                    else 0.0
+                )
+                teacher_trust_alpha = candidate_teacher_trust_alpha(
+                    teacher_trust_visible_count,
+                    teacher_trust_correct_count,
+                    alpha_min=candidate_teacher_trust_alpha_min,
+                    view_prior=candidate_teacher_trust_view_prior,
+                    warmup_active=teacher_trust_warmup_active,
+                    warmup_blend=teacher_trust_warmup_blend,
+                )
+                teacher_features_for_matching = candidate_teacher_effective_features(
+                    teacher_initial_features,
+                    teacher_landmark_features,
+                    teacher_trust_alpha,
+                )
             candidate_batch = build_sparse_candidate_batch(
                 gt_feature_map,
                 teacher_heat_map,
-                teacher_landmark_features,
+                teacher_features_for_matching,
                 teacher_landmark_xyz,
                 K,
                 viewmat,
@@ -3262,6 +4192,49 @@ def training_detector(
                     candidate_teacher_online_render_provenance_temperature
                 ),
             )
+            hard_preservation_loss = heat_map.sum() * 0.0
+            if hard_candidate_teacher is not None and not online_render_used:
+                hard_targets = hard_candidate_teacher.build(
+                    str(viewpoint_cam.image_name),
+                    keypoint_ids=candidate_batch.keypoint_ids,
+                    candidate_keypoint_idx=candidate_batch.pair_scorer_keypoint_idx,
+                    candidate_landmark_idx=candidate_batch.pair_scorer_landmark_idx,
+                    candidate_scores=(
+                        candidate_batch.matcher_deployment_score.detach()
+                    ),
+                    keypoint_xy=candidate_batch.keypoint_xy,
+                    deployment_mask=candidate_batch.map_candidate_quota_mask,
+                    gt_correct_mask=(candidate_batch.pair_scorer_labels > 0.5),
+                    landmark_xyz=teacher_landmark_xyz,
+                    K=K,
+                    pose_gt_w2c=viewmat,
+                )
+                hard_preservation_loss, hard_diagnostics = (
+                    hard_candidate_preservation_loss(
+                        candidate_batch.matcher_similarity,
+                        hard_targets,
+                        temperature=candidate_teacher_hard_preservation_temperature,
+                        margin=candidate_teacher_hard_preservation_margin,
+                        score_target=candidate_teacher_match_margin,
+                        require_harmful=(
+                            candidate_teacher_hard_preservation_harmful_mode
+                            == "exact_pose_delete"
+                        ),
+                    )
+                )
+                candidate_batch.diagnostics.update(hard_targets.diagnostics)
+                candidate_batch.diagnostics.update(hard_diagnostics)
+            else:
+                candidate_batch.diagnostics.update(
+                    {
+                        "hard_teacher_refreshed": 0.0,
+                        "hard_teacher_cached_target_count": 0.0,
+                        "hard_teacher_loss_useful": 0.0,
+                        "hard_teacher_loss_harmful": 0.0,
+                        "hard_teacher_loss_pairwise": 0.0,
+                        "hard_teacher_loss_skipped_no_harmful": 0.0,
+                    }
+                )
             teacher_losses = sparse_candidate_losses(
                 candidate_batch,
                 assignment_mode=candidate_teacher_assignment_mode,
@@ -3316,14 +4289,52 @@ def training_detector(
                         candidate_query_failure_score(teacher_losses),
                         decay=candidate_teacher_online_render_failure_ema,
                     )
+            teacher_last_diagnostics = _numeric_teacher_diagnostics(candidate_batch.diagnostics)
+            if hard_candidate_teacher is not None:
+                teacher_last_diagnostics.update(hard_candidate_teacher.diagnostics())
+            if bool(candidate_teacher_adaptive_trust) and not online_render_used:
+                trust_camera_index = teacher_trust_camera_index.get(
+                    str(viewpoint_cam.image_name)
+                )
+                if trust_camera_index is None:
+                    raise ValueError(
+                        "real candidate-teacher query is absent from the "
+                        "adaptive-trust camera index"
+                    )
+                update_candidate_teacher_trust_evidence(
+                    teacher_trust_visible_count,
+                    teacher_trust_correct_count,
+                    render_visible_mask[sampled_idx],
+                    candidate_batch.pair_scorer_landmark_idx,
+                    candidate_batch.pair_scorer_labels > 0.5,
+                    candidate_batch.map_candidate_classification_valid_mask,
+                    camera_index=trust_camera_index,
+                    visible_view_mask=teacher_trust_visible_view_mask,
+                    correct_view_mask=teacher_trust_correct_view_mask,
+                    report=False,
+                    validate_indices=False,
+                )
+                teacher_trust_update_steps += 1
+                teacher_last_diagnostics["trust_evidence_updates"] = float(
+                    teacher_trust_update_steps
+                )
+            elif bool(candidate_teacher_adaptive_trust):
+                teacher_last_diagnostics["trust_synthetic_query_skipped"] = 1.0
             if candidate_teacher_optimize_features:
-                feature_anchor_loss = (
+                feature_anchor_drift = (
                     1.0
                     - (
-                        F.normalize(teacher_landmark_features, dim=1)
+                        F.normalize(teacher_features_for_matching, dim=1)
                         * teacher_initial_features
                     ).sum(dim=1)
-                ).clamp_min(0.0).mean()
+                ).clamp_min(0.0)
+                if teacher_trust_alpha is None:
+                    feature_anchor_loss = feature_anchor_drift.mean()
+                else:
+                    trust_weight = (teacher_trust_alpha + 1e-6).reciprocal()
+                    feature_anchor_loss = (
+                        feature_anchor_drift * trust_weight
+                    ).sum() / trust_weight.sum().clamp_min(1e-6)
             loss = (
                 float(candidate_teacher_pair_weight) * teacher_losses.pair
                 + float(candidate_teacher_hard_negative_weight) * teacher_losses.hard_negative
@@ -3332,6 +4343,8 @@ def training_detector(
                 * teacher_losses.provenance_assignment
                 + float(candidate_teacher_counterfactual_assignment_weight)
                 * teacher_losses.counterfactual_assignment
+                + float(candidate_teacher_hard_preservation_weight)
+                * hard_preservation_loss
                 + float(candidate_teacher_dustbin_weight) * teacher_losses.dustbin_assignment
                 + float(candidate_teacher_matcher_assignment_weight)
                 * teacher_losses.matcher_assignment
@@ -3372,9 +4385,10 @@ def training_detector(
                 + float(candidate_teacher_map_capacity_weight)
                 * teacher_losses.map_capacity
                 + float(candidate_teacher_base_detector_weight) * base_detector_loss
+                + float(candidate_teacher_detector_preservation_weight)
+                * detector_preservation_loss
                 + float(candidate_teacher_feature_anchor_weight) * feature_anchor_loss
             )
-            teacher_last_diagnostics = _numeric_teacher_diagnostics(candidate_batch.diagnostics)
             if online_render_used:
                 online_render_stats["episodes"] += 1
                 if pair_weights is not None:
@@ -3443,10 +4457,31 @@ def training_detector(
                         * teacher_losses.counterfactual_assignment,
                         [teacher_dustbin_score],
                     ),
+                    "grad_hard_preservation_loc_feature": _isolated_loss_gradient_norm(
+                        float(candidate_teacher_hard_preservation_weight)
+                        * hard_preservation_loss,
+                        [teacher_landmark_features],
+                    ),
                     "grad_feature_anchor_loc_feature": _isolated_loss_gradient_norm(
                         float(candidate_teacher_feature_anchor_weight)
                         * feature_anchor_loss,
                         [teacher_landmark_features],
+                    ),
+                    "grad_detector_preservation_detector_trunk": (
+                        _isolated_loss_gradient_norm(
+                            float(candidate_teacher_detector_preservation_weight)
+                            * detector_preservation_loss,
+                            detector.cnn.parameters(),
+                        )
+                    ),
+                    "grad_detector_preservation_matchability": (
+                        _isolated_loss_gradient_norm(
+                            float(candidate_teacher_detector_preservation_weight)
+                            * detector_preservation_loss,
+                            detector.matchability_head.parameters()
+                            if detector.matchability_head is not None
+                            else [],
+                        )
                     ),
                 }
             )
@@ -3519,6 +4554,7 @@ def training_detector(
                             "Pair": f"{float(teacher_losses.pair.detach().item()):.4f}",
                             "Rank": f"{float(teacher_losses.assignment.detach().item()):.4f}",
                             "Swap": f"{float(teacher_losses.counterfactual_assignment.detach().item()):.4f}",
+                            "Hard": f"{float(hard_preservation_loss.detach().item()):.4f}",
                             "Reproj": f"{float(teacher_losses.matcher_reprojection_assignment.detach().item()):.4f}",
                             "Dust": f"{float(teacher_losses.dustbin_assignment.detach().item()):.4f}",
                             "Score": f"{float(teacher_losses.pair_scorer.detach().item()):.4f}",
@@ -3526,6 +4562,7 @@ def training_detector(
                             "MapB": f"{float(teacher_losses.map_bias.detach().item()):.4f}",
                             "DirB": f"{float(teacher_losses.map_directional_bias.detach().item()):.4f}",
                             "Offset": f"{float(teacher_losses.detector_offset.detach().item()):.4f}",
+                            "Keep": f"{float(detector_preservation_loss.detach().item()):.4f}",
                             "Prec": f"{teacher_last_diagnostics.get('predicted_gt_precision', 0.0):.3f}",
                             "FN": f"{teacher_last_diagnostics.get('false_negative_rate', 0.0):.3f}",
                         }
@@ -3556,6 +4593,7 @@ def training_detector(
                         "counterfactual_assignment": (
                             teacher_losses.counterfactual_assignment
                         ),
+                        "hard_preservation": hard_preservation_loss,
                         "dustbin_assignment": teacher_losses.dustbin_assignment,
                         "matcher_assignment": teacher_losses.matcher_assignment,
                         "matcher_reprojection_assignment": (
@@ -3590,6 +4628,7 @@ def training_detector(
                         "map_directional_bias": teacher_losses.map_directional_bias,
                         "map_capacity": teacher_losses.map_capacity,
                         "base_detector": base_detector_loss,
+                        "detector_preservation": detector_preservation_loss,
                         "feature_anchor": feature_anchor_loss,
                     }
                     for name, value in component_values.items():
@@ -3617,6 +4656,9 @@ def training_detector(
                     "loss_assignment": float(teacher_losses.assignment.detach().item()),
                     "loss_counterfactual_assignment": float(
                         teacher_losses.counterfactual_assignment.detach().item()
+                    ),
+                    "loss_hard_preservation": float(
+                        hard_preservation_loss.detach().item()
                     ),
                     "loss_dustbin_assignment": float(
                         teacher_losses.dustbin_assignment.detach().item()
@@ -3678,6 +4720,9 @@ def training_detector(
                         teacher_losses.map_capacity.detach().item()
                     ),
                     "loss_base_detector": float(base_detector_loss.detach().item()),
+                    "loss_detector_preservation": float(
+                        detector_preservation_loss.detach().item()
+                    ),
                     "loss_feature_anchor": float(feature_anchor_loss.detach().item()),
                 }
                 history_item.update(teacher_last_diagnostics)
@@ -3694,9 +4739,11 @@ def training_detector(
                 del candidate_selection_heat_map
                 del teacher_heat_map
                 del detector_supervision_heatmap
+                del teacher_features_for_matching
             del loss
             del teacher_losses
             del base_detector_loss
+            del detector_preservation_loss
             del feature_anchor_loss
             del keypoint_heat_map
             del matchability_heat_map
@@ -3724,13 +4771,69 @@ def training_detector(
 
         if iteration in saving_iterations:
             print("\n[ITER {}] Saving detector".format(iteration))
+            teacher_features_for_export = teacher_landmark_features
+            normalize_exported_features = bool(candidate_teacher_optimize_features)
+            adaptive_trust_state_for_export = None
+            if sparse_candidate_teacher and bool(candidate_teacher_adaptive_trust):
+                with torch.no_grad():
+                    export_trust_warmup_active = (
+                        teacher_trust_update_steps < candidate_teacher_trust_warmup_steps
+                    )
+                    export_trust_warmup_blend = (
+                        max(
+                            0.0,
+                            1.0
+                            - float(teacher_trust_update_steps)
+                            / float(max(candidate_teacher_trust_warmup_steps, 1)),
+                        )
+                        if candidate_teacher_trust_warmup_steps > 0
+                        else 0.0
+                    )
+                    export_trust_alpha = candidate_teacher_trust_alpha(
+                        teacher_trust_visible_count,
+                        teacher_trust_correct_count,
+                        alpha_min=candidate_teacher_trust_alpha_min,
+                        view_prior=candidate_teacher_trust_view_prior,
+                        warmup_active=export_trust_warmup_active,
+                        warmup_blend=export_trust_warmup_blend,
+                    )
+                    teacher_features_for_export = candidate_teacher_effective_features(
+                        teacher_initial_features,
+                        teacher_landmark_features,
+                        export_trust_alpha,
+                    )
+                    normalize_exported_features = True
+                    teacher_last_diagnostics.update(
+                        candidate_teacher_trust_diagnostics(
+                            teacher_trust_visible_count,
+                            teacher_trust_correct_count,
+                            export_trust_alpha,
+                            warmup_active=export_trust_warmup_active,
+                        )
+                    )
+                    teacher_last_diagnostics["trust_evidence_updates"] = float(
+                        teacher_trust_update_steps
+                    )
+                    teacher_last_diagnostics["trust_warmup_blend"] = float(
+                        export_trust_warmup_blend
+                    )
+                    adaptive_trust_state_for_export = {
+                        "initial_features": teacher_initial_features,
+                        "raw_features": teacher_landmark_features,
+                        "visible_count": teacher_trust_visible_count,
+                        "correct_count": teacher_trust_correct_count,
+                        "visible_view_mask": teacher_trust_visible_view_mask,
+                        "correct_view_mask": teacher_trust_correct_view_mask,
+                        "evidence_camera_names": teacher_trust_camera_names,
+                        "update_steps": teacher_trust_update_steps,
+                    }
             if sparse_candidate_teacher and validation_cameras:
                 validation_metrics = evaluate_sparse_candidate_teacher(
                     detector,
                     feature_extractor,
                     gaussians,
                     sampled_idx,
-                    teacher_landmark_features,
+                    teacher_features_for_export,
                     teacher_landmark_xyz,
                     teacher_dustbin_score,
                     teacher_pair_scorer,
@@ -3923,7 +5026,7 @@ def training_detector(
                 save_sparse_candidate_teacher_state(
                     state_path,
                     sampled_idx,
-                    teacher_landmark_features,
+                    teacher_features_for_export,
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
@@ -3934,11 +5037,13 @@ def training_detector(
                     pair_measurement_threshold=(
                         calibrated_pair_measurement_threshold
                     ),
+                    adaptive_trust_state=adaptive_trust_state_for_export,
+                    normalize_features=normalize_exported_features,
                 )
                 save_sparse_candidate_teacher_state(
                     os.path.join(save_path, "candidate_teacher_state.pt"),
                     sampled_idx,
-                    teacher_landmark_features,
+                    teacher_features_for_export,
                     iteration,
                     teacher_config,
                     teacher_last_diagnostics,
@@ -3949,6 +5054,8 @@ def training_detector(
                     pair_measurement_threshold=(
                         calibrated_pair_measurement_threshold
                     ),
+                    adaptive_trust_state=adaptive_trust_state_for_export,
+                    normalize_features=normalize_exported_features,
                 )
 
     if sparse_candidate_teacher:
@@ -3975,10 +5082,18 @@ def training_detector(
             "iterations": int(train_iteration),
             "landmark_count": int(sampled_idx.numel()),
             "config": teacher_config,
-            "final": teacher_history[-1] if teacher_history else teacher_last_diagnostics,
+            "final": {
+                **(teacher_history[-1] if teacher_history else {}),
+                **teacher_last_diagnostics,
+            },
             "history": teacher_history,
             "validation_history": teacher_validation_history,
             "online_render_stats": online_render_stats,
+            "hard_candidate_teacher_stats": (
+                hard_candidate_teacher.diagnostics()
+                if hard_candidate_teacher is not None
+                else {}
+            ),
         }
         summary_path = os.path.join(save_path, "candidate_teacher_training_summary.json")
         with open(summary_path, "w") as handle:
@@ -4096,6 +5211,12 @@ def build_arg_parser(with_components=False):
     )
     parser.add_argument("--candidate_teacher_optimize_features", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_freeze_detector", action="store_true", default=False)
+    parser.add_argument(
+        "--candidate_teacher_detector_only",
+        action="store_true",
+        default=False,
+        help="Freeze all candidate-map-side parameters and train only the detector.",
+    )
     parser.add_argument("--candidate_teacher_detector_lr", type=float, default=1e-4)
     parser.add_argument("--candidate_teacher_feature_lr", type=float, default=5e-5)
     parser.add_argument("--candidate_teacher_dustbin_lr", type=float, default=0.0)
@@ -4309,6 +5430,78 @@ def build_arg_parser(with_components=False):
         "--candidate_teacher_counterfactual_require_nonnegative_translation_gain",
         action="store_true",
     )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_refresh_visits",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_solver",
+        choices=["poselib", "opencv"],
+        default="poselib",
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_reprojection_error",
+        type=float,
+        default=8.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_ransac_seed",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_min_inliers",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_max_pose_error_cm",
+        type=float,
+        default=100.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_max_useful", type=int, default=96
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_max_harmful", type=int, default=96
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_temperature",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_margin", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_harmful_mode",
+        choices=["all_false", "translation_delete", "exact_pose_delete"],
+        default="all_false",
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_exact_replay_max_candidates",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--candidate_teacher_grid_rows", type=int, default=4)
     parser.add_argument("--candidate_teacher_grid_cols", type=int, default=4)
     parser.add_argument("--candidate_teacher_depth_bins", type=int, default=4)
@@ -4434,7 +5627,16 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_geometry_weight", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_coverage_weight", type=float, default=0.1)
     parser.add_argument("--candidate_teacher_base_detector_weight", type=float, default=0.1)
+    parser.add_argument(
+        "--candidate_teacher_detector_preservation_weight",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--candidate_teacher_feature_anchor_weight", type=float, default=0.01)
+    parser.add_argument("--candidate_teacher_adaptive_trust", action="store_true", default=False)
+    parser.add_argument("--candidate_teacher_trust_alpha_min", type=float, default=0.25)
+    parser.add_argument("--candidate_teacher_trust_view_prior", type=float, default=3.0)
+    parser.add_argument("--candidate_teacher_trust_warmup_passes", type=float, default=1.0)
     parser.add_argument("--candidate_teacher_support_query_split", action="store_true", default=False)
     parser.add_argument("--candidate_teacher_query_ratio", type=float, default=0.2)
     parser.add_argument("--candidate_teacher_validation_ratio", type=float, default=0.0)
@@ -4584,6 +5786,7 @@ if __name__ == "__main__":
         ),
         candidate_teacher_optimize_features=args.candidate_teacher_optimize_features,
         candidate_teacher_freeze_detector=args.candidate_teacher_freeze_detector,
+        candidate_teacher_detector_only=args.candidate_teacher_detector_only,
         candidate_teacher_detector_lr=args.candidate_teacher_detector_lr,
         candidate_teacher_feature_lr=args.candidate_teacher_feature_lr,
         candidate_teacher_dustbin_lr=args.candidate_teacher_dustbin_lr,
@@ -4729,6 +5932,54 @@ if __name__ == "__main__":
         candidate_teacher_counterfactual_require_nonnegative_translation_gain=(
             args.candidate_teacher_counterfactual_require_nonnegative_translation_gain
         ),
+        candidate_teacher_hard_preservation_weight=(
+            args.candidate_teacher_hard_preservation_weight
+        ),
+        candidate_teacher_hard_preservation_refresh_visits=(
+            args.candidate_teacher_hard_preservation_refresh_visits
+        ),
+        candidate_teacher_hard_preservation_solver=(
+            args.candidate_teacher_hard_preservation_solver
+        ),
+        candidate_teacher_hard_preservation_reprojection_error=(
+            args.candidate_teacher_hard_preservation_reprojection_error
+        ),
+        candidate_teacher_hard_preservation_ransac_seed=(
+            args.candidate_teacher_hard_preservation_ransac_seed
+        ),
+        candidate_teacher_hard_preservation_min_inliers=(
+            args.candidate_teacher_hard_preservation_min_inliers
+        ),
+        candidate_teacher_hard_preservation_max_pose_error_cm=(
+            args.candidate_teacher_hard_preservation_max_pose_error_cm
+        ),
+        candidate_teacher_hard_preservation_max_useful=(
+            args.candidate_teacher_hard_preservation_max_useful
+        ),
+        candidate_teacher_hard_preservation_max_harmful=(
+            args.candidate_teacher_hard_preservation_max_harmful
+        ),
+        candidate_teacher_hard_preservation_temperature=(
+            args.candidate_teacher_hard_preservation_temperature
+        ),
+        candidate_teacher_hard_preservation_margin=(
+            args.candidate_teacher_hard_preservation_margin
+        ),
+        candidate_teacher_hard_preservation_harmful_mode=(
+            args.candidate_teacher_hard_preservation_harmful_mode
+        ),
+        candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m=(
+            args.candidate_teacher_hard_preservation_harmful_min_translation_delete_gain_m
+        ),
+        candidate_teacher_hard_preservation_exact_replay_max_candidates=(
+            args.candidate_teacher_hard_preservation_exact_replay_max_candidates
+        ),
+        candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm=(
+            args.candidate_teacher_hard_preservation_exact_replay_min_pose_gain_cm
+        ),
+        candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree=(
+            args.candidate_teacher_hard_preservation_exact_replay_rotation_weight_cm_per_degree
+        ),
         candidate_teacher_grid_rows=args.candidate_teacher_grid_rows,
         candidate_teacher_grid_cols=args.candidate_teacher_grid_cols,
         candidate_teacher_depth_bins=args.candidate_teacher_depth_bins,
@@ -4820,7 +6071,16 @@ if __name__ == "__main__":
         candidate_teacher_geometry_weight=args.candidate_teacher_geometry_weight,
         candidate_teacher_coverage_weight=args.candidate_teacher_coverage_weight,
         candidate_teacher_base_detector_weight=args.candidate_teacher_base_detector_weight,
+        candidate_teacher_detector_preservation_weight=(
+            args.candidate_teacher_detector_preservation_weight
+        ),
         candidate_teacher_feature_anchor_weight=args.candidate_teacher_feature_anchor_weight,
+        candidate_teacher_adaptive_trust=args.candidate_teacher_adaptive_trust,
+        candidate_teacher_trust_alpha_min=args.candidate_teacher_trust_alpha_min,
+        candidate_teacher_trust_view_prior=args.candidate_teacher_trust_view_prior,
+        candidate_teacher_trust_warmup_passes=(
+            args.candidate_teacher_trust_warmup_passes
+        ),
         candidate_teacher_support_query_split=args.candidate_teacher_support_query_split,
         candidate_teacher_query_ratio=args.candidate_teacher_query_ratio,
         candidate_teacher_validation_ratio=args.candidate_teacher_validation_ratio,

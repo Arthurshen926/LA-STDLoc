@@ -300,6 +300,31 @@ def select_match_candidates(
     )
 
 
+def select_offset_only_candidates(
+    matches,
+    *,
+    threshold=-float("inf"),
+    max_matches_per_keypoint=0,
+    max_matches_per_landmark=0,
+    min_match_count=0,
+    refill_trigger_count=0,
+):
+    """Select the deployed candidate graph before applying a side offset head.
+
+    The offset-only path is intentionally unable to replace cosine scores with
+    learned pair scores: doing so changes the landmark quota and turns a
+    measurement refinement into an untracked candidate selector.
+    """
+    return select_match_candidates(
+        matches,
+        threshold=threshold,
+        max_matches_per_keypoint=max_matches_per_keypoint,
+        max_matches_per_landmark=max_matches_per_landmark,
+        min_match_count=min_match_count,
+        refill_trigger_count=refill_trigger_count,
+    )
+
+
 def select_match_candidates_with_geometry_refill(
     matches,
     keypoint_xy,

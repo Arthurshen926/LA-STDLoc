@@ -16,9 +16,13 @@ def solve_pose(
     scores=None,
     progressive_sampling=False,
     max_prosac_iterations=100000,
+    ransac_seed=0,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
+    ransac_seed = int(ransac_seed)
+    if ransac_seed < 0:
+        raise ValueError("ransac_seed must be non-negative")
     match_num = p2d.shape[0]
     if match_num < 4:
         print("[SKIP] No enough matches")
@@ -37,6 +41,8 @@ def solve_pose(
         p3d = p3d[solver_to_input]
 
     if solver == "opencv":
+        # OpenCV keeps RANSAC state globally, so set it before every solve.
+        cv2.setRNGSeed(ransac_seed)
         success, rvec, tvec, inliers = cv2.solvePnPRansac(
             p3d,
             p2d,
@@ -76,6 +82,7 @@ def solve_pose(
                 "success_prob": confidence,
                 "progressive_sampling": bool(progressive_sampling),
                 "max_prosac_iterations": int(max_prosac_iterations),
+                "seed": ransac_seed,
             },
             {
                 "verbose": False,

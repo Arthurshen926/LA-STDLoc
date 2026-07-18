@@ -1117,6 +1117,42 @@ class DetectorSoftTargetsTest(unittest.TestCase):
         self.assertTrue(args.candidate_teacher_support_query_split)
         self.assertEqual(args.candidate_teacher_validation_ratio, 0.25)
 
+    def test_detector_only_candidate_teacher_rejects_map_side_optimizers(self):
+        from train_detector import (
+            validate_detector_only_candidate_teacher_configuration,
+        )
+
+        validate_detector_only_candidate_teacher_configuration(
+            enabled=True,
+            sparse_candidate_teacher=True,
+        )
+        with self.assertRaisesRegex(ValueError, "candidate_teacher_optimize_features"):
+            validate_detector_only_candidate_teacher_configuration(
+                enabled=True,
+                sparse_candidate_teacher=True,
+                optimize_features=True,
+            )
+        with self.assertRaisesRegex(ValueError, "candidate_teacher_dustbin_weight"):
+            validate_detector_only_candidate_teacher_configuration(
+                enabled=True,
+                sparse_candidate_teacher=True,
+                dustbin_weight=0.25,
+            )
+        with self.assertRaisesRegex(ValueError, "sparse_candidate_teacher"):
+            validate_detector_only_candidate_teacher_configuration(
+                enabled=True,
+                sparse_candidate_teacher=False,
+            )
+
+    def test_detector_parser_accepts_detector_only_candidate_teacher_stage(self):
+        from train_detector import build_arg_parser
+
+        args = build_arg_parser().parse_args(
+            ["--sparse_candidate_teacher", "--candidate_teacher_detector_only"]
+        )
+
+        self.assertTrue(args.candidate_teacher_detector_only)
+
     def test_precomputed_detector_landmarks_are_loaded_and_validated(self):
         import pickle
         import tempfile

@@ -123,9 +123,44 @@ def test_progressive_pose_sampling_sorts_scores_and_restores_inlier_indices(monk
         progressive_sampling=True,
         scores=scores,
         max_prosac_iterations=123,
+        ransac_seed=17,
     )
 
     np.testing.assert_array_equal(captured["points2d"][:, 0], [1, 2, 4, 0, 3])
     np.testing.assert_array_equal(inliers, [1, 4])
     assert captured["options"]["progressive_sampling"] is True
     assert captured["options"]["max_prosac_iterations"] == 123
+    assert captured["options"]["seed"] == 17
+
+
+def test_opencv_pose_solver_sets_ransac_seed(monkeypatch):
+    import utils.pose_utils as pose_utils
+
+    captured = {}
+
+    def fake_set_rng_seed(seed):
+        captured["seed"] = seed
+
+    def fake_solve_pnp(*args, **kwargs):
+        del args, kwargs
+        return (
+            True,
+            np.zeros((3, 1), dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            np.arange(4, dtype=np.int32).reshape(-1, 1),
+        )
+
+    monkeypatch.setattr(pose_utils.cv2, "setRNGSeed", fake_set_rng_seed)
+    monkeypatch.setattr(pose_utils.cv2, "solvePnPRansac", fake_solve_pnp)
+    points2d = np.array([[10.0, 10.0], [20.0, 10.0], [10.0, 20.0], [20.0, 20.0]])
+    points3d = np.array(
+        [[-1.0, -1.0, 5.0], [1.0, -1.0, 5.0], [-1.0, 1.0, 5.0], [1.0, 1.0, 5.0]]
+    )
+    K = np.array([[400.0, 0.0, 320.0], [0.0, 400.0, 180.0], [0.0, 0.0, 1.0]])
+
+    _, inliers = pose_utils.solve_pose(
+        points2d, points3d, K, solver="opencv", ransac_seed=37
+    )
+
+    assert captured["seed"] == 37
+    np.testing.assert_array_equal(inliers, [0, 1, 2, 3])

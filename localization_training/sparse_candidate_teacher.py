@@ -52,6 +52,8 @@ class SparseCandidateBatch:
     pair_reprojection_error: torch.Tensor
     pair_scorer_features: torch.Tensor
     pair_scorer_logits: torch.Tensor
+    matcher_similarity: torch.Tensor
+    matcher_deployment_score: torch.Tensor
     matcher_assignment_logits: torch.Tensor
     pair_scorer_keypoint_idx: torch.Tensor
     pair_scorer_landmark_idx: torch.Tensor
@@ -65,6 +67,7 @@ class SparseCandidateBatch:
     pair_measurement_target_offsets: torch.Tensor
     pair_measurement_jacobian: torch.Tensor
     pair_measurement_geometry_valid_mask: torch.Tensor
+    map_candidate_quota_mask: torch.Tensor
     map_candidate_geometry_valid_mask: torch.Tensor
     map_candidate_classification_valid_mask: torch.Tensor
     map_candidate_accepted_mask: torch.Tensor
@@ -1523,11 +1526,16 @@ def build_sparse_candidate_batch(
         dustbin_score = similarity.new_tensor(float(match_margin))
     else:
         dustbin_score = dustbin_score.to(device=device, dtype=dtype)
-    matcher_assignment_logits = similarity[
+    matcher_similarity = similarity[
+        predicted_keypoint_idx, predicted_landmark_idx
+    ]
+    # Quotas are applied to score_matrix, which differs from cosine similarity
+    # when dual-softmax is enabled. Keep it explicit for hard graph replay.
+    matcher_deployment_score = score_matrix[
         predicted_keypoint_idx, predicted_landmark_idx
     ]
     matcher_assignment_logits = (
-        matcher_assignment_logits - dustbin_score
+        matcher_similarity - dustbin_score
     ) / max(float(match_temperature), 1e-6)
     with torch.no_grad():
         map_candidate_quota_mask = match_candidate_selection_mask(
@@ -2524,6 +2532,8 @@ def build_sparse_candidate_batch(
         pair_reprojection_error=pair_reprojection_error,
         pair_scorer_features=pair_scorer_features,
         pair_scorer_logits=pair_scorer_logits,
+        matcher_similarity=matcher_similarity,
+        matcher_deployment_score=matcher_deployment_score,
         matcher_assignment_logits=matcher_assignment_logits,
         pair_scorer_keypoint_idx=predicted_keypoint_idx,
         pair_scorer_landmark_idx=predicted_landmark_idx,
@@ -2539,6 +2549,7 @@ def build_sparse_candidate_batch(
         pair_measurement_geometry_valid_mask=(
             pair_measurement_geometry_valid_mask
         ),
+        map_candidate_quota_mask=map_candidate_quota_mask,
         map_candidate_geometry_valid_mask=map_candidate_geometry_valid_mask,
         map_candidate_classification_valid_mask=(
             map_candidate_classification_valid_mask

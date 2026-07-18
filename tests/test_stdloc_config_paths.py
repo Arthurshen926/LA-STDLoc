@@ -23,6 +23,65 @@ class STDLocConfigPathTest(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_direct_holdout_requires_matching_training_partition(self):
+        from stdloc import candidate_direct_holdout_mismatches
+        from stdloc import validate_candidate_direct_holdout_compatibility
+
+        state_config = {
+            "validation_ratio": 0.2,
+            "split_mode": "temporal_block",
+            "split_seed": 2026,
+        }
+        self.assertEqual(
+            candidate_direct_holdout_mismatches(
+                state_config,
+                validation_ratio=0.2,
+                split_mode="temporal_block",
+                split_seed=2026,
+            ),
+            [],
+        )
+        self.assertEqual(
+            validate_candidate_direct_holdout_compatibility(
+                state_config,
+                validation_ratio=0.2,
+                split_mode="temporal_block",
+                split_seed=2026,
+            ),
+            [],
+        )
+        with self.assertRaisesRegex(ValueError, "validation_ratio.*0.0.*0.2"):
+            validate_candidate_direct_holdout_compatibility(
+                {**state_config, "validation_ratio": 0.0},
+                validation_ratio=0.2,
+                split_mode="temporal_block",
+                split_seed=2026,
+            )
+
+    def test_sparse_artifact_overrides_are_explicit_and_independent(self):
+        from stdloc import apply_sparse_artifact_overrides
+
+        config = {
+            "sparse": {
+                "detector_path": "baseline_detector.pth",
+                "landmark_feature_override_path": "baseline_state.pt",
+            }
+        }
+        apply_sparse_artifact_overrides(
+            config,
+            detector_path="/tmp/checkpoint_detector.pth",
+            landmark_feature_override_path="/tmp/checkpoint_state.pt",
+        )
+
+        self.assertEqual(
+            config["sparse"]["detector_path"],
+            "/tmp/checkpoint_detector.pth",
+        )
+        self.assertEqual(
+            config["sparse"]["landmark_feature_override_path"],
+            "/tmp/checkpoint_state.pt",
+        )
+
     def test_candidate_frontend_mismatch_can_fail_strictly(self):
         from stdloc import candidate_frontend_mismatches
         from stdloc import validate_candidate_frontend_compatibility

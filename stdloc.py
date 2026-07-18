@@ -37,6 +37,7 @@ from localization_training.sparse_frontend import (
     match_score_matrix,
     rank_keypoint_proposals,
     select_match_candidates,
+    select_offset_only_candidates,
     select_match_candidates_with_geometry_refill,
 )
 from scene import Scene
@@ -150,6 +151,86 @@ def validate_candidate_frontend_compatibility(state_config, sparse_config):
         raise ValueError(message)
     warnings.warn(message, RuntimeWarning, stacklevel=2)
     return mismatches
+
+
+def candidate_direct_holdout_mismatches(
+    state_config,
+    *,
+    validation_ratio,
+    split_mode,
+    split_seed,
+):
+    """Compare a direct validation request with candidate-teacher training metadata."""
+    if not isinstance(state_config, dict):
+        return [("candidate_teacher_state_config", None, "required")]
+    expected = (
+        ("validation_ratio", float(validation_ratio)),
+        ("split_mode", str(split_mode)),
+        ("split_seed", int(split_seed)),
+    )
+    mismatches = []
+    for name, requested in expected:
+        trained = state_config.get(name)
+        if isinstance(requested, float):
+            matches = trained is not None and abs(float(trained) - requested) <= 1e-8
+        else:
+            matches = trained == requested
+        if not matches:
+            mismatches.append((name, trained, requested))
+    return mismatches
+
+
+def validate_candidate_direct_holdout_compatibility(
+    state_config,
+    *,
+    validation_ratio,
+    split_mode,
+    split_seed,
+    policy="error",
+):
+    """Reject a claimed direct holdout unless its training partition matches."""
+    policy = str(policy).lower()
+    if policy not in {"ignore", "warn", "error"}:
+        raise ValueError(
+            "candidate direct holdout policy must be one of: ignore, warn, error"
+        )
+    mismatches = candidate_direct_holdout_mismatches(
+        state_config,
+        validation_ratio=validation_ratio,
+        split_mode=split_mode,
+        split_seed=split_seed,
+    )
+    if not mismatches or policy == "ignore":
+        return mismatches
+    details = ", ".join(
+        f"{name}: trained={trained!r}, requested={requested!r}"
+        for name, trained, requested in mismatches
+    )
+    message = (
+        "candidate_direct_validation_holdout requires a candidate-teacher state "
+        f"trained with the same held-out partition ({details})"
+    )
+    if policy == "error":
+        raise ValueError(message)
+    warnings.warn(message, RuntimeWarning, stacklevel=2)
+    return mismatches
+
+
+def apply_sparse_artifact_overrides(
+    config,
+    *,
+    detector_path=None,
+    landmark_feature_override_path=None,
+):
+    """Apply explicit evaluation artifact overrides without changing the source YAML."""
+    sparse_config = config.setdefault("sparse", {})
+    if detector_path is not None:
+        sparse_config["detector_path"] = detector_path
+    if landmark_feature_override_path is not None:
+        sparse_config["landmark_feature_override_path"] = (
+            landmark_feature_override_path
+        )
+
 
 # TODO use interpolate
 def lift_2d_to_3d(points2d, intrinsic, Twc, depth_map):
@@ -1942,11 +2023,51 @@ class STDLoc:
             )
             or 0
         )
+        pair_measurement_preserve_candidates = bool(
+            self.config["sparse"].get(
+                "pair_measurement_preserve_candidates", False
+            )
+        )
+        if pair_measurement_preserve_candidates:
+            if self.pair_measurement_head is None:
+                raise ValueError(
+                    "pair_measurement_preserve_candidates requires "
+                    "use_pair_measurement=true"
+                )
+            if pair_measurement_fixed_candidate_count > 0:
+                raise ValueError(
+                    "pair_measurement_preserve_candidates is incompatible with "
+                    "pair_measurement_fixed_candidate_count"
+                )
+            if self.config["sparse"].get(
+                "use_pair_measurement_progressive_sampling", False
+            ):
+                raise ValueError(
+                    "pair_measurement_preserve_candidates is incompatible with "
+                    "progressive sampling"
+                )
+            if self.config["sparse"].get(
+                "use_pair_measurement_covariance_refinement", False
+            ):
+                raise ValueError(
+                    "pair_measurement_preserve_candidates is incompatible with "
+                    "covariance refinement"
+                )
         selected_measurement_offsets = None
         selected_measurement_covariance = None
         pair_measurement_match_count_before = raw_match_count
         if self.pair_measurement_head is not None:
-            matches = select_match_candidates(matches, threshold=match_threshold)
+            if pair_measurement_preserve_candidates:
+                matches = select_offset_only_candidates(
+                    matches,
+                    threshold=match_threshold,
+                    max_matches_per_keypoint=max_matches_per_keypoint,
+                    max_matches_per_landmark=max_matches_per_landmark,
+                    min_match_count=min_candidate_matches,
+                    refill_trigger_count=candidate_refill_trigger_count,
+                )
+            else:
+                matches = select_match_candidates(matches, threshold=match_threshold)
             pair_measurement_match_count_before = int(matches.keypoint_idx.numel())
             pair_features = build_pair_context_features(
                 similarity,
@@ -1984,74 +2105,78 @@ class STDLoc:
                     else None
                 ),
             )
-            measurement_source_matches = SparseMatchResult(
-                matches.keypoint_idx,
-                matches.landmark_idx,
-                measurement_output.inlier_logits,
-            )
-            pair_measurement_refill_mode = self.config["sparse"].get(
-                "pair_measurement_refill_mode", "score"
-            )
-            selection_threshold = (
-                -float("inf")
-                if pair_measurement_fixed_candidate_count > 0
-                else self.pair_measurement_threshold
-            )
-            if pair_measurement_refill_mode == "geometry":
-                matches = select_match_candidates_with_geometry_refill(
-                    measurement_source_matches,
-                    sampled_keypoint_xy,
-                    self.landmarks.get_xyz,
-                    (H, W),
-                    threshold=selection_threshold,
-                    max_matches_per_keypoint=max_matches_per_keypoint,
-                    max_matches_per_landmark=max_matches_per_landmark,
-                    min_match_count=min_candidate_matches,
-                    refill_trigger_count=candidate_refill_trigger_count,
-                    max_match_count=pair_measurement_fixed_candidate_count,
-                    grid_rows=self.config["sparse"].get(
-                        "pair_measurement_refill_grid_rows", 4
-                    ),
-                    grid_cols=self.config["sparse"].get(
-                        "pair_measurement_refill_grid_cols", 4
-                    ),
-                    voxel_size=self.config["sparse"].get(
-                        "pair_measurement_refill_voxel_size", 0.25
-                    ),
-                    spatial_weight=self.config["sparse"].get(
-                        "pair_measurement_refill_spatial_weight", 0.25
-                    ),
-                    voxel_weight=self.config["sparse"].get(
-                        "pair_measurement_refill_voxel_weight", 0.25
-                    ),
-                )
-            elif pair_measurement_refill_mode == "score":
-                matches = select_match_candidates(
-                    measurement_source_matches,
-                    threshold=selection_threshold,
-                    max_matches_per_keypoint=max_matches_per_keypoint,
-                    max_matches_per_landmark=max_matches_per_landmark,
-                    min_match_count=min_candidate_matches,
-                    refill_trigger_count=candidate_refill_trigger_count,
-                    max_match_count=pair_measurement_fixed_candidate_count,
-                )
+            if pair_measurement_preserve_candidates:
+                selected_measurement_offsets = measurement_output.offset
+                selected_measurement_covariance = measurement_output.covariance
             else:
-                raise ValueError(
-                    "pair_measurement_refill_mode must be 'score' or 'geometry', "
-                    f"got {pair_measurement_refill_mode!r}"
+                measurement_source_matches = SparseMatchResult(
+                    matches.keypoint_idx,
+                    matches.landmark_idx,
+                    measurement_output.inlier_logits,
                 )
-            selected_measurement_offsets = gather_aligned_pair_values(
-                measurement_source_matches,
-                matches,
-                measurement_output.offset,
-                landmark_features.shape[0],
-            )
-            selected_measurement_covariance = gather_aligned_pair_values(
-                measurement_source_matches,
-                matches,
-                measurement_output.covariance,
-                landmark_features.shape[0],
-            )
+                pair_measurement_refill_mode = self.config["sparse"].get(
+                    "pair_measurement_refill_mode", "score"
+                )
+                selection_threshold = (
+                    -float("inf")
+                    if pair_measurement_fixed_candidate_count > 0
+                    else self.pair_measurement_threshold
+                )
+                if pair_measurement_refill_mode == "geometry":
+                    matches = select_match_candidates_with_geometry_refill(
+                        measurement_source_matches,
+                        sampled_keypoint_xy,
+                        self.landmarks.get_xyz,
+                        (H, W),
+                        threshold=selection_threshold,
+                        max_matches_per_keypoint=max_matches_per_keypoint,
+                        max_matches_per_landmark=max_matches_per_landmark,
+                        min_match_count=min_candidate_matches,
+                        refill_trigger_count=candidate_refill_trigger_count,
+                        max_match_count=pair_measurement_fixed_candidate_count,
+                        grid_rows=self.config["sparse"].get(
+                            "pair_measurement_refill_grid_rows", 4
+                        ),
+                        grid_cols=self.config["sparse"].get(
+                            "pair_measurement_refill_grid_cols", 4
+                        ),
+                        voxel_size=self.config["sparse"].get(
+                            "pair_measurement_refill_voxel_size", 0.25
+                        ),
+                        spatial_weight=self.config["sparse"].get(
+                            "pair_measurement_refill_spatial_weight", 0.25
+                        ),
+                        voxel_weight=self.config["sparse"].get(
+                            "pair_measurement_refill_voxel_weight", 0.25
+                        ),
+                    )
+                elif pair_measurement_refill_mode == "score":
+                    matches = select_match_candidates(
+                        measurement_source_matches,
+                        threshold=selection_threshold,
+                        max_matches_per_keypoint=max_matches_per_keypoint,
+                        max_matches_per_landmark=max_matches_per_landmark,
+                        min_match_count=min_candidate_matches,
+                        refill_trigger_count=candidate_refill_trigger_count,
+                        max_match_count=pair_measurement_fixed_candidate_count,
+                    )
+                else:
+                    raise ValueError(
+                        "pair_measurement_refill_mode must be 'score' or "
+                        f"'geometry', got {pair_measurement_refill_mode!r}"
+                    )
+                selected_measurement_offsets = gather_aligned_pair_values(
+                    measurement_source_matches,
+                    matches,
+                    measurement_output.offset,
+                    landmark_features.shape[0],
+                )
+                selected_measurement_covariance = gather_aligned_pair_values(
+                    measurement_source_matches,
+                    matches,
+                    measurement_output.covariance,
+                    landmark_features.shape[0],
+                )
             pair_scorer_match_count_before = raw_match_count
         elif self.pair_scorer is not None:
             matches = select_match_candidates(matches, threshold=match_threshold)
@@ -2212,6 +2337,7 @@ class STDLoc:
             max_prosac_iterations=self.config["sparse"].get(
                 "pair_measurement_max_prosac_iterations", 100000
             ),
+            ransac_seed=self.config["sparse"].get("ransac_seed", 0),
         )
         covariance_refinement_inliers = 0
         if (
@@ -2263,6 +2389,7 @@ class STDLoc:
                     self.config["sparse"]["confidence"],
                     self.config["sparse"]["max_iterations"],
                     self.config["sparse"]["min_iterations"],
+                    ransac_seed=self.config["sparse"].get("ransac_seed", 0),
                 )
                 if refined_inliers.shape[0] > 0:
                     pose_w2c = refined_pose_w2c
@@ -2303,6 +2430,9 @@ class STDLoc:
                     "pair_measurement_refill_mode", "score"
                 )
                 == "geometry"
+            ),
+            "sparse_diag_pair_measurement_preserve_candidates": float(
+                pair_measurement_preserve_candidates
             ),
             "sparse_diag_pair_measurement_offset_enabled": float(
                 self.pair_measurement_head is not None
@@ -2612,6 +2742,7 @@ class STDLoc:
             self.config["dense"]["confidence"],
             self.config["dense"]["max_iterations"],
             self.config["dense"]["min_iterations"],
+            ransac_seed=self.config["dense"].get("ransac_seed", 0),
         )
 
         result = {
@@ -2652,6 +2783,18 @@ if __name__ == "__main__":
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--cfg", default=None, type=str)
     parser.add_argument("--prefix", default=None, type=str)
+    parser.add_argument(
+        "--detector_path",
+        default=None,
+        type=str,
+        help="Override sparse.detector_path from the config.",
+    )
+    parser.add_argument(
+        "--landmark_feature_override_path",
+        default=None,
+        type=str,
+        help="Override sparse.landmark_feature_override_path from the config.",
+    )
     parser.add_argument("--sparse_only", action="store_true")
     parser.add_argument(
         "--evaluation_camera_subset",
@@ -2669,6 +2812,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--candidate_direct_validation_holdout",
         action="store_true",
+    )
+    parser.add_argument(
+        "--candidate_direct_validation_holdout_policy",
+        choices=["ignore", "warn", "error"],
+        default="error",
     )
     args = get_combined_args(parser)
     args.eval = args.evaluation_camera_subset == "test"
@@ -2699,6 +2847,11 @@ if __name__ == "__main__":
 
     # Set up config
     config = yaml.load(open(args.cfg), Loader=yaml.FullLoader)
+    apply_sparse_artifact_overrides(
+        config,
+        detector_path=args.detector_path,
+        landmark_feature_override_path=args.landmark_feature_override_path,
+    )
     if args.sparse_only:
         config.setdefault("sparse", {})["sparse_only"] = True
         
@@ -2718,6 +2871,24 @@ if __name__ == "__main__":
 
     # loc main
     stdloc = STDLoc(gaussians, config)
+
+    if (
+        args.evaluation_camera_subset == "candidate_validation"
+        and args.candidate_direct_validation_holdout
+    ):
+        override_state = stdloc.landmark_feature_override_state
+        state_config = (
+            override_state.get("config", {})
+            if isinstance(override_state, dict)
+            else None
+        )
+        validate_candidate_direct_holdout_compatibility(
+            state_config,
+            validation_ratio=args.candidate_validation_ratio,
+            split_mode=args.candidate_split_mode,
+            split_seed=args.candidate_split_seed,
+            policy=args.candidate_direct_validation_holdout_policy,
+        )
 
     discrete_oracle_dump_dir = None
     discrete_oracle_query_files = []
@@ -2970,6 +3141,9 @@ if __name__ == "__main__":
                         ),
                         "min_iterations": np.asarray(
                             config["sparse"]["min_iterations"]
+                        ),
+                        "ransac_seed": np.asarray(
+                            config["sparse"].get("ransac_seed", 0)
                         ),
                     }
                 )

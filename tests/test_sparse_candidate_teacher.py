@@ -11,6 +11,247 @@ def test_online_render_ratio_curriculum_is_scene_independent():
     assert scheduled_online_render_ratio(250, 1000, 0.1, 0.3, 0.25, 0.75) == 0.1
 
 
+def test_detector_proposal_preservation_uses_combined_map_and_detaches_teacher():
+    from train_detector import detector_proposal_preservation_loss
+
+    student_keypoint = torch.tensor([[[0.2, 0.8]]], requires_grad=True)
+    student_matchability = torch.tensor([[[0.3, 0.9]]], requires_grad=True)
+    teacher_keypoint = torch.tensor([[[0.1, 0.5]]], requires_grad=True)
+    teacher_matchability = torch.tensor([[[0.4, 0.6]]], requires_grad=True)
+
+    mask = torch.tensor([[[True, False]]])
+    loss = detector_proposal_preservation_loss(
+        student_keypoint,
+        student_matchability,
+        teacher_keypoint,
+        teacher_matchability,
+        valid_mask=mask,
+    )
+    expected = (
+        torch.sqrt(torch.tensor(0.2 * 0.3))
+        - torch.sqrt(torch.tensor(0.1 * 0.4))
+    ).square()
+    assert torch.allclose(loss, expected)
+
+    loss.backward()
+    assert student_keypoint.grad is not None
+    assert student_matchability.grad is not None
+    assert teacher_keypoint.grad is None
+    assert teacher_matchability.grad is None
+
+
+def test_detector_only_state_export_can_preserve_frozen_feature_bytes(tmp_path):
+    from train_detector import save_sparse_candidate_teacher_state
+
+    features = torch.tensor([[0.6, 0.8], [0.3, 0.4]], dtype=torch.float32)
+    path = tmp_path / "frozen_state.pt"
+    save_sparse_candidate_teacher_state(
+        str(path),
+        torch.tensor([3, 7]),
+        features,
+        iteration=1,
+        config={"landmark_features_frozen": True},
+        normalize_features=False,
+    )
+    state = torch.load(path, map_location="cpu")
+    assert torch.equal(state["landmark_features"], features)
+
+
+def test_candidate_teacher_adaptive_trust_uses_correct_visibility_evidence():
+    from train_detector import candidate_teacher_trust_alpha
+
+    visible = torch.tensor([10.0, 10.0, 10.0, 0.0])
+    correct = torch.tensor([10.0, 5.0, 1.0, 0.0])
+    alpha = candidate_teacher_trust_alpha(
+        visible,
+        correct,
+        alpha_min=0.2,
+        view_prior=2.0,
+    )
+
+    assert torch.allclose(
+        alpha,
+        torch.tensor([10.0 / 12.0, 5.0 / 12.0, 0.2, 0.2]),
+    )
+    assert torch.equal(
+        candidate_teacher_trust_alpha(
+            visible,
+            correct,
+            alpha_min=0.2,
+            view_prior=2.0,
+            warmup_active=True,
+        ),
+        torch.ones_like(visible),
+    )
+    evidence_only = candidate_teacher_trust_alpha(
+        visible,
+        correct,
+        alpha_min=0.2,
+        view_prior=2.0,
+    )
+    halfway = candidate_teacher_trust_alpha(
+        visible,
+        correct,
+        alpha_min=0.2,
+        view_prior=2.0,
+        warmup_active=True,
+        warmup_blend=0.5,
+    )
+    assert torch.allclose(halfway, 0.5 * (torch.ones_like(visible) + evidence_only))
+
+
+def test_candidate_teacher_trust_counts_only_retained_predicted_candidates():
+    from train_detector import update_candidate_teacher_trust_evidence
+
+    visible = torch.zeros(4)
+    correct = torch.zeros(4)
+    diagnostics = update_candidate_teacher_trust_evidence(
+        visible,
+        correct,
+        torch.tensor([True, False, True, True]),
+        torch.tensor([0, 0, 2, 3, 3]),
+        torch.tensor([True, True, False, True, True]),
+        torch.tensor([True, False, True, True, True]),
+    )
+
+    assert torch.equal(visible, torch.tensor([1.0, 0.0, 1.0, 1.0]))
+    assert torch.equal(correct, torch.tensor([1.0, 0.0, 0.0, 1.0]))
+    assert diagnostics["trust_visible_added"] == 3.0
+    assert diagnostics["trust_correct_landmarks_added"] == 2.0
+
+    assert update_candidate_teacher_trust_evidence(
+        visible,
+        correct,
+        torch.tensor([False, False, False, False]),
+        torch.tensor([], dtype=torch.long),
+        torch.tensor([], dtype=torch.bool),
+        torch.tensor([], dtype=torch.bool),
+        report=False,
+        validate_indices=False,
+    ) == {}
+
+
+def test_candidate_teacher_trust_counts_each_real_camera_once():
+    from train_detector import update_candidate_teacher_trust_evidence
+
+    visible = torch.zeros(3)
+    correct = torch.zeros(3)
+    visible_views = torch.zeros(3, 2, dtype=torch.bool)
+    correct_views = torch.zeros_like(visible_views)
+    args = (
+        visible,
+        correct,
+        torch.tensor([True, True, False]),
+        torch.tensor([0, 1]),
+        torch.tensor([True, True]),
+        torch.tensor([True, True]),
+    )
+
+    first = update_candidate_teacher_trust_evidence(
+        *args,
+        camera_index=0,
+        visible_view_mask=visible_views,
+        correct_view_mask=correct_views,
+    )
+    duplicate = update_candidate_teacher_trust_evidence(
+        *args,
+        camera_index=0,
+        visible_view_mask=visible_views,
+        correct_view_mask=correct_views,
+    )
+    second_camera = update_candidate_teacher_trust_evidence(
+        *args,
+        camera_index=1,
+        visible_view_mask=visible_views,
+        correct_view_mask=correct_views,
+    )
+
+    assert torch.equal(visible, torch.tensor([2.0, 2.0, 0.0]))
+    assert torch.equal(correct, torch.tensor([2.0, 2.0, 0.0]))
+    assert first["trust_visible_added"] == 2.0
+    assert duplicate["trust_visible_added"] == 0.0
+    assert duplicate["trust_correct_landmarks_added"] == 0.0
+    assert second_camera["trust_correct_landmarks_added"] == 2.0
+    assert first["trust_unique_camera_evidence"] == 1.0
+
+
+def test_candidate_teacher_effective_features_respects_trust_scale():
+    from train_detector import candidate_teacher_effective_features
+
+    initial = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    raw = torch.tensor([[0.0, 1.0], [0.0, 1.0]], requires_grad=True)
+    effective = candidate_teacher_effective_features(
+        initial,
+        raw,
+        torch.tensor([1.0, 0.25]),
+    )
+
+    assert torch.allclose(effective[0], torch.tensor([0.0, 1.0]))
+    assert effective[1, 0] > effective[0, 0]
+    assert effective[1, 1] < effective[0, 1]
+    effective[:, 0].sum().backward()
+    assert raw.grad is not None
+    assert raw.grad[1].norm() < raw.grad[0].norm()
+
+
+def test_candidate_teacher_adaptive_trust_state_round_trip(tmp_path):
+    from train_detector import (
+        load_sparse_candidate_teacher_adaptive_trust_state,
+        save_sparse_candidate_teacher_state,
+    )
+
+    path = tmp_path / "trust_state.pt"
+    indices = torch.tensor([3, 7])
+    effective_features = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    raw_features = torch.tensor([[2.0, 1.0], [1.0, 3.0]])
+    initial_features = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    save_sparse_candidate_teacher_state(
+        str(path),
+        indices,
+        effective_features,
+        iteration=10,
+        config={},
+        adaptive_trust_state={
+            "initial_features": initial_features,
+            "raw_features": raw_features,
+            "visible_count": torch.tensor([3.0, 4.0]),
+            "correct_count": torch.tensor([2.0, 4.0]),
+            "visible_view_mask": torch.tensor(
+                [[True, True, True, False], [True, True, True, True]]
+            ),
+            "correct_view_mask": torch.tensor(
+                [[True, True, False, False], [True, True, True, True]]
+            ),
+            "evidence_camera_names": ("camera-0", "camera-1", "camera-2", "camera-3"),
+            "update_steps": 10,
+        },
+    )
+
+    resumed = load_sparse_candidate_teacher_adaptive_trust_state(
+        str(path), indices, device="cpu"
+    )
+    assert resumed is not None
+    assert torch.allclose(resumed["initial_features"], initial_features)
+    assert torch.equal(resumed["raw_features"], raw_features)
+    assert torch.equal(resumed["visible_count"], torch.tensor([3.0, 4.0]))
+    assert torch.equal(resumed["correct_count"], torch.tensor([2.0, 4.0]))
+    assert resumed["visible_view_mask"].tolist() == [
+        [True, True, True, False],
+        [True, True, True, True],
+    ]
+    assert resumed["correct_view_mask"].tolist() == [
+        [True, True, False, False],
+        [True, True, True, True],
+    ]
+    assert resumed["evidence_camera_names"] == (
+        "camera-0",
+        "camera-1",
+        "camera-2",
+        "camera-3",
+    )
+    assert resumed["update_steps"] == 10
+
+
 def test_failure_guided_pair_weights_focus_failures_but_keep_exploration():
     from train_detector import failure_guided_pair_weights, update_camera_failure_ema
 
@@ -1110,3 +1351,37 @@ def test_measurement_accepted_detector_targets_use_calibrated_pair_threshold():
 
     assert accepted.detector_targets.tolist() == [1.0]
     assert rejected.detector_targets.tolist() == [0.0]
+
+
+def test_candidate_batch_exposes_deployment_scores_separately_from_similarity():
+    from localization_training.sparse_candidate_teacher import build_sparse_candidate_batch
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[:, 1, 1] = torch.tensor([1.0, 0.0])
+    feature_map[:, 3, 3] = torch.tensor([0.0, 1.0])
+    heatmap = torch.zeros(1, 5, 5)
+    heatmap[0, 1, 1] = 0.9
+    heatmap[0, 3, 3] = 0.8
+    K, pose = _camera()
+    landmarks = torch.tensor(
+        [_point_at_pixel(1.5, 1.5), _point_at_pixel(3.5, 3.5)]
+    )
+
+    batch = build_sparse_candidate_batch(
+        feature_map,
+        heatmap,
+        torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        landmarks,
+        K,
+        pose,
+        detect_num=2,
+        nms_radius=0,
+        dual_softmax=True,
+        dual_softmax_temperature=0.1,
+        positive_radius_px=0.5,
+    )
+
+    assert batch.matcher_deployment_score.shape == batch.matcher_similarity.shape
+    assert not torch.allclose(
+        batch.matcher_deployment_score, batch.matcher_similarity
+    )
