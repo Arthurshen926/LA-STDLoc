@@ -1,0 +1,2192 @@
+import argparse
+import hashlib
+import json
+import os
+import pickle
+import random
+import subprocess
+import sys
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+from arguments import ModelParams
+from encoders.feature_extractor import FeatureExtractor
+from gaussian_renderer import get_render_visible_mask, render_from_pose_gsplat
+from localization_training.detector_free_map import (
+    background_dustbin_loss,
+    bounded_geometry_losses,
+    build_detector_free_observations,
+    build_score_proposal_observations,
+    descriptor_trust_loss,
+    hard_hypothesis_retrieval_loss,
+    jitter_detector_free_observations,
+    local_correlation_peak_loss,
+    local_soft_correspondences,
+    materialize_descriptor_residual,
+    multiview_descriptor_loss,
+    observation_adaptive_trust_weights,
+    pose_layer_loss,
+    random_negative_retrieval_loss,
+)
+from localization_training.direct_landmark_teacher import (
+    filter_depth_consistent_landmarks,
+    make_intrinsics_from_fov,
+    project_landmarks_to_query,
+)
+from localization_training.episode_sampler import split_support_query_cameras
+from localization_training.landmark_distill import coverage_preserving_sample, robust_normalize
+from localization_training.pose_information import compute_pose_information
+from localization_training.pose_refiner import se3_exp
+from localization_training.surface_anchor import (
+    build_pure_geometric_scaffold,
+    materialize_bounded_surface_anchors,
+)
+from scene import Scene
+from utils.general_utils import safe_state, seed_everything
+from utils.image_utils import get_resolution_from_longest_edge
+
+
+def _gaussian_model_for_type(gaussian_type, sh_degree):
+    from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
+
+    gaussian_type = str(gaussian_type).lower()
+    if gaussian_type == "2dgs":
+        return GaussianModel_2dgs(sh_degree)
+    if gaussian_type == "3dgs":
+        return GaussianModel(sh_degree)
+    raise ValueError(f"Unsupported Gaussian type: {gaussian_type}")
+
+
+def _file_sha256(path, chunk_size=1024 * 1024):
+    path = Path(path)
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_output(*args):
+    try:
+        return subprocess.check_output(
+            ["git", *args],
+            cwd=Path(__file__).resolve().parent,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+def _write_reproducibility_manifest(
+    output_dir,
+    dataset,
+    args,
+    *,
+    landmark_path=None,
+    scaffold_diagnostics=None,
+):
+    paths = {
+        "landmark_path": None if landmark_path is None else str(landmark_path),
+        "initial_state_path": str(args.initial_state_path or ""),
+        "query_cache_path": str(args.query_cache_path or ""),
+        "visibility_cache_path": str(args.visibility_cache_path or ""),
+    }
+    manifest = {
+        "version": 1,
+        "command": [sys.executable, *sys.argv],
+        "arguments": vars(args),
+        "dataset": {
+            "model_path": os.path.abspath(dataset.model_path),
+            "source_path": os.path.abspath(dataset.source_path),
+            "images": str(dataset.images),
+            "resolution": int(dataset.resolution),
+            "longest_edge": int(dataset.longest_edge),
+            "gaussian_type": str(dataset.gaussian_type),
+            "feature_type": str(dataset.feature_type),
+        },
+        "inputs": {
+            key: {
+                "path": value,
+                "sha256": (
+                    _file_sha256(value)
+                    if value
+                    and key not in {"query_cache_path", "visibility_cache_path"}
+                    else None
+                ),
+            }
+            for key, value in paths.items()
+        },
+        "scaffold": dict(scaffold_diagnostics or {}),
+        "git": {
+            "commit": _git_output("rev-parse", "HEAD"),
+            "branch": _git_output("branch", "--show-current"),
+            "status_porcelain": _git_output("status", "--porcelain"),
+            "diff_sha256": hashlib.sha256(
+                _git_output("diff", "--binary").encode("utf-8")
+            ).hexdigest(),
+        },
+    }
+    path = Path(output_dir) / "reproducibility_manifest.json"
+    with path.open("w") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+    return path
+
+
+def _load_landmark_indices(model_path, landmark_path, point_count):
+    path = Path(landmark_path)
+    if not path.is_absolute():
+        path = Path(model_path) / path
+    with path.open("rb") as handle:
+        indices = torch.as_tensor(pickle.load(handle), dtype=torch.long).reshape(-1)
+    if indices.numel() == 0:
+        raise ValueError("Localization scaffold is empty")
+    if int(indices.min()) < 0 or int(indices.max()) >= int(point_count):
+        raise ValueError(
+            "Localization scaffold contains out-of-range primitive indices: "
+            f"count={indices.numel()} points={point_count}"
+        )
+    if int(torch.unique(indices).numel()) != int(indices.numel()):
+        raise ValueError("Localization scaffold must contain unique primitive IDs")
+    return indices, path
+
+
+def _load_masks(dataset):
+    candidates = (
+        Path(dataset.source_path) / dataset.images / "masks.pkl",
+        Path(dataset.source_path) / "masks.pkl",
+    )
+    for path in candidates:
+        if path.exists():
+            with path.open("rb") as handle:
+                return pickle.load(handle)
+    return None
+
+
+def _resize_mask(mask, target_hw):
+    mask = torch.as_tensor(mask, device="cuda").bool()
+    while mask.ndim > 2:
+        mask = mask.squeeze(0)
+    return (
+        F.interpolate(mask[None, None].float(), size=target_hw, mode="nearest")
+        .squeeze(0)
+        .squeeze(0)
+        .bool()
+    )
+
+
+def _query_feature_outputs(
+    camera,
+    feature_extractor,
+    *,
+    longest_edge,
+    masks=None,
+):
+    image = camera.original_image.cuda()
+    fine_height, fine_width = get_resolution_from_longest_edge(
+        image.shape[-2],
+        image.shape[-1],
+        longest_edge,
+    )
+    target_height = max(int(fine_height) // 8, 1)
+    target_width = max(int(fine_width) // 8, 1)
+    with torch.no_grad():
+        outputs = feature_extractor(image[None])
+        feature_map = F.interpolate(
+            outputs["feature_map"],
+            size=(target_height, target_width),
+            mode="bilinear",
+            align_corners=False,
+        )[0]
+        feature_map = F.normalize(feature_map.float(), dim=0)
+        score_map = outputs.get("scores")
+        if score_map is None:
+            score_map = outputs.get("repeatability")
+        if score_map is not None:
+            score_map = torch.as_tensor(score_map[0]).squeeze().float()
+    image_name = str(getattr(camera, "image_name", ""))
+    if masks is not None and image_name in masks:
+        object_mask = _resize_mask(masks[image_name][0], feature_map.shape[-2:])
+        distortion_mask = _resize_mask(masks[image_name][2], feature_map.shape[-2:])
+        valid_mask = object_mask & distortion_mask
+        feature_map = feature_map * valid_mask[None]
+    else:
+        valid_mask = torch.ones(
+            feature_map.shape[-2:],
+            device=feature_map.device,
+            dtype=torch.bool,
+        )
+    proposal_score_map = None
+    if score_map is not None:
+        score_map = F.adaptive_max_pool2d(
+            score_map[None, None],
+            output_size=feature_map.shape[-2:],
+        )[0, 0]
+        proposal_score_map = score_map * valid_mask
+    return feature_map, proposal_score_map, valid_mask
+
+
+def _squeeze_render_map(value):
+    if value is None:
+        return None
+    value = torch.as_tensor(value).squeeze()
+    if value.ndim == 3 and value.shape[-1] == 1:
+        value = value[..., 0]
+    if value.ndim != 2:
+        raise ValueError(f"Expected a 2D render map, got {tuple(value.shape)}")
+    return value
+
+
+@torch.no_grad()
+def _render_depth_alpha(gaussians, camera, height, width, background, norm_before_render):
+    pose_w2c = camera.world_view_transform.transpose(0, 1).cuda()
+    render_pkg = render_from_pose_gsplat(
+        gaussians,
+        pose_w2c,
+        camera.FoVx,
+        camera.FoVy,
+        width,
+        height,
+        bg_color=background,
+        render_mode="RGB+ED",
+        rgb_only=True,
+        norm_feat_bf_render=norm_before_render,
+        rasterize_mode="antialiased",
+    )
+    depth = _squeeze_render_map(render_pkg.get("depth"))
+    alpha = render_pkg.get("alphas")
+    if alpha is None:
+        alpha = render_pkg.get("rend_alpha")
+    alpha = _squeeze_render_map(alpha)
+    if depth is None or alpha is None:
+        raise RuntimeError("Frozen RGB map did not return depth and alpha")
+    return depth, alpha
+
+
+def _camera_cache_key(camera):
+    return str(getattr(camera, "image_name", "")).replace("\\", "/")
+
+
+def _uniformly_subsample_cameras(cameras, maximum):
+    cameras = list(cameras)
+    maximum = int(maximum)
+    if maximum <= 0 or len(cameras) <= maximum:
+        return cameras
+    positions = torch.linspace(0, len(cameras) - 1, maximum).round().long().tolist()
+    return [cameras[position] for position in positions]
+
+
+def _cache_signature(dataset, args):
+    payload = {
+        "version": 6,
+        "feature_resize_mode": "encoder_full_then_coarse_bilinear",
+        "model_path": os.path.abspath(dataset.model_path),
+        "source_path": os.path.abspath(dataset.source_path),
+        "load_iteration": int(args.load_iteration),
+        "feature_type": str(dataset.feature_type),
+        "images": str(dataset.images),
+        "resolution": int(dataset.resolution),
+        "longest_edge": int(dataset.longest_edge),
+        "white_background": bool(dataset.white_background),
+        "norm_before_render": bool(dataset.norm_before_render),
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), payload
+
+
+def _cache_payload_compatible(cached_payload, expected_payload):
+    if not isinstance(cached_payload, dict):
+        return False
+    required_keys = (
+        "version",
+        "feature_resize_mode",
+        "model_path",
+        "source_path",
+        "load_iteration",
+        "feature_type",
+        "images",
+        "resolution",
+        "longest_edge",
+        "white_background",
+        "norm_before_render",
+    )
+    return all(
+        cached_payload.get(key) == expected_payload.get(key)
+        for key in required_keys
+    )
+
+
+@torch.no_grad()
+def _build_query_cache(
+    cameras,
+    gaussians,
+    feature_extractor,
+    masks,
+    background,
+    norm_before_render,
+    longest_edge,
+    existing=None,
+):
+    cache = {} if existing is None else dict(existing)
+    for camera in tqdm(cameras, desc="Detector-free real-query cache"):
+        name = _camera_cache_key(camera)
+        feature_map, proposal_score_map, valid_mask = _query_feature_outputs(
+            camera,
+            feature_extractor,
+            longest_edge=longest_edge,
+            masks=masks,
+        )
+        height, width = feature_map.shape[-2:]
+        previous = cache.get(name, {})
+        if "depth" in previous and "alpha" in previous:
+            depth = previous["depth"]
+            alpha = previous["alpha"]
+        else:
+            depth, alpha = _render_depth_alpha(
+                gaussians,
+                camera,
+                height,
+                width,
+                background,
+                norm_before_render,
+            )
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        )
+        cache[name] = {
+            "feature_map": feature_map.detach().to(device="cpu", dtype=torch.float16),
+            "depth": torch.as_tensor(depth).detach().to(device="cpu", dtype=torch.float32),
+            "alpha": torch.as_tensor(alpha).detach().to(device="cpu", dtype=torch.float16),
+            "K": K.detach().cpu(),
+            "pose_w2c": camera.world_view_transform.transpose(0, 1).detach().cpu(),
+            "valid_mask": valid_mask.detach().cpu(),
+        }
+        if proposal_score_map is not None:
+            cache[name]["proposal_score_map"] = proposal_score_map.detach().to(
+                device="cpu", dtype=torch.float16
+            )
+        del feature_map, depth, alpha
+    return cache
+
+
+def _load_or_build_query_cache(
+    path,
+    signature,
+    signature_payload,
+    cameras,
+    gaussians,
+    feature_extractor,
+    masks,
+    background,
+    norm_before_render,
+    longest_edge,
+    require_proposal_scores=False,
+):
+    path = Path(path) if path else None
+    if path is not None and path.exists():
+        payload = torch.load(path, map_location="cpu")
+        signature_matches = payload.get("signature") == signature
+        legacy_matches = _cache_payload_compatible(
+            payload.get("signature_payload"), signature_payload
+        )
+        if not signature_matches and not legacy_matches:
+            print(
+                f"Ignoring incompatible detector-free query cache: {path}"
+            )
+            cached = {}
+        else:
+            cached = payload.get("queries", {})
+        missing = [
+            _camera_cache_key(camera)
+            for camera in cameras
+            if _camera_cache_key(camera) not in cached
+            or (
+                require_proposal_scores
+                and "proposal_score_map"
+                not in cached[_camera_cache_key(camera)]
+            )
+        ]
+        if not missing:
+            print(f"Loaded detector-free query cache: {path} queries={len(cached)}")
+            return cached
+    else:
+        cached = {}
+    missing_cameras = [
+        camera
+        for camera in cameras
+        if _camera_cache_key(camera) not in cached
+        or (
+            require_proposal_scores
+            and "proposal_score_map" not in cached[_camera_cache_key(camera)]
+        )
+    ]
+    cache = _build_query_cache(
+        missing_cameras,
+        gaussians,
+        feature_extractor,
+        masks,
+        background,
+        norm_before_render,
+        longest_edge,
+        existing=cached,
+    )
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "version": 2,
+                "signature": signature,
+                "signature_payload": signature_payload,
+                "queries": cache,
+            },
+            path,
+        )
+        print(f"Saved detector-free query cache: {path}")
+    return cache
+
+
+def _cached_observations(
+    cached,
+    bank_xyz,
+    args,
+    *,
+    max_observations,
+    bank_visibility_mask=None,
+):
+    feature_map = cached["feature_map"].cuda().float()
+    return build_detector_free_observations(
+        bank_xyz,
+        feature_map,
+        cached["K"].cuda().float(),
+        cached["pose_w2c"].cuda().float(),
+        target_depth=cached["depth"].cuda().float(),
+        target_alpha=cached["alpha"].cuda().float(),
+        bank_visibility_mask=bank_visibility_mask,
+        query_valid_mask=cached.get("valid_mask"),
+        alpha_threshold=args.alpha_threshold,
+        depth_abs_tolerance=args.depth_abs_tolerance,
+        depth_rel_tolerance=args.depth_rel_tolerance,
+        max_observations=max_observations,
+        grid_rows=args.grid_rows,
+        grid_cols=args.grid_cols,
+        depth_bins=args.depth_bins,
+    )
+
+
+@torch.no_grad()
+def _basic_visibility_counts(
+    xyz,
+    query_names,
+    cache,
+    args,
+    *,
+    chunk_size=262144,
+):
+    """Count depth-consistent support views without inspecting image descriptors."""
+    xyz = torch.as_tensor(xyz).detach().float()
+    counts = torch.zeros(xyz.shape[0], dtype=torch.int16, device=xyz.device)
+    for name in tqdm(query_names, desc="Pure scaffold visibility"):
+        cached = cache[name]
+        feature_map = cached["feature_map"]
+        height, width = feature_map.shape[-2:]
+        K = cached["K"].to(device=xyz.device, dtype=xyz.dtype)
+        pose_w2c = cached["pose_w2c"].to(device=xyz.device, dtype=xyz.dtype)
+        target_depth = cached["depth"].to(device=xyz.device, dtype=xyz.dtype)
+        target_alpha = cached["alpha"].to(device=xyz.device, dtype=xyz.dtype)
+        valid_mask = cached.get("valid_mask")
+        if valid_mask is not None:
+            valid_mask = valid_mask.to(device=xyz.device, dtype=torch.bool).squeeze()
+        for start in range(0, xyz.shape[0], int(chunk_size)):
+            end = min(start + int(chunk_size), xyz.shape[0])
+            uv, depth, projected = project_landmarks_to_query(
+                xyz[start:end],
+                K,
+                pose_w2c,
+                height,
+                width,
+            )
+            visible = filter_depth_consistent_landmarks(
+                uv,
+                depth,
+                projected,
+                target_depth=target_depth,
+                target_alpha=target_alpha,
+                alpha_threshold=args.alpha_threshold,
+                abs_tolerance=args.depth_abs_tolerance,
+                rel_tolerance=args.depth_rel_tolerance,
+            )
+            if valid_mask is not None and bool(visible.any().item()):
+                rounded = uv.round().long()
+                visible_indices = torch.nonzero(visible, as_tuple=False).reshape(-1)
+                visible[visible_indices] &= valid_mask[
+                    rounded[visible_indices, 1],
+                    rounded[visible_indices, 0],
+                ]
+            counts[start:end] += visible.to(dtype=counts.dtype)
+    return counts
+
+
+def _load_or_build_landmark_indices(
+    dataset,
+    gaussians,
+    args,
+    *,
+    visibility_counts=None,
+):
+    if args.scaffold_mode == "file":
+        indices, path = _load_landmark_indices(
+            dataset.model_path,
+            args.landmark_path,
+            point_count=gaussians.get_xyz.shape[0],
+        )
+        return indices, path, {
+            "mode": "file",
+            "path": str(path),
+            "budget": int(indices.numel()),
+        }
+
+    output_path = Path(args.generated_landmark_path)
+    if not output_path.is_absolute():
+        output_path = Path(args.output_dir) / output_path
+    metadata_path = output_path.with_suffix(output_path.suffix + ".json")
+    if output_path.exists() and not args.regenerate_scaffold:
+        indices, path = _load_landmark_indices(
+            dataset.model_path,
+            str(output_path),
+            point_count=gaussians.get_xyz.shape[0],
+        )
+        metadata = {}
+        if metadata_path.exists():
+            with metadata_path.open() as handle:
+                metadata = json.load(handle)
+        metadata.setdefault("mode", "pure_geometry_cached")
+        metadata.setdefault("budget", int(indices.numel()))
+        return indices, path, metadata
+
+    opacity = gaussians.get_opacity.detach().reshape(-1)
+    eligible = torch.isfinite(opacity) & (opacity >= float(args.scaffold_min_opacity))
+    if visibility_counts is not None:
+        visibility_counts = torch.as_tensor(
+            visibility_counts,
+            device=eligible.device,
+        ).reshape(-1)
+        if visibility_counts.numel() != eligible.numel():
+            raise ValueError("scaffold visibility counts must match the primitive count")
+        eligible &= visibility_counts >= int(args.scaffold_min_visible_views)
+    scaffold = build_pure_geometric_scaffold(
+        gaussians.get_xyz.detach(),
+        gaussians.get_rotation.detach(),
+        args.scaffold_budget,
+        eligible=eligible,
+        normal_bins=args.scaffold_normal_bins,
+        voxel_size=args.scaffold_voxel_size,
+        search_steps=args.scaffold_search_steps,
+        seed=args.scaffold_seed,
+    )
+    if visibility_counts is not None:
+        selected_visibility = visibility_counts[scaffold.indices]
+        scaffold.diagnostics.update(
+            {
+                "visibility_prefilter": True,
+                "minimum_visible_views": int(args.scaffold_min_visible_views),
+                "selected_visible_views_min": int(selected_visibility.min().item()),
+                "selected_visible_views_median": float(
+                    selected_visibility.float().median().item()
+                ),
+                "selected_visible_views_mean": float(
+                    selected_visibility.float().mean().item()
+                ),
+            }
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as handle:
+        pickle.dump(scaffold.indices.detach().cpu(), handle)
+    with metadata_path.open("w") as handle:
+        json.dump(scaffold.diagnostics, handle, indent=2, sort_keys=True)
+    print(
+        "Saved pure-geometric localization scaffold: "
+        f"{output_path} count={scaffold.indices.numel()}"
+    )
+    return scaffold.indices.cpu(), output_path, scaffold.diagnostics
+
+
+def _cached_score_proposal_observations(cached, anchor_observations, args):
+    score_map = cached.get("proposal_score_map")
+    if score_map is None or int(args.generic_proposal_count) <= 0:
+        return None
+    return build_score_proposal_observations(
+        anchor_observations,
+        score_map.cuda().float(),
+        max_proposals=args.generic_proposal_count,
+        nms_radius=args.generic_proposal_nms_radius,
+        score_threshold=args.generic_proposal_score_threshold,
+        positive_search_radius_px=args.generic_proposal_positive_radius,
+    )
+
+
+def _visibility_signature(dataset, args, landmark_indices):
+    digest = hashlib.sha256()
+    digest.update(landmark_indices.detach().cpu().numpy().tobytes())
+    payload = {
+        "version": 2,
+        "model_path": os.path.abspath(dataset.model_path),
+        "source_path": os.path.abspath(dataset.source_path),
+        "load_iteration": int(args.load_iteration),
+        "images": str(dataset.images),
+        "resolution": int(dataset.resolution),
+        "longest_edge": int(dataset.longest_edge),
+        "feature_resize_mode": "encoder_full_then_coarse_bilinear",
+        "landmark_sha256": digest.hexdigest(),
+        "landmark_count": int(landmark_indices.numel()),
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest(), payload
+
+
+def _render_bank_visibility(gaussians, camera, width, height, landmark_indices):
+    xyz = gaussians._xyz
+    previous_requires_grad = bool(xyz.requires_grad)
+    xyz.requires_grad_(True)
+    try:
+        with torch.enable_grad():
+            visible = get_render_visible_mask(
+                gaussians,
+                camera,
+                width,
+                height,
+            )
+    finally:
+        xyz.grad = None
+        xyz.requires_grad_(previous_requires_grad)
+    return visible[landmark_indices.cuda()].detach().cpu().bool()
+
+
+def _load_or_build_visibility_cache(
+    path,
+    signature,
+    signature_payload,
+    cameras,
+    query_cache,
+    gaussians,
+    landmark_indices,
+):
+    path = Path(path) if path else None
+    if path is not None and path.exists():
+        payload = torch.load(path, map_location="cpu")
+        if payload.get("signature") != signature:
+            raise ValueError(
+                f"Visibility cache signature mismatch for {path}; use a matching scaffold"
+            )
+        cached = payload.get("visibility", {})
+        missing = [
+            _camera_cache_key(camera)
+            for camera in cameras
+            if _camera_cache_key(camera) not in cached
+        ]
+        if not missing:
+            print(f"Loaded rasterizer visibility cache: {path} views={len(cached)}")
+            return cached
+    visibility = {}
+    for camera in tqdm(cameras, desc="2DGS contribution visibility"):
+        name = _camera_cache_key(camera)
+        height, width = query_cache[name]["feature_map"].shape[-2:]
+        visibility[name] = _render_bank_visibility(
+            gaussians,
+            camera,
+            width,
+            height,
+            landmark_indices,
+        )
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "version": 1,
+                "signature": signature,
+                "signature_payload": signature_payload,
+                "visibility": visibility,
+            },
+            path,
+        )
+        print(f"Saved rasterizer visibility cache: {path}")
+    return visibility
+
+
+@torch.no_grad()
+def _build_mvinit_features(
+    query_names,
+    cache,
+    bank_xyz,
+    fallback_features,
+    args,
+    visibility_cache=None,
+):
+    feature_dim = int(fallback_features.shape[1])
+    feature_sum = torch.zeros(
+        (bank_xyz.shape[0], feature_dim), device=bank_xyz.device, dtype=torch.float32
+    )
+    observation_count = torch.zeros(
+        bank_xyz.shape[0], device=bank_xyz.device, dtype=torch.long
+    )
+    for name in tqdm(query_names, desc="Detector-free MVInit"):
+        observations = _cached_observations(
+            cache[name],
+            bank_xyz,
+            args,
+            max_observations=args.mvinit_max_observations,
+            bank_visibility_mask=(
+                None if visibility_cache is None else visibility_cache[name]
+            ),
+        )
+        if observations.source_indices.numel() == 0:
+            continue
+        feature_sum.index_add_(
+            0,
+            observations.source_indices,
+            observations.query_features.float(),
+        )
+        observation_count.index_add_(
+            0,
+            observations.source_indices,
+            torch.ones_like(observations.source_indices),
+        )
+    observed = observation_count > 0
+    result = F.normalize(fallback_features.float(), dim=-1)
+    if bool(observed.any().item()):
+        result = result.clone()
+        result[observed] = F.normalize(feature_sum[observed], dim=-1)
+    diagnostics = {
+        "observed_landmarks": int(observed.sum().item()),
+        "unobserved_landmarks": int((~observed).sum().item()),
+        "observation_count_mean": float(observation_count.float().mean().item()),
+        "observation_count_median": float(observation_count.float().median().item()),
+        "observation_count_max": int(observation_count.max().item()),
+    }
+    return result, observation_count, diagnostics
+
+
+def _load_initial_features(path, landmark_indices, feature_dim, device):
+    state = torch.load(path, map_location="cpu")
+    state_indices = torch.as_tensor(state.get("landmark_indices"), dtype=torch.long)
+    if not torch.equal(state_indices.reshape(-1), landmark_indices.cpu()):
+        raise ValueError("Initial state landmark IDs do not match the fixed scaffold")
+    features = torch.as_tensor(state.get("landmark_features"), dtype=torch.float32)
+    features = features.reshape(landmark_indices.numel(), -1)
+    if int(features.shape[1]) != int(feature_dim):
+        raise ValueError(
+            f"Initial state descriptor dimension is {features.shape[1]}, expected {feature_dim}"
+        )
+    return F.normalize(features.to(device), dim=-1), state
+
+
+def _fallback_features(gaussians, landmark_indices, feature_dim):
+    features = gaussians.get_loc_feature[landmark_indices.cuda()].reshape(
+        landmark_indices.numel(), -1
+    )
+    if int(features.shape[1]) != int(feature_dim):
+        return F.normalize(
+            torch.randn(
+                landmark_indices.numel(),
+                feature_dim,
+                device=gaussians.get_xyz.device,
+            ),
+            dim=-1,
+        )
+    finite = torch.isfinite(features).all(dim=1)
+    normalized = F.normalize(
+        torch.nan_to_num(features.float(), nan=0.0, posinf=0.0, neginf=0.0), dim=-1
+    )
+    invalid = (~finite) | (torch.linalg.norm(normalized, dim=-1) < 1e-6)
+    if bool(invalid.any().item()):
+        normalized[invalid] = F.normalize(
+            torch.randn(
+                int(invalid.sum().item()),
+                feature_dim,
+                device=normalized.device,
+            ),
+            dim=-1,
+        )
+    return normalized
+
+
+def _mean_diagnostics(records):
+    keys = sorted({key for record in records for key in record})
+    return {
+        key: float(
+            sum(float(record[key]) for record in records if key in record)
+            / max(sum(1 for record in records if key in record), 1)
+        )
+        for key in keys
+    }
+
+
+def _all_parameter_gradients_finite(parameters):
+    for parameter in parameters:
+        if parameter.grad is not None and not bool(
+            torch.isfinite(parameter.grad).all().item()
+        ):
+            return False
+    return True
+
+
+@torch.no_grad()
+def _collect_landmark_statistics(
+    features,
+    query_names,
+    cache,
+    bank_xyz,
+    args,
+    visibility_cache=None,
+):
+    count = int(bank_xyz.shape[0])
+    device = bank_xyz.device
+    observation_count = torch.zeros(count, device=device)
+    correct_count = torch.zeros(count, device=device)
+    margin_sum = torch.zeros(count, device=device)
+    entropy_sum = torch.zeros(count, device=device)
+    reprojection_sum = torch.zeros(count, device=device)
+    translation_fim_sum = torch.zeros(count, device=device)
+    uv_sum = torch.zeros((count, 2), device=device)
+    depth_sum = torch.zeros(count, device=device)
+    normalized_features = F.normalize(features, dim=1)
+    records = []
+    for name in tqdm(query_names, desc="One-time landmark statistics"):
+        observations = _cached_observations(
+            cache[name],
+            bank_xyz,
+            args,
+            max_observations=args.statistics_observations,
+            bank_visibility_mask=(
+                None if visibility_cache is None else visibility_cache[name]
+            ),
+        )
+        source = observations.source_indices
+        if source.numel() == 0:
+            continue
+        query = F.normalize(observations.query_features, dim=1)
+        scores = query @ normalized_features.T
+        score_topk = min(max(int(args.statistics_hypothesis_topk), 2), count)
+        top_values, top_indices = torch.topk(scores, score_topk, dim=1)
+        top1 = top_indices[:, 0]
+        top1_distance = torch.linalg.norm(
+            observations.bank_uv[top1] - observations.query_uv, dim=1
+        )
+        clean = observations.bank_visible[top1] & (
+            top1_distance <= float(args.positive_radius_px)
+        )
+        source_score = scores.gather(1, source[:, None]).squeeze(1)
+        competitor = torch.where(
+            top1 == source,
+            top_values[:, 1],
+            top_values[:, 0],
+        )
+        margin = source_score - competitor
+        probability = torch.softmax(
+            top_values / max(float(args.temperature), 1e-6), dim=1
+        )
+        entropy = -(probability * probability.clamp_min(1e-8).log()).sum(dim=1)
+        entropy /= max(float(torch.log(torch.tensor(score_topk)).item()), 1.0)
+        local = local_soft_correspondences(
+            features,
+            observations,
+            radius=args.local_radius,
+            temperature=args.local_temperature,
+        )
+        local_error = torch.linalg.norm(
+            local.expected_uv - observations.query_uv, dim=1
+        )
+        top1_projected = observations.bank_projected[top1]
+        finite_top1_distance = top1_distance[
+            top1_projected & torch.isfinite(top1_distance)
+        ]
+        ones = torch.ones_like(source, dtype=torch.float32)
+        observation_count.index_add_(0, source, ones)
+        correct_count.index_add_(0, source, clean.float())
+        margin_sum.index_add_(0, source, margin)
+        entropy_sum.index_add_(0, source, entropy)
+        reprojection_sum.index_add_(0, source, local_error)
+        height, width = observations.query_feature_map.shape[-2:]
+        normalized_uv = observations.query_uv.clone()
+        normalized_uv[:, 0] /= max(float(width - 1), 1.0)
+        normalized_uv[:, 1] /= max(float(height - 1), 1.0)
+        uv_sum.index_add_(0, source, normalized_uv)
+        depth_sum.index_add_(0, source, observations.source_depth)
+        if source.numel() >= 6:
+            information = compute_pose_information(
+                bank_xyz[source],
+                observations.K,
+                observations.pose_w2c,
+                weights=clean.float().clamp_min(0.05),
+                translation_scale=args.pose_translation_scale_m,
+                rotation_scale=float(
+                    torch.deg2rad(torch.tensor(args.pose_rotation_scale_deg)).item()
+                ),
+            )
+            translation_fim_sum.index_add_(
+                0, source, information.translation_scores
+            )
+        records.append(
+            {
+                "observations": int(source.numel()),
+                "top1_clean_precision": float(clean.float().mean().item()),
+                "top1_reprojection_median_px": float(
+                    finite_top1_distance.median().item()
+                    if finite_top1_distance.numel()
+                    else 0.0
+                ),
+                "top1_projected_ratio": float(top1_projected.float().mean().item()),
+                "source_margin_mean": float(margin.mean().item()),
+                "hypothesis_entropy_mean": float(entropy.mean().item()),
+            }
+        )
+    denominator = observation_count.clamp_min(1.0)
+    matchability = (correct_count + 1.0) / (observation_count + 2.0)
+    statistics = {
+        "observation_count": observation_count,
+        "correct_count": correct_count,
+        "matchability": matchability,
+        "margin": margin_sum / denominator,
+        "entropy": entropy_sum / denominator,
+        "reprojection_error": reprojection_sum / denominator,
+        "translation_fim": translation_fim_sum / denominator,
+        "mean_uv": uv_sum / denominator[:, None],
+        "mean_depth": depth_sum / denominator,
+    }
+    diagnostics = _mean_diagnostics(records)
+    diagnostics.update(
+        {
+            "query_count": len(records),
+            "observed_landmark_count": int((observation_count > 0).sum().item()),
+            "matchability_mean": float(
+                matchability[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
+                else 0.0
+            ),
+        }
+    )
+    return statistics, diagnostics
+
+
+@torch.no_grad()
+def _distill_final_landmark_bank(
+    output_dir,
+    landmark_indices,
+    features,
+    bank_xyz,
+    raw_anchor_offset,
+    statistics,
+    args,
+    config,
+    mvinit_observation_count,
+    dustbin_score,
+):
+    observation_count = statistics["observation_count"]
+    matchability = statistics["matchability"]
+    repeatability = (
+        observation_count
+        / observation_count[observation_count > 0].median().clamp_min(1.0)
+        if bool((observation_count > 0).any())
+        else torch.zeros_like(observation_count)
+    ).clamp(0.0, 1.0)
+    margin_quality = torch.sigmoid(robust_normalize(statistics["margin"]))
+    entropy_quality = (1.0 - statistics["entropy"]).clamp(0.0, 1.0)
+    reprojection_quality = torch.exp(
+        -statistics["reprojection_error"].clamp_min(0.0)
+        / max(float(args.distill_reprojection_scale_px), 1e-6)
+    )
+    fim_quality = torch.sigmoid(
+        robust_normalize(statistics["translation_fim"])
+    )
+    utility = (
+        matchability
+        * (0.5 + 0.5 * repeatability)
+        * (0.5 + 0.5 * margin_quality)
+        * (0.5 + 0.5 * entropy_quality)
+        * (0.5 + 0.5 * reprojection_quality)
+        * (0.75 + 0.25 * fim_quality)
+    )
+    extent = bank_xyz.quantile(0.99, dim=0) - bank_xyz.quantile(0.01, dim=0)
+    voxel_size = float(args.distill_voxel_size)
+    if voxel_size <= 0.0:
+        voxel_size = float(torch.linalg.norm(extent).item()) / 40.0
+    eligible = observation_count >= float(args.distill_min_observations)
+    eligibility_relaxed = "none"
+    if int(eligible.sum().item()) < int(args.distill_budget):
+        eligible = observation_count > 0
+        eligibility_relaxed = "observed"
+    effective_budget = min(int(args.distill_budget), int(eligible.sum().item()))
+    if effective_budget <= 0:
+        raise ValueError("No observed landmarks are available for final distillation")
+    if effective_budget < int(args.distill_budget):
+        eligibility_relaxed = "observed_shortfall"
+    selected, selection_meta = coverage_preserving_sample(
+        bank_xyz,
+        base_score=matchability,
+        utility=utility,
+        num=effective_budget,
+        min_observations=eligible,
+        base_preserve_ratio=args.distill_matchability_preserve_ratio,
+        utility_preserve_ratio=args.distill_utility_preserve_ratio,
+        high_confidence=(matchability >= float(args.distill_high_confidence)),
+        high_confidence_ratio=args.distill_high_confidence_ratio,
+        voxel_size=voxel_size,
+        max_per_voxel=args.distill_max_per_voxel,
+        uv=statistics["mean_uv"] * 1000.0,
+        image_size=(1000, 1000),
+        grid_size=args.distill_grid_size,
+        max_per_grid=args.distill_max_per_grid,
+        depth=statistics["mean_depth"],
+        depth_bins=args.distill_depth_bins,
+        max_per_depth_bin=args.distill_max_per_depth_bin,
+        allow_unbalanced_fallback=True,
+    )
+    output_dir = Path(output_dir)
+    selected_global = landmark_indices[selected.cpu()]
+    sampled_path = output_dir / "distilled_sampled_idx.pkl"
+    with sampled_path.open("wb") as handle:
+        pickle.dump(selected_global.detach().cpu(), handle)
+    distilled_config = dict(config)
+    distilled_config["one_time_landmark_distillation"] = True
+    distilled_config["distillation"] = {
+        "source_pool_size": int(landmark_indices.numel()),
+        "final_budget": int(selected.numel()),
+        "voxel_size": voxel_size,
+        "uses_matchability": True,
+        "uses_conditional_translation_fim": True,
+        "uses_3d_image_depth_coverage": True,
+        "eligibility_relaxed": eligibility_relaxed,
+        "requested_budget": int(args.distill_budget),
+        "observed_budget_shortfall": int(args.distill_budget) - effective_budget,
+    }
+    distilled_statistics = {
+        key: value[selected].detach().cpu() for key, value in statistics.items()
+    }
+    distilled_meta = {
+        "landmark_indices": selected_global.detach().cpu(),
+        "candidate_quality": utility[selected].detach().cpu(),
+        "utility": utility[selected].detach().cpu(),
+        "matchability": matchability[selected].detach().cpu(),
+        "repeatability": repeatability[selected].detach().cpu(),
+        "margin": statistics["margin"][selected].detach().cpu(),
+        "reproj_error": statistics["reprojection_error"][selected].detach().cpu(),
+        "information": statistics["translation_fim"][selected].detach().cpu(),
+        "translation_fim": statistics["translation_fim"][selected].detach().cpu(),
+        "coverage_uv": statistics["mean_uv"][selected].detach().cpu(),
+        "coverage_image_size": torch.tensor([1000.0, 1000.0]),
+        "coverage_grid_size": int(args.distill_grid_size),
+        "coverage_depth": statistics["mean_depth"][selected].detach().cpu(),
+        "coverage_depth_bins": int(args.distill_depth_bins),
+        "selection_meta": selection_meta,
+    }
+    meta_path = output_dir / "landmark_meta.pt"
+    torch.save(distilled_meta, meta_path)
+    state_path = output_dir / "distilled_lafgs_map_state.pt"
+    state = {
+        "version": 6,
+        "iteration": int(args.steps),
+        "landmark_indices": selected_global.detach().cpu(),
+        "landmark_features": F.normalize(features[selected], dim=1).detach().cpu(),
+        "landmark_xyz": bank_xyz[selected].detach().cpu(),
+        "raw_anchor_offset": raw_anchor_offset[selected].detach().cpu(),
+        "mvinit_observation_count": mvinit_observation_count[selected].detach().cpu(),
+        "landmark_statistics": distilled_statistics,
+        "selection_meta": selection_meta,
+        "config": distilled_config,
+    }
+    if dustbin_score is not None:
+        state["dustbin_score"] = float(dustbin_score.detach().item())
+    torch.save(state, state_path)
+    return {
+        "sampled_idx_path": str(sampled_path),
+        "state_path": str(state_path),
+        "landmark_meta_path": str(meta_path),
+        "source_pool_size": int(landmark_indices.numel()),
+        "selected_count": int(selected.numel()),
+        "utility_selected_mean": float(utility[selected].mean().item()),
+        "matchability_selected_mean": float(matchability[selected].mean().item()),
+        "translation_fim_selected_mean": float(
+            statistics["translation_fim"][selected].mean().item()
+        ),
+        "eligibility_relaxed": eligibility_relaxed,
+    }
+
+
+@torch.no_grad()
+def _validate_descriptor_field(
+    features,
+    validation_names,
+    cache,
+    bank_xyz,
+    args,
+    visibility_cache=None,
+    dustbin_score=None,
+):
+    records = []
+    for name in tqdm(validation_names, desc="Detector-free validation"):
+        observations = _cached_observations(
+            cache[name],
+            bank_xyz,
+            args,
+            max_observations=args.validation_observations,
+            bank_visibility_mask=(
+                None if visibility_cache is None else visibility_cache[name]
+            ),
+        )
+        if observations.source_indices.numel() == 0:
+            continue
+        retrieval = hard_hypothesis_retrieval_loss(
+            features,
+            observations,
+            hypothesis_topk=args.hypothesis_topk,
+            temperature=args.temperature,
+            positive_radius_px=args.positive_radius_px,
+            negative_radius_px=args.negative_radius_px,
+            margin=args.retrieval_margin,
+            dustbin_score=dustbin_score,
+        )
+        record = dict(retrieval.diagnostics)
+        proposal_observations = _cached_score_proposal_observations(
+            cache[name],
+            observations,
+            args,
+        )
+        if proposal_observations is not None:
+            proposal_retrieval = hard_hypothesis_retrieval_loss(
+                features,
+                proposal_observations,
+                hypothesis_topk=args.hypothesis_topk,
+                temperature=args.temperature,
+                positive_radius_px=args.positive_radius_px,
+                negative_radius_px=args.negative_radius_px,
+                margin=args.retrieval_margin,
+                dustbin_score=dustbin_score,
+            )
+            record.update(
+                {
+                    f"generic_proposal_{key}": value
+                    for key, value in proposal_retrieval.diagnostics.items()
+                }
+            )
+            record["generic_proposal_loss"] = float(
+                proposal_retrieval.loss.item()
+            )
+            record["generic_proposal_observations"] = int(
+                proposal_observations.source_indices.numel()
+            )
+        record["mv_loss"] = float(
+            multiview_descriptor_loss(features, observations).item()
+        )
+        if args.local_weight > 0.0:
+            local_loss, local_diagnostics = local_correlation_peak_loss(
+                features,
+                observations,
+                radius=args.local_radius,
+                target_sigma=args.local_target_sigma,
+                temperature=args.local_temperature,
+            )
+            record["local_loss"] = float(local_loss.item())
+            record.update(local_diagnostics)
+        record["visible_observations"] = int(observations.source_indices.numel())
+        records.append(record)
+    summary = _mean_diagnostics(records)
+    summary["validation_query_count"] = len(records)
+    return summary
+
+
+def _state_config(
+    args,
+    dataset,
+    train_count,
+    validation_count,
+    landmark_path,
+    scaffold_diagnostics,
+):
+    return {
+        "method": "lafgs_detector_free_bounded_surface_v4",
+        "detector_free": True,
+        "scene_detector_used_for_map_training": False,
+        "frozen_generic_proposal_head": bool(args.generic_proposal_count > 0),
+        "geometry_frozen": not bool(args.geometry_weight > 0.0),
+        "raw_xyz_trainable": False,
+        "bounded_anchor_trainable": bool(args.geometry_weight > 0.0),
+        "dynamic_landmark_selection": False,
+        "one_time_landmark_distillation": bool(args.distill_budget > 0),
+        "online_rendering": False,
+        "fim_loss_enabled": False,
+        "pair_enabled": False,
+        "topology_enabled": False,
+        "objective": str(args.objective),
+        "steps": int(args.steps),
+        "feature_lr": float(args.feature_lr),
+        "geometry_lr": float(args.geometry_lr),
+        "weight_decay": float(args.weight_decay),
+        "mv_weight": float(args.mv_weight),
+        "retrieval_weight": float(args.retrieval_weight),
+        "trust_weight": float(args.trust_weight),
+        "local_weight": float(args.local_weight),
+        "local_correlation_enabled": bool(args.local_weight > 0.0),
+        "local_radius": int(args.local_radius),
+        "local_target_sigma": float(args.local_target_sigma),
+        "local_temperature": float(args.local_temperature),
+        "temperature": float(args.temperature),
+        "hypothesis_topk": int(args.hypothesis_topk),
+        "random_negative_count": int(args.random_negative_count),
+        "positive_radius_px": float(args.positive_radius_px),
+        "negative_radius_px": float(args.negative_radius_px),
+        "retrieval_margin": float(args.retrieval_margin),
+        "visibility_mode": str(args.visibility_mode),
+        "proposal_jitter_std": float(args.proposal_jitter_std),
+        "proposal_jitter_max": float(args.proposal_jitter_max),
+        "generic_proposal_weight": float(args.generic_proposal_weight),
+        "generic_proposal_count": int(args.generic_proposal_count),
+        "generic_proposal_nms_radius": int(args.generic_proposal_nms_radius),
+        "generic_proposal_score_threshold": float(
+            args.generic_proposal_score_threshold
+        ),
+        "generic_proposal_positive_radius": float(
+            args.generic_proposal_positive_radius
+        ),
+        "dustbin_weight": float(args.dustbin_weight),
+        "dustbin_background_count": int(args.dustbin_background_count),
+        "dustbin_background_alpha_max": float(args.dustbin_background_alpha_max),
+        "dustbin_no_anchor": bool(args.dustbin_no_anchor),
+        "geometry_start_step": int(args.geometry_start_step),
+        "geometry_weight": float(args.geometry_weight),
+        "surface_weight": float(args.surface_weight),
+        "depth_weight": float(args.depth_weight),
+        "reprojection_weight": float(args.reprojection_weight),
+        "tangent_bound_m": float(args.tangent_bound_m),
+        "normal_bound_m": float(args.normal_bound_m),
+        "pose_start_step": int(args.pose_start_step),
+        "pose_interval": int(args.pose_interval),
+        "pose_weight": float(args.pose_weight),
+        "pose_iterations": int(args.pose_iterations),
+        "trust_observation_power": float(args.trust_observation_power),
+        "initial_state_blend": float(args.initial_state_blend),
+        "mvinit_max_observations": int(args.mvinit_max_observations),
+        "max_observations": int(args.max_observations),
+        "validation_ratio": float(args.validation_ratio),
+        "split_mode": str(args.split_mode),
+        "split_seed": int(args.split_seed),
+        "train_camera_count": int(train_count),
+        "validation_camera_count": int(validation_count),
+        "model_path": os.path.abspath(dataset.model_path),
+        "source_path": os.path.abspath(dataset.source_path),
+        "map_iteration": int(args.load_iteration),
+        "landmark_path": str(landmark_path),
+        "scaffold": dict(scaffold_diagnostics),
+    }
+
+
+def _save_state(
+    path,
+    iteration,
+    landmark_indices,
+    features,
+    config,
+    diagnostics,
+    mvinit_observation_count,
+    dustbin_score=None,
+    landmark_xyz=None,
+    raw_anchor_offset=None,
+):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+            "version": 6,
+            "iteration": int(iteration),
+            "landmark_indices": landmark_indices.detach().cpu(),
+            "landmark_features": F.normalize(features.detach().float(), dim=-1).cpu(),
+            "config": dict(config),
+            "diagnostics": dict(diagnostics),
+            "mvinit_observation_count": mvinit_observation_count.detach().cpu(),
+        }
+    if landmark_xyz is not None:
+        state["landmark_xyz"] = torch.as_tensor(landmark_xyz).detach().float().cpu()
+    if raw_anchor_offset is not None:
+        state["raw_anchor_offset"] = (
+            torch.as_tensor(raw_anchor_offset).detach().float().cpu()
+        )
+    if dustbin_score is not None:
+        state["dustbin_score"] = float(
+            torch.as_tensor(dustbin_score).detach().cpu().item()
+        )
+    torch.save(state, path)
+
+
+def train(dataset, args):
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    gaussians = _gaussian_model_for_type(dataset.gaussian_type, dataset.sh_degree)
+    scene = Scene(
+        dataset,
+        gaussians,
+        load_iteration=args.load_iteration,
+        shuffle=False,
+        preload_cameras=False,
+    )
+    if not scene.loaded_iter:
+        raise ValueError("A pretrained Gaussian map checkpoint is required")
+    for parameter in gaussians.parameters():
+        parameter.requires_grad_(False)
+
+    feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
+    for parameter in feature_extractor.parameters():
+        parameter.requires_grad_(False)
+
+    all_train_cameras = sorted(
+        scene.getTrainCameras(),
+        key=lambda camera: _camera_cache_key(camera),
+    )
+    if float(args.validation_ratio) <= 0.0:
+        train_cameras = all_train_cameras
+        validation_cameras = []
+    else:
+        train_cameras, validation_cameras = split_support_query_cameras(
+            all_train_cameras,
+            query_ratio=args.validation_ratio,
+            seed=args.split_seed + 1,
+            mode=args.split_mode,
+        )
+    train_cameras = _uniformly_subsample_cameras(
+        train_cameras, args.max_train_views
+    )
+    validation_cameras = _uniformly_subsample_cameras(
+        validation_cameras, args.max_validation_views
+    )
+    train_names = [_camera_cache_key(camera) for camera in train_cameras]
+    validation_names = [_camera_cache_key(camera) for camera in validation_cameras]
+    print(
+        "LaFGS detector-free split: "
+        f"train={len(train_names)} validation={len(validation_names)} "
+        f"mode={args.split_mode} seed={args.split_seed}"
+    )
+
+    masks = _load_masks(dataset)
+    background = torch.tensor(
+        [1.0, 1.0, 1.0] if dataset.white_background else [0.0, 0.0, 0.0],
+        device="cuda",
+    )
+    signature, signature_payload = _cache_signature(dataset, args)
+    cache = _load_or_build_query_cache(
+        args.query_cache_path,
+        signature,
+        signature_payload,
+        train_cameras + validation_cameras,
+        gaussians,
+        feature_extractor,
+        masks,
+        background,
+        dataset.norm_before_render,
+        dataset.longest_edge,
+        require_proposal_scores=bool(args.generic_proposal_count > 0),
+    )
+    scaffold_visibility_counts = None
+    if (
+        args.scaffold_mode == "pure_geometry"
+        and int(args.scaffold_min_visible_views) > 0
+    ):
+        scaffold_visibility_counts = _basic_visibility_counts(
+            gaussians.get_xyz.detach(),
+            train_names,
+            cache,
+            args,
+            chunk_size=args.scaffold_visibility_chunk_size,
+        )
+        visible_eligible = scaffold_visibility_counts >= int(
+            args.scaffold_min_visible_views
+        )
+        print(
+            "Pure scaffold basic-visibility prefilter: "
+            f"eligible={int(visible_eligible.sum().item())}/"
+            f"{visible_eligible.numel()} "
+            f"minimum_views={args.scaffold_min_visible_views}"
+        )
+
+    landmark_indices, landmark_path, scaffold_diagnostics = (
+        _load_or_build_landmark_indices(
+            dataset,
+            gaussians,
+            args,
+            visibility_counts=scaffold_visibility_counts,
+        )
+    )
+    _write_reproducibility_manifest(
+        output_dir,
+        dataset,
+        args,
+        landmark_path=landmark_path,
+        scaffold_diagnostics=scaffold_diagnostics,
+    )
+    base_bank_xyz = gaussians.get_xyz[landmark_indices.cuda()].detach().float()
+    base_bank_rotation = (
+        gaussians.get_rotation[landmark_indices.cuda()].detach().float()
+    )
+    visibility_cache = None
+    if args.visibility_mode == "rasterizer":
+        visibility_signature, visibility_payload = _visibility_signature(
+            dataset,
+            args,
+            landmark_indices,
+        )
+        visibility_cache = _load_or_build_visibility_cache(
+            args.visibility_cache_path,
+            visibility_signature,
+            visibility_payload,
+            train_cameras + validation_cameras,
+            cache,
+            gaussians,
+            landmark_indices,
+        )
+
+    fallback = _fallback_features(
+        gaussians,
+        landmark_indices,
+        feature_dim=feature_extractor.feature_dim,
+    )
+    mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
+        _build_mvinit_features(
+            train_names,
+            cache,
+            base_bank_xyz,
+            fallback,
+            args,
+            visibility_cache=visibility_cache,
+        )
+    )
+    initial_state = None
+    if args.initial_state_path:
+        prior_features, initial_state = _load_initial_features(
+            args.initial_state_path,
+            landmark_indices,
+            feature_extractor.feature_dim,
+            base_bank_xyz.device,
+        )
+        blend = float(max(0.0, min(1.0, args.initial_state_blend)))
+        initial_features = F.normalize(
+            blend * prior_features + (1.0 - blend) * mvinit_features,
+            dim=-1,
+        )
+        mvinit_diagnostics["loaded_initial_state"] = 1.0
+        mvinit_diagnostics["initial_state_path"] = os.path.abspath(
+            args.initial_state_path
+        )
+        mvinit_diagnostics["initial_state_blend"] = blend
+    else:
+        initial_features = mvinit_features
+
+    config = _state_config(
+        args,
+        dataset,
+        len(train_names),
+        len(validation_names),
+        landmark_path,
+        scaffold_diagnostics,
+    )
+    residual = torch.nn.Parameter(torch.zeros_like(initial_features))
+    raw_anchor_offset = torch.nn.Parameter(torch.zeros_like(base_bank_xyz))
+    if initial_state is not None and "raw_anchor_offset" in initial_state:
+        initial_raw_offset = torch.as_tensor(
+            initial_state["raw_anchor_offset"],
+            device=base_bank_xyz.device,
+            dtype=base_bank_xyz.dtype,
+        ).reshape_as(raw_anchor_offset)
+        with torch.no_grad():
+            raw_anchor_offset.copy_(initial_raw_offset)
+        mvinit_diagnostics["loaded_initial_anchor_offset"] = 1.0
+    dustbin_score = None
+    optimizer_parameters = [residual, raw_anchor_offset]
+    if float(args.dustbin_weight) > 0.0:
+        dustbin_initial_value = (
+            float(initial_state["dustbin_score"])
+            if initial_state is not None and "dustbin_score" in initial_state
+            else float(args.dustbin_init)
+        )
+        dustbin_score = torch.nn.Parameter(
+            initial_features.new_tensor(dustbin_initial_value)
+        )
+        optimizer_parameters.append(dustbin_score)
+    optimizer = torch.optim.AdamW(
+        [
+            {
+                "params": [residual],
+                "lr": args.feature_lr,
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": [raw_anchor_offset],
+                "lr": args.geometry_lr,
+                "weight_decay": 0.0,
+            },
+            *(
+                [
+                    {
+                        "params": [dustbin_score],
+                        "lr": args.feature_lr,
+                        "weight_decay": 0.0,
+                    }
+                ]
+                if dustbin_score is not None
+                else []
+            ),
+        ],
+    )
+    cuda_generator = torch.Generator(device=base_bank_xyz.device).manual_seed(
+        args.train_seed
+    )
+    camera_rng = random.Random(args.train_seed)
+    trust_weights = observation_adaptive_trust_weights(
+        mvinit_observation_count,
+        power=args.trust_observation_power,
+        minimum=args.trust_weight_min,
+        maximum=args.trust_weight_max,
+    ).to(device=base_bank_xyz.device)
+    train_order = list(train_names)
+    camera_rng.shuffle(train_order)
+    order_position = 0
+    history = []
+    save_steps = set(args.save_steps)
+    save_steps.add(int(args.steps))
+
+    initial_xyz = materialize_bounded_surface_anchors(
+        base_bank_xyz,
+        base_bank_rotation,
+        raw_anchor_offset,
+        tangent_bound_m=args.tangent_bound_m,
+        normal_bound_m=args.normal_bound_m,
+    )
+    initial_validation = _validate_descriptor_field(
+        initial_features,
+        validation_names,
+        cache,
+        initial_xyz,
+        args,
+        visibility_cache=visibility_cache,
+        dustbin_score=dustbin_score,
+    )
+    _save_state(
+        output_dir / "0_lafgs_map_state.pt",
+        0,
+        landmark_indices,
+        initial_features,
+        config,
+        {**mvinit_diagnostics, **initial_validation},
+        mvinit_observation_count,
+        dustbin_score=dustbin_score,
+        landmark_xyz=initial_xyz,
+        raw_anchor_offset=raw_anchor_offset,
+    )
+
+    progress = tqdm(range(1, args.steps + 1), desc=f"LaFGS map {args.objective}")
+    for step in progress:
+        if order_position >= len(train_order):
+            camera_rng.shuffle(train_order)
+            order_position = 0
+        query_name = train_order[order_position]
+        order_position += 1
+        current_xyz = materialize_bounded_surface_anchors(
+            base_bank_xyz,
+            base_bank_rotation,
+            raw_anchor_offset,
+            tangent_bound_m=args.tangent_bound_m,
+            normal_bound_m=args.normal_bound_m,
+        )
+        observations = _cached_observations(
+            cache[query_name],
+            current_xyz,
+            args,
+            max_observations=args.max_observations,
+            bank_visibility_mask=(
+                None
+                if visibility_cache is None
+                else visibility_cache[query_name]
+            ),
+        )
+        if observations.source_indices.numel() == 0:
+            continue
+        retrieval_observations = jitter_detector_free_observations(
+            observations,
+            standard_deviation=args.proposal_jitter_std,
+            maximum=args.proposal_jitter_max,
+            generator=cuda_generator,
+        )
+        proposal_observations = _cached_score_proposal_observations(
+            cache[query_name],
+            observations,
+            args,
+        )
+
+        features = materialize_descriptor_residual(
+            initial_features,
+            residual,
+            residual_scale=args.residual_scale,
+            max_residual_norm=args.max_residual_norm,
+        )
+        mv_loss = multiview_descriptor_loss(features, observations)
+        if args.objective == "mv":
+            retrieval_loss = features.sum() * 0.0
+            retrieval_diagnostics = {}
+        elif args.objective == "random":
+            retrieval = random_negative_retrieval_loss(
+                features,
+                retrieval_observations,
+                negative_count=args.random_negative_count,
+                temperature=args.temperature,
+                positive_radius_px=args.positive_radius_px,
+                negative_radius_px=args.negative_radius_px,
+                generator=cuda_generator,
+                dustbin_score=dustbin_score,
+            )
+            retrieval_loss = retrieval.loss
+            retrieval_diagnostics = retrieval.diagnostics
+        elif args.objective == "hard":
+            retrieval = hard_hypothesis_retrieval_loss(
+                features,
+                retrieval_observations,
+                hypothesis_topk=args.hypothesis_topk,
+                temperature=args.temperature,
+                positive_radius_px=args.positive_radius_px,
+                negative_radius_px=args.negative_radius_px,
+                margin=args.retrieval_margin,
+                dustbin_score=dustbin_score,
+            )
+            retrieval_loss = retrieval.loss
+            retrieval_diagnostics = retrieval.diagnostics
+        else:
+            raise ValueError(f"Unknown objective: {args.objective}")
+        if proposal_observations is not None and args.objective != "mv":
+            proposal_retrieval = hard_hypothesis_retrieval_loss(
+                features,
+                proposal_observations,
+                hypothesis_topk=args.hypothesis_topk,
+                temperature=args.temperature,
+                positive_radius_px=args.positive_radius_px,
+                negative_radius_px=args.negative_radius_px,
+                margin=args.retrieval_margin,
+                dustbin_score=dustbin_score,
+            )
+            proposal_retrieval_loss = proposal_retrieval.loss
+            proposal_retrieval_diagnostics = {
+                f"generic_proposal_{key}": value
+                for key, value in proposal_retrieval.diagnostics.items()
+            }
+        else:
+            proposal_retrieval_loss = features.sum() * 0.0
+            proposal_retrieval_diagnostics = {}
+        trust_loss = descriptor_trust_loss(
+            features,
+            initial_features,
+            weights=trust_weights,
+        )
+        if args.local_weight > 0.0:
+            local_loss, local_diagnostics = local_correlation_peak_loss(
+                features,
+                observations,
+                radius=args.local_radius,
+                target_sigma=args.local_target_sigma,
+                temperature=args.local_temperature,
+            )
+        else:
+            local_loss = features.sum() * 0.0
+            local_diagnostics = {}
+        if dustbin_score is not None:
+            dustbin_loss, dustbin_diagnostics = background_dustbin_loss(
+                features,
+                observations,
+                dustbin_score,
+                sample_count=args.dustbin_background_count,
+                exclusion_radius_px=args.dustbin_exclusion_radius,
+                hypothesis_topk=args.hypothesis_topk,
+                temperature=args.temperature,
+                background_alpha_max=args.dustbin_background_alpha_max,
+                allow_no_anchor=args.dustbin_no_anchor,
+                generator=cuda_generator,
+            )
+        else:
+            dustbin_loss = features.sum() * 0.0
+            dustbin_diagnostics = {}
+        geometry_active = (
+            float(args.geometry_weight) > 0.0
+            and step >= int(args.geometry_start_step)
+        )
+        if geometry_active:
+            (
+                surface_loss,
+                depth_loss,
+                geometry_reprojection_loss,
+                local_correspondences,
+                geometry_diagnostics,
+            ) = bounded_geometry_losses(
+                current_xyz,
+                raw_anchor_offset,
+                features,
+                observations,
+                local_radius=args.local_radius,
+                local_temperature=args.local_temperature,
+                depth_scale_floor=args.depth_scale_floor,
+            )
+        else:
+            surface_loss = raw_anchor_offset.sum() * 0.0
+            depth_loss = raw_anchor_offset.sum() * 0.0
+            geometry_reprojection_loss = raw_anchor_offset.sum() * 0.0
+            local_correspondences = None
+            geometry_diagnostics = {"bounded_geometry_active": 0.0}
+        pose_active = (
+            geometry_active
+            and float(args.pose_weight) > 0.0
+            and step >= int(args.pose_start_step)
+            and step % max(int(args.pose_interval), 1) == 0
+        )
+        if pose_active:
+            pose_noise = torch.randn(
+                6,
+                device=current_xyz.device,
+                dtype=current_xyz.dtype,
+                generator=cuda_generator,
+            )
+            pose_noise[:3] *= float(args.pose_init_translation_std_m)
+            pose_noise[3:] *= float(
+                torch.deg2rad(torch.tensor(args.pose_init_rotation_std_deg)).item()
+            )
+            pose_init = se3_exp(pose_noise) @ observations.pose_w2c
+            pose_loss, pose_diagnostics = pose_layer_loss(
+                current_xyz,
+                observations,
+                local_correspondences,
+                pose_init,
+                num_iterations=args.pose_iterations,
+                damping=args.pose_damping,
+                min_points=args.pose_min_points,
+                max_points=args.pose_max_points,
+                translation_scale_m=args.pose_translation_scale_m,
+                rotation_scale_degrees=args.pose_rotation_scale_deg,
+                max_condition_number=args.pose_max_condition_number,
+            )
+        else:
+            pose_loss = raw_anchor_offset.sum() * 0.0
+            pose_diagnostics = {"pose_layer_active": 0.0}
+        loss = (
+            args.mv_weight * mv_loss
+            + args.retrieval_weight * retrieval_loss
+            + args.generic_proposal_weight * proposal_retrieval_loss
+            + args.local_weight * local_loss
+            + args.trust_weight * trust_loss
+            + args.dustbin_weight * dustbin_loss
+            + (
+                args.geometry_weight
+                * (
+                    args.surface_weight * surface_loss
+                    + args.depth_weight * depth_loss
+                    + args.reprojection_weight * geometry_reprojection_loss
+                )
+            )
+            + args.pose_weight * pose_loss
+        )
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        gradients_finite = _all_parameter_gradients_finite(optimizer_parameters)
+        if gradients_finite:
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                optimizer_parameters,
+                args.gradient_clip_norm,
+            )
+            gradients_finite = bool(torch.isfinite(grad_norm).item())
+        else:
+            grad_norm = loss.new_tensor(float("nan"))
+        optimizer_step_skipped = not gradients_finite
+        if gradients_finite:
+            optimizer.step()
+        else:
+            optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            raw_anchor_offset.clamp_(-float(args.raw_offset_clip), float(args.raw_offset_clip))
+            current_xyz = materialize_bounded_surface_anchors(
+                base_bank_xyz,
+                base_bank_rotation,
+                raw_anchor_offset,
+                tangent_bound_m=args.tangent_bound_m,
+                normal_bound_m=args.normal_bound_m,
+            )
+            displacement = torch.linalg.norm(current_xyz - base_bank_xyz, dim=1)
+        record = {
+            "step": step,
+            "loss": float(loss.detach().item()),
+            "mv_loss": float(mv_loss.detach().item()),
+            "retrieval_loss": float(retrieval_loss.detach().item()),
+            "generic_proposal_loss": float(
+                proposal_retrieval_loss.detach().item()
+            ),
+            "local_loss": float(local_loss.detach().item()),
+            "trust_loss": float(trust_loss.detach().item()),
+            "dustbin_loss": float(dustbin_loss.detach().item()),
+            "surface_loss": float(surface_loss.detach().item()),
+            "depth_loss": float(depth_loss.detach().item()),
+            "geometry_reprojection_loss": float(
+                geometry_reprojection_loss.detach().item()
+            ),
+            "pose_loss": float(pose_loss.detach().item()),
+            "anchor_displacement_mean_m": float(displacement.mean().item()),
+            "anchor_displacement_p95_m": float(
+                torch.quantile(displacement, 0.95).item()
+            ),
+            "anchor_displacement_max_m": float(displacement.max().item()),
+            "grad_norm": float(grad_norm.detach().item()),
+            "optimizer_step_skipped_nonfinite": float(optimizer_step_skipped),
+            "visible_observations": int(observations.source_indices.numel()),
+            "generic_proposal_observations": (
+                0
+                if proposal_observations is None
+                else int(proposal_observations.source_indices.numel())
+            ),
+            **retrieval_diagnostics,
+            **proposal_retrieval_diagnostics,
+            **local_diagnostics,
+            **dustbin_diagnostics,
+            **geometry_diagnostics,
+            **pose_diagnostics,
+        }
+        history.append(record)
+        if step % args.log_interval == 0:
+            recent = _mean_diagnostics(history[-args.log_interval :])
+            progress.set_postfix(
+                loss=f"{recent.get('loss', 0.0):.4f}",
+                mv=f"{recent.get('mv_loss', 0.0):.4f}",
+                retr=f"{recent.get('retrieval_loss', 0.0):.4f}",
+                prop=f"{recent.get('generic_proposal_loss', 0.0):.4f}",
+                local=f"{recent.get('local_loss', 0.0):.4f}",
+                geo=f"{recent.get('geometry_reprojection_loss', 0.0):.3f}",
+                pose=f"{recent.get('pose_loss', 0.0):.3f}",
+            )
+        if step in save_steps:
+            checkpoint_features = materialize_descriptor_residual(
+                initial_features,
+                residual,
+                residual_scale=args.residual_scale,
+                max_residual_norm=args.max_residual_norm,
+            )
+            validation = _validate_descriptor_field(
+                checkpoint_features,
+                validation_names,
+                cache,
+                current_xyz.detach(),
+                args,
+                visibility_cache=visibility_cache,
+                dustbin_score=dustbin_score,
+            )
+            recent = _mean_diagnostics(history[-min(len(history), 200) :])
+            _save_state(
+                output_dir / f"{step}_lafgs_map_state.pt",
+                step,
+                landmark_indices,
+                checkpoint_features,
+                config,
+                {**mvinit_diagnostics, **recent, **validation},
+                mvinit_observation_count,
+                dustbin_score=dustbin_score,
+                landmark_xyz=current_xyz,
+                raw_anchor_offset=raw_anchor_offset,
+            )
+
+    final_features = materialize_descriptor_residual(
+        initial_features,
+        residual,
+        residual_scale=args.residual_scale,
+        max_residual_norm=args.max_residual_norm,
+    )
+    final_xyz = materialize_bounded_surface_anchors(
+        base_bank_xyz,
+        base_bank_rotation,
+        raw_anchor_offset,
+        tangent_bound_m=args.tangent_bound_m,
+        normal_bound_m=args.normal_bound_m,
+    )
+    final_validation = _validate_descriptor_field(
+        final_features,
+        validation_names,
+        cache,
+        final_xyz,
+        args,
+        visibility_cache=visibility_cache,
+        dustbin_score=dustbin_score,
+    )
+    distillation_summary = {"enabled": False}
+    landmark_statistics_summary = {}
+    if int(args.distill_budget) > 0:
+        statistics, landmark_statistics_summary = _collect_landmark_statistics(
+            final_features,
+            train_names,
+            cache,
+            final_xyz,
+            args,
+            visibility_cache=visibility_cache,
+        )
+        distillation_summary = {
+            "enabled": True,
+            **_distill_final_landmark_bank(
+                output_dir,
+                landmark_indices,
+                final_features,
+                final_xyz,
+                raw_anchor_offset,
+                statistics,
+                args,
+                config,
+                mvinit_observation_count,
+                dustbin_score,
+            ),
+        }
+    with torch.no_grad():
+        feature_cosine = (
+            F.normalize(final_features, dim=-1)
+            * F.normalize(initial_features, dim=-1)
+        ).sum(dim=-1)
+        bounded_local_offset = torch.tanh(raw_anchor_offset)
+        tangent_offset = (
+            bounded_local_offset[:, :2] * float(args.tangent_bound_m)
+        )
+        normal_offset = (
+            bounded_local_offset[:, 2].abs() * float(args.normal_bound_m)
+        )
+        tangent_norm = torch.linalg.norm(tangent_offset, dim=1)
+        summary = {
+            "config": config,
+            "mvinit": mvinit_diagnostics,
+            "initial_validation": initial_validation,
+            "final_validation": final_validation,
+            "landmark_statistics": landmark_statistics_summary,
+            "distillation": distillation_summary,
+            "feature_drift": {
+                "cosine_mean": float(feature_cosine.mean().item()),
+                "cosine_p01": float(torch.quantile(feature_cosine, 0.01).item()),
+                "l2_mean": float(
+                    torch.linalg.norm(final_features - initial_features, dim=-1)
+                    .mean()
+                    .item()
+                ),
+                "residual_raw_l2_mean": float(
+                    torch.linalg.norm(residual, dim=-1).mean().item()
+                ),
+                "residual_raw_l2_max": float(
+                    torch.linalg.norm(residual, dim=-1).max().item()
+                ),
+            },
+            "dustbin": {
+                "enabled": dustbin_score is not None,
+                "score": (
+                    None
+                    if dustbin_score is None
+                    else float(dustbin_score.detach().item())
+                ),
+            },
+            "history_tail": history[-min(len(history), 200) :],
+            "geometry_invariant": {
+                "base_bank_xyz_trainable": bool(base_bank_xyz.requires_grad),
+                "bounded_anchor_trainable": bool(raw_anchor_offset.requires_grad),
+                "anchor_displacement_mean_m": float(
+                    torch.linalg.norm(final_xyz - base_bank_xyz, dim=1).mean().item()
+                ),
+                "anchor_displacement_p95_m": float(
+                    torch.quantile(
+                        torch.linalg.norm(final_xyz - base_bank_xyz, dim=1), 0.95
+                    ).item()
+                ),
+                "anchor_displacement_max_m": float(
+                    torch.linalg.norm(final_xyz - base_bank_xyz, dim=1).max().item()
+                ),
+                "tangent_displacement_mean_m": float(tangent_norm.mean().item()),
+                "tangent_displacement_p95_m": float(
+                    torch.quantile(tangent_norm, 0.95).item()
+                ),
+                "tangent_displacement_max_m": float(tangent_norm.max().item()),
+                "normal_displacement_abs_mean_m": float(
+                    normal_offset.mean().item()
+                ),
+                "normal_displacement_abs_p95_m": float(
+                    torch.quantile(normal_offset, 0.95).item()
+                ),
+                "normal_displacement_abs_max_m": float(normal_offset.max().item()),
+                "gaussian_parameter_grad_count": int(
+                    sum(
+                        parameter.grad is not None
+                        for parameter in gaussians.parameters()
+                    )
+                ),
+            },
+        }
+    _save_state(
+        output_dir / f"{args.steps}_lafgs_map_state.pt",
+        args.steps,
+        landmark_indices,
+        final_features,
+        config,
+        {**mvinit_diagnostics, **_mean_diagnostics(history[-min(len(history), 200):]), **final_validation},
+        mvinit_observation_count,
+        dustbin_score=dustbin_score,
+        landmark_xyz=final_xyz,
+        raw_anchor_offset=raw_anchor_offset,
+    )
+    with (output_dir / "training_summary.json").open("w") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+    print(f"Saved detector-free LaFGS map training output: {output_dir}")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Detector-free localization descriptor reconstruction on a fixed Gaussian surface"
+    )
+    model_params = ModelParams(parser)
+    parser.add_argument("--load_iteration", type=int, default=30000)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument(
+        "--scaffold_mode",
+        choices=["file", "pure_geometry"],
+        default="pure_geometry",
+    )
+    parser.add_argument("--landmark_path", default="detector/sampled_idx.pkl")
+    parser.add_argument("--generated_landmark_path", default="pure_geometry_scaffold.pkl")
+    parser.add_argument("--regenerate_scaffold", action="store_true")
+    parser.add_argument("--scaffold_budget", type=int, default=16384)
+    parser.add_argument("--scaffold_min_opacity", type=float, default=0.05)
+    parser.add_argument("--scaffold_min_visible_views", type=int, default=1)
+    parser.add_argument("--scaffold_visibility_chunk_size", type=int, default=262144)
+    parser.add_argument("--scaffold_normal_bins", type=int, default=6)
+    parser.add_argument("--scaffold_voxel_size", type=float, default=0.0)
+    parser.add_argument("--scaffold_search_steps", type=int, default=14)
+    parser.add_argument("--scaffold_seed", type=int, default=2026)
+    parser.add_argument("--initial_state_path", default="")
+    parser.add_argument("--initial_state_blend", type=float, default=0.0)
+    parser.add_argument("--query_cache_path", default="")
+    parser.add_argument("--visibility_mode", choices=["depth", "rasterizer"], default="depth")
+    parser.add_argument("--visibility_cache_path", default="")
+    parser.add_argument("--objective", choices=["mv", "random", "hard"], default="hard")
+    parser.add_argument("--steps", type=int, default=5000)
+    parser.add_argument(
+        "--save_steps", nargs="*", type=int, default=[1000, 2000, 3000, 4000, 5000]
+    )
+    parser.add_argument("--feature_lr", type=float, default=1.5e-4)
+    parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--gradient_clip_norm", type=float, default=10.0)
+    parser.add_argument("--residual_scale", type=float, default=1.0)
+    parser.add_argument("--max_residual_norm", type=float, default=0.0)
+    parser.add_argument("--mv_weight", type=float, default=1.0)
+    parser.add_argument("--retrieval_weight", type=float, default=0.5)
+    parser.add_argument("--trust_weight", type=float, default=0.02)
+    parser.add_argument("--trust_observation_power", type=float, default=0.5)
+    parser.add_argument("--trust_weight_min", type=float, default=0.25)
+    parser.add_argument("--trust_weight_max", type=float, default=4.0)
+    parser.add_argument("--local_weight", type=float, default=0.05)
+    parser.add_argument("--local_radius", type=int, default=3)
+    parser.add_argument("--local_target_sigma", type=float, default=1.0)
+    parser.add_argument("--local_temperature", type=float, default=0.07)
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--hypothesis_topk", type=int, default=32)
+    parser.add_argument("--random_negative_count", type=int, default=32)
+    parser.add_argument("--positive_radius_px", type=float, default=2.0)
+    parser.add_argument("--negative_radius_px", type=float, default=6.0)
+    parser.add_argument("--retrieval_margin", type=float, default=0.05)
+    parser.add_argument("--proposal_jitter_std", type=float, default=0.0)
+    parser.add_argument("--proposal_jitter_max", type=float, default=0.0)
+    parser.add_argument("--generic_proposal_weight", type=float, default=0.0)
+    parser.add_argument("--generic_proposal_count", type=int, default=0)
+    parser.add_argument("--generic_proposal_nms_radius", type=int, default=2)
+    parser.add_argument("--generic_proposal_score_threshold", type=float, default=0.0)
+    parser.add_argument("--generic_proposal_positive_radius", type=float, default=2.0)
+    parser.add_argument("--dustbin_weight", type=float, default=0.02)
+    parser.add_argument("--dustbin_init", type=float, default=0.2)
+    parser.add_argument("--dustbin_background_count", type=int, default=128)
+    parser.add_argument("--dustbin_exclusion_radius", type=float, default=6.0)
+    parser.add_argument("--dustbin_background_alpha_max", type=float, default=0.05)
+    parser.add_argument(
+        "--dustbin_no_anchor",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use valid pixels outside all visible-anchor neighborhoods when low-alpha background is absent.",
+    )
+    parser.add_argument("--geometry_start_step", type=int, default=2000)
+    parser.add_argument("--geometry_lr", type=float, default=2e-3)
+    parser.add_argument("--geometry_weight", type=float, default=0.1)
+    parser.add_argument("--surface_weight", type=float, default=0.05)
+    parser.add_argument("--depth_weight", type=float, default=0.25)
+    parser.add_argument("--reprojection_weight", type=float, default=1.0)
+    parser.add_argument("--tangent_bound_m", type=float, default=0.02)
+    parser.add_argument("--normal_bound_m", type=float, default=0.005)
+    parser.add_argument("--raw_offset_clip", type=float, default=3.0)
+    parser.add_argument("--depth_scale_floor", type=float, default=0.25)
+    parser.add_argument("--pose_start_step", type=int, default=3500)
+    parser.add_argument("--pose_interval", type=int, default=4)
+    parser.add_argument("--pose_weight", type=float, default=0.01)
+    parser.add_argument("--pose_iterations", type=int, default=2)
+    parser.add_argument("--pose_damping", type=float, default=1e-3)
+    parser.add_argument("--pose_min_points", type=int, default=24)
+    parser.add_argument("--pose_max_points", type=int, default=96)
+    parser.add_argument("--pose_init_translation_std_m", type=float, default=0.01)
+    parser.add_argument("--pose_init_rotation_std_deg", type=float, default=0.5)
+    parser.add_argument("--pose_translation_scale_m", type=float, default=0.02)
+    parser.add_argument("--pose_rotation_scale_deg", type=float, default=2.0)
+    parser.add_argument("--pose_max_condition_number", type=float, default=5e4)
+    parser.add_argument("--distill_budget", type=int, default=0)
+    parser.add_argument("--statistics_observations", type=int, default=1024)
+    parser.add_argument("--statistics_hypothesis_topk", type=int, default=32)
+    parser.add_argument("--distill_min_observations", type=int, default=2)
+    parser.add_argument("--distill_reprojection_scale_px", type=float, default=2.0)
+    parser.add_argument(
+        "--distill_matchability_preserve_ratio", type=float, default=0.30
+    )
+    parser.add_argument("--distill_utility_preserve_ratio", type=float, default=0.35)
+    parser.add_argument("--distill_high_confidence", type=float, default=0.75)
+    parser.add_argument("--distill_high_confidence_ratio", type=float, default=0.10)
+    parser.add_argument("--distill_voxel_size", type=float, default=0.0)
+    parser.add_argument("--distill_max_per_voxel", type=int, default=8)
+    parser.add_argument("--distill_grid_size", type=int, default=8)
+    parser.add_argument("--distill_max_per_grid", type=int, default=512)
+    parser.add_argument("--distill_depth_bins", type=int, default=8)
+    parser.add_argument("--distill_max_per_depth_bin", type=int, default=4096)
+    parser.add_argument(
+        "--mvinit_max_observations",
+        type=int,
+        default=0,
+        help="Per-view MVInit cap; zero uses every visible anchor.",
+    )
+    parser.add_argument("--max_observations", type=int, default=512)
+    parser.add_argument("--validation_observations", type=int, default=512)
+    parser.add_argument("--grid_rows", type=int, default=8)
+    parser.add_argument("--grid_cols", type=int, default=8)
+    parser.add_argument("--depth_bins", type=int, default=4)
+    parser.add_argument("--alpha_threshold", type=float, default=0.2)
+    parser.add_argument("--depth_abs_tolerance", type=float, default=1e-3)
+    parser.add_argument("--depth_rel_tolerance", type=float, default=0.01)
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--split_mode",
+        choices=["random", "sequence_block", "temporal_block"],
+        default="temporal_block",
+    )
+    parser.add_argument("--split_seed", type=int, default=2026)
+    parser.add_argument("--train_seed", type=int, default=2026)
+    parser.add_argument("--max_train_views", type=int, default=0)
+    parser.add_argument("--max_validation_views", type=int, default=0)
+    parser.add_argument("--log_interval", type=int, default=25)
+    parser.add_argument("--quiet", action="store_true")
+    return parser, model_params
+
+
+if __name__ == "__main__":
+    parser, model_params = build_parser()
+    args = parser.parse_args()
+    safe_state(args.quiet)
+    seed_everything(args.train_seed)
+    dataset = model_params.extract(args)
+    train(dataset, args)

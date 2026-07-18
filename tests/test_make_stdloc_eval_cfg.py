@@ -12,6 +12,96 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_stdloc_eval_cfg
 
 
 class MakeStdlocEvalCfgTest(unittest.TestCase):
+    def test_preserves_all_unspecified_sparse_runtime_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            preserved = {
+                "unique_landmark_matches": True,
+                "use_candidate_dustbin": True,
+                "pair_scorer_threshold": 0.37,
+                "use_pair_measurement": True,
+                "use_pair_measurement_offset": False,
+                "pair_measurement_refill_mode": "geometry",
+                "min_candidate_matches": 777,
+                "use_detector_offset": True,
+                "full_primitive_retrieval": True,
+                "full_primitive_chunk_size": 4096,
+                "diagnostics": {
+                    "enabled": False,
+                    "grid_rows": 9,
+                    "dump_pre_selector": False,
+                },
+                "geometry_balance": {"enabled": True, "max_matches": 321},
+            }
+            base_cfg.write_text(yaml.dump({"sparse": preserved, "dense": {}}))
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(out_cfg.read_text(), Loader=yaml.FullLoader)["sparse"]
+            for key, value in preserved.items():
+                self.assertEqual(sparse[key], value)
+
+    def test_preserves_unspecified_matching_caps_and_frontend_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(
+                yaml.dump(
+                    {
+                        "sparse": {
+                            "max_matches_per_keypoint": 1,
+                            "max_matches_per_landmark": 2,
+                            "candidate_frontend_match_policy": "ignore",
+                        },
+                        "dense": {},
+                    }
+                )
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(sparse["max_matches_per_keypoint"], 1)
+            self.assertEqual(sparse["max_matches_per_landmark"], 2)
+            self.assertEqual(
+                sparse["candidate_frontend_match_policy"], "ignore"
+            )
+
     def test_writes_detector_landmark_artifact_paths_and_sparse_overrides(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

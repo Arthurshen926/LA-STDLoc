@@ -2,6 +2,28 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_candidate_teacher_geometry_requires_alignment_and_is_finite(self):
+        import torch
+
+        from stdloc import load_candidate_teacher_landmark_geometry
+
+        state = {
+            "landmark_indices": torch.tensor([2, 5]),
+            "landmark_xyz": torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        }
+        xyz = load_candidate_teacher_landmark_geometry(state, torch.tensor([2, 5]))
+        self.assertEqual(tuple(xyz.shape), (2, 3))
+        with self.assertRaisesRegex(ValueError, "not aligned"):
+            load_candidate_teacher_landmark_geometry(state, torch.tensor([5, 2]))
+        invalid = dict(state)
+        invalid["landmark_xyz"] = torch.tensor(
+            [[1.0, 2.0, float("nan")], [4.0, 5.0, 6.0]]
+        )
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            load_candidate_teacher_landmark_geometry(
+                invalid, torch.tensor([2, 5])
+            )
+
     def test_direct_candidate_validation_matches_training_holdout(self):
         from stdloc import select_candidate_validation_cameras
         from train_detector import partition_candidate_teacher_cameras

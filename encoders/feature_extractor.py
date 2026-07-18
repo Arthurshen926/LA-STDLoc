@@ -7,12 +7,12 @@ from encoders.sp_encoder.export_image_embeddings import SuperPoint
 class FeatureExtractor(nn.Module):
     def __init__(self, feature_type):
         super(FeatureExtractor, self).__init__()
-        self.feature_type = feature_type
-        if feature_type == "sp":
+        self.feature_type = "sp" if feature_type == "superpoint" else feature_type
+        if self.feature_type == "sp":
             print("Loading SuperPoint model...")
             self.model = SuperPoint().cuda().eval()
             self.feature_dim = 256
-        elif feature_type == "r2d2":
+        elif self.feature_type == "r2d2":
             print("Loading R2D2 model...")
             self.model = get_pretrained_model()
             self.feature_dim = 128

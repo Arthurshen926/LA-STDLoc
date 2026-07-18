@@ -179,10 +179,14 @@ def readColmapSceneInfo(path, feature_type, images, eval, images_to_read=None):
     
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
-    if feature_type == 'sp':
+    if feature_type in ('sp', 'superpoint'):
         loc_feature_dim = 256
     elif feature_type == 'r2d2':
         loc_feature_dim = 128
+    else:
+        raise ValueError(
+            f"Unsupported localization feature type: {feature_type!r}"
+        )
 
     if eval:
         train_cam_infos = []

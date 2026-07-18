@@ -15,68 +15,68 @@ def make_stdloc_eval_cfg(
     candidate_teacher_state_path=None,
     pair_scorer_state_path=None,
     landmark_feature_override_path=None,
-    override_landmark_features=False,
+    override_landmark_features=None,
     pair_measurement_state_path=None,
     detect_num=None,
     reprojection_error=None,
     nms=None,
     match_threshold=None,
     match_topk=None,
-    unique_landmark_matches=False,
-    max_matches_per_keypoint=0,
-    max_matches_per_landmark=0,
-    use_candidate_dustbin=False,
-    use_candidate_pair_scorer=False,
-    pair_scorer_threshold=0.0,
-    use_candidate_pair_scorer_calibrated_threshold=False,
-    use_pair_measurement=False,
-    pair_measurement_threshold=0.0,
-    use_pair_measurement_calibrated_threshold=False,
-    use_pair_measurement_offset=True,
-    use_pair_measurement_covariance_refinement=False,
-    pair_measurement_refinement_iterations=10,
-    pair_measurement_mahalanobis_threshold=3.0,
-    pair_measurement_robust_delta=2.5,
-    pair_measurement_covariance_model_floor_px=1.0,
-    use_pair_measurement_progressive_sampling=False,
-    pair_measurement_max_prosac_iterations=100000,
-    pair_measurement_fixed_candidate_count=0,
-    pair_measurement_refill_mode="score",
-    pair_measurement_refill_grid_rows=4,
-    pair_measurement_refill_grid_cols=4,
-    pair_measurement_refill_voxel_size=0.25,
-    pair_measurement_refill_spatial_weight=0.25,
-    pair_measurement_refill_voxel_weight=0.25,
-    min_candidate_matches=0,
-    candidate_refill_trigger_count=0,
-    use_detector_matchability=False,
-    detector_matchability_mode="combined_nms",
-    use_detector_offset=False,
-    detector_max_offset=2.0,
-    candidate_frontend_match_policy="warn",
-    diagnostics=True,
-    diagnostics_dump_correspondences=False,
-    diagnostics_dump_inliers_only=True,
-    diagnostics_dump_discrete_oracle=False,
-    diagnostics_oracle_topk=32,
-    diagnostics_grid_rows=4,
-    diagnostics_grid_cols=4,
-    diagnostics_voxel_size=0.25,
-    diagnostics_task_translation_scale_m=0.02,
-    diagnostics_task_rotation_scale_degrees=2.0,
-    geometry_balance=False,
+    unique_landmark_matches=None,
+    max_matches_per_keypoint=None,
+    max_matches_per_landmark=None,
+    use_candidate_dustbin=None,
+    use_candidate_pair_scorer=None,
+    pair_scorer_threshold=None,
+    use_candidate_pair_scorer_calibrated_threshold=None,
+    use_pair_measurement=None,
+    pair_measurement_threshold=None,
+    use_pair_measurement_calibrated_threshold=None,
+    use_pair_measurement_offset=None,
+    use_pair_measurement_covariance_refinement=None,
+    pair_measurement_refinement_iterations=None,
+    pair_measurement_mahalanobis_threshold=None,
+    pair_measurement_robust_delta=None,
+    pair_measurement_covariance_model_floor_px=None,
+    use_pair_measurement_progressive_sampling=None,
+    pair_measurement_max_prosac_iterations=None,
+    pair_measurement_fixed_candidate_count=None,
+    pair_measurement_refill_mode=None,
+    pair_measurement_refill_grid_rows=None,
+    pair_measurement_refill_grid_cols=None,
+    pair_measurement_refill_voxel_size=None,
+    pair_measurement_refill_spatial_weight=None,
+    pair_measurement_refill_voxel_weight=None,
+    min_candidate_matches=None,
+    candidate_refill_trigger_count=None,
+    use_detector_matchability=None,
+    detector_matchability_mode=None,
+    use_detector_offset=None,
+    detector_max_offset=None,
+    candidate_frontend_match_policy=None,
+    diagnostics=None,
+    diagnostics_dump_correspondences=None,
+    diagnostics_dump_inliers_only=None,
+    diagnostics_dump_discrete_oracle=None,
+    diagnostics_oracle_topk=None,
+    diagnostics_grid_rows=None,
+    diagnostics_grid_cols=None,
+    diagnostics_voxel_size=None,
+    diagnostics_task_translation_scale_m=None,
+    diagnostics_task_rotation_scale_degrees=None,
+    geometry_balance=None,
     geometry_balance_grid_rows=4,
     geometry_balance_grid_cols=4,
     geometry_balance_max_per_cell=64,
     geometry_balance_voxel_size=0.25,
     geometry_balance_max_per_voxel=64,
     geometry_balance_max_matches=0,
-    full_primitive_retrieval=False,
-    full_primitive_retrieval_topk=32,
-    full_primitive_chunk_size=8192,
-    full_primitive_surface_suppression=False,
-    full_primitive_voxel_size=0.05,
-    full_primitive_max_per_surface=1,
+    full_primitive_retrieval=None,
+    full_primitive_retrieval_topk=None,
+    full_primitive_chunk_size=None,
+    full_primitive_surface_suppression=None,
+    full_primitive_voxel_size=None,
+    full_primitive_max_per_surface=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -102,7 +102,8 @@ def make_stdloc_eval_cfg(
             landmark_feature_override_path
         )
         sparse["landmark_feature_override_model_path"] = artifact_model_path
-    sparse["override_landmark_features"] = bool(override_landmark_features)
+    if override_landmark_features is not None:
+        sparse["override_landmark_features"] = bool(override_landmark_features)
     if pair_measurement_state_path:
         sparse["pair_measurement_state_path"] = str(
             pair_measurement_state_path
@@ -118,97 +119,142 @@ def make_stdloc_eval_cfg(
         sparse["threshold"] = float(match_threshold)
     if match_topk is not None:
         sparse["topk"] = int(match_topk)
-    sparse["unique_landmark_matches"] = bool(unique_landmark_matches)
-    sparse["max_matches_per_keypoint"] = int(max_matches_per_keypoint)
-    sparse["max_matches_per_landmark"] = int(max_matches_per_landmark)
-    sparse["use_candidate_dustbin"] = bool(use_candidate_dustbin)
-    sparse["use_candidate_pair_scorer"] = bool(use_candidate_pair_scorer)
-    sparse["pair_scorer_threshold"] = float(pair_scorer_threshold)
-    sparse["use_candidate_pair_scorer_calibrated_threshold"] = bool(
-        use_candidate_pair_scorer_calibrated_threshold
-    )
-    sparse["use_pair_measurement"] = bool(use_pair_measurement)
-    sparse["pair_measurement_threshold"] = float(pair_measurement_threshold)
-    sparse["use_pair_measurement_calibrated_threshold"] = bool(
-        use_pair_measurement_calibrated_threshold
-    )
-    sparse["use_pair_measurement_offset"] = bool(use_pair_measurement_offset)
-    sparse["use_pair_measurement_covariance_refinement"] = bool(
-        use_pair_measurement_covariance_refinement
-    )
-    sparse["pair_measurement_refinement_iterations"] = int(
-        pair_measurement_refinement_iterations
-    )
-    sparse["pair_measurement_mahalanobis_threshold"] = float(
-        pair_measurement_mahalanobis_threshold
-    )
-    sparse["pair_measurement_robust_delta"] = float(
-        pair_measurement_robust_delta
-    )
-    sparse["pair_measurement_covariance_model_floor_px"] = float(
-        pair_measurement_covariance_model_floor_px
-    )
-    sparse["use_pair_measurement_progressive_sampling"] = bool(
-        use_pair_measurement_progressive_sampling
-    )
-    sparse["pair_measurement_max_prosac_iterations"] = int(
-        pair_measurement_max_prosac_iterations
-    )
-    sparse["pair_measurement_fixed_candidate_count"] = int(
-        pair_measurement_fixed_candidate_count
-    )
-    sparse["pair_measurement_refill_mode"] = str(pair_measurement_refill_mode)
-    sparse["pair_measurement_refill_grid_rows"] = int(
-        pair_measurement_refill_grid_rows
-    )
-    sparse["pair_measurement_refill_grid_cols"] = int(
-        pair_measurement_refill_grid_cols
-    )
-    sparse["pair_measurement_refill_voxel_size"] = float(
-        pair_measurement_refill_voxel_size
-    )
-    sparse["pair_measurement_refill_spatial_weight"] = float(
-        pair_measurement_refill_spatial_weight
-    )
-    sparse["pair_measurement_refill_voxel_weight"] = float(
-        pair_measurement_refill_voxel_weight
-    )
-    sparse["min_candidate_matches"] = int(min_candidate_matches)
-    sparse["candidate_refill_trigger_count"] = int(candidate_refill_trigger_count)
-    sparse["use_detector_matchability"] = bool(use_detector_matchability)
-    sparse["detector_matchability_mode"] = str(detector_matchability_mode)
-    sparse["use_detector_offset"] = bool(use_detector_offset)
-    sparse["detector_max_offset"] = float(detector_max_offset)
-    sparse["candidate_frontend_match_policy"] = str(candidate_frontend_match_policy)
-    sparse["full_primitive_retrieval"] = bool(full_primitive_retrieval)
-    sparse["full_primitive_retrieval_topk"] = int(full_primitive_retrieval_topk)
-    sparse["full_primitive_chunk_size"] = int(full_primitive_chunk_size)
-    sparse["full_primitive_surface_suppression"] = bool(
-        full_primitive_surface_suppression
-    )
-    sparse["full_primitive_voxel_size"] = float(full_primitive_voxel_size)
-    sparse["full_primitive_max_per_surface"] = int(
-        full_primitive_max_per_surface
-    )
-    sparse["diagnostics"] = {
-        "enabled": bool(diagnostics),
-        "gt_metrics": bool(diagnostics),
-        "dump_correspondences": bool(diagnostics_dump_correspondences),
-        "dump_inliers_only": bool(diagnostics_dump_inliers_only),
-        "dump_pre_selector": True,
-        "dump_discrete_oracle": bool(diagnostics_dump_discrete_oracle),
-        "oracle_topk": int(diagnostics_oracle_topk),
-        "grid_rows": int(diagnostics_grid_rows),
-        "grid_cols": int(diagnostics_grid_cols),
-        "voxel_size": float(diagnostics_voxel_size),
-        "task_translation_scale_m": float(
-            diagnostics_task_translation_scale_m
+    if unique_landmark_matches is not None:
+        sparse["unique_landmark_matches"] = bool(unique_landmark_matches)
+    if max_matches_per_keypoint is not None:
+        sparse["max_matches_per_keypoint"] = int(max_matches_per_keypoint)
+    else:
+        sparse.setdefault("max_matches_per_keypoint", 0)
+    if max_matches_per_landmark is not None:
+        sparse["max_matches_per_landmark"] = int(max_matches_per_landmark)
+    else:
+        sparse.setdefault("max_matches_per_landmark", 0)
+    optional_sparse = {
+        "use_candidate_dustbin": (use_candidate_dustbin, bool),
+        "use_candidate_pair_scorer": (use_candidate_pair_scorer, bool),
+        "pair_scorer_threshold": (pair_scorer_threshold, float),
+        "use_candidate_pair_scorer_calibrated_threshold": (
+            use_candidate_pair_scorer_calibrated_threshold,
+            bool,
         ),
-        "task_rotation_scale_degrees": float(
-            diagnostics_task_rotation_scale_degrees
+        "use_pair_measurement": (use_pair_measurement, bool),
+        "pair_measurement_threshold": (pair_measurement_threshold, float),
+        "use_pair_measurement_calibrated_threshold": (
+            use_pair_measurement_calibrated_threshold,
+            bool,
+        ),
+        "use_pair_measurement_offset": (use_pair_measurement_offset, bool),
+        "use_pair_measurement_covariance_refinement": (
+            use_pair_measurement_covariance_refinement,
+            bool,
+        ),
+        "pair_measurement_refinement_iterations": (
+            pair_measurement_refinement_iterations,
+            int,
+        ),
+        "pair_measurement_mahalanobis_threshold": (
+            pair_measurement_mahalanobis_threshold,
+            float,
+        ),
+        "pair_measurement_robust_delta": (pair_measurement_robust_delta, float),
+        "pair_measurement_covariance_model_floor_px": (
+            pair_measurement_covariance_model_floor_px,
+            float,
+        ),
+        "use_pair_measurement_progressive_sampling": (
+            use_pair_measurement_progressive_sampling,
+            bool,
+        ),
+        "pair_measurement_max_prosac_iterations": (
+            pair_measurement_max_prosac_iterations,
+            int,
+        ),
+        "pair_measurement_fixed_candidate_count": (
+            pair_measurement_fixed_candidate_count,
+            int,
+        ),
+        "pair_measurement_refill_mode": (pair_measurement_refill_mode, str),
+        "pair_measurement_refill_grid_rows": (
+            pair_measurement_refill_grid_rows,
+            int,
+        ),
+        "pair_measurement_refill_grid_cols": (
+            pair_measurement_refill_grid_cols,
+            int,
+        ),
+        "pair_measurement_refill_voxel_size": (
+            pair_measurement_refill_voxel_size,
+            float,
+        ),
+        "pair_measurement_refill_spatial_weight": (
+            pair_measurement_refill_spatial_weight,
+            float,
+        ),
+        "pair_measurement_refill_voxel_weight": (
+            pair_measurement_refill_voxel_weight,
+            float,
+        ),
+        "min_candidate_matches": (min_candidate_matches, int),
+        "candidate_refill_trigger_count": (candidate_refill_trigger_count, int),
+        "use_detector_matchability": (use_detector_matchability, bool),
+        "detector_matchability_mode": (detector_matchability_mode, str),
+        "use_detector_offset": (use_detector_offset, bool),
+        "detector_max_offset": (detector_max_offset, float),
+        "full_primitive_retrieval": (full_primitive_retrieval, bool),
+        "full_primitive_retrieval_topk": (full_primitive_retrieval_topk, int),
+        "full_primitive_chunk_size": (full_primitive_chunk_size, int),
+        "full_primitive_surface_suppression": (
+            full_primitive_surface_suppression,
+            bool,
+        ),
+        "full_primitive_voxel_size": (full_primitive_voxel_size, float),
+        "full_primitive_max_per_surface": (
+            full_primitive_max_per_surface,
+            int,
         ),
     }
-    if geometry_balance:
+    for key, (value, converter) in optional_sparse.items():
+        if value is not None:
+            sparse[key] = converter(value)
+    if candidate_frontend_match_policy is not None:
+        sparse["candidate_frontend_match_policy"] = str(
+            candidate_frontend_match_policy
+        )
+    else:
+        sparse.setdefault("candidate_frontend_match_policy", "warn")
+    diagnostic_values = {
+        "dump_correspondences": (diagnostics_dump_correspondences, bool),
+        "dump_inliers_only": (diagnostics_dump_inliers_only, bool),
+        "dump_discrete_oracle": (diagnostics_dump_discrete_oracle, bool),
+        "oracle_topk": (diagnostics_oracle_topk, int),
+        "grid_rows": (diagnostics_grid_rows, int),
+        "grid_cols": (diagnostics_grid_cols, int),
+        "voxel_size": (diagnostics_voxel_size, float),
+        "task_translation_scale_m": (
+            diagnostics_task_translation_scale_m,
+            float,
+        ),
+        "task_rotation_scale_degrees": (
+            diagnostics_task_rotation_scale_degrees,
+            float,
+        ),
+    }
+    if diagnostics is not None or any(
+        value is not None for value, _ in diagnostic_values.values()
+    ):
+        diagnostic_cfg = sparse.setdefault("diagnostics", {})
+        if diagnostics is not None:
+            diagnostic_cfg["enabled"] = bool(diagnostics)
+            diagnostic_cfg["gt_metrics"] = bool(diagnostics)
+            diagnostic_cfg.setdefault("dump_pre_selector", True)
+        elif "enabled" not in diagnostic_cfg:
+            diagnostic_cfg["enabled"] = True
+            diagnostic_cfg["gt_metrics"] = True
+            diagnostic_cfg["dump_pre_selector"] = True
+        for key, (value, converter) in diagnostic_values.items():
+            if value is not None:
+                diagnostic_cfg[key] = converter(value)
+    if geometry_balance is True:
         sparse["geometry_balance"] = {
             "enabled": True,
             "grid_rows": int(geometry_balance_grid_rows),
@@ -321,114 +367,128 @@ def main():
     parser.add_argument("--candidate_teacher_state_path", default="")
     parser.add_argument("--pair_scorer_state_path", default="")
     parser.add_argument("--landmark_feature_override_path", default="")
-    parser.add_argument("--override_landmark_features", action="store_true")
+    parser.add_argument(
+        "--override_landmark_features", action="store_true", default=None
+    )
     parser.add_argument("--pair_measurement_state_path", default="")
     parser.add_argument("--detect_num", type=int, default=None)
     parser.add_argument("--reprojection_error", type=float, default=None)
     parser.add_argument("--nms", type=int, default=None)
     parser.add_argument("--match_threshold", type=float, default=None)
     parser.add_argument("--match_topk", type=int, default=None)
-    parser.add_argument("--unique_landmark_matches", action="store_true")
-    parser.add_argument("--max_matches_per_keypoint", type=int, default=0)
-    parser.add_argument("--max_matches_per_landmark", type=int, default=0)
-    parser.add_argument("--use_candidate_dustbin", action="store_true")
-    parser.add_argument("--use_candidate_pair_scorer", action="store_true")
-    parser.add_argument("--pair_scorer_threshold", type=float, default=0.0)
+    parser.add_argument("--unique_landmark_matches", action="store_true", default=None)
+    parser.add_argument("--max_matches_per_keypoint", type=int, default=None)
+    parser.add_argument("--max_matches_per_landmark", type=int, default=None)
+    parser.add_argument("--use_candidate_dustbin", action="store_true", default=None)
+    parser.add_argument("--use_candidate_pair_scorer", action="store_true", default=None)
+    parser.add_argument("--pair_scorer_threshold", type=float, default=None)
     parser.add_argument(
-        "--use_candidate_pair_scorer_calibrated_threshold", action="store_true"
+        "--use_candidate_pair_scorer_calibrated_threshold", action="store_true", default=None
     )
-    parser.add_argument("--use_pair_measurement", action="store_true")
-    parser.add_argument("--pair_measurement_threshold", type=float, default=0.0)
+    parser.add_argument("--use_pair_measurement", action="store_true", default=None)
+    parser.add_argument("--pair_measurement_threshold", type=float, default=None)
     parser.add_argument(
-        "--use_pair_measurement_calibrated_threshold", action="store_true"
-    )
-    parser.add_argument(
-        "--disable_pair_measurement_offset", action="store_true"
+        "--use_pair_measurement_calibrated_threshold", action="store_true", default=None
     )
     parser.add_argument(
-        "--use_pair_measurement_covariance_refinement", action="store_true"
+        "--disable_pair_measurement_offset", action="store_true", default=None
     )
     parser.add_argument(
-        "--pair_measurement_refinement_iterations", type=int, default=10
+        "--use_pair_measurement_covariance_refinement", action="store_true", default=None
     )
     parser.add_argument(
-        "--pair_measurement_mahalanobis_threshold", type=float, default=3.0
+        "--pair_measurement_refinement_iterations", type=int, default=None
     )
     parser.add_argument(
-        "--pair_measurement_robust_delta", type=float, default=2.5
+        "--pair_measurement_mahalanobis_threshold", type=float, default=None
     )
     parser.add_argument(
-        "--pair_measurement_covariance_model_floor_px", type=float, default=1.0
+        "--pair_measurement_robust_delta", type=float, default=None
     )
     parser.add_argument(
-        "--use_pair_measurement_progressive_sampling", action="store_true"
+        "--pair_measurement_covariance_model_floor_px", type=float, default=None
     )
     parser.add_argument(
-        "--pair_measurement_max_prosac_iterations", type=int, default=100000
+        "--use_pair_measurement_progressive_sampling", action="store_true", default=None
     )
     parser.add_argument(
-        "--pair_measurement_fixed_candidate_count", type=int, default=0
+        "--pair_measurement_max_prosac_iterations", type=int, default=None
+    )
+    parser.add_argument(
+        "--pair_measurement_fixed_candidate_count", type=int, default=None
     )
     parser.add_argument(
         "--pair_measurement_refill_mode",
         choices=["score", "geometry"],
-        default="score",
+        default=None,
     )
-    parser.add_argument("--pair_measurement_refill_grid_rows", type=int, default=4)
-    parser.add_argument("--pair_measurement_refill_grid_cols", type=int, default=4)
+    parser.add_argument("--pair_measurement_refill_grid_rows", type=int, default=None)
+    parser.add_argument("--pair_measurement_refill_grid_cols", type=int, default=None)
     parser.add_argument(
-        "--pair_measurement_refill_voxel_size", type=float, default=0.25
-    )
-    parser.add_argument(
-        "--pair_measurement_refill_spatial_weight", type=float, default=0.25
+        "--pair_measurement_refill_voxel_size", type=float, default=None
     )
     parser.add_argument(
-        "--pair_measurement_refill_voxel_weight", type=float, default=0.25
+        "--pair_measurement_refill_spatial_weight", type=float, default=None
     )
-    parser.add_argument("--min_candidate_matches", type=int, default=0)
-    parser.add_argument("--candidate_refill_trigger_count", type=int, default=0)
-    parser.add_argument("--use_detector_matchability", action="store_true")
+    parser.add_argument(
+        "--pair_measurement_refill_voxel_weight", type=float, default=None
+    )
+    parser.add_argument("--min_candidate_matches", type=int, default=None)
+    parser.add_argument("--candidate_refill_trigger_count", type=int, default=None)
+    parser.add_argument("--use_detector_matchability", action="store_true", default=None)
     parser.add_argument(
         "--detector_matchability_mode",
         choices=["combined_nms", "proposal_rerank"],
-        default="combined_nms",
+        default=None,
     )
-    parser.add_argument("--use_detector_offset", action="store_true")
-    parser.add_argument("--detector_max_offset", type=float, default=2.0)
+    parser.add_argument("--use_detector_offset", action="store_true", default=None)
+    parser.add_argument("--detector_max_offset", type=float, default=None)
     parser.add_argument(
         "--candidate_frontend_match_policy",
         choices=["error", "warn", "ignore"],
-        default="warn",
+        default=None,
     )
-    parser.add_argument("--no_diagnostics", action="store_true")
-    parser.add_argument("--diagnostics_dump_correspondences", action="store_true")
-    parser.add_argument("--diagnostics_dump_all", action="store_true")
-    parser.add_argument("--diagnostics_dump_discrete_oracle", action="store_true")
-    parser.add_argument("--diagnostics_oracle_topk", type=int, default=32)
-    parser.add_argument("--diagnostics_grid_rows", type=int, default=4)
-    parser.add_argument("--diagnostics_grid_cols", type=int, default=4)
-    parser.add_argument("--diagnostics_voxel_size", type=float, default=0.25)
+    diagnostics_group = parser.add_mutually_exclusive_group()
+    diagnostics_group.add_argument(
+        "--diagnostics",
+        action="store_true",
+        default=None,
+        help="Enable GT correspondence and pose-information diagnostics.",
+    )
+    diagnostics_group.add_argument(
+        "--no_diagnostics",
+        action="store_true",
+        default=None,
+        help="Explicitly disable sparse localization diagnostics.",
+    )
+    parser.add_argument("--diagnostics_dump_correspondences", action="store_true", default=None)
+    parser.add_argument("--diagnostics_dump_all", action="store_true", default=None)
+    parser.add_argument("--diagnostics_dump_discrete_oracle", action="store_true", default=None)
+    parser.add_argument("--diagnostics_oracle_topk", type=int, default=None)
+    parser.add_argument("--diagnostics_grid_rows", type=int, default=None)
+    parser.add_argument("--diagnostics_grid_cols", type=int, default=None)
+    parser.add_argument("--diagnostics_voxel_size", type=float, default=None)
     parser.add_argument(
-        "--diagnostics_task_translation_scale_m", type=float, default=0.02
+        "--diagnostics_task_translation_scale_m", type=float, default=None
     )
     parser.add_argument(
-        "--diagnostics_task_rotation_scale_degrees", type=float, default=2.0
+        "--diagnostics_task_rotation_scale_degrees", type=float, default=None
     )
-    parser.add_argument("--geometry_balance", action="store_true")
+    parser.add_argument("--geometry_balance", action="store_true", default=None)
     parser.add_argument("--geometry_balance_grid_rows", type=int, default=4)
     parser.add_argument("--geometry_balance_grid_cols", type=int, default=4)
     parser.add_argument("--geometry_balance_max_per_cell", type=int, default=64)
     parser.add_argument("--geometry_balance_voxel_size", type=float, default=0.25)
     parser.add_argument("--geometry_balance_max_per_voxel", type=int, default=64)
     parser.add_argument("--geometry_balance_max_matches", type=int, default=0)
-    parser.add_argument("--full_primitive_retrieval", action="store_true")
-    parser.add_argument("--full_primitive_retrieval_topk", type=int, default=32)
-    parser.add_argument("--full_primitive_chunk_size", type=int, default=8192)
+    parser.add_argument("--full_primitive_retrieval", action="store_true", default=None)
+    parser.add_argument("--full_primitive_retrieval_topk", type=int, default=None)
+    parser.add_argument("--full_primitive_chunk_size", type=int, default=None)
     parser.add_argument(
-        "--full_primitive_surface_suppression", action="store_true"
+        "--full_primitive_surface_suppression", action="store_true", default=None
     )
-    parser.add_argument("--full_primitive_voxel_size", type=float, default=0.05)
-    parser.add_argument("--full_primitive_max_per_surface", type=int, default=1)
+    parser.add_argument("--full_primitive_voxel_size", type=float, default=None)
+    parser.add_argument("--full_primitive_max_per_surface", type=int, default=None)
     parser.add_argument("--summary_json", default="")
     args = parser.parse_args()
 
@@ -462,7 +522,11 @@ def main():
         use_pair_measurement_calibrated_threshold=(
             args.use_pair_measurement_calibrated_threshold
         ),
-        use_pair_measurement_offset=not args.disable_pair_measurement_offset,
+        use_pair_measurement_offset=(
+            None
+            if args.disable_pair_measurement_offset is None
+            else not args.disable_pair_measurement_offset
+        ),
         use_pair_measurement_covariance_refinement=(
             args.use_pair_measurement_covariance_refinement
         ),
@@ -508,9 +572,21 @@ def main():
         use_detector_offset=args.use_detector_offset,
         detector_max_offset=args.detector_max_offset,
         candidate_frontend_match_policy=args.candidate_frontend_match_policy,
-        diagnostics=not args.no_diagnostics,
+        diagnostics=(
+            args.diagnostics
+            if args.diagnostics is not None
+            else (
+                None
+                if args.no_diagnostics is None
+                else not args.no_diagnostics
+            )
+        ),
         diagnostics_dump_correspondences=args.diagnostics_dump_correspondences,
-        diagnostics_dump_inliers_only=not args.diagnostics_dump_all,
+        diagnostics_dump_inliers_only=(
+            None
+            if args.diagnostics_dump_all is None
+            else not args.diagnostics_dump_all
+        ),
         diagnostics_dump_discrete_oracle=args.diagnostics_dump_discrete_oracle,
         diagnostics_oracle_topk=args.diagnostics_oracle_topk,
         diagnostics_grid_rows=args.diagnostics_grid_rows,

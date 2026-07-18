@@ -1196,6 +1196,39 @@ def load_candidate_teacher_landmark_features(
     return features, state
 
 
+def load_candidate_teacher_landmark_geometry(
+    state,
+    landmark_indices,
+    *,
+    device=None,
+    dtype=torch.float32,
+):
+    """Load materialized localization anchors with exact sparse-ID alignment."""
+    if not isinstance(state, dict) or "landmark_xyz" not in state:
+        return None
+    expected_indices = torch.as_tensor(
+        landmark_indices, dtype=torch.long
+    ).reshape(-1).cpu()
+    state_indices = torch.as_tensor(
+        state.get("landmark_indices", []), dtype=torch.long
+    ).reshape(-1).cpu()
+    if not torch.equal(state_indices, expected_indices):
+        raise ValueError(
+            "sparse localization geometry is not aligned with detector landmarks: "
+            f"state_count={state_indices.numel()} expected_count={expected_indices.numel()}"
+        )
+    xyz = torch.as_tensor(state["landmark_xyz"], dtype=dtype).reshape(-1, 3)
+    if xyz.shape[0] != expected_indices.numel():
+        raise ValueError(
+            "sparse localization geometry count does not match detector landmarks"
+        )
+    if not bool(torch.isfinite(xyz).all().item()):
+        raise ValueError("sparse localization geometry contains non-finite values")
+    if device is not None:
+        xyz = xyz.to(device=device, dtype=dtype)
+    return xyz
+
+
 def remap_sampled_indices_from_source_index(
     sampled_idx,
     source_index,
@@ -1439,6 +1472,21 @@ class STDLoc:
                 self.landmarks._loc_feature = torch.nn.Parameter(
                     merged.reshape_as(current_features), requires_grad=False
                 )
+                if "landmark_xyz" in state:
+                    override_xyz = load_candidate_teacher_landmark_geometry(
+                        {
+                            **state,
+                            "landmark_indices": state_indices.detach().cpu(),
+                        },
+                        state_indices.detach().cpu(),
+                        device=self.landmarks.get_xyz.device,
+                        dtype=self.landmarks.get_xyz.dtype,
+                    )
+                    merged_xyz = self.landmarks.get_xyz.detach().clone()
+                    merged_xyz[state_indices] = override_xyz
+                    self.landmarks._xyz = torch.nn.Parameter(
+                        merged_xyz, requires_grad=False
+                    )
                 self.landmark_feature_override_state = state
             else:
                 override, self.landmark_feature_override_state = load_candidate_teacher_landmark_features(
@@ -1449,6 +1497,16 @@ class STDLoc:
                     dtype=current_features.dtype,
                 )
                 self.landmarks._loc_feature = override.reshape_as(current_features)
+                override_xyz = load_candidate_teacher_landmark_geometry(
+                    self.landmark_feature_override_state,
+                    self.landmark_indices,
+                    device=self.landmarks.get_xyz.device,
+                    dtype=self.landmarks.get_xyz.dtype,
+                )
+                if override_xyz is not None:
+                    self.landmarks._xyz = torch.nn.Parameter(
+                        override_xyz, requires_grad=False
+                    )
 
         landmark_meta_path = sparse_config.get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
@@ -2849,8 +2907,10 @@ if __name__ == "__main__":
     config = yaml.load(open(args.cfg), Loader=yaml.FullLoader)
     apply_sparse_artifact_overrides(
         config,
-        detector_path=args.detector_path,
-        landmark_feature_override_path=args.landmark_feature_override_path,
+        detector_path=getattr(args, "detector_path", None),
+        landmark_feature_override_path=getattr(
+            args, "landmark_feature_override_path", None
+        ),
     )
     if args.sparse_only:
         config.setdefault("sparse", {})["sparse_only"] = True

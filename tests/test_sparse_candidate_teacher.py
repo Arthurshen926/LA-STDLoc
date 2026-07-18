@@ -11,6 +11,14 @@ def test_online_render_ratio_curriculum_is_scene_independent():
     assert scheduled_online_render_ratio(250, 1000, 0.1, 0.3, 0.25, 0.75) == 0.1
 
 
+def test_detector_training_loads_test_cameras_only_for_scheduled_evaluation():
+    from train_detector import training_requires_test_cameras
+
+    assert not training_requires_test_cameras([3001], 3000)
+    assert not training_requires_test_cameras([], 3000)
+    assert training_requires_test_cameras([1000, 3001], 3000)
+
+
 def test_detector_proposal_preservation_uses_combined_map_and_detaches_teacher():
     from train_detector import detector_proposal_preservation_loss
 
@@ -44,6 +52,7 @@ def test_detector_only_state_export_can_preserve_frozen_feature_bytes(tmp_path):
     from train_detector import save_sparse_candidate_teacher_state
 
     features = torch.tensor([[0.6, 0.8], [0.3, 0.4]], dtype=torch.float32)
+    landmark_xyz = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     path = tmp_path / "frozen_state.pt"
     save_sparse_candidate_teacher_state(
         str(path),
@@ -51,10 +60,12 @@ def test_detector_only_state_export_can_preserve_frozen_feature_bytes(tmp_path):
         features,
         iteration=1,
         config={"landmark_features_frozen": True},
+        landmark_xyz=landmark_xyz,
         normalize_features=False,
     )
     state = torch.load(path, map_location="cpu")
     assert torch.equal(state["landmark_features"], features)
+    assert torch.equal(state["landmark_xyz"], landmark_xyz)
 
 
 def test_candidate_teacher_adaptive_trust_uses_correct_visibility_evidence():

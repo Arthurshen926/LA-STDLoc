@@ -10,12 +10,15 @@
 #
 
 import copy
+import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import uuid
 from argparse import ArgumentParser, Namespace
+from pathlib import Path
 from random import randint, random
 
 import torch
@@ -68,6 +71,98 @@ from localization_training.sparse_frontend import (
     limit_matches_per_keypoint,
     rank_keypoint_proposals,
 )
+
+
+def _artifact_sha256(path, chunk_size=1024 * 1024):
+    path = Path(path)
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _detector_git_output(*args):
+    try:
+        return subprocess.check_output(
+            ["git", *args],
+            cwd=Path(__file__).resolve().parent,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+def write_detector_reproducibility_manifest(dataset, args):
+    output_dir = Path(dataset.model_path) / str(args.detector_folder)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def resolve(path):
+        if not path:
+            return ""
+        path = Path(path)
+        if not path.is_absolute():
+            path = Path(dataset.model_path) / path
+        return str(path.resolve())
+
+    inputs = {
+        "precomputed_landmark_path": resolve(args.precomputed_landmark_path),
+        "candidate_teacher_state_init_path": resolve(
+            args.candidate_teacher_state_init_path
+        ),
+        "candidate_teacher_detector_init_path": resolve(
+            args.candidate_teacher_detector_init_path
+        ),
+        "candidate_teacher_pair_scorer_init_path": resolve(
+            args.candidate_teacher_pair_scorer_init_path
+        ),
+        "candidate_teacher_pair_measurement_init_path": resolve(
+            args.candidate_teacher_pair_measurement_init_path
+        ),
+    }
+    git_diff = _detector_git_output("diff", "--binary")
+    manifest = {
+        "version": 1,
+        "command": [sys.executable, *sys.argv],
+        "arguments": vars(args),
+        "dataset": {
+            "model_path": os.path.abspath(dataset.model_path),
+            "source_path": os.path.abspath(dataset.source_path),
+            "images": str(dataset.images),
+            "resolution": int(dataset.resolution),
+            "longest_edge": int(dataset.longest_edge),
+            "gaussian_type": str(dataset.gaussian_type),
+            "feature_type": str(dataset.feature_type),
+        },
+        "inputs": {
+            key: {
+                "path": path,
+                "sha256": _artifact_sha256(path) if path else None,
+            }
+            for key, path in inputs.items()
+        },
+        "effective_objective": (
+            "detector_match_plus_offset"
+            if bool(args.candidate_teacher_detector_only)
+            else "configured_candidate_teacher_objective"
+        ),
+        "git": {
+            "commit": _detector_git_output("rev-parse", "HEAD"),
+            "branch": _detector_git_output("branch", "--show-current"),
+            "status_porcelain": _detector_git_output("status", "--porcelain"),
+            "diff_sha256": hashlib.sha256(git_diff.encode("utf-8")).hexdigest(),
+        },
+    }
+    path = output_dir / "reproducibility_manifest.json"
+    with path.open("w") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+    return path
 from localization_training.splat_provenance import compress_2dgs_rgb_meta_to_bank
 from scene.kpdetector import KpDetector
 
@@ -134,6 +229,15 @@ def partition_candidate_teacher_cameras(
             mode=split_mode,
         )
     return training_cameras, validation_cameras, support_camera_count
+
+
+def training_requires_test_cameras(test_iterations, total_iterations):
+    """Return whether detector training schedules any test-set evaluation."""
+    total_iterations = int(total_iterations)
+    return any(
+        1 <= int(iteration) <= total_iterations
+        for iteration in (test_iterations or ())
+    )
 
 
 def extract_normalized_feature_map(feature_extractor, image, size):
@@ -1136,14 +1240,24 @@ def build_detector_target_map(
     detector_target_mode="hard",
     landmark_meta=None,
     soft_sigma=1.5,
+    landmark_xyz=None,
 ):
+    target_xyz = (
+        gaussian_localization_xyz(gaussians)[sampled_idx]
+        if landmark_xyz is None
+        else torch.as_tensor(
+            landmark_xyz,
+            device=gt_feature_map.device,
+            dtype=gt_feature_map.dtype,
+        ).reshape(sampled_idx.numel(), 3)
+    )
     if detector_target_mode == "soft":
         utility = detector_landmark_quality_from_meta(landmark_meta, int(sampled_idx.numel()))
         sampled_visible = None
         if render_visible_mask is not None:
             sampled_visible = render_visible_mask[sampled_idx]
         gt_map, weight_map = generate_soft_gt_map(
-            gaussian_localization_xyz(gaussians)[sampled_idx],
+            target_xyz,
             gt_feature_map,
             pose,
             K,
@@ -1158,7 +1272,7 @@ def build_detector_target_map(
         if render_visible_mask is not None:
             sampled_visible = render_visible_mask[sampled_idx]
         gt_map, weight_map = generate_weighted_hard_gt_map(
-            gaussian_localization_xyz(gaussians)[sampled_idx],
+            target_xyz,
             gt_feature_map,
             pose,
             K,
@@ -1168,7 +1282,29 @@ def build_detector_target_map(
         return gt_map, True, weight_map
     if detector_target_mode != "hard":
         raise ValueError(f"Unknown detector_target_mode: {detector_target_mode}")
-    return generate_gt_map(gaussians, gt_feature_map, sampled_idx, pose, K, render_visible_mask), False, None
+    if landmark_xyz is None:
+        gt_map = generate_gt_map(
+            gaussians,
+            gt_feature_map,
+            sampled_idx,
+            pose,
+            K,
+            render_visible_mask,
+        )
+    else:
+        sampled_visible = (
+            None
+            if render_visible_mask is None
+            else render_visible_mask[sampled_idx]
+        )
+        gt_map, _ = generate_weighted_hard_gt_map(
+            target_xyz,
+            gt_feature_map,
+            pose,
+            K,
+            render_visible_mask=sampled_visible,
+        )
+    return gt_map, False, None
 
 
 def detector_target_loss(heat_map, gt_map, soft_target=False, weight_map=None):
@@ -1754,6 +1890,7 @@ def save_sparse_candidate_teacher_state(
     landmark_features,
     iteration,
     config,
+    landmark_xyz=None,
     diagnostics=None,
     dustbin_score=None,
     pair_scorer=None,
@@ -1779,6 +1916,16 @@ def save_sparse_candidate_teacher_state(
         "config": dict(config),
         "diagnostics": dict(diagnostics or {}),
     }
+    if landmark_xyz is not None:
+        exported_xyz = torch.as_tensor(landmark_xyz).detach().float().cpu()
+        if exported_xyz.shape != (exported_features.shape[0], 3):
+            raise ValueError(
+                "candidate teacher landmark_xyz must have shape "
+                f"({exported_features.shape[0]}, 3), got {tuple(exported_xyz.shape)}"
+            )
+        if not bool(torch.isfinite(exported_xyz).all()):
+            raise ValueError("candidate teacher landmark_xyz contains non-finite values")
+        state["landmark_xyz"] = exported_xyz
     if dustbin_score is not None:
         state["dustbin_score"] = float(torch.as_tensor(dustbin_score).detach().item())
     if pair_scorer is not None:
@@ -2992,6 +3139,11 @@ def training_detector(
         "landmark_features_frozen": not bool(candidate_teacher_optimize_features),
         "freeze_detector": bool(candidate_teacher_freeze_detector),
         "detector_only": bool(candidate_teacher_detector_only),
+        "effective_objective": (
+            "detector_match_plus_offset"
+            if bool(candidate_teacher_detector_only)
+            else "configured_candidate_teacher_objective"
+        ),
         "detector_init_path": detector_init_path,
         "state_init_path": candidate_teacher_state_init_path,
         "pair_scorer_init_path": candidate_teacher_pair_scorer_init_path,
@@ -3423,6 +3575,24 @@ def training_detector(
             requires_grad=bool(candidate_teacher_optimize_features),
         )
         teacher_landmark_xyz = gaussian_localization_xyz(gaussians)[sampled_idx].detach().float()
+        if isinstance(teacher_init_state, dict) and "landmark_xyz" in teacher_init_state:
+            state_indices = torch.as_tensor(
+                teacher_init_state.get("landmark_indices", []), dtype=torch.long
+            ).reshape(-1)
+            if not torch.equal(state_indices.cpu(), sampled_idx.detach().cpu()):
+                raise ValueError(
+                    "candidate teacher landmark_xyz is not aligned with detector landmarks"
+                )
+            state_xyz = torch.as_tensor(
+                teacher_init_state["landmark_xyz"],
+                device=teacher_landmark_xyz.device,
+                dtype=teacher_landmark_xyz.dtype,
+            ).reshape(-1, 3)
+            if state_xyz.shape != teacher_landmark_xyz.shape or not bool(
+                torch.isfinite(state_xyz).all().item()
+            ):
+                raise ValueError("candidate teacher landmark_xyz is invalid")
+            teacher_landmark_xyz = state_xyz
         initial_dustbin_score = float(candidate_teacher_dustbin_init)
         if isinstance(teacher_init_state, dict) and "dustbin_score" in teacher_init_state:
             initial_dustbin_score = float(teacher_init_state["dustbin_score"])
@@ -3936,6 +4106,7 @@ def training_detector(
                 detector_target_mode=detector_target_mode,
                 landmark_meta=landmark_meta,
                 soft_sigma=soft_sigma,
+                landmark_xyz=teacher_landmark_xyz,
             )
 
         # use mask to filter out object
@@ -4389,6 +4560,13 @@ def training_detector(
                 * detector_preservation_loss
                 + float(candidate_teacher_feature_anchor_weight) * feature_anchor_loss
             )
+            if candidate_teacher_detector_only:
+                loss = (
+                    float(candidate_teacher_detector_match_weight)
+                    * teacher_losses.detector_match
+                    + float(candidate_teacher_detector_offset_weight)
+                    * teacher_losses.detector_offset
+                )
             if online_render_used:
                 online_render_stats["episodes"] += 1
                 if pair_weights is not None:
@@ -5029,7 +5207,8 @@ def training_detector(
                     teacher_features_for_export,
                     iteration,
                     teacher_config,
-                    teacher_last_diagnostics,
+                    landmark_xyz=teacher_landmark_xyz,
+                    diagnostics=teacher_last_diagnostics,
                     dustbin_score=teacher_dustbin_score,
                     pair_scorer=teacher_pair_scorer,
                     pair_scorer_threshold=calibrated_pair_scorer_threshold,
@@ -5046,7 +5225,8 @@ def training_detector(
                     teacher_features_for_export,
                     iteration,
                     teacher_config,
-                    teacher_last_diagnostics,
+                    landmark_xyz=teacher_landmark_xyz,
+                    diagnostics=teacher_last_diagnostics,
                     dustbin_score=teacher_dustbin_score,
                     pair_scorer=teacher_pair_scorer,
                     pair_scorer_threshold=calibrated_pair_scorer_threshold,
@@ -5714,6 +5894,7 @@ if __name__ == "__main__":
 
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     dataset = lp.extract(args)
+    write_detector_reproducibility_manifest(dataset, args)
     if dataset.gaussian_type == "3dgs":
         from scene.gaussian_model import GaussianModel
         gaussians = GaussianModel(dataset.sh_degree)
@@ -5731,7 +5912,15 @@ if __name__ == "__main__":
             masks = pickle.load(open(mask_path, "rb"))
             break
 
-    scene = Scene(dataset, gaussians, load_iteration=args.iteration)
+    scene = Scene(
+        dataset,
+        gaussians,
+        load_iteration=args.iteration,
+        load_test_cameras=training_requires_test_cameras(
+            args.test_iterations,
+            args.iterations,
+        ),
+    )
 
     if TENSORBOARD_FOUND:
         tb_writer = SummaryWriter(

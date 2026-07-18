@@ -24,7 +24,7 @@ from utils.camera_utils import loadCam
 class Scene:
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], num=-1, images_to_read=None, preload_cameras=True): 
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], num=-1, images_to_read=None, preload_cameras=True, load_test_cameras=True):
         self.args = args
         self.model_path = args.model_path
         self.source_path = args.source_path
@@ -34,6 +34,7 @@ class Scene:
         self.longest_edge = args.longest_edge
         self.resolution_scales = resolution_scales
         self.preload_cameras = preload_cameras
+        self.load_test_cameras = load_test_cameras
         self.shuffle = shuffle
 
         if load_iteration:
@@ -79,12 +80,28 @@ class Scene:
                     self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras[::step_train], resolution_scale, args) if not args.eval else []
                     print("Loading Test Cameras")
                     step_test = len(scene_info.test_cameras) // num
-                    self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras[::step_test], resolution_scale, args)
+                    self.test_cameras[resolution_scale] = (
+                        cameraList_from_camInfos(
+                            scene_info.test_cameras[::step_test],
+                            resolution_scale,
+                            args,
+                        )
+                        if load_test_cameras
+                        else []
+                    )
                 else:
                     print("Loading Train Cameras")
                     self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args) if not args.eval else []
                     print("Loading Test Cameras")
-                    self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
+                    self.test_cameras[resolution_scale] = (
+                        cameraList_from_camInfos(
+                            scene_info.test_cameras,
+                            resolution_scale,
+                            args,
+                        )
+                        if load_test_cameras
+                        else []
+                    )
 
         if self.loaded_iter:
             point_cloud_path = os.path.join(self.model_path,
