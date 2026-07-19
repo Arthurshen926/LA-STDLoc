@@ -85,6 +85,39 @@ def select_candidate_validation_cameras(
     return validation_cameras
 
 
+def load_evaluation_camera_list(cameras, path):
+    """Select an ordered, explicit evaluation subset by image name.
+
+    Candidate-validation splits are useful for standard reporting, but dense
+    refinement training also needs sparse seed poses for the complementary
+    real-training views.  An explicit list makes that protocol reproducible
+    without changing the scene split or relying on list ordering.
+    """
+    with open(path) as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        payload = payload.get("image_names", payload.get("images"))
+    if not isinstance(payload, list) or not payload:
+        raise ValueError(
+            "evaluation_camera_list must be a non-empty JSON list, or an object "
+            "with an image_names/images list"
+        )
+    names = [str(name).replace("\\", "/") for name in payload]
+    if len(set(names)) != len(names):
+        raise ValueError("evaluation_camera_list contains duplicate image names")
+    by_name = {
+        str(camera.image_name).replace("\\", "/"): camera
+        for camera in cameras
+    }
+    missing = [name for name in names if name not in by_name]
+    if missing:
+        raise ValueError(
+            "evaluation_camera_list contains images absent from this scene: "
+            f"{missing[:3]}"
+        )
+    return [by_name[name] for name in names]
+
+
 def candidate_frontend_mismatches(state_config, sparse_config):
     """Report train/eval sparse-frontend settings that change candidate context."""
     if not isinstance(state_config, dict):
@@ -1222,6 +1255,16 @@ def build_evaluation_protocol(dataset, args, cameras):
         "feature_type": str(dataset.feature_type),
         "gaussian_type": str(dataset.gaussian_type),
         "evaluation_camera_subset": str(args.evaluation_camera_subset),
+        "evaluation_camera_list": (
+            os.path.realpath(getattr(args, "evaluation_camera_list", ""))
+            if getattr(args, "evaluation_camera_list", "")
+            else ""
+        ),
+        "evaluation_camera_list_sha256": (
+            file_sha256(getattr(args, "evaluation_camera_list", ""))
+            if getattr(args, "evaluation_camera_list", "")
+            else None
+        ),
         "evaluation_camera_count": len(camera_records),
         "camera_names_sha256": camera_names_digest,
         "loaded_image_shapes": loaded_shapes,
@@ -2997,6 +3040,14 @@ if __name__ == "__main__":
         choices=["test", "candidate_validation"],
         default="test",
     )
+    parser.add_argument(
+        "--evaluation_camera_list",
+        default="",
+        help=(
+            "Optional JSON list of image names that overrides the standard "
+            "test/candidate-validation camera subset."
+        ),
+    )
     parser.add_argument("--candidate_query_ratio", type=float, default=0.2)
     parser.add_argument("--candidate_validation_ratio", type=float, default=0.25)
     parser.add_argument(
@@ -3015,12 +3066,26 @@ if __name__ == "__main__":
         default="error",
     )
     args = get_combined_args(parser)
-    args.eval = args.evaluation_camera_subset == "test"
+    # The dataset reader interprets ``eval=True`` as "read only the official
+    # test-image list".  An explicit camera list may intentionally target
+    # train images (for example, to collect sparse priors for dense-field
+    # training), so it must load the normal train/test split first.
+    args.eval = args.evaluation_camera_subset == "test" and not bool(
+        args.evaluation_camera_list
+    )
 
+    results_root = os.environ.get("STDLOC_RESULTS_ROOT", "results")
     if hasattr(args, "prefix"):
-        output_path = f"results/{args.prefix}-{args.model_path.replace('/', '_')}-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_name = (
+            f"{args.prefix}-{args.model_path.replace('/', '_')}-"
+            f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
     else:
-        output_path = f"results/{args.model_path.replace('/', '_')}-{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        output_name = (
+            f"{args.model_path.replace('/', '_')}-"
+            f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+    output_path = os.path.join(results_root, output_name)
     print("Output path:", output_path)
     os.makedirs(output_path, exist_ok=True)
 
@@ -3039,7 +3104,9 @@ if __name__ == "__main__":
         load_iteration=args.iteration,
         shuffle=False,
         preload_cameras=False,
-        load_test_cameras=args.eval,
+        # Explicit lists can contain either partition, while ``args.eval``
+        # above only controls how the COLMAP reader builds those partitions.
+        load_test_cameras=args.eval or bool(args.evaluation_camera_list),
     )
 
     # Set up config
@@ -3073,6 +3140,7 @@ if __name__ == "__main__":
 
     if (
         args.evaluation_camera_subset == "candidate_validation"
+        and not args.evaluation_camera_list
         and args.candidate_direct_validation_holdout
     ):
         override_state = stdloc.landmark_feature_override_state
@@ -3109,7 +3177,16 @@ if __name__ == "__main__":
             source_gaussian_idx=bank_indices.numpy(),
         )
 
-    if args.evaluation_camera_subset == "candidate_validation":
+    if args.evaluation_camera_list:
+        all_cameras = list(scene.getTrainCameras()) + list(scene.getTestCameras())
+        test_cameras = load_evaluation_camera_list(
+            all_cameras, args.evaluation_camera_list
+        )
+        print(
+            "Explicit evaluation cameras: "
+            f"{len(test_cameras)} list={args.evaluation_camera_list}"
+        )
+    elif args.evaluation_camera_subset == "candidate_validation":
         test_cameras = select_candidate_validation_cameras(
             scene.getTrainCameras(),
             query_ratio=args.candidate_query_ratio,

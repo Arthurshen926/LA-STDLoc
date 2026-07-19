@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 
 import torch
@@ -20,6 +21,10 @@ from localization_training.dense_distill import (
 )
 from localization_training.losses import fine_reprojection_loss, symmetric_descriptor_loss
 from localization_training.pose_information import compute_pose_information
+from localization_training.pose_refiner import (
+    camera_center_from_w2c,
+    weighted_gauss_newton_refine,
+)
 
 
 @dataclass
@@ -33,6 +38,7 @@ class DenseTeacherOutput:
     anchor_count: int
     diagnostics: dict = field(default_factory=dict)
     rank_loss: torch.Tensor = None
+    pose_loss: torch.Tensor = None
 
     @property
     def loc_viewspace_points(self):
@@ -53,6 +59,113 @@ def _as_pose_tensor(pose, device):
     return torch.tensor(pose, device=device, dtype=torch.float32)
 
 
+def _rotation_surrogate(reference_w2c, candidate_w2c):
+    """Smooth non-negative rotation residual equal to ``1 - cos(theta)``."""
+    relative = candidate_w2c[:3, :3] @ reference_w2c[:3, :3].transpose(0, 1)
+    return (0.5 * (3.0 - torch.trace(relative))).clamp_min(0.0)
+
+
+def _pose_error_diagnostics(reference_w2c, candidate_w2c):
+    reference_center = camera_center_from_w2c(reference_w2c)
+    candidate_center = camera_center_from_w2c(candidate_w2c)
+    translation = torch.linalg.vector_norm(candidate_center - reference_center)
+    cosine = (1.0 - _rotation_surrogate(reference_w2c, candidate_w2c)).clamp(
+        -1.0, 1.0
+    )
+    rotation = torch.rad2deg(torch.acos(cosine))
+    return translation, rotation
+
+
+def soft_pose_refinement_loss(
+    points_world,
+    predicted_uv,
+    intrinsic,
+    pose_init_w2c,
+    pose_gt_w2c,
+    confidence,
+    *,
+    num_iterations=1,
+    damping=1e-2,
+    translation_scale_m=0.05,
+    rotation_scale_deg=0.5,
+    max_anchors=128,
+):
+    """Unroll a local soft-correspondence GN update and supervise its pose.
+
+    This is deliberately a bounded, feature-only objective: world points are
+    detached by the refiner, while gradients flow through the soft candidate
+    expectation ``predicted_uv`` into the rendered localization field.  It
+    therefore teaches the final local matching matrix to both preserve a good
+    seed and improve a biased sparse seed without moving frozen 2DGS geometry.
+    """
+    zero = predicted_uv.new_tensor(0.0)
+    if points_world.shape[0] < 4 or int(max_anchors) <= 0:
+        return zero, {
+            "pose_refinement_anchor_count": int(points_world.shape[0]),
+            "pose_refinement_used_anchor_count": 0,
+        }
+    if points_world.shape[0] > int(max_anchors):
+        indices = torch.linspace(
+            0,
+            points_world.shape[0] - 1,
+            int(max_anchors),
+            device=points_world.device,
+        ).round().long()
+        points_world = points_world[indices]
+        predicted_uv = predicted_uv[indices]
+        confidence = confidence[indices]
+    weights = torch.as_tensor(
+        confidence, device=predicted_uv.device, dtype=predicted_uv.dtype
+    ).detach().reshape(-1).clamp_min(1e-3)
+    rotation_scale_rad = math.radians(float(rotation_scale_deg))
+    parameter_scale = predicted_uv.new_tensor(
+        [
+            float(translation_scale_m),
+            float(translation_scale_m),
+            float(translation_scale_m),
+            rotation_scale_rad,
+            rotation_scale_rad,
+            rotation_scale_rad,
+        ]
+    )
+    refined_pose, refiner = weighted_gauss_newton_refine(
+        points_world,
+        predicted_uv + 0.5,
+        intrinsic,
+        pose_init_w2c,
+        weights=weights,
+        num_iterations=int(num_iterations),
+        damping=float(damping),
+        detach_points=True,
+        parameter_scale=parameter_scale,
+    )
+    translation_error, rotation_error_deg = _pose_error_diagnostics(
+        pose_gt_w2c, refined_pose
+    )
+    rotation_surrogate = _rotation_surrogate(pose_gt_w2c, refined_pose)
+    rotation_scale = 1.0 - math.cos(rotation_scale_rad)
+    translation_loss = F.smooth_l1_loss(
+        translation_error / float(translation_scale_m), zero
+    )
+    rotation_loss = F.smooth_l1_loss(rotation_surrogate / rotation_scale, zero)
+    loss = translation_loss + rotation_loss
+    initial_translation, initial_rotation_deg = _pose_error_diagnostics(
+        pose_gt_w2c, pose_init_w2c
+    )
+    diagnostics = {
+        "pose_refinement_anchor_count": int(confidence.numel()),
+        "pose_refinement_used_anchor_count": int(points_world.shape[0]),
+        "pose_refinement_initial_translation_m": float(initial_translation.detach().item()),
+        "pose_refinement_initial_rotation_deg": float(initial_rotation_deg.detach().item()),
+        "pose_refinement_final_translation_m": float(translation_error.detach().item()),
+        "pose_refinement_final_rotation_deg": float(rotation_error_deg.detach().item()),
+        "pose_refinement_initial_rmse": float(refiner["initial_rmse"].item()),
+        "pose_refinement_final_rmse": float(refiner["final_rmse"].item()),
+        "pose_refinement_condition": float(refiner["condition_number"].item()),
+    }
+    return loss, diagnostics
+
+
 def _flatten_depth(depth):
     if depth is None:
         return None
@@ -68,6 +181,63 @@ def _flatten_alpha(alpha):
     if alpha.dim() == 3:
         alpha = alpha[..., 0]
     return alpha
+
+
+def _sample_valid_mask(mask, uv, image_height, image_width):
+    """Sample a binary query-validity mask at continuous feature-grid UVs."""
+    if mask is None:
+        return torch.ones(uv.shape[0], dtype=torch.bool, device=uv.device)
+    mask = torch.as_tensor(mask, device=uv.device, dtype=torch.float32).squeeze()
+    if mask.ndim != 2:
+        raise ValueError(f"query_valid_mask must be 2D, got {tuple(mask.shape)}")
+    if mask.shape != (image_height, image_width):
+        mask = F.interpolate(
+            mask[None, None],
+            size=(image_height, image_width),
+            mode="nearest",
+        )[0, 0]
+    sampled = bilinear_sample_features(mask[None], uv)[..., 0]
+    return sampled >= 0.5
+
+
+@torch.no_grad()
+def _render_field_geometry(
+    gaussians,
+    pose_w2c,
+    fovx,
+    fovy,
+    width,
+    height,
+    background,
+    rasterize_args,
+):
+    """Render geometry with exactly the support used by loc-feature splatting.
+
+    The RGB geometry render and a sparse/dense localization field can have
+    different opacity support.  Reprojecting a field pixel with RGB depth
+    labels an occluded or entirely different surface, which makes the dense
+    teacher internally contradictory.  Swap only for this frozen geometry
+    render and restore the map immediately.
+    """
+    if not hasattr(gaussians, "_loc_opacity"):
+        return None
+    original_opacity = gaussians._opacity
+    try:
+        gaussians._opacity = gaussians._loc_opacity
+        return render_from_pose_gsplat(
+            gaussians,
+            pose_w2c,
+            fovx,
+            fovy,
+            width,
+            height,
+            bg_color=background,
+            render_mode="RGB+ED",
+            rgb_only=True,
+            **rasterize_args,
+        )
+    finally:
+        gaussians._opacity = original_opacity
 
 
 def _normalize_responsibility(weights):
@@ -428,6 +598,9 @@ def dense_localization_teacher(
     desc_temperature=0.07,
     fine_temperature=0.05,
     fine_window_radius=4,
+    fine_peak_weight=0.0,
+    fine_target_sigma=1.0,
+    fine_window_center="target",
     dense_kl_weight=0.0,
     dense_kl_temperature=0.07,
     dense_rank_weight=0.0,
@@ -443,14 +616,27 @@ def dense_localization_teacher(
     min_positive_prob=-1.0,
     max_reproj_error=-1.0,
     min_eligible_anchors=1,
+    pose_refinement_weight=0.0,
+    pose_refinement_iterations=1,
+    pose_refinement_damping=1e-2,
+    pose_refinement_translation_scale_m=0.05,
+    pose_refinement_rotation_scale_deg=0.5,
+    pose_refinement_max_anchors=128,
     norm_feat_bf_render=True,
     use_loc_opacity=True,
+    field_depth_source="field_expected",
+    query_valid_mask=None,
     min_anchors=8,
     rasterize_args=None,
 ):
     """Run one differentiable dense localization teacher episode."""
     rasterize_args = rasterize_args or {}
     device = query_feature_map.device
+    if fine_window_center not in {"target", "render"}:
+        raise ValueError(
+            "fine_window_center must be 'target' or 'render', "
+            f"got {fine_window_center!r}"
+        )
     pose_init_w2c = _as_pose_tensor(pose_init_w2c, device)
     pose_gt_w2c = _as_pose_tensor(pose_gt_w2c, device)
 
@@ -473,6 +659,33 @@ def dense_localization_teacher(
     depth = _flatten_depth(render_pkg.get("depth"))
     alpha = _flatten_alpha(render_pkg.get("loc_alphas", render_pkg.get("alphas")))
 
+    if field_depth_source not in {"rgb_expected", "field_expected"}:
+        raise ValueError(
+            "field_depth_source must be 'rgb_expected' or 'field_expected', "
+            f"got {field_depth_source!r}"
+        )
+    field_geometry = None
+    if field_depth_source == "field_expected" and bool(use_loc_opacity):
+        field_geometry = _render_field_geometry(
+            gaussians,
+            pose_init_w2c,
+            fovx,
+            fovy,
+            width,
+            height,
+            background,
+            rasterize_args,
+        )
+        if field_geometry is not None:
+            field_depth = _flatten_depth(field_geometry.get("depth"))
+            field_alpha = _flatten_alpha(
+                field_geometry.get("rend_alpha", field_geometry.get("alphas"))
+            )
+            if field_depth is not None:
+                depth = field_depth
+            if field_alpha is not None:
+                alpha = field_alpha
+
     zero = query_feature_map.new_tensor(0.0)
     if rendered_feature_map is None or depth is None:
         return DenseTeacherOutput(zero, zero, zero, zero, {}, render_pkg, 0)
@@ -489,39 +702,123 @@ def dense_localization_teacher(
 
     render_uv = grid[anchor_idx]
     render_depth = depth.reshape(-1)[anchor_idx]
-    targets = build_target_correspondences(render_uv, render_depth.detach(), render_pkg["loc_K"], pose_init_w2c, pose_gt_w2c)
+    targets = build_target_correspondences(
+        render_uv,
+        render_depth.detach(),
+        render_pkg["loc_K"],
+        pose_init_w2c,
+        pose_gt_w2c,
+        # Match the local dense PnP convention: image/grid indices represent
+        # cells, while geometry is lifted at their centers.
+        pixel_center_offset=0.5,
+    )
     target_uv = targets["target_uv"].detach()
     target_valid = targets["valid"]
     target_valid = target_valid & (target_uv[:, 0] >= 0) & (target_uv[:, 0] <= query_feature_map.shape[2] - 1)
     target_valid = target_valid & (target_uv[:, 1] >= 0) & (target_uv[:, 1] <= query_feature_map.shape[1] - 1)
+    target_valid = target_valid & _sample_valid_mask(
+        query_valid_mask,
+        target_uv,
+        query_feature_map.shape[1],
+        query_feature_map.shape[2],
+    )
 
     if target_valid.sum() < min_anchors:
         return DenseTeacherOutput(zero, zero, zero, zero, {}, render_pkg, int(target_valid.sum().item()))
 
     anchor_idx = anchor_idx[target_valid]
     render_uv = render_uv[target_valid]
+    render_depth = render_depth[target_valid]
     target_uv = target_uv[target_valid]
     target_points_world = targets["points_world"][target_valid].detach()
     y = render_uv[:, 1].long().clamp(0, rendered_feature_map.shape[1] - 1)
     x = render_uv[:, 0].long().clamp(0, rendered_feature_map.shape[2] - 1)
     rendered_features = rendered_feature_map[:, y, x].T
     query_features = bilinear_sample_features(query_feature_map.detach(), target_uv)
-
-    desc_loss = symmetric_descriptor_loss(rendered_features, query_features, temperature=desc_temperature)
+    window_center_uv = render_uv if fine_window_center == "render" else None
     reproj_loss, fine_stats = fine_reprojection_loss(
         rendered_features,
         query_feature_map.detach(),
         target_uv,
         window_radius=fine_window_radius,
         temperature=fine_temperature,
+        valid_mask=query_valid_mask,
+        peak_weight=fine_peak_weight,
+        target_sigma=fine_target_sigma,
+        window_center_uv=window_center_uv,
     )
+    local_target_mask = fine_stats["target_in_window"]
+    target_offset = torch.linalg.norm(target_uv - render_uv, dim=-1)
     visible_idx = render_pkg.get("loc_visible_idx")
     visible_count = 0 if visible_idx is None else visible_idx.numel()
     contributor_ids = None
     responsibility_weights = None
     compact_contributor_ids = None
     visible_bank_features = None
-    diagnostics = {}
+    diagnostics = {
+        "field_depth_source": str(field_depth_source),
+        "field_geometry_rendered": float(field_geometry is not None),
+        "fine_window_center": str(fine_window_center),
+        "query_valid_anchor_count": int(target_valid.sum().item()),
+        "local_target_in_window_count": int(local_target_mask.sum().item()),
+        "local_target_in_window_fraction": float(local_target_mask.float().mean().item()),
+        "local_target_offset_mean_px": float(target_offset.mean().item()),
+        "local_target_offset_median_px": float(target_offset.median().item()),
+        "anchor_positive_prob_mean": float(
+            fine_stats["positive_prob"][local_target_mask].mean().item()
+            if bool(local_target_mask.any().item())
+            else 0.0
+        ),
+        "anchor_reproj_error_mean_px": float(
+            fine_stats["reproj_error"][local_target_mask].mean().item()
+            if bool(local_target_mask.any().item())
+            else 0.0
+        ),
+        "anchor_reproj_error_median_px": float(
+            fine_stats["reproj_error"][local_target_mask].median().item()
+            if bool(local_target_mask.any().item())
+            else 0.0
+        ),
+        "anchor_entropy_mean": float(
+            fine_stats["entropy"][local_target_mask].mean().item()
+            if bool(local_target_mask.any().item())
+            else 0.0
+        ),
+        "anchor_target_nll_mean": float(
+            fine_stats["target_nll"][local_target_mask].mean().item()
+            if bool(local_target_mask.any().item())
+            else 0.0
+        ),
+    }
+    if int(local_target_mask.sum().item()) < min_anchors:
+        return DenseTeacherOutput(
+            zero,
+            zero,
+            zero,
+            zero,
+            {},
+            render_pkg,
+            int(local_target_mask.sum().item()),
+            diagnostics=diagnostics,
+        )
+
+    # Train the descriptor contrast only over correspondences that can appear
+    # in the local candidate set.  Otherwise far-out jitter samples optimize
+    # a global retrieval surrogate, not the final local PnP objective.
+    def _mask_anchor_tensor(value):
+        if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == local_target_mask.shape[0]:
+            return value[local_target_mask]
+        return value
+
+    anchor_idx = anchor_idx[local_target_mask]
+    render_uv = render_uv[local_target_mask]
+    render_depth = render_depth[local_target_mask]
+    target_uv = target_uv[local_target_mask]
+    target_points_world = target_points_world[local_target_mask]
+    rendered_features = rendered_features[local_target_mask]
+    query_features = query_features[local_target_mask]
+    fine_stats = {key: _mask_anchor_tensor(value) for key, value in fine_stats.items()}
+    desc_loss = symmetric_descriptor_loss(rendered_features, query_features, temperature=desc_temperature)
     if visible_count > 0:
         with torch.no_grad():
             contributor_ids, responsibility_weights = _sample_pixel_contributors(
@@ -558,6 +855,7 @@ def dense_localization_teacher(
             )
     kl_loss = zero
     rank_loss = zero
+    pose_loss = zero
     if (
         (float(dense_kl_weight) > 0 or float(dense_rank_weight) > 0)
         and compact_contributor_ids is not None
@@ -605,7 +903,28 @@ def dense_localization_teacher(
                 margin=dense_rank_margin,
             )
             diagnostics.update(rank_diagnostics)
-    loss = desc_loss + reproj_loss + float(dense_kl_weight) * kl_loss + float(dense_rank_weight) * rank_loss
+    if float(pose_refinement_weight) > 0.0:
+        pose_loss, pose_diagnostics = soft_pose_refinement_loss(
+            target_points_world,
+            fine_stats["pred_uv"],
+            render_pkg["loc_K"],
+            pose_init_w2c,
+            pose_gt_w2c,
+            fine_stats["positive_prob"],
+            num_iterations=pose_refinement_iterations,
+            damping=pose_refinement_damping,
+            translation_scale_m=pose_refinement_translation_scale_m,
+            rotation_scale_deg=pose_refinement_rotation_scale_deg,
+            max_anchors=pose_refinement_max_anchors,
+        )
+        diagnostics.update(pose_diagnostics)
+    loss = (
+        desc_loss
+        + reproj_loss
+        + float(dense_kl_weight) * kl_loss
+        + float(dense_rank_weight) * rank_loss
+        + float(pose_refinement_weight) * pose_loss
+    )
 
     with torch.no_grad():
         rendered_n = F.normalize(rendered_features, p=2, dim=-1)
@@ -663,4 +982,5 @@ def dense_localization_teacher(
         int(target_valid.sum().item()),
         diagnostics=diagnostics,
         rank_loss=rank_loss,
+        pose_loss=pose_loss,
     )

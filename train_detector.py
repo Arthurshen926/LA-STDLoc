@@ -209,8 +209,17 @@ def partition_candidate_teacher_cameras(
     split_mode="temporal_block",
     split_seed=2026,
 ):
-    """Build candidate-train and held-out validation camera sets."""
-    training_cameras = list(cameras)
+    """Build candidate-train and held-out validation camera sets.
+
+    Candidate-map training, direct held-out evaluation, and detector fitting
+    must operate on the same canonical camera order.  ``Scene`` may shuffle
+    camera objects for conventional detector training, so partitioning an
+    arbitrary input order makes a temporal-block split semantically unstable.
+    """
+    training_cameras = sorted(
+        list(cameras),
+        key=lambda camera: str(getattr(camera, "image_name", "")).replace("\\", "/"),
+    )
     validation_cameras = []
     support_camera_count = len(training_cameras)
     if bool(support_query_split):
@@ -229,6 +238,56 @@ def partition_candidate_teacher_cameras(
             mode=split_mode,
         )
     return training_cameras, validation_cameras, support_camera_count
+
+
+def candidate_teacher_camera_names_sha256(cameras):
+    """Hash the canonical candidate-camera set for split-audit artifacts."""
+    names = sorted(
+        str(getattr(camera, "image_name", "")).replace("\\", "/")
+        for camera in cameras
+    )
+    return hashlib.sha256(("\n".join(names) + "\n").encode("utf-8")).hexdigest()
+
+
+def write_candidate_teacher_partition_manifest(
+    output_dir,
+    support_cameras,
+    training_cameras,
+    validation_cameras,
+    *,
+    split_mode,
+    split_seed,
+    validation_ratio,
+):
+    """Persist exact camera identities so a direct holdout is auditable."""
+    def names(cameras):
+        return sorted(
+            str(getattr(camera, "image_name", "")).replace("\\", "/")
+            for camera in cameras
+        )
+
+    payload = {
+        "version": 1,
+        "camera_order": "image_name_lexicographic",
+        "split_mode": str(split_mode),
+        "split_seed": int(split_seed),
+        "validation_ratio": float(validation_ratio),
+        "support_camera_names": names(support_cameras),
+        "candidate_train_camera_names": names(training_cameras),
+        "candidate_validation_camera_names": names(validation_cameras),
+        "support_camera_names_sha256": candidate_teacher_camera_names_sha256(
+            support_cameras
+        ),
+        "candidate_train_camera_names_sha256": (
+            candidate_teacher_camera_names_sha256(training_cameras)
+        ),
+        "candidate_validation_camera_names_sha256": (
+            candidate_teacher_camera_names_sha256(validation_cameras)
+        ),
+    }
+    output_path = Path(output_dir) / "candidate_teacher_partition.json"
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
 
 
 def training_requires_test_cameras(test_iterations, total_iterations):
@@ -2940,8 +2999,10 @@ def training_detector(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     training_cameras = scene.getTrainCameras().copy()
+    input_cameras = list(training_cameras)
     validation_cameras = []
     support_camera_count = len(training_cameras)
+    camera_partition = None
     if sparse_candidate_teacher:
         training_cameras, validation_cameras, support_camera_count = (
             partition_candidate_teacher_cameras(
@@ -2952,6 +3013,15 @@ def training_detector(
                 split_mode=candidate_teacher_split_mode,
                 split_seed=candidate_teacher_split_seed,
             )
+        )
+        camera_partition = write_candidate_teacher_partition_manifest(
+            save_path,
+            input_cameras,
+            training_cameras,
+            validation_cameras,
+            split_mode=candidate_teacher_split_mode,
+            split_seed=candidate_teacher_split_seed,
+            validation_ratio=candidate_teacher_validation_ratio,
         )
     if sparse_candidate_teacher and (
         candidate_teacher_support_query_split or validation_cameras
@@ -3485,6 +3555,22 @@ def training_detector(
         "support_camera_count": int(support_camera_count),
         "query_camera_count": int(len(training_cameras)),
         "validation_camera_count": int(len(validation_cameras)),
+        "camera_order": (
+            str(camera_partition["camera_order"])
+            if camera_partition is not None
+            else "scene_order"
+        ),
+        "input_camera_names_sha256": (
+            str(camera_partition["support_camera_names_sha256"])
+            if camera_partition is not None
+            else candidate_teacher_camera_names_sha256(input_cameras)
+        ),
+        "query_camera_names_sha256": candidate_teacher_camera_names_sha256(
+            training_cameras
+        ),
+        "validation_camera_names_sha256": candidate_teacher_camera_names_sha256(
+            validation_cameras
+        ),
         "query_ratio": float(candidate_teacher_query_ratio),
         "validation_ratio": float(candidate_teacher_validation_ratio),
         "split_mode": str(candidate_teacher_split_mode),
@@ -5916,6 +6002,10 @@ if __name__ == "__main__":
         dataset,
         gaussians,
         load_iteration=args.iteration,
+        # Candidate-teacher direct holdouts are defined on lexical camera
+        # order, matching train_lafgs_map.py and stdloc.py.  Conventional
+        # detector training retains the historical shuffled order.
+        shuffle=not bool(args.sparse_candidate_teacher),
         load_test_cameras=training_requires_test_cameras(
             args.test_iterations,
             args.iterations,

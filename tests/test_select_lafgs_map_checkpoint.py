@@ -177,3 +177,71 @@ def test_joint_gate_requires_protocol_even_without_candidates(tmp_path):
             tmp_path / "control.pt",
             [],
         )
+
+
+def test_performance_selector_uses_pose_objective_with_deployment_recall_guard(
+    tmp_path,
+):
+    from scripts.select_lafgs_map_checkpoint import select_checkpoint
+
+    def write_per_query_results(summary_path, errors):
+        summary_path.with_name("results.json").write_text(
+            json.dumps([{"sparse_TE": error} for error in errors])
+        )
+
+    control = _summary(
+        tmp_path / "control.json",
+        te=3.0,
+        ae=0.15,
+        raw=0.10,
+        inlier=0.40,
+        logdet=12.0,
+    )
+    control_payload = json.loads(control.read_text())
+    control_payload["sparse"].update({"recall_2m_5d": 0.95, "recall_5cm_5d": 0.20})
+    control.write_text(json.dumps(control_payload))
+    write_per_query_results(control, [2.0, 4.0])
+
+    preferred = _summary(
+        tmp_path / "preferred.json",
+        te=2.8,
+        ae=0.16,
+        raw=0.09,
+        inlier=0.39,
+        logdet=11.0,
+    )
+    preferred_payload = json.loads(preferred.read_text())
+    preferred_payload["sparse"].update({"recall_2m_5d": 0.95, "recall_5cm_5d": 0.20})
+    preferred.write_text(json.dumps(preferred_payload))
+    write_per_query_results(preferred, [2.0, 4.0])
+
+    rejected = _summary(
+        tmp_path / "rejected.json",
+        te=2.5,
+        ae=0.10,
+        raw=0.20,
+        inlier=0.60,
+        logdet=15.0,
+    )
+    rejected_payload = json.loads(rejected.read_text())
+    rejected_payload["sparse"].update({"recall_2m_5d": 0.93, "recall_5cm_5d": 0.15})
+    rejected.write_text(json.dumps(rejected_payload))
+    write_per_query_results(rejected, [2.0, 3.0])
+
+    report = select_checkpoint(
+        control,
+        tmp_path / "control.pt",
+        [
+            ("preferred", preferred, tmp_path / "preferred.pt"),
+            ("rejected", rejected, tmp_path / "rejected.pt"),
+        ],
+        selection_mode="performance",
+        mean_te_weight=0.05,
+        max_recall_2m_drop=0.01,
+        max_recall_5cm_drop=0.01,
+    )
+
+    assert report["selected_tag"] == "preferred"
+    assert report["candidates"][0]["accepted"] is True
+    assert report["candidates"][1]["accepted"] is False
+    assert report["selection_protocol"]["test_metrics_used"] is False

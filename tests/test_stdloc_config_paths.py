@@ -45,6 +45,25 @@ class STDLocConfigPathTest(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_explicit_evaluation_camera_list_preserves_requested_order(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from stdloc import load_evaluation_camera_list
+
+        cameras = [
+            SimpleNamespace(image_name="seq1/frame00002.png"),
+            SimpleNamespace(image_name="seq1/frame00001.png"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cameras.json"
+            path.write_text(json.dumps({"image_names": ["seq1/frame00001.png"]}))
+            selected = load_evaluation_camera_list(cameras, path)
+
+        self.assertEqual([camera.image_name for camera in selected], ["seq1/frame00001.png"])
+
     def test_direct_holdout_requires_matching_training_partition(self):
         from stdloc import candidate_direct_holdout_mismatches
         from stdloc import validate_candidate_direct_holdout_compatibility

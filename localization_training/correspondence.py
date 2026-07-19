@@ -33,10 +33,31 @@ def project_world_to_pixels(points_world, K, pose_w2c, eps=1e-8):
     return xy, valid
 
 
-def build_target_correspondences(render_uv, render_depth, K, pose_init_w2c, pose_gt_w2c):
-    """Map rendered pixels from an initial pose to their target pixels under GT pose."""
-    points_world = unproject_pixels(render_uv, render_depth, K, pose_init_w2c)
+def build_target_correspondences(
+    render_uv,
+    render_depth,
+    K,
+    pose_init_w2c,
+    pose_gt_w2c,
+    pixel_center_offset=0.0,
+):
+    """Map rendered pixels from an initial pose to target feature-grid pixels.
+
+    The localization evaluator treats an integer feature-grid coordinate as a
+    pixel-cell index and performs PnP/lifting at ``index + 0.5``.  A dense
+    teacher that perturbs the render pose must use the same convention:
+    unproject at the source cell center, then convert the projected physical
+    coordinate back to a feature-grid index.  The zero-offset default keeps
+    legacy callers byte-for-byte compatible.
+    """
+    offset = torch.as_tensor(
+        pixel_center_offset,
+        dtype=render_uv.dtype,
+        device=render_uv.device,
+    )
+    points_world = unproject_pixels(render_uv + offset, render_depth, K, pose_init_w2c)
     target_uv, valid = project_world_to_pixels(points_world, K, pose_gt_w2c)
+    target_uv = target_uv - offset
     valid = valid & torch.isfinite(target_uv).all(dim=1) & torch.isfinite(points_world).all(dim=1)
     return {
         "points_world": points_world,

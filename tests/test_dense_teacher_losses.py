@@ -35,6 +35,138 @@ class DenseTeacherLossTest(unittest.TestCase):
         self.assertTrue(torch.allclose(stats["pred_uv"], target_uv, atol=1e-3))
         self.assertGreater(stats["positive_prob"].item(), 0.99)
 
+    def test_fine_reprojection_loss_excludes_invalid_local_cells(self):
+        from localization_training.losses import fine_reprojection_loss
+
+        feature_map = torch.zeros(2, 5, 5)
+        rendered = torch.tensor([[1.0, 0.0]])
+        target_uv = torch.tensor([[2.0, 2.0]])
+        feature_map[:, 2, 2] = rendered[0]
+        # An invalid adjacent cell has a stronger descriptor match.  Without
+        # a per-window mask it incorrectly pulls the soft expectation away.
+        feature_map[:, 2, 3] = torch.tensor([2.0, 0.0])
+        valid_mask = torch.ones(5, 5, dtype=torch.bool)
+        valid_mask[2, 3] = False
+
+        loss, stats = fine_reprojection_loss(
+            rendered,
+            feature_map,
+            target_uv,
+            window_radius=1,
+            temperature=0.01,
+            valid_mask=valid_mask,
+        )
+
+        self.assertLess(loss.item(), 1e-4)
+        self.assertTrue(torch.allclose(stats["pred_uv"], target_uv, atol=1e-3))
+
+    def test_fine_reprojection_peak_term_rejects_symmetric_ambiguity(self):
+        from localization_training.losses import fine_reprojection_loss
+
+        target_uv = torch.tensor([[2.0, 2.0]])
+        rendered = torch.tensor([[1.0, 0.0]])
+        aligned = torch.zeros(2, 5, 5)
+        aligned[:, 2, 2] = rendered[0]
+        ambiguous = torch.zeros_like(aligned)
+        ambiguous[:, 2, 1] = rendered[0]
+        ambiguous[:, 2, 3] = rendered[0]
+
+        aligned_loss, _ = fine_reprojection_loss(
+            rendered,
+            aligned,
+            target_uv,
+            window_radius=1,
+            temperature=0.05,
+            peak_weight=1.0,
+            target_sigma=0.5,
+        )
+        ambiguous_loss, stats = fine_reprojection_loss(
+            rendered,
+            ambiguous,
+            target_uv,
+            window_radius=1,
+            temperature=0.05,
+            peak_weight=1.0,
+            target_sigma=0.5,
+        )
+
+        self.assertGreater(ambiguous_loss.item(), aligned_loss.item())
+        self.assertGreater(stats["target_nll"].item(), 0.0)
+
+    def test_fine_reprojection_can_train_render_centered_candidate_window(self):
+        from localization_training.losses import fine_reprojection_loss
+
+        feature_map = torch.zeros(2, 7, 7)
+        rendered = torch.tensor([[1.0, 0.0]])
+        render_uv = torch.tensor([[2.0, 3.0]])
+        target_uv = torch.tensor([[3.0, 3.0]])
+        feature_map[:, 3, 3] = rendered[0]
+
+        loss, stats = fine_reprojection_loss(
+            rendered,
+            feature_map,
+            target_uv,
+            window_radius=1,
+            temperature=0.01,
+            window_center_uv=render_uv,
+        )
+
+        self.assertLess(loss.item(), 1e-4)
+        self.assertTrue(stats["target_in_window"].item())
+        self.assertTrue(torch.allclose(stats["pred_uv"], target_uv, atol=1e-3))
+
+    def test_fine_reprojection_ignores_targets_outside_render_candidate_window(self):
+        from localization_training.losses import fine_reprojection_loss
+
+        feature_map = torch.zeros(2, 9, 9)
+        rendered = torch.tensor([[1.0, 0.0]])
+        render_uv = torch.tensor([[2.0, 4.0]])
+        target_uv = torch.tensor([[5.0, 4.0]])
+        feature_map[:, 4, 5] = rendered[0]
+
+        loss, stats = fine_reprojection_loss(
+            rendered,
+            feature_map,
+            target_uv,
+            window_radius=1,
+            temperature=0.01,
+            peak_weight=1.0,
+            window_center_uv=render_uv,
+        )
+
+        self.assertEqual(loss.item(), 0.0)
+        self.assertFalse(stats["target_in_window"].item())
+
+    def test_target_correspondence_uses_feature_cell_center_convention(self):
+        from localization_training.correspondence import build_target_correspondences
+
+        pose = torch.eye(4)
+        intrinsic = torch.tensor(
+            [
+                [80.0, 0.0, 8.0],
+                [0.0, 80.0, 6.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+        render_uv = torch.tensor([[3.0, 4.0], [7.0, 2.0]])
+        depth = torch.tensor([4.0, 7.0])
+
+        target = build_target_correspondences(
+            render_uv,
+            depth,
+            intrinsic,
+            pose,
+            pose,
+            pixel_center_offset=0.5,
+        )
+
+        self.assertTrue(target["valid"].all())
+        self.assertTrue(torch.allclose(target["target_uv"], render_uv, atol=1e-6))
+        expected_x = (render_uv[:, 0] + 0.5 - intrinsic[0, 2]) / intrinsic[0, 0] * depth
+        expected_y = (render_uv[:, 1] + 0.5 - intrinsic[1, 2]) / intrinsic[1, 1] * depth
+        self.assertTrue(torch.allclose(target["points_world"][:, 0], expected_x, atol=1e-6))
+        self.assertTrue(torch.allclose(target["points_world"][:, 1], expected_y, atol=1e-6))
+
     def test_responsibility_stats_assign_dense_observations_to_contributing_gaussians(self):
         from localization_training.dense_teacher import aggregate_dense_anchor_stats
 
@@ -183,6 +315,51 @@ class DenseTeacherLossTest(unittest.TestCase):
         )
 
         self.assertEqual(out.diagnostics["responsibility_reconstruction_mean_cosine"], 0.9)
+
+    def test_soft_pose_refinement_loss_backpropagates_to_local_predictions(self):
+        from localization_training.dense_teacher import soft_pose_refinement_loss
+        from localization_training.pose_refiner import project_points, se3_exp
+
+        points = torch.tensor(
+            [
+                [-0.4, -0.3, 3.0],
+                [0.5, -0.2, 3.5],
+                [-0.3, 0.4, 4.0],
+                [0.4, 0.5, 3.2],
+                [0.1, -0.5, 4.5],
+                [-0.5, 0.1, 3.8],
+            ],
+            dtype=torch.float32,
+        )
+        intrinsic = torch.tensor(
+            [[120.0, 0.0, 40.0], [0.0, 120.0, 30.0], [0.0, 0.0, 1.0]]
+        )
+        pose_gt = torch.eye(4)
+        pose_init = se3_exp(torch.tensor([0.08, 0.0, 0.0, 0.0, 0.0, 0.0])) @ pose_gt
+        target_uv, valid = project_points(points, intrinsic, pose_gt)
+        self.assertTrue(valid.all())
+        predicted_uv = (target_uv - 0.5 + torch.tensor([0.25, -0.1])).detach()
+        predicted_uv.requires_grad_(True)
+
+        loss, diagnostics = soft_pose_refinement_loss(
+            points,
+            predicted_uv,
+            intrinsic,
+            pose_init,
+            pose_gt,
+            torch.ones(points.shape[0]),
+            num_iterations=1,
+            damping=1e-2,
+            translation_scale_m=0.05,
+            rotation_scale_deg=0.5,
+            max_anchors=16,
+        )
+
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreaterEqual(diagnostics["pose_refinement_used_anchor_count"], 4)
+        loss.backward()
+        self.assertTrue(torch.isfinite(predicted_uv.grad).all())
+        self.assertGreater(float(predicted_uv.grad.abs().sum()), 0.0)
 
     def test_pixel_contributor_sampling_prefers_depth_consistent_gaussian(self):
         from localization_training.dense_teacher import _sample_pixel_contributors

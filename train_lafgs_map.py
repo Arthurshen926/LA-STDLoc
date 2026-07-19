@@ -277,6 +277,12 @@ def _camera_cache_key(camera):
     return str(getattr(camera, "image_name", "")).replace("\\", "/")
 
 
+def _camera_names_sha256(names):
+    """Hash a canonical camera-name set for direct-holdout auditability."""
+    normalized = sorted(str(name).replace("\\", "/") for name in names)
+    return hashlib.sha256(("\n".join(normalized) + "\n").encode("utf-8")).hexdigest()
+
+
 def _uniformly_subsample_cameras(cameras, maximum):
     cameras = list(cameras)
     maximum = int(maximum)
@@ -1277,6 +1283,7 @@ def _distill_final_landmark_bank(
         & (false_top1_rate <= float(args.distill_false_top1_max))
     )
     eligibility_relaxed = "none"
+    rank_pool_size = int(eligible.sum().item())
     if int(eligible.sum().item()) < int(args.distill_budget):
         observed_indices = torch.nonzero(
             observed_eligible, as_tuple=False
@@ -1285,15 +1292,35 @@ def _distill_final_landmark_bank(
             reliable_order = torch.argsort(
                 matchability[observed_indices], descending=True, stable=True
             )
-            keep = min(int(args.distill_budget), int(observed_indices.numel()))
+            # Keep a larger matchability-first reservoir.  Coverage and FIM
+            # can then choose the final fixed-size bank instead of becoming
+            # inert because the fallback exposed exactly K candidates.
+            requested_pool = max(
+                int(args.distill_budget),
+                int(
+                    round(
+                        float(args.distill_budget)
+                        * max(float(args.distill_rank_pool_multiplier), 1.0)
+                    )
+                ),
+            )
+            keep = min(requested_pool, int(observed_indices.numel()))
             eligible = torch.zeros_like(eligible)
             eligible[observed_indices[reliable_order[:keep]]] = True
-        eligibility_relaxed = "matchability_rank_shortfall"
+            rank_pool_size = keep
+        eligibility_relaxed = "matchability_rank_pool"
     effective_budget = min(int(args.distill_budget), int(eligible.sum().item()))
     if effective_budget <= 0:
         raise ValueError("No observed landmarks are available for final distillation")
     if effective_budget < int(args.distill_budget):
         eligibility_relaxed = "observed_shortfall"
+        if bool(args.distill_require_exact_budget):
+            raise ValueError(
+                "Final landmark distillation could not satisfy the requested "
+                f"budget ({effective_budget}/{int(args.distill_budget)} observed "
+                "eligible landmarks). Increase --statistics_observations or use "
+                "a smaller fixed comparison budget."
+            )
     selected, selection_meta = coverage_preserving_sample(
         bank_xyz,
         base_score=matchability,
@@ -1334,6 +1361,8 @@ def _distill_final_landmark_bank(
         "uses_conditional_translation_fim": True,
         "uses_3d_image_depth_coverage": True,
         "eligibility_relaxed": eligibility_relaxed,
+        "rank_pool_size": int(rank_pool_size),
+        "rank_pool_multiplier": float(args.distill_rank_pool_multiplier),
         "requested_budget": int(args.distill_budget),
         "observed_budget_shortfall": int(args.distill_budget) - effective_budget,
     }
@@ -1391,6 +1420,7 @@ def _distill_final_landmark_bank(
             statistics["translation_fim"][selected].mean().item()
         ),
         "eligibility_relaxed": eligibility_relaxed,
+        "rank_pool_size": int(rank_pool_size),
     }
 
 
@@ -1489,8 +1519,8 @@ def _validate_descriptor_field(
 def _state_config(
     args,
     dataset,
-    train_count,
-    validation_count,
+    train_names,
+    validation_names,
     landmark_path,
     scaffold_diagnostics,
 ):
@@ -1511,6 +1541,12 @@ def _state_config(
         "topology_enabled": False,
         "objective": str(args.objective),
         "steps": int(args.steps),
+        # Keep the requested checkpoint grid in every state.  It makes a
+        # missing intermediate checkpoint a visible protocol failure instead
+        # of silently changing the validation selection set.
+        "checkpoint_save_steps": sorted(
+            {int(step) for step in args.save_steps} | {int(args.steps)}
+        ),
         "feature_lr": float(args.feature_lr),
         "geometry_lr": float(args.geometry_lr),
         "weight_decay": float(args.weight_decay),
@@ -1569,6 +1605,13 @@ def _state_config(
         "mvinit_mode": str(args.mvinit_mode),
         "descriptor_end_step": int(args.descriptor_end_step),
         "mvinit_max_observations": int(args.mvinit_max_observations),
+        "distill_budget": int(args.distill_budget),
+        "distill_require_exact_budget": bool(args.distill_require_exact_budget),
+        "distill_rank_pool_multiplier": float(
+            args.distill_rank_pool_multiplier
+        ),
+        "statistics_observations": int(args.statistics_observations),
+        "distill_min_observations": int(args.distill_min_observations),
         "distill_matchability_threshold": float(
             args.distill_matchability_threshold
         ),
@@ -1578,8 +1621,14 @@ def _state_config(
         "validation_ratio": float(args.validation_ratio),
         "split_mode": str(args.split_mode),
         "split_seed": int(args.split_seed),
-        "train_camera_count": int(train_count),
-        "validation_camera_count": int(validation_count),
+        "camera_order": "image_name_lexicographic",
+        "train_camera_count": int(len(train_names)),
+        "validation_camera_count": int(len(validation_names)),
+        "train_camera_names_sha256": _camera_names_sha256(train_names),
+        "validation_camera_names_sha256": _camera_names_sha256(validation_names),
+        "input_camera_names_sha256": _camera_names_sha256(
+            list(train_names) + list(validation_names)
+        ),
         "model_path": os.path.abspath(dataset.model_path),
         "source_path": os.path.abspath(dataset.source_path),
         "map_iteration": int(args.load_iteration),
@@ -1625,6 +1674,24 @@ def _save_state(
     sampled_path = Path(path).parent / "sampled_idx.pkl"
     with sampled_path.open("wb") as handle:
         pickle.dump(landmark_indices.detach().cpu(), handle)
+
+
+def _checkpoint_integrity(output_dir, requested_steps):
+    """Return a deterministic audit of the requested map checkpoints."""
+    output_dir = Path(output_dir)
+    requested_steps = sorted({int(step) for step in requested_steps})
+    saved_steps = [
+        step
+        for step in requested_steps
+        if (output_dir / f"{step}_lafgs_map_state.pt").is_file()
+    ]
+    missing_steps = sorted(set(requested_steps) - set(saved_steps))
+    return {
+        "requested_steps": requested_steps,
+        "saved_steps": saved_steps,
+        "missing_steps": missing_steps,
+        "complete": not missing_steps,
+    }
 
 
 def train(dataset, args):
@@ -1801,8 +1868,8 @@ def train(dataset, args):
     config = _state_config(
         args,
         dataset,
-        len(train_names),
-        len(validation_names),
+        train_names,
+        validation_names,
         landmark_path,
         scaffold_diagnostics,
     )
@@ -1876,8 +1943,10 @@ def train(dataset, args):
     camera_rng.shuffle(train_order)
     order_position = 0
     history = []
-    save_steps = set(args.save_steps)
-    save_steps.add(int(args.steps))
+    requested_checkpoint_steps = sorted(
+        {int(step) for step in args.save_steps} | {int(args.steps)}
+    )
+    save_steps = set(requested_checkpoint_steps)
 
     initial_xyz = materialize_bounded_surface_anchors(
         base_bank_xyz,
@@ -1909,6 +1978,42 @@ def train(dataset, args):
         raw_anchor_offset=raw_anchor_offset,
     )
 
+    empty_observation_steps = 0
+    empty_observation_checkpoint_steps = []
+
+    def save_checkpoint(step, checkpoint_xyz, *, after_empty_observation=False):
+        checkpoint_features = materialize_descriptor_residual(
+            initial_features,
+            residual,
+            residual_scale=args.residual_scale,
+            max_residual_norm=args.max_residual_norm,
+        )
+        validation = _validate_descriptor_field(
+            checkpoint_features,
+            validation_names,
+            cache,
+            checkpoint_xyz.detach(),
+            args,
+            visibility_cache=visibility_cache,
+            dustbin_score=dustbin_score,
+            base_bank_xyz=base_bank_xyz,
+        )
+        recent = _mean_diagnostics(history[-min(len(history), 200) :])
+        if after_empty_observation:
+            recent["checkpoint_saved_after_empty_observation"] = 1.0
+        _save_state(
+            output_dir / f"{step}_lafgs_map_state.pt",
+            step,
+            landmark_indices,
+            checkpoint_features,
+            config,
+            {**mvinit_diagnostics, **recent, **validation},
+            mvinit_observation_count,
+            dustbin_score=dustbin_score,
+            landmark_xyz=checkpoint_xyz,
+            raw_anchor_offset=raw_anchor_offset,
+        )
+
     progress = tqdm(range(1, args.steps + 1), desc=f"LaFGS map {args.objective}")
     for step in progress:
         if order_position >= len(train_order):
@@ -1936,6 +2041,14 @@ def train(dataset, args):
             prediction_bank_xyz=current_xyz,
         )
         if observations.source_indices.numel() == 0:
+            empty_observation_steps += 1
+            if step in save_steps:
+                save_checkpoint(
+                    step,
+                    current_xyz,
+                    after_empty_observation=True,
+                )
+                empty_observation_checkpoint_steps.append(step)
             continue
         retrieval_observations = jitter_detector_free_observations(
             observations,
@@ -2238,35 +2351,7 @@ def train(dataset, args):
                 pose=f"{recent.get('pose_loss', 0.0):.3f}",
             )
         if step in save_steps:
-            checkpoint_features = materialize_descriptor_residual(
-                initial_features,
-                residual,
-                residual_scale=args.residual_scale,
-                max_residual_norm=args.max_residual_norm,
-            )
-            validation = _validate_descriptor_field(
-                checkpoint_features,
-                validation_names,
-                cache,
-                current_xyz.detach(),
-                args,
-                visibility_cache=visibility_cache,
-                dustbin_score=dustbin_score,
-                base_bank_xyz=base_bank_xyz,
-            )
-            recent = _mean_diagnostics(history[-min(len(history), 200) :])
-            _save_state(
-                output_dir / f"{step}_lafgs_map_state.pt",
-                step,
-                landmark_indices,
-                checkpoint_features,
-                config,
-                {**mvinit_diagnostics, **recent, **validation},
-                mvinit_observation_count,
-                dustbin_score=dustbin_score,
-                landmark_xyz=current_xyz,
-                raw_anchor_offset=raw_anchor_offset,
-            )
+            save_checkpoint(step, current_xyz)
 
     final_features = materialize_descriptor_residual(
         initial_features,
@@ -2362,9 +2447,21 @@ def train(dataset, args):
                 ),
             },
             "history_tail": history[-min(len(history), 200) :],
+            "training_control": {
+                "empty_observation_steps": int(empty_observation_steps),
+                "empty_observation_checkpoint_steps": list(
+                    empty_observation_checkpoint_steps
+                ),
+            },
             "geometry_invariant": {
                 "base_bank_xyz_trainable": bool(base_bank_xyz.requires_grad),
-                "bounded_anchor_trainable": bool(raw_anchor_offset.requires_grad),
+                # raw_anchor_offset remains a Parameter so staged runs can
+                # reuse one optimizer layout.  It is not trainable in a
+                # descriptor-only phase unless a configured loss can update it.
+                "bounded_anchor_parameter_requires_grad": bool(
+                    raw_anchor_offset.requires_grad
+                ),
+                "bounded_anchor_trainable": bool(args.geometry_weight > 0.0),
                 "anchor_displacement_mean_m": float(
                     torch.linalg.norm(final_xyz - base_bank_xyz, dim=1).mean().item()
                 ),
@@ -2408,8 +2505,17 @@ def train(dataset, args):
         landmark_xyz=final_xyz,
         raw_anchor_offset=raw_anchor_offset,
     )
+    summary["checkpoint_integrity"] = _checkpoint_integrity(
+        output_dir, requested_checkpoint_steps
+    )
     with (output_dir / "training_summary.json").open("w") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+    missing_checkpoint_steps = summary["checkpoint_integrity"]["missing_steps"]
+    if missing_checkpoint_steps:
+        raise RuntimeError(
+            "Requested LaFGS checkpoint(s) were not written: "
+            + ", ".join(str(step) for step in missing_checkpoint_steps)
+        )
     print(f"Saved detector-free LaFGS map training output: {output_dir}")
 
 
@@ -2550,6 +2656,24 @@ def build_parser():
     parser.add_argument("--pose_rotation_scale_deg", type=float, default=2.0)
     parser.add_argument("--pose_max_condition_number", type=float, default=5e4)
     parser.add_argument("--distill_budget", type=int, default=0)
+    parser.add_argument(
+        "--distill_require_exact_budget",
+        action="store_true",
+        help=(
+            "Fail instead of silently shrinking the final distilled bank when "
+            "the requested fixed landmark budget is not observed."
+        ),
+    )
+    parser.add_argument(
+        "--distill_rank_pool_multiplier",
+        type=float,
+        default=2.0,
+        help=(
+            "When threshold-qualified landmarks are fewer than the final "
+            "budget, retain this multiple of the budget by matchability before "
+            "coverage/FIM selection."
+        ),
+    )
     parser.add_argument("--statistics_observations", type=int, default=1024)
     parser.add_argument("--statistics_hypothesis_topk", type=int, default=32)
     parser.add_argument("--distill_min_observations", type=int, default=2)
