@@ -129,13 +129,31 @@ class Scene:
         if self.preload_cameras:
             return self.train_cameras[scale]
         else:
-            return DataLoader(SceneDataset(self, split='train'), batch_size=None, shuffle=self.shuffle, pin_memory=True, num_workers=4)
+            return DataLoader(
+                SceneDataset(self, split='train'),
+                batch_size=None,
+                shuffle=self.shuffle,
+                pin_memory=True,
+                num_workers=self._camera_loader_num_workers(),
+            )
 
     def getTestCameras(self, scale=1.0):
         if self.preload_cameras:
             return self.test_cameras[scale]
         else:
-            return DataLoader(SceneDataset(self, split='test'), batch_size=None, shuffle=self.shuffle, pin_memory=True, num_workers=4)
+            return DataLoader(
+                SceneDataset(self, split='test'),
+                batch_size=None,
+                shuffle=self.shuffle,
+                pin_memory=True,
+                num_workers=self._camera_loader_num_workers(),
+            )
+
+    def _camera_loader_num_workers(self):
+        # Forked workers cannot initialize CUDA. Keep the legacy CUDA camera
+        # behavior functional by loading in the parent process; formal runs use
+        # data_device=cpu and retain parallel image decoding.
+        return 0 if str(self.args.data_device).startswith("cuda") else 4
     
 
 class SceneDataset(Dataset):

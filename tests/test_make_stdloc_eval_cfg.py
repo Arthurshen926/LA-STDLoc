@@ -303,6 +303,52 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             self.assertEqual(float(summary["diagnostics"]["voxel_size"]), 0.5)
             self.assertTrue(summary["geometry_balance"]["enabled"])
 
+    def test_allows_detector_and_landmark_artifacts_to_be_decoupled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(yaml.dump({"sparse": {}, "dense": {}}))
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                    "--detector_folder",
+                    "frozen_detector",
+                    "--detector_iters",
+                    "2000",
+                    "--landmark_path",
+                    "/tmp/map/sampled_idx.pkl",
+                    "--landmark_meta_path",
+                    "/tmp/map/landmark_meta.pt",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(
+                sparse["detector_path"], "frozen_detector/2000_detector.pth"
+            )
+            self.assertEqual(
+                sparse["landmark_path"], "/tmp/map/sampled_idx.pkl"
+            )
+            self.assertEqual(
+                sparse["landmark_meta_path"], "/tmp/map/landmark_meta.pt"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

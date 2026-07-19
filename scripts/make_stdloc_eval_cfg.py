@@ -12,6 +12,8 @@ def make_stdloc_eval_cfg(
     artifact_model_path,
     detector_folder="detector",
     detector_iters=30000,
+    landmark_path=None,
+    landmark_meta_path=None,
     candidate_teacher_state_path=None,
     pair_scorer_state_path=None,
     landmark_feature_override_path=None,
@@ -85,8 +87,16 @@ def make_stdloc_eval_cfg(
     detector_folder = str(detector_folder).strip("/")
     detector_iters = int(detector_iters)
     sparse["detector_path"] = f"{detector_folder}/{detector_iters}_detector.pth"
-    sparse["landmark_path"] = f"{detector_folder}/sampled_idx.pkl"
-    sparse["landmark_meta_path"] = f"{detector_folder}/landmark_meta.pt"
+    sparse["landmark_path"] = (
+        str(landmark_path)
+        if landmark_path
+        else f"{detector_folder}/sampled_idx.pkl"
+    )
+    sparse["landmark_meta_path"] = (
+        str(landmark_meta_path)
+        if landmark_meta_path
+        else f"{detector_folder}/landmark_meta.pt"
+    )
     sparse["detector_model_path"] = artifact_model_path
     sparse["landmark_model_path"] = artifact_model_path
     sparse["landmark_meta_model_path"] = artifact_model_path
@@ -273,6 +283,7 @@ def make_stdloc_eval_cfg(
         "artifact_model_path": artifact_model_path,
         "detector_path": sparse["detector_path"],
         "landmark_path": sparse["landmark_path"],
+        "landmark_meta_path": sparse["landmark_meta_path"],
         "candidate_teacher_state_path": sparse.get("candidate_teacher_state_path"),
         "pair_scorer_state_path": sparse.get("pair_scorer_state_path"),
         "landmark_feature_override_path": sparse.get(
@@ -364,6 +375,16 @@ def main():
     parser.add_argument("--artifact_model_path", required=True)
     parser.add_argument("--detector_folder", default="detector")
     parser.add_argument("--detector_iters", type=int, default=30000)
+    parser.add_argument(
+        "--landmark_path",
+        default="",
+        help="Explicit sparse landmark ID artifact, independent of detector_folder.",
+    )
+    parser.add_argument(
+        "--landmark_meta_path",
+        default="",
+        help="Explicit landmark metadata artifact, independent of detector_folder.",
+    )
     parser.add_argument("--candidate_teacher_state_path", default="")
     parser.add_argument("--pair_scorer_state_path", default="")
     parser.add_argument("--landmark_feature_override_path", default="")
@@ -498,6 +519,8 @@ def main():
         args.artifact_model_path,
         detector_folder=args.detector_folder,
         detector_iters=args.detector_iters,
+        landmark_path=args.landmark_path,
+        landmark_meta_path=args.landmark_meta_path,
         candidate_teacher_state_path=args.candidate_teacher_state_path,
         pair_scorer_state_path=args.pair_scorer_state_path,
         landmark_feature_override_path=args.landmark_feature_override_path,

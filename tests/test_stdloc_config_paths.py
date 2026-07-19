@@ -211,6 +211,124 @@ class STDLocConfigPathTest(unittest.TestCase):
             self.assertEqual(file_sha256(path), file_sha256(path))
             self.assertIsNone(file_sha256(Path(tmp) / "missing"))
 
+    def test_evaluation_protocol_hash_captures_resolution_and_image_content(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from stdloc import build_evaluation_protocol
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_root = root / "processed" / "seq1"
+            image_root.mkdir(parents=True)
+            image_path = image_root / "frame00001.png"
+            image_path.write_bytes(b"first image")
+            dataset = SimpleNamespace(
+                source_path=str(root),
+                images="processed",
+                resolution=1,
+                longest_edge=640,
+                feature_type="sp",
+                gaussian_type="2dgs",
+            )
+            args = SimpleNamespace(
+                evaluation_camera_subset="test",
+                candidate_query_ratio=0.2,
+                candidate_validation_ratio=0.25,
+                candidate_split_mode="temporal_block",
+                candidate_split_seed=2026,
+                candidate_direct_validation_holdout=False,
+            )
+            camera = SimpleNamespace(
+                image_name="seq1/frame00001.png",
+                original_image=SimpleNamespace(shape=(3, 1080, 1920)),
+            )
+
+            first = build_evaluation_protocol(dataset, args, [camera])
+            dataset.resolution = -1
+            resized = build_evaluation_protocol(dataset, args, [camera])
+            self.assertNotEqual(
+                first["protocol_sha256"], resized["protocol_sha256"]
+            )
+            dataset.resolution = 1
+            image_path.write_bytes(b"changed image")
+            changed = build_evaluation_protocol(dataset, args, [camera])
+            self.assertNotEqual(
+                first["protocol_sha256"], changed["protocol_sha256"]
+            )
+
+    def test_evaluation_protocol_does_not_consume_scene_dataloader(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from stdloc import build_evaluation_protocol
+
+        class NeverIterateLoader:
+            def __init__(self, scene):
+                self.dataset = SimpleNamespace(scene=scene, split="test")
+
+            def __iter__(self):
+                raise AssertionError("protocol construction consumed the loader")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_root = root / "processed" / "seq1"
+            image_root.mkdir(parents=True)
+            (image_root / "frame00001.png").write_bytes(b"image")
+            camera_info = SimpleNamespace(
+                image_name="seq1/frame00001.png",
+                width=1920,
+                height=1080,
+            )
+            scene = SimpleNamespace(
+                scene_info=SimpleNamespace(
+                    train_cameras=[],
+                    test_cameras=[camera_info],
+                )
+            )
+            dataset = SimpleNamespace(
+                source_path=str(root),
+                images="processed",
+                resolution=-1,
+                longest_edge=640,
+                feature_type="sp",
+                gaussian_type="2dgs",
+            )
+            args = SimpleNamespace(
+                evaluation_camera_subset="test",
+                candidate_query_ratio=0.2,
+                candidate_validation_ratio=0.25,
+                candidate_split_mode="temporal_block",
+                candidate_split_seed=2026,
+                candidate_direct_validation_holdout=False,
+            )
+
+            protocol = build_evaluation_protocol(
+                dataset,
+                args,
+                NeverIterateLoader(scene),
+            )
+
+            self.assertEqual(
+                protocol["loaded_image_shapes"],
+                [{"height": 900, "width": 1600, "count": 1}],
+            )
+
+    def test_scene_disables_forked_camera_workers_for_cuda_images(self):
+        from types import SimpleNamespace
+
+        from scene import Scene
+
+        scene = Scene.__new__(Scene)
+        scene.args = SimpleNamespace(data_device="cuda")
+        self.assertEqual(scene._camera_loader_num_workers(), 0)
+        scene.args.data_device = "cuda:1"
+        self.assertEqual(scene._camera_loader_num_workers(), 0)
+        scene.args.data_device = "cpu"
+        self.assertEqual(scene._camera_loader_num_workers(), 4)
+
     def test_topk_match_preserves_keypoint_ids_for_multiple_matches_per_row(self):
         import torch
 
@@ -439,6 +557,37 @@ class STDLocConfigPathTest(unittest.TestCase):
                 "sparse_diag_inlier_pose_info_rotation_task_scale_degrees"
             ],
             3.0,
+        )
+
+    def test_sparse_correspondence_diagnostics_excludes_points_behind_camera(self):
+        import numpy as np
+
+        from stdloc import sparse_correspondence_diagnostics
+
+        K = np.array(
+            [[100.0, 0.0, 50.0], [0.0, 100.0, 40.0], [0.0, 0.0, 1.0]]
+        )
+        p3d = np.array([[0.0, 0.0, 2.0], [1.0, 1.0, -1.0]])
+        p2d = np.array([[49.5, 39.5], [10.0, 10.0]])
+        diagnostics = sparse_correspondence_diagnostics(
+            p2d,
+            p3d,
+            K,
+            np.eye(4),
+            np.array([0]),
+            100,
+            80,
+            gt_pose_w2c=np.eye(4),
+        )
+
+        self.assertAlmostEqual(
+            diagnostics["sparse_diag_all_gt_projected_ratio"], 0.5
+        )
+        self.assertLess(
+            diagnostics["sparse_diag_all_gt_reproj_px_max"], 1e-6
+        )
+        self.assertAlmostEqual(
+            diagnostics["sparse_diag_all_gt_precision_2px"], 0.5
         )
 
     def test_pose_bias_diagnostic_detects_systematic_reprojection_shift(self):

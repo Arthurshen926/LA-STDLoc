@@ -1,6 +1,17 @@
 import torch
 
 
+def test_descriptor_stage_can_be_explicitly_disabled():
+    from localization_training.detector_free_map import descriptor_losses_active
+
+    assert descriptor_losses_active(1, -1) is False
+    assert descriptor_losses_active(1000, -1) is False
+    assert descriptor_losses_active(1, 0) is True
+    assert descriptor_losses_active(1000, 0) is True
+    assert descriptor_losses_active(10, 10) is True
+    assert descriptor_losses_active(11, 10) is False
+
+
 def _observations():
     from localization_training.detector_free_map import DetectorFreeObservationBatch
 
@@ -77,6 +88,140 @@ def test_hard_hypothesis_penalizes_current_false_top_match():
     assert features.grad[2].abs().sum() > 0
 
 
+def test_hard_hypothesis_never_injects_missed_source():
+    from localization_training.detector_free_map import (
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = _observations()
+    features = torch.tensor(
+        [[0.0, 1.0], [0.1, 0.9], [0.9, 0.1]],
+        requires_grad=True,
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+        missed_positive_weight=1.0,
+        missed_positive_margin=0.1,
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_candidate_count_mean"] == 1.0
+    assert diagnostics["retrieval_candidate_source_injected"] == 0.0
+    assert diagnostics["retrieval_source_recall_at_hypothesis_k"] == 0.0
+    assert diagnostics["retrieval_missed_source_count"] == 1
+    assert diagnostics["retrieval_missed_positive_count"] == 1
+    assert diagnostics["retrieval_valid_loss_rows"] == 0
+    assert diagnostics["retrieval_missed_positive_loss"] > 0
+    output.loss.backward()
+    assert features.grad[:2].abs().sum() > 0
+    assert features.grad[2].abs().sum() > 0
+
+
+def test_missed_source_is_not_a_miss_when_equivalent_surfel_is_retrieved():
+    from localization_training.detector_free_map import (
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = _observations()
+    features = torch.tensor(
+        [[0.0, 1.0], [1.0, 0.0], [0.9, 0.1]],
+        requires_grad=True,
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+        missed_positive_weight=1.0,
+        missed_positive_margin=0.1,
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_source_recall_at_hypothesis_k"] == 0.0
+    assert diagnostics["retrieval_gt_recall_at_hypothesis_k"] == 1.0
+    assert diagnostics["retrieval_missed_source_count"] == 1
+    assert diagnostics["retrieval_missed_positive_count"] == 0
+    assert diagnostics["retrieval_missed_positive_loss"] == 0.0
+
+
+def test_hard_hypothesis_reports_true_global_recall_at_fixed_k():
+    from localization_training.detector_free_map import (
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = _observations()
+    features = torch.tensor(
+        [[0.7, 0.7], [0.6, 0.8], [1.0, 0.0]],
+        requires_grad=True,
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+    )
+    assert output.diagnostics["retrieval_source_recall_at_1"] == 0.0
+    assert output.diagnostics["retrieval_source_recall_at_4"] == 1.0
+
+
+def test_random_retrieval_does_not_treat_unmatched_as_last_landmark():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        random_negative_retrieval_loss,
+    )
+
+    observations = _observations()
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0, -1]),
+        query_features=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        query_uv=torch.tensor([[10.0, 10.0], [30.0, 30.0]]),
+        source_depth=torch.tensor([2.0, 0.0]),
+        bank_uv=observations.bank_uv,
+        bank_depth=observations.bank_depth,
+        bank_projected=observations.bank_projected,
+        bank_visible=observations.bank_visible,
+    )
+    features = torch.tensor(
+        [[1.0, 0.0], [0.99, 0.01], [0.0, 1.0]],
+        requires_grad=True,
+    )
+    output = random_negative_retrieval_loss(
+        features,
+        observations,
+        negative_count=2,
+        generator=torch.Generator().manual_seed(4),
+    )
+    assert output.diagnostics["retrieval_query_count"] == 1
+    assert output.diagnostics["retrieval_unmatched_query_count"] == 1
+    output.loss.backward()
+    assert torch.isfinite(features.grad).all()
+
+
+def test_local_soft_correspondence_invalidates_unmatched_rows():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        local_soft_correspondences,
+    )
+
+    feature_map = torch.zeros(2, 5, 5)
+    feature_map[0] = 1.0
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0, -1]),
+        query_features=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        query_uv=torch.tensor([[2.0, 2.0], [3.0, 3.0]]),
+        source_depth=torch.tensor([2.0, 0.0]),
+        bank_uv=torch.tensor([[2.0, 2.0], [3.0, 3.0]]),
+        bank_depth=torch.tensor([2.0, 2.0]),
+        bank_projected=torch.tensor([True, True]),
+        bank_visible=torch.tensor([True, True]),
+        query_feature_map=feature_map,
+    )
+    features = torch.tensor([[1.0, 0.0], [0.0, 1.0]], requires_grad=True)
+    output = local_soft_correspondences(features, observations, radius=1)
+    assert output.valid.tolist() == [True, False]
+    assert output.confidence[1].item() == 0.0
+    output.expected_uv[0].sum().backward()
+    assert features.grad[1].abs().sum() == 0
+
+
 def test_balanced_observation_builder_uses_depth_visibility():
     from localization_training.detector_free_map import (
         build_detector_free_observations,
@@ -127,6 +272,38 @@ def test_observation_builder_accepts_rasterizer_visibility_override():
     )
     assert batch.bank_visible.tolist() == [True, True]
     assert batch.source_indices.tolist() == [0, 1]
+
+
+def test_observation_builder_keeps_base_measurement_fixed_from_prediction():
+    from localization_training.detector_free_map import (
+        build_detector_free_observations,
+        multiview_descriptor_loss,
+    )
+
+    base_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+    predicted_xyz = torch.tensor([[0.1, 0.0, 2.0]], requires_grad=True)
+    feature_map = torch.zeros(2, 12, 12)
+    feature_map[0] = 1.0
+    K = torch.tensor(
+        [[20.0, 0.0, 6.0], [0.0, 20.0, 6.0], [0.0, 0.0, 1.0]]
+    )
+    batch = build_detector_free_observations(
+        base_xyz,
+        feature_map,
+        K,
+        torch.eye(4),
+        prediction_bank_xyz=predicted_xyz,
+        target_depth=torch.full((12, 12), 2.0),
+        target_alpha=torch.ones(12, 12),
+    )
+    assert torch.allclose(batch.query_uv, torch.tensor([[6.0, 6.0]]))
+    assert torch.allclose(batch.base_bank_uv, torch.tensor([[6.0, 6.0]]))
+    assert torch.allclose(batch.bank_uv, torch.tensor([[7.0, 6.0]]))
+    descriptor = torch.tensor([[0.0, 1.0]], requires_grad=True)
+    loss = multiview_descriptor_loss(descriptor, batch)
+    loss.backward()
+    assert descriptor.grad is not None and descriptor.grad.abs().sum() > 0
+    assert predicted_xyz.grad is None
 
 
 def test_observation_adaptive_trust_protects_weak_landmarks():
@@ -347,6 +524,8 @@ def test_pose_layer_has_finite_geometry_gradient_near_correct_rotation():
     K = torch.tensor([[100.0, 0.0, 40.0], [0.0, 100.0, 30.0], [0.0, 0.0, 1.0]])
     gt_pose = torch.eye(4)
     target_uv, _ = project_points(points.detach(), K, gt_pose)
+    measurement_uv = target_uv.clone().requires_grad_()
+    confidence = torch.ones(points.shape[0], requires_grad=True)
     observations = DetectorFreeObservationBatch(
         source_indices=torch.arange(points.shape[0]),
         query_features=torch.zeros(points.shape[0], 2),
@@ -360,8 +539,8 @@ def test_pose_layer_has_finite_geometry_gradient_near_correct_rotation():
         pose_w2c=gt_pose,
     )
     local = LocalSoftCorrespondenceOutput(
-        expected_uv=target_uv,
-        confidence=torch.ones(points.shape[0]),
+        expected_uv=measurement_uv,
+        confidence=confidence,
         entropy=torch.zeros(points.shape[0]),
         valid=torch.ones(points.shape[0], dtype=torch.bool),
     )
@@ -380,3 +559,186 @@ def test_pose_layer_has_finite_geometry_gradient_near_correct_rotation():
     loss.backward()
     assert points.grad is not None
     assert torch.isfinite(points.grad).all()
+    assert measurement_uv.grad is None
+    assert confidence.grad is None
+
+
+def test_bounded_geometry_uses_independent_measurement_and_only_updates_xyz():
+    from localization_training.detector_free_map import (
+        bounded_geometry_losses,
+        build_detector_free_observations,
+    )
+
+    base_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+    predicted_xyz = torch.tensor([[0.02, 0.0, 2.0]], requires_grad=True)
+    feature_map = torch.zeros(2, 16, 16)
+    feature_map[0] = 1.0
+    feature_map[:, 8, 8] = torch.tensor([0.0, 1.0])
+    K = torch.tensor(
+        [[50.0, 0.0, 8.0], [0.0, 50.0, 8.0], [0.0, 0.0, 1.0]]
+    )
+    observations = build_detector_free_observations(
+        base_xyz,
+        feature_map,
+        K,
+        torch.eye(4),
+        prediction_bank_xyz=predicted_xyz,
+        target_depth=torch.full((16, 16), 2.0),
+        target_alpha=torch.ones(16, 16),
+    )
+    descriptor = torch.tensor([[0.0, 1.0]], requires_grad=True)
+    raw_offset = torch.zeros_like(predicted_xyz, requires_grad=True)
+    _, depth, reprojection, _, _ = bounded_geometry_losses(
+        predicted_xyz,
+        raw_offset,
+        descriptor,
+        observations,
+        local_radius=1,
+    )
+    (depth + reprojection).backward()
+    assert predicted_xyz.grad is not None
+    assert predicted_xyz.grad.abs().sum() > 0
+    assert descriptor.grad is None
+
+
+def test_pose_layer_feature_mode_routes_gradient_only_to_measurement():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        LocalSoftCorrespondenceOutput,
+        pose_layer_loss,
+    )
+    from localization_training.pose_refiner import project_points, se3_exp
+
+    grid = torch.cartesian_prod(
+        torch.linspace(-0.5, 0.5, 5),
+        torch.linspace(-0.4, 0.4, 4),
+    )
+    points = torch.cat([grid, torch.full((grid.shape[0], 1), 3.0)], dim=1)
+    points.requires_grad_(True)
+    K = torch.tensor(
+        [[100.0, 0.0, 40.0], [0.0, 100.0, 30.0], [0.0, 0.0, 1.0]]
+    )
+    gt_pose = torch.eye(4)
+    target_uv, _ = project_points(points.detach(), K, gt_pose)
+    measurement_uv = (target_uv + torch.tensor([0.15, -0.1])).requires_grad_()
+    confidence = torch.ones(points.shape[0], requires_grad=True)
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.arange(points.shape[0]),
+        query_features=torch.zeros(points.shape[0], 2),
+        query_uv=target_uv,
+        source_depth=torch.full((points.shape[0],), 3.0),
+        bank_uv=target_uv,
+        bank_depth=torch.full((points.shape[0],), 3.0),
+        bank_projected=torch.ones(points.shape[0], dtype=torch.bool),
+        bank_visible=torch.ones(points.shape[0], dtype=torch.bool),
+        K=K,
+        pose_w2c=gt_pose,
+    )
+    local = LocalSoftCorrespondenceOutput(
+        expected_uv=measurement_uv,
+        confidence=confidence,
+        entropy=torch.zeros(points.shape[0]),
+        valid=torch.ones(points.shape[0], dtype=torch.bool),
+    )
+    perturbation = torch.tensor(
+        [0.005, -0.003, 0.002, 0.001, -0.001, 0.001]
+    )
+    loss, diagnostics = pose_layer_loss(
+        points,
+        observations,
+        local,
+        se3_exp(perturbation),
+        min_points=6,
+        max_points=32,
+        max_condition_number=1e8,
+        gradient_mode="feature",
+    )
+    assert diagnostics["pose_layer_feature_gradient_mode"] == 1.0
+    loss.backward()
+    assert measurement_uv.grad is not None
+    assert measurement_uv.grad.abs().sum() > 0
+    assert confidence.grad is not None
+    assert confidence.grad.abs().sum() > 0
+    assert points.grad is None
+
+
+def test_overlap_initial_state_aligns_descriptors_and_offsets_by_id(tmp_path):
+    import torch
+
+    from train_lafgs_map import _load_initial_features
+
+    state_path = tmp_path / "state.pt"
+    torch.save(
+        {
+            "landmark_indices": torch.tensor([5, 2]),
+            "landmark_features": torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+            "raw_anchor_offset": torch.tensor(
+                [[5.0, 5.1, 5.2], [2.0, 2.1, 2.2]]
+            ),
+        },
+        state_path,
+    )
+    fallback = torch.tensor(
+        [[0.0, -1.0], [-1.0, 0.0], [1.0, 1.0]]
+    )
+
+    features, aligned_state, matched = _load_initial_features(
+        state_path,
+        torch.tensor([2, 5, 7]),
+        2,
+        torch.device("cpu"),
+        fallback_features=fallback,
+        alignment="overlap",
+    )
+
+    assert matched == 2
+    assert torch.allclose(features[0], torch.tensor([1.0, 0.0]))
+    assert torch.allclose(features[1], torch.tensor([0.0, 1.0]))
+    assert torch.allclose(
+        features[2],
+        torch.nn.functional.normalize(fallback[2], dim=0),
+    )
+    assert torch.allclose(
+        aligned_state["raw_anchor_offset"],
+        torch.tensor(
+            [
+                [2.0, 2.1, 2.2],
+                [5.0, 5.1, 5.2],
+                [0.0, 0.0, 0.0],
+            ]
+        ),
+    )
+    assert aligned_state["_raw_anchor_offset_alignment_valid"] is True
+
+
+def test_inactive_phase_gradient_clear_prevents_adamw_weight_decay():
+    import torch
+
+    from train_lafgs_map import _clear_inactive_phase_gradients
+
+    residual = torch.nn.Parameter(torch.tensor([1.0, -2.0]))
+    anchor = torch.nn.Parameter(torch.tensor([0.5]))
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [residual], "lr": 0.1, "weight_decay": 0.5},
+            {"params": [anchor], "lr": 0.1, "weight_decay": 0.0},
+        ]
+    )
+    before_residual = residual.detach().clone()
+    before_anchor = anchor.detach().clone()
+    (residual.sum() * 0.0 + anchor.sum() * 0.0).backward()
+
+    _clear_inactive_phase_gradients(
+        residual,
+        anchor,
+        None,
+        descriptor_update_active=False,
+        geometry_update_active=False,
+        dustbin_update_active=False,
+    )
+    optimizer.step()
+
+    assert residual.grad is None
+    assert anchor.grad is None
+    assert torch.equal(residual.detach(), before_residual)
+    assert torch.equal(anchor.detach(), before_anchor)

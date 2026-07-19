@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import warnings
+from collections import Counter
 from argparse import ArgumentParser
 
 import numpy as np
@@ -341,10 +342,10 @@ def _project_points_np(p3d, K, pose_w2c, eps=1e-8):
     p3d_h = np.concatenate([p3d, np.ones((p3d.shape[0], 1), dtype=np.float64)], axis=1)
     cam = (pose_w2c @ p3d_h.T)[:3].T
     depth = cam[:, 2]
-    safe_depth = np.maximum(depth, eps)
-    uv = np.empty((p3d.shape[0], 2), dtype=np.float64)
-    uv[:, 0] = K[0, 0] * cam[:, 0] / safe_depth + K[0, 2]
-    uv[:, 1] = K[1, 1] * cam[:, 1] / safe_depth + K[1, 2]
+    valid = np.isfinite(cam).all(axis=1) & (depth > eps)
+    uv = np.full((p3d.shape[0], 2), np.nan, dtype=np.float64)
+    uv[valid, 0] = K[0, 0] * cam[valid, 0] / depth[valid] + K[0, 2]
+    uv[valid, 1] = K[1, 1] * cam[valid, 1] / depth[valid] + K[1, 2]
     return uv, depth
 
 
@@ -720,10 +721,14 @@ def sparse_correspondence_diagnostics(
     observed = p2d + 0.5
     projected, depth = _project_points_np(p3d, K, pose_w2c)
     residual = np.linalg.norm(projected - observed, axis=1)
+    valid_projection = np.isfinite(projected).all(axis=1)
+    diagnostics["sparse_diag_all_est_projected_ratio"] = float(
+        np.mean(valid_projection)
+    )
     diagnostics.update(_residual_stats("sparse_diag_all_est_reproj_px", residual))
     diagnostics.update(_occupancy_stats_2d("sparse_diag_all", p2d, width, height, grid_rows, grid_cols))
     diagnostics.update(_occupancy_stats_3d("sparse_diag_all", p3d, voxel_size))
-    finite_depth = depth[np.isfinite(depth)]
+    finite_depth = depth[np.isfinite(depth) & (depth > 1e-8)]
     if finite_depth.size:
         diagnostics.update(
             {
@@ -736,6 +741,9 @@ def sparse_correspondence_diagnostics(
         inlier_p2d = p2d[inliers]
         inlier_p3d = p3d[inliers]
         inlier_depth = depth[inliers]
+        diagnostics["sparse_diag_inlier_est_projected_ratio"] = float(
+            np.mean(valid_projection[inliers])
+        )
         diagnostics.update(_residual_stats("sparse_diag_inlier_est_reproj_px", residual[inliers]))
         diagnostics.update(_occupancy_stats_2d("sparse_diag_inlier", inlier_p2d, width, height, grid_rows, grid_cols))
         diagnostics.update(_occupancy_stats_3d("sparse_diag_inlier", inlier_p3d, voxel_size))
@@ -749,7 +757,9 @@ def sparse_correspondence_diagnostics(
                 rotation_task_scale_degrees=rotation_task_scale_degrees,
             )
         )
-        finite_inlier_depth = inlier_depth[np.isfinite(inlier_depth)]
+        finite_inlier_depth = inlier_depth[
+            np.isfinite(inlier_depth) & (inlier_depth > 1e-8)
+        ]
         if finite_inlier_depth.size:
             diagnostics.update(
                 {
@@ -763,12 +773,19 @@ def sparse_correspondence_diagnostics(
     if gt_pose_w2c is not None:
         gt_projected, _ = _project_points_np(p3d, K, gt_pose_w2c)
         gt_residual = np.linalg.norm(gt_projected - observed, axis=1)
+        gt_valid_projection = np.isfinite(gt_projected).all(axis=1)
+        diagnostics["sparse_diag_all_gt_projected_ratio"] = float(
+            np.mean(gt_valid_projection)
+        )
         diagnostics.update(_residual_stats("sparse_diag_all_gt_reproj_px", gt_residual))
         for threshold in (2.0, 4.0, 6.0):
             diagnostics[f"sparse_diag_all_gt_precision_{int(threshold)}px"] = float(
                 np.mean(gt_residual <= threshold)
             )
         if inliers.shape[0] > 0:
+            diagnostics["sparse_diag_inlier_gt_projected_ratio"] = float(
+                np.mean(gt_valid_projection[inliers])
+            )
             diagnostics.update(_residual_stats("sparse_diag_inlier_gt_reproj_px", gt_residual[inliers]))
             for threshold in (2.0, 4.0, 6.0):
                 diagnostics[f"sparse_diag_inlier_gt_precision_{int(threshold)}px"] = float(
@@ -1100,6 +1117,127 @@ def file_sha256(path, chunk_size=1024 * 1024):
         for chunk in iter(lambda: handle.read(int(chunk_size)), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def named_file_manifest(root, relative_paths):
+    """Hash a named input set so image/preprocessing changes are reproducible."""
+    root = os.path.realpath(os.fspath(root))
+    digest = hashlib.sha256()
+    found = 0
+    missing = []
+    normalized_paths = sorted(
+        {os.path.normpath(str(path)) for path in relative_paths}
+    )
+    for relative_path in normalized_paths:
+        file_path = os.path.realpath(os.path.join(root, relative_path))
+        file_digest = file_sha256(file_path)
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        if file_digest is None:
+            digest.update(b"MISSING")
+            missing.append(relative_path)
+        else:
+            digest.update(file_digest.encode("ascii"))
+            found += 1
+        digest.update(b"\n")
+    return {
+        "root": root,
+        "requested_count": len(normalized_paths),
+        "found_count": found,
+        "missing_count": len(missing),
+        "missing_paths": missing,
+        "sha256": digest.hexdigest(),
+    }
+
+
+def _protocol_camera_records(cameras):
+    """Read DataLoader camera metadata without consuming its image iterator."""
+    loader_dataset = getattr(cameras, "dataset", None)
+    scene = getattr(loader_dataset, "scene", None)
+    split = getattr(loader_dataset, "split", None)
+    scene_info = getattr(scene, "scene_info", None)
+    if scene_info is not None and split in {"train", "test"}:
+        if split == "train":
+            return list(scene_info.train_cameras)
+        return list(scene_info.test_cameras)
+    return list(cameras)
+
+
+def _protocol_loaded_shape(camera, resolution):
+    image = getattr(camera, "original_image", None)
+    if image is not None and len(image.shape) >= 2:
+        return int(image.shape[-2]), int(image.shape[-1])
+
+    width = getattr(camera, "width", None)
+    height = getattr(camera, "height", None)
+    if width is None or height is None:
+        width = getattr(camera, "image_width", None)
+        height = getattr(camera, "image_height", None)
+    if width is None or height is None:
+        raise ValueError(
+            f"Camera {getattr(camera, 'image_name', '<unnamed>')} has no image shape metadata"
+        )
+
+    width = int(width)
+    height = int(height)
+    if resolution in {1, 2, 3, 4, 8}:
+        return round(height / float(resolution)), round(width / float(resolution))
+    if resolution == -2:
+        return 320, 480
+    if resolution == -1:
+        scale = width / 1600.0 if width > 1600 else 1.0
+    else:
+        scale = width / float(resolution)
+    return int(height / scale), int(width / scale)
+
+
+def build_evaluation_protocol(dataset, args, cameras):
+    """Materialize every image-side setting that can change sparse candidates."""
+    camera_records = _protocol_camera_records(cameras)
+    camera_names = [str(camera.image_name) for camera in camera_records]
+    image_root = os.path.join(dataset.source_path, dataset.images)
+    image_manifest = named_file_manifest(image_root, camera_names)
+    if image_manifest["missing_count"]:
+        raise FileNotFoundError(
+            "evaluation image manifest is incomplete under "
+            f"{image_manifest['root']}: {image_manifest['missing_paths'][:3]}"
+        )
+
+    shape_counts = Counter()
+    for camera in camera_records:
+        shape_counts[_protocol_loaded_shape(camera, dataset.resolution)] += 1
+    loaded_shapes = [
+        {"height": height, "width": width, "count": count}
+        for (height, width), count in sorted(shape_counts.items())
+    ]
+    camera_names_digest = hashlib.sha256(
+        ("\n".join(camera_names) + "\n").encode("utf-8")
+    ).hexdigest()
+    protocol = {
+        "schema_version": 1,
+        "source_path": os.path.realpath(dataset.source_path),
+        "images": str(dataset.images),
+        "resolution": dataset.resolution,
+        "longest_edge": int(dataset.longest_edge),
+        "feature_type": str(dataset.feature_type),
+        "gaussian_type": str(dataset.gaussian_type),
+        "evaluation_camera_subset": str(args.evaluation_camera_subset),
+        "evaluation_camera_count": len(camera_records),
+        "camera_names_sha256": camera_names_digest,
+        "loaded_image_shapes": loaded_shapes,
+        "query_image_manifest": image_manifest,
+        "candidate_split": {
+            "query_ratio": float(args.candidate_query_ratio),
+            "validation_ratio": float(args.candidate_validation_ratio),
+            "mode": str(args.candidate_split_mode),
+            "seed": int(args.candidate_split_seed),
+            "direct_holdout": bool(args.candidate_direct_validation_holdout),
+        },
+    }
+    protocol["protocol_sha256"] = hashlib.sha256(
+        json.dumps(protocol, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return protocol
 
 
 def tensor_sha256(value):
@@ -2901,6 +3039,7 @@ if __name__ == "__main__":
         load_iteration=args.iteration,
         shuffle=False,
         preload_cameras=False,
+        load_test_cameras=args.eval,
     )
 
     # Set up config
@@ -2986,6 +3125,13 @@ if __name__ == "__main__":
         )
     else:
         test_cameras = scene.getTestCameras()
+
+    evaluation_protocol = build_evaluation_protocol(dataset, args, test_cameras)
+    with open(
+        os.path.join(output_path, "evaluation_protocol.json"), "w"
+    ) as protocol_file:
+        json.dump(evaluation_protocol, protocol_file, indent=2)
+        protocol_file.write("\n")
 
     results = []
     sparse_aes = []
@@ -3276,6 +3422,7 @@ if __name__ == "__main__":
         "model_path": dataset.model_path,
         "evaluation_camera_subset": args.evaluation_camera_subset,
         "evaluation_camera_count": len(test_cameras),
+        "evaluation_protocol": evaluation_protocol,
         "artifact_provenance": stdloc.artifact_provenance,
         "sparse": {
             "median_ae": np.median(sparse_aes),

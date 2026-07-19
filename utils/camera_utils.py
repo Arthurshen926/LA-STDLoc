@@ -16,12 +16,24 @@ from utils.graphics_utils import fov2focal
 from tqdm import tqdm
 import cv2
 import torch
+from PIL import Image
 
 WARNED = False
 hist_equalizer = None
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    image_raw = None
+    image_path = getattr(cam_info, "image_path", None)
+    if image_path:
+        with Image.open(image_path) as source_image:
+            orig_w, orig_h = source_image.size
+            image_raw = torch.from_numpy(np.array(source_image, copy=True)) / 255.0
+    elif cam_info.image is not None:
+        orig_w, orig_h = cam_info.image.size
+        image_raw = torch.from_numpy(np.array(cam_info.image, copy=True)) / 255.0
+    else:
+        orig_w = int(cam_info.width)
+        orig_h = int(cam_info.height)
     
     if args.resolution in [1, 2, 3, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -46,8 +58,7 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    if cam_info.image is not None:
-        image_raw = torch.from_numpy(np.array(cam_info.image)) / 255.0
+    if image_raw is not None:
         # print(image_raw.shape)
         if len(image_raw.shape) == 3:
             image_raw = image_raw.permute(2, 0, 1)
@@ -57,7 +68,7 @@ def loadCam(args, id, cam_info, resolution_scale):
         resized_image_rgb = torch.nn.functional.interpolate(image_raw.unsqueeze(dim=0), size=(resolution[1], resolution[0]), mode='bilinear', align_corners=False).squeeze(dim=0)
         gt_image = resized_image_rgb[:3, ...]
         loaded_mask = None
-        if resized_image_rgb.shape[1] == 4:
+        if resized_image_rgb.shape[0] == 4:
             loaded_mask = resized_image_rgb[3:4, ...]
     else:
         gt_image = None

@@ -1,151 +1,172 @@
-# LaFGS V2: Progressive Localization Coreset
+# LaFGS V2: Causal Localization-Field Reconstruction
 
-## Architecture contract
+## Current status
 
-LaFGS V2 keeps four objects separate:
+The progressive shadow-coreset route in `train_coreset_v2.py` is retained only
+for historical reproduction. It is not the current mainline: its accepted output
+often fell back to the unchanged strong bank, while its old evaluation protocol
+did not pin query resolution.
 
-1. `G_R`: the complete external RGB 2DGS. Geometry, appearance, primitive IDs,
-   rendering, depth, and visibility are frozen.
-2. `S`: the exact strong localization bank used by the reproducible baseline.
-   Its primitive IDs, 3D anchors, and descriptors are preserved exactly.
-3. `P`: the full observed surface-patch shadow pool, represented by weighted
-   geometric medoids of stable 2DGS IDs. It has no fixed atom-count cap.
-4. `A_t`: an exact-budget deployment set initialized from `S`. A shadow atom can
-   enter only through a fixed held-out query probe; rejected swaps leave `S`
-   unchanged.
-5. `C_q`: the query-specific top-k query-to-active-set correspondence graph.
-6. `I_q`: the correspondences retained by deployment-time RANSAC/PnP.
+The current mainline is `train_lafgs_map.py`. It reconstructs a localization
+descriptor field on a frozen external MAtCha 2DGS surface, evaluates every phase
+with a fixed deployment frontend, and advances only after a joint held-out gate.
+This is deliberately a causal sequence rather than one monolithic run.
 
-The core path intentionally excludes raw-XYZ updates, topology operations, Pair,
-FIM weighting, and Diff-PnP. Those modules are not required to produce or deploy
-the V2 coreset.
+## Representation
 
-## Training flow
+The implementation keeps these quantities distinct:
 
-1. Load the external 30k MAtCha 2DGS and freeze it.
-2. Build stable surface groups from primitive position and normal.
-3. Aggregate frozen image-encoder features into every primitive (full-map MVInit),
-   requiring repeated observations and optionally blending a strong prior field.
-4. Discover every surface patch exercised by real detector queries. Keep
-   provenance mass on active, shadow, and missing atoms separate; never
-   renormalize a partially observed target back to probability one.
-5. Insert the strong bank as exact atoms rather than merging it into 2 cm patches.
-   Keep its descriptors frozen while shadow descriptors learn from query episodes.
-7. Recover top-K primitive composition weights from the 2DGS raster metadata and
-   aggregate them into soft surface-group provenance targets.
-8. Add GT-reprojected strong landmarks as a fixed extra positive channel, guarded
-   by both renderer visibility and full-map rendered depth. This channel remains
-   present even when a view has no visible strong landmark.
-9. Train with deployment cosine scores only. Coverage misses reject false active
-   candidates and update inactive shadow positives so they can become proposals.
-10. Propose small exact-budget shadow swaps after warm-up. Accept a proposal only
-    when a fixed held-out real-query probe improves top-1 precision plus weighted
-    top-16 recall; otherwise restore the prior active set exactly.
-11. Optionally add rendered RGB episodes to real episodes. Synthetic RGB first
-    passes through `valid_support_mask`; invalid pixels are neutralized before the
-    frozen encoder and invalid feature cells are excluded from detector sampling,
-    matching, provenance labels, and self-localization. Synthetic episodes update
-    only localization descriptors/statistics.
-12. Materialize the final coreset, freeze it, retrain the scene detector, then run
-   standard sparse matching and RANSAC/PnP.
+1. `G_base`: frozen external RGB 2DGS geometry, appearance, normals, and primitive
+   identities.
+2. `S_strong`: protected localization-bank IDs and mature descriptors.
+3. `P_extra`: optional geometry-derived surface candidates. A protected union
+   appends these without replacing strong identities.
+4. `X_base`: immutable surface anchors.
+5. `X_current`: bounded tangent/normal reconstruction derived from `X_base`.
+6. `base_uv`: projection of `X_base`, fixed for an observation.
+7. `measurement_uv`: an independent local image measurement.
+8. `predicted_uv`: projection of `X_current`.
 
-## Outputs
+Geometry supervision compares `measurement_uv` with `predicted_uv`; moving an
+anchor cannot move its own observation target.
 
-Each coreset run writes:
+## Causal phases
 
-- `coreset_state.pt`: complete V2 state and provenance.
-- `final_candidate_teacher_state.pt`: evaluation-compatible feature override.
-- `sampled_idx.pkl`: stable source primitive IDs.
-- `localization_features.pt`: compact normalized descriptors.
-- `coverage_cell_ids.pt`: compact coverage IDs; identity and redundancy mappings
-  remain in `coreset_state.pt`.
-- `landmark_meta.pt`: gates and selection metadata.
-- `training_log.jsonl` and `training_summary.json`: stage diagnostics and config.
+### Phase 0: scaffold and initialization
 
-## ShopFacade experiment protocol
+- Use the exact strong bank as the protected core.
+- Optionally append pure-geometry candidates with `protected_union`.
+- Aggregate frozen image-encoder features over support views.
+- Use robust MV medoids by default. Existing mature descriptors can be aligned
+  by exact ID or blended only on overlapping IDs.
+- Split support and validation cameras before cache construction. Test cameras
+  are never loaded by map training.
 
-The entry point is `scripts/run_lafgs_v2_shopfacade.sh`. It pins all work to
-physical GPU 2 and uses the external MAtCha 2DGS at iteration 30000.
+### Phase 1: descriptor reconstruction
+
+Geometry is frozen. Training mixes:
+
+- exact base projections;
+- local jitter proposals;
+- frozen generic keypoint/grid proposals, including unmatched background;
+- true full-bank hard retrieval.
+
+Hard retrieval never injects the source landmark into the forward top-K set.
+True source and geometric Recall@1/4/16/64 are reported separately. A retrieval
+miss may use a separate missed-positive ranking loss, but it does not alter the
+candidate set. Set-valued positives treat a geometrically equivalent surfel
+within the positive radius as a valid retrieval.
+
+### Phase 2: bounded surface geometry
+
+This phase is allowed only after Phase 1 passes the fixed-frontend gate.
+Descriptors are frozen or used as an EMA teacher. Default bounds are 5 mm in
+the tangent plane and 2 mm along the normal; stricter 2 mm/1 mm experiments are
+supported. Raw 2DGS XYZ remains immutable.
+
+### Phase 3: PoseLayer
+
+Pose gradients have explicit, mutually exclusive routes:
+
+- `feature`: detach 3D points; keep `measurement_uv` and confidence
+  differentiable.
+- `geometry`: detach measurements and confidence; update bounded anchors only.
+
+Unit tests require the intended parameter group to receive a nonzero gradient
+and the other group to receive none. A PoseLayer branch must outperform a
+same-length no-pose continuation on deployment candidates before combination.
+
+### Phase 4: distillation
+
+Landmarks are filtered by real global matchability and false-top1 rate first.
+Coverage and translation pose information/FIM are second-stage tie breakers.
+FIM is not allowed to rescue globally ambiguous descriptors.
+
+### Phase 5: detector
+
+The map and bank are frozen before scene-detector training. A candidate map must
+first pass the fixed strong-detector gate; otherwise detector retraining and all
+later phases stop, and the exact strong map is selected.
+
+Dustbin remains off unless inference uses the same explicit unmatched decision
+as training. Online rendering and dynamic landmark replacement are not part of
+the accepted mainline until the real-query descriptor gate passes.
+
+## Joint checkpoint gate
+
+`scripts/select_lafgs_map_checkpoint.py` requires all candidates and the control
+to use the same held-out camera subset and the same evaluation protocol hash. A
+candidate must simultaneously:
+
+- improve median translation by at least 0.02 cm;
+- not worsen median rotation;
+- not worsen raw GT precision at 2 px;
+- not worsen RANSAC-inlier GT precision at 2 px;
+- not worsen translation pose-information logdet.
+
+If no candidate passes, selection returns the strong control state. Test-set
+metrics are not used for checkpoint selection.
+
+## Reproducible evaluation protocol
+
+Formal Cambridge evaluation pins:
+
+- `--source_path /mnt/pool/sqy/Cambridge_stdloc/<scene>`;
+- `--images processed`;
+- `--resolution 1`;
+- `--data_device cpu` for DataLoader image decoding;
+- the camera subset and split seed;
+- detector, landmark IDs, metadata, descriptor state, and map checkpoint hashes.
+
+Every result writes `evaluation_protocol.json`. Its hash covers query names,
+loaded shapes, candidate-split settings, and the SHA256 manifest of query image
+contents. The selector rejects legacy or mismatched protocols.
+
+This fixed a high-impact reproduction error: the default `resolution=-1`
+silently resized 1920-wide Cambridge queries to 1600 pixels. The same strong
+artifacts then produced about 3.28 cm instead of the pinned 3.095 cm result.
+
+Camera metadata no longer stores inherited lazy PIL handles. DataLoader workers
+open private image handles, and CUDA-backed camera loading automatically uses
+the parent process because forked workers cannot initialize CUDA.
+
+## ShopFacade evidence
+
+With the fixed 46-camera temporal validation split and fixed strong detector:
+
+| State | TE (cm) | AE (deg) | Raw P@2 | Inlier P@2 | Translation logdet | Gate |
+|---|---:|---:|---:|---:|---:|---|
+| strong control | 2.4517 | 0.1283 | 9.0398% | 41.1052% | 12.4668 | control |
+| descriptor F1, step 250 | 2.3369 | 0.1267 | 9.0505% | 41.0205% | 12.4725 | reject |
+| descriptor F2, step 500 | 2.3988 | 0.1266 | 9.0526% | 41.0397% | 12.4738 | reject |
+
+F1 improved true source Recall@1 from 16.23% to 20.50%, Recall@16 from 41.77%
+to 47.93%, and reduced median top-1 reprojection from 10.53 px to 9.09 px.
+However, every F1/F2 checkpoint slightly reduced inlier P@2 or failed another
+gate condition. The formal selection therefore keeps the strong control and
+does not open geometry, PoseLayer, dustbin, or detector retraining for this
+branch. This is a negative descriptor-stage result, not evidence for later
+modules.
+
+The pinned full-test reference artifacts are:
+
+- safe strong fallback: 3.0951 cm median TE and 0.1411 degree median AE;
+- older candidate-aligned numerical best: 3.0470 cm and 0.1577 degree.
+
+The numerical best is retained as a performance reference, while the strong
+fallback is the causally selected state for the corrected phased protocol.
+
+## Entrypoints
+
+The formal ShopFacade entry is:
 
 ```bash
-scripts/run_lafgs_v2_shopfacade.sh c0       # 30k real-only V2.2 shadow-swap run
-scripts/run_lafgs_v2_shopfacade.sh eval_c0  # 10k detector + test localization
-scripts/run_lafgs_v2_shopfacade.sh c1       # real + 15% masked rendered episodes
-scripts/run_lafgs_v2_shopfacade.sh eval_c1  # 10k detector + test localization
+scripts/run_lafgs_v2_shopfacade.sh descriptor   # corrected Phase 1
+scripts/run_lafgs_v2_shopfacade.sh test_strong  # safe pinned fallback
+scripts/run_lafgs_v2_shopfacade.sh test_best    # numerical reference
+scripts/run_lafgs_v2_shopfacade.sh verify       # regression suite
 ```
 
-The final evaluation has no Pair, FIM selection, Diff-PnP, topology, or geometry
-updates. This keeps changes in pose quality attributable to the learned coreset.
-
-## Acceptance criteria
-
-A run is an improvement only if the fixed probe accepts at least one swap and the
-held-out localization evaluation improves pose error without reducing raw GT
-precision, RANSAC-inlier GT precision, or pose information. If all proposals are
-rejected, the output is deliberately the exact strong bank; this is a valid safe
-fallback, not evidence that the shadow-pool objective improved the map.
-
-## ShopFacade V2.2 result (2026-07-17)
-
-The corrected C1 run used the external MAtCha 30k 2DGS, 16,384 exact seed
-landmarks, the full 516,147-patch shadow pool, 10k optimization steps, and 15%
-masked online-render episodes.
-
-- GT seed reprojection now requires renderer visibility and rendered-depth
-  consistency. Before this fix, occluded landmarks were incorrectly assigned
-  0.75 positive mass. Clean real reprojection positives are roughly 10-18% of
-  detected queries; rendered novel views contain substantially fewer.
-- The online artifact mask retained 99.65% of feature cells on average and
-  96.33% in the most strongly masked logging window. Invalid cells cannot enter
-  detector sampling or matching.
-- The fixed clean seed probe objective was 0.07385. Seventeen independent shadow
-  proposals ranged from 0.06750 to 0.07324, so all were rejected.
-- The exported C1 set is the exact strong bank: all IDs match; descriptor cosine
-  similarity has mean 1.0 and minimum 0.99999976.
-- A fresh held-out test with the co-adapted seed detector produced 3.7571 cm
-  median translation error, 0.18365 degree median rotation error, 13.97% raw GT
-  precision at 4 px, 77.63% RANSAC-inlier GT precision at 4 px, and 549.36 mean
-  inliers.
-
-Therefore V2.2 is a safe, normally localizing fallback, but the current shadow
-utility and masked render branch do not yet improve the strong bank. More steps
-or scalar reweighting are not supported by this run; the next method change must
-improve query-specific visible-surface positives and final-set solvability before
-allowing deployment-set churn.
-
-## Candidate-aligned active Field mainline
-
-V2.3 no longer treats shadow utility as the primary optimizer. Training cameras
-are split into disjoint temporal support and probe blocks before MVInit, atom
-discovery, episode caching, or utility updates. Probe cameras are used only for
-accept/reject evaluation. Saved metadata uses schema version 30, stores only
-active-row `candidate_quality`, checks unique raw IDs, and records hashes for the
-active IDs, descriptors, detector, source geometry, and seed artifacts.
-
-`scripts/compare_sparse_identity.py` compares two discrete-oracle evaluation
-dumps at the bank, detector keypoint, top-K retrieval, pre-PnP pair, selector,
-RANSAC-inlier, and final-pose levels. The ShopFacade P0 comparison found the
-original strong bank and V2.2 C1 functionally identical on all 103 test queries.
-Their scores differ by at most 2.98e-7, but top-1 IDs, candidate sets, inliers,
-and poses are identical. The reproducible baseline is therefore 3.7571 cm; the
-historical approximately 3.1 cm result came from an unpinned frontend/runtime
-stack rather than from the V2.2 map transformation.
-
-The active-field P1 experiment freezes the detector and geometry and optimizes
-only the active 16k descriptors and dustbin with the query-specific exact
-decision-set teacher. It uses a 185/46 temporal support/validation split. Active
-descriptor gradient norms are nonzero (typically 2.3-6.6), while detector trunk
-gradients remain exactly zero.
-
-| Effective step | Median TE (cm) | Median AE (deg) | Raw GT P@4 | Inlier GT P@4 | Pose logdet | Translation min eig |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 3.757 | 0.184 | 13.97% | 77.63% | 88.48 | 21.54 |
-| 1500 | 3.315 | 0.164 | 16.92% | 78.99% | 89.45 | 26.49 |
-| 2250 | **3.228** | **0.155** | 17.66% | 79.21% | 89.66 | 27.66 |
-| 3000 | 3.285 | 0.158 | **17.79%** | **79.22%** | **89.70** | **27.87** |
-
-The 2250-step checkpoint is the current best. The 3000-step result demonstrates
-that cleanliness and scalar pose information can continue improving while pose
-error regresses, so checkpoint selection must use the held-out deployment
-frontend and pose metric. Shadow add/prune, Pair, Diff-PnP, and topology remain
-outside this result until the active Field baseline is fixed and reproducible.
+The former progressive route moved to
+`scripts/run_lafgs_v2_progressive_legacy_shopfacade.sh` and is available only
+through explicit `legacy_*` modes.

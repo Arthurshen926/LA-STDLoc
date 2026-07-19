@@ -17,7 +17,6 @@ from typing import NamedTuple
 
 import numpy as np
 import torch
-from PIL import Image
 from plyfile import PlyData, PlyElement
 
 from scene.colmap_loader import (qvec2rotmat, read_extrinsics_binary,
@@ -108,9 +107,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, images_to_r
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         image_path = os.path.join(images_folder, extr.name)
-        image = Image.open(image_path) 
         
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+        # Keep only the path in scene metadata. A lazy PIL handle inherited by
+        # multiple DataLoader workers shares its file offset and can be read
+        # concurrently, producing intermittent "image file is truncated"
+        # failures. loadCam opens a private handle in the consuming worker.
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=None,
                               image_path=image_path, image_name=image_name, width=width, height=height) 
         
         cam_infos.append(cam_info)

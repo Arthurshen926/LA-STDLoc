@@ -26,6 +26,10 @@ class DetectorFreeObservationBatch:
     bank_depth: torch.Tensor
     bank_projected: torch.Tensor
     bank_visible: torch.Tensor
+    base_bank_uv: Optional[torch.Tensor] = None
+    base_bank_depth: Optional[torch.Tensor] = None
+    base_bank_projected: Optional[torch.Tensor] = None
+    base_bank_visible: Optional[torch.Tensor] = None
     query_feature_map: Optional[torch.Tensor] = None
     target_depth_map: Optional[torch.Tensor] = None
     target_alpha_map: Optional[torch.Tensor] = None
@@ -47,6 +51,39 @@ class LocalSoftCorrespondenceOutput:
     entropy: torch.Tensor
     valid: torch.Tensor
     diagnostics: dict = field(default_factory=dict)
+
+
+def _select_observation_rows(observations, rows):
+    """Select query rows while preserving per-camera bank state."""
+    return DetectorFreeObservationBatch(
+        source_indices=observations.source_indices[rows],
+        query_features=observations.query_features[rows],
+        query_uv=observations.query_uv[rows],
+        source_depth=observations.source_depth[rows],
+        bank_uv=observations.bank_uv,
+        bank_depth=observations.bank_depth,
+        bank_projected=observations.bank_projected,
+        bank_visible=observations.bank_visible,
+        base_bank_uv=observations.base_bank_uv,
+        base_bank_depth=observations.base_bank_depth,
+        base_bank_projected=observations.base_bank_projected,
+        base_bank_visible=observations.base_bank_visible,
+        query_feature_map=observations.query_feature_map,
+        target_depth_map=observations.target_depth_map,
+        target_alpha_map=observations.target_alpha_map,
+        query_valid_mask=observations.query_valid_mask,
+        K=observations.K,
+        pose_w2c=observations.pose_w2c,
+    )
+
+
+def descriptor_losses_active(step, descriptor_end_step):
+    descriptor_end_step = int(descriptor_end_step)
+    if descriptor_end_step < 0:
+        return False
+    if descriptor_end_step == 0:
+        return True
+    return int(step) <= descriptor_end_step
 
 
 def observation_adaptive_trust_weights(
@@ -177,6 +214,7 @@ def build_detector_free_observations(
     K,
     pose_w2c,
     *,
+    prediction_bank_xyz=None,
     target_depth=None,
     target_alpha=None,
     bank_visibility_mask=None,
@@ -193,9 +231,19 @@ def build_detector_free_observations(
     if feature_map.ndim != 3:
         raise ValueError("query_feature_map must have shape [channels, height, width]")
     height, width = feature_map.shape[-2:]
-    bank_xyz = torch.as_tensor(
+    base_bank_xyz = torch.as_tensor(
         bank_xyz, device=feature_map.device, dtype=feature_map.dtype
-    ).reshape(-1, 3)
+    ).reshape(-1, 3).detach()
+    if prediction_bank_xyz is None:
+        prediction_bank_xyz = base_bank_xyz
+    else:
+        prediction_bank_xyz = torch.as_tensor(
+            prediction_bank_xyz,
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        ).reshape(-1, 3)
+        if prediction_bank_xyz.shape != base_bank_xyz.shape:
+            raise ValueError("prediction_bank_xyz must match bank_xyz")
     K = torch.as_tensor(K, device=feature_map.device, dtype=feature_map.dtype)
     pose_w2c = torch.as_tensor(
         pose_w2c, device=feature_map.device, dtype=feature_map.dtype
@@ -206,18 +254,25 @@ def build_detector_free_observations(
         ).squeeze()
         if tuple(query_valid_mask.shape) != (height, width):
             raise ValueError("query_valid_mask must match the query feature grid")
+    base_bank_uv, base_bank_depth, base_bank_projected = project_landmarks_to_query(
+        base_bank_xyz,
+        K,
+        pose_w2c,
+        height,
+        width,
+    )
     bank_uv, bank_depth, bank_projected = project_landmarks_to_query(
-        bank_xyz,
+        prediction_bank_xyz,
         K,
         pose_w2c,
         height,
         width,
     )
     if bank_visibility_mask is None:
-        bank_visible = filter_depth_consistent_landmarks(
-            bank_uv,
-            bank_depth,
-            bank_projected,
+        base_bank_visible = filter_depth_consistent_landmarks(
+            base_bank_uv,
+            base_bank_depth,
+            base_bank_projected,
             target_depth=target_depth,
             target_alpha=target_alpha,
             alpha_threshold=alpha_threshold,
@@ -230,13 +285,24 @@ def build_detector_free_observations(
             device=feature_map.device,
             dtype=torch.bool,
         ).reshape(-1)
-        if bank_visibility_mask.numel() != bank_xyz.shape[0]:
+        if bank_visibility_mask.numel() != base_bank_xyz.shape[0]:
             raise ValueError("bank_visibility_mask must have one value per landmark")
-        bank_visible = bank_projected & bank_visibility_mask
+        base_bank_visible = base_bank_projected & bank_visibility_mask
+    if query_valid_mask is not None and bool(base_bank_visible.any().item()):
+        rounded = base_bank_uv.detach().round().long()
+        visible_indices = torch.nonzero(
+            base_bank_visible, as_tuple=False
+        ).reshape(-1)
+        base_bank_visible = base_bank_visible.clone()
+        base_bank_visible[visible_indices] &= query_valid_mask[
+            rounded[visible_indices, 1],
+            rounded[visible_indices, 0],
+        ]
+    bank_visible = base_bank_visible & bank_projected
     source_indices = _balanced_visible_indices(
-        bank_visible,
-        bank_uv,
-        bank_depth,
+        base_bank_visible,
+        base_bank_uv,
+        base_bank_depth,
         max_observations=max_observations,
         image_size=(height, width),
         grid_rows=grid_rows,
@@ -253,6 +319,10 @@ def build_detector_free_observations(
             bank_depth=bank_depth,
             bank_projected=bank_projected,
             bank_visible=bank_visible,
+            base_bank_uv=base_bank_uv,
+            base_bank_depth=base_bank_depth,
+            base_bank_projected=base_bank_projected,
+            base_bank_visible=base_bank_visible,
             query_feature_map=feature_map.detach(),
             target_depth_map=None if target_depth is None else torch.as_tensor(target_depth).detach(),
             target_alpha_map=None if target_alpha is None else torch.as_tensor(target_alpha).detach(),
@@ -260,7 +330,7 @@ def build_detector_free_observations(
             K=K,
             pose_w2c=pose_w2c,
         )
-    query_uv = bank_uv[source_indices]
+    query_uv = base_bank_uv[source_indices].detach()
     query_features = bilinear_sample_features(feature_map.detach(), query_uv)
     feature_valid = torch.isfinite(query_features).all(dim=1) & (
         torch.linalg.norm(query_features, dim=-1) > 1e-6
@@ -272,11 +342,15 @@ def build_detector_free_observations(
         source_indices=source_indices,
         query_features=F.normalize(query_features, dim=-1),
         query_uv=query_uv,
-        source_depth=bank_depth[source_indices],
+        source_depth=base_bank_depth[source_indices].detach(),
         bank_uv=bank_uv,
         bank_depth=bank_depth,
         bank_projected=bank_projected,
         bank_visible=bank_visible,
+        base_bank_uv=base_bank_uv,
+        base_bank_depth=base_bank_depth,
+        base_bank_projected=base_bank_projected,
+        base_bank_visible=base_bank_visible,
         query_feature_map=feature_map.detach(),
         target_depth_map=None if target_depth is None else torch.as_tensor(target_depth).detach(),
         target_alpha_map=None if target_alpha is None else torch.as_tensor(target_alpha).detach(),
@@ -330,6 +404,10 @@ def jitter_detector_free_observations(
         bank_depth=observations.bank_depth,
         bank_projected=observations.bank_projected,
         bank_visible=observations.bank_visible,
+        base_bank_uv=observations.base_bank_uv,
+        base_bank_depth=observations.base_bank_depth,
+        base_bank_projected=observations.base_bank_projected,
+        base_bank_visible=observations.base_bank_visible,
         query_feature_map=feature_map,
         target_depth_map=observations.target_depth_map,
         target_alpha_map=observations.target_alpha_map,
@@ -347,6 +425,7 @@ def build_score_proposal_observations(
     nms_radius=2,
     score_threshold=0.0,
     positive_search_radius_px=2.0,
+    include_unmatched=False,
 ):
     """Build detector-independent query observations from a frozen score head."""
     feature_map = observations.query_feature_map
@@ -381,18 +460,43 @@ def build_score_proposal_observations(
         dim=1,
     ).to(dtype=feature_map.dtype)
 
+    teacher_uv = (
+        observations.base_bank_uv
+        if observations.base_bank_uv is not None
+        else observations.bank_uv
+    )
+    teacher_depth = (
+        observations.base_bank_depth
+        if observations.base_bank_depth is not None
+        else observations.bank_depth
+    )
+    teacher_visible = (
+        observations.base_bank_visible
+        if observations.base_bank_visible is not None
+        else observations.bank_visible
+    )
     visible_indices = torch.nonzero(
-        observations.bank_visible, as_tuple=False
+        teacher_visible, as_tuple=False
     ).squeeze(1)
     if query_uv.numel() == 0 or visible_indices.numel() == 0:
-        source_indices = visible_indices.new_empty(0)
-        query_uv = feature_map.new_zeros((0, 2))
+        source_indices = visible_indices.new_full(
+            (query_uv.shape[0],), -1
+        )
+        if not include_unmatched:
+            source_indices = visible_indices.new_empty(0)
+            query_uv = feature_map.new_zeros((0, 2))
     else:
-        distances = torch.cdist(query_uv, observations.bank_uv[visible_indices])
+        distances = torch.cdist(query_uv, teacher_uv[visible_indices])
         nearest_distance, nearest_position = distances.min(dim=1)
-        keep = nearest_distance <= float(positive_search_radius_px)
-        query_uv = query_uv[keep]
-        source_indices = visible_indices[nearest_position[keep]]
+        matched = nearest_distance <= float(positive_search_radius_px)
+        if include_unmatched:
+            source_indices = visible_indices.new_full(
+                (query_uv.shape[0],), -1
+            )
+            source_indices[matched] = visible_indices[nearest_position[matched]]
+        else:
+            query_uv = query_uv[matched]
+            source_indices = visible_indices[nearest_position[matched]]
 
     query_features = bilinear_sample_features(feature_map.detach(), query_uv)
     feature_valid = torch.isfinite(query_features).all(dim=1) & (
@@ -401,15 +505,23 @@ def build_score_proposal_observations(
     source_indices = source_indices[feature_valid]
     query_uv = query_uv[feature_valid]
     query_features = query_features[feature_valid]
+    source_depth = feature_map.new_zeros(source_indices.shape[0])
+    matched = source_indices >= 0
+    if bool(matched.any().item()):
+        source_depth[matched] = teacher_depth[source_indices[matched]].detach()
     return DetectorFreeObservationBatch(
         source_indices=source_indices,
         query_features=F.normalize(query_features, dim=-1),
         query_uv=query_uv,
-        source_depth=observations.bank_depth[source_indices],
+        source_depth=source_depth,
         bank_uv=observations.bank_uv,
         bank_depth=observations.bank_depth,
         bank_projected=observations.bank_projected,
         bank_visible=observations.bank_visible,
+        base_bank_uv=observations.base_bank_uv,
+        base_bank_depth=observations.base_bank_depth,
+        base_bank_projected=observations.base_bank_projected,
+        base_bank_visible=observations.base_bank_visible,
         query_feature_map=feature_map,
         target_depth_map=observations.target_depth_map,
         target_alpha_map=observations.target_alpha_map,
@@ -420,10 +532,11 @@ def build_score_proposal_observations(
 
 
 def multiview_descriptor_loss(bank_features, observations):
-    if observations.source_indices.numel() == 0:
+    valid = observations.source_indices >= 0
+    if not bool(valid.any().item()):
         return bank_features.sum() * 0.0
-    source = F.normalize(bank_features[observations.source_indices], dim=-1)
-    query = F.normalize(observations.query_features.detach(), dim=-1)
+    source = F.normalize(bank_features[observations.source_indices[valid]], dim=-1)
+    query = F.normalize(observations.query_features[valid].detach(), dim=-1)
     return (1.0 - (source * query).sum(dim=-1)).mean()
 
 
@@ -439,6 +552,8 @@ def local_correlation_peak_loss(
     feature_map = observations.query_feature_map
     if feature_map is None:
         raise ValueError("Local correlation loss requires the frozen query feature map")
+    source_valid = observations.source_indices >= 0
+    observations = _select_observation_rows(observations, source_valid)
     query_count = int(observations.source_indices.numel())
     radius = max(int(radius), 0)
     if query_count == 0:
@@ -556,11 +671,13 @@ def local_soft_correspondences(
     patch_features = F.normalize(
         torch.nan_to_num(patch_features, nan=0.0, posinf=0.0, neginf=0.0), dim=-1
     )
-    source = F.normalize(bank_features[observations.source_indices], dim=-1)
+    source_valid = observations.source_indices >= 0
+    safe_source_indices = observations.source_indices.clamp_min(0)
+    source = F.normalize(bank_features[safe_source_indices], dim=-1)
     logits = torch.einsum("qd,qpd->qp", source, patch_features)
     logits = logits / max(float(temperature), 1e-6)
     logits = logits.masked_fill(~patch_valid, -torch.inf)
-    valid = patch_valid.any(dim=1)
+    valid = patch_valid.any(dim=1) & source_valid
     safe_logits = torch.where(valid[:, None], logits, torch.zeros_like(logits))
     probability = torch.softmax(safe_logits, dim=-1) * patch_valid
     probability = probability / probability.sum(dim=1, keepdim=True).clamp_min(1e-8)
@@ -604,21 +721,27 @@ def bounded_geometry_losses(
     depth_scale_floor=0.25,
 ):
     """Surface, rendered-depth, and local feature reprojection supervision."""
+    # The image measurement is produced by a frozen descriptor teacher around
+    # the immutable base projection. Only the predicted anchor projection is
+    # allowed to move.
     local = local_soft_correspondences(
-        bank_features,
+        bank_features.detach(),
         observations,
         radius=local_radius,
         temperature=local_temperature,
     )
-    valid = local.valid & (local.confidence > 0)
+    source_valid = observations.source_indices >= 0
+    valid = local.valid & (local.confidence > 0) & source_valid
     if bool(valid.any()):
+        source_indices = observations.source_indices[valid]
+        predicted_uv = observations.bank_uv[source_indices]
         reprojection_error = torch.linalg.norm(
-            local.expected_uv.detach() - observations.query_uv, dim=1
+            local.expected_uv[valid].detach() - predicted_uv, dim=1
         )
         reprojection_loss = (
             F.smooth_l1_loss(
-                reprojection_error[valid],
-                torch.zeros_like(reprojection_error[valid]),
+                reprojection_error,
+                torch.zeros_like(reprojection_error),
                 reduction="none",
                 beta=1.0,
             )
@@ -629,20 +752,23 @@ def bounded_geometry_losses(
 
     depth_loss = current_xyz.sum() * 0.0
     depth_valid_count = 0
-    if observations.target_depth_map is not None and observations.query_uv.numel() > 0:
+    if observations.target_depth_map is not None and bool(valid.any()):
         depth_map = torch.as_tensor(
             observations.target_depth_map,
             device=current_xyz.device,
             dtype=current_xyz.dtype,
         ).squeeze()
         rendered_depth = bilinear_sample_features(
-            depth_map[None], observations.query_uv
+            depth_map[None], local.expected_uv[valid].detach()
         )[:, 0]
+        predicted_depth = observations.bank_depth[
+            observations.source_indices[valid]
+        ]
         depth_valid = (
             torch.isfinite(rendered_depth)
             & (rendered_depth > 0)
-            & torch.isfinite(observations.source_depth)
-            & (observations.source_depth > 0)
+            & torch.isfinite(predicted_depth)
+            & (predicted_depth > 0)
         )
         depth_valid_count = int(depth_valid.sum().detach().item())
         if bool(depth_valid.any()):
@@ -650,7 +776,7 @@ def bounded_geometry_losses(
                 float(depth_scale_floor)
             )
             normalized_error = (
-                observations.source_depth[depth_valid] - rendered_depth[depth_valid].detach()
+                predicted_depth[depth_valid] - rendered_depth[depth_valid].detach()
             ) / scale
             depth_loss = F.smooth_l1_loss(
                 normalized_error,
@@ -680,10 +806,15 @@ def pose_layer_loss(
     translation_scale_m=0.02,
     rotation_scale_degrees=2.0,
     max_condition_number=5e4,
+    gradient_mode="geometry",
 ):
     if observations.K is None or observations.pose_w2c is None:
         raise ValueError("PoseLayer requires K and the GT world-to-camera pose")
-    valid = local_correspondences.valid & (local_correspondences.confidence > 0)
+    valid = (
+        local_correspondences.valid
+        & (local_correspondences.confidence > 0)
+        & (observations.source_indices >= 0)
+    )
     valid_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
     if valid_indices.numel() < int(min_points):
         zero = current_xyz.sum() * 0.0
@@ -693,8 +824,20 @@ def pose_layer_loss(
         valid_indices = valid_indices[torch.topk(confidence, int(max_points)).indices]
     source_indices = observations.source_indices[valid_indices]
     points = current_xyz[source_indices]
-    target_uv = local_correspondences.expected_uv[valid_indices].detach()
-    weights = local_correspondences.confidence[valid_indices].detach().clamp_min(1e-4)
+    gradient_mode = str(gradient_mode)
+    if gradient_mode == "feature":
+        points = points.detach()
+        target_uv = local_correspondences.expected_uv[valid_indices]
+        weights = local_correspondences.confidence[valid_indices].clamp_min(1e-4)
+        zero_reference = target_uv.sum() + weights.sum()
+        detach_points = True
+    elif gradient_mode == "geometry":
+        target_uv = local_correspondences.expected_uv[valid_indices].detach()
+        weights = local_correspondences.confidence[valid_indices].detach().clamp_min(1e-4)
+        zero_reference = current_xyz.sum()
+        detach_points = False
+    else:
+        raise ValueError("gradient_mode must be 'feature' or 'geometry'")
     parameter_scale = points.new_tensor(
         [float(translation_scale_m)] * 3
         + [float(torch.deg2rad(torch.tensor(rotation_scale_degrees)).item())] * 3
@@ -707,7 +850,7 @@ def pose_layer_loss(
         weights=weights,
         num_iterations=int(num_iterations),
         damping=float(damping),
-        detach_points=False,
+        detach_points=detach_points,
         parameter_scale=parameter_scale,
     )
     gt_pose = observations.pose_w2c.to(device=points.device, dtype=points.dtype)
@@ -741,7 +884,7 @@ def pose_layer_loss(
         beta=1.0,
     )
     if not accepted:
-        loss = current_xyz.sum() * 0.0
+        loss = zero_reference * 0.0
     diagnostics = {
         "pose_layer_active": 1.0,
         "pose_layer_accepted": float(accepted),
@@ -753,6 +896,8 @@ def pose_layer_loss(
         "pose_layer_initial_rmse_px": float(info["initial_rmse"].item()),
         "pose_layer_final_rmse_px": float(info["final_rmse"].item()),
         "pose_layer_condition_number": float(info["condition_number"].item()),
+        "pose_layer_feature_gradient_mode": float(gradient_mode == "feature"),
+        "pose_layer_geometry_gradient_mode": float(gradient_mode == "geometry"),
     }
     return loss, diagnostics
 
@@ -824,7 +969,17 @@ def _retrieval_diagnostics(scores, observations, candidate_indices=None):
     top1_uv = observations.bank_uv[top1]
     distance = torch.linalg.norm(top1_uv - observations.query_uv, dim=-1)
     top1_visible = observations.bank_visible[top1]
-    return {
+    top1_projected = observations.bank_projected[top1]
+    valid_distance = top1_projected & torch.isfinite(distance)
+    source_valid = observations.source_indices >= 0
+    source_top1 = (
+        (top1[source_valid] == observations.source_indices[source_valid])
+        .float()
+        .mean()
+        if bool(source_valid.any().item())
+        else scores.new_zeros(())
+    )
+    diagnostics = {
         "retrieval_query_count": int(scores.shape[0]),
         "retrieval_top1_gt_precision_2px": float(
             (top1_visible & (distance <= 2.0)).float().mean().detach().item()
@@ -833,12 +988,45 @@ def _retrieval_diagnostics(scores, observations, candidate_indices=None):
             (top1_visible & (distance <= 4.0)).float().mean().detach().item()
         ),
         "retrieval_source_top1_ratio": float(
-            (top1 == observations.source_indices).float().mean().detach().item()
+            source_top1.detach().item()
         ),
         "retrieval_top1_reprojection_median_px": float(
-            distance.median().detach().item()
+            distance[valid_distance].median().detach().item()
+            if bool(valid_distance.any().item())
+            else 0.0
+        ),
+        "retrieval_top1_projected_ratio": float(
+            valid_distance.float().mean().detach().item()
         ),
     }
+    if candidate_indices is None:
+        max_k = min(64, int(scores.shape[1]))
+        top_indices = torch.topk(scores, k=max_k, dim=1).indices
+        for requested_k in (1, 4, 16, 64):
+            effective_k = min(requested_k, max_k)
+            retrieved = top_indices[:, :effective_k]
+            if bool(source_valid.any().item()):
+                source_recall = (
+                    retrieved[source_valid]
+                    == observations.source_indices[source_valid, None]
+                ).any(dim=1).float().mean()
+            else:
+                source_recall = scores.new_zeros(())
+            retrieved_uv = observations.bank_uv[retrieved]
+            distance_k = torch.linalg.norm(
+                retrieved_uv - observations.query_uv[:, None], dim=-1
+            )
+            visible_k = observations.bank_visible[retrieved]
+            geometric_recall = (
+                visible_k & (distance_k <= 2.0)
+            ).any(dim=1).float().mean()
+            diagnostics[
+                f"retrieval_source_recall_at_{requested_k}"
+            ] = float(source_recall.detach().item())
+            diagnostics[
+                f"retrieval_geometric_recall_at_{requested_k}"
+            ] = float(geometric_recall.detach().item())
+    return diagnostics
 
 
 def random_negative_retrieval_loss(
@@ -852,10 +1040,22 @@ def random_negative_retrieval_loss(
     dustbin_score=None,
     generator=None,
 ):
+    unmatched_query_count = int((observations.source_indices < 0).sum().item())
+    observations = _select_observation_rows(
+        observations,
+        observations.source_indices >= 0,
+    )
     query_count = int(observations.source_indices.numel())
     bank_count = int(bank_features.shape[0])
     if query_count == 0 or bank_count < 2:
-        return DetectorFreeRetrievalOutput(bank_features.sum() * 0.0)
+        return DetectorFreeRetrievalOutput(
+            bank_features.sum() * 0.0,
+            {
+                "retrieval_mode_random": 1.0,
+                "retrieval_query_count": 0,
+                "retrieval_unmatched_query_count": unmatched_query_count,
+            },
+        )
     negative_count = max(1, min(int(negative_count), bank_count - 1))
     random_indices = torch.randint(
         bank_count,
@@ -902,6 +1102,7 @@ def random_negative_retrieval_loss(
             "retrieval_negative_count_mean": float(
                 negative.float().sum(dim=1).mean().detach().item()
             ),
+            "retrieval_unmatched_query_count": unmatched_query_count,
         }
     )
     return DetectorFreeRetrievalOutput(loss, diagnostics)
@@ -916,6 +1117,10 @@ def hard_hypothesis_retrieval_loss(
     positive_radius_px=2.0,
     negative_radius_px=6.0,
     margin=0.0,
+    missed_positive_weight=1.0,
+    missed_positive_margin=0.05,
+    unmatched_rejection_weight=0.0,
+    unmatched_max_similarity=0.5,
     dustbin_score=None,
 ):
     query_count = int(observations.source_indices.numel())
@@ -927,9 +1132,9 @@ def hard_hypothesis_retrieval_loss(
     full_scores = query @ bank.T
     topk = max(1, min(int(hypothesis_topk), bank_count))
     top_indices = torch.topk(full_scores.detach(), k=topk, dim=1).indices
-    candidate_indices = torch.cat(
-        [observations.source_indices[:, None], top_indices], dim=1
-    )
+    # This is the deployment candidate set. Ground-truth/source landmarks are
+    # never injected into it.
+    candidate_indices = top_indices
     candidate_features = bank[candidate_indices]
     raw_logits = torch.einsum("qd,qcd->qc", query, candidate_features)
     logits = raw_logits / max(float(temperature), 1e-6)
@@ -959,10 +1164,67 @@ def hard_hypothesis_retrieval_loss(
             loss = loss + F.relu(
                 float(margin) + negative_score[finite] - positive_score[finite]
             ).mean()
+    source_valid = observations.source_indices >= 0
+    source_retrieved = torch.zeros(
+        query_count, dtype=torch.bool, device=full_scores.device
+    )
+    if bool(source_valid.any().item()):
+        source_retrieved[source_valid] = (
+            top_indices[source_valid]
+            == observations.source_indices[source_valid, None]
+        ).any(dim=1)
+    # A projected surface location can be represented by several overlapping
+    # surfels. Retrieval supervision therefore uses the full GT-consistent
+    # landmark set, while exact source-ID recall remains a diagnostic only.
+    geometric_retrieved = positive.any(dim=1)
+    missed_positive = source_valid & ~geometric_retrieved
+    missed_positive_loss = full_scores.sum() * 0.0
+    if float(missed_positive_weight) > 0.0 and bool(missed_positive.any().item()):
+        bank_uv = observations.bank_uv
+        query_uv = observations.query_uv[missed_positive]
+        distance_squared = (
+            query_uv.square().sum(dim=1, keepdim=True)
+            + bank_uv.square().sum(dim=1)[None]
+            - 2.0 * (query_uv @ bank_uv.T)
+        ).clamp_min(0.0)
+        full_positive = (
+            observations.bank_visible[None]
+            & torch.isfinite(distance_squared)
+            & (distance_squared <= float(positive_radius_px) ** 2)
+        )
+        positive_scores = full_scores[missed_positive].masked_fill(
+            ~full_positive, -torch.inf
+        ).max(dim=1).values
+        retrieved_best = full_scores[missed_positive].gather(
+            1, top_indices[missed_positive, :1]
+        ).squeeze(1)
+        valid_miss = torch.isfinite(positive_scores)
+        if bool(valid_miss.any().item()):
+            missed_positive_loss = F.relu(
+                float(missed_positive_margin)
+                + retrieved_best[valid_miss]
+                - positive_scores[valid_miss]
+            ).mean()
+            loss = loss + float(missed_positive_weight) * missed_positive_loss
+
+    unmatched = ~source_valid
+    unmatched_loss = full_scores.sum() * 0.0
+    if float(unmatched_rejection_weight) > 0.0 and bool(unmatched.any().item()):
+        unmatched_positive = positive[unmatched].any(dim=1)
+        truly_unmatched = unmatched.clone()
+        truly_unmatched[unmatched] = ~unmatched_positive
+        if bool(truly_unmatched.any().item()):
+            best_similarity = full_scores[truly_unmatched].gather(
+                1, top_indices[truly_unmatched, :1]
+            ).squeeze(1)
+            unmatched_loss = F.relu(
+                best_similarity - float(unmatched_max_similarity)
+            ).mean()
+            loss = loss + float(unmatched_rejection_weight) * unmatched_loss
     diagnostics = _retrieval_diagnostics(
         full_scores.detach(), observations, candidate_indices=None
     )
-    topk_positive = positive[:, 1:].any(dim=1)
+    topk_positive = positive.any(dim=1)
     diagnostics.update(
         {
             "retrieval_mode_hard": 1.0,
@@ -977,6 +1239,25 @@ def hard_hypothesis_retrieval_loss(
             "retrieval_gt_recall_at_hypothesis_k": float(
                 topk_positive.float().mean().detach().item()
             ),
+            "retrieval_source_recall_at_hypothesis_k": float(
+                source_retrieved[source_valid].float().mean().detach().item()
+                if bool(source_valid.any().item())
+                else 0.0
+            ),
+            "retrieval_missed_source_count": int(
+                (source_valid & ~source_retrieved).sum().item()
+            ),
+            "retrieval_missed_positive_count": int(
+                missed_positive.sum().item()
+            ),
+            "retrieval_missed_positive_loss": float(
+                missed_positive_loss.detach().item()
+            ),
+            "retrieval_unmatched_query_count": int(unmatched.sum().item()),
+            "retrieval_unmatched_rejection_loss": float(
+                unmatched_loss.detach().item()
+            ),
+            "retrieval_candidate_source_injected": 0.0,
         }
     )
     return DetectorFreeRetrievalOutput(loss, diagnostics)
