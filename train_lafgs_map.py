@@ -38,12 +38,25 @@ from localization_training.direct_landmark_teacher import (
     project_landmarks_to_query,
 )
 from localization_training.episode_sampler import split_support_query_cameras
-from localization_training.landmark_distill import coverage_preserving_sample, robust_normalize
+from localization_training.landmark_distill import (
+    coverage_balanced_score,
+    coverage_preserving_sample,
+    robust_normalize,
+)
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
 from localization_training.surface_anchor import (
     build_pure_geometric_scaffold,
     materialize_bounded_surface_anchors,
+)
+from localization_training.ulf_initializer import (
+    PIXEL_CENTER_OFFSET,
+    geometry_view_weights,
+    grid_index_to_physical,
+    nearest_keypoint_distance,
+    sample_dense_descriptors_at_image_uv,
+    sample_mask_at_grid_uv,
+    surface_normals_from_rotation,
 )
 from scene import Scene
 from utils.general_utils import safe_state, seed_everything
@@ -185,47 +198,128 @@ def _resize_mask(mask, target_hw):
     )
 
 
+_VALID_MASK_POLICY = "object_and_sky_and_distortion_v1"
+_QUERY_FEATURE_CONTRACT_LEGACY = "legacy_full_then_resized_map"
+_QUERY_FEATURE_CONTRACT_NATIVE = "native_resized_input"
+
+
+def _valid_mask_from_scene_masks(masks, image_name, target_hw, *, device="cuda"):
+    """Return the common object/sky/distortion validity domain.
+
+    All sparse selection paths must use this mask before sampling keypoints or
+    descriptors.  Keeping it in one helper prevents the cache, KCS and GWFF
+    paths from silently seeing different image support.
+    """
+    target_hw = (int(target_hw[0]), int(target_hw[1]))
+    if masks is None or image_name not in masks:
+        return torch.ones(target_hw, dtype=torch.bool, device=device)
+    channels = masks[image_name]
+    if len(channels) < 3:
+        raise ValueError(
+            f"Mask entry for {image_name!r} must contain object, sky and distortion masks"
+        )
+    object_mask = _resize_mask(channels[0], target_hw).to(device=device)
+    sky_mask = _resize_mask(channels[1], target_hw).to(device=device)
+    distortion_mask = _resize_mask(channels[2], target_hw).to(device=device)
+    return object_mask & sky_mask & distortion_mask
+
+
+def _masked_camera_image(camera, masks):
+    image = camera.original_image.cuda()
+    image_name = _camera_cache_key(camera)
+    valid_mask = _valid_mask_from_scene_masks(
+        masks,
+        image_name,
+        image.shape[-2:],
+        device=image.device,
+    )
+    return image * valid_mask[None].to(dtype=image.dtype), valid_mask
+
+
+def _native_feature_input(camera, masks, longest_edge):
+    """Resize RGB before encoding so native SuperPoint descriptors stay valid."""
+    image = camera.original_image.cuda()
+    full_valid_mask = _valid_mask_from_scene_masks(
+        masks,
+        _camera_cache_key(camera),
+        image.shape[-2:],
+        device=image.device,
+    )
+    target_height, target_width = get_resolution_from_longest_edge(
+        image.shape[-2], image.shape[-1], longest_edge
+    )
+    target_hw = (int(target_height), int(target_width))
+    if tuple(image.shape[-2:]) != target_hw:
+        image = F.interpolate(
+            image[None], size=target_hw, mode="bilinear", align_corners=False
+        )[0]
+        valid_mask = F.interpolate(
+            full_valid_mask[None, None].float(), size=target_hw, mode="nearest"
+        )[0, 0].bool()
+    else:
+        valid_mask = full_valid_mask
+    return image * valid_mask[None].to(dtype=image.dtype), valid_mask
+
+
 def _query_feature_outputs(
     camera,
     feature_extractor,
     *,
     longest_edge,
     masks=None,
+    query_feature_contract=_QUERY_FEATURE_CONTRACT_LEGACY,
 ):
-    image = camera.original_image.cuda()
+    query_feature_contract = str(query_feature_contract)
+    if query_feature_contract == _QUERY_FEATURE_CONTRACT_NATIVE:
+        image, full_valid_mask = _native_feature_input(camera, masks, longest_edge)
+    elif query_feature_contract == _QUERY_FEATURE_CONTRACT_LEGACY:
+        image, full_valid_mask = _masked_camera_image(camera, masks)
+    else:
+        raise ValueError(
+            f"Unknown query feature contract: {query_feature_contract!r}"
+        )
     fine_height, fine_width = get_resolution_from_longest_edge(
         image.shape[-2],
         image.shape[-1],
         longest_edge,
     )
-    target_height = max(int(fine_height) // 8, 1)
-    target_width = max(int(fine_width) // 8, 1)
     with torch.no_grad():
         outputs = feature_extractor(image[None])
-        feature_map = F.interpolate(
-            outputs["feature_map"],
-            size=(target_height, target_width),
-            mode="bilinear",
-            align_corners=False,
-        )[0]
+        encoder_feature_map = outputs["feature_map"]
+        if query_feature_contract == _QUERY_FEATURE_CONTRACT_NATIVE:
+            expected_hw = (
+                max(int(fine_height) // 8, 1),
+                max(int(fine_width) // 8, 1),
+            )
+            if tuple(encoder_feature_map.shape[-2:]) != expected_hw:
+                raise RuntimeError(
+                    "Native SuperPoint descriptor map does not match the "
+                    f"resized-image stride-8 grid: got={tuple(encoder_feature_map.shape[-2:])} "
+                    f"expected={expected_hw}"
+                )
+            feature_map = encoder_feature_map[0]
+        else:
+            target_height = max(int(fine_height) // 8, 1)
+            target_width = max(int(fine_width) // 8, 1)
+            feature_map = F.interpolate(
+                encoder_feature_map,
+                size=(target_height, target_width),
+                mode="bilinear",
+                align_corners=False,
+            )[0]
         feature_map = F.normalize(feature_map.float(), dim=0)
         score_map = outputs.get("scores")
         if score_map is None:
             score_map = outputs.get("repeatability")
         if score_map is not None:
             score_map = torch.as_tensor(score_map[0]).squeeze().float()
-    image_name = str(getattr(camera, "image_name", ""))
-    if masks is not None and image_name in masks:
-        object_mask = _resize_mask(masks[image_name][0], feature_map.shape[-2:])
-        distortion_mask = _resize_mask(masks[image_name][2], feature_map.shape[-2:])
-        valid_mask = object_mask & distortion_mask
-        feature_map = feature_map * valid_mask[None]
-    else:
-        valid_mask = torch.ones(
-            feature_map.shape[-2:],
-            device=feature_map.device,
-            dtype=torch.bool,
-        )
+    valid_mask = _valid_mask_from_scene_masks(
+        masks,
+        _camera_cache_key(camera),
+        feature_map.shape[-2:],
+        device=feature_map.device,
+    )
+    feature_map = feature_map * valid_mask[None]
     proposal_score_map = None
     if score_map is not None:
         score_map = F.adaptive_max_pool2d(
@@ -233,7 +327,31 @@ def _query_feature_outputs(
             output_size=feature_map.shape[-2:],
         )[0, 0]
         proposal_score_map = score_map * valid_mask
-    return feature_map, proposal_score_map, valid_mask
+    metadata = {
+        "input_image_hw": [int(image.shape[-2]), int(image.shape[-1])],
+        "encoder_dense_hw": [
+            int(encoder_feature_map.shape[-2]),
+            int(encoder_feature_map.shape[-1]),
+        ],
+        "feature_grid_hw": [int(feature_map.shape[-2]), int(feature_map.shape[-1])],
+        "query_feature_contract": query_feature_contract,
+        "feature_resize_mode": (
+            "resize_image_then_native_stride8"
+            if query_feature_contract == _QUERY_FEATURE_CONTRACT_NATIVE
+            else "encoder_full_then_coarse_bilinear"
+        ),
+        "descriptor_source": (
+            "superpoint_native_dense_resized_input"
+            if query_feature_contract == _QUERY_FEATURE_CONTRACT_NATIVE
+            else "superpoint_dense_then_coarse_bilinear"
+        ),
+        "pixel_center_offset": float(PIXEL_CENTER_OFFSET),
+        "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
+        "full_valid_fraction": float(full_valid_mask.float().mean().item()),
+        "grid_valid_fraction": float(valid_mask.float().mean().item()),
+    }
+    return feature_map, proposal_score_map, valid_mask, metadata
 
 
 def _squeeze_render_map(value):
@@ -294,8 +412,21 @@ def _uniformly_subsample_cameras(cameras, maximum):
 
 def _cache_signature(dataset, args):
     payload = {
-        "version": 6,
-        "feature_resize_mode": "encoder_full_then_coarse_bilinear",
+        "version": 8,
+        "query_feature_contract": str(args.query_feature_contract),
+        "feature_resize_mode": (
+            "resize_image_then_native_stride8"
+            if str(args.query_feature_contract) == _QUERY_FEATURE_CONTRACT_NATIVE
+            else "encoder_full_then_coarse_bilinear"
+        ),
+        "descriptor_source": (
+            "superpoint_native_dense_resized_input"
+            if str(args.query_feature_contract) == _QUERY_FEATURE_CONTRACT_NATIVE
+            else "superpoint_dense_then_coarse_bilinear"
+        ),
+        "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
+        "pixel_center_offset": float(PIXEL_CENTER_OFFSET),
+        "valid_mask_policy": _VALID_MASK_POLICY,
         "model_path": os.path.abspath(dataset.model_path),
         "source_path": os.path.abspath(dataset.source_path),
         "load_iteration": int(args.load_iteration),
@@ -315,7 +446,12 @@ def _cache_payload_compatible(cached_payload, expected_payload):
         return False
     required_keys = (
         "version",
+        "query_feature_contract",
         "feature_resize_mode",
+        "descriptor_source",
+        "coordinate_convention",
+        "pixel_center_offset",
+        "valid_mask_policy",
         "model_path",
         "source_path",
         "load_iteration",
@@ -341,16 +477,18 @@ def _build_query_cache(
     background,
     norm_before_render,
     longest_edge,
+    query_feature_contract,
     existing=None,
 ):
     cache = {} if existing is None else dict(existing)
     for camera in tqdm(cameras, desc="Detector-free real-query cache"):
         name = _camera_cache_key(camera)
-        feature_map, proposal_score_map, valid_mask = _query_feature_outputs(
+        feature_map, proposal_score_map, valid_mask, metadata = _query_feature_outputs(
             camera,
             feature_extractor,
             longest_edge=longest_edge,
             masks=masks,
+            query_feature_contract=query_feature_contract,
         )
         height, width = feature_map.shape[-2:]
         previous = cache.get(name, {})
@@ -381,6 +519,8 @@ def _build_query_cache(
             "K": K.detach().cpu(),
             "pose_w2c": camera.world_view_transform.transpose(0, 1).detach().cpu(),
             "valid_mask": valid_mask.detach().cpu(),
+            "pixel_center_offset": float(PIXEL_CENTER_OFFSET),
+            "frontend_metadata": metadata,
         }
         if proposal_score_map is not None:
             cache[name]["proposal_score_map"] = proposal_score_map.detach().to(
@@ -401,6 +541,7 @@ def _load_or_build_query_cache(
     background,
     norm_before_render,
     longest_edge,
+    query_feature_contract=_QUERY_FEATURE_CONTRACT_LEGACY,
     require_proposal_scores=False,
     cache_policy="reuse_or_build",
 ):
@@ -470,6 +611,7 @@ def _load_or_build_query_cache(
         background,
         norm_before_render,
         longest_edge,
+        query_feature_contract,
         existing=cached,
     )
     if path is not None:
@@ -477,7 +619,7 @@ def _load_or_build_query_cache(
         temporary_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
         torch.save(
             {
-                "version": 2,
+                "version": 3,
                 "signature": signature,
                 "signature_payload": signature_payload,
                 "queries": cache,
@@ -516,6 +658,7 @@ def _cached_observations(
         grid_rows=args.grid_rows,
         grid_cols=args.grid_cols,
         depth_bins=args.depth_bins,
+        pixel_center_offset=float(cached.get("pixel_center_offset", 0.0)),
     )
 
 
@@ -550,6 +693,7 @@ def _basic_visibility_counts(
                 pose_w2c,
                 height,
                 width,
+                pixel_center_offset=float(cached.get("pixel_center_offset", 0.0)),
             )
             visible = filter_depth_consistent_landmarks(
                 uv,
@@ -572,12 +716,301 @@ def _basic_visibility_counts(
     return counts
 
 
+def _render_full_visibility(gaussians, camera, width, height):
+    """Use raster contribution, rather than primitive-center depth, for visibility."""
+    xyz = gaussians._xyz
+    previous_requires_grad = bool(xyz.requires_grad)
+    xyz.requires_grad_(True)
+    try:
+        with torch.enable_grad():
+            visible = get_render_visible_mask(gaussians, camera, width, height)
+    finally:
+        xyz.grad = None
+        xyz.requires_grad_(previous_requires_grad)
+    return visible.detach().bool()
+
+
+def _automatic_ulf_voxel_size(xyz, budget):
+    xyz = torch.as_tensor(xyz).float()
+    if xyz.numel() == 0:
+        return 1.0
+    extent = (xyz.amax(dim=0) - xyz.amin(dim=0)).clamp_min(1e-4)
+    volume = float(extent.prod().item())
+    return max((volume / max(int(budget), 1)) ** (1.0 / 3.0), 1e-4)
+
+
+def _build_ulf_consensus_landmark_indices(
+    gaussians,
+    cameras,
+    masks,
+    feature_extractor,
+    args,
+):
+    """ULF-Loc KCS over full 2DGS primitives with contribution visibility.
+
+    The vote is emitted only when a visible surface primitive projects within
+    ``ulf_consensus_radius_px`` of a native sparse SuperPoint keypoint.  The
+    final coverage-balanced extraction is deterministic and records any
+    necessary fallback when the consensus pool is too small for the requested
+    bank size.
+    """
+    if str(feature_extractor.feature_type) != "sp":
+        raise ValueError("ULF consensus sampling currently requires SuperPoint")
+    xyz = gaussians.get_xyz.detach().float()
+    opacity = gaussians.get_opacity.detach().reshape(-1)
+    eligible = torch.isfinite(opacity) & (opacity >= float(args.scaffold_min_opacity))
+    votes = torch.zeros(xyz.shape[0], dtype=torch.int32, device=xyz.device)
+    visibility_counts = torch.zeros_like(votes)
+    cameras = _uniformly_subsample_cameras(
+        cameras,
+        args.ulf_consensus_max_views,
+    )
+    view_records = []
+    radius_px = float(args.ulf_consensus_radius_px)
+    for camera in tqdm(cameras, desc="ULF keypoint-consensus sampling"):
+        image, valid_mask = _native_feature_input(
+            camera, masks, args.longest_edge
+        )
+        height, width = image.shape[-2:]
+        sparse = feature_extractor.detectAndCompute(
+            image[None],
+            top_k=args.ulf_consensus_keypoints,
+        )[0]
+        keypoints = sparse["keypoints"]
+        keypoint_valid = sample_mask_at_grid_uv(valid_mask, keypoints)
+        keypoints = keypoints[keypoint_valid]
+        render_visible = _render_full_visibility(gaussians, camera, width, height)
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=xyz.device,
+            dtype=xyz.dtype,
+        )
+        uv, _, projected = project_landmarks_to_query(
+            xyz,
+            K,
+            camera.world_view_transform.transpose(0, 1).cuda(),
+            height,
+            width,
+            pixel_center_offset=PIXEL_CENTER_OFFSET,
+        )
+        in_valid_mask = sample_mask_at_grid_uv(valid_mask, uv)
+        visible = eligible & projected & render_visible & in_valid_mask
+        visible_indices = torch.nonzero(visible, as_tuple=False).reshape(-1)
+        if visible_indices.numel() > int(args.ulf_consensus_max_candidates_per_view) > 0:
+            candidate_opacity = opacity[visible_indices]
+            _, keep = torch.topk(
+                candidate_opacity,
+                int(args.ulf_consensus_max_candidates_per_view),
+                largest=True,
+                sorted=False,
+            )
+            visible_indices = visible_indices[keep]
+        if visible_indices.numel() > 0:
+            visibility_counts[visible_indices] += 1
+        matched_count = 0
+        if visible_indices.numel() > 0 and keypoints.numel() > 0:
+            distance = nearest_keypoint_distance(
+                uv[visible_indices],
+                keypoints,
+                chunk_size=args.ulf_consensus_distance_chunk,
+            )
+            matched = distance <= radius_px
+            if bool(matched.any().item()):
+                votes[visible_indices[matched]] += 1
+                matched_count = int(matched.sum().item())
+        view_records.append(
+            {
+                "image_name": _camera_cache_key(camera),
+                "processed_image_hw": [int(height), int(width)],
+                "sparse_keypoints_before_mask": int(sparse["keypoints"].shape[0]),
+                "sparse_keypoints_after_mask": int(keypoints.shape[0]),
+                "contribution_visible_primitives": int(render_visible.sum().item()),
+                "eligible_visible_primitives": int(visible_indices.shape[0]),
+                "consensus_votes": matched_count,
+            }
+        )
+
+    min_votes = max(int(args.ulf_consensus_min_votes), 1)
+    consensus_eligible = eligible & (votes >= min_votes)
+    candidate_eligible = consensus_eligible
+    fallback_to_non_consensus = False
+    requested_budget = min(int(args.scaffold_budget), int(eligible.sum().item()))
+    if int(candidate_eligible.sum().item()) < requested_budget:
+        candidate_eligible = eligible
+        fallback_to_non_consensus = True
+    vote_score = votes.float() + 0.01 * visibility_counts.float()
+    voxel_size = float(args.ulf_consensus_voxel_size)
+    if voxel_size <= 0.0:
+        voxel_size = _automatic_ulf_voxel_size(xyz[candidate_eligible], requested_budget)
+    selected = coverage_balanced_score(
+        xyz,
+        requested_budget,
+        vote_score,
+        voxel_size=voxel_size,
+        max_per_voxel=args.ulf_consensus_max_per_voxel,
+        eligible=candidate_eligible,
+        allow_overflow=True,
+    )
+    if selected.numel() != requested_budget:
+        raise RuntimeError(
+            "ULF consensus scaffold could not satisfy the requested budget: "
+            f"requested={requested_budget} selected={selected.numel()}"
+        )
+    selected_votes = votes[selected]
+    diagnostics = {
+        "mode": "ulf_keypoint_consensus",
+        "budget": int(selected.numel()),
+        "requested_budget": int(args.scaffold_budget),
+        "eligible_primitives": int(eligible.sum().item()),
+        "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
+        "fallback_to_non_consensus": bool(fallback_to_non_consensus),
+        "selected_with_consensus": int((selected_votes >= min_votes).sum().item()),
+        "selected_vote_mean": float(selected_votes.float().mean().item()),
+        "selected_vote_max": int(selected_votes.max().item()) if selected_votes.numel() else 0,
+        "minimum_votes": min_votes,
+        "consensus_radius_px": radius_px,
+        "consensus_sparse_keypoints": int(args.ulf_consensus_keypoints),
+        "consensus_view_count": int(len(cameras)),
+        "distance_chunk_size": int(args.ulf_consensus_distance_chunk),
+        "candidate_cap_per_view": int(args.ulf_consensus_max_candidates_per_view),
+        "voxel_size": float(voxel_size),
+        "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
+        "visibility": "2dgs_raster_contribution_gradient",
+        "visibility_resolution": "resized_feature_input_resolution",
+        "query_feature_contract": _QUERY_FEATURE_CONTRACT_NATIVE,
+        "coordinate_convention": "grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
+        "views": view_records,
+    }
+    return selected.detach().cpu(), diagnostics
+
+
+def _build_ulf_geometry_features(
+    cameras,
+    gaussians,
+    landmark_indices,
+    masks,
+    feature_extractor,
+    fallback_features,
+    args,
+):
+    """Fuse native dense SuperPoint descriptors with surface-normal weights."""
+    landmark_indices_gpu = landmark_indices.to(device=gaussians.get_xyz.device)
+    bank_xyz = gaussians.get_xyz[landmark_indices_gpu].detach().float()
+    rotations = gaussians.get_rotation[landmark_indices_gpu].detach().float()
+    scales = gaussians.get_scaling[landmark_indices_gpu].detach().float()
+    normals = surface_normals_from_rotation(rotations, scales)
+    feature_sum = torch.zeros(
+        (bank_xyz.shape[0], fallback_features.shape[1]),
+        device=bank_xyz.device,
+        dtype=torch.float32,
+    )
+    weight_sum = torch.zeros(bank_xyz.shape[0], device=bank_xyz.device)
+    observation_count = torch.zeros(
+        bank_xyz.shape[0], dtype=torch.long, device=bank_xyz.device
+    )
+    cameras = _uniformly_subsample_cameras(cameras, args.ulf_fusion_max_views)
+    sampled_weight_sum = 0.0
+    sampled_weight_count = 0
+    native_size_mismatch_views = 0
+    for camera in tqdm(cameras, desc="ULF geometry-weighted feature fusion"):
+        image, valid_mask = _native_feature_input(
+            camera, masks, args.longest_edge
+        )
+        height, width = image.shape[-2:]
+        dense_features, _ = feature_extractor.detectAndComputeDense(image[None])
+        expected_hw = (int(dense_features.shape[-2]) * 8, int(dense_features.shape[-1]) * 8)
+        native_size_mismatch_views += int(expected_hw != (int(height), int(width)))
+        visible = _render_full_visibility(gaussians, camera, width, height)[
+            landmark_indices_gpu
+        ]
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=bank_xyz.device,
+            dtype=bank_xyz.dtype,
+        )
+        grid_uv, _, projected = project_landmarks_to_query(
+            bank_xyz,
+            K,
+            camera.world_view_transform.transpose(0, 1).cuda(),
+            height,
+            width,
+            pixel_center_offset=PIXEL_CENTER_OFFSET,
+        )
+        valid = visible & projected & sample_mask_at_grid_uv(valid_mask, grid_uv)
+        if not bool(valid.any().item()):
+            continue
+        compact_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
+        sampled = sample_dense_descriptors_at_image_uv(
+            dense_features,
+            grid_index_to_physical(grid_uv[compact_indices]),
+            (height, width),
+        )
+        weights = geometry_view_weights(
+            bank_xyz[compact_indices],
+            normals[compact_indices],
+            camera.camera_center.cuda(),
+        )
+        if float(args.ulf_fusion_min_cosine) > 0.0:
+            weights = weights * (weights >= float(args.ulf_fusion_min_cosine))
+        useful = weights > 0.0
+        if not bool(useful.any().item()):
+            continue
+        compact_indices = compact_indices[useful]
+        sampled = sampled[useful]
+        weights = weights[useful].float()
+        feature_sum.index_add_(0, compact_indices, sampled.float() * weights[:, None])
+        weight_sum.index_add_(0, compact_indices, weights)
+        observation_count.index_add_(
+            0,
+            compact_indices,
+            torch.ones_like(compact_indices, dtype=observation_count.dtype),
+        )
+        sampled_weight_sum += float(weights.sum().item())
+        sampled_weight_count += int(weights.numel())
+
+    observed = weight_sum > 1e-8
+    result = F.normalize(fallback_features.float(), dim=-1).clone()
+    if bool(observed.any().item()):
+        result[observed] = F.normalize(
+            feature_sum[observed] / weight_sum[observed, None],
+            dim=-1,
+        )
+    diagnostics = {
+        "initialization_mode": "ulf_geometry_weighted_fusion",
+        "observed_landmarks": int(observed.sum().item()),
+        "unobserved_landmarks": int((~observed).sum().item()),
+        "observation_count_mean": float(observation_count.float().mean().item()),
+        "observation_count_median": float(observation_count.float().median().item()),
+        "observation_count_max": int(observation_count.max().item()),
+        "geometry_weight_mean": sampled_weight_sum / max(sampled_weight_count, 1),
+        "geometry_weighted_samples": int(sampled_weight_count),
+        "fusion_view_count": int(len(cameras)),
+        "native_stride8_size_mismatch_views": int(native_size_mismatch_views),
+        "visibility": "2dgs_raster_contribution_gradient",
+        "visibility_resolution": "resized_feature_input_resolution",
+        "query_feature_contract": _QUERY_FEATURE_CONTRACT_NATIVE,
+        "coordinate_convention": "grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
+    }
+    return result, observation_count, diagnostics
+
+
 def _load_or_build_landmark_indices(
     dataset,
     gaussians,
     args,
     *,
     visibility_counts=None,
+    cameras=None,
+    masks=None,
+    feature_extractor=None,
 ):
     if args.scaffold_mode == "file":
         indices, path = _load_landmark_indices(
@@ -605,9 +1038,30 @@ def _load_or_build_landmark_indices(
         if metadata_path.exists():
             with metadata_path.open() as handle:
                 metadata = json.load(handle)
-        metadata.setdefault("mode", "pure_geometry_cached")
+        metadata.setdefault("mode", f"{args.scaffold_mode}_cached")
         metadata.setdefault("budget", int(indices.numel()))
         return indices, path, metadata
+
+    if args.scaffold_mode == "ulf_consensus":
+        if cameras is None or feature_extractor is None:
+            raise ValueError("ULF consensus scaffold requires cameras and a feature extractor")
+        indices, diagnostics = _build_ulf_consensus_landmark_indices(
+            gaussians,
+            cameras,
+            masks,
+            feature_extractor,
+            args,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("wb") as handle:
+            pickle.dump(indices, handle)
+        with metadata_path.open("w") as handle:
+            json.dump(diagnostics, handle, indent=2, sort_keys=True)
+        print(
+            "Saved ULF keypoint-consensus localization scaffold: "
+            f"{output_path} count={indices.numel()}"
+        )
+        return indices, output_path, diagnostics
 
     opacity = gaussians.get_opacity.detach().reshape(-1)
     eligible = torch.isfinite(opacity) & (opacity >= float(args.scaffold_min_opacity))
@@ -718,14 +1172,21 @@ def _visibility_signature(dataset, args, landmark_indices):
     digest = hashlib.sha256()
     digest.update(landmark_indices.detach().cpu().numpy().tobytes())
     payload = {
-        "version": 2,
+        "version": 4,
         "model_path": os.path.abspath(dataset.model_path),
         "source_path": os.path.abspath(dataset.source_path),
         "load_iteration": int(args.load_iteration),
         "images": str(dataset.images),
         "resolution": int(dataset.resolution),
         "longest_edge": int(dataset.longest_edge),
-        "feature_resize_mode": "encoder_full_then_coarse_bilinear",
+        "query_feature_contract": str(args.query_feature_contract),
+        "feature_resize_mode": (
+            "resize_image_then_native_stride8"
+            if str(args.query_feature_contract) == _QUERY_FEATURE_CONTRACT_NATIVE
+            else "encoder_full_then_coarse_bilinear"
+        ),
+        "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
         "landmark_sha256": digest.hexdigest(),
         "landmark_count": int(landmark_indices.numel()),
     }
@@ -791,7 +1252,7 @@ def _load_or_build_visibility_cache(
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "version": 1,
+                "version": 2,
                 "signature": signature,
                 "signature_payload": signature_payload,
                 "visibility": visibility,
@@ -1394,7 +1855,7 @@ def _distill_final_landmark_bank(
     torch.save(distilled_meta, meta_path)
     state_path = output_dir / "distilled_lafgs_map_state.pt"
     state = {
-        "version": 6,
+        "version": 7,
         "iteration": int(args.steps),
         "landmark_indices": selected_global.detach().cpu(),
         "landmark_features": F.normalize(features[selected], dim=1).detach().cpu(),
@@ -1528,6 +1989,7 @@ def _state_config(
         "method": "lafgs_detector_free_bounded_surface_v4",
         "detector_free": True,
         "query_cache_policy": str(args.query_cache_policy),
+        "query_feature_contract": str(args.query_feature_contract),
         "scene_detector_used_for_map_training": False,
         "frozen_generic_proposal_head": bool(args.generic_proposal_count > 0),
         "geometry_frozen": not bool(args.geometry_weight > 0.0),
@@ -1602,9 +2064,16 @@ def _state_config(
         "trust_observation_power": float(args.trust_observation_power),
         "initial_state_blend": float(args.initial_state_blend),
         "initial_state_alignment": str(args.initial_state_alignment),
+        "initialization_mode": str(args.initialization_mode),
         "mvinit_mode": str(args.mvinit_mode),
         "descriptor_end_step": int(args.descriptor_end_step),
         "mvinit_max_observations": int(args.mvinit_max_observations),
+        "ulf_consensus_keypoints": int(args.ulf_consensus_keypoints),
+        "ulf_consensus_radius_px": float(args.ulf_consensus_radius_px),
+        "ulf_consensus_min_votes": int(args.ulf_consensus_min_votes),
+        "ulf_fusion_min_cosine": float(args.ulf_fusion_min_cosine),
+        "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
         "distill_budget": int(args.distill_budget),
         "distill_require_exact_budget": bool(args.distill_require_exact_budget),
         "distill_rank_pool_multiplier": float(
@@ -1697,6 +2166,15 @@ def _checkpoint_integrity(output_dir, requested_steps):
 def train(dataset, args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if (
+        args.scaffold_mode == "ulf_consensus"
+        or args.initialization_mode == "ulf_geometry"
+    ) and str(args.query_feature_contract) != _QUERY_FEATURE_CONTRACT_NATIVE:
+        raise ValueError(
+            "ULF KCS/GWFF requires --query_feature_contract "
+            f"{_QUERY_FEATURE_CONTRACT_NATIVE}; otherwise its native sparse "
+            "descriptors would be initialized against a different cache contract."
+        )
     gaussians = _gaussian_model_for_type(dataset.gaussian_type, dataset.sh_degree)
     scene = Scene(
         dataset,
@@ -1760,6 +2238,7 @@ def train(dataset, args):
         background,
         dataset.norm_before_render,
         dataset.longest_edge,
+        args.query_feature_contract,
         require_proposal_scores=bool(args.generic_proposal_count > 0),
         cache_policy=args.query_cache_policy,
     )
@@ -1791,6 +2270,9 @@ def train(dataset, args):
             gaussians,
             args,
             visibility_counts=scaffold_visibility_counts,
+            cameras=train_cameras,
+            masks=masks,
+            feature_extractor=feature_extractor,
         )
     )
     _write_reproducibility_manifest(
@@ -1826,16 +2308,46 @@ def train(dataset, args):
         landmark_indices,
         feature_dim=feature_extractor.feature_dim,
     )
-    mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
-        _build_mvinit_features(
-            train_names,
-            cache,
-            base_bank_xyz,
-            fallback,
-            args,
-            visibility_cache=visibility_cache,
-        )
+    state_only_initialization = bool(
+        args.initial_state_path and float(args.initial_state_blend) >= 1.0
     )
+    if args.initialization_mode == "ulf_geometry" and not state_only_initialization:
+        mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
+            _build_ulf_geometry_features(
+                train_cameras,
+                gaussians,
+                landmark_indices,
+                masks,
+                feature_extractor,
+                fallback,
+                args,
+            )
+        )
+    elif args.initialization_mode == "ulf_geometry":
+        # A descriptor continuation with blend=1 reuses the bootstrap state
+        # exactly. Avoid recomputing the frozen ULF fusion merely to construct
+        # an unused fallback.
+        mvinit_features = fallback
+        mvinit_observation_count = torch.zeros(
+            fallback.shape[0], dtype=torch.long, device=fallback.device
+        )
+        mvinit_diagnostics = {
+            "initialization_mode": "ulf_geometry_weighted_fusion",
+            "initializer_reused_from_exact_state": True,
+            "observed_landmarks": 0,
+            "unobserved_landmarks": int(fallback.shape[0]),
+        }
+    else:
+        mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
+            _build_mvinit_features(
+                train_names,
+                cache,
+                base_bank_xyz,
+                fallback,
+                args,
+                visibility_cache=visibility_cache,
+            )
+        )
     initial_state = None
     if args.initial_state_path:
         prior_features, initial_state, initial_state_match_count = _load_initial_features(
@@ -2527,9 +3039,21 @@ def build_parser():
     parser.add_argument("--load_iteration", type=int, default=30000)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument(
+        "--query_feature_contract",
+        choices=[
+            _QUERY_FEATURE_CONTRACT_LEGACY,
+            _QUERY_FEATURE_CONTRACT_NATIVE,
+        ],
+        default=_QUERY_FEATURE_CONTRACT_NATIVE,
+        help=(
+            "Image/descriptor contract for map reconstruction. Native mode "
+            "resizes RGB before SuperPoint and preserves its stride-8 map."
+        ),
+    )
+    parser.add_argument(
         "--scaffold_mode",
-        choices=["file", "pure_geometry", "protected_union"],
-        default="pure_geometry",
+        choices=["file", "pure_geometry", "protected_union", "ulf_consensus"],
+        default="ulf_consensus",
     )
     parser.add_argument("--landmark_path", default="detector/sampled_idx.pkl")
     parser.add_argument(
@@ -2547,6 +3071,42 @@ def build_parser():
     parser.add_argument("--scaffold_voxel_size", type=float, default=0.0)
     parser.add_argument("--scaffold_search_steps", type=int, default=14)
     parser.add_argument("--scaffold_seed", type=int, default=2026)
+    parser.add_argument(
+        "--ulf_consensus_keypoints",
+        type=int,
+        default=2048,
+        help="Native sparse SuperPoint keypoints retained per support view for KCS.",
+    )
+    parser.add_argument("--ulf_consensus_radius_px", type=float, default=1.0)
+    parser.add_argument("--ulf_consensus_min_votes", type=int, default=1)
+    parser.add_argument(
+        "--ulf_consensus_max_views",
+        type=int,
+        default=0,
+        help="Zero uses every support camera; otherwise uniformly subsample views.",
+    )
+    parser.add_argument("--ulf_consensus_distance_chunk", type=int, default=8192)
+    parser.add_argument(
+        "--ulf_consensus_max_candidates_per_view",
+        type=int,
+        default=0,
+        help="Optional opacity-ranked cap for KCS; zero preserves all visible primitives.",
+    )
+    parser.add_argument("--ulf_consensus_voxel_size", type=float, default=0.0)
+    parser.add_argument("--ulf_consensus_max_per_voxel", type=int, default=8)
+    parser.add_argument(
+        "--initialization_mode",
+        choices=["mvinit", "ulf_geometry"],
+        default="ulf_geometry",
+        help="Descriptor initializer for a newly built landmark bank.",
+    )
+    parser.add_argument(
+        "--ulf_fusion_max_views",
+        type=int,
+        default=0,
+        help="Zero fuses every support camera; otherwise uniformly subsample views.",
+    )
+    parser.add_argument("--ulf_fusion_min_cosine", type=float, default=0.0)
     parser.add_argument("--initial_state_path", default="")
     parser.add_argument("--initial_state_blend", type=float, default=0.0)
     parser.add_argument(
@@ -2564,7 +3124,11 @@ def build_parser():
             "protocol fails instead of silently rebuilding shared query features."
         ),
     )
-    parser.add_argument("--visibility_mode", choices=["depth", "rasterizer"], default="depth")
+    parser.add_argument(
+        "--visibility_mode",
+        choices=["depth", "rasterizer"],
+        default="rasterizer",
+    )
     parser.add_argument("--visibility_cache_path", default="")
     parser.add_argument("--objective", choices=["mv", "random", "hard"], default="hard")
     parser.add_argument("--steps", type=int, default=5000)

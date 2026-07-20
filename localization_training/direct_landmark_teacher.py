@@ -79,7 +79,22 @@ def stable_landmark_memory_indices(gaussians, full_indices):
     return stable
 
 
-def project_landmarks_to_query(xyz, K, pose_w2c, height, width, eps=1e-8):
+def project_landmarks_to_query(
+    xyz,
+    K,
+    pose_w2c,
+    height,
+    width,
+    eps=1e-8,
+    pixel_center_offset=0.0,
+):
+    """Project landmarks into a feature grid.
+
+    ``pixel_center_offset=0`` retains the historical pixel-index convention.
+    New sparse-compatible paths use ``0.5``: a grid cell at integer ``i`` is
+    physically observed at pixel coordinate ``i + 0.5``, matching the PnP
+    frontend's explicit ``+0.5`` conversion.
+    """
     if xyz.numel() == 0:
         empty_uv = xyz.new_zeros((0, 2))
         return empty_uv, xyz.new_zeros((0,)), torch.zeros(0, dtype=torch.bool, device=xyz.device)
@@ -88,9 +103,15 @@ def project_landmarks_to_query(xyz, K, pose_w2c, height, width, eps=1e-8):
     xyz_h = torch.cat([xyz, torch.ones(xyz.shape[0], 1, dtype=K.dtype, device=K.device)], dim=1)
     xyz_cam = (pose_w2c @ xyz_h.T)[:3].T
     depth = xyz_cam[:, 2]
-    uv = torch.empty(xyz.shape[0], 2, dtype=K.dtype, device=K.device)
-    uv[:, 0] = K[0, 0] * xyz_cam[:, 0] / depth.clamp_min(eps) + K[0, 2]
-    uv[:, 1] = K[1, 1] * xyz_cam[:, 1] / depth.clamp_min(eps) + K[1, 2]
+    physical_uv = torch.empty(xyz.shape[0], 2, dtype=K.dtype, device=K.device)
+    physical_uv[:, 0] = K[0, 0] * xyz_cam[:, 0] / depth.clamp_min(eps) + K[0, 2]
+    physical_uv[:, 1] = K[1, 1] * xyz_cam[:, 1] / depth.clamp_min(eps) + K[1, 2]
+    offset = torch.as_tensor(
+        pixel_center_offset,
+        dtype=K.dtype,
+        device=K.device,
+    )
+    uv = physical_uv - offset
     valid = (
         (depth > eps)
         & torch.isfinite(uv).all(dim=1)

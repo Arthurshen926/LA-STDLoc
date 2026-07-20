@@ -299,17 +299,106 @@ def training_requires_test_cameras(test_iterations, total_iterations):
     )
 
 
-def extract_normalized_feature_map(feature_extractor, image, size):
-    """Run the fixed image encoder without keeping gradients for detector targets."""
+def _resize_hard_valid_mask(valid_mask, target_hw, device):
+    """Resize a binary query-support mask without introducing soft borders."""
+    if valid_mask is None:
+        return None
+    mask = torch.as_tensor(valid_mask, dtype=torch.float32, device=device)
+    while mask.ndim > 2:
+        if mask.shape[0] == 1:
+            mask = mask.squeeze(0)
+        elif mask.shape[-1] == 1:
+            mask = mask.squeeze(-1)
+        else:
+            raise ValueError(
+                "A query validity mask must reduce to [H,W], got "
+                f"shape {tuple(mask.shape)}"
+            )
+    if mask.ndim != 2:
+        raise ValueError(f"A query validity mask must be [H,W], got {tuple(mask.shape)}")
+    return F.interpolate(
+        mask[None, None], size=tuple(map(int, target_hw)), mode="nearest"
+    )[0, 0].bool()
+
+
+def camera_valid_mask(masks, camera, device="cuda"):
+    """Return the common object/sky/distortion support for a real query."""
+    if masks is None:
+        return None
+    raw_name = str(camera.image_name)
+    name = raw_name.replace("\\", "/")
+    if name not in masks and raw_name in masks:
+        name = raw_name
+    if name not in masks:
+        return None
+    channels = masks[name]
+    if len(channels) < 3:
+        raise ValueError(
+            f"Mask entry for {name!r} must contain object, sky and distortion masks"
+        )
+    target_hw = tuple(map(int, camera.original_image.shape[-2:]))
+    return (
+        _resize_hard_valid_mask(channels[0], target_hw, device)
+        & _resize_hard_valid_mask(channels[1], target_hw, device)
+        & _resize_hard_valid_mask(channels[2], target_hw, device)
+    )
+
+
+def extract_normalized_feature_map(
+    feature_extractor,
+    image,
+    size,
+    *,
+    query_feature_contract="legacy_full_then_resized_map",
+    valid_mask=None,
+):
+    """Run the fixed encoder under the chosen sparse feature contract."""
     with torch.no_grad():
-        gt_feature_map = feature_extractor(image[None])["feature_map"]
-        gt_feature_map = F.interpolate(
-            gt_feature_map,
-            size=size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
+        if query_feature_contract == "native_resized_input":
+            resized_image = F.interpolate(
+                image[None], size=size, mode="bilinear", align_corners=False
+            )
+            input_mask = _resize_hard_valid_mask(
+                valid_mask, size, resized_image.device
+            )
+            if input_mask is not None:
+                resized_image = resized_image * input_mask[None, None].to(
+                    dtype=resized_image.dtype
+                )
+            gt_feature_map = feature_extractor(resized_image)["feature_map"]
+            expected_hw = (max(int(size[0]) // 8, 1), max(int(size[1]) // 8, 1))
+            if tuple(gt_feature_map.shape[-2:]) != expected_hw:
+                raise RuntimeError(
+                    "Native SuperPoint detector target has an unexpected "
+                    f"stride-8 shape: got={tuple(gt_feature_map.shape[-2:])} "
+                    f"expected={expected_hw}"
+                )
+            gt_feature_map = gt_feature_map.squeeze(0)
+        elif query_feature_contract == "legacy_full_then_resized_map":
+            input_mask = _resize_hard_valid_mask(
+                valid_mask, image.shape[-2:], image.device
+            )
+            if input_mask is not None:
+                image = image * input_mask[None].to(dtype=image.dtype)
+            gt_feature_map = feature_extractor(image[None])["feature_map"]
+            gt_feature_map = F.interpolate(
+                gt_feature_map,
+                size=size,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+        else:
+            raise ValueError(
+                f"Unknown query feature contract: {query_feature_contract!r}"
+            )
         gt_feature_map = F.normalize(gt_feature_map, p=2, dim=0)
+        output_mask = _resize_hard_valid_mask(
+            valid_mask, gt_feature_map.shape[-2:], gt_feature_map.device
+        )
+        if output_mask is not None:
+            gt_feature_map = gt_feature_map * output_mask[None].to(
+                dtype=gt_feature_map.dtype
+            )
     return gt_feature_map.detach()
 
 
@@ -596,6 +685,7 @@ def render_online_candidate_query(
     return_provenance=False,
     provenance_landmark_indices=None,
     pair_weights=None,
+    query_feature_contract="legacy_full_then_resized_map",
 ):
     """Render current RGB geometry and encode it without candidate-loss gradients."""
     candidate = sample_interpolated_novel_view(
@@ -629,6 +719,7 @@ def render_online_candidate_query(
             feature_extractor,
             render_pkg["render"].clamp(0.0, 1.0),
             size=fine_resolution,
+            query_feature_contract=query_feature_contract,
         )
     if return_provenance:
         render_pkg["rgb_meta"]["rendered_depth"] = render_pkg.get("depth")
@@ -1521,6 +1612,7 @@ def matching_oriented_sample(
     num=16384,
     k=32,
     return_coverage_stats=False,
+    query_feature_contract="legacy_full_then_resized_map",
 ):
     viewpoint_stack = scene.getTrainCameras().copy()
     loc_xyz = gaussian_localization_xyz(gaussians)
@@ -1537,10 +1629,13 @@ def matching_oriented_sample(
             scene.longest_edge,
         )
         gt_image = viewpoint_cam.original_image.cuda()
+        query_valid_mask = camera_valid_mask(masks, viewpoint_cam, gt_image.device)
         gt_feature_map = extract_normalized_feature_map(
             feature_extractor,
             gt_image,
             size=(fine_resolution[0], fine_resolution[1]),
+            query_feature_contract=query_feature_contract,
+            valid_mask=query_valid_mask,
         )
 
         viewmat = viewpoint_cam.world_view_transform.transpose(0, 1).cuda()  # [4, 4]
@@ -1573,21 +1668,15 @@ def matching_oriented_sample(
                 viewpoint_cam.image_name,
                 render_visible_mask,
             )
-        if masks is not None:
-            object_mask = masks[viewpoint_cam.image_name][0].cuda()[None]
-            distort_mask = masks[viewpoint_cam.image_name][2].cuda()[None]
-            mask = object_mask & distort_mask
-            img_mask = (
-                F.interpolate(
-                    mask[None].float(),
-                    size=(gt_feature_map.shape[1], gt_feature_map.shape[2]),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0)
-                > 0.5
-            )
-        else:
-            img_mask = None
+        img_mask = (
+            _resize_hard_valid_mask(
+                query_valid_mask,
+                gt_feature_map.shape[-2:],
+                gt_feature_map.device,
+            )[None]
+            if query_valid_mask is not None
+            else None
+        )
 
         score, mask = calculate_match_score(
             gaussians,
@@ -1794,6 +1883,7 @@ def evaluate_detector(
     render_visible_masks=None,
     tb_writer=None,
     iteration=0,
+    query_feature_contract="legacy_full_then_resized_map",
 ):
     torch.cuda.empty_cache()
 
@@ -1823,10 +1913,15 @@ def evaluate_detector(
             loss_sum = 0.0
             for idx, viewpoint_cam in enumerate(config["cameras"]):
                 gt_image = viewpoint_cam.original_image.cuda()
+                query_valid_mask = camera_valid_mask(
+                    masks, viewpoint_cam, gt_image.device
+                )
                 gt_feature_map = extract_normalized_feature_map(
                     feature_extractor,
                     gt_image,
                     size=(fine_resolution[0], fine_resolution[1]),
+                    query_feature_contract=query_feature_contract,
+                    valid_mask=query_valid_mask,
                 )
 
                 viewmat = viewpoint_cam.world_view_transform.transpose(0, 1).cuda()  # [4, 4]
@@ -1869,21 +1964,12 @@ def evaluate_detector(
                     visible_mask,
                 )
 
-                if masks is not None:
-                    object_mask = masks[viewpoint_cam.image_name][0].cuda()[None]
-                    # sky_mask = masks[viewpoint_cam.image_name][1].cuda()[None]
-                    distort_mask = masks[viewpoint_cam.image_name][2].cuda()[None]
-
-                    mask = object_mask & distort_mask
-                    gt_map_mask = (
-                        F.interpolate(
-                            mask[None].float(),
-                            size=(gt_map.shape[1], gt_map.shape[2]),
-                            mode="bilinear",
-                            align_corners=False,
-                        ).squeeze(0)
-                        > 0.5
-                    )
+                if query_valid_mask is not None:
+                    gt_map_mask = _resize_hard_valid_mask(
+                        query_valid_mask,
+                        gt_map.shape[-2:],
+                        gt_map.device,
+                    )[None]
                     gt_map = gt_map * gt_map_mask
 
                 # Loss
@@ -2322,6 +2408,7 @@ def evaluate_sparse_candidate_teacher(
     map_directional_residual_clip_px=24.0,
     map_directional_robust_scale_px=12.0,
     map_directional_robust_quality_floor=0.01,
+    query_feature_contract="legacy_full_then_resized_map",
 ):
     if not cameras:
         return {}
@@ -2355,6 +2442,10 @@ def evaluate_sparse_candidate_teacher(
             feature_extractor,
             camera.original_image.cuda(),
             size=(fine_resolution[0], fine_resolution[1]),
+            query_feature_contract=query_feature_contract,
+            valid_mask=camera_valid_mask(
+                masks, camera, camera.original_image.device
+            ),
         )
         pose_w2c = camera.world_view_transform.transpose(0, 1).cuda()
         focal_x = fov2focal(camera.FoVx, feature_map.shape[2])
@@ -2394,14 +2485,13 @@ def evaluate_sparse_candidate_teacher(
             matchability_heatmap,
             candidate_kwargs["nms_radius"],
         )
-        if masks is not None:
-            valid_mask = masks[camera.image_name][0].cuda()[None] & masks[camera.image_name][2].cuda()[None]
-            valid_mask = F.interpolate(
-                valid_mask[None].float(),
-                size=feature_map.shape[-2:],
-                mode="bilinear",
-                align_corners=False,
-            ).squeeze(0) > 0.5
+        valid_mask = camera_valid_mask(masks, camera, feature_map.device)
+        if valid_mask is not None:
+            valid_mask = _resize_hard_valid_mask(
+                valid_mask,
+                feature_map.shape[-2:],
+                feature_map.device,
+            )
             heatmap = heatmap * valid_mask
             matchability_heatmap = matchability_heatmap * valid_mask
         validation_candidate_kwargs = dict(candidate_kwargs)
@@ -2666,6 +2756,7 @@ def training_detector(
     candidate_teacher_pair_scorer_architecture="auto",
     candidate_teacher_detect_num=2048,
     candidate_teacher_nms_radius=2,
+    candidate_teacher_query_feature_contract="legacy_full_then_resized_map",
     candidate_teacher_match_mode="topk",
     candidate_teacher_match_topk=1,
     candidate_teacher_match_threshold=0.0,
@@ -2810,6 +2901,14 @@ def training_detector(
     candidate_teacher_online_render_failure_temperature=1.0,
     candidate_teacher_online_render_uniform_floor=0.1,
 ):
+    if candidate_teacher_query_feature_contract not in {
+        "legacy_full_then_resized_map",
+        "native_resized_input",
+    }:
+        raise ValueError(
+            "candidate_teacher_query_feature_contract must be "
+            "'legacy_full_then_resized_map' or 'native_resized_input'"
+        )
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
     feature_extractor = FeatureExtractor(scene.feature_type).cuda().eval()
@@ -2855,6 +2954,7 @@ def training_detector(
             num=landmark_num,
             k=landmark_k,
             return_coverage_stats=sampling_mode == "coverage_preserving",
+            query_feature_contract=candidate_teacher_query_feature_contract,
         )
         if sampling_mode == "coverage_preserving":
             sampled_idx, score_avg, score_num, coverage_stats = sample_result
@@ -3264,6 +3364,7 @@ def training_detector(
         "soft_sigma": float(soft_sigma),
         "detect_num": int(candidate_teacher_detect_num),
         "nms_radius": int(candidate_teacher_nms_radius),
+        "query_feature_contract": str(candidate_teacher_query_feature_contract),
         "match_mode": str(candidate_teacher_match_mode),
         "match_topk": int(candidate_teacher_match_topk),
         "match_threshold": float(candidate_teacher_match_threshold),
@@ -4102,6 +4203,7 @@ def training_detector(
         )
         online_render_pkg = None
         pair_weights = None
+        query_valid_mask = None
         if online_render_used:
             if candidate_teacher_online_render_sampling_mode == "failure_guided":
                 pair_weights = failure_guided_pair_weights(
@@ -4127,6 +4229,7 @@ def training_detector(
                 ),
                 provenance_landmark_indices=sampled_idx,
                 pair_weights=pair_weights,
+                query_feature_contract=candidate_teacher_query_feature_contract,
             )
         else:
             fine_resolution = get_resolution_from_longest_edge(
@@ -4135,10 +4238,15 @@ def training_detector(
                 scene.longest_edge,
             )
             gt_image = viewpoint_cam.original_image.cuda()
+            query_valid_mask = camera_valid_mask(
+                masks, viewpoint_cam, gt_image.device
+            )
             gt_feature_map = extract_normalized_feature_map(
                 feature_extractor,
                 gt_image,
                 size=(fine_resolution[0], fine_resolution[1]),
+                query_feature_contract=candidate_teacher_query_feature_contract,
+                valid_mask=query_valid_mask,
             )
             viewmat = viewpoint_cam.world_view_transform.transpose(0, 1).cuda()
 
@@ -4197,19 +4305,12 @@ def training_detector(
 
         # use mask to filter out object
         gt_map_mask = None
-        if masks is not None and not online_render_used:
-            object_mask = masks[viewpoint_cam.image_name][0].cuda()[None]
-            distort_mask = masks[viewpoint_cam.image_name][2].cuda()[None]
-            mask = object_mask & distort_mask
-            gt_map_mask = (
-                F.interpolate(
-                    mask[None].float(),
-                    size=(gt_feature_map.shape[1], gt_feature_map.shape[2]),
-                    mode="bilinear",
-                    align_corners=False,
-                ).squeeze(0)
-                > 0.5
-            )
+        if query_valid_mask is not None and not online_render_used:
+            gt_map_mask = _resize_hard_valid_mask(
+                query_valid_mask,
+                gt_feature_map.shape[-2:],
+                gt_feature_map.device,
+            )[None]
             if gt_map is not None:
                 gt_map = gt_map * gt_map_mask
                 if weight_map is not None:
@@ -5030,6 +5131,7 @@ def training_detector(
                 render_visible_masks,
                 tb_writer,
                 iteration,
+                query_feature_contract=candidate_teacher_query_feature_contract,
             )
             detector.train()
 
@@ -5261,6 +5363,7 @@ def training_detector(
                     map_directional_robust_quality_floor=(
                         candidate_teacher_map_directional_robust_quality_floor
                     ),
+                    query_feature_contract=candidate_teacher_query_feature_contract,
                 )
                 calibrated_pair_scorer_threshold = validation_metrics.get(
                     "pair_scorer_calibrated_threshold"
@@ -5497,6 +5600,12 @@ def build_arg_parser(with_components=False):
     )
     parser.add_argument("--candidate_teacher_detect_num", type=int, default=2048)
     parser.add_argument("--candidate_teacher_nms_radius", type=int, default=2)
+    parser.add_argument(
+        "--candidate_teacher_query_feature_contract",
+        choices=["legacy_full_then_resized_map", "native_resized_input"],
+        default="legacy_full_then_resized_map",
+        help="Sparse query encoder contract shared with LaFGS map training.",
+    )
     parser.add_argument(
         "--candidate_teacher_match_mode",
         choices=["topk", "mnn"],
@@ -6078,6 +6187,9 @@ if __name__ == "__main__":
         ),
         candidate_teacher_detect_num=args.candidate_teacher_detect_num,
         candidate_teacher_nms_radius=args.candidate_teacher_nms_radius,
+        candidate_teacher_query_feature_contract=(
+            args.candidate_teacher_query_feature_contract
+        ),
         candidate_teacher_match_mode=args.candidate_teacher_match_mode,
         candidate_teacher_match_topk=args.candidate_teacher_match_topk,
         candidate_teacher_match_threshold=args.candidate_teacher_match_threshold,

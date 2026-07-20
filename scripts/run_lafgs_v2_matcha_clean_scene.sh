@@ -3,12 +3,13 @@ set -euo pipefail
 
 # Causal clean-chain LaFGS V2 experiment on an external RGB-only MAtCha 2DGS.
 #
-# The script intentionally keeps map reconstruction and detector fitting apart:
-#   1. build a wide geometry pool and select a fixed matchability-aware bank;
-#   2. reconstruct descriptors while geometry remains frozen;
-#   3. select only on a direct held-out training-camera split with a frozen
-#      bootstrap detector;
-#   4. fit a new detector only after the map state has been selected;
+# The script intentionally keeps map reconstruction and query frontend apart:
+#   1. build a wide ULF keypoint-consensus bank from the frozen 2DGS;
+#   2. initialize it by geometry-weighted native SuperPoint feature fusion,
+#      then reconstruct descriptors while geometry remains frozen;
+#   3. select only on a direct held-out training-camera split;
+#   4. use native SuperPoint sparse PnP by default, with detector fitting kept
+#      as an explicit legacy comparison mode;
 #   5. evaluate test cameras once, after all choices are fixed.
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
@@ -20,6 +21,9 @@ SCENE="$1"
 GPU="$2"
 MODE="$3"
 MVINIT_MODE="${4:-medoid}"
+INITIALIZATION_MODE="${LAFGS_V2_INITIALIZATION_MODE:-ulf_geometry}"
+QUERY_FEATURE_CONTRACT="${LAFGS_V2_QUERY_FEATURE_CONTRACT:-native_resized_input}"
+SPARSE_FRONTEND="${LAFGS_V2_SPARSE_FRONTEND:-ulfloc_native}"
 
 case "$SCENE" in
   GreatCourt|KingsCollege|OldHospital|ShopFacade|StMarysChurch) ;;
@@ -37,6 +41,26 @@ case "$MVINIT_MODE" in
   mean|medoid) ;;
   *) echo "MVInit mode must be mean or medoid; got $MVINIT_MODE" >&2; exit 2 ;;
 esac
+case "$INITIALIZATION_MODE" in
+  mvinit|ulf_geometry) ;;
+  *) echo "Initialization mode must be mvinit or ulf_geometry; got $INITIALIZATION_MODE" >&2; exit 2 ;;
+esac
+case "$QUERY_FEATURE_CONTRACT" in
+  legacy_full_then_resized_map|native_resized_input) ;;
+  *) echo "Query feature contract must be legacy_full_then_resized_map or native_resized_input; got $QUERY_FEATURE_CONTRACT" >&2; exit 2 ;;
+esac
+case "$SPARSE_FRONTEND" in
+  detector|ulfloc_native) ;;
+  *) echo "Sparse frontend must be detector or ulfloc_native; got $SPARSE_FRONTEND" >&2; exit 2 ;;
+esac
+if [[ "$INITIALIZATION_MODE" == "ulf_geometry" && "$QUERY_FEATURE_CONTRACT" != "native_resized_input" ]]; then
+  echo "ULF keypoint-consensus/GWFF initialization requires native_resized_input descriptors" >&2
+  exit 2
+fi
+if [[ "$SPARSE_FRONTEND" == "ulfloc_native" && "$QUERY_FEATURE_CONTRACT" != "native_resized_input" ]]; then
+  echo "ulfloc_native sparse frontend requires native_resized_input descriptors" >&2
+  exit 2
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
@@ -47,11 +71,20 @@ WRAPPER_ROOT="$EXPERIMENT_ROOT/matcha_wrappers"
 SCENE_ROOT="$EXPERIMENT_ROOT/$SCENE"
 MODEL_ROOT="$WRAPPER_ROOT/$SCENE"
 DESCRIPTOR_STEPS="${LAFGS_V2_DESCRIPTOR_STEPS:-3000}"
+CHECKPOINT_STEPS_CSV="${LAFGS_V2_CHECKPOINT_STEPS:-500,1000,1500,2000,2500,3000}"
 DETECTOR_STEPS="${LAFGS_V2_DETECTOR_STEPS:-2000}"
 POOL_BUDGET="${LAFGS_V2_POOL_BUDGET:-98304}"
 LANDMARK_BUDGET="${LAFGS_V2_LANDMARK_BUDGET:-16384}"
 STATS_OBSERVATIONS="${LAFGS_V2_STATS_OBSERVATIONS:-512}"
 MVINIT_OBSERVATIONS="${LAFGS_V2_MVINIT_OBSERVATIONS:-512}"
+ULF_CONSENSUS_KEYPOINTS="${LAFGS_V2_ULF_CONSENSUS_KEYPOINTS:-2048}"
+ULF_CONSENSUS_RADIUS_PX="${LAFGS_V2_ULF_CONSENSUS_RADIUS_PX:-1.0}"
+ULF_CONSENSUS_MIN_VOTES="${LAFGS_V2_ULF_CONSENSUS_MIN_VOTES:-1}"
+ULF_CONSENSUS_MAX_VIEWS="${LAFGS_V2_ULF_CONSENSUS_MAX_VIEWS:-0}"
+ULF_CONSENSUS_DISTANCE_CHUNK="${LAFGS_V2_ULF_CONSENSUS_DISTANCE_CHUNK:-8192}"
+ULF_CONSENSUS_MAX_PER_VOXEL="${LAFGS_V2_ULF_CONSENSUS_MAX_PER_VOXEL:-8}"
+ULF_FUSION_MAX_VIEWS="${LAFGS_V2_ULF_FUSION_MAX_VIEWS:-0}"
+ULF_FUSION_MIN_COSINE="${LAFGS_V2_ULF_FUSION_MIN_COSINE:-0.0}"
 DISTILL_RANK_POOL_MULTIPLIER="${LAFGS_V2_DISTILL_RANK_POOL_MULTIPLIER:-2}"
 VALIDATION_RATIO="${LAFGS_V2_VALIDATION_RATIO:-0.2}"
 SPLIT_MODE="${LAFGS_V2_SPLIT_MODE:-temporal_block}"
@@ -61,10 +94,38 @@ case "$SELECTION_MODE" in
   safety|performance) ;;
   *) echo "Selection mode must be safety or performance; got $SELECTION_MODE" >&2; exit 2 ;;
 esac
-EXPERIMENT_TAG="${MVINIT_MODE}_p${POOL_BUDGET}_s${STATS_OBSERVATIONS}_rp${DISTILL_RANK_POOL_MULTIPLIER}"
+
+# Keep saved training states explicit and bounded by the requested schedule.
+# This permits long formal runs to validate late-stage checkpoints while
+# retaining the short-run defaults used by smoke experiments.
+IFS=',' read -r -a RAW_CHECKPOINT_STEPS <<< "$CHECKPOINT_STEPS_CSV"
+declare -A CHECKPOINT_STEP_SEEN=()
+CHECKPOINT_STEPS=()
+for raw_step in "${RAW_CHECKPOINT_STEPS[@]}"; do
+  step="${raw_step//[[:space:]]/}"
+  if [[ ! "$step" =~ ^[0-9]+$ ]] || (( step <= 0 || step > DESCRIPTOR_STEPS )); then
+    echo "Invalid descriptor checkpoint step $raw_step for $DESCRIPTOR_STEPS training steps" >&2
+    exit 2
+  fi
+  if [[ -z "${CHECKPOINT_STEP_SEEN[$step]+x}" ]]; then
+    CHECKPOINT_STEP_SEEN[$step]=1
+    CHECKPOINT_STEPS+=("$step")
+  fi
+done
+if [[ -z "${CHECKPOINT_STEP_SEEN[$DESCRIPTOR_STEPS]+x}" ]]; then
+  CHECKPOINT_STEPS+=("$DESCRIPTOR_STEPS")
+fi
+mapfile -t CHECKPOINT_STEPS < <(printf '%s\n' "${CHECKPOINT_STEPS[@]}" | sort -n)
+
+if [[ "$INITIALIZATION_MODE" == "ulf_geometry" ]]; then
+  SCAFFOLD_MODE="ulf_consensus"
+else
+  SCAFFOLD_MODE="pure_geometry"
+fi
+EXPERIMENT_TAG="${INITIALIZATION_MODE}_${QUERY_FEATURE_CONTRACT}_${SPARSE_FRONTEND}_p${POOL_BUDGET}_s${STATS_OBSERVATIONS}_rp${DISTILL_RANK_POOL_MULTIPLIER}"
 BOOTSTRAP_DIR="$SCENE_ROOT/bootstrap_${EXPERIMENT_TAG}"
 DESCRIPTOR_DIR="$SCENE_ROOT/descriptor_${EXPERIMENT_TAG}_${DESCRIPTOR_STEPS}"
-QUERY_CACHE="$SCENE_ROOT/query_cache_v6.pt"
+QUERY_CACHE="$SCENE_ROOT/query_cache_v8_${QUERY_FEATURE_CONTRACT}_${INITIALIZATION_MODE}.pt"
 NORMALIZATION_JSON="$SCENE_ROOT/scene_normalization.json"
 CONFIG_ROOT="$SCENE_ROOT/configs/$EXPERIMENT_TAG"
 LOG_ROOT="$SCENE_ROOT/logs/$EXPERIMENT_TAG"
@@ -211,16 +272,26 @@ bootstrap_to_dir() {
     --gaussian_type 2dgs --feature_type sp \
     --resolution 1 --longest_edge 640 --norm_before_render \
     --load_iteration 30000 --output_dir "$output_dir" \
-    --scaffold_mode pure_geometry \
-    --generated_landmark_path "$output_dir/wide_geometry_pool.pkl" \
+    --scaffold_mode "$SCAFFOLD_MODE" \
+    --generated_landmark_path "$output_dir/wide_${INITIALIZATION_MODE}_pool.pkl" \
     --regenerate_scaffold \
     --scaffold_budget "$POOL_BUDGET" \
     --scaffold_min_opacity 0.05 --scaffold_min_visible_views 0 \
     --scaffold_normal_bins 6 --scaffold_seed 2026 \
+    --query_feature_contract "$QUERY_FEATURE_CONTRACT" \
     --query_cache_path "$QUERY_CACHE" --query_cache_policy "$cache_policy" \
-    --visibility_mode depth --objective hard \
+    --visibility_mode rasterizer --objective hard \
     --steps 0 --save_steps 0 \
+    --initialization_mode "$INITIALIZATION_MODE" \
     --mvinit_mode "$MVINIT_MODE" --mvinit_max_observations "$MVINIT_OBSERVATIONS" \
+    --ulf_consensus_keypoints "$ULF_CONSENSUS_KEYPOINTS" \
+    --ulf_consensus_radius_px "$ULF_CONSENSUS_RADIUS_PX" \
+    --ulf_consensus_min_votes "$ULF_CONSENSUS_MIN_VOTES" \
+    --ulf_consensus_max_views "$ULF_CONSENSUS_MAX_VIEWS" \
+    --ulf_consensus_distance_chunk "$ULF_CONSENSUS_DISTANCE_CHUNK" \
+    --ulf_consensus_max_per_voxel "$ULF_CONSENSUS_MAX_PER_VOXEL" \
+    --ulf_fusion_max_views "$ULF_FUSION_MAX_VIEWS" \
+    --ulf_fusion_min_cosine "$ULF_FUSION_MIN_COSINE" \
     --mv_weight 0 --retrieval_weight 0 --trust_weight 0 --local_weight 0 \
     --proposal_jitter_std 0 --proposal_jitter_max 0 \
     --generic_proposal_count 512 --generic_proposal_weight 0 \
@@ -288,6 +359,7 @@ train_detector_from_state() {
       --precomputed_landmark_path "$landmark_ids" \
       --sparse_candidate_teacher --candidate_teacher_detector_only \
       --candidate_teacher_state_init_path "$state" \
+      --candidate_teacher_query_feature_contract "$QUERY_FEATURE_CONTRACT" \
       --candidate_teacher_detector_lr 1e-4 \
       --candidate_teacher_detect_num "$EVAL_DETECT_NUM" \
       --candidate_teacher_nms_radius "$NMS_RADIUS_PX" \
@@ -328,6 +400,10 @@ train_detector_from_state() {
 
 baseline_detector() {
   bootstrap
+  if [[ "$SPARSE_FRONTEND" == "ulfloc_native" ]]; then
+    echo "[LaFGS V2 clean] ulfloc_native uses frozen SuperPoint sparse keypoints; skipping detector-only fit"
+    return
+  fi
   train_detector_from_state baseline_detector "$BASELINE_DETECTOR_FOLDER" "$BOOTSTRAP_STATE" true "$BOOTSTRAP_IDS"
 }
 
@@ -349,11 +425,13 @@ descriptor() {
     --scaffold_mode file --landmark_path "$BOOTSTRAP_IDS" \
     --initial_state_path "$BOOTSTRAP_STATE" --initial_state_blend 1 \
     --initial_state_alignment exact \
+    --query_feature_contract "$QUERY_FEATURE_CONTRACT" \
     --query_cache_path "$QUERY_CACHE" --query_cache_policy readonly \
-    --visibility_mode depth --objective hard \
+    --visibility_mode rasterizer --objective hard \
     --steps "$DESCRIPTOR_STEPS" \
-    --save_steps 500 1000 1500 2000 2500 "$DESCRIPTOR_STEPS" \
+    --save_steps "${CHECKPOINT_STEPS[@]}" \
     --feature_lr 5e-5 --weight_decay 1e-4 \
+    --initialization_mode "$INITIALIZATION_MODE" \
     --mvinit_mode "$MVINIT_MODE" --mvinit_max_observations "$MVINIT_OBSERVATIONS" \
     --mv_weight 0.5 --retrieval_weight 0.5 --trust_weight 0.1 --local_weight 0.05 \
     --hypothesis_topk 32 --positive_radius_px 2 --negative_radius_px 6 \
@@ -403,7 +481,7 @@ verify_initialization_selection() {
     return 1
   fi
   require_file "$INITIALIZATION_SELECTION"
-  "$PYTHON" - "$INITIALIZATION_SELECTION" "$MVINIT_MODE" "$SELECTION_REPORT" <<'PY'
+  "$PYTHON" - "$INITIALIZATION_SELECTION" "$INITIALIZATION_MODE" "$SELECTION_REPORT" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -475,10 +553,12 @@ full_descriptor() {
     --scaffold_mode file --landmark_path "$FULL_BOOTSTRAP_IDS" \
     --initial_state_path "$FULL_BOOTSTRAP_STATE" --initial_state_blend 1 \
     --initial_state_alignment exact \
+    --query_feature_contract "$QUERY_FEATURE_CONTRACT" \
     --query_cache_path "$QUERY_CACHE" --query_cache_policy readonly \
-    --visibility_mode depth --objective hard \
+    --visibility_mode rasterizer --objective hard \
     --steps "$step" --save_steps "$step" \
     --feature_lr 5e-5 --weight_decay 1e-4 \
+    --initialization_mode "$INITIALIZATION_MODE" \
     --mvinit_mode "$MVINIT_MODE" --mvinit_max_observations "$MVINIT_OBSERVATIONS" \
     --mv_weight 0.5 --retrieval_weight 0.5 --trust_weight 0.1 --local_weight 0.05 \
     --hypothesis_topk 32 --positive_radius_px 2 --negative_radius_px 6 \
@@ -500,7 +580,8 @@ write_final_refit_manifest() {
   "$PYTHON" - \
     "$FINAL_REFIT_MANIFEST" "$SELECTION_REPORT" "$FULL_BOOTSTRAP_STATE" \
     "$FULL_BOOTSTRAP_IDS" "$FULL_BOOTSTRAP_META" "$state" "$step" \
-    "$MODEL_ROOT" "$SOURCE_PLY" "$QUERY_CACHE" "$INITIALIZATION_SELECTION" <<'PY'
+    "$MODEL_ROOT" "$SOURCE_PLY" "$QUERY_CACHE" "$INITIALIZATION_SELECTION" \
+    "$QUERY_FEATURE_CONTRACT" <<'PY'
 import hashlib
 import json
 import sys
@@ -518,6 +599,7 @@ from pathlib import Path
     source_ply,
     query_cache,
     initialization_selection,
+    query_feature_contract,
 ) = map(Path, sys.argv[1:])
 payload = json.loads(selection_report.read_text())
 protocol = payload.get("selection_protocol", {})
@@ -551,6 +633,7 @@ record = {
     "frozen_2dgs_model_path": str(model_root.resolve()),
     "source_matcha_ply": str(source_ply.resolve()),
     "query_cache": str(query_cache.resolve()),
+    "query_feature_contract": str(query_feature_contract),
 }
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
@@ -592,6 +675,8 @@ make_eval_config() {
     --landmark_path "$landmark_ids" --landmark_meta_path "$landmark_meta" \
     --landmark_feature_override_path "$state" --override_landmark_features \
     --detect_num "$EVAL_DETECT_NUM" --nms "$NMS_RADIUS_PX" \
+    --sparse_query_feature_contract "$QUERY_FEATURE_CONTRACT" \
+    --sparse_frontend "$SPARSE_FRONTEND" \
     --reprojection_error "$RESIDUAL_CLIP_PX" \
     --match_threshold 0 --match_topk 1 --max_matches_per_landmark 2 \
     --candidate_frontend_match_policy error --diagnostics \
@@ -627,7 +712,7 @@ run_eval() {
     --gaussian_type 2dgs --feature_type sp
     --resolution 1 --longest_edge 640 --norm_before_render
     --iteration 30000 --cfg "$cfg"
-    --prefix "lafgs-v2-clean-${SCENE}-${MVINIT_MODE}-${label}-${subset}"
+    --prefix "lafgs-v2-clean-${SCENE}-${INITIALIZATION_MODE}-${label}-${subset}"
     --sparse_only
   )
   if [[ "$subset" == "validation" ]]; then
@@ -656,7 +741,7 @@ validate() {
   descriptor
   run_eval control validation "$BASELINE_DETECTOR_FOLDER" "$BOOTSTRAP_STATE"
   local checkpoint
-  for checkpoint in 500 1000 1500 2000 2500 "$DESCRIPTOR_STEPS"; do
+  for checkpoint in "${CHECKPOINT_STEPS[@]}"; do
     local state="$DESCRIPTOR_DIR/${checkpoint}_lafgs_map_state.pt"
     if [[ -f "$state" ]]; then
       run_eval "descriptor_${checkpoint}" validation "$BASELINE_DETECTOR_FOLDER" "$state"
@@ -680,7 +765,7 @@ select_checkpoint() {
     --output "$SELECTION_REPORT"
   )
   local checkpoint
-  for checkpoint in 500 1000 1500 2000 2500 "$DESCRIPTOR_STEPS"; do
+  for checkpoint in "${CHECKPOINT_STEPS[@]}"; do
     local state="$DESCRIPTOR_DIR/${checkpoint}_lafgs_map_state.pt"
     local result_ref="$RESULT_ROOT/descriptor_${checkpoint}_validation.results_path"
     if [[ -f "$state" && -f "$result_ref" ]]; then
@@ -693,6 +778,10 @@ select_checkpoint() {
 
 final_detector() {
   final_refit
+  if [[ "$SPARSE_FRONTEND" == "ulfloc_native" ]]; then
+    echo "[LaFGS V2 clean] ulfloc_native selected map needs no scene-specific detector"
+    return
+  fi
   local step
   local state
   step="$(selected_descriptor_step)"
@@ -719,7 +808,9 @@ test_selected() {
   step="$(selected_descriptor_step)"
   state="$(full_descriptor_state_path "$step")"
   selected_detector="$FULL_FINAL_DETECTOR_FOLDER"
-  if [[ "$state" == "$FULL_BOOTSTRAP_STATE" ]]; then
+  if [[ "$SPARSE_FRONTEND" == "ulfloc_native" ]]; then
+    selected_detector="ulfloc_native_no_detector"
+  elif [[ "$state" == "$FULL_BOOTSTRAP_STATE" ]]; then
     selected_detector="$FULL_BOOTSTRAP_DETECTOR_FOLDER"
   fi
   run_eval bootstrap_full test "$FULL_BOOTSTRAP_DETECTOR_FOLDER" "$FULL_BOOTSTRAP_STATE" \

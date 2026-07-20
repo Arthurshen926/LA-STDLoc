@@ -226,6 +226,7 @@ def build_detector_free_observations(
     grid_rows=8,
     grid_cols=8,
     depth_bins=4,
+    pixel_center_offset=0.0,
 ):
     feature_map = torch.as_tensor(query_feature_map)
     if feature_map.ndim != 3:
@@ -260,6 +261,7 @@ def build_detector_free_observations(
         pose_w2c,
         height,
         width,
+        pixel_center_offset=pixel_center_offset,
     )
     bank_uv, bank_depth, bank_projected = project_landmarks_to_query(
         prediction_bank_xyz,
@@ -267,6 +269,7 @@ def build_detector_free_observations(
         pose_w2c,
         height,
         width,
+        pixel_center_offset=pixel_center_offset,
     )
     if bank_visibility_mask is None:
         base_bank_visible = filter_depth_consistent_landmarks(

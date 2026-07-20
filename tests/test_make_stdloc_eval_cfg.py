@@ -349,6 +349,39 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
                 sparse["landmark_meta_path"], "/tmp/map/landmark_meta.pt"
             )
 
+    def test_writes_explicit_ulfloc_native_frontend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(yaml.dump({"sparse": {}, "dense": {}}))
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                    "--sparse_query_feature_contract",
+                    "native_resized_input",
+                    "--sparse_frontend",
+                    "ulfloc_native",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(out_cfg.read_text(), Loader=yaml.FullLoader)["sparse"]
+            self.assertEqual(sparse["sparse_frontend"], "ulfloc_native")
+            self.assertEqual(
+                sparse["query_feature_contract"], "native_resized_input"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

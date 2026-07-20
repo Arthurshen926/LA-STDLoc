@@ -39,3 +39,25 @@ class FeatureExtractor(nn.Module):
                 "repeatability": repeatability,
                 "reliability": reliability
             }
+
+    @torch.no_grad()
+    def detectAndCompute(self, image, top_k=None, detection_threshold=None):
+        """Expose the native sparse frontend without changing ``forward``."""
+        if self.feature_type != "sp":
+            raise NotImplementedError(
+                "detectAndCompute is currently defined only for SuperPoint"
+            )
+        return self.model.detectAndCompute(
+            image,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+        )
+
+    @torch.no_grad()
+    def detectAndComputeDense(self, image):
+        """Expose the native stride-8 SuperPoint feature map."""
+        if self.feature_type != "sp":
+            raise NotImplementedError(
+                "detectAndComputeDense is currently defined only for SuperPoint"
+            )
+        return self.model.detectAndComputeDense(image)

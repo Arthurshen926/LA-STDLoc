@@ -2,6 +2,23 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_ulfloc_native_frontend_requires_the_native_direct_contract(self):
+        from stdloc import validate_sparse_frontend_config
+
+        valid = {
+            "sparse_frontend": "ulfloc_native",
+            "query_feature_contract": "native_resized_input",
+            "use_landmark_prior": False,
+        }
+        self.assertEqual(validate_sparse_frontend_config(valid), "ulfloc_native")
+
+        with self.assertRaisesRegex(ValueError, "native_resized_input"):
+            validate_sparse_frontend_config(
+                {**valid, "query_feature_contract": "legacy_full_then_resized_map"}
+            )
+        with self.assertRaisesRegex(ValueError, "use_pair_measurement"):
+            validate_sparse_frontend_config({**valid, "use_pair_measurement": True})
+
     def test_candidate_teacher_geometry_requires_alignment_and_is_finite(self):
         import torch
 
@@ -165,6 +182,20 @@ class STDLocConfigPathTest(unittest.TestCase):
             candidate_frontend_mismatches(trained, evaluated),
             [("map_max_matches_per_landmark", 2, 1)],
         )
+
+    def test_detector_query_feature_contract_mismatch_can_fail_strictly(self):
+        from stdloc import validate_detector_query_feature_contract
+
+        matching = {
+            "detector_training_query_feature_contract": "native_resized_input",
+            "query_feature_contract": "native_resized_input",
+            "candidate_frontend_match_policy": "error",
+        }
+        self.assertIsNone(validate_detector_query_feature_contract(matching))
+        mismatched = dict(matching)
+        mismatched["query_feature_contract"] = "legacy_full_then_resized_map"
+        with self.assertRaisesRegex(ValueError, "query feature contract mismatch"):
+            validate_detector_query_feature_contract(mismatched)
 
     def test_candidate_teacher_features_require_exact_landmark_alignment(self):
         import tempfile
@@ -420,7 +451,7 @@ class STDLocConfigPathTest(unittest.TestCase):
         self.assertEqual(diagnostics["detected_keypoints"], 2)
         self.assertEqual(diagnostics["sparse_valid_mask_filtered_keypoints"], 2)
 
-    def test_select_sparse_keypoints_by_valid_mask_refills_to_target_count(self):
+    def test_select_sparse_keypoints_by_valid_mask_never_refills_invalid_cells(self):
         import torch
 
         from stdloc import select_sparse_keypoints_by_valid_mask
@@ -437,11 +468,11 @@ class STDLocConfigPathTest(unittest.TestCase):
             refill_invalid=True,
         )
 
-        self.assertEqual(selected.tolist(), [0, 2, 4, 1])
+        self.assertEqual(selected.tolist(), [0, 2, 4])
         self.assertEqual(diagnostics["detected_keypoints_raw"], 6)
-        self.assertEqual(diagnostics["detected_keypoints"], 4)
+        self.assertEqual(diagnostics["detected_keypoints"], 3)
         self.assertEqual(diagnostics["sparse_valid_mask_selected_valid_keypoints"], 3)
-        self.assertEqual(diagnostics["sparse_valid_mask_refill_keypoints"], 1)
+        self.assertEqual(diagnostics["sparse_valid_mask_refill_keypoints"], 0)
 
     def test_sparse_correspondence_diagnostics_reports_geometry_and_gt_precision(self):
         import numpy as np

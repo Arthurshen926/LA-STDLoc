@@ -79,6 +79,8 @@ def make_stdloc_eval_cfg(
     full_primitive_surface_suppression=None,
     full_primitive_voxel_size=None,
     full_primitive_max_per_surface=None,
+    sparse_query_feature_contract=None,
+    sparse_frontend=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -101,6 +103,37 @@ def make_stdloc_eval_cfg(
     sparse["landmark_model_path"] = artifact_model_path
     sparse["landmark_meta_model_path"] = artifact_model_path
     sparse["use_landmark_prior"] = False
+    if sparse_query_feature_contract is not None:
+        sparse["query_feature_contract"] = str(sparse_query_feature_contract)
+    if sparse_frontend is not None:
+        sparse["sparse_frontend"] = str(sparse_frontend)
+    detector_summary_path = os.path.join(
+        artifact_model_path,
+        detector_folder,
+        "candidate_teacher_training_summary.json",
+    )
+    if (
+        str(sparse.get("sparse_frontend", "detector")) == "detector"
+        and os.path.isfile(detector_summary_path)
+    ):
+        with open(detector_summary_path, "r", encoding="utf-8") as handle:
+            detector_summary = json.load(handle)
+        trained_contract = detector_summary.get("config", {}).get(
+            "query_feature_contract"
+        )
+        if trained_contract:
+            configured_contract = sparse.get(
+                "query_feature_contract", "legacy_full_then_resized_map"
+            )
+            if str(trained_contract) != str(configured_contract):
+                raise ValueError(
+                    "Detector training/evaluation query feature contracts differ: "
+                    f"trained={trained_contract!r} configured={configured_contract!r}"
+                )
+            sparse["detector_training_query_feature_contract"] = str(
+                trained_contract
+            )
+            sparse["detector_training_summary_path"] = detector_summary_path
     if candidate_teacher_state_path:
         sparse["candidate_teacher_state_path"] = str(candidate_teacher_state_path)
         sparse["candidate_teacher_state_model_path"] = artifact_model_path
@@ -360,6 +393,7 @@ def make_stdloc_eval_cfg(
         ),
         "use_detector_offset": sparse.get("use_detector_offset", False),
         "detector_max_offset": sparse.get("detector_max_offset", 2.0),
+        "sparse_frontend": sparse.get("sparse_frontend", "detector"),
         "candidate_frontend_match_policy": sparse.get(
             "candidate_frontend_match_policy", "warn"
         ),
@@ -510,6 +544,16 @@ def main():
     )
     parser.add_argument("--full_primitive_voxel_size", type=float, default=None)
     parser.add_argument("--full_primitive_max_per_surface", type=int, default=None)
+    parser.add_argument(
+        "--sparse_query_feature_contract",
+        choices=["legacy_full_then_resized_map", "native_resized_input"],
+        default=None,
+    )
+    parser.add_argument(
+        "--sparse_frontend",
+        choices=["detector", "ulfloc_native"],
+        default=None,
+    )
     parser.add_argument("--summary_json", default="")
     args = parser.parse_args()
 
@@ -636,6 +680,8 @@ def main():
         ),
         full_primitive_voxel_size=args.full_primitive_voxel_size,
         full_primitive_max_per_surface=args.full_primitive_max_per_surface,
+        sparse_query_feature_contract=args.sparse_query_feature_contract,
+        sparse_frontend=args.sparse_frontend,
     )
     if args.summary_json:
         os.makedirs(os.path.dirname(os.path.abspath(args.summary_json)), exist_ok=True)

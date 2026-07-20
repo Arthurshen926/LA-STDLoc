@@ -41,6 +41,7 @@ from localization_training.sparse_frontend import (
     select_offset_only_candidates,
     select_match_candidates_with_geometry_refill,
 )
+from localization_training.ulf_initializer import sample_mask_at_grid_uv
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scene.kpdetector import KpDetector, simple_nms
@@ -83,6 +84,54 @@ def select_candidate_validation_cameras(
         mode=split_mode,
     )
     return validation_cameras
+
+
+_EVALUATION_VALID_MASK_POLICY = "object_and_sky_and_distortion_v1"
+
+
+def load_evaluation_masks(dataset):
+    """Load the preprocessing masks used to constrain sparse query selection."""
+    candidates = (
+        os.path.join(dataset.source_path, dataset.images, "masks.pkl"),
+        os.path.join(dataset.source_path, "masks.pkl"),
+    )
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, "rb") as handle:
+                return pickle.load(handle), path
+    return None, ""
+
+
+def _resize_evaluation_mask(mask, target_hw, device):
+    mask = torch.as_tensor(mask, dtype=torch.float32, device=device)
+    while mask.ndim > 2:
+        mask = mask.squeeze(0)
+    if mask.ndim != 2:
+        raise ValueError(f"Expected a two-dimensional mask, got {tuple(mask.shape)}")
+    return F.interpolate(
+        mask[None, None], size=target_hw, mode="nearest"
+    )[0, 0].bool()
+
+
+def evaluation_valid_mask(masks, camera):
+    """Build the valid query domain before detector keypoint selection."""
+    if masks is None:
+        return None
+    name = str(camera.image_name).replace("\\", "/")
+    if name not in masks:
+        return None
+    channels = masks[name]
+    if len(channels) < 3:
+        raise ValueError(
+            f"Mask entry for {name!r} must contain object, sky and distortion masks"
+        )
+    target_hw = camera.original_image.shape[-2:]
+    device = camera.original_image.device
+    return (
+        _resize_evaluation_mask(channels[0], target_hw, device)
+        & _resize_evaluation_mask(channels[1], target_hw, device)
+        & _resize_evaluation_mask(channels[2], target_hw, device)
+    )
 
 
 def load_evaluation_camera_list(cameras, path):
@@ -185,6 +234,68 @@ def validate_candidate_frontend_compatibility(state_config, sparse_config):
         raise ValueError(message)
     warnings.warn(message, RuntimeWarning, stacklevel=2)
     return mismatches
+
+
+def validate_detector_query_feature_contract(sparse_config):
+    """Prevent a detector from running on a different encoder representation."""
+    trained = sparse_config.get("detector_training_query_feature_contract")
+    if not trained:
+        return
+    evaluated = sparse_config.get(
+        "query_feature_contract", "legacy_full_then_resized_map"
+    )
+    if str(trained) == str(evaluated):
+        return
+    policy = str(sparse_config.get("candidate_frontend_match_policy", "warn")).lower()
+    message = (
+        "detector train/eval query feature contract mismatch: "
+        f"trained={trained!r} evaluated={evaluated!r}"
+    )
+    if policy == "error":
+        raise ValueError(message)
+    if policy == "warn":
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+
+
+def validate_sparse_frontend_config(sparse_config):
+    """Validate the explicit sparse frontend contract before loading artifacts."""
+    frontend = str(sparse_config.get("sparse_frontend", "detector")).lower()
+    if frontend not in {"detector", "ulfloc_native"}:
+        raise ValueError(
+            "sparse_frontend must be 'detector' or 'ulfloc_native', got "
+            f"{frontend!r}"
+        )
+    if frontend != "ulfloc_native":
+        return frontend
+    contract = str(
+        sparse_config.get("query_feature_contract", "legacy_full_then_resized_map")
+    )
+    if contract != "native_resized_input":
+        raise ValueError(
+            "ulfloc_native sparse frontend requires query_feature_contract="
+            "'native_resized_input'"
+        )
+    incompatible = (
+        "mnn_match",
+        "dual_softmax",
+        "use_candidate_dustbin",
+        "use_candidate_pair_scorer",
+        "use_pair_measurement",
+        "use_detector_matchability",
+        "use_detector_offset",
+    )
+    enabled = [name for name in incompatible if bool(sparse_config.get(name, False))]
+    if enabled:
+        raise ValueError(
+            "ulfloc_native sparse frontend currently supports direct cosine "
+            "retrieval only; disable " + ", ".join(enabled)
+        )
+    if bool(sparse_config.get("use_landmark_prior", False)):
+        raise ValueError(
+            "ulfloc_native sparse frontend does not apply landmark priors; "
+            "set use_landmark_prior=false"
+        )
+    return frontend
 
 
 def candidate_direct_holdout_mismatches(
@@ -1094,12 +1205,13 @@ def select_sparse_keypoints_by_valid_mask(
         refill_count = 0
     else:
         selected_valid = valid_kp_ids[:target_count]
-        if bool(refill_invalid) and selected_valid.numel() < target_count:
-            refill = invalid_kp_ids[: target_count - selected_valid.numel()]
-        else:
-            refill = invalid_kp_ids[:0]
-        selected = torch.cat([selected_valid, refill], dim=0)
-        refill_count = int(refill.numel())
+        # A validity mask defines a hard support constraint.  Candidate
+        # over-sampling occurs before this function; adding invalid cells back
+        # here would make sky/dynamic masking ineffective whenever a view has
+        # few valid keypoints.
+        del refill_invalid, invalid_kp_ids
+        selected = selected_valid
+        refill_count = 0
     selected_valid_count = int((mask[selected].sum().item() if selected.numel() else 0))
     selected_count = int(selected.numel())
     return selected, {
@@ -1246,6 +1358,13 @@ def build_evaluation_protocol(dataset, args, cameras):
     camera_names_digest = hashlib.sha256(
         ("\n".join(camera_names) + "\n").encode("utf-8")
     ).hexdigest()
+    mask_candidates = (
+        os.path.join(dataset.source_path, dataset.images, "masks.pkl"),
+        os.path.join(dataset.source_path, "masks.pkl"),
+    )
+    mask_path = next(
+        (path for path in mask_candidates if os.path.isfile(path)), ""
+    )
     protocol = {
         "schema_version": 1,
         "source_path": os.path.realpath(dataset.source_path),
@@ -1265,6 +1384,12 @@ def build_evaluation_protocol(dataset, args, cameras):
             if getattr(args, "evaluation_camera_list", "")
             else None
         ),
+        "sparse_valid_mask": {
+            "enabled": bool(mask_path),
+            "policy": _EVALUATION_VALID_MASK_POLICY if mask_path else "none",
+            "path": os.path.realpath(mask_path) if mask_path else "",
+            "sha256": file_sha256(mask_path) if mask_path else None,
+        },
         "evaluation_camera_count": len(camera_records),
         "camera_names_sha256": camera_names_digest,
         "loaded_image_shapes": loaded_shapes,
@@ -1568,6 +1693,13 @@ class STDLoc:
         self.gaussians = gaussians
         self.config = config
         sparse_config = config["sparse"]
+        self.sparse_frontend = validate_sparse_frontend_config(sparse_config)
+        if self.sparse_frontend == "ulfloc_native" and str(
+            config.get("feature_type", "")
+        ).lower() not in {"sp", "superpoint"}:
+            raise ValueError("ulfloc_native sparse frontend requires feature_type='sp'")
+        if self.sparse_frontend == "detector":
+            validate_detector_query_feature_contract(sparse_config)
         sampled_idx_path = resolve_artifact_path(
             config["model_path"],
             sparse_config["landmark_path"],
@@ -1881,11 +2013,13 @@ class STDLoc:
                     measurement_training_features = candidate_features.reshape_as(
                         active_features_flat.cpu()
                     )
-        detector_path = resolve_artifact_path(
-            config["model_path"],
-            sparse_config["detector_path"],
-            sparse_config.get("detector_model_path"),
-        )
+        detector_path = None
+        if self.sparse_frontend == "detector":
+            detector_path = resolve_artifact_path(
+                config["model_path"],
+                sparse_config["detector_path"],
+                sparse_config.get("detector_model_path"),
+            )
         self.artifact_provenance = {
             "map_model_path": str(config["model_path"]),
             "map_checkpoint_path": config.get("_map_checkpoint_path"),
@@ -1906,6 +2040,7 @@ class STDLoc:
             ),
             "detector_path": detector_path,
             "detector_file_sha256": file_sha256(detector_path),
+            "sparse_frontend": self.sparse_frontend,
             "active_vs_map_feature_delta": landmark_feature_delta(
                 map_features_flat, active_features_flat
             ),
@@ -1945,41 +2080,82 @@ class STDLoc:
         self.feature_extractor = FeatureExtractor(config["feature_type"]).cuda().eval()
         self.longest_edge = config["longest_edge"]
 
-        self.detector = KpDetector(
-            self.feature_extractor.feature_dim,
-            matchability_head=config["sparse"].get("use_detector_matchability", False),
-            offset_head=config["sparse"].get("use_detector_offset", False),
-            max_offset=config["sparse"].get("detector_max_offset", 2.0),
-        )
-        self.detector.load_state_dict(
-            torch.load(
-                resolve_artifact_path(
-                    config["model_path"],
-                    sparse_config["detector_path"],
-                    sparse_config.get("detector_model_path"),
-                )
+        self.detector = None
+        if self.sparse_frontend == "detector":
+            self.detector = KpDetector(
+                self.feature_extractor.feature_dim,
+                matchability_head=config["sparse"].get(
+                    "use_detector_matchability", False
+                ),
+                offset_head=config["sparse"].get("use_detector_offset", False),
+                max_offset=config["sparse"].get("detector_max_offset", 2.0),
             )
+            self.detector.load_state_dict(torch.load(detector_path))
+            self.detector.eval().cuda()
+
+    def _prepare_native_sparse_input(self, image, sparse_valid_mask=None):
+        """Apply the V8 native RGB/mask contract once for all sparse paths."""
+        fine_resolution = get_resolution_from_longest_edge(
+            image.shape[-2], image.shape[-1], self.longest_edge
         )
-        self.detector.eval().cuda()
+        sparse_image = F.interpolate(
+            image[None],
+            size=fine_resolution,
+            mode="bilinear",
+            align_corners=False,
+        )
+        sparse_mask = None
+        if sparse_valid_mask is not None:
+            sparse_mask = _resize_evaluation_mask(
+                sparse_valid_mask,
+                fine_resolution,
+                sparse_image.device,
+            )
+            sparse_image = sparse_image * sparse_mask[None, None].to(
+                dtype=sparse_image.dtype
+            )
+        return sparse_image, sparse_mask
 
     @torch.no_grad()
     def localize(self, query_image, fovx, fovy, sparse_valid_mask=None, sparse_support_score=None):
         """
         image: torch.Tensor, shape (3, H, W)
         """
-        # Get feature
-        query_fine_feature_map, query_coarse_feature_map = self.get_feature_map(
-            query_image
-        )
-
-        # Sparse stage
-        sparse_result = self.loc_sparse(
-            query_fine_feature_map,
-            fovx,
-            fovy,
-            valid_mask=sparse_valid_mask,
-            support_score=sparse_support_score,
-        )
+        if self.sparse_frontend == "ulfloc_native":
+            sparse_result = self.loc_sparse_ulfloc_native(
+                query_image,
+                fovx,
+                fovy,
+                valid_mask=sparse_valid_mask,
+                support_score=sparse_support_score,
+            )
+            if self.config.get(
+                "sparse_only", self.config["sparse"].get("sparse_only", False)
+            ):
+                return {"sparse": sparse_result, "dense": []}
+            _, query_fine_feature_map, query_coarse_feature_map = self.get_feature_map(
+                query_image,
+                include_dense=True,
+                sparse_valid_mask=sparse_valid_mask,
+            )
+        else:
+            # Detector mode consumes the native stride-8 descriptor map.
+            (
+                query_sparse_feature_map,
+                query_fine_feature_map,
+                query_coarse_feature_map,
+            ) = self.get_feature_map(
+                query_image,
+                include_dense=True,
+                sparse_valid_mask=sparse_valid_mask,
+            )
+            sparse_result = self.loc_sparse(
+                query_sparse_feature_map,
+                fovx,
+                fovy,
+                valid_mask=sparse_valid_mask,
+                support_score=sparse_support_score,
+            )
         if self.config.get("sparse_only", self.config["sparse"].get("sparse_only", False)):
             return {"sparse": sparse_result, "dense": []}
 
@@ -2824,6 +3000,296 @@ class STDLoc:
         return result
 
     @torch.no_grad()
+    def loc_sparse_ulfloc_native(
+        self,
+        query_image,
+        fovx,
+        fovy,
+        valid_mask=None,
+        support_score=None,
+    ):
+        """ULF-Loc-style sparse PnP over the active LaFGS landmark bank.
+
+        The query descriptor is produced by SuperPoint's native
+        ``detectAndCompute`` API at full image resolution.  The map-side
+        descriptor is still the active LaFGS field, so this changes only the
+        query frontend and not the landmark bank or the correspondence solver.
+        """
+        if support_score is not None:
+            raise ValueError(
+                "ulfloc_native sparse frontend does not support a detector "
+                "support-score prior"
+            )
+        if self.feature_extractor.feature_type != "sp":
+            raise ValueError("ulfloc_native sparse frontend requires SuperPoint")
+
+        sparse_image, input_mask = self._prepare_native_sparse_input(
+            query_image, valid_mask
+        )
+        detect_num = int(self.config["sparse"].get("detect_num", 2048))
+        sparse = self.feature_extractor.detectAndCompute(
+            sparse_image, top_k=detect_num
+        )[0]
+        keypoints = sparse["keypoints"]
+        keypoint_scores = sparse["keypoint_scores"]
+        query_features = F.normalize(sparse["descriptors"], dim=1)
+        native_before_mask = int(keypoints.shape[0])
+        if input_mask is not None:
+            keep = sample_mask_at_grid_uv(input_mask, keypoints)
+            keypoints = keypoints[keep]
+            keypoint_scores = keypoint_scores[keep]
+            query_features = query_features[keep]
+
+        height, width = map(int, sparse_image.shape[-2:])
+        mask_diagnostics = {
+            "sparse_diag_valid_mask_enabled": float(input_mask is not None),
+            "sparse_diag_valid_mask_input_keypoints": native_before_mask,
+            "sparse_diag_valid_mask_kept_keypoints": int(keypoints.shape[0]),
+            "sparse_diag_valid_mask_removed_keypoints": int(
+                native_before_mask - keypoints.shape[0]
+            ),
+        }
+        if keypoints.numel() == 0:
+            result = {
+                "pose_w2c": np.eye(4, dtype=np.float32),
+                "inliers": 0,
+                "matches": 0,
+                "detected_keypoints": 0,
+                "sparse_diag_frontend_ulfloc_native": 1.0,
+            }
+            result.update(mask_diagnostics)
+            return result
+
+        landmark_features = F.normalize(
+            self.landmarks.get_loc_feature.detach().reshape(
+                self.landmarks.get_loc_feature.shape[0], -1
+            ),
+            dim=1,
+        )
+        configured_topk = min(
+            max(int(self.config["sparse"].get("topk", 1)), 1),
+            int(landmark_features.shape[0]),
+        )
+        diag_cfg = self.config["sparse"].get("diagnostics", {})
+        dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
+        oracle_topk = min(
+            max(int(diag_cfg.get("oracle_topk", 32)), 1),
+            int(landmark_features.shape[0]),
+        )
+        retrieval_topk = max(configured_topk, oracle_topk if dump_discrete_oracle else 0)
+        retrieval = chunked_exact_topk(
+            query_features,
+            landmark_features,
+            topk=retrieval_topk,
+            chunk_size=self.config["sparse"].get("full_primitive_chunk_size", 8192),
+        )
+        raw_scores = retrieval.scores[:, :configured_topk]
+        raw_landmark_idx = retrieval.indices[:, :configured_topk]
+        raw_keypoint_idx = torch.arange(
+            keypoints.shape[0], device=keypoints.device
+        )[:, None].expand_as(raw_landmark_idx)
+        raw_matches = SparseMatchResult(
+            raw_keypoint_idx.reshape(-1),
+            raw_landmark_idx.reshape(-1),
+            raw_scores.reshape(-1),
+        )
+        raw_match_count = int(raw_matches.scores.numel())
+        max_matches_per_landmark = int(
+            self.config["sparse"].get("max_matches_per_landmark", 0) or 0
+        )
+        max_matches_per_keypoint = int(
+            self.config["sparse"].get("max_matches_per_keypoint", 0) or 0
+        )
+        if self.config["sparse"].get("unique_landmark_matches", False):
+            max_matches_per_landmark = 1
+        min_candidate_matches = int(
+            self.config["sparse"].get("min_candidate_matches", 0) or 0
+        )
+        candidate_refill_trigger_count = int(
+            self.config["sparse"].get("candidate_refill_trigger_count", 0) or 0
+        )
+        match_threshold = float(self.config["sparse"].get("threshold", 0.0))
+        matches = select_match_candidates(
+            raw_matches,
+            threshold=match_threshold,
+            max_matches_per_keypoint=max_matches_per_keypoint,
+            max_matches_per_landmark=max_matches_per_landmark,
+            min_match_count=min_candidate_matches,
+            refill_trigger_count=candidate_refill_trigger_count,
+        )
+        if matches.keypoint_idx.numel() == 0:
+            result = {
+                "pose_w2c": np.eye(4, dtype=np.float32),
+                "inliers": 0,
+                "matches": 0,
+                "detected_keypoints": int(keypoints.shape[0]),
+                "sparse_diag_frontend_ulfloc_native": 1.0,
+            }
+            result.update(mask_diagnostics)
+            return result
+
+        p2d_matcher_raw = keypoints[raw_matches.keypoint_idx].detach().cpu().float()
+        p3d_matcher_raw = self.landmarks.get_xyz[
+            raw_matches.landmark_idx
+        ].detach().cpu().float()
+        scores_matcher_raw = raw_matches.scores.detach().cpu().float()
+        p2d = keypoints[matches.keypoint_idx].detach().cpu().float()
+        p3d = self.landmarks.get_xyz[matches.landmark_idx].detach().cpu().float()
+        scores = matches.scores.detach().cpu().float()
+        p2d_pre_selector = p2d.clone()
+        p3d_pre_selector = p3d.clone()
+        scores_pre_selector = scores.clone()
+        selector_indices = torch.arange(p2d.shape[0], dtype=torch.long)
+        selector = _geometry_selector_from_config(self.config["sparse"], width, height)
+        if selector is not None:
+            selector_indices = selector.select(p2d, p3d, scores).detach().cpu().long()
+            p2d = p2d[selector_indices]
+            p3d = p3d[selector_indices]
+            scores = scores[selector_indices]
+        match_count_before_selector = int(p2d_pre_selector.shape[0])
+        match_count = int(p2d.shape[0])
+
+        p2d_np = p2d.numpy()
+        p3d_np = p3d.numpy()
+        scores_np = scores.numpy()
+        K = get_intrinsic(fovx, fovy, width, height)
+        if p2d_np.shape[0] >= 4:
+            pose_w2c, inliers = solve_pose(
+                p2d_np + 0.5,
+                p3d_np,
+                K,
+                self.config["sparse"]["solver"],
+                self.config["sparse"]["reprojection_error"],
+                self.config["sparse"]["confidence"],
+                self.config["sparse"]["max_iterations"],
+                self.config["sparse"]["min_iterations"],
+                scores=scores_np,
+                ransac_seed=self.config["sparse"].get("ransac_seed", 0),
+            )
+        else:
+            pose_w2c = np.eye(4, dtype=np.float32)
+            inliers = np.empty(0, dtype=np.int64)
+
+        result = {
+            "pose_w2c": pose_w2c,
+            "inliers": int(inliers.shape[0]),
+            "matches": match_count,
+            "matches_before_selector": match_count_before_selector,
+            "detected_keypoints": int(keypoints.shape[0]),
+            "sparse_diag_frontend_ulfloc_native": 1.0,
+            "sparse_diag_matches_before_landmark_limit": raw_match_count,
+            "sparse_diag_matches_after_landmark_limit": int(matches.scores.numel()),
+            "sparse_diag_max_matches_per_keypoint": max_matches_per_keypoint,
+            "sparse_diag_landmark_limit_removed_ratio": (
+                1.0 - int(matches.scores.numel()) / max(raw_match_count, 1)
+            ),
+            "sparse_diag_candidate_match_threshold": match_threshold,
+            "sparse_diag_candidate_dustbin_enabled": 0.0,
+            "sparse_diag_pair_scorer_enabled": 0.0,
+            "sparse_diag_pair_measurement_enabled": 0.0,
+            "sparse_diag_detector_offset_enabled": 0.0,
+        }
+        if bool(diag_cfg.get("enabled", True)):
+            result.update(
+                sparse_correspondence_diagnostics(
+                    p2d_np,
+                    p3d_np,
+                    K,
+                    pose_w2c,
+                    inliers.reshape(-1),
+                    width,
+                    height,
+                    grid_rows=diag_cfg.get("grid_rows", 4),
+                    grid_cols=diag_cfg.get("grid_cols", 4),
+                    voxel_size=diag_cfg.get("voxel_size", 0.25),
+                    translation_task_scale_m=diag_cfg.get(
+                        "task_translation_scale_m", 0.02
+                    ),
+                    rotation_task_scale_degrees=diag_cfg.get(
+                        "task_rotation_scale_degrees", 2.0
+                    ),
+                )
+            )
+        if bool(diag_cfg.get("gt_metrics", True)) or bool(
+            diag_cfg.get("dump_correspondences", False)
+        ) or dump_discrete_oracle:
+            inliers_flat = np.asarray(inliers, dtype=np.int64).reshape(-1)
+            valid_post_inliers = inliers_flat[
+                (inliers_flat >= 0) & (inliers_flat < selector_indices.numel())
+            ]
+            pre_selector_inliers = (
+                selector_indices[torch.from_numpy(valid_post_inliers).long()].numpy()
+                if valid_post_inliers.size > 0
+                else np.empty(0, dtype=np.int64)
+            )
+            result["_debug_sparse_matches"] = {
+                "p2d": p2d_np,
+                "p3d": p3d_np,
+                "scores": scores_np,
+                "inliers": inliers_flat,
+                "p2d_pre_selector": p2d_pre_selector.numpy(),
+                "p3d_pre_selector": p3d_pre_selector.numpy(),
+                "scores_pre_selector": scores_pre_selector.numpy(),
+                "inliers_pre_selector": pre_selector_inliers,
+                "p2d_matcher_raw": p2d_matcher_raw.numpy(),
+                "p3d_matcher_raw": p3d_matcher_raw.numpy(),
+                "scores_matcher_raw": scores_matcher_raw.numpy(),
+                "measurement_covariance": None,
+                "measurement_covariance_pre_selector": None,
+                "K": K,
+                "width": width,
+                "height": height,
+            }
+            if dump_discrete_oracle:
+                result["_debug_sparse_matches"]["discrete_oracle"] = {
+                    "keypoint_xy": keypoints.detach().cpu().numpy(),
+                    "keypoint_flat_idx": np.arange(keypoints.shape[0], dtype=np.int64),
+                    "keypoint_detector_score": keypoint_scores.detach().cpu().float().numpy(),
+                    "topk_landmark_idx": retrieval.indices[:, :oracle_topk]
+                    .detach()
+                    .cpu()
+                    .numpy(),
+                    "topk_scores": retrieval.scores[:, :oracle_topk]
+                    .detach()
+                    .cpu()
+                    .float()
+                    .numpy(),
+                    "matcher_raw_keypoint_idx": raw_matches.keypoint_idx.detach()
+                    .cpu()
+                    .numpy(),
+                    "matcher_raw_landmark_idx": raw_matches.landmark_idx.detach()
+                    .cpu()
+                    .numpy(),
+                    "matcher_raw_scores": raw_matches.scores.detach()
+                    .cpu()
+                    .float()
+                    .numpy(),
+                    "hard_pre_keypoint_idx": matches.keypoint_idx.detach().cpu().numpy(),
+                    "hard_pre_landmark_idx": matches.landmark_idx.detach().cpu().numpy(),
+                    "hard_pre_scores": scores_pre_selector.numpy(),
+                    "hard_post_keypoint_idx": matches.keypoint_idx.detach()
+                    .cpu()[selector_indices]
+                    .numpy(),
+                    "hard_post_landmark_idx": matches.landmark_idx.detach()
+                    .cpu()[selector_indices]
+                    .numpy(),
+                    "hard_post_scores": scores_np,
+                    "hard_post_inliers": inliers_flat,
+                    "selector_indices": selector_indices.numpy(),
+                    "candidate_threshold": np.asarray(match_threshold),
+                    "match_topk": np.asarray(configured_topk),
+                    "max_matches_per_keypoint": np.asarray(max_matches_per_keypoint),
+                    "max_matches_per_landmark": np.asarray(max_matches_per_landmark),
+                    "min_candidate_matches": np.asarray(min_candidate_matches),
+                    "candidate_refill_trigger_count": np.asarray(
+                        candidate_refill_trigger_count
+                    ),
+                    "geometry_selector_enabled": np.asarray(selector is not None),
+                }
+        result.update(mask_diagnostics)
+        return result
+
+    @torch.no_grad()
     def loc_dense(
         self,
         coarse_query_feature_map,
@@ -2991,18 +3457,65 @@ class STDLoc:
         result.update(dense_guidance_diagnostics)
         return result
 
-    def get_feature_map(self, image):
+    def get_feature_map(self, image, *, include_dense=False, sparse_valid_mask=None):
         """
         image: torch.Tensor, shape (3, H, W)
+
+        ``native_resized_input`` is a representation contract shared with the
+        LaFGS query cache: resize RGB and the hard validity mask before the
+        frozen SuperPoint encoder, then consume its native stride-8 map.  The
+        post-encoder keypoint filter in ``loc_sparse`` remains in place as a
+        second, exact support check.
         """
         fine_resolution = get_resolution_from_longest_edge(
             image.shape[-2], image.shape[-1], self.longest_edge
         )
         coarse_resolution = (fine_resolution[0] // 8, fine_resolution[1] // 8)
+        sparse_contract = self.config["sparse"].get(
+            "query_feature_contract", "legacy_full_then_resized_map"
+        )
+        if sparse_contract not in {
+            "legacy_full_then_resized_map",
+            "native_resized_input",
+        }:
+            raise ValueError(
+                f"Unknown sparse query feature contract: {sparse_contract!r}"
+            )
 
-        # Get feature
-        feature_map = self.feature_extractor(image[None])["feature_map"]  # 1, C, H, W
+        if sparse_contract == "native_resized_input":
+            sparse_image, sparse_mask = self._prepare_native_sparse_input(
+                image, sparse_valid_mask
+            )
+            sparse_feature_map = self.feature_extractor(sparse_image)["feature_map"][0]
+            if tuple(sparse_feature_map.shape[-2:]) != tuple(coarse_resolution):
+                raise RuntimeError(
+                    "Native sparse descriptor grid does not match the "
+                    f"configured stride-8 resolution: got={tuple(sparse_feature_map.shape[-2:])} "
+                    f"expected={tuple(coarse_resolution)}"
+                )
+            sparse_feature_map = F.normalize(sparse_feature_map, p=2, dim=0)
+            if sparse_mask is not None:
+                feature_mask = _resize_evaluation_mask(
+                    sparse_mask,
+                    sparse_feature_map.shape[-2:],
+                    sparse_feature_map.device,
+                )
+                sparse_feature_map = sparse_feature_map * feature_mask[None].to(
+                    dtype=sparse_feature_map.dtype
+                )
+            if not include_dense:
+                return sparse_feature_map, None
+            if self.config.get(
+                "sparse_only", self.config["sparse"].get("sparse_only", False)
+            ):
+                return sparse_feature_map, None, None
+        else:
+            sparse_feature_map = None
 
+        # Dense refinement retains its historical image pyramid.  Sparse
+        # localization can instead use the native resized input above without
+        # changing dense-stage behavior.
+        feature_map = self.feature_extractor(image[None])["feature_map"]
         coarse_feature_map = F.interpolate(
             feature_map, size=coarse_resolution, mode="bilinear", align_corners=False
         )[0]
@@ -3011,8 +3524,11 @@ class STDLoc:
             feature_map, size=fine_resolution, mode="bilinear", align_corners=False
         )[0]
         fine_feature_map = F.normalize(fine_feature_map, p=2, dim=0)
-
-        return fine_feature_map, coarse_feature_map
+        if sparse_feature_map is None:
+            sparse_feature_map = fine_feature_map
+        if include_dense:
+            return sparse_feature_map, fine_feature_map, coarse_feature_map
+        return sparse_feature_map, coarse_feature_map
 
 
 if __name__ == "__main__":
@@ -3133,6 +3649,11 @@ if __name__ == "__main__":
             "point_cloud.ply",
         )
 
+    evaluation_masks, evaluation_masks_path = load_evaluation_masks(dataset)
+    config.setdefault("sparse", {}).setdefault(
+        "valid_mask_policy", _EVALUATION_VALID_MASK_POLICY
+    )
+
     yaml.dump(config, open(os.path.join(output_path, os.path.basename(args.cfg)), "w"))
 
     # loc main
@@ -3230,7 +3751,17 @@ if __name__ == "__main__":
         fovy = camera_info.FoVy
 
         # localization
-        loc_res = stdloc.localize(query_image, fovx, fovy)
+        sparse_valid_mask = evaluation_valid_mask(evaluation_masks, camera_info)
+        loc_res = stdloc.localize(
+            query_image,
+            fovx,
+            fovy,
+            sparse_valid_mask=sparse_valid_mask,
+        )
+        loc_res["sparse"]["sparse_valid_mask_policy"] = (
+            _EVALUATION_VALID_MASK_POLICY if sparse_valid_mask is not None else "none"
+        )
+        loc_res["sparse"]["sparse_valid_mask_source"] = evaluation_masks_path
         sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
         if sparse_debug is not None:
             post_selector_diagnostics = sparse_correspondence_diagnostics(
