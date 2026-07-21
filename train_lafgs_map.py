@@ -19,6 +19,7 @@ from localization_training.detector_free_map import (
     background_dustbin_loss,
     bounded_geometry_losses,
     build_detector_free_observations,
+    build_native_sparse_observations,
     build_score_proposal_observations,
     descriptor_losses_active,
     descriptor_trust_loss,
@@ -28,6 +29,7 @@ from localization_training.detector_free_map import (
     local_soft_correspondences,
     materialize_descriptor_residual,
     multiview_descriptor_loss,
+    native_association_geometry_losses,
     observation_adaptive_trust_weights,
     pose_layer_loss,
     random_negative_retrieval_loss,
@@ -411,8 +413,13 @@ def _uniformly_subsample_cameras(cameras, maximum):
 
 
 def _cache_signature(dataset, args):
+    observation_source = str(getattr(args, "observation_source", "anchor"))
+    native_sparse_enabled = observation_source in {
+        "native",
+        "native_plus_anchor",
+    }
     payload = {
-        "version": 8,
+        "version": 9,
         "query_feature_contract": str(args.query_feature_contract),
         "feature_resize_mode": (
             "resize_image_then_native_stride8"
@@ -436,6 +443,17 @@ def _cache_signature(dataset, args):
         "longest_edge": int(dataset.longest_edge),
         "white_background": bool(dataset.white_background),
         "norm_before_render": bool(dataset.norm_before_render),
+        "native_sparse_enabled": native_sparse_enabled,
+        "native_sparse_keypoint_count": (
+            int(getattr(args, "native_keypoint_count", 2048))
+            if native_sparse_enabled
+            else 0
+        ),
+        "native_sparse_coordinate_convention": (
+            "superpoint_grid_index_then_pnp_plus_half_v1"
+            if native_sparse_enabled
+            else ""
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload
@@ -461,6 +479,9 @@ def _cache_payload_compatible(cached_payload, expected_payload):
         "longest_edge",
         "white_background",
         "norm_before_render",
+        "native_sparse_enabled",
+        "native_sparse_keypoint_count",
+        "native_sparse_coordinate_convention",
     )
     return all(
         cached_payload.get(key) == expected_payload.get(key)
@@ -478,6 +499,8 @@ def _build_query_cache(
     norm_before_render,
     longest_edge,
     query_feature_contract,
+    include_native_sparse=False,
+    native_keypoint_count=2048,
     existing=None,
 ):
     cache = {} if existing is None else dict(existing)
@@ -526,6 +549,77 @@ def _build_query_cache(
             cache[name]["proposal_score_map"] = proposal_score_map.detach().to(
                 device="cpu", dtype=torch.float16
             )
+        if include_native_sparse:
+            # This is the exact sparse frontend contract used by
+            # ``loc_sparse_ulfloc_native``: resize RGB first, mask it before
+            # detection, retain native detector coordinates, and defer the
+            # +0.5 conversion until PnP.
+            native_image, native_valid_mask = _native_feature_input(
+                camera, masks, longest_edge
+            )
+            native_sparse = feature_extractor.detectAndCompute(
+                native_image[None], top_k=int(native_keypoint_count)
+            )[0]
+            native_keypoints = native_sparse["keypoints"]
+            native_descriptors = F.normalize(native_sparse["descriptors"], dim=1)
+            native_scores = native_sparse["keypoint_scores"]
+            native_keep = sample_mask_at_grid_uv(native_valid_mask, native_keypoints)
+            native_keypoints = native_keypoints[native_keep]
+            native_descriptors = native_descriptors[native_keep]
+            native_scores = native_scores[native_keep]
+            native_height, native_width = native_image.shape[-2:]
+            if "native_depth" in previous and "native_alpha" in previous:
+                native_depth = previous["native_depth"]
+                native_alpha = previous["native_alpha"]
+            else:
+                native_depth, native_alpha = _render_depth_alpha(
+                    gaussians,
+                    camera,
+                    native_height,
+                    native_width,
+                    background,
+                    norm_before_render,
+                )
+            native_K = make_intrinsics_from_fov(
+                camera.FoVx,
+                camera.FoVy,
+                native_width,
+                native_height,
+                device=native_image.device,
+                dtype=native_image.dtype,
+            )
+            cache[name].update(
+                {
+                    "native_keypoints": native_keypoints.detach().cpu(),
+                    "native_descriptors": native_descriptors.detach().to(
+                        device="cpu", dtype=torch.float16
+                    ),
+                    "native_scores": native_scores.detach().to(
+                        device="cpu", dtype=torch.float16
+                    ),
+                    "native_valid_mask": native_valid_mask.detach().cpu(),
+                    "native_depth": torch.as_tensor(native_depth)
+                    .detach()
+                    .to(device="cpu", dtype=torch.float32),
+                    "native_alpha": torch.as_tensor(native_alpha)
+                    .detach()
+                    .to(device="cpu", dtype=torch.float16),
+                    "native_K": native_K.detach().cpu(),
+                    "native_input_hw": [int(native_height), int(native_width)],
+                    "native_sparse_metadata": {
+                        "detect_and_compute": True,
+                        "detect_num": int(native_keypoint_count),
+                        "keypoint_count_before_mask": int(
+                            native_sparse["keypoints"].shape[0]
+                        ),
+                        "keypoint_count_after_mask": int(native_keypoints.shape[0]),
+                        "coordinate_convention": (
+                            "superpoint_grid_index_then_pnp_plus_half_v1"
+                        ),
+                    },
+                }
+            )
+            del native_image, native_valid_mask, native_sparse
         del feature_map, depth, alpha
     return cache
 
@@ -543,6 +637,8 @@ def _load_or_build_query_cache(
     longest_edge,
     query_feature_contract=_QUERY_FEATURE_CONTRACT_LEGACY,
     require_proposal_scores=False,
+    require_native_sparse=False,
+    native_keypoint_count=2048,
     cache_policy="reuse_or_build",
 ):
     cache_policy = str(cache_policy)
@@ -578,6 +674,19 @@ def _load_or_build_query_cache(
                 and "proposal_score_map"
                 not in cached[_camera_cache_key(camera)]
             )
+            or (
+                require_native_sparse
+                and not {
+                    "native_keypoints",
+                    "native_descriptors",
+                    "native_scores",
+                    "native_valid_mask",
+                    "native_depth",
+                    "native_alpha",
+                    "native_K",
+                    "native_input_hw",
+                }.issubset(cached[_camera_cache_key(camera)])
+            )
         ]
         if not missing:
             print(f"Loaded detector-free query cache: {path} queries={len(cached)}")
@@ -602,6 +711,19 @@ def _load_or_build_query_cache(
             require_proposal_scores
             and "proposal_score_map" not in cached[_camera_cache_key(camera)]
         )
+        or (
+            require_native_sparse
+            and not {
+                "native_keypoints",
+                "native_descriptors",
+                "native_scores",
+                "native_valid_mask",
+                "native_depth",
+                "native_alpha",
+                "native_K",
+                "native_input_hw",
+            }.issubset(cached[_camera_cache_key(camera)])
+        )
     ]
     cache = _build_query_cache(
         missing_cameras,
@@ -612,6 +734,8 @@ def _load_or_build_query_cache(
         norm_before_render,
         longest_edge,
         query_feature_contract,
+        include_native_sparse=require_native_sparse,
+        native_keypoint_count=native_keypoint_count,
         existing=cached,
     )
     if path is not None:
@@ -660,6 +784,97 @@ def _cached_observations(
         depth_bins=args.depth_bins,
         pixel_center_offset=float(cached.get("pixel_center_offset", 0.0)),
     )
+
+
+def _cached_native_observations(
+    cached,
+    base_bank_xyz,
+    args,
+    *,
+    max_observations,
+    bank_visibility_mask=None,
+    prediction_bank_xyz=None,
+):
+    required = {
+        "native_keypoints",
+        "native_descriptors",
+        "native_scores",
+        "native_valid_mask",
+        "native_depth",
+        "native_alpha",
+        "native_K",
+        "native_input_hw",
+    }
+    missing = sorted(required - set(cached))
+    if missing:
+        raise ValueError(
+            "Native sparse observations were requested but the query cache is "
+            f"missing: {', '.join(missing)}"
+        )
+    native_height, native_width = map(int, cached["native_input_hw"])
+    return build_native_sparse_observations(
+        base_bank_xyz,
+        cached["native_keypoints"].cuda().float(),
+        cached["native_descriptors"].cuda().float(),
+        cached["native_scores"].cuda().float(),
+        cached["native_K"].cuda().float(),
+        cached["pose_w2c"].cuda().float(),
+        image_size=(native_height, native_width),
+        prediction_bank_xyz=prediction_bank_xyz,
+        target_depth=cached["native_depth"].cuda().float(),
+        target_alpha=cached["native_alpha"].cuda().float(),
+        bank_visibility_mask=bank_visibility_mask,
+        query_valid_mask=cached["native_valid_mask"].cuda().bool(),
+        max_observations=max_observations,
+        grid_rows=args.grid_rows,
+        grid_cols=args.grid_cols,
+        positive_radius_px=args.native_association_radius_px,
+        unmatched_fraction=args.native_unmatched_fraction,
+        sampling_mode=args.native_sampling_mode,
+        pixel_center_offset=float(PIXEL_CENTER_OFFSET),
+    )
+
+
+def _primary_observations(
+    cached,
+    base_bank_xyz,
+    args,
+    *,
+    max_observations,
+    bank_visibility_mask=None,
+    prediction_bank_xyz=None,
+):
+    """Return deployment-aligned observations and optional anchor auxiliary."""
+    source = str(args.observation_source)
+    if source == "anchor":
+        observations = _cached_observations(
+            cached,
+            base_bank_xyz,
+            args,
+            max_observations=max_observations,
+            bank_visibility_mask=bank_visibility_mask,
+            prediction_bank_xyz=prediction_bank_xyz,
+        )
+        return observations, None
+    observations = _cached_native_observations(
+        cached,
+        base_bank_xyz,
+        args,
+        max_observations=max_observations,
+        bank_visibility_mask=bank_visibility_mask,
+        prediction_bank_xyz=prediction_bank_xyz,
+    )
+    anchor_auxiliary = None
+    if source == "native_plus_anchor" and float(args.native_anchor_aux_weight) > 0.0:
+        anchor_auxiliary = _cached_observations(
+            cached,
+            base_bank_xyz,
+            args,
+            max_observations=max_observations,
+            bank_visibility_mask=bank_visibility_mask,
+            prediction_bank_xyz=prediction_bank_xyz,
+        )
+    return observations, anchor_auxiliary
 
 
 @torch.no_grad()
@@ -1172,7 +1387,7 @@ def _visibility_signature(dataset, args, landmark_indices):
     digest = hashlib.sha256()
     digest.update(landmark_indices.detach().cpu().numpy().tobytes())
     payload = {
-        "version": 4,
+        "version": 5,
         "model_path": os.path.abspath(dataset.model_path),
         "source_path": os.path.abspath(dataset.source_path),
         "load_iteration": int(args.load_iteration),
@@ -1187,6 +1402,11 @@ def _visibility_signature(dataset, args, landmark_indices):
         ),
         "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
         "valid_mask_policy": _VALID_MASK_POLICY,
+        "visibility_resolution": (
+            "native_sparse_input"
+            if str(args.observation_source) in {"native", "native_plus_anchor"}
+            else "feature_grid"
+        ),
         "landmark_sha256": digest.hexdigest(),
         "landmark_count": int(landmark_indices.numel()),
     }
@@ -1220,6 +1440,7 @@ def _load_or_build_visibility_cache(
     query_cache,
     gaussians,
     landmark_indices,
+    native_sparse=False,
 ):
     path = Path(path) if path else None
     if path is not None and path.exists():
@@ -1240,7 +1461,10 @@ def _load_or_build_visibility_cache(
     visibility = {}
     for camera in tqdm(cameras, desc="2DGS contribution visibility"):
         name = _camera_cache_key(camera)
-        height, width = query_cache[name]["feature_map"].shape[-2:]
+        if native_sparse:
+            height, width = map(int, query_cache[name]["native_input_hw"])
+        else:
+            height, width = query_cache[name]["feature_map"].shape[-2:]
         visibility[name] = _render_bank_visibility(
             gaussians,
             camera,
@@ -1898,7 +2122,7 @@ def _validate_descriptor_field(
 ):
     records = []
     for name in tqdm(validation_names, desc="Detector-free validation"):
-        observations = _cached_observations(
+        observations, anchor_auxiliary = _primary_observations(
             cache[name],
             bank_xyz if base_bank_xyz is None else base_bank_xyz,
             args,
@@ -1908,7 +2132,7 @@ def _validate_descriptor_field(
             ),
             prediction_bank_xyz=bank_xyz,
         )
-        if observations.source_indices.numel() == 0:
+        if observations.query_features.numel() == 0:
             continue
         retrieval = hard_hypothesis_retrieval_loss(
             features,
@@ -1925,10 +2149,10 @@ def _validate_descriptor_field(
             dustbin_score=dustbin_score,
         )
         record = dict(retrieval.diagnostics)
-        proposal_observations = _cached_score_proposal_observations(
-            cache[name],
-            observations,
-            args,
+        proposal_observations = (
+            _cached_score_proposal_observations(cache[name], observations, args)
+            if str(args.observation_source) == "anchor"
+            else None
         )
         if proposal_observations is not None:
             proposal_retrieval = hard_hypothesis_retrieval_loss(
@@ -1957,20 +2181,38 @@ def _validate_descriptor_field(
             record["generic_proposal_observations"] = int(
                 proposal_observations.source_indices.numel()
             )
-        record["mv_loss"] = float(
-            multiview_descriptor_loss(features, observations).item()
-        )
-        if args.local_weight > 0.0:
+        if str(args.observation_source) == "anchor":
+            auxiliary_observations = observations
+            auxiliary_scale = 1.0
+        else:
+            auxiliary_observations = anchor_auxiliary
+            auxiliary_scale = float(args.native_anchor_aux_weight)
+        if auxiliary_observations is not None:
+            record["mv_loss"] = float(
+                auxiliary_scale
+                * multiview_descriptor_loss(features, auxiliary_observations).item()
+            )
+        else:
+            record["mv_loss"] = 0.0
+        if args.local_weight > 0.0 and auxiliary_observations is not None:
             local_loss, local_diagnostics = local_correlation_peak_loss(
-                features,
-                observations,
+                features, auxiliary_observations,
                 radius=args.local_radius,
                 target_sigma=args.local_target_sigma,
                 temperature=args.local_temperature,
             )
             record["local_loss"] = float(local_loss.item())
             record.update(local_diagnostics)
-        record["visible_observations"] = int(observations.source_indices.numel())
+        record["visible_observations"] = int(observations.query_features.shape[0])
+        record["matched_observations"] = int(
+            (observations.source_indices >= 0).sum().item()
+        )
+        record["unmatched_observations"] = int(
+            (observations.source_indices < 0).sum().item()
+        )
+        record["native_candidate_observations"] = float(
+            str(args.observation_source) != "anchor"
+        )
         records.append(record)
     summary = _mean_diagnostics(records)
     summary["validation_query_count"] = len(records)
@@ -1986,11 +2228,20 @@ def _state_config(
     scaffold_diagnostics,
 ):
     return {
-        "method": "lafgs_detector_free_bounded_surface_v4",
+        "method": "lafgs_kcs_gwff_alternating_native_candidate_v1",
         "detector_free": True,
         "query_cache_policy": str(args.query_cache_policy),
         "query_feature_contract": str(args.query_feature_contract),
         "scene_detector_used_for_map_training": False,
+        "observation_source": str(args.observation_source),
+        "native_sparse_keypoint_count": int(args.native_keypoint_count),
+        "native_sparse_coordinate_convention": (
+            "superpoint_grid_index_then_pnp_plus_half_v1"
+        ),
+        "native_association_radius_px": float(args.native_association_radius_px),
+        "native_unmatched_fraction": float(args.native_unmatched_fraction),
+        "native_sampling_mode": str(args.native_sampling_mode),
+        "native_anchor_aux_weight": float(args.native_anchor_aux_weight),
         "frozen_generic_proposal_head": bool(args.generic_proposal_count > 0),
         "geometry_frozen": not bool(args.geometry_weight > 0.0),
         "raw_xyz_trainable": False,
@@ -2051,6 +2302,13 @@ def _state_config(
         "dustbin_no_anchor": bool(args.dustbin_no_anchor),
         "geometry_start_step": int(args.geometry_start_step),
         "geometry_weight": float(args.geometry_weight),
+        "geometry_mode": str(args.geometry_mode),
+        "geometry_association_max_reprojection_px": float(
+            args.geometry_association_max_reprojection_px
+        ),
+        "geometry_association_min_margin": float(
+            args.geometry_association_min_margin
+        ),
         "surface_weight": float(args.surface_weight),
         "depth_weight": float(args.depth_weight),
         "reprojection_weight": float(args.reprojection_weight),
@@ -2166,6 +2424,44 @@ def _checkpoint_integrity(output_dir, requested_steps):
 def train(dataset, args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    native_observation_mode = str(args.observation_source) in {
+        "native",
+        "native_plus_anchor",
+    }
+    if native_observation_mode and str(args.query_feature_contract) != _QUERY_FEATURE_CONTRACT_NATIVE:
+        raise ValueError(
+            "Native candidate supervision requires --query_feature_contract "
+            f"{_QUERY_FEATURE_CONTRACT_NATIVE} so training and deployment share "
+            "the same resized SuperPoint input."
+        )
+    if native_observation_mode and int(args.generic_proposal_count) > 0:
+        raise ValueError(
+            "generic proposal maps are a dense auxiliary and cannot be mixed "
+            "into native candidate supervision; use native_plus_anchor instead"
+        )
+    if str(args.geometry_mode) == "native_association" and not native_observation_mode:
+        raise ValueError(
+            "native_association geometry requires --observation_source native "
+            "or native_plus_anchor"
+        )
+    if (
+        str(args.geometry_mode) == "native_association"
+        and str(args.pose_gradient_mode) == "geometry"
+        and float(args.pose_weight) > 0.0
+    ):
+        raise ValueError(
+            "native_association geometry has no local-anchor pose measurement; "
+            "run fixed-pose BA with --pose_gradient_mode off"
+        )
+    if (
+        str(args.geometry_mode) == "native_association"
+        and float(args.geometry_weight) > 0.0
+        and int(args.descriptor_end_step) >= 0
+    ):
+        raise ValueError(
+            "native_association is an alternating fixed-descriptor BA stage; "
+            "set --descriptor_end_step -1 and run descriptor refresh separately"
+        )
     if (
         args.scaffold_mode == "ulf_consensus"
         or args.initialization_mode == "ulf_geometry"
@@ -2240,6 +2536,10 @@ def train(dataset, args):
         dataset.longest_edge,
         args.query_feature_contract,
         require_proposal_scores=bool(args.generic_proposal_count > 0),
+        require_native_sparse=(
+            str(args.observation_source) in {"native", "native_plus_anchor"}
+        ),
+        native_keypoint_count=args.native_keypoint_count,
         cache_policy=args.query_cache_policy,
     )
     scaffold_visibility_counts = None
@@ -2301,6 +2601,9 @@ def train(dataset, args):
             cache,
             gaussians,
             landmark_indices,
+            native_sparse=(
+                str(args.observation_source) in {"native", "native_plus_anchor"}
+            ),
         )
 
     fallback = _fallback_features(
@@ -2540,7 +2843,7 @@ def train(dataset, args):
             tangent_bound_m=args.tangent_bound_m,
             normal_bound_m=args.normal_bound_m,
         )
-        observations = _cached_observations(
+        observations, anchor_auxiliary = _primary_observations(
             cache[query_name],
             base_bank_xyz,
             args,
@@ -2552,7 +2855,7 @@ def train(dataset, args):
             ),
             prediction_bank_xyz=current_xyz,
         )
-        if observations.source_indices.numel() == 0:
+        if observations.query_features.numel() == 0:
             empty_observation_steps += 1
             if step in save_steps:
                 save_checkpoint(
@@ -2562,16 +2865,20 @@ def train(dataset, args):
                 )
                 empty_observation_checkpoint_steps.append(step)
             continue
-        retrieval_observations = jitter_detector_free_observations(
-            observations,
-            standard_deviation=args.proposal_jitter_std,
-            maximum=args.proposal_jitter_max,
-            generator=cuda_generator,
+        retrieval_observations = (
+            jitter_detector_free_observations(
+                observations,
+                standard_deviation=args.proposal_jitter_std,
+                maximum=args.proposal_jitter_max,
+                generator=cuda_generator,
+            )
+            if str(args.observation_source) == "anchor"
+            else observations
         )
-        proposal_observations = _cached_score_proposal_observations(
-            cache[query_name],
-            observations,
-            args,
+        proposal_observations = (
+            _cached_score_proposal_observations(cache[query_name], observations, args)
+            if str(args.observation_source) == "anchor"
+            else None
         )
 
         features = materialize_descriptor_residual(
@@ -2585,8 +2892,22 @@ def train(dataset, args):
             args.descriptor_end_step,
         )
         descriptor_scale = float(descriptor_active)
-        mv_loss = multiview_descriptor_loss(features, observations)
-        if args.objective == "mv":
+        if str(args.observation_source) == "anchor":
+            auxiliary_observations = observations
+            auxiliary_scale = 1.0
+        else:
+            auxiliary_observations = anchor_auxiliary
+            auxiliary_scale = float(args.native_anchor_aux_weight)
+        if auxiliary_observations is not None:
+            mv_loss = auxiliary_scale * multiview_descriptor_loss(
+                features, auxiliary_observations
+            )
+        else:
+            mv_loss = features.sum() * 0.0
+        if not descriptor_active:
+            retrieval_loss = features.sum() * 0.0
+            retrieval_diagnostics = {"descriptor_retrieval_skipped": 1.0}
+        elif args.objective == "mv":
             retrieval_loss = features.sum() * 0.0
             retrieval_diagnostics = {}
         elif args.objective == "random":
@@ -2621,7 +2942,11 @@ def train(dataset, args):
             retrieval_diagnostics = retrieval.diagnostics
         else:
             raise ValueError(f"Unknown objective: {args.objective}")
-        if proposal_observations is not None and args.objective != "mv":
+        if (
+            descriptor_active
+            and proposal_observations is not None
+            and args.objective != "mv"
+        ):
             proposal_retrieval = hard_hypothesis_retrieval_loss(
                 features,
                 proposal_observations,
@@ -2649,10 +2974,10 @@ def train(dataset, args):
             initial_features,
             weights=trust_weights,
         )
-        if args.local_weight > 0.0:
+        if args.local_weight > 0.0 and auxiliary_observations is not None:
             local_loss, local_diagnostics = local_correlation_peak_loss(
                 features,
-                observations,
+                auxiliary_observations,
                 radius=args.local_radius,
                 target_sigma=args.local_target_sigma,
                 temperature=args.local_temperature,
@@ -2660,10 +2985,10 @@ def train(dataset, args):
         else:
             local_loss = features.sum() * 0.0
             local_diagnostics = {}
-        if dustbin_score is not None:
+        if dustbin_score is not None and auxiliary_observations is not None:
             dustbin_loss, dustbin_diagnostics = background_dustbin_loss(
                 features,
-                observations,
+                auxiliary_observations,
                 dustbin_score,
                 sample_count=args.dustbin_background_count,
                 exclusion_radius_px=args.dustbin_exclusion_radius,
@@ -2681,21 +3006,39 @@ def train(dataset, args):
             and step >= int(args.geometry_start_step)
         )
         if geometry_active:
-            (
-                surface_loss,
-                depth_loss,
-                geometry_reprojection_loss,
-                local_correspondences,
-                geometry_diagnostics,
-            ) = bounded_geometry_losses(
-                current_xyz,
-                raw_anchor_offset,
-                features,
-                observations,
-                local_radius=args.local_radius,
-                local_temperature=args.local_temperature,
-                depth_scale_floor=args.depth_scale_floor,
-            )
+            if str(args.geometry_mode) == "native_association":
+                (
+                    surface_loss,
+                    depth_loss,
+                    geometry_reprojection_loss,
+                    geometry_diagnostics,
+                ) = native_association_geometry_losses(
+                    current_xyz,
+                    raw_anchor_offset,
+                    features,
+                    observations,
+                    max_reprojection_error_px=args.geometry_association_max_reprojection_px,
+                    min_score_margin=args.geometry_association_min_margin,
+                    alpha_threshold=args.alpha_threshold,
+                    depth_scale_floor=args.depth_scale_floor,
+                )
+                local_correspondences = None
+            else:
+                (
+                    surface_loss,
+                    depth_loss,
+                    geometry_reprojection_loss,
+                    local_correspondences,
+                    geometry_diagnostics,
+                ) = bounded_geometry_losses(
+                    current_xyz,
+                    raw_anchor_offset,
+                    features,
+                    observations,
+                    local_radius=args.local_radius,
+                    local_temperature=args.local_temperature,
+                    depth_scale_floor=args.depth_scale_floor,
+                )
         else:
             surface_loss = raw_anchor_offset.sum() * 0.0
             depth_loss = raw_anchor_offset.sum() * 0.0
@@ -2722,6 +3065,11 @@ def train(dataset, args):
                 )
             else:
                 pose_correspondences = local_correspondences
+            if pose_correspondences is None:
+                raise RuntimeError(
+                    "The configured pose layer requires local anchor correspondences; "
+                    "it is intentionally unavailable in native_association geometry mode"
+                )
             pose_noise = torch.randn(
                 6,
                 device=current_xyz.device,
@@ -2837,7 +3185,21 @@ def train(dataset, args):
             "anchor_displacement_max_m": float(displacement.max().item()),
             "grad_norm": float(grad_norm.detach().item()),
             "optimizer_step_skipped_nonfinite": float(optimizer_step_skipped),
-            "visible_observations": int(observations.source_indices.numel()),
+            "visible_observations": int(observations.query_features.shape[0]),
+            "matched_observations": int(
+                (observations.source_indices >= 0).sum().item()
+            ),
+            "unmatched_observations": int(
+                (observations.source_indices < 0).sum().item()
+            ),
+            "native_candidate_observations": float(
+                str(args.observation_source) != "anchor"
+            ),
+            "anchor_auxiliary_observations": (
+                0
+                if anchor_auxiliary is None
+                else int(anchor_auxiliary.query_features.shape[0])
+            ),
             "generic_proposal_observations": (
                 0
                 if proposal_observations is None
@@ -3130,6 +3492,52 @@ def build_parser():
         default="rasterizer",
     )
     parser.add_argument("--visibility_cache_path", default="")
+    parser.add_argument(
+        "--observation_source",
+        choices=["anchor", "native", "native_plus_anchor"],
+        default="anchor",
+        help=(
+            "anchor preserves the legacy projection-sampled objective; native "
+            "uses deployed SuperPoint detectAndCompute proposals; "
+            "native_plus_anchor adds a low-weight projection auxiliary."
+        ),
+    )
+    parser.add_argument(
+        "--native_keypoint_count",
+        type=int,
+        default=2048,
+        help="Native SuperPoint proposal count cached per query image.",
+    )
+    parser.add_argument(
+        "--native_association_radius_px",
+        type=float,
+        default=2.0,
+        help="GT reprojection radius used only to label native proposals.",
+    )
+    parser.add_argument(
+        "--native_unmatched_fraction",
+        type=float,
+        default=0.25,
+        help=(
+            "Unmatched ratio only for the label_balanced ablation; ignored by "
+            "the deployment-aligned detector_grid default."
+        ),
+    )
+    parser.add_argument(
+        "--native_sampling_mode",
+        choices=["detector_grid", "label_balanced"],
+        default="detector_grid",
+        help=(
+            "detector_grid samples actual SuperPoint proposals before GT labels; "
+            "label_balanced is an explicitly non-deployment ablation."
+        ),
+    )
+    parser.add_argument(
+        "--native_anchor_aux_weight",
+        type=float,
+        default=0.1,
+        help="Relative anchor MV/local auxiliary weight in native_plus_anchor mode.",
+    )
     parser.add_argument("--objective", choices=["mv", "random", "hard"], default="hard")
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument(
@@ -3202,6 +3610,18 @@ def build_parser():
     parser.add_argument("--normal_bound_m", type=float, default=0.002)
     parser.add_argument("--raw_offset_clip", type=float, default=3.0)
     parser.add_argument("--depth_scale_floor", type=float, default=0.25)
+    parser.add_argument(
+        "--geometry_mode",
+        choices=["anchor_local", "native_association"],
+        default="anchor_local",
+        help=(
+            "anchor_local is the legacy dense-anchor geometry branch; "
+            "native_association performs fixed-descriptor BA on GT-clean "
+            "native top-1 matches."
+        ),
+    )
+    parser.add_argument("--geometry_association_max_reprojection_px", type=float, default=2.0)
+    parser.add_argument("--geometry_association_min_margin", type=float, default=0.0)
     parser.add_argument("--pose_start_step", type=int, default=3500)
     parser.add_argument("--pose_interval", type=int, default=4)
     parser.add_argument("--pose_weight", type=float, default=0.01)

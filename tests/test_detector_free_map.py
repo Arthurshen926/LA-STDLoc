@@ -306,6 +306,83 @@ def test_observation_builder_keeps_base_measurement_fixed_from_prediction():
     assert predicted_xyz.grad is None
 
 
+def test_native_sparse_observations_preserve_detector_coordinates_and_unmatched_rows():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+    )
+
+    # K has a half-pixel principal point so a point on the optical axis projects
+    # to the detector grid coordinate (4, 4) after the sparse +0.5 convention.
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0], [0.5, 0.0, 2.0]])
+    K = torch.tensor(
+        [[10.0, 0.0, 4.5], [0.0, 10.0, 4.5], [0.0, 0.0, 1.0]]
+    )
+    keypoints = torch.tensor([[4.0, 4.0], [0.0, 0.0]])
+    descriptors = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    batch = build_native_sparse_observations(
+        bank_xyz,
+        keypoints,
+        descriptors,
+        torch.tensor([1.0, 0.5]),
+        K,
+        torch.eye(4),
+        image_size=(10, 10),
+        bank_visibility_mask=torch.tensor([True, True]),
+        max_observations=2,
+        positive_radius_px=0.75,
+        unmatched_fraction=0.5,
+    )
+
+    # The query is an actual detector proposal, not the base anchor projection.
+    assert torch.equal(batch.query_uv, keypoints)
+    assert batch.source_indices.tolist() == [0, -1]
+    assert torch.allclose(batch.query_features, descriptors)
+    assert torch.allclose(batch.base_bank_uv[0], torch.tensor([4.0, 4.0]))
+    assert batch.query_feature_map is None
+
+
+def test_native_association_geometry_updates_only_predicted_surface_anchor():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_association_geometry_losses,
+    )
+
+    base_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+    predicted_xyz = torch.tensor([[0.02, 0.0, 2.0]], requires_grad=True)
+    K = torch.tensor(
+        [[50.0, 0.0, 8.5], [0.0, 50.0, 8.5], [0.0, 0.0, 1.0]]
+    )
+    observations = build_native_sparse_observations(
+        base_xyz,
+        torch.tensor([[8.0, 8.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1.0]),
+        K,
+        torch.eye(4),
+        image_size=(16, 16),
+        prediction_bank_xyz=predicted_xyz,
+        target_depth=torch.full((16, 16), 2.0),
+        target_alpha=torch.ones(16, 16),
+        bank_visibility_mask=torch.tensor([True]),
+        max_observations=1,
+        positive_radius_px=1.0,
+    )
+    descriptor = torch.tensor([[1.0, 0.0]], requires_grad=True)
+    raw_offset = torch.zeros_like(predicted_xyz, requires_grad=True)
+    _, depth_loss, reprojection_loss, diagnostics = native_association_geometry_losses(
+        predicted_xyz,
+        raw_offset,
+        descriptor,
+        observations,
+        max_reprojection_error_px=1.0,
+    )
+    assert diagnostics["native_geometry_clean_correspondences"] == 1
+    (depth_loss + reprojection_loss).backward()
+    assert predicted_xyz.grad is not None
+    assert predicted_xyz.grad.abs().sum() > 0
+    assert descriptor.grad is None
+
+
 def test_observation_adaptive_trust_protects_weak_landmarks():
     from localization_training.detector_free_map import (
         observation_adaptive_trust_weights,

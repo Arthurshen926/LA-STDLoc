@@ -363,6 +363,325 @@ def build_detector_free_observations(
     )
 
 
+def _balanced_sparse_keypoint_indices(
+    keypoints,
+    scores,
+    *,
+    max_observations,
+    image_size,
+    grid_rows=8,
+    grid_cols=8,
+):
+    """Select native sparse keypoints without replacing them by anchor samples.
+
+    The output remains a subset of the detector's actual proposals.  Grid
+    round-robin selection keeps a high-score facade from consuming the whole
+    training batch while preserving the proposal distribution seen by sparse
+    PnP at inference.
+    """
+    keypoints = torch.as_tensor(keypoints)
+    scores = torch.as_tensor(scores, device=keypoints.device).reshape(-1)
+    if keypoints.ndim != 2 or keypoints.shape[1] != 2:
+        raise ValueError("keypoints must have shape [N, 2]")
+    if scores.numel() != keypoints.shape[0]:
+        raise ValueError("scores must have one value per keypoint")
+    count = int(keypoints.shape[0])
+    maximum = int(max_observations)
+    if maximum <= 0 or count <= maximum:
+        return torch.arange(count, device=keypoints.device, dtype=torch.long)
+
+    height, width = (int(image_size[0]), int(image_size[1]))
+    rows = max(int(grid_rows), 1)
+    cols = max(int(grid_cols), 1)
+    x_bin = torch.floor(
+        keypoints[:, 0].clamp(0.0, max(float(width) - 1.0, 0.0))
+        / max(float(width), 1.0)
+        * cols
+    ).long().clamp(0, cols - 1)
+    y_bin = torch.floor(
+        keypoints[:, 1].clamp(0.0, max(float(height) - 1.0, 0.0))
+        / max(float(height), 1.0)
+        * rows
+    ).long().clamp(0, rows - 1)
+    group_id = y_bin * cols + x_bin
+    # Stable sorting gives reproducible ties for native SuperPoint scores.
+    score_order = torch.argsort(scores, descending=True, stable=True)
+    groups = []
+    for group in torch.unique(group_id, sorted=True):
+        in_group = score_order[group_id[score_order] == group]
+        if in_group.numel() > 0:
+            groups.append(in_group)
+    selected = []
+    rank = 0
+    while len(selected) < maximum:
+        progressed = False
+        for group in groups:
+            if rank >= group.numel():
+                continue
+            selected.append(group[rank])
+            progressed = True
+            if len(selected) >= maximum:
+                break
+        if not progressed:
+            break
+        rank += 1
+    if not selected:
+        return score_order[:maximum]
+    return torch.stack(selected)
+
+
+def _mask_at_uv(valid_mask, uv):
+    valid_mask = torch.as_tensor(valid_mask, device=uv.device, dtype=torch.bool)
+    if valid_mask.ndim != 2:
+        raise ValueError("query_valid_mask must be two-dimensional")
+    height, width = valid_mask.shape
+    rounded = uv.detach().round().long()
+    in_bounds = (
+        (rounded[:, 0] >= 0)
+        & (rounded[:, 0] < width)
+        & (rounded[:, 1] >= 0)
+        & (rounded[:, 1] < height)
+    )
+    keep = torch.zeros(uv.shape[0], dtype=torch.bool, device=uv.device)
+    if bool(in_bounds.any().item()):
+        keep[in_bounds] = valid_mask[
+            rounded[in_bounds, 1], rounded[in_bounds, 0]
+        ]
+    return keep
+
+
+def build_native_sparse_observations(
+    bank_xyz,
+    native_keypoints,
+    native_descriptors,
+    native_scores,
+    K,
+    pose_w2c,
+    *,
+    image_size,
+    prediction_bank_xyz=None,
+    target_depth=None,
+    target_alpha=None,
+    bank_visibility_mask=None,
+    query_valid_mask=None,
+    max_observations=512,
+    grid_rows=8,
+    grid_cols=8,
+    positive_radius_px=2.0,
+    unmatched_fraction=0.25,
+    sampling_mode="detector_grid",
+    pixel_center_offset=0.5,
+):
+    """Build supervision from deployed native SuperPoint keypoints.
+
+    ``native_keypoints`` uses the detector grid-index convention.  The sparse
+    PnP frontend converts these coordinates with ``+0.5`` only when passing
+    them to the solver; projections here therefore also use the corresponding
+    grid-index convention through ``pixel_center_offset=0.5``.  Unlike
+    ``build_detector_free_observations``, this function never creates a query
+    by sampling the dense feature map at a landmark projection.
+
+    ``source_indices`` is a GT-only association for diagnostics, missed-
+    positive supervision, and optional multiview auxiliary losses.  It is not
+    inserted into retrieval candidates by ``hard_hypothesis_retrieval_loss``.
+    """
+    native_keypoints = torch.as_tensor(native_keypoints)
+    native_descriptors = torch.as_tensor(
+        native_descriptors, device=native_keypoints.device
+    )
+    native_scores = torch.as_tensor(
+        native_scores, device=native_keypoints.device, dtype=native_keypoints.dtype
+    ).reshape(-1)
+    if native_keypoints.ndim != 2 or native_keypoints.shape[1] != 2:
+        raise ValueError("native_keypoints must have shape [N, 2]")
+    if native_descriptors.ndim != 2 or native_descriptors.shape[0] != native_keypoints.shape[0]:
+        raise ValueError("native_descriptors must have shape [N, D]")
+    if native_scores.numel() != native_keypoints.shape[0]:
+        raise ValueError("native_scores must have one value per keypoint")
+    height, width = (int(image_size[0]), int(image_size[1]))
+    device = native_keypoints.device
+    dtype = native_keypoints.dtype
+    base_bank_xyz = torch.as_tensor(
+        bank_xyz, device=device, dtype=dtype
+    ).reshape(-1, 3).detach()
+    if prediction_bank_xyz is None:
+        prediction_bank_xyz = base_bank_xyz
+    else:
+        prediction_bank_xyz = torch.as_tensor(
+            prediction_bank_xyz, device=device, dtype=dtype
+        ).reshape(-1, 3)
+        if prediction_bank_xyz.shape != base_bank_xyz.shape:
+            raise ValueError("prediction_bank_xyz must match bank_xyz")
+    K = torch.as_tensor(K, device=device, dtype=dtype)
+    pose_w2c = torch.as_tensor(pose_w2c, device=device, dtype=dtype)
+    base_bank_uv, base_bank_depth, base_bank_projected = project_landmarks_to_query(
+        base_bank_xyz,
+        K,
+        pose_w2c,
+        height,
+        width,
+        pixel_center_offset=pixel_center_offset,
+    )
+    bank_uv, bank_depth, bank_projected = project_landmarks_to_query(
+        prediction_bank_xyz,
+        K,
+        pose_w2c,
+        height,
+        width,
+        pixel_center_offset=pixel_center_offset,
+    )
+    if bank_visibility_mask is None:
+        base_bank_visible = base_bank_projected
+    else:
+        bank_visibility_mask = torch.as_tensor(
+            bank_visibility_mask, device=device, dtype=torch.bool
+        ).reshape(-1)
+        if bank_visibility_mask.numel() != base_bank_xyz.shape[0]:
+            raise ValueError("bank_visibility_mask must have one value per landmark")
+        base_bank_visible = base_bank_projected & bank_visibility_mask
+    if query_valid_mask is not None:
+        query_valid_mask = torch.as_tensor(
+            query_valid_mask, device=device, dtype=torch.bool
+        ).squeeze()
+        if tuple(query_valid_mask.shape) != (height, width):
+            raise ValueError("query_valid_mask must match the native image size")
+        base_bank_visible = base_bank_visible & _mask_at_uv(
+            query_valid_mask, base_bank_uv
+        )
+    bank_visible = base_bank_visible & bank_projected
+
+    descriptor_valid = torch.isfinite(native_descriptors).all(dim=1) & (
+        torch.linalg.norm(native_descriptors, dim=-1) > 1e-6
+    )
+    coordinate_valid = (
+        torch.isfinite(native_keypoints).all(dim=1)
+        & (native_keypoints[:, 0] >= 0.0)
+        & (native_keypoints[:, 0] <= float(width - 1))
+        & (native_keypoints[:, 1] >= 0.0)
+        & (native_keypoints[:, 1] <= float(height - 1))
+    )
+    valid = descriptor_valid & coordinate_valid
+    if query_valid_mask is not None and bool(valid.any().item()):
+        valid &= _mask_at_uv(query_valid_mask, native_keypoints)
+    valid_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
+    empty_features = native_descriptors.new_zeros((0, native_descriptors.shape[1]))
+    if valid_indices.numel() == 0:
+        return DetectorFreeObservationBatch(
+            source_indices=torch.empty(0, dtype=torch.long, device=device),
+            query_features=empty_features,
+            query_uv=native_keypoints.new_zeros((0, 2)),
+            source_depth=native_keypoints.new_zeros((0,)),
+            bank_uv=bank_uv,
+            bank_depth=bank_depth,
+            bank_projected=bank_projected,
+            bank_visible=bank_visible,
+            base_bank_uv=base_bank_uv,
+            base_bank_depth=base_bank_depth,
+            base_bank_projected=base_bank_projected,
+            base_bank_visible=base_bank_visible,
+            target_depth_map=None if target_depth is None else torch.as_tensor(target_depth).detach(),
+            target_alpha_map=None if target_alpha is None else torch.as_tensor(target_alpha).detach(),
+            query_valid_mask=query_valid_mask,
+            K=K,
+            pose_w2c=pose_w2c,
+        )
+
+    sampling_mode = str(sampling_mode)
+    if sampling_mode not in {"detector_grid", "label_balanced"}:
+        raise ValueError(
+            "sampling_mode must be detector_grid or label_balanced"
+        )
+    # ``detector_grid`` is the formal path: choose the actual deployment
+    # proposals before inspecting geometry. ``label_balanced`` is retained
+    # solely as an ablation for deliberately changing the train distribution.
+    reservoir_limit = int(max_observations)
+    if sampling_mode == "label_balanced" and reservoir_limit > 0:
+        reservoir_limit *= 2
+    selected_local = _balanced_sparse_keypoint_indices(
+        native_keypoints[valid_indices],
+        native_scores[valid_indices],
+        max_observations=reservoir_limit,
+        image_size=(height, width),
+        grid_rows=grid_rows,
+        grid_cols=grid_cols,
+    )
+    selected = valid_indices[selected_local]
+    query_uv = native_keypoints[selected]
+    query_features = F.normalize(native_descriptors[selected], dim=-1)
+    query_scores = native_scores[selected]
+    source_indices = torch.full(
+        (selected.numel(),), -1, dtype=torch.long, device=device
+    )
+    visible_indices = torch.nonzero(base_bank_visible, as_tuple=False).reshape(-1)
+    if visible_indices.numel() > 0 and selected.numel() > 0:
+        distance = torch.cdist(query_uv.float(), base_bank_uv[visible_indices].float())
+        nearest_distance, nearest_position = distance.min(dim=1)
+        matched = nearest_distance <= float(positive_radius_px)
+        source_indices[matched] = visible_indices[nearest_position[matched]]
+
+    # This optional ablation rebalances labels after detector proposal
+    # selection. It must never be used by the main candidate-aligned method,
+    # because it changes the sparse frontend distribution seen at inference.
+    maximum = int(max_observations)
+    if (
+        sampling_mode == "label_balanced"
+        and maximum > 0
+        and selected.numel() > maximum
+    ):
+        unmatched_limit = int(round(maximum * max(min(float(unmatched_fraction), 1.0), 0.0)))
+        matched_positions = torch.nonzero(source_indices >= 0, as_tuple=False).reshape(-1)
+        unmatched_positions = torch.nonzero(source_indices < 0, as_tuple=False).reshape(-1)
+        selected_positions = []
+        if matched_positions.numel() > 0:
+            selected_positions.append(matched_positions[: max(maximum - unmatched_limit, 0)])
+        if unmatched_limit > 0 and unmatched_positions.numel() > 0:
+            selected_positions.append(unmatched_positions[:unmatched_limit])
+        chosen = (
+            torch.cat(selected_positions)
+            if selected_positions
+            else torch.empty(0, dtype=torch.long, device=device)
+        )
+        if chosen.numel() < maximum:
+            remaining_mask = torch.ones(selected.numel(), dtype=torch.bool, device=device)
+            remaining_mask[chosen] = False
+            chosen = torch.cat(
+                [chosen, torch.nonzero(remaining_mask, as_tuple=False).reshape(-1)[: maximum - chosen.numel()]]
+            )
+        chosen = chosen[:maximum]
+        query_uv = query_uv[chosen]
+        query_features = query_features[chosen]
+        query_scores = query_scores[chosen]
+        source_indices = source_indices[chosen]
+
+    source_depth = query_uv.new_zeros(source_indices.shape[0])
+    source_valid = source_indices >= 0
+    if bool(source_valid.any().item()):
+        source_depth[source_valid] = base_bank_depth[source_indices[source_valid]].detach()
+    return DetectorFreeObservationBatch(
+        source_indices=source_indices,
+        query_features=query_features,
+        query_uv=query_uv,
+        source_depth=source_depth,
+        bank_uv=bank_uv,
+        bank_depth=bank_depth,
+        bank_projected=bank_projected,
+        bank_visible=bank_visible,
+        base_bank_uv=base_bank_uv,
+        base_bank_depth=base_bank_depth,
+        base_bank_projected=base_bank_projected,
+        base_bank_visible=base_bank_visible,
+        # Native descriptors are already the deployment sparse measurement;
+        # attaching a stride-8 map here would make jitter/local-anchor losses
+        # silently sample in the wrong coordinate system.
+        query_feature_map=None,
+        target_depth_map=None if target_depth is None else torch.as_tensor(target_depth).detach(),
+        target_alpha_map=None if target_alpha is None else torch.as_tensor(target_alpha).detach(),
+        query_valid_mask=query_valid_mask,
+        K=K,
+        pose_w2c=pose_w2c,
+    )
+
+
 def jitter_detector_free_observations(
     observations,
     *,
@@ -794,6 +1113,139 @@ def bounded_geometry_losses(
         "geometry_depth_count": depth_valid_count,
     }
     return surface_loss, depth_loss, reprojection_loss, local, diagnostics
+
+
+def native_association_geometry_losses(
+    current_xyz,
+    raw_offset,
+    bank_features,
+    observations,
+    *,
+    max_reprojection_error_px=2.0,
+    min_score_margin=0.0,
+    alpha_threshold=0.2,
+    depth_scale_floor=0.25,
+):
+    """Fixed-descriptor, native-match-driven bounded surface BA loss.
+
+    The association is produced by the same native SuperPoint descriptor and
+    full-bank cosine retrieval used at deployment.  Only current top-1 matches
+    that are already GT-reprojection clean are accepted.  Thus the GT pose is
+    a geometric gate and target measurement, not a shortcut that inserts a
+    landmark into the candidate set.  ``bank_features`` is detached so this
+    loss can update only the bounded surface anchor parameterization.
+    """
+    query_count = int(observations.query_features.shape[0])
+    bank_count = int(bank_features.shape[0])
+    zero = current_xyz.sum() * 0.0
+    if query_count == 0 or bank_count == 0:
+        return zero, zero, zero, {
+            "native_geometry_active": 0.0,
+            "native_geometry_candidate_count": 0,
+            "native_geometry_clean_correspondences": 0,
+        }
+    query = F.normalize(observations.query_features.detach(), dim=-1)
+    bank = F.normalize(bank_features.detach(), dim=-1)
+    scores = query @ bank.T
+    top_count = min(2, bank_count)
+    top_scores, top_indices = torch.topk(scores, k=top_count, dim=1)
+    top1 = top_indices[:, 0]
+    top1_score = top_scores[:, 0]
+    if top_count > 1:
+        score_margin = top_scores[:, 0] - top_scores[:, 1]
+    else:
+        score_margin = torch.full_like(top1_score, torch.inf)
+    predicted_uv = observations.bank_uv[top1]
+    reprojection_error = torch.linalg.norm(
+        predicted_uv - observations.query_uv.detach(), dim=1
+    )
+    source_valid = observations.source_indices >= 0
+    clean = (
+        source_valid
+        & observations.bank_visible[top1]
+        & observations.bank_projected[top1]
+        & torch.isfinite(reprojection_error)
+        & (reprojection_error.detach() <= float(max_reprojection_error_px))
+        & (score_margin.detach() >= float(min_score_margin))
+    )
+    if observations.query_valid_mask is not None and bool(clean.any().item()):
+        clean = clean & _mask_at_uv(observations.query_valid_mask, observations.query_uv)
+
+    reprojection_loss = zero
+    if bool(clean.any().item()):
+        reprojection_loss = F.smooth_l1_loss(
+            predicted_uv[clean],
+            observations.query_uv[clean].detach(),
+            reduction="none",
+            beta=1.0,
+        ).sum(dim=1).mean()
+
+    depth_loss = zero
+    depth_count = 0
+    if observations.target_depth_map is not None and bool(clean.any().item()):
+        depth_map = torch.as_tensor(
+            observations.target_depth_map,
+            device=current_xyz.device,
+            dtype=current_xyz.dtype,
+        ).squeeze()
+        rendered_depth = bilinear_sample_features(
+            depth_map[None], observations.query_uv[clean].detach()
+        )[:, 0]
+        predicted_depth = observations.bank_depth[top1[clean]]
+        depth_valid = (
+            torch.isfinite(rendered_depth)
+            & (rendered_depth > 0)
+            & torch.isfinite(predicted_depth)
+            & (predicted_depth > 0)
+        )
+        if observations.target_alpha_map is not None and bool(depth_valid.any().item()):
+            alpha_map = torch.as_tensor(
+                observations.target_alpha_map,
+                device=current_xyz.device,
+                dtype=current_xyz.dtype,
+            ).squeeze()
+            alpha = bilinear_sample_features(
+                alpha_map[None], observations.query_uv[clean].detach()
+            )[:, 0]
+            depth_valid &= torch.isfinite(alpha) & (alpha >= float(alpha_threshold))
+        depth_count = int(depth_valid.sum().detach().item())
+        if bool(depth_valid.any().item()):
+            scale = rendered_depth[depth_valid].detach().abs().clamp_min(
+                float(depth_scale_floor)
+            )
+            normalized_error = (
+                predicted_depth[depth_valid] - rendered_depth[depth_valid].detach()
+            ) / scale
+            depth_loss = F.smooth_l1_loss(
+                normalized_error,
+                torch.zeros_like(normalized_error),
+                beta=0.01,
+            )
+    surface_loss = torch.tanh(raw_offset).square().mean()
+    source_identity = (
+        (top1[clean] == observations.source_indices[clean]).float().mean()
+        if bool(clean.any().item())
+        else scores.new_zeros(())
+    )
+    diagnostics = {
+        "native_geometry_active": 1.0,
+        "native_geometry_candidate_count": query_count,
+        "native_geometry_clean_correspondences": int(clean.sum().detach().item()),
+        "native_geometry_clean_ratio": float(clean.float().mean().detach().item()),
+        "native_geometry_reprojection_median_px": float(
+            reprojection_error[clean].detach().median().item()
+            if bool(clean.any().item())
+            else 0.0
+        ),
+        "native_geometry_reprojection_loss": float(reprojection_loss.detach().item()),
+        "native_geometry_depth_loss": float(depth_loss.detach().item()),
+        "native_geometry_depth_count": depth_count,
+        "native_geometry_top1_score_mean": float(top1_score.detach().mean().item()),
+        "native_geometry_top1_margin_mean": float(score_margin.detach().mean().item()),
+        "native_geometry_source_identity_ratio": float(source_identity.detach().item()),
+        "native_geometry_descriptor_frozen": 1.0,
+    }
+    return surface_loss, depth_loss, reprojection_loss, diagnostics
 
 
 def pose_layer_loss(
