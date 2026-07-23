@@ -156,6 +156,28 @@ def nearest_gt_targets(keypoint_xy, projected, valid, radius):
     return target, np.asarray(distance, dtype=np.float64)
 
 
+def oracle_assignment_candidates(raw_rows, targets, scores):
+    """Construct the attachment's O1 oracle without changing native 2D points.
+
+    Each matchable native keypoint receives the nearest visible landmark under
+    the ground-truth pose.  Rows without a valid nearby landmark are excluded:
+    assigning an arbitrary 3D point to them would turn an assignment oracle
+    into an artificial outlier-contamination experiment.
+    """
+    raw_rows = np.asarray(raw_rows, dtype=np.int64).reshape(-1)
+    targets = np.asarray(targets, dtype=np.int64).reshape(-1)
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    if not (raw_rows.shape == targets.shape == scores.shape):
+        raise ValueError("oracle assignment inputs must have equal lengths")
+    keep = targets >= 0
+    return CandidateSet(
+        keypoint_idx=raw_rows[keep],
+        landmark_idx=targets[keep],
+        scores=scores[keep],
+        source_idx=raw_rows[keep],
+    )
+
+
 def run_pose(candidates, keypoint_xy, landmark_xyz, K, query, seed):
     cv2.setRNGSeed(int(seed))
     p2d = np.asarray(keypoint_xy, dtype=np.float64)[candidates.keypoint_idx]
@@ -493,6 +515,7 @@ def evaluate(
     bootstrap_samples=10000,
     translation_scale_m=None,
     rotation_scale_degrees=None,
+    skip_counterfactual=False,
 ):
     dump_dir = Path(dump_dir)
     manifest = json.loads((dump_dir / "manifest.json").read_text())
@@ -514,6 +537,9 @@ def evaluate(
     methods = (
         "actual",
         "replay",
+        "O1_oracle_3d_assignment",
+        "O2_oracle_candidate_filter",
+        "O3_oracle_2d_measurement",
         "O2_top1_swap",
         "O3_hardcap",
         "O2O3_swap_hardcap",
@@ -682,6 +708,11 @@ def evaluate(
             correctness_priority=swapped_correct,
         )
         clean_hard = baseline.subset(hard_correct)
+        assignment_oracle = oracle_assignment_candidates(
+            raw_rows,
+            strict_target[raw_rows],
+            raw_scores,
+        )
 
         actual_pose = np.asarray(query["pred_pose_w2c"], dtype=np.float64)
         replay_pose, replay_inliers = run_pose(
@@ -719,6 +750,12 @@ def evaluate(
         signed_p2d = inlier_p2d.copy()
         signed_p2d[inlier_correct] = projected[inlier_set.landmark_idx[inlier_correct]]
         signed_pose, _ = deterministic_pnp(signed_p2d, inlier_p3d, K)
+        clean_inliers = inlier_set.subset(inlier_correct)
+        measurement_pose, _ = deterministic_pnp(
+            projected[clean_inliers.landmark_idx],
+            landmark_xyz[clean_inliers.landmark_idx],
+            K,
+        )
 
         base_bias_metrics = set_bias_metrics(
             baseline,
@@ -751,21 +788,24 @@ def evaluate(
         final_bias.append(final_bias_metrics["bias_m"] * 100.0)
         clean_hard_bias.append(clean_bias_metrics["bias_m"] * 100.0)
 
-        _, cf_records = counterfactual_gain_distribution(
-            raw_rows,
-            raw_lm,
-            raw_scores,
-            baseline,
-            strict_target,
-            keypoint_xy,
-            landmark_xyz,
-            K,
-            gt_pose,
-            threshold,
-            max_per_landmark,
-            translation_scale_m,
-            rotation_scale_degrees,
-        )
+        if skip_counterfactual:
+            cf_records = []
+        else:
+            _, cf_records = counterfactual_gain_distribution(
+                raw_rows,
+                raw_lm,
+                raw_scores,
+                baseline,
+                strict_target,
+                keypoint_xy,
+                landmark_xyz,
+                K,
+                gt_pose,
+                threshold,
+                max_per_landmark,
+                translation_scale_m,
+                rotation_scale_degrees,
+            )
         strict_cf = [record for record in cf_records if record["strict_positive"]]
         cf_positive_rows.append(len(strict_cf))
         if strict_cf:
@@ -828,6 +868,16 @@ def evaluate(
         poses = {
             "actual": actual_pose,
             "replay": replay_pose,
+            "O1_oracle_3d_assignment": run_pose(
+                assignment_oracle,
+                keypoint_xy,
+                landmark_xyz,
+                K,
+                query,
+                seed + query_index,
+            )[0],
+            "O2_oracle_candidate_filter": clean_pose,
+            "O3_oracle_2d_measurement": measurement_pose,
             "O2_top1_swap": swap_pose,
             "O3_hardcap": hardcap_pose,
             "O2O3_swap_hardcap": swap_hardcap_pose,
@@ -848,6 +898,7 @@ def evaluate(
             {
                 "image_name": image_name,
                 "matchable_rows_2px": int(strict_matchable.sum()),
+                "oracle_assignment_matches": int(len(assignment_oracle.scores)),
                 "hard_matches": int(len(baseline.scores)),
                 "hard_gt_precision_2px": float(hard_correct.mean()),
                 "ransac_inliers": int(len(inlier_set.scores)),
@@ -930,6 +981,14 @@ def evaluate(
         "query_count": len(query_records),
         "selector_replay_failures": selector_replay_failures,
         "O1_retrieval": retrieval_summary,
+        "P0_oracles": {
+            "O1_oracle_3d_assignment": summaries["O1_oracle_3d_assignment"],
+            "O2_oracle_candidate_filter": summaries[
+                "O2_oracle_candidate_filter"
+            ],
+            "O3_oracle_2d_measurement": summaries["O3_oracle_2d_measurement"],
+            "counterfactual_enabled": bool(not skip_counterfactual),
+        },
         "discrete_diagnostics": {
             "hard_top1_gt_precision_mean": float(np.mean(hard_precision)),
             "ransac_inlier_gt_precision_mean": float(np.mean(inlier_precision)),
@@ -991,6 +1050,11 @@ def main():
     parser.add_argument("--bootstrap_samples", type=int, default=10000)
     parser.add_argument("--translation_scale_m", type=float, default=None)
     parser.add_argument("--rotation_scale_degrees", type=float, default=None)
+    parser.add_argument(
+        "--skip_counterfactual",
+        action="store_true",
+        help="Skip expensive O6 single-swap analysis when only P0 oracle bounds are needed.",
+    )
     args = parser.parse_args()
     report = evaluate(
         args.dump_dir,
@@ -1000,9 +1064,11 @@ def main():
         bootstrap_samples=args.bootstrap_samples,
         translation_scale_m=args.translation_scale_m,
         rotation_scale_degrees=args.rotation_scale_degrees,
+        skip_counterfactual=args.skip_counterfactual,
     )
     print(json.dumps({
         "O1_retrieval": report["O1_retrieval"],
+        "P0_oracles": report["P0_oracles"],
         "discrete_diagnostics": report["discrete_diagnostics"],
         "bias_diagnostics": report["bias_diagnostics"],
         "O6_counterfactual": report["O6_counterfactual"],

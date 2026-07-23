@@ -10,8 +10,8 @@ def make_stdloc_eval_cfg(
     base_cfg,
     output,
     artifact_model_path,
-    detector_folder="detector",
-    detector_iters=30000,
+    detector_folder=None,
+    detector_iters=None,
     landmark_path=None,
     landmark_meta_path=None,
     candidate_teacher_state_path=None,
@@ -55,6 +55,9 @@ def make_stdloc_eval_cfg(
     detector_matchability_mode=None,
     use_detector_offset=None,
     detector_max_offset=None,
+    use_native_matchability=None,
+    native_matchability_state_path=None,
+    native_matchability_max_prosac_iterations=None,
     candidate_frontend_match_policy=None,
     diagnostics=None,
     diagnostics_dump_correspondences=None,
@@ -66,6 +69,12 @@ def make_stdloc_eval_cfg(
     diagnostics_voxel_size=None,
     diagnostics_task_translation_scale_m=None,
     diagnostics_task_rotation_scale_degrees=None,
+    use_two_stage_pose_refinement=None,
+    two_stage_tight_reprojection_error=None,
+    two_stage_min_inliers=None,
+    two_stage_refinement_iterations=None,
+    two_stage_robust_delta=None,
+    two_stage_damping=None,
     geometry_balance=None,
     geometry_balance_grid_rows=4,
     geometry_balance_grid_cols=4,
@@ -86,19 +95,56 @@ def make_stdloc_eval_cfg(
         cfg = yaml.load(f, Loader=yaml.FullLoader)
     cfg["model_path"] = artifact_model_path
     sparse = cfg.setdefault("sparse", {})
-    detector_folder = str(detector_folder).strip("/")
-    detector_iters = int(detector_iters)
-    sparse["detector_path"] = f"{detector_folder}/{detector_iters}_detector.pth"
-    sparse["landmark_path"] = (
-        str(landmark_path)
-        if landmark_path
-        else f"{detector_folder}/sampled_idx.pkl"
+    explicit_detector_artifact = (
+        detector_folder is not None or detector_iters is not None
     )
-    sparse["landmark_meta_path"] = (
-        str(landmark_meta_path)
-        if landmark_meta_path
-        else f"{detector_folder}/landmark_meta.pt"
-    )
+    if explicit_detector_artifact:
+        if detector_folder is None or detector_iters is None:
+            raise ValueError(
+                "detector_folder and detector_iters must be provided together"
+            )
+        detector_folder = str(detector_folder).strip("/")
+        detector_iters = int(detector_iters)
+        sparse["detector_path"] = (
+            f"{detector_folder}/{detector_iters}_detector.pth"
+        )
+        sparse["landmark_path"] = (
+            str(landmark_path)
+            if landmark_path
+            else f"{detector_folder}/sampled_idx.pkl"
+        )
+        sparse["landmark_meta_path"] = (
+            str(landmark_meta_path)
+            if landmark_meta_path
+            else f"{detector_folder}/landmark_meta.pt"
+        )
+    else:
+        # Preserve the base configuration's artifact binding.  Falling back to
+        # the historical detector is only valid when the base config has no
+        # binding at all; silently replacing an explicit native frontend or
+        # external landmark bank makes validation non-reproducible.
+        if not sparse.get("detector_path"):
+            detector_folder = "detector"
+            detector_iters = 30000
+            sparse["detector_path"] = (
+                f"{detector_folder}/{detector_iters}_detector.pth"
+            )
+        else:
+            detector_folder = os.path.dirname(
+                str(sparse["detector_path"])
+            ).strip("/") or "."
+        if landmark_path:
+            sparse["landmark_path"] = str(landmark_path)
+        else:
+            sparse.setdefault(
+                "landmark_path", f"{detector_folder}/sampled_idx.pkl"
+            )
+        if landmark_meta_path:
+            sparse["landmark_meta_path"] = str(landmark_meta_path)
+        else:
+            sparse.setdefault(
+                "landmark_meta_path", f"{detector_folder}/landmark_meta.pt"
+            )
     sparse["detector_model_path"] = artifact_model_path
     sparse["landmark_model_path"] = artifact_model_path
     sparse["landmark_meta_model_path"] = artifact_model_path
@@ -239,10 +285,34 @@ def make_stdloc_eval_cfg(
         ),
         "min_candidate_matches": (min_candidate_matches, int),
         "candidate_refill_trigger_count": (candidate_refill_trigger_count, int),
+        "use_two_stage_pose_refinement": (
+            use_two_stage_pose_refinement,
+            bool,
+        ),
+        "two_stage_tight_reprojection_error": (
+            two_stage_tight_reprojection_error,
+            float,
+        ),
+        "two_stage_min_inliers": (two_stage_min_inliers, int),
+        "two_stage_refinement_iterations": (
+            two_stage_refinement_iterations,
+            int,
+        ),
+        "two_stage_robust_delta": (two_stage_robust_delta, float),
+        "two_stage_damping": (two_stage_damping, float),
         "use_detector_matchability": (use_detector_matchability, bool),
         "detector_matchability_mode": (detector_matchability_mode, str),
         "use_detector_offset": (use_detector_offset, bool),
         "detector_max_offset": (detector_max_offset, float),
+        "use_native_matchability": (use_native_matchability, bool),
+        "native_matchability_state_path": (
+            native_matchability_state_path,
+            str,
+        ),
+        "native_matchability_max_prosac_iterations": (
+            native_matchability_max_prosac_iterations,
+            int,
+        ),
         "full_primitive_retrieval": (full_primitive_retrieval, bool),
         "full_primitive_retrieval_topk": (full_primitive_retrieval_topk, int),
         "full_primitive_chunk_size": (full_primitive_chunk_size, int),
@@ -387,12 +457,32 @@ def make_stdloc_eval_cfg(
         ),
         "min_candidate_matches": sparse.get("min_candidate_matches", 0),
         "candidate_refill_trigger_count": sparse.get("candidate_refill_trigger_count", 0),
+        "use_two_stage_pose_refinement": sparse.get(
+            "use_two_stage_pose_refinement", False
+        ),
+        "two_stage_tight_reprojection_error": sparse.get(
+            "two_stage_tight_reprojection_error", 4.0
+        ),
+        "two_stage_min_inliers": sparse.get("two_stage_min_inliers", 6),
+        "two_stage_refinement_iterations": sparse.get(
+            "two_stage_refinement_iterations", 10
+        ),
+        "two_stage_robust_delta": sparse.get("two_stage_robust_delta", 1.5),
+        "two_stage_damping": sparse.get("two_stage_damping", 1e-6),
         "use_detector_matchability": sparse.get("use_detector_matchability", False),
         "detector_matchability_mode": sparse.get(
             "detector_matchability_mode", "combined_nms"
         ),
         "use_detector_offset": sparse.get("use_detector_offset", False),
         "detector_max_offset": sparse.get("detector_max_offset", 2.0),
+        "use_native_matchability": sparse.get("use_native_matchability", False),
+        "native_matchability_state_path": sparse.get(
+            "native_matchability_state_path", ""
+        ),
+        "native_matchability_max_prosac_iterations": sparse.get(
+            "native_matchability_max_prosac_iterations",
+            sparse.get("max_iterations", 100000),
+        ),
         "sparse_frontend": sparse.get("sparse_frontend", "detector"),
         "candidate_frontend_match_policy": sparse.get(
             "candidate_frontend_match_policy", "warn"
@@ -407,8 +497,17 @@ def main():
     parser.add_argument("--base_cfg", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact_model_path", required=True)
-    parser.add_argument("--detector_folder", default="detector")
-    parser.add_argument("--detector_iters", type=int, default=30000)
+    parser.add_argument(
+        "--detector_folder",
+        default=None,
+        help="Override the base config's detector folder; requires --detector_iters.",
+    )
+    parser.add_argument(
+        "--detector_iters",
+        type=int,
+        default=None,
+        help="Override the base config's detector iteration; requires --detector_folder.",
+    )
     parser.add_argument(
         "--landmark_path",
         default="",
@@ -490,6 +589,15 @@ def main():
     )
     parser.add_argument("--min_candidate_matches", type=int, default=None)
     parser.add_argument("--candidate_refill_trigger_count", type=int, default=None)
+    parser.add_argument(
+        "--use_two_stage_pose_refinement", action="store_true", default=None,
+        help="Refine the wide-RANSAC pose on the same tight sparse candidate set.",
+    )
+    parser.add_argument("--two_stage_tight_reprojection_error", type=float, default=None)
+    parser.add_argument("--two_stage_min_inliers", type=int, default=None)
+    parser.add_argument("--two_stage_refinement_iterations", type=int, default=None)
+    parser.add_argument("--two_stage_robust_delta", type=float, default=None)
+    parser.add_argument("--two_stage_damping", type=float, default=None)
     parser.add_argument("--use_detector_matchability", action="store_true", default=None)
     parser.add_argument(
         "--detector_matchability_mode",
@@ -498,6 +606,11 @@ def main():
     )
     parser.add_argument("--use_detector_offset", action="store_true", default=None)
     parser.add_argument("--detector_max_offset", type=float, default=None)
+    parser.add_argument("--use_native_matchability", action="store_true", default=None)
+    parser.add_argument("--native_matchability_state_path", default=None)
+    parser.add_argument(
+        "--native_matchability_max_prosac_iterations", type=int, default=None
+    )
     parser.add_argument(
         "--candidate_frontend_match_policy",
         choices=["error", "warn", "ignore"],
@@ -634,10 +747,21 @@ def main():
         ),
         min_candidate_matches=args.min_candidate_matches,
         candidate_refill_trigger_count=args.candidate_refill_trigger_count,
+        use_two_stage_pose_refinement=args.use_two_stage_pose_refinement,
+        two_stage_tight_reprojection_error=args.two_stage_tight_reprojection_error,
+        two_stage_min_inliers=args.two_stage_min_inliers,
+        two_stage_refinement_iterations=args.two_stage_refinement_iterations,
+        two_stage_robust_delta=args.two_stage_robust_delta,
+        two_stage_damping=args.two_stage_damping,
         use_detector_matchability=args.use_detector_matchability,
         detector_matchability_mode=args.detector_matchability_mode,
         use_detector_offset=args.use_detector_offset,
         detector_max_offset=args.detector_max_offset,
+        use_native_matchability=args.use_native_matchability,
+        native_matchability_state_path=args.native_matchability_state_path,
+        native_matchability_max_prosac_iterations=(
+            args.native_matchability_max_prosac_iterations
+        ),
         candidate_frontend_match_policy=args.candidate_frontend_match_policy,
         diagnostics=(
             args.diagnostics

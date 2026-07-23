@@ -62,6 +62,7 @@ from localization_training.surface_anchor import (
 )
 from localization_training.ulf_initializer import (
     PIXEL_CENTER_OFFSET,
+    adaptive_cosine_histogram_trim_schedule,
     accumulate_cosine_histogram,
     consensus_eligibility,
     cosine_histogram_trim_thresholds,
@@ -1132,6 +1133,29 @@ def _validate_native_objective_semantics(args):
             raise ValueError(
                 "native_outcome_mode requires --native_sampling_mode detector_grid"
             )
+        new_outcome_defaults = {
+            "native_keep_loose_weight": 0.0,
+            "native_keep_loose_margin": 0.025,
+            "native_attractor_weight": 0.0,
+            "native_attractor_margin": 0.05,
+            "native_global_attractor_weight": 0.0,
+            "native_global_attractor_support_power": 0.5,
+            "native_global_attractor_max_score": 4.0,
+        }
+        for name, default in new_outcome_defaults.items():
+            if float(getattr(args, name, default)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
+        if int(getattr(args, "native_global_attractor_min_incoming", 4)) < 1:
+            raise ValueError("native_global_attractor_min_incoming must be positive")
+        if float(getattr(args, "native_global_attractor_max_score", 4.0)) <= 0.0:
+            raise ValueError("native_global_attractor_max_score must be positive")
+        if float(getattr(args, "native_keep_loose_radius_px", 4.0)) < float(
+            getattr(args, "native_association_radius_px", 2.0)
+        ):
+            raise ValueError(
+                "native_keep_loose_radius_px must be at least "
+                "native_association_radius_px"
+            )
 
     if source == "native":
         inert_anchor_options = {
@@ -1178,6 +1202,9 @@ def _validate_distillation_semantics(args):
     hard_core_ratio = float(args.distill_hard_matchability_core_ratio)
     reservoir_score = str(args.distill_quality_reservoir_score)
     wilson_z = float(args.distill_quality_reservoir_wilson_z)
+    global_attractor_weight = float(
+        getattr(args, "distill_global_attractor_weight", 0.0)
+    )
     if budget < 0:
         raise ValueError("distill_budget must be non-negative")
     if not math.isfinite(reservoir_multiplier) or reservoir_multiplier < 0.0:
@@ -1201,6 +1228,17 @@ def _validate_distillation_semantics(args):
     if not math.isfinite(hard_core_ratio) or not 0.0 <= hard_core_ratio <= 1.0:
         raise ValueError(
             "distill_hard_matchability_core_ratio must lie in [0, 1]"
+        )
+    if (
+        not math.isfinite(global_attractor_weight)
+        or global_attractor_weight < 0.0
+    ):
+        raise ValueError(
+            "distill_global_attractor_weight must be finite and non-negative"
+        )
+    if global_attractor_weight > 0.0 and budget <= 0:
+        raise ValueError(
+            "distill_global_attractor_weight requires a positive distill_budget"
         )
 
 
@@ -1228,6 +1266,31 @@ def _validate_ulf_initializer_semantics(args):
         raise ValueError("ulf_fusion_descriptor_min_cosine must be in [-1, 1]")
     if not 0.0 <= float(args.ulf_fusion_descriptor_trim_fraction) < 1.0:
         raise ValueError("ulf_fusion_descriptor_trim_fraction must be in [0, 1)")
+    adaptive_trim = bool(args.ulf_fusion_adaptive_trim)
+    if adaptive_trim and float(args.ulf_fusion_descriptor_trim_fraction) != 0.0:
+        raise ValueError(
+            "ulf_fusion_adaptive_trim requires ulf_fusion_descriptor_trim_fraction=0 "
+            "so the per-landmark schedule has unambiguous semantics"
+        )
+    if not (
+        0.0
+        <= float(args.ulf_fusion_adaptive_trim_min_fraction)
+        <= float(args.ulf_fusion_adaptive_trim_max_fraction)
+        < 1.0
+    ):
+        raise ValueError(
+            "adaptive GWFF trim fractions must satisfy 0 <= min <= max < 1"
+        )
+    if not -1.0 <= float(args.ulf_fusion_adaptive_trim_tail_cosine) <= 1.0:
+        raise ValueError("ulf_fusion_adaptive_trim_tail_cosine must be in [-1, 1]")
+    if int(args.ulf_fusion_adaptive_trim_min_observations) < 1:
+        raise ValueError("ulf_fusion_adaptive_trim_min_observations must be positive")
+    if str(args.ulf_fusion_adaptive_trim_mode) not in {"absolute", "relative_mad"}:
+        raise ValueError(
+            "ulf_fusion_adaptive_trim_mode must be absolute or relative_mad"
+        )
+    if float(args.ulf_fusion_adaptive_trim_mad_scale) <= 0.0:
+        raise ValueError("ulf_fusion_adaptive_trim_mad_scale must be positive")
     if int(args.ulf_fusion_trim_histogram_bins) < 2:
         raise ValueError("ulf_fusion_trim_histogram_bins must be at least two")
     if str(args.ulf_fusion_reference_mode) not in {
@@ -1259,20 +1322,35 @@ def _validate_ulf_initializer_semantics(args):
         raise ValueError("support_rgb_only requires --longest_edge 0")
 
 
-def _native_candidate_loss_kwargs(args):
+def _native_candidate_loss_kwargs(args, *, global_attractor_scores=None):
     """Return explicit native-candidate weights only for native proposals."""
     native = str(args.observation_source) in {"native", "native_plus_anchor"}
+    # The global false-attractor prior is a train-split artifact.  Validation
+    # must never build or consume it, so callers receive a zero-weight no-op
+    # unless they explicitly supply the frozen training prior.
+    global_attractor_enabled = global_attractor_scores is not None
     return {
         "native_outcome_mode": bool(args.native_outcome_mode and native),
         "native_nce_weight": float(args.native_nce_weight),
         "native_keep_weight": float(args.native_keep_weight),
         "native_keep_margin": float(args.native_keep_margin),
+        "native_keep_loose_weight": float(args.native_keep_loose_weight),
+        "native_keep_loose_radius_px": float(args.native_keep_loose_radius_px),
+        "native_keep_loose_margin": float(args.native_keep_loose_margin),
         "native_swap_weight": float(args.native_swap_weight),
         "native_swap_margin": float(args.native_swap_margin),
         "native_miss_weight": float(args.native_miss_weight),
         "native_miss_margin": float(args.native_miss_margin),
         "native_reject_weight": float(args.native_reject_weight),
         "native_reject_threshold": float(args.native_reject_threshold),
+        "native_attractor_weight": float(args.native_attractor_weight),
+        "native_attractor_margin": float(args.native_attractor_margin),
+        "native_global_attractor_weight": (
+            float(args.native_global_attractor_weight)
+            if global_attractor_enabled
+            else 0.0
+        ),
+        "native_global_attractor_scores": global_attractor_scores,
     }
 
 
@@ -2633,10 +2711,20 @@ def _build_ulf_robust_geometry_features(
 
     trim_fraction = float(args.ulf_fusion_descriptor_trim_fraction)
     descriptor_min_cosine = float(args.ulf_fusion_descriptor_min_cosine)
-    needs_trim = trim_fraction > 0.0 or descriptor_min_cosine > -1.0
+    adaptive_trim = bool(args.ulf_fusion_adaptive_trim)
+    needs_trim = (
+        trim_fraction > 0.0 or descriptor_min_cosine > -1.0 or adaptive_trim
+    )
     thresholds = torch.full((bank_count,), -1.0, device=bank_xyz.device)
     posttrim_count = pretrim_count.clone()
     result = reference
+    adaptive_trim_fractions = torch.full(
+        (bank_count,), trim_fraction, dtype=torch.float32, device=bank_xyz.device
+    )
+    adaptive_tail_rates = None
+    adaptive_tail_thresholds = None
+    adaptive_medians = None
+    adaptive_mads = None
     if needs_trim:
         histogram = torch.zeros(
             (bank_count, int(args.ulf_fusion_trim_histogram_bins)),
@@ -2649,7 +2737,25 @@ def _build_ulf_robust_geometry_features(
             histogram.copy_(accumulate_cosine_histogram(histogram, indices, cosine))
 
         for_each_observation("Robust ULF GWFF cosine histogram", accumulate_histogram)
-        thresholds = cosine_histogram_trim_thresholds(histogram, trim_fraction).to(
+        if adaptive_trim:
+            (
+                adaptive_trim_fractions,
+                adaptive_tail_rates,
+                adaptive_tail_thresholds,
+                adaptive_medians,
+                adaptive_mads,
+            ) = adaptive_cosine_histogram_trim_schedule(
+                histogram,
+                tail_cosine=float(args.ulf_fusion_adaptive_trim_tail_cosine),
+                min_fraction=float(args.ulf_fusion_adaptive_trim_min_fraction),
+                max_fraction=float(args.ulf_fusion_adaptive_trim_max_fraction),
+                min_observations=int(args.ulf_fusion_adaptive_trim_min_observations),
+                mode=str(args.ulf_fusion_adaptive_trim_mode),
+                mad_scale=float(args.ulf_fusion_adaptive_trim_mad_scale),
+            )
+        thresholds = cosine_histogram_trim_thresholds(
+            histogram, adaptive_trim_fractions
+        ).to(
             device=bank_xyz.device
         )
         thresholds = torch.maximum(
@@ -2699,6 +2805,54 @@ def _build_ulf_robust_geometry_features(
         "retained_observation_fraction": retained_fraction,
         "descriptor_trim_enabled": bool(needs_trim),
         "descriptor_trim_fraction": trim_fraction,
+        "adaptive_descriptor_trim_enabled": adaptive_trim,
+        "adaptive_descriptor_trim_min_fraction": float(
+            args.ulf_fusion_adaptive_trim_min_fraction
+        ),
+        "adaptive_descriptor_trim_max_fraction": float(
+            args.ulf_fusion_adaptive_trim_max_fraction
+        ),
+        "adaptive_descriptor_trim_tail_cosine": float(
+            args.ulf_fusion_adaptive_trim_tail_cosine
+        ),
+        "adaptive_descriptor_trim_mode": str(args.ulf_fusion_adaptive_trim_mode),
+        "adaptive_descriptor_trim_mad_scale": float(
+            args.ulf_fusion_adaptive_trim_mad_scale
+        ),
+        "adaptive_descriptor_trim_min_observations": int(
+            args.ulf_fusion_adaptive_trim_min_observations
+        ),
+        "adaptive_descriptor_trim_fraction_mean_observed": (
+            float(adaptive_trim_fractions[reference_observed].mean().item())
+            if bool(reference_observed.any().item())
+            else 0.0
+        ),
+        "adaptive_descriptor_trim_fraction_p95_observed": (
+            float(torch.quantile(adaptive_trim_fractions[reference_observed], 0.95).item())
+            if bool(reference_observed.any().item())
+            else 0.0
+        ),
+        "adaptive_descriptor_trim_tail_rate_mean_observed": (
+            float(adaptive_tail_rates[reference_observed].mean().item())
+            if adaptive_tail_rates is not None and bool(reference_observed.any().item())
+            else None
+        ),
+        "adaptive_descriptor_trim_threshold_mean_observed": (
+            float(adaptive_tail_thresholds[reference_observed].mean().item())
+            if adaptive_tail_thresholds is not None
+            and bool(reference_observed.any().item())
+            else None
+        ),
+        "adaptive_descriptor_trim_median_mean_observed": (
+            float(adaptive_medians[reference_observed].mean().item())
+            if adaptive_medians is not None and bool(reference_observed.any().item())
+            else None
+        ),
+        "adaptive_descriptor_trim_mad_mean_observed": (
+            float(adaptive_mads[reference_observed].mean().item())
+            if adaptive_mads is not None and bool(reference_observed.any().item())
+            else None
+        ),
         "descriptor_min_cosine": descriptor_min_cosine,
         "descriptor_trim_histogram_bins": int(args.ulf_fusion_trim_histogram_bins),
         "fusion_reference_mode": reference_mode,
@@ -3530,6 +3684,140 @@ def _collect_landmark_statistics(
 
 
 @torch.no_grad()
+def _collect_native_global_attractor_statistics(
+    features,
+    query_names,
+    cache,
+    bank_xyz,
+    args,
+    *,
+    visibility_cache=None,
+    base_bank_xyz=None,
+    max_observations=None,
+):
+    """Estimate train-only false-attractor priors for a fixed native bank.
+
+    A KCS landmark can be repeatable while still attracting unrelated native
+    keypoints in repeated facades.  This pass records the *target* landmark of
+    every geometrically wrong top-1 prediction, unlike source-side
+    matchability statistics.  It is evaluated on the training split only,
+    detached from descriptor gradients, and then kept fixed for the residual
+    stage so the deployment candidate graph itself is never edited.
+    """
+    landmark_count = int(bank_xyz.shape[0])
+    device = bank_xyz.device
+    incoming_count = torch.zeros(landmark_count, device=device)
+    false_count = torch.zeros(landmark_count, device=device)
+    correct_count = torch.zeros(landmark_count, device=device)
+    normalized_features = F.normalize(features.detach(), dim=1)
+    records = []
+    observation_limit = (
+        int(args.max_observations)
+        if max_observations is None
+        else int(max_observations)
+    )
+    for name in tqdm(query_names, desc="Native false-attractor prior"):
+        observations, _ = _primary_observations(
+            cache[name],
+            bank_xyz if base_bank_xyz is None else base_bank_xyz,
+            args,
+            max_observations=observation_limit,
+            bank_visibility_mask=(
+                None if visibility_cache is None else visibility_cache[name]
+            ),
+            prediction_bank_xyz=bank_xyz,
+        )
+        source_valid = observations.source_indices >= 0
+        if not bool(source_valid.any().item()):
+            continue
+        query = F.normalize(
+            observations.query_features[source_valid].detach(), dim=1
+        )
+        top1 = (query @ normalized_features.T).argmax(dim=1)
+        top1_distance = torch.linalg.norm(
+            observations.bank_uv[top1]
+            - observations.query_uv[source_valid],
+            dim=1,
+        )
+        clean = observations.bank_visible[top1] & (
+            top1_distance <= float(args.positive_radius_px)
+        )
+        ones = torch.ones_like(top1, dtype=incoming_count.dtype)
+        incoming_count.index_add_(0, top1, ones)
+        correct_count.index_add_(0, top1[clean], ones[clean])
+        false_count.index_add_(0, top1[~clean], ones[~clean])
+        records.append(
+            {
+                "observations": int(top1.numel()),
+                "top1_clean_precision": float(clean.float().mean().item()),
+                "unique_top1_landmarks": int(torch.unique(top1).numel()),
+            }
+        )
+
+    observed = incoming_count > 0
+    false_rate = torch.zeros_like(incoming_count)
+    false_rate[observed] = false_count[observed] / incoming_count[observed]
+    min_incoming = max(int(args.native_global_attractor_min_incoming), 1)
+    eligible = incoming_count >= float(min_incoming)
+    support_reference = (
+        torch.log1p(incoming_count[eligible]).median()
+        if bool(eligible.any().item())
+        else incoming_count.new_tensor(1.0)
+    )
+    support = torch.zeros_like(incoming_count)
+    if bool(eligible.any().item()):
+        support[eligible] = (
+            torch.log1p(incoming_count[eligible])
+            / support_reference.clamp_min(1e-8)
+        ).pow(float(args.native_global_attractor_support_power))
+    raw_score = false_rate * support
+    score = torch.zeros_like(raw_score)
+    positive = raw_score > 0.0
+    if bool(positive.any().item()):
+        score[positive] = raw_score[positive] / raw_score[positive].mean().clamp_min(
+            1e-8
+        )
+        score.clamp_(max=float(args.native_global_attractor_max_score))
+    diagnostics = _mean_diagnostics(records)
+    diagnostics.update(
+        {
+            "native_global_attractor_prior_enabled": 1.0,
+            "native_global_attractor_prior_query_count": int(len(records)),
+            "native_global_attractor_prior_incoming_count": int(
+                incoming_count.sum().item()
+            ),
+            "native_global_attractor_prior_false_count": int(
+                false_count.sum().item()
+            ),
+            "native_global_attractor_prior_raw_false_rate": float(
+                false_count.sum().item()
+                / incoming_count.sum().clamp_min(1.0).item()
+            ),
+            "native_global_attractor_prior_eligible_landmarks": int(
+                eligible.sum().item()
+            ),
+            "native_global_attractor_prior_nonzero_landmarks": int(
+                positive.sum().item()
+            ),
+            "native_global_attractor_prior_score_mean": float(
+                score[positive].mean().item() if bool(positive.any()) else 0.0
+            ),
+            "native_global_attractor_prior_score_max": float(score.max().item()),
+            "native_global_attractor_prior_support_reference": float(
+                support_reference.item()
+            ),
+        }
+    )
+    return {
+        "incoming_count": incoming_count,
+        "false_count": false_count,
+        "correct_count": correct_count,
+        "false_rate": false_rate,
+        "score": score,
+    }, diagnostics
+
+
+@torch.no_grad()
 def _distill_final_landmark_bank(
     output_dir,
     landmark_indices,
@@ -3541,6 +3829,7 @@ def _distill_final_landmark_bank(
     config,
     mvinit_observation_count,
     dustbin_score,
+    global_attractor_statistics=None,
 ):
     observation_count = statistics.get(
         "effective_observation_count", statistics["observation_count"]
@@ -3572,6 +3861,47 @@ def _distill_final_landmark_bank(
         * (0.5 + 0.5 * reprojection_quality)
         * (0.75 + 0.25 * fim_quality)
     )
+    global_attractor_weight = float(
+        getattr(args, "distill_global_attractor_weight", 0.0)
+    )
+    global_attractor_score = torch.zeros_like(matchability)
+    global_attractor_false_rate = torch.zeros_like(matchability)
+    global_attractor_incoming = torch.zeros_like(matchability)
+    global_attractor_reliability = torch.ones_like(matchability)
+    global_attractor_active = False
+    if global_attractor_weight > 0.0:
+        if global_attractor_statistics is None:
+            raise ValueError(
+                "distill_global_attractor_weight requires train-only "
+                "global_attractor_statistics"
+            )
+
+        def _global_stat(name):
+            value = global_attractor_statistics.get(name)
+            if value is None:
+                return torch.zeros_like(matchability)
+            value = torch.as_tensor(
+                value, device=matchability.device, dtype=matchability.dtype
+            ).reshape(-1)
+            if value.numel() != matchability.numel():
+                raise ValueError(
+                    "global_attractor_statistics must align with the source "
+                    "landmark bank"
+                )
+            return value
+
+        global_attractor_score = _global_stat("score").clamp_min(0.0)
+        global_attractor_false_rate = _global_stat("false_rate").clamp(0.0, 1.0)
+        global_attractor_incoming = _global_stat("incoming_count").clamp_min(0.0)
+        # This is a ranking prior, not a query-time filter.  A landmark with
+        # no observed false-attractor evidence remains neutral, while a
+        # repeatedly wrong target is less likely to enter the fixed bank.
+        global_attractor_reliability = torch.reciprocal(
+            1.0 + global_attractor_weight * global_attractor_score
+        )
+        utility = utility * global_attractor_reliability
+        global_attractor_active = True
+    selection_score = matchability * global_attractor_reliability
     extent = bank_xyz.quantile(0.99, dim=0) - bank_xyz.quantile(0.01, dim=0)
     voxel_size = float(args.distill_voxel_size)
     if voxel_size <= 0.0:
@@ -3591,7 +3921,7 @@ def _distill_final_landmark_bank(
         ).reshape(-1)
         if observed_indices.numel() > 0:
             reliable_order = torch.argsort(
-                matchability[observed_indices], descending=True, stable=True
+                selection_score[observed_indices], descending=True, stable=True
             )
             # Keep a larger matchability-first reservoir.  Coverage and FIM
             # can then choose the final fixed-size bank instead of becoming
@@ -3638,6 +3968,7 @@ def _distill_final_landmark_bank(
             observation_count,
             z=float(args.distill_quality_reservoir_wilson_z),
         )
+    quality_reservoir_score = quality_reservoir_score * global_attractor_reliability
     if quality_reservoir_multiplier > 0.0:
         quality_reservoir_observed_any = observation_count > 0
         quality_reservoir = top_score_reservoir(
@@ -3680,7 +4011,7 @@ def _distill_final_landmark_bank(
         strict_budget, int(round(float(strict_budget) * hard_core_ratio))
     )
     hard_core = hard_score_core(
-        matchability,
+        selection_score,
         hard_core_count,
         eligible=eligible,
     )
@@ -3690,7 +4021,7 @@ def _distill_final_landmark_bank(
     coverage_budget = strict_budget - int(hard_core.numel())
     coverage_selected, selection_meta = coverage_preserving_sample(
         bank_xyz,
-        base_score=matchability,
+        base_score=selection_score,
         utility=utility,
         num=coverage_budget,
         min_observations=coverage_eligible,
@@ -3867,6 +4198,12 @@ def _distill_final_landmark_bank(
                 int(quality_reservoir_observed_any.sum().item()),
                 device=bank_xyz.device,
             ),
+            "global_attractor_selection_active": torch.tensor(
+                global_attractor_active, device=bank_xyz.device
+            ),
+            "global_attractor_weight": torch.tensor(
+                global_attractor_weight, device=bank_xyz.device
+            ),
         }
     )
     output_dir = Path(output_dir)
@@ -3885,6 +4222,12 @@ def _distill_final_landmark_bank(
         "matchability_threshold": float(args.distill_matchability_threshold),
         "false_top1_max": float(args.distill_false_top1_max),
         "proposal_weight": float(args.distill_proposal_weight),
+        "global_attractor_selection": {
+            "enabled": global_attractor_active,
+            "weight": global_attractor_weight,
+            "statistics_split": "train_only" if global_attractor_active else None,
+            "role": "fixed_bank_ranking_prior_not_query_filter",
+        },
         "uses_conditional_translation_fim": True,
         "uses_3d_image_depth_coverage": True,
         "eligibility_relaxed": eligibility_relaxed,
@@ -3907,6 +4250,11 @@ def _distill_final_landmark_bank(
         ),
         "quality_reservoir_matchability_cutoff": float(
             matchability[quality_reservoir].min().item()
+            if quality_reservoir.numel() > 0
+            else 0.0
+        ),
+        "quality_reservoir_selection_score_cutoff": float(
+            selection_score[quality_reservoir].min().item()
             if quality_reservoir.numel() > 0
             else 0.0
         ),
@@ -3966,6 +4314,17 @@ def _distill_final_landmark_bank(
         "quality_reservoir_score": quality_reservoir_score[selected]
         .detach()
         .cpu(),
+        "global_attractor_score": global_attractor_score[selected].detach().cpu(),
+        "global_attractor_false_rate": global_attractor_false_rate[selected]
+        .detach()
+        .cpu(),
+        "global_attractor_incoming_count": global_attractor_incoming[selected]
+        .detach()
+        .cpu(),
+        "global_attractor_reliability": global_attractor_reliability[selected]
+        .detach()
+        .cpu(),
+        "selection_score": selection_score[selected].detach().cpu(),
         "quality_reservoir_member": torch.zeros_like(
             eligible, dtype=torch.bool
         )
@@ -4014,6 +4373,13 @@ def _distill_final_landmark_bank(
         "quality_reservoir_count": int(quality_reservoir.numel()),
         "quality_reservoir_active": quality_reservoir_active,
         "quality_reservoir_score_mode": quality_reservoir_score_mode,
+        "global_attractor_selection_active": global_attractor_active,
+        "global_attractor_selected_score_mean": float(
+            global_attractor_score[selected].mean().item()
+        ),
+        "global_attractor_selected_reliability_mean": float(
+            global_attractor_reliability[selected].mean().item()
+        ),
     }
 
 
@@ -4234,12 +4600,29 @@ def _state_config(
         "native_nce_weight": float(args.native_nce_weight),
         "native_keep_weight": float(args.native_keep_weight),
         "native_keep_margin": float(args.native_keep_margin),
+        "native_keep_loose_weight": float(args.native_keep_loose_weight),
+        "native_keep_loose_radius_px": float(args.native_keep_loose_radius_px),
+        "native_keep_loose_margin": float(args.native_keep_loose_margin),
         "native_swap_weight": float(args.native_swap_weight),
         "native_swap_margin": float(args.native_swap_margin),
         "native_miss_weight": float(args.native_miss_weight),
         "native_miss_margin": float(args.native_miss_margin),
         "native_reject_weight": float(args.native_reject_weight),
         "native_reject_threshold": float(args.native_reject_threshold),
+        "native_attractor_weight": float(args.native_attractor_weight),
+        "native_attractor_margin": float(args.native_attractor_margin),
+        "native_global_attractor_weight": float(
+            args.native_global_attractor_weight
+        ),
+        "native_global_attractor_min_incoming": int(
+            args.native_global_attractor_min_incoming
+        ),
+        "native_global_attractor_support_power": float(
+            args.native_global_attractor_support_power
+        ),
+        "native_global_attractor_max_score": float(
+            args.native_global_attractor_max_score
+        ),
         # A bounded-BA state inherits this from the residual state so the
         # evaluator can still enforce the descriptor-stage deployment score.
         "native_reject_contract": native_reject_contract,
@@ -4329,6 +4712,23 @@ def _state_config(
         "ulf_fusion_descriptor_trim_fraction": float(
             args.ulf_fusion_descriptor_trim_fraction
         ),
+        "ulf_fusion_adaptive_trim": bool(args.ulf_fusion_adaptive_trim),
+        "ulf_fusion_adaptive_trim_min_fraction": float(
+            args.ulf_fusion_adaptive_trim_min_fraction
+        ),
+        "ulf_fusion_adaptive_trim_max_fraction": float(
+            args.ulf_fusion_adaptive_trim_max_fraction
+        ),
+        "ulf_fusion_adaptive_trim_tail_cosine": float(
+            args.ulf_fusion_adaptive_trim_tail_cosine
+        ),
+        "ulf_fusion_adaptive_trim_mode": str(args.ulf_fusion_adaptive_trim_mode),
+        "ulf_fusion_adaptive_trim_mad_scale": float(
+            args.ulf_fusion_adaptive_trim_mad_scale
+        ),
+        "ulf_fusion_adaptive_trim_min_observations": int(
+            args.ulf_fusion_adaptive_trim_min_observations
+        ),
         "ulf_fusion_reference_mode": str(args.ulf_fusion_reference_mode),
         "ulf_fusion_trim_histogram_bins": int(
             args.ulf_fusion_trim_histogram_bins
@@ -4379,6 +4779,9 @@ def _state_config(
         ),
         "distill_false_top1_max": float(args.distill_false_top1_max),
         "distill_proposal_weight": float(args.distill_proposal_weight),
+        "distill_global_attractor_weight": float(
+            args.distill_global_attractor_weight
+        ),
         "max_observations": int(args.max_observations),
         "validation_ratio": float(args.validation_ratio),
         "split_mode": str(args.split_mode),
@@ -4530,6 +4933,7 @@ def train(dataset, args):
         or args.initialization_mode == "ulf_parity"
     ) and (
         float(args.ulf_fusion_descriptor_trim_fraction) != 0.0
+        or bool(args.ulf_fusion_adaptive_trim)
         or float(args.ulf_fusion_descriptor_min_cosine) != -1.0
         or int(args.ulf_consensus_min_visible_views) != 0
         or float(args.ulf_consensus_min_rate) != 0.0
@@ -4919,6 +5323,57 @@ def train(dataset, args):
         geometry_support_diagnostics["native_geometry_support_path"] = str(
             support_path.resolve()
         )
+    native_global_attractor_scores = None
+    native_global_attractor_diagnostics = {
+        "native_global_attractor_prior_enabled": 0.0,
+    }
+    if (
+        native_observation_mode
+        and bool(args.native_outcome_mode)
+        and float(args.native_global_attractor_weight) > 0.0
+    ):
+        (
+            native_global_attractor_statistics,
+            native_global_attractor_diagnostics,
+        ) = _collect_native_global_attractor_statistics(
+            initial_features,
+            train_names,
+            cache,
+            initial_xyz,
+            args,
+            visibility_cache=visibility_cache,
+            base_bank_xyz=base_bank_xyz,
+        )
+        native_global_attractor_scores = native_global_attractor_statistics[
+            "score"
+        ].detach()
+        global_attractor_path = output_dir / "native_global_attractor_prior.pt"
+        torch.save(
+            {
+                "version": 1,
+                "split": "train_only",
+                "train_camera_names_sha256": _camera_names_sha256(train_names),
+                "landmark_indices": landmark_indices.detach().cpu(),
+                "statistics": {
+                    name: value.detach().cpu()
+                    for name, value in native_global_attractor_statistics.items()
+                },
+                "diagnostics": dict(native_global_attractor_diagnostics),
+            },
+            global_attractor_path,
+        )
+        config["native_global_attractor_prior"] = {
+            "enabled": True,
+            "split": "train_only",
+            "path": str(global_attractor_path.resolve()),
+            "train_camera_names_sha256": _camera_names_sha256(train_names),
+        }
+    else:
+        config["native_global_attractor_prior"] = {"enabled": False}
+    native_loss_kwargs = _native_candidate_loss_kwargs(
+        args,
+        global_attractor_scores=native_global_attractor_scores,
+    )
     initial_validation = _validate_descriptor_field(
         initial_features,
         validation_names,
@@ -4935,7 +5390,12 @@ def train(dataset, args):
         landmark_indices,
         initial_features,
         config,
-        {**mvinit_diagnostics, **geometry_support_diagnostics, **initial_validation},
+        {
+            **mvinit_diagnostics,
+            **geometry_support_diagnostics,
+            **native_global_attractor_diagnostics,
+            **initial_validation,
+        },
         mvinit_observation_count,
         dustbin_score=dustbin_score,
         landmark_xyz=initial_xyz,
@@ -4971,7 +5431,13 @@ def train(dataset, args):
             landmark_indices,
             checkpoint_features,
             config,
-            {**mvinit_diagnostics, **geometry_support_diagnostics, **recent, **validation},
+            {
+                **mvinit_diagnostics,
+                **geometry_support_diagnostics,
+                **native_global_attractor_diagnostics,
+                **recent,
+                **validation,
+            },
             mvinit_observation_count,
             dustbin_score=dustbin_score,
             landmark_xyz=checkpoint_xyz,
@@ -5085,7 +5551,7 @@ def train(dataset, args):
                 unmatched_rejection_weight=args.unmatched_rejection_weight,
                 unmatched_max_similarity=args.unmatched_max_similarity,
                 dustbin_score=dustbin_score,
-                **_native_candidate_loss_kwargs(args),
+                **native_loss_kwargs,
             )
             retrieval_loss = retrieval.loss
             retrieval_diagnostics = retrieval.diagnostics
@@ -5428,6 +5894,54 @@ def train(dataset, args):
             visibility_cache=visibility_cache,
             base_bank_xyz=base_bank_xyz,
         )
+        distill_global_attractor_statistics = None
+        distill_global_attractor_diagnostics = {
+            "distill_global_attractor_prior_enabled": 0.0,
+        }
+        if float(args.distill_global_attractor_weight) > 0.0:
+            if not native_observation_mode:
+                raise ValueError(
+                    "distill_global_attractor_weight requires native sparse "
+                    "observations"
+                )
+            (
+                distill_global_attractor_statistics,
+                distill_global_attractor_diagnostics,
+            ) = _collect_native_global_attractor_statistics(
+                final_features,
+                train_names,
+                cache,
+                final_xyz,
+                args,
+                visibility_cache=visibility_cache,
+                base_bank_xyz=base_bank_xyz,
+                max_observations=args.statistics_observations,
+            )
+            distill_global_attractor_path = (
+                output_dir / "distill_global_attractor_prior.pt"
+            )
+            torch.save(
+                {
+                    "version": 1,
+                    "split": "train_only",
+                    "train_camera_names_sha256": _camera_names_sha256(train_names),
+                    "landmark_indices": landmark_indices.detach().cpu(),
+                    "statistics": {
+                        name: value.detach().cpu()
+                        for name, value in distill_global_attractor_statistics.items()
+                    },
+                    "diagnostics": dict(distill_global_attractor_diagnostics),
+                },
+                distill_global_attractor_path,
+            )
+            config["distill_global_attractor_prior"] = {
+                "enabled": True,
+                "split": "train_only",
+                "path": str(distill_global_attractor_path.resolve()),
+                "train_camera_names_sha256": _camera_names_sha256(train_names),
+            }
+        else:
+            config["distill_global_attractor_prior"] = {"enabled": False}
         distillation_summary = {
             "enabled": True,
             **_distill_final_landmark_bank(
@@ -5441,7 +5955,9 @@ def train(dataset, args):
                 config,
                 mvinit_observation_count,
                 dustbin_score,
+                global_attractor_statistics=distill_global_attractor_statistics,
             ),
+            **distill_global_attractor_diagnostics,
         }
     with torch.no_grad():
         feature_cosine = (
@@ -5463,6 +5979,7 @@ def train(dataset, args):
             "landmark_statistics": landmark_statistics_summary,
             "distillation": distillation_summary,
             "native_geometry_support": geometry_support_diagnostics,
+            "native_global_attractor_prior": native_global_attractor_diagnostics,
             "feature_drift": {
                 "cosine_mean": float(feature_cosine.mean().item()),
                 "cosine_p01": float(torch.quantile(feature_cosine, 0.01).item()),
@@ -5543,6 +6060,7 @@ def train(dataset, args):
         {
             **mvinit_diagnostics,
             **geometry_support_diagnostics,
+            **native_global_attractor_diagnostics,
             **_mean_diagnostics(history[-min(len(history), 200):]),
             **final_validation,
         },
@@ -5762,6 +6280,37 @@ def build_parser():
         help="Robust GWFF: per-landmark bottom cosine fraction removed after prototype fusion.",
     )
     parser.add_argument(
+        "--ulf_fusion_adaptive_trim",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use each landmark's streaming low-cosine tail rate to choose a "
+            "bounded GWFF trim fraction instead of one global fraction."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_fusion_adaptive_trim_min_fraction", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--ulf_fusion_adaptive_trim_max_fraction", type=float, default=0.20
+    )
+    parser.add_argument(
+        "--ulf_fusion_adaptive_trim_tail_cosine", type=float, default=0.75
+    )
+    parser.add_argument(
+        "--ulf_fusion_adaptive_trim_min_observations", type=int, default=4
+    )
+    parser.add_argument(
+        "--ulf_fusion_adaptive_trim_mode",
+        choices=["absolute", "relative_mad"],
+        default="absolute",
+        help=(
+            "Use an absolute cosine tail for ablations or each landmark's "
+            "median/MAD-normalized tail for robust GWFF."
+        ),
+    )
+    parser.add_argument("--ulf_fusion_adaptive_trim_mad_scale", type=float, default=2.5)
+    parser.add_argument(
         "--ulf_fusion_reference_mode",
         choices=["mean", "weighted_cosine_medoid"],
         default="mean",
@@ -5897,12 +6446,35 @@ def build_parser():
     parser.add_argument("--native_nce_weight", type=float, default=0.0)
     parser.add_argument("--native_keep_weight", type=float, default=1.0)
     parser.add_argument("--native_keep_margin", type=float, default=0.05)
+    parser.add_argument("--native_keep_loose_weight", type=float, default=0.0)
+    parser.add_argument("--native_keep_loose_radius_px", type=float, default=4.0)
+    parser.add_argument("--native_keep_loose_margin", type=float, default=0.025)
     parser.add_argument("--native_swap_weight", type=float, default=1.0)
     parser.add_argument("--native_swap_margin", type=float, default=0.05)
     parser.add_argument("--native_miss_weight", type=float, default=1.0)
     parser.add_argument("--native_miss_margin", type=float, default=0.05)
     parser.add_argument("--native_reject_weight", type=float, default=0.1)
     parser.add_argument("--native_reject_threshold", type=float, default=0.5)
+    parser.add_argument("--native_attractor_weight", type=float, default=0.0)
+    parser.add_argument("--native_attractor_margin", type=float, default=0.05)
+    parser.add_argument(
+        "--native_global_attractor_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for a frozen train-only per-landmark false-attractor prior; "
+            "it preserves the deployed candidate set and only reweights ranking."
+        ),
+    )
+    parser.add_argument(
+        "--native_global_attractor_min_incoming", type=int, default=4
+    )
+    parser.add_argument(
+        "--native_global_attractor_support_power", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--native_global_attractor_max_score", type=float, default=4.0
+    )
     parser.add_argument("--proposal_jitter_std", type=float, default=0.0)
     parser.add_argument("--proposal_jitter_max", type=float, default=0.0)
     parser.add_argument("--generic_proposal_weight", type=float, default=0.0)
@@ -6046,6 +6618,15 @@ def build_parser():
         "--distill_matchability_threshold", type=float, default=0.5
     )
     parser.add_argument("--distill_false_top1_max", type=float, default=0.5)
+    parser.add_argument(
+        "--distill_global_attractor_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Train-only target-side false-attractor penalty used only when "
+            "ranking a distilled fixed bank; it never filters deployment pairs."
+        ),
+    )
     parser.add_argument(
         "--distill_proposal_weight",
         type=float,

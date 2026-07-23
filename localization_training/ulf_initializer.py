@@ -255,7 +255,7 @@ def cosine_histogram_bin_indices(cosine: torch.Tensor, bins: int) -> torch.Tenso
 
 
 def cosine_histogram_trim_thresholds(
-    histogram: torch.Tensor, trim_fraction: float
+    histogram: torch.Tensor, trim_fraction: float | torch.Tensor
 ) -> torch.Tensor:
     """Return conservative lower cosine thresholds for per-landmark trimming.
 
@@ -266,16 +266,165 @@ def cosine_histogram_trim_thresholds(
     histogram = torch.as_tensor(histogram)
     if histogram.ndim != 2 or histogram.shape[1] < 2:
         raise ValueError("histogram must have shape [landmarks, bins>=2]")
-    trim_fraction = float(trim_fraction)
-    if not 0.0 <= trim_fraction < 1.0:
-        raise ValueError("trim_fraction must be in [0, 1)")
     bins = int(histogram.shape[1])
     counts = histogram.to(dtype=torch.long).clamp_min(0)
+    fractions = torch.as_tensor(
+        trim_fraction, device=histogram.device, dtype=torch.float32
+    )
+    if fractions.ndim == 0:
+        fractions = fractions.expand(counts.shape[0])
+    elif fractions.ndim == 1 and fractions.numel() == counts.shape[0]:
+        fractions = fractions.reshape(-1)
+    else:
+        raise ValueError(
+            "trim_fraction must be scalar or have one value per landmark"
+        )
+    if not bool(torch.isfinite(fractions).all().item()) or bool(
+        ((fractions < 0.0) | (fractions >= 1.0)).any().item()
+    ):
+        raise ValueError("trim_fraction must be finite and lie in [0, 1)")
     total = counts.sum(dim=1)
-    drop = torch.floor(total.float() * trim_fraction).to(dtype=torch.long)
+    drop = torch.floor(total.float() * fractions).to(dtype=torch.long)
     cumulative = counts.cumsum(dim=1)
     retained_bin = (cumulative <= drop[:, None]).sum(dim=1).clamp(0, bins - 1)
     return -1.0 + 2.0 * retained_bin.to(dtype=torch.float32) / float(bins)
+
+
+def _histogram_weighted_quantile_centers(
+    counts: torch.Tensor, quantile: float
+) -> torch.Tensor:
+    """Estimate a per-row quantile from compact cosine-histogram counts."""
+    counts = torch.as_tensor(counts, dtype=torch.long).clamp_min(0)
+    if counts.ndim != 2 or counts.shape[1] < 2:
+        raise ValueError("counts must have shape [landmarks, bins>=2]")
+    quantile = float(quantile)
+    if not 0.0 <= quantile <= 1.0:
+        raise ValueError("histogram quantile must lie in [0, 1]")
+    bins = int(counts.shape[1])
+    total = counts.sum(dim=1)
+    # The one-based rank avoids selecting an empty leading bin for a nonempty
+    # histogram. Empty rows are irrelevant to the caller's support gate and
+    # deterministically receive the first bin center.
+    rank = torch.ceil(total.float() * quantile).to(dtype=torch.long).clamp_min(1)
+    index = (counts.cumsum(dim=1) >= rank[:, None]).to(dtype=torch.long).argmax(dim=1)
+    centers = -1.0 + (
+        torch.arange(bins, device=counts.device, dtype=torch.float32) + 0.5
+    ) * (2.0 / float(bins))
+    return centers[index]
+
+
+def adaptive_cosine_histogram_trim_schedule(
+    histogram: torch.Tensor,
+    *,
+    tail_cosine: float,
+    min_fraction: float,
+    max_fraction: float,
+    min_observations: int,
+    mode: str = "absolute",
+    mad_scale: float = 2.5,
+) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor | None,
+    torch.Tensor | None,
+]:
+    """Choose a bounded trim fraction from each landmark's low-cosine tail.
+
+    A global trim fraction treats stable, unimodal landmarks and landmarks
+    with a substantial incompatible-view tail identically.  This streaming
+    statistic keeps the former intact and trims only as much as the observed
+    low-agreement tail for sufficiently supported landmarks. ``absolute`` is
+    retained for a controlled ablation. ``relative_mad`` evaluates the tail
+    against each landmark's own median/MAD, which prevents a globally lower
+    but internally stable descriptor mode from being mistaken for an outlier.
+
+    The return value includes the applied fraction, tail rate, per-landmark
+    threshold, and optional median/MAD diagnostics. The latter are derived
+    from the histogram only; no full support descriptor tensor is retained.
+    """
+    histogram = torch.as_tensor(histogram)
+    if histogram.ndim != 2 or histogram.shape[1] < 2:
+        raise ValueError("histogram must have shape [landmarks, bins>=2]")
+    tail_cosine = float(tail_cosine)
+    min_fraction = float(min_fraction)
+    max_fraction = float(max_fraction)
+    min_observations = int(min_observations)
+    if not -1.0 <= tail_cosine <= 1.0:
+        raise ValueError("tail_cosine must lie in [-1, 1]")
+    if not (
+        0.0 <= min_fraction <= max_fraction < 1.0
+    ):
+        raise ValueError("adaptive trim fractions must satisfy 0 <= min <= max < 1")
+    if min_observations < 1:
+        raise ValueError("min_observations must be positive")
+    mode = str(mode)
+    if mode not in {"absolute", "relative_mad"}:
+        raise ValueError("adaptive trim mode must be absolute or relative_mad")
+    mad_scale = float(mad_scale)
+    if not torch.isfinite(torch.tensor(mad_scale)) or mad_scale <= 0.0:
+        raise ValueError("adaptive MAD scale must be finite and positive")
+
+    counts = histogram.to(dtype=torch.long).clamp_min(0)
+    bins = int(counts.shape[1])
+    centers = -1.0 + (torch.arange(
+        bins, device=histogram.device, dtype=torch.float32
+    ) + 0.5) * (2.0 / float(bins))
+    total = counts.sum(dim=1)
+    median = None
+    mad = None
+    if mode == "absolute":
+        thresholds = centers.new_full((counts.shape[0],), tail_cosine)
+    else:
+        median = _histogram_weighted_quantile_centers(counts, 0.5)
+        absolute_deviation = (centers[None, :] - median[:, None]).abs()
+        sorted_deviation, order = absolute_deviation.sort(dim=1)
+        sorted_counts = counts.gather(1, order)
+        mad_rank = torch.ceil(total.float() * 0.5).to(dtype=torch.long).clamp_min(1)
+        mad_index = (sorted_counts.cumsum(dim=1) >= mad_rank[:, None]).to(
+            dtype=torch.long
+        ).argmax(dim=1)
+        mad = sorted_deviation.gather(1, mad_index[:, None]).squeeze(1)
+        # Histogram quantization otherwise permits a zero MAD for observations
+        # occupying one bin, making a stable mode spuriously trim half its
+        # samples at a bin boundary.
+        mad = mad.clamp_min(2.0 / float(bins))
+        thresholds = (median - mad_scale * mad).clamp(-1.0, 1.0)
+    low_tail = (counts * (centers[None, :] < thresholds[:, None])).sum(dim=1)
+    tail_rate = low_tail.to(dtype=torch.float32) / total.clamp_min(1).to(
+        dtype=torch.float32
+    )
+    fractions = tail_rate.clamp(min=min_fraction, max=max_fraction)
+    # Do not infer a landmark-specific distribution from one or two support
+    # views. Those points retain every observation, including when a positive
+    # minimum fraction was configured for well-supported landmarks.
+    fractions = torch.where(
+        total >= min_observations, fractions, torch.zeros_like(fractions)
+    )
+    return fractions, tail_rate, thresholds, median, mad
+
+
+def adaptive_cosine_histogram_trim_fractions(
+    histogram: torch.Tensor,
+    *,
+    tail_cosine: float,
+    min_fraction: float,
+    max_fraction: float,
+    min_observations: int,
+    mode: str = "absolute",
+    mad_scale: float = 2.5,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Backward-compatible fraction/tail-rate view of the adaptive schedule."""
+    fractions, tail_rate, _, _, _ = adaptive_cosine_histogram_trim_schedule(
+        histogram,
+        tail_cosine=tail_cosine,
+        min_fraction=min_fraction,
+        max_fraction=max_fraction,
+        min_observations=min_observations,
+        mode=mode,
+        mad_scale=mad_scale,
+    )
+    return fractions, tail_rate
 
 
 def accumulate_cosine_histogram(

@@ -46,7 +46,15 @@ if [[ -z "$SOURCE_ROOT" ]]; then
 fi
 
 SOURCE_MANIFEST="$SOURCE_ROOT/study_manifest.json"
-SOURCE_SELECTION="$SOURCE_ROOT/results/residual_selection_safety.json"
+# New robust-native studies select the sparse descriptor state by the
+# deployment pose objective with fixed recall safeguards.  Retain the old
+# safety selection only as an explicit backwards-compatible fallback for
+# historical artifacts.
+DEFAULT_SOURCE_SELECTION="$SOURCE_ROOT/results/residual_selection_performance_v1.json"
+if [[ ! -f "$DEFAULT_SOURCE_SELECTION" && -f "$SOURCE_ROOT/results/residual_selection_safety.json" ]]; then
+  DEFAULT_SOURCE_SELECTION="$SOURCE_ROOT/results/residual_selection_safety.json"
+fi
+SOURCE_SELECTION="${LAFGS_ROBUST_BA_SOURCE_SELECTION:-$DEFAULT_SOURCE_SELECTION}"
 DEFAULT_BOOTSTRAP_DIR="$SOURCE_ROOT/bootstrap"
 # Multi-seed residual runs intentionally share a frozen bootstrap instead of
 # copying 32K map artifacts into every seed namespace.  Resolve that explicit
@@ -196,7 +204,7 @@ payload = json.load(open(sys.argv[1], "r", encoding="utf-8"))
 if payload.get("selection_protocol", {}).get("test_metrics_used") is not False:
     raise SystemExit("robust residual selection used test metrics")
 if payload.get("used_control_fallback", payload.get("used_strong_fallback", False)):
-    raise SystemExit("robust residual did not pass the validation-only safety gate")
+    raise SystemExit("robust residual did not pass the validation-only selection gate")
 print(payload["selected_state"])
 PY
 }

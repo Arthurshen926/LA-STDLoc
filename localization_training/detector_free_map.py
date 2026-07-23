@@ -1833,12 +1833,19 @@ def hard_hypothesis_retrieval_loss(
     native_nce_weight=0.0,
     native_keep_weight=1.0,
     native_keep_margin=0.05,
+    native_keep_loose_weight=0.0,
+    native_keep_loose_radius_px=4.0,
+    native_keep_loose_margin=0.025,
     native_swap_weight=1.0,
     native_swap_margin=0.05,
     native_miss_weight=1.0,
     native_miss_margin=0.05,
     native_reject_weight=0.1,
     native_reject_threshold=0.5,
+    native_attractor_weight=0.0,
+    native_attractor_margin=0.05,
+    native_global_attractor_weight=0.0,
+    native_global_attractor_scores=None,
 ):
     query_count = int(observations.source_indices.numel())
     bank_count = int(bank_features.shape[0])
@@ -1918,6 +1925,33 @@ def hard_hypothesis_retrieval_loss(
         if bool(keep_valid.any().item())
         else zero
     )
+    # A 2--4px top-1 is not accurate enough to be a high-precision positive,
+    # but it is still a useful correspondence that a later residual stage
+    # should not casually destroy while repairing false top-1 assignments.
+    # This tier is optional so historical native objectives remain bitwise
+    # equivalent when its weight is zero.
+    loose_keep = torch.zeros_like(top1_positive)
+    loose_keep_loss = zero
+    if float(native_keep_loose_weight) > 0.0:
+        loose_radius = float(native_keep_loose_radius_px)
+        if loose_radius < float(positive_radius_px):
+            raise ValueError(
+                "native_keep_loose_radius_px must be at least positive_radius_px"
+            )
+        loose_positive, _, _ = _candidate_geometry_masks(
+            observations,
+            candidate_indices,
+            positive_radius_px=loose_radius,
+            negative_radius_px=negative_radius_px,
+        )
+        loose_keep = (~top1_positive) & loose_positive[:, 0]
+        loose_keep_valid = loose_keep & torch.isfinite(candidate_negative_score)
+        if bool(loose_keep_valid.any().item()):
+            loose_keep_loss = F.relu(
+                float(native_keep_loose_margin)
+                + candidate_negative_score[loose_keep_valid]
+                - raw_logits[loose_keep_valid, 0]
+            ).mean()
     swap_loss = (
         F.relu(
             float(native_swap_margin)
@@ -1970,13 +2004,113 @@ def hard_hypothesis_retrieval_loss(
             raw_logits[reject, 0] - float(native_reject_threshold)
         ).mean()
 
+    # Repeated facade elements can become a false-attractor landmark: many
+    # valid native keypoints choose the same wrong top-1 in one query.  The
+    # normal swap/miss objective sees these rows independently.  Weight their
+    # ranking violations by log(1 + per-landmark false-attractor count), while
+    # keeping candidate IDs detached and unchanged.
+    attractor_loss = zero
+    global_attractor_loss = zero
+    attractor_count = 0
+    attractor_unique_count = 0
+    attractor_max_count = 0
+    global_attractor_count = 0
+    global_attractor_unique_count = 0
+    global_attractor_score_mean = 0.0
+    use_local_attractor = float(native_attractor_weight) > 0.0
+    use_global_attractor = float(native_global_attractor_weight) > 0.0
+    if bool(native_outcome_mode) and (use_local_attractor or use_global_attractor):
+        global_scores = None
+        if use_global_attractor:
+            if native_global_attractor_scores is None:
+                raise ValueError(
+                    "native_global_attractor_weight requires "
+                    "native_global_attractor_scores"
+                )
+            global_scores = torch.as_tensor(
+                native_global_attractor_scores,
+                device=raw_logits.device,
+                dtype=raw_logits.dtype,
+            ).reshape(-1)
+            if int(global_scores.numel()) != bank_count:
+                raise ValueError(
+                    "native_global_attractor_scores must have one entry per "
+                    "landmark"
+                )
+            global_scores = global_scores.detach().clamp_min(0.0)
+        false_attractor = source_valid & ~top1_positive
+        if bool(false_attractor.any().item()):
+            attractor_positive_score, attractor_rows = _full_positive_best(
+                false_attractor
+            )
+            valid_attractor = torch.isfinite(attractor_positive_score)
+            if bool(valid_attractor.any().item()):
+                attractor_landmarks = top_indices[attractor_rows, 0][
+                    valid_attractor
+                ]
+                attractor_scores = raw_logits[attractor_rows, 0][
+                    valid_attractor
+                ]
+                attractor_positive_score = attractor_positive_score[
+                    valid_attractor
+                ]
+                violation = F.relu(
+                    float(native_attractor_margin)
+                    + attractor_scores
+                    - attractor_positive_score
+                )
+                if use_local_attractor:
+                    counts = torch.zeros(
+                        bank_count,
+                        device=raw_logits.device,
+                        dtype=raw_logits.dtype,
+                    )
+                    counts.scatter_add_(
+                        0,
+                        attractor_landmarks,
+                        torch.ones_like(attractor_scores),
+                    )
+                    row_counts = counts[attractor_landmarks]
+                    row_weights = torch.log1p(row_counts)
+                    row_weights = row_weights / row_weights.mean().detach().clamp_min(1e-8)
+                    attractor_loss = (
+                        (row_weights * violation).sum()
+                        / row_weights.sum().clamp_min(1e-8)
+                    )
+                    attractor_count = int(attractor_landmarks.numel())
+                    attractor_unique_count = int(
+                        torch.unique(attractor_landmarks).numel()
+                    )
+                    attractor_max_count = int(row_counts.max().item())
+                if use_global_attractor:
+                    global_row_weights = global_scores[attractor_landmarks]
+                    globally_supported = global_row_weights > 0.0
+                    if bool(globally_supported.any().item()):
+                        global_row_weights = global_row_weights[globally_supported]
+                        global_violation = violation[globally_supported]
+                        global_attractor_loss = (
+                            (global_row_weights * global_violation).sum()
+                            / global_row_weights.sum().clamp_min(1e-8)
+                        )
+                        global_landmarks = attractor_landmarks[globally_supported]
+                        global_attractor_count = int(global_landmarks.numel())
+                        global_attractor_unique_count = int(
+                            torch.unique(global_landmarks).numel()
+                        )
+                        global_attractor_score_mean = float(
+                            global_row_weights.mean().detach().item()
+                        )
+
     if native_outcome_mode:
         loss = (
             float(native_nce_weight) * nce_loss
             + float(native_keep_weight) * keep_loss
+            + float(native_keep_loose_weight) * loose_keep_loss
             + float(native_swap_weight) * swap_loss
             + float(native_miss_weight) * missed_positive_loss
             + float(native_reject_weight) * unmatched_loss
+            + float(native_attractor_weight) * attractor_loss
+            + float(native_global_attractor_weight) * global_attractor_loss
         )
     else:
         # Preserve the original hard candidate objective for existing
@@ -2058,12 +2192,30 @@ def hard_hypothesis_retrieval_loss(
             "retrieval_native_nce_loss": float(nce_loss.detach().item()),
             "retrieval_native_keep_count": int(keep.sum().item()),
             "retrieval_native_keep_loss": float(keep_loss.detach().item()),
+            "retrieval_native_keep_loose_count": int(loose_keep.sum().item()),
+            "retrieval_native_keep_loose_loss": float(
+                loose_keep_loss.detach().item()
+            ),
             "retrieval_native_swap_count": int(swap.sum().item()),
             "retrieval_native_swap_loss": float(swap_loss.detach().item()),
             "retrieval_native_miss_count": int(missed_positive.sum().item()),
             "retrieval_native_miss_loss": float(missed_positive_loss.detach().item()),
             "retrieval_native_reject_count": int(reject.sum().item()),
             "retrieval_native_reject_loss": float(unmatched_loss.detach().item()),
+            "retrieval_native_attractor_count": attractor_count,
+            "retrieval_native_attractor_unique_count": attractor_unique_count,
+            "retrieval_native_attractor_max_count": attractor_max_count,
+            "retrieval_native_attractor_loss": float(attractor_loss.detach().item()),
+            "retrieval_native_global_attractor_count": global_attractor_count,
+            "retrieval_native_global_attractor_unique_count": (
+                global_attractor_unique_count
+            ),
+            "retrieval_native_global_attractor_score_mean": (
+                global_attractor_score_mean
+            ),
+            "retrieval_native_global_attractor_loss": float(
+                global_attractor_loss.detach().item()
+            ),
         }
     )
     return DetectorFreeRetrievalOutput(loss, diagnostics)

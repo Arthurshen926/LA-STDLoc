@@ -50,18 +50,25 @@ SPLIT_MODE="${LAFGS_PAIR_SPLIT_MODE:-stratified_temporal_block}"
 SPLIT_SEED="${LAFGS_PAIR_SPLIT_SEED:-2026}"
 CAMERA_LOADER_WORKERS="${LAFGS_PAIR_CAMERA_LOADER_WORKERS:-0}"
 
-SOURCE_RUN_ROOT="${LAFGS_PAIR_SOURCE_RUN_ROOT:-$REFERENCE_ROOT/$SCENE/ulfparity_native16000_s128_k2048_ulfloc_parity_tau0_cap0_v8_fullres_native_uncapped_pure_native}"
-FIELD_STATE="${LAFGS_PAIR_FIELD_STATE:-$SOURCE_RUN_ROOT/residual_5000/5000_lafgs_map_state.pt}"
-LANDMARK_IDS="${LAFGS_PAIR_LANDMARK_IDS:-$SOURCE_RUN_ROOT/bootstrap/sampled_idx.pkl}"
-LANDMARK_META="${LAFGS_PAIR_LANDMARK_META:-$SOURCE_RUN_ROOT/bootstrap/landmark_meta.pt}"
-# Keep the cache tied to the supplied field run by default.  Old historical
-# runs can still select their legacy cache through LAFGS_PAIR_QUERY_CACHE_PATH.
-QUERY_CACHE="${LAFGS_PAIR_QUERY_CACHE_PATH:-$SOURCE_RUN_ROOT/query_cache_native_fullres_k2048.pt}"
+# A Pair/LGCV sidecar must attach to an explicitly named sparse map.  The old
+# default silently selected a historical 16K field and could make a result look
+# canonical while it was evaluated on another map.
+SOURCE_RUN_ROOT="${LAFGS_PAIR_SOURCE_RUN_ROOT:-}"
+FIELD_STATE="${LAFGS_PAIR_FIELD_STATE:-}"
+LANDMARK_IDS="${LAFGS_PAIR_LANDMARK_IDS:-}"
+LANDMARK_META="${LAFGS_PAIR_LANDMARK_META:-}"
+QUERY_CACHE="${LAFGS_PAIR_QUERY_CACHE_PATH:-}"
 RUN_LABEL="${LAFGS_PAIR_LABEL:-u0_residual5k_native}"
 PAIR_POSE_SOLVER="${LAFGS_PAIR_POSE_SOLVER:-prior_gn}"
 TASK_TRANSLATION_SCALE_M="${LAFGS_PAIR_DIAGNOSTICS_TRANSLATION_SCALE_M:-}"
 PRIOR_GN_TRANSLATION_SCALE_M="${LAFGS_PAIR_PRIOR_GN_TRANSLATION_SCALE_M:-}"
 PRIOR_GN_MAX_TRANSLATION_M="${LAFGS_PAIR_PRIOR_GN_MAX_TRANSLATION_M:-}"
+PAIR_SEED_MAX_ANCHORS="${LAFGS_PAIR_SEED_MAX_ANCHORS:-2048}"
+# The paired OldHospital ablation found that the uncalibrated hard LGCV filter
+# removes useful local support. Keep it opt-in until a calibrated variant is
+# validated; record it in both the output name and manifest so local-RGB and
+# LGCV results cannot be conflated.
+PAIR_INLIER_LGCV_FILTER="${LAFGS_PAIR_INLIER_LGCV_FILTER:-0}"
 
 case "$PAIR_POSE_SOLVER" in
   prior_gn|ransac_pnp) ;;
@@ -79,8 +86,17 @@ if ! [[ "$CAMERA_LOADER_WORKERS" =~ ^[0-9]+$ ]]; then
   echo "LAFGS_PAIR_CAMERA_LOADER_WORKERS must be a non-negative integer" >&2
   exit 2
 fi
+if ! [[ "$PAIR_SEED_MAX_ANCHORS" =~ ^[0-9]+$ ]]; then
+  echo "LAFGS_PAIR_SEED_MAX_ANCHORS must be a non-negative integer" >&2
+  exit 2
+fi
+if [[ "$PAIR_INLIER_LGCV_FILTER" != "0" && "$PAIR_INLIER_LGCV_FILTER" != "1" ]]; then
+  echo "LAFGS_PAIR_INLIER_LGCV_FILTER must be 0 or 1" >&2
+  exit 2
+fi
 
-RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/${RUN_LABEL}_${REPRESENTATION}_pair_inlier_local_v1"
+LGCV_TAG="lgcv${PAIR_INLIER_LGCV_FILTER}"
+RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/${RUN_LABEL}_${REPRESENTATION}_pair_inlier_local_${LGCV_TAG}_v2"
 CONFIG_ROOT="$RUN_ROOT/configs"
 LOG_ROOT="$RUN_ROOT/logs"
 RESULT_ROOT="$RUN_ROOT/results"
@@ -105,6 +121,15 @@ require_file() {
   if [[ ! -f "$1" ]]; then
     echo "Required artifact is missing: $1" >&2
     exit 1
+  fi
+}
+
+require_env_path() {
+  local name="$1"
+  local value="$2"
+  if [[ -z "$value" ]]; then
+    echo "Pair/LGCV requires explicit ${name}; refusing an implicit historical map" >&2
+    exit 2
   fi
 }
 
@@ -150,54 +175,94 @@ PY
 }
 
 write_manifest() {
-  "$PYTHON" - "$MANIFEST" <<PY
+  "$PYTHON" - \
+    "$MANIFEST" "$MODEL_ROOT" "$FIELD_STATE" "$LANDMARK_IDS" "$LANDMARK_META" "$QUERY_CACHE" "$SOURCE_RUN_ROOT" \
+    "$SCENE" "$REPRESENTATION" "$LONGEST_EDGE" "$NATIVE_KEYPOINTS" "$MATCH_THRESHOLD" "$MAX_MATCHES_PER_LANDMARK" \
+    "$SPLIT_MODE" "$SPLIT_SEED" "$VALIDATION_RATIO" "$PAIR_POSE_SOLVER" "$PAIR_SEED_MAX_ANCHORS" "$PAIR_INLIER_LGCV_FILTER" \
+    "$TASK_TRANSLATION_SCALE_M" "$PRIOR_GN_TRANSLATION_SCALE_M" "$PRIOR_GN_MAX_TRANSLATION_M" <<'PY'
+import hashlib
 import json
+import sys
 from pathlib import Path
 
+(
+    manifest_path,
+    model_root,
+    field_state,
+    landmark_ids,
+    landmark_meta,
+    query_cache,
+    source_run_root,
+    scene,
+    representation,
+    longest_edge,
+    native_keypoints,
+    match_threshold,
+    max_matches_per_landmark,
+    split_mode,
+    split_seed,
+    validation_ratio,
+    pair_pose_solver,
+    pair_seed_max_anchors,
+    pair_inlier_lgcv_filter,
+    task_translation_scale_m,
+    prior_gn_translation_scale_m,
+    prior_gn_max_translation_m,
+) = sys.argv[1:]
+
+def fingerprint(path):
+    path = Path(path).resolve()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {"path": str(path), "sha256": digest.hexdigest(), "bytes": path.stat().st_size}
+
 payload = {
-    "schema_version": 1,
+    "schema_version": 3,
     "purpose": "validation_only_true_sparse_ransac_inlier_pair_lgcv_sidecar",
     "test_evaluation_forbidden": True,
-    "scene": "${SCENE}",
-    "representation": "${REPRESENTATION}",
+    "scene": scene,
+    "representation": representation,
     "sparse_contract": {
-        "longest_edge": ${LONGEST_EDGE},
+        "longest_edge": int(longest_edge),
         "frontend": "ulfloc_native",
-        "native_keypoints": ${NATIVE_KEYPOINTS},
+        "native_keypoints": int(native_keypoints),
         "topk": 1,
-        "cosine_threshold": ${MATCH_THRESHOLD},
-        "max_matches_per_landmark": ${MAX_MATCHES_PER_LANDMARK},
-        "candidate_split_mode": "${SPLIT_MODE}",
-        "candidate_split_seed": ${SPLIT_SEED},
-        "candidate_validation_ratio": ${VALIDATION_RATIO},
+        "cosine_threshold": float(match_threshold),
+        "max_matches_per_landmark": int(max_matches_per_landmark),
+        "candidate_split_mode": split_mode,
+        "candidate_split_seed": int(split_seed),
+        "candidate_validation_ratio": float(validation_ratio),
     },
     "pair": {
         "seed": "same_run_sparse_ransac_inlier_p2d_p3d",
         "gt_used_for_refinement": False,
-        "lgcv": True,
+        "lgcv": bool(int(pair_inlier_lgcv_filter)),
         "feature_grid": "native",
-        "pose_solver": "${PAIR_POSE_SOLVER}",
+        "pose_solver": pair_pose_solver,
         "expanded_anchor_radius_feature_px": 4,
         "expanded_anchor_stride_feature_px": 2,
-        "max_expanded_anchors": 2048,
-        "task_translation_scale_m": ${TASK_TRANSLATION_SCALE_M},
-        "prior_gn_translation_scale_m": ${PRIOR_GN_TRANSLATION_SCALE_M},
-        "prior_gn_max_translation_m": ${PRIOR_GN_MAX_TRANSLATION_M},
+        "max_expanded_anchors": int(pair_seed_max_anchors),
+        "task_translation_scale_m": float(task_translation_scale_m),
+        "prior_gn_translation_scale_m": float(prior_gn_translation_scale_m),
+        "prior_gn_max_translation_m": float(prior_gn_max_translation_m),
     },
     "inputs": {
-        "model_root": str(Path("${MODEL_ROOT}").resolve()),
-        "field_state": str(Path("${FIELD_STATE}").resolve()),
-        "landmark_ids": str(Path("${LANDMARK_IDS}").resolve()),
-        "landmark_meta": str(Path("${LANDMARK_META}").resolve()),
-        "query_cache": str(Path("${QUERY_CACHE}").resolve()),
+        "model_root": str(Path(model_root).resolve()),
+        "source_run_root": str(Path(source_run_root).resolve()) if source_run_root else None,
+        "field_state": fingerprint(field_state),
+        "landmark_ids": fingerprint(landmark_ids),
+        "landmark_meta": fingerprint(landmark_meta),
+        "query_cache": fingerprint(query_cache),
     },
 }
-Path("${MANIFEST}").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+Path(manifest_path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 PY
 }
 
 verify_field_binding() {
-  "$PYTHON" - "$FIELD_STATE" "$LANDMARK_IDS" "$SPLIT_MODE" "$SPLIT_SEED" <<'PY'
+  "$PYTHON" - "$FIELD_STATE" "$LANDMARK_IDS" "$LANDMARK_META" "$SPLIT_MODE" "$SPLIT_SEED" <<'PY'
 import json
 import pickle
 import sys
@@ -205,9 +270,10 @@ from pathlib import Path
 
 import torch
 
-state_path, ids_path, expected_mode, expected_seed = sys.argv[1:]
+state_path, ids_path, meta_path, expected_mode, expected_seed = sys.argv[1:]
 state_path = Path(state_path)
 ids_path = Path(ids_path)
+meta_path = Path(meta_path)
 state = torch.load(state_path, map_location="cpu")
 state_indices = torch.as_tensor(state.get("landmark_indices"), dtype=torch.long)
 try:
@@ -219,6 +285,13 @@ landmark_indices = torch.as_tensor(landmark_indices, dtype=torch.long)
 if state_indices.ndim != 1 or not torch.equal(state_indices, landmark_indices):
     raise SystemExit(
         "Pair/LGCV field state does not use the supplied landmark IDs; "
+        "refuse a mismatched sparse map."
+    )
+meta = torch.load(meta_path, map_location="cpu")
+meta_indices = torch.as_tensor(meta.get("landmark_indices"), dtype=torch.long)
+if meta_indices.ndim != 1 or not torch.equal(state_indices, meta_indices):
+    raise SystemExit(
+        "Pair/LGCV landmark metadata does not use the supplied field IDs; "
         "refuse a mismatched sparse map."
     )
 config = state.get("config", {})
@@ -334,6 +407,11 @@ run_pair_dense() {
   if [[ "$REPRESENTATION" == "lafgs_field" ]]; then
     mode_args+=(--field_state "$FIELD_STATE")
   fi
+  if [[ "$PAIR_INLIER_LGCV_FILTER" == "1" ]]; then
+    mode_args+=(--pair_inlier_lgcv_filter)
+  else
+    mode_args+=(--no-pair_inlier_lgcv_filter)
+  fi
   run_logged pair_inlier_local_validation \
     "$PYTHON" scripts/eval_lafgs_dense_refinement.py \
     -s "$DATA_ROOT/$SCENE" -m "$MODEL_ROOT" --images processed --data_device cpu \
@@ -345,7 +423,7 @@ run_pair_dense() {
     --query_cache "$QUERY_CACHE" --dense_iterations 1 --feature_grid native \
     --matching_mode pair_inlier_local --local_radius_px 3 --local_anchor_stride 1 \
     --local_temperature 0.07 --local_correspondence_mode soft \
-    --pair_seed_expansion_radius_px 4 --pair_seed_expansion_stride_px 2 --pair_seed_max_anchors 2048 \
+    --pair_seed_expansion_radius_px 4 --pair_seed_expansion_stride_px 2 --pair_seed_max_anchors "$PAIR_SEED_MAX_ANCHORS" \
     --max_dense_matches 2048 --dense_pose_solver "$PAIR_POSE_SOLVER" \
     --prior_gn_iterations 1 --prior_gn_damping 100 --prior_gn_translation_scale_m "$PRIOR_GN_TRANSLATION_SCALE_M" \
     --prior_gn_rotation_scale_deg 0.5 --prior_gn_robust_delta_px 0.75 \
@@ -355,6 +433,10 @@ run_pair_dense() {
   require_file "$output/summary.json"
 }
 
+require_env_path LAFGS_PAIR_FIELD_STATE "$FIELD_STATE"
+require_env_path LAFGS_PAIR_LANDMARK_IDS "$LANDMARK_IDS"
+require_env_path LAFGS_PAIR_LANDMARK_META "$LANDMARK_META"
+require_env_path LAFGS_PAIR_QUERY_CACHE_PATH "$QUERY_CACHE"
 require_file "$MODEL_ROOT/artifact_provenance.json"
 require_file "$MODEL_ROOT/point_cloud/iteration_30000/point_cloud.ply"
 require_file "$FIELD_STATE"

@@ -155,6 +155,58 @@ class LocalDenseMatchingTest(unittest.TestCase):
         query_xy, rendered_xy, _ = matches
         self.assertLess(float((query_xy - rendered_xy).abs().max()), 1e-3)
 
+    def test_local_matching_can_return_lgcv_rejection_payload_for_diagnostics(self):
+        generator = torch.Generator().manual_seed(17)
+        query = F.normalize(torch.randn(16, 8, 10, generator=generator), p=2, dim=0)
+        matches, diagnostics, payload = dense_eval.build_local_dense_matches(
+            query,
+            query.clone(),
+            torch.ones(8, 10, dtype=torch.bool),
+            radius_px=0,
+            anchor_stride=2,
+            temperature=0.07,
+            batch_size=32,
+            min_similarity=-1.0,
+            max_dense_matches=0,
+            geometric_filter=True,
+            geometric_support_threshold=100.0,
+            return_lgcv_payload=True,
+        )
+
+        self.assertIsNone(matches)
+        self.assertIsNotNone(payload)
+        self.assertEqual(
+            diagnostics["local_lgcv_rejected"],
+            diagnostics["local_matches_before_lgcv"],
+        )
+        self.assertTrue(bool(payload["rejected_mask"].all()))
+
+    def test_lgcv_support_is_invariant_to_independent_image_translations(self):
+        # LGCV operates on local triangles, so translating either image plane
+        # must not change its support. This catches accidental reuse of an
+        # absolute anchor after neighbourhood coordinates have been centred.
+        query_xy = torch.tensor(
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0],
+             [2.0, 0.0], [0.0, 2.0], [2.0, 1.0], [1.0, 2.0]]
+        )
+        rendered_xy = query_xy * 1.1 + torch.tensor([3.0, -2.0])
+        kwargs = dict(
+            neighbors=5,
+            angle_thresh_cos=0.9659,
+            scale_thresh=0.1,
+            scale_limit=3.0,
+        )
+        base = dense_eval._ulfloc_geometric_support(
+            query_xy, rendered_xy, **kwargs
+        )
+        translated = dense_eval._ulfloc_geometric_support(
+            query_xy + torch.tensor([300.0, -500.0]),
+            rendered_xy + torch.tensor([-700.0, 900.0]),
+            **kwargs,
+        )
+        torch.testing.assert_close(base, translated)
+        self.assertTrue(bool((base > 0).all()))
+
     def test_local_matching_excludes_invalid_query_window_cells(self):
         generator = torch.Generator().manual_seed(19)
         channels, height, width = 32, 10, 12

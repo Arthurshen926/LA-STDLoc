@@ -224,6 +224,125 @@ def test_native_outcome_loss_separates_keep_swap_miss_and_reject():
     assert torch.isfinite(features.grad).all()
 
 
+def test_native_attractor_penalty_targets_repeated_wrong_top1_landmark():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0, 0]),
+        query_features=torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        query_uv=torch.tensor([[10.0, 10.0], [10.5, 10.0]]),
+        source_depth=torch.ones(2),
+        bank_uv=torch.tensor([[10.0, 10.0], [30.0, 30.0], [40.0, 40.0]]),
+        bank_depth=torch.ones(3),
+        bank_projected=torch.ones(3, dtype=torch.bool),
+        bank_visible=torch.ones(3, dtype=torch.bool),
+    )
+    # Landmark 2 is the same wrong top-1 for both otherwise matchable rows.
+    features = torch.tensor(
+        [[0.7, 0.7], [0.0, 1.0], [0.99, 0.10]], requires_grad=True
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+        native_outcome_mode=True,
+        native_nce_weight=0.0,
+        native_keep_weight=0.0,
+        native_swap_weight=0.0,
+        native_miss_weight=0.0,
+        native_reject_weight=0.0,
+        native_attractor_weight=1.0,
+        native_attractor_margin=0.05,
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_native_attractor_count"] == 2
+    assert diagnostics["retrieval_native_attractor_unique_count"] == 1
+    assert diagnostics["retrieval_native_attractor_max_count"] == 2
+    assert diagnostics["retrieval_native_attractor_loss"] > 0.0
+    output.loss.backward()
+    assert features.grad[2].abs().sum() > 0.0
+
+
+def test_native_global_attractor_prior_reweights_only_known_false_targets():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0, 0]),
+        query_features=torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        query_uv=torch.tensor([[10.0, 10.0], [10.5, 10.0]]),
+        source_depth=torch.ones(2),
+        bank_uv=torch.tensor([[10.0, 10.0], [30.0, 30.0], [40.0, 40.0]]),
+        bank_depth=torch.ones(3),
+        bank_projected=torch.ones(3, dtype=torch.bool),
+        bank_visible=torch.ones(3, dtype=torch.bool),
+    )
+    features = torch.tensor(
+        [[0.7, 0.7], [0.0, 1.0], [0.99, 0.10]], requires_grad=True
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+        native_outcome_mode=True,
+        native_keep_weight=0.0,
+        native_swap_weight=0.0,
+        native_miss_weight=0.0,
+        native_reject_weight=0.0,
+        native_global_attractor_weight=1.0,
+        native_global_attractor_scores=torch.tensor([0.0, 0.0, 3.0]),
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_native_global_attractor_count"] == 2
+    assert diagnostics["retrieval_native_global_attractor_unique_count"] == 1
+    assert diagnostics["retrieval_native_global_attractor_score_mean"] == 3.0
+    assert diagnostics["retrieval_native_global_attractor_loss"] > 0.0
+    output.loss.backward()
+    assert features.grad[2].abs().sum() > 0.0
+
+
+def test_native_loose_keep_preserves_a_2_to_4_pixel_top1():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([-1]),
+        query_features=torch.tensor([[1.0, 0.0]]),
+        query_uv=torch.tensor([[13.0, 10.0]]),
+        source_depth=torch.zeros(1),
+        bank_uv=torch.tensor([[10.0, 10.0], [40.0, 40.0]]),
+        bank_depth=torch.ones(2),
+        bank_projected=torch.ones(2, dtype=torch.bool),
+        bank_visible=torch.ones(2, dtype=torch.bool),
+    )
+    features = torch.tensor([[1.0, 0.0], [0.9, 0.1]], requires_grad=True)
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=2,
+        native_outcome_mode=True,
+        native_nce_weight=0.0,
+        native_keep_weight=0.0,
+        native_keep_loose_weight=1.0,
+        native_keep_loose_radius_px=4.0,
+        native_keep_loose_margin=1.0,
+        native_swap_weight=0.0,
+        native_miss_weight=0.0,
+        native_reject_weight=0.0,
+    )
+    assert output.diagnostics["retrieval_native_keep_loose_count"] == 1
+    assert output.diagnostics["retrieval_native_keep_loose_loss"] > 0.0
+    output.loss.backward()
+    assert torch.isfinite(features.grad).all()
+
+
 def test_random_retrieval_does_not_treat_unmatched_as_last_landmark():
     from localization_training.detector_free_map import (
         DetectorFreeObservationBatch,

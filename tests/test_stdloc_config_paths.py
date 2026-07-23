@@ -19,6 +19,32 @@ class STDLocConfigPathTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "use_pair_measurement"):
             validate_sparse_frontend_config({**valid, "use_pair_measurement": True})
 
+    def test_native_matchability_is_solver_only_and_cannot_change_candidates(self):
+        from stdloc import validate_sparse_frontend_config
+
+        config = {
+            "sparse_frontend": "ulfloc_native",
+            "query_feature_contract": "native_resized_input",
+            "use_landmark_prior": False,
+            "use_native_matchability": True,
+            "native_matchability_state_path": "/tmp/native_matchability.pt",
+            "topk": 1,
+            "threshold": 0.0,
+        }
+        self.assertEqual(validate_sparse_frontend_config(config), "ulfloc_native")
+        self.assertEqual(
+            validate_sparse_frontend_config(
+                {**config, "use_two_stage_pose_refinement": True}
+            ),
+            "ulfloc_native",
+        )
+        with self.assertRaisesRegex(ValueError, "topk must be 1"):
+            validate_sparse_frontend_config({**config, "topk": 2})
+        with self.assertRaisesRegex(ValueError, "max_matches_per_landmark"):
+            validate_sparse_frontend_config(
+                {**config, "max_matches_per_landmark": 1}
+            )
+
     def test_candidate_teacher_geometry_requires_alignment_and_is_finite(self):
         import torch
 

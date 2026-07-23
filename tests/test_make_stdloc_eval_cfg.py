@@ -12,6 +12,55 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_stdloc_eval_cfg
 
 
 class MakeStdlocEvalCfgTest(unittest.TestCase):
+    def test_preserves_base_artifact_binding_without_detector_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(
+                yaml.dump(
+                    {
+                        "sparse": {
+                            "detector_path": "ulfloc_native_no_detector/0_detector.pth",
+                            "landmark_path": "/maps/oldhospital/sampled_idx.pkl",
+                            "landmark_meta_path": "/maps/oldhospital/landmark_meta.pt",
+                        },
+                        "dense": {},
+                    }
+                )
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(
+                sparse["detector_path"], "ulfloc_native_no_detector/0_detector.pth"
+            )
+            self.assertEqual(
+                sparse["landmark_path"], "/maps/oldhospital/sampled_idx.pkl"
+            )
+            self.assertEqual(
+                sparse["landmark_meta_path"], "/maps/oldhospital/landmark_meta.pt"
+            )
+
     def test_preserves_all_unspecified_sparse_runtime_options(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -56,6 +105,34 @@ class MakeStdlocEvalCfgTest(unittest.TestCase):
             sparse = yaml.load(out_cfg.read_text(), Loader=yaml.FullLoader)["sparse"]
             for key, value in preserved.items():
                 self.assertEqual(sparse[key], value)
+
+    def test_writes_native_matchability_solver_only_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(yaml.dump({"sparse": {}, "dense": {}}))
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg", str(base_cfg),
+                    "--output", str(out_cfg),
+                    "--artifact_model_path", "/tmp/model",
+                    "--use_native_matchability",
+                    "--native_matchability_state_path", "/tmp/calibrator.pt",
+                    "--native_matchability_max_prosac_iterations", "40000",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(out_cfg.read_text(), Loader=yaml.FullLoader)["sparse"]
+            self.assertTrue(sparse["use_native_matchability"])
+            self.assertEqual(sparse["native_matchability_state_path"], "/tmp/calibrator.pt")
+            self.assertEqual(sparse["native_matchability_max_prosac_iterations"], 40000)
 
     def test_preserves_unspecified_matching_caps_and_frontend_policy(self):
         with tempfile.TemporaryDirectory() as tmp:

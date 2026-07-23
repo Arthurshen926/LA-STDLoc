@@ -158,6 +158,7 @@ def covariance_weighted_pose_refinement(
     robust_delta=2.5,
     model_mismatch_floor_px=1.0,
     damping=1e-6,
+    weights=None,
 ):
     """Refine a robust PnP hypothesis using pair-specific 2D covariance."""
     p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
@@ -168,6 +169,21 @@ def covariance_weighted_pose_refinement(
     valid_inliers = inliers[(inliers >= 0) & (inliers < p2d.shape[0])]
     if p2d.shape[0] != p3d.shape[0] or covariance.shape[0] != p2d.shape[0]:
         raise ValueError("p2d, p3d, and covariance must have the same count")
+    if weights is None:
+        weights = np.ones(p2d.shape[0], dtype=np.float64)
+    else:
+        weights = np.asarray(weights, dtype=np.float64).reshape(-1)
+        if weights.shape[0] != p2d.shape[0]:
+            raise ValueError("weights must have the same count as p2d")
+        weights = np.where(np.isfinite(weights), weights, 0.0)
+        weights = np.maximum(weights, 0.0)
+        positive = weights[weights > 0.0]
+        if positive.size == 0:
+            weights = np.ones(p2d.shape[0], dtype=np.float64)
+        else:
+            # Preserve relative matchability while avoiding an arbitrary global
+            # rescaling of the normal equations and damping term.
+            weights = weights / float(np.mean(positive))
     if valid_inliers.shape[0] < 4:
         return np.asarray(initial_pose_w2c, dtype=np.float64), valid_inliers
 
@@ -218,7 +234,7 @@ def covariance_weighted_pose_refinement(
             if delta > 0.0
             else np.ones_like(radial)
         )
-        scale = np.sqrt(robust)[:, None]
+        scale = np.sqrt(robust * weights[selected])[:, None]
         design = (jacobian * scale[:, :, None]).reshape(-1, 6)
         target = (residual * scale).reshape(-1)
         information = design.T @ design
@@ -238,6 +254,191 @@ def covariance_weighted_pose_refinement(
     if not np.isfinite(refined).all():
         return pose, valid_inliers
     return refined, selected
+
+
+def _pose_reprojection_errors(p2d, p3d, K, pose_w2c):
+    """Return Euclidean pixel residuals for a world-to-camera pose."""
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    pose = np.asarray(pose_w2c, dtype=np.float64).reshape(4, 4)
+    if p2d.shape[0] != p3d.shape[0]:
+        raise ValueError("p2d and p3d must have the same count")
+    errors = np.full(p2d.shape[0], np.inf, dtype=np.float64)
+    valid = np.isfinite(p2d).all(axis=1) & np.isfinite(p3d).all(axis=1)
+    if not np.any(valid) or not np.isfinite(pose).all():
+        return errors
+    rvec = cv2.Rodrigues(pose[:3, :3])[0]
+    projected, _ = cv2.projectPoints(
+        p3d[valid], rvec, pose[:3, 3], K, np.zeros((4, 1), dtype=np.float64)
+    )
+    residual = p2d[valid] - projected.reshape(-1, 2)
+    errors[valid] = np.linalg.norm(residual, axis=1)
+    return errors
+
+
+def _huber_reprojection_cost(errors, delta, weights=None):
+    errors = np.asarray(errors, dtype=np.float64).reshape(-1)
+    if weights is None:
+        weights = np.ones_like(errors)
+    else:
+        weights = np.asarray(weights, dtype=np.float64).reshape(-1)
+        if weights.shape != errors.shape:
+            raise ValueError("weights must match reprojection errors")
+    valid = np.isfinite(errors) & np.isfinite(weights) & (weights >= 0.0)
+    errors = errors[valid]
+    weights = weights[valid]
+    if errors.size == 0:
+        return float("inf")
+    delta = max(float(delta), 1e-6)
+    quadratic = errors <= delta
+    return float(
+        np.sum(weights[quadratic] * 0.5 * errors[quadratic] ** 2)
+        + np.sum(weights[~quadratic] * delta * (errors[~quadratic] - 0.5 * delta))
+    )
+
+
+def two_stage_pose_refinement(
+    p2d,
+    p3d,
+    K,
+    initial_pose_w2c,
+    initial_inliers,
+    *,
+    tight_reprojection_error=4.0,
+    min_inliers=6,
+    iterations=10,
+    robust_delta=1.5,
+    damping=1e-6,
+    matchability_weights=None,
+):
+    """Tighten a wide-RANSAC pose without changing its candidate identities.
+
+    The first stage is intentionally external: callers obtain a robust pose with
+    their normal wide-threshold RANSAC (12px in the canonical sparse protocol).
+    This function re-evaluates that *same complete correspondence set* under
+    the seed pose, keeps only geometrically tight candidates, and runs a robust
+    local IRLS update.  It falls back to the seed if the narrow set is too small
+    or the local robust objective does not improve.
+    """
+    p2d = np.asarray(p2d, dtype=np.float64).reshape(-1, 2)
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    initial_pose = np.asarray(initial_pose_w2c, dtype=np.float64).reshape(4, 4)
+    initial_inliers = np.asarray(initial_inliers, dtype=np.int64).reshape(-1)
+    if p2d.shape[0] != p3d.shape[0]:
+        raise ValueError("p2d and p3d must have the same count")
+    if float(tight_reprojection_error) <= 0.0:
+        raise ValueError("tight_reprojection_error must be positive")
+    if matchability_weights is None:
+        matchability_weights = np.ones(p2d.shape[0], dtype=np.float64)
+        weighted = False
+    else:
+        matchability_weights = np.asarray(
+            matchability_weights, dtype=np.float64
+        ).reshape(-1)
+        if matchability_weights.shape[0] != p2d.shape[0]:
+            raise ValueError("matchability_weights must have the same count as p2d")
+        matchability_weights = np.where(
+            np.isfinite(matchability_weights), matchability_weights, 0.0
+        )
+        matchability_weights = np.maximum(matchability_weights, 0.0)
+        weighted = True
+    min_inliers = max(int(min_inliers), 4)
+    valid_initial = initial_inliers[
+        (initial_inliers >= 0) & (initial_inliers < p2d.shape[0])
+    ]
+    diagnostics = {
+        "two_stage_enabled": True,
+        "two_stage_seed_inliers": int(valid_initial.size),
+        "two_stage_tight_threshold_px": float(tight_reprojection_error),
+        "two_stage_tight_candidate_count": 0,
+        "two_stage_tight_seed_inlier_count": 0,
+        "two_stage_refined_tight_candidate_count": 0,
+        "two_stage_seed_cost": None,
+        "two_stage_refined_cost": None,
+        "two_stage_matchability_weighted": bool(weighted),
+        "two_stage_tight_matchability_mean": 0.0,
+        "two_stage_tight_matchability_p10": 0.0,
+        "two_stage_tight_matchability_p90": 0.0,
+        "two_stage_accepted": False,
+        "two_stage_reason": "not_attempted",
+    }
+    if valid_initial.size < 4 or not np.isfinite(initial_pose).all():
+        diagnostics["two_stage_reason"] = "invalid_seed"
+        return initial_pose.astype(np.float32), valid_initial, diagnostics
+
+    seed_errors = _pose_reprojection_errors(p2d, p3d, K, initial_pose)
+    tight_indices = np.flatnonzero(seed_errors <= float(tight_reprojection_error))
+    diagnostics["two_stage_tight_candidate_count"] = int(tight_indices.size)
+    diagnostics["two_stage_tight_seed_inlier_count"] = int(
+        np.intersect1d(tight_indices, valid_initial, assume_unique=False).size
+    )
+    if tight_indices.size < min_inliers:
+        diagnostics["two_stage_reason"] = "insufficient_tight_candidates"
+        return initial_pose.astype(np.float32), valid_initial, diagnostics
+
+    tight_weights = matchability_weights[tight_indices]
+    diagnostics["two_stage_tight_matchability_mean"] = float(
+        np.mean(tight_weights)
+    )
+    diagnostics["two_stage_tight_matchability_p10"] = float(
+        np.quantile(tight_weights, 0.10)
+    )
+    diagnostics["two_stage_tight_matchability_p90"] = float(
+        np.quantile(tight_weights, 0.90)
+    )
+
+    seed_cost = _huber_reprojection_cost(
+        seed_errors[tight_indices], robust_delta, tight_weights
+    )
+    diagnostics["two_stage_seed_cost"] = seed_cost
+    covariance = np.broadcast_to(
+        np.eye(2, dtype=np.float64), (p2d.shape[0], 2, 2)
+    ).copy()
+    refined_pose, _ = covariance_weighted_pose_refinement(
+        p2d,
+        p3d,
+        K,
+        initial_pose,
+        covariance,
+        tight_indices,
+        iterations=int(iterations),
+        mahalanobis_threshold=float("inf"),
+        robust_delta=float(robust_delta),
+        model_mismatch_floor_px=0.0,
+        damping=float(damping),
+        weights=matchability_weights,
+    )
+    if not np.isfinite(refined_pose).all():
+        diagnostics["two_stage_reason"] = "nonfinite_refinement"
+        return initial_pose.astype(np.float32), valid_initial, diagnostics
+
+    refined_errors = _pose_reprojection_errors(p2d, p3d, K, refined_pose)
+    refined_cost = _huber_reprojection_cost(
+        refined_errors[tight_indices], robust_delta, tight_weights
+    )
+    refined_tight_indices = np.flatnonzero(
+        refined_errors <= float(tight_reprojection_error)
+    )
+    diagnostics["two_stage_refined_cost"] = refined_cost
+    diagnostics["two_stage_refined_tight_candidate_count"] = int(
+        refined_tight_indices.size
+    )
+    if refined_tight_indices.size < min_inliers:
+        diagnostics["two_stage_reason"] = "insufficient_refined_tight_candidates"
+        return initial_pose.astype(np.float32), valid_initial, diagnostics
+    if not np.isfinite(refined_cost) or refined_cost > seed_cost + 1e-8:
+        diagnostics["two_stage_reason"] = "robust_cost_not_improved"
+        return initial_pose.astype(np.float32), valid_initial, diagnostics
+
+    diagnostics["two_stage_accepted"] = True
+    diagnostics["two_stage_reason"] = "accepted"
+    return (
+        np.asarray(refined_pose, dtype=np.float32),
+        np.asarray(refined_tight_indices, dtype=np.int64),
+        diagnostics,
+    )
 
 
 def cal_pose_error(pred_w2c, gt_w2c):

@@ -52,11 +52,30 @@ export LAFGS_ROBUST_TRIM_HIST_BINS=64
 export LAFGS_ROBUST_FUSION_REFERENCE_MODE=mean
 export LAFGS_ROBUST_RESIDUAL_STEPS=5000
 export LAFGS_ROBUST_CAMERA_LOADER_WORKERS=0
+# This is the selected native residual profile: protect native GT-clean
+# correspondences while penalizing train-only false-attractor landmarks.  It
+# must be explicit because the general robust-initializer runner defaults to
+# a no-attractor ablation profile.
+export LAFGS_ROBUST_NATIVE_KEEP_WEIGHT=1.0
+export LAFGS_ROBUST_NATIVE_KEEP_MARGIN=0.05
+export LAFGS_ROBUST_NATIVE_KEEP_LOOSE_WEIGHT=0.0
+export LAFGS_ROBUST_NATIVE_KEEP_LOOSE_RADIUS_PX=4.0
+export LAFGS_ROBUST_NATIVE_KEEP_LOOSE_MARGIN=0.025
+export LAFGS_ROBUST_NATIVE_SWAP_WEIGHT=1.0
+export LAFGS_ROBUST_NATIVE_SWAP_MARGIN=0.05
+export LAFGS_ROBUST_NATIVE_MISS_WEIGHT=1.0
+export LAFGS_ROBUST_NATIVE_MISS_MARGIN=0.05
+export LAFGS_ROBUST_NATIVE_REJECT_WEIGHT=0.05
+export LAFGS_ROBUST_NATIVE_REJECT_THRESHOLD=0.0
+export LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_WEIGHT=0.25
+export LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_MIN_INCOMING=4
+export LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_SUPPORT_POWER=0.5
+export LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_MAX_SCORE=4.0
 
 printf '%s\n' '[LaFGS-V2 canonical sparse mainline]'
 printf '%s\n' 'full-resolution native frontend; cosine top-1; no landmark match cap'
 printf '%s\n' 'strict KCS 32K; RGB-only support KCS; 10% mean-reference GWFF trim'
-printf '%s\n' 'pure-native 5K residual; validation-only checkpoint selection before test'
+printf '%s\n' 'false-attractor-aware pure-native 5K residual; validation-only checkpoint selection before test'
 
 exec bash "$SCRIPT_DIR/run_lafgs_v2_robust_initializer_ablation.sh" \
   "$SCENE" "$GPU" support_rgb_only "$MODE"

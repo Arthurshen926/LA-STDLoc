@@ -195,6 +195,70 @@ def test_streaming_cosine_histogram_trim_drops_bottom_quantile_conservatively():
     assert torch.isclose(thresholds[1], torch.tensor(-0.2), atol=1e-6)
 
 
+def test_adaptive_histogram_trim_only_targets_supported_low_agreement_tails():
+    from localization_training.ulf_initializer import (
+        adaptive_cosine_histogram_trim_fractions,
+    )
+
+    # Landmark 0 is a stable high-cosine prototype; landmark 1 has a broad
+    # incompatible tail; landmark 2 does not have enough observations to
+    # estimate a landmark-specific trimming schedule.
+    histogram = torch.tensor(
+        [
+            [0, 0, 0, 0, 0, 0, 0, 1, 3, 4],
+            [3, 2, 1, 0, 0, 0, 0, 0, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+        ],
+        dtype=torch.int32,
+    )
+    fractions, tail_rate = adaptive_cosine_histogram_trim_fractions(
+        histogram,
+        tail_cosine=0.5,
+        min_fraction=0.0,
+        max_fraction=0.2,
+        min_observations=4,
+    )
+    assert tail_rate[0] == 0.0
+    assert torch.isclose(fractions[0], torch.tensor(0.0))
+    assert tail_rate[1] > 0.5
+    assert torch.isclose(fractions[1], torch.tensor(0.2))
+    assert torch.isclose(fractions[2], torch.tensor(0.0))
+
+
+def test_relative_mad_adaptive_trim_preserves_stable_low_cosine_landmarks():
+    from localization_training.ulf_initializer import (
+        adaptive_cosine_histogram_trim_schedule,
+    )
+
+    # The first landmark is consistently only moderately aligned with its
+    # mean prototype. An absolute 0.75 gate would trim it, whereas a
+    # landmark-relative tail test must preserve it. The second contains a
+    # clearly separated low-cosine mode and should receive the capped trim.
+    histogram = torch.tensor(
+        [
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 6, 2, 0, 0, 0, 0, 0, 0, 0],
+            [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0],
+        ],
+        dtype=torch.int32,
+    )
+    fractions, tail_rate, thresholds, median, mad = (
+        adaptive_cosine_histogram_trim_schedule(
+            histogram,
+            tail_cosine=0.75,
+            min_fraction=0.0,
+            max_fraction=0.2,
+            min_observations=4,
+            mode="relative_mad",
+            mad_scale=2.0,
+        )
+    )
+    assert torch.allclose(fractions, torch.tensor([0.0, 0.2]))
+    assert torch.allclose(tail_rate, torch.tensor([0.0, 0.2]))
+    assert median is not None and mad is not None
+    assert thresholds[0] < median[0]
+    assert thresholds[1] > -0.5
+
+
 def test_streaming_weighted_cosine_medoid_chooses_central_observation():
     from localization_training.ulf_initializer import update_weighted_cosine_medoid_state
 
@@ -249,6 +313,32 @@ def test_lafgs_parser_accepts_explicit_robust_ulf_modes():
     assert args.ulf_fusion_reference_mode == "weighted_cosine_medoid"
 
 
+def test_lafgs_parser_accepts_adaptive_robust_gwff_modes():
+    from train_lafgs_map import build_parser
+
+    parser, _ = build_parser()
+    args = parser.parse_args(
+        [
+            "--output_dir", "/tmp/lafgs-adaptive-gwff-test",
+            "--scaffold_mode", "ulf_robust_consensus",
+            "--initialization_mode", "ulf_robust_geometry",
+            "--ulf_fusion_descriptor_trim_fraction", "0",
+            "--ulf_fusion_adaptive_trim",
+            "--ulf_fusion_adaptive_trim_min_fraction", "0.0",
+            "--ulf_fusion_adaptive_trim_max_fraction", "0.2",
+            "--ulf_fusion_adaptive_trim_tail_cosine", "0.75",
+            "--ulf_fusion_adaptive_trim_min_observations", "4",
+            "--ulf_fusion_adaptive_trim_mode", "relative_mad",
+            "--ulf_fusion_adaptive_trim_mad_scale", "2.5",
+        ]
+    )
+    assert args.ulf_fusion_adaptive_trim
+    assert args.ulf_fusion_descriptor_trim_fraction == 0.0
+    assert args.ulf_fusion_adaptive_trim_max_fraction == 0.2
+    assert args.ulf_fusion_adaptive_trim_mode == "relative_mad"
+    assert args.ulf_fusion_adaptive_trim_mad_scale == 2.5
+
+
 def test_formal_lafgs_runners_default_to_stratified_temporal_holdout():
     root = Path(__file__).resolve().parents[1]
     expected = "stratified_temporal_block"
@@ -267,12 +357,33 @@ def test_formal_lafgs_runners_default_to_stratified_temporal_holdout():
     assert 'LAFGS_ROBUST_CAMERA_LOADER_WORKERS:-0' in robust
     assert 'export STDLOC_CAMERA_LOADER_WORKERS="$CAMERA_LOADER_WORKERS"' in robust
     assert "select_residual) select_residual" in robust
-    assert "validation_only_safety" in robust
+    assert "validation_only_performance_v1" in robust
     assert 'ROBUST_PROTOCOL_VERSION="v2_split${SPLIT_MODE}_seed${SPLIT_SEED}_fullres_native_uncapped"' in robust
     assert "verify_state_protocol" in robust
     assert "verify_eval_protocol" in robust
+    assert "verify_eval_config_binding" in robust
+    assert 'verify_eval_config_binding "$cfg" "$state"' in robust
+    assert "s/^Result are saved in //p" in robust
+    assert "s/^Results are saved in //p" in robust
+    assert 'LAFGS_ROBUST_MIN_RATE:-0.01' in robust
     assert 'LAFGS_ROBUST_FUSION_REFERENCE_MODE:-mean' in robust
     assert '--ulf_fusion_reference_mode "$FUSION_REFERENCE_MODE"' in robust
+    assert 'LAFGS_ROBUST_ADAPTIVE_TRIM:-0' in robust
+    assert 'adaptive GWFF requires LAFGS_ROBUST_TRIM_FRACTION=0' in robust
+    assert '--ulf_fusion_adaptive_trim' in robust
+    assert 'LAFGS_ROBUST_ADAPTIVE_TRIM_MODE:-relative_mad' in robust
+    assert 'LAFGS_ROBUST_LANDMARK_SOURCE_PATH:-' in robust
+    assert 'verify_bootstrap_landmark_source' in robust
+    assert 'LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_WEIGHT:-0.0' in robust
+    assert 'RESIDUAL_PROFILE_TAG=' in robust
+    assert '--native_global_attractor_weight "$NATIVE_GLOBAL_ATTRACTOR_WEIGHT"' in robust
+    assert 'residual profile mismatch for {name}' in robust
+
+    canonical = (root / "scripts" / "run_lafgs_v2_canonical_native_mainline.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_WEIGHT=0.25' in canonical
+    assert 'false-attractor-aware pure-native 5K residual' in canonical
 
     widebank = (root / "scripts" / "run_lafgs_v2_widebank_distill_refresh.sh").read_text(
         encoding="utf-8"

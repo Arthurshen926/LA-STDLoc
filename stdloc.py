@@ -25,6 +25,11 @@ from localization_training.full_primitive_retrieval import (
     chunked_exact_topk,
     suppress_redundant_hypotheses,
 )
+from localization_training.native_matchability import (
+    build_native_matchability_features,
+    calibrated_native_matchability,
+    validate_native_matchability_state,
+)
 from localization_training.pair_scorer import SparsePairScorer
 from localization_training.pair_measurement import (
     PairMeasurementHead,
@@ -53,6 +58,7 @@ from utils.pose_utils import (
     cal_pose_error,
     covariance_weighted_pose_refinement,
     solve_pose,
+    two_stage_pose_refinement,
 )
 
 
@@ -305,6 +311,36 @@ def validate_sparse_frontend_config(sparse_config):
             "ulfloc_native sparse frontend does not apply landmark priors; "
             "set use_landmark_prior=false"
         )
+    if bool(sparse_config.get("use_native_matchability", False)):
+        state_path = str(sparse_config.get("native_matchability_state_path", ""))
+        if not state_path:
+            raise ValueError(
+                "use_native_matchability=true requires "
+                "native_matchability_state_path"
+            )
+        changed_candidate_controls = []
+        if int(sparse_config.get("topk", 1)) != 1:
+            changed_candidate_controls.append("topk must be 1")
+        if abs(float(sparse_config.get("threshold", 0.0))) > 1e-12:
+            changed_candidate_controls.append("threshold must be 0")
+        if int(sparse_config.get("max_matches_per_keypoint", 0) or 0) != 0:
+            changed_candidate_controls.append("max_matches_per_keypoint must be 0")
+        if int(sparse_config.get("max_matches_per_landmark", 0) or 0) != 0:
+            changed_candidate_controls.append("max_matches_per_landmark must be 0")
+        if bool(sparse_config.get("unique_landmark_matches", False)):
+            changed_candidate_controls.append("unique_landmark_matches must be false")
+        if int(sparse_config.get("min_candidate_matches", 0) or 0) != 0:
+            changed_candidate_controls.append("min_candidate_matches must be 0")
+        if int(sparse_config.get("candidate_refill_trigger_count", 0) or 0) != 0:
+            changed_candidate_controls.append("candidate_refill_trigger_count must be 0")
+        geometry = sparse_config.get("geometry_balance", {}) or {}
+        if bool(geometry.get("enabled", False)):
+            changed_candidate_controls.append("geometry_balance must be disabled")
+        if changed_candidate_controls:
+            raise ValueError(
+                "native matchability is a solver-only control; "
+                + ", ".join(changed_candidate_controls)
+            )
     return frontend
 
 
@@ -2067,6 +2103,58 @@ class STDLoc:
         active_features_flat = self.landmarks.get_loc_feature.detach().reshape(
             self.landmarks.get_loc_feature.shape[0], -1
         )
+        self.native_matchability_state = None
+        self.native_matchability_false_attractor_rate = None
+        self.native_matchability_incoming_count = None
+        full_native_matchability_state_path = None
+        if bool(sparse_config.get("use_native_matchability", False)):
+            full_native_matchability_state_path = resolve_artifact_path(
+                config["model_path"],
+                sparse_config["native_matchability_state_path"],
+                sparse_config.get(
+                    "native_matchability_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            if not os.path.isfile(full_native_matchability_state_path):
+                raise FileNotFoundError(
+                    "native matchability state does not exist: "
+                    f"{full_native_matchability_state_path}"
+                )
+            state = torch.load(full_native_matchability_state_path, map_location="cpu")
+            validate_native_matchability_state(
+                state, landmark_count=int(active_features_flat.shape[0])
+            )
+            provenance = state.get("provenance", {})
+            expected_indices_sha = provenance.get("landmark_indices_sha256")
+            active_indices_sha = tensor_sha256(self.landmark_indices)
+            if expected_indices_sha and expected_indices_sha != active_indices_sha:
+                raise ValueError(
+                    "native matchability landmark IDs do not match active map"
+                )
+            expected_features_sha = provenance.get("landmark_features_sha256")
+            active_features_sha = tensor_sha256(active_features_flat)
+            if expected_features_sha and expected_features_sha != active_features_sha:
+                raise ValueError(
+                    "native matchability descriptors do not match active map"
+                )
+            expected_field_sha = provenance.get("field_state_file_sha256")
+            active_field_sha = file_sha256(full_feature_override_path)
+            if expected_field_sha and expected_field_sha != active_field_sha:
+                raise ValueError(
+                    "native matchability field-state hash does not match active override"
+                )
+            self.native_matchability_state = state
+            self.native_matchability_false_attractor_rate = torch.as_tensor(
+                state["landmark_false_attractor_rate"],
+                device=active_features_flat.device,
+                dtype=torch.float32,
+            )
+            self.native_matchability_incoming_count = torch.as_tensor(
+                state["landmark_incoming_count"],
+                device=active_features_flat.device,
+                dtype=torch.float32,
+            )
         scorer_training_features = None
         if isinstance(self.candidate_teacher_state, dict):
             candidate_features = self.candidate_teacher_state.get("landmark_features")
@@ -2112,10 +2200,15 @@ class STDLoc:
             "pair_measurement_state_file_sha256": file_sha256(
                 full_pair_measurement_state_path
             ),
+            "native_matchability_state_path": full_native_matchability_state_path,
+            "native_matchability_state_file_sha256": file_sha256(
+                full_native_matchability_state_path
+            ),
             "detector_path": detector_path,
             "detector_file_sha256": file_sha256(detector_path),
             "sparse_frontend": self.sparse_frontend,
             "native_reject_threshold_contract": self.native_reject_threshold_contract,
+            "native_matchability_enabled": bool(self.native_matchability_state),
             "active_vs_map_feature_delta": landmark_feature_delta(
                 map_features_flat, active_features_flat
             ),
@@ -3174,13 +3267,23 @@ class STDLoc:
             max(int(self.config["sparse"].get("topk", 1)), 1),
             int(landmark_features.shape[0]),
         )
+        native_matchability_enabled = self.native_matchability_state is not None
+        native_matchability_topk = (
+            int(self.native_matchability_state["topk"])
+            if native_matchability_enabled
+            else 0
+        )
         diag_cfg = self.config["sparse"].get("diagnostics", {})
         dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
         oracle_topk = min(
             max(int(diag_cfg.get("oracle_topk", 32)), 1),
             int(landmark_features.shape[0]),
         )
-        retrieval_topk = max(configured_topk, oracle_topk if dump_discrete_oracle else 0)
+        retrieval_topk = max(
+            configured_topk,
+            oracle_topk if dump_discrete_oracle else 0,
+            native_matchability_topk,
+        )
         retrieval = chunked_exact_topk(
             query_features,
             landmark_features,
@@ -3221,6 +3324,61 @@ class STDLoc:
             min_match_count=min_candidate_matches,
             refill_trigger_count=candidate_refill_trigger_count,
         )
+        native_matchability_scores = None
+        native_matchability_diagnostics = {
+            "sparse_diag_native_matchability_enabled": float(
+                native_matchability_enabled
+            ),
+            "sparse_diag_native_matchability_candidate_preserved": 0.0,
+            "sparse_diag_native_matchability_topk": float(native_matchability_topk),
+            "sparse_diag_native_matchability_score_mean": 0.0,
+            "sparse_diag_native_matchability_score_p10": 0.0,
+            "sparse_diag_native_matchability_score_p90": 0.0,
+        }
+        if native_matchability_enabled:
+            expected_landmarks = raw_landmark_idx[matches.keypoint_idx, 0]
+            if not torch.equal(matches.landmark_idx, expected_landmarks):
+                raise RuntimeError(
+                    "native matchability must score the unchanged cosine top-1 "
+                    "candidate graph"
+                )
+            context_scores = retrieval.scores[
+                matches.keypoint_idx, :native_matchability_topk
+            ]
+            context_indices = retrieval.indices[
+                matches.keypoint_idx, :native_matchability_topk
+            ]
+            confidence_features = build_native_matchability_features(
+                context_scores,
+                context_indices,
+                false_attractor_rate=self.native_matchability_false_attractor_rate,
+                incoming_count=self.native_matchability_incoming_count,
+                keypoint_scores=keypoint_scores[matches.keypoint_idx],
+                entropy_temperature=self.native_matchability_state[
+                    "entropy_temperature"
+                ],
+            )
+            native_matchability_scores = calibrated_native_matchability(
+                confidence_features, self.native_matchability_state
+            )
+            native_matchability_diagnostics.update(
+                {
+                    "sparse_diag_native_matchability_candidate_preserved": 1.0,
+                    "sparse_diag_native_matchability_score_mean": float(
+                        native_matchability_scores.mean().detach().item()
+                    ),
+                    "sparse_diag_native_matchability_score_p10": float(
+                        torch.quantile(native_matchability_scores, 0.10)
+                        .detach()
+                        .item()
+                    ),
+                    "sparse_diag_native_matchability_score_p90": float(
+                        torch.quantile(native_matchability_scores, 0.90)
+                        .detach()
+                        .item()
+                    ),
+                }
+            )
         matching_end = clock()
         runtime_diagnostics["sparse_diag_runtime_matching_ms"] = float(
             (matching_end - matching_start) * 1000.0
@@ -3248,6 +3406,11 @@ class STDLoc:
         p2d = keypoints[matches.keypoint_idx].detach().cpu().float()
         p3d = self.landmarks.get_xyz[matches.landmark_idx].detach().cpu().float()
         scores = matches.scores.detach().cpu().float()
+        solver_scores = (
+            native_matchability_scores.detach().cpu().float()
+            if native_matchability_scores is not None
+            else scores
+        )
         p2d_pre_selector = p2d.clone()
         p3d_pre_selector = p3d.clone()
         scores_pre_selector = scores.clone()
@@ -3258,12 +3421,14 @@ class STDLoc:
             p2d = p2d[selector_indices]
             p3d = p3d[selector_indices]
             scores = scores[selector_indices]
+            solver_scores = solver_scores[selector_indices]
         match_count_before_selector = int(p2d_pre_selector.shape[0])
         match_count = int(p2d.shape[0])
 
         p2d_np = p2d.numpy()
         p3d_np = p3d.numpy()
         scores_np = scores.numpy()
+        solver_scores_np = solver_scores.numpy()
         K = get_intrinsic(fovx, fovy, width, height)
         if p2d_np.shape[0] >= 4:
             ransac_start = time.perf_counter()
@@ -3276,7 +3441,14 @@ class STDLoc:
                 self.config["sparse"]["confidence"],
                 self.config["sparse"]["max_iterations"],
                 self.config["sparse"]["min_iterations"],
-                scores=scores_np,
+                scores=solver_scores_np,
+                progressive_sampling=bool(native_matchability_enabled),
+                max_prosac_iterations=int(
+                    self.config["sparse"].get(
+                        "native_matchability_max_prosac_iterations",
+                        self.config["sparse"]["max_iterations"],
+                    )
+                ),
                 ransac_seed=self.config["sparse"].get("ransac_seed", 0),
                 return_diagnostics=True,
             )
@@ -3287,6 +3459,43 @@ class STDLoc:
             pose_w2c = np.eye(4, dtype=np.float32)
             inliers = np.empty(0, dtype=np.int64)
             ransac_diagnostics = {}
+        two_stage_diagnostics = {
+            "two_stage_enabled": False,
+            "two_stage_accepted": False,
+            "two_stage_reason": "disabled",
+        }
+        if bool(self.config["sparse"].get("use_two_stage_pose_refinement", False)):
+            two_stage_start = time.perf_counter()
+            pose_w2c, inliers, two_stage_diagnostics = two_stage_pose_refinement(
+                p2d_np + 0.5,
+                p3d_np,
+                K,
+                pose_w2c,
+                inliers,
+                tight_reprojection_error=self.config["sparse"].get(
+                    "two_stage_tight_reprojection_error", 4.0
+                ),
+                min_inliers=self.config["sparse"].get(
+                    "two_stage_min_inliers", 6
+                ),
+                iterations=self.config["sparse"].get(
+                    "two_stage_refinement_iterations", 10
+                ),
+                robust_delta=self.config["sparse"].get(
+                    "two_stage_robust_delta", 1.5
+                ),
+                damping=self.config["sparse"].get(
+                    "two_stage_damping", 1e-6
+                ),
+                matchability_weights=(
+                    solver_scores_np if native_matchability_scores is not None else None
+                ),
+            )
+            runtime_diagnostics["sparse_diag_runtime_two_stage_ms"] = float(
+                (time.perf_counter() - two_stage_start) * 1000.0
+            )
+        else:
+            runtime_diagnostics["sparse_diag_runtime_two_stage_ms"] = 0.0
         actual_hypotheses = ransac_diagnostics.get("ransac_actual_hypotheses")
         required_hypotheses = ransac_diagnostics.get(
             "ransac_required_hypotheses_at_confidence"
@@ -3310,6 +3519,7 @@ class STDLoc:
                 ),
             }
         )
+        runtime_diagnostics.update(native_matchability_diagnostics)
 
         result = {
             "pose_w2c": pose_w2c,
@@ -3330,6 +3540,12 @@ class STDLoc:
             "sparse_diag_pair_measurement_enabled": 0.0,
             "sparse_diag_detector_offset_enabled": 0.0,
         }
+        result.update(
+            {
+                f"sparse_diag_{key}": value
+                for key, value in two_stage_diagnostics.items()
+            }
+        )
         if bool(diag_cfg.get("enabled", True)):
             result.update(
                 sparse_correspondence_diagnostics(

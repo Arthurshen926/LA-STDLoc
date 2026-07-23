@@ -426,18 +426,21 @@ def _ulfloc_geometric_support(
         | (query_rel.norm(dim=-1) > 50.0)
         | (rendered_rel.norm(dim=-1) > 50.0)
     )
-    invalid_triangle = invalid_edge[:, :, None] & invalid_edge[:, None, :]
+    # A triangle is usable only when *both* anchor-neighbour edges are valid.
+    # Using ``&`` here left a one-sided degenerate edge in the support count.
+    invalid_triangle = invalid_edge[:, :, None] | invalid_edge[:, None, :]
     query_jk = (query_j - query_k).norm(dim=-1)
     rendered_jk = (rendered_j - rendered_k).norm(dim=-1)
     invalid_triangle |= (query_jk < 1e-6) | (rendered_jk < 1e-6)
 
-    query_anchor = query_xy[:, None, None, :]
-    rendered_anchor = rendered_xy[:, None, None, :]
-    query_a = (query_j - query_anchor).norm(dim=-1) + 1e-8
-    query_b = (query_k - query_anchor).norm(dim=-1) + 1e-8
+    # ``query_rel`` and ``rendered_rel`` are already anchor-centred.  Do not
+    # subtract the absolute anchor coordinates again: doing so made the scale
+    # test depend on image translation and rejected correct local matches.
+    query_a = query_j.norm(dim=-1) + 1e-8
+    query_b = query_k.norm(dim=-1) + 1e-8
     query_c = query_jk + 1e-8
-    rendered_a = (rendered_j - rendered_anchor).norm(dim=-1) + 1e-8
-    rendered_b = (rendered_k - rendered_anchor).norm(dim=-1) + 1e-8
+    rendered_a = rendered_j.norm(dim=-1) + 1e-8
+    rendered_b = rendered_k.norm(dim=-1) + 1e-8
     rendered_c = rendered_jk + 1e-8
     scale_a = rendered_a / query_a
     scale_b = rendered_b / query_b
@@ -654,6 +657,7 @@ def build_local_dense_matches(
     geometric_scale_limit=3.0,
     rendered_anchor_xy=None,
     query_anchor_xy=None,
+    return_lgcv_payload=False,
 ):
     """Match each rendered anchor only inside a seed-pose local query window.
 
@@ -685,6 +689,11 @@ def build_local_dense_matches(
         raise ValueError("local matching radius/stride/batch_size are invalid")
     if correspondence_mode not in {"hard", "soft"}:
         raise ValueError(f"Unsupported local correspondence mode: {correspondence_mode}")
+
+    def finish(matches, diagnostics, lgcv_payload=None):
+        if return_lgcv_payload:
+            return matches, diagnostics, lgcv_payload
+        return matches, diagnostics
 
     if (rendered_anchor_xy is None) != (query_anchor_xy is None):
         raise ValueError(
@@ -722,13 +731,13 @@ def build_local_dense_matches(
         anchor_source = "provided"
     initial_anchor_count = int(rendered_xy.shape[0])
     if rendered_xy.shape[0] < 4:
-        return None, {
+        return finish(None, {
             "coarse_valid_cells": 0,
             "coarse_matches": 0,
             "local_anchor_count": initial_anchor_count,
             "local_anchor_source": anchor_source,
             "fine_matches": 0,
-        }
+        })
     # Keep the spatial sampling deterministic and bounded before constructing
     # local descriptor windows.  A later score-based cap is still applied.
     if max_dense_matches > 0 and rendered_xy.shape[0] > int(max_dense_matches):
@@ -828,13 +837,13 @@ def build_local_dense_matches(
             candidate_count_parts.append(candidate_count[keep])
 
     if not score_parts:
-        return None, {
+        return finish(None, {
             "coarse_valid_cells": 0,
             "coarse_matches": 0,
             "local_anchor_count": initial_anchor_count,
             "local_anchor_source": anchor_source,
             "fine_matches": 0,
-        }
+        })
     query_xy = torch.cat(query_parts, dim=0)
     rendered_xy = torch.cat(rendered_parts, dim=0)
     score = torch.cat(score_parts, dim=0)
@@ -868,7 +877,10 @@ def build_local_dense_matches(
 
     local_before_lgcv = int(query_xy.shape[0])
     local_lgcv_retained = local_before_lgcv
+    lgcv_payload = None
     if bool(geometric_filter) and query_xy.shape[0] >= 3:
+        pre_lgcv_query_xy = query_xy
+        pre_lgcv_rendered_xy = rendered_xy
         support = _ulfloc_geometric_support(
             query_xy,
             rendered_xy,
@@ -878,6 +890,12 @@ def build_local_dense_matches(
             scale_limit=float(geometric_scale_limit),
         )
         keep = support >= float(geometric_support_threshold)
+        if return_lgcv_payload:
+            lgcv_payload = {
+                "query_xy": pre_lgcv_query_xy.detach(),
+                "rendered_xy": pre_lgcv_rendered_xy.detach(),
+                "rejected_mask": (~keep).detach(),
+            }
         query_xy = query_xy[keep]
         rendered_xy = rendered_xy[keep]
         score = score[keep]
@@ -920,10 +938,11 @@ def build_local_dense_matches(
         "local_lgcv_retained_fraction": float(
             local_lgcv_retained / max(local_before_lgcv, 1)
         ),
+        "local_lgcv_rejected": int(local_before_lgcv - local_lgcv_retained),
     }
     if query_xy.shape[0] < 4:
-        return None, diagnostics
-    return (query_xy.float(), rendered_xy.float(), score), diagnostics
+        return finish(None, diagnostics, lgcv_payload)
+    return finish((query_xy.float(), rendered_xy.float(), score), diagnostics, lgcv_payload)
 
 
 def _resize_pixel_center_coordinates(points_xy, source_width, source_height, width, height):
@@ -1422,6 +1441,10 @@ def _refine_once(
     sparse_pair_correspondence=None,
 ):
     height, width = query_fine.shape[-2:]
+    capture_lgcv_payload = bool(
+        gt_pose_w2c is not None and args.dense_gt_diagnostics
+    )
+    lgcv_payload = None
     if args.matching_mode == "global" and query_coarse is None:
         raise ValueError("global matching requires a coarse query feature map")
     (
@@ -1525,7 +1548,7 @@ def _refine_once(
             matches = None
         else:
             rendered_anchor_xy, query_anchor_xy = anchors
-            matches, diagnostics = build_local_dense_matches(
+            local_result = build_local_dense_matches(
                 query_fine,
                 rendered_features,
                 rendered_valid,
@@ -1537,7 +1560,7 @@ def _refine_once(
                 max_dense_matches=int(args.max_dense_matches),
                 correspondence_mode=args.local_correspondence_mode,
                 query_valid=query_valid_mask,
-                geometric_filter=True,
+                geometric_filter=bool(args.pair_inlier_lgcv_filter),
                 geometric_neighbors=int(args.ulfloc_geometric_neighbors),
                 geometric_support_threshold=float(args.ulfloc_geometric_support_threshold),
                 geometric_angle_cos=float(args.ulfloc_geometric_angle_cos),
@@ -1545,10 +1568,15 @@ def _refine_once(
                 geometric_scale_limit=float(args.ulfloc_geometric_scale_limit),
                 rendered_anchor_xy=rendered_anchor_xy,
                 query_anchor_xy=query_anchor_xy,
+                return_lgcv_payload=capture_lgcv_payload,
             )
+            if capture_lgcv_payload:
+                matches, diagnostics, lgcv_payload = local_result
+            else:
+                matches, diagnostics = local_result
             diagnostics.update(pair_diagnostics)
     else:
-        matches, diagnostics = build_local_dense_matches(
+        local_result = build_local_dense_matches(
             query_fine,
             rendered_features,
             rendered_valid,
@@ -1569,7 +1597,12 @@ def _refine_once(
             geometric_angle_cos=float(args.ulfloc_geometric_angle_cos),
             geometric_scale_threshold=float(args.ulfloc_geometric_scale_threshold),
             geometric_scale_limit=float(args.ulfloc_geometric_scale_limit),
+            return_lgcv_payload=capture_lgcv_payload,
         )
+        if capture_lgcv_payload:
+            matches, diagnostics, lgcv_payload = local_result
+        else:
+            matches, diagnostics = local_result
     diagnostics.update(
         {
             "render_valid_fraction": float(rendered_valid.float().mean().item()),
@@ -1625,6 +1658,53 @@ def _refine_once(
         lift_depth = bank_median_depth
         lift_depth_source = "bank_median"
     diagnostics["lift_depth_source"] = lift_depth_source
+
+    if lgcv_payload is not None:
+        def add_lgcv_gt_diagnostics(prefix, selection):
+            selection = torch.as_tensor(
+                selection, device=query_fine.device, dtype=torch.bool)
+            query_xy_selected = lgcv_payload["query_xy"][selection]
+            rendered_xy_selected = lgcv_payload["rendered_xy"][selection]
+            if query_xy_selected.shape[0] == 0:
+                diagnostics[f"{prefix}_count"] = 0
+                diagnostics[f"{prefix}_gt_reproj_px_median"] = None
+                diagnostics[f"{prefix}_gt_precision_2px"] = None
+                diagnostics[f"{prefix}_gt_precision_4px"] = None
+                return
+            points3d_selected = lift_2d_to_3d(
+                rendered_xy_selected,
+                torch.as_tensor(intrinsic, device="cuda"),
+                torch.as_tensor(pose_c2w, device="cuda"),
+                lift_depth,
+            )
+            finite_selected = torch.isfinite(points3d_selected).all(dim=1)
+            query_xy_selected = query_xy_selected[finite_selected]
+            points3d_selected = points3d_selected[finite_selected]
+            if query_xy_selected.shape[0] == 0:
+                diagnostics[f"{prefix}_count"] = 0
+                diagnostics[f"{prefix}_gt_reproj_px_median"] = None
+                diagnostics[f"{prefix}_gt_precision_2px"] = None
+                diagnostics[f"{prefix}_gt_precision_4px"] = None
+                return
+            metrics = gt_reprojection_diagnostics(
+                query_xy_selected.detach().cpu().numpy(),
+                points3d_selected.detach().cpu().numpy(),
+                intrinsic,
+                gt_pose_w2c,
+                np.arange(query_xy_selected.shape[0], dtype=np.int64),
+            )
+            for key, value in metrics.items():
+                if key.startswith("dense_all_"):
+                    diagnostics[f"{prefix}_{key[len('dense_all_'):]}"] = value
+
+        pre_count = int(lgcv_payload["query_xy"].shape[0])
+        add_lgcv_gt_diagnostics(
+            "local_lgcv_pre",
+            torch.ones(pre_count, device=query_fine.device, dtype=torch.bool),
+        )
+        add_lgcv_gt_diagnostics(
+            "local_lgcv_rejected", lgcv_payload["rejected_mask"]
+        )
     points3d = lift_2d_to_3d(
         rendered_xy,
         torch.as_tensor(intrinsic, device="cuda"),
@@ -1996,6 +2076,22 @@ def evaluate(args, dataset):
             "raw_dense_inliers": int(final_diag.get("inliers", 0)),
             "raw_dense_match_count": int(final_diag.get("finite_points3d", 0)),
             "raw_dense_inlier_ratio": float(final_diag.get("inlier_ratio", 0.0)),
+            "raw_dense_lgcv_filter": bool(final_diag.get("local_lgcv_filter", False)),
+            "raw_dense_lgcv_matches_before": int(
+                final_diag.get("local_matches_before_lgcv", 0)
+            ),
+            "raw_dense_lgcv_retained": int(
+                final_diag.get("local_lgcv_retained", 0)
+            ),
+            "raw_dense_lgcv_rejected": int(
+                final_diag.get("local_lgcv_rejected", 0)
+            ),
+            "raw_dense_lgcv_rejected_gt_reproj_px_median": final_diag.get(
+                "local_lgcv_rejected_gt_reproj_px_median"
+            ),
+            "raw_dense_lgcv_rejected_gt_precision_2px": final_diag.get(
+                "local_lgcv_rejected_gt_precision_2px"
+            ),
             # Legacy fields are relative to the sparse estimate.
             "raw_pose_delta_translation_m": float(sparse_delta_translation),
             "raw_pose_delta_rotation_deg": float(sparse_delta_rotation),
@@ -2046,6 +2142,23 @@ def evaluate(args, dataset):
         "field_manifest": field_manifest,
     }
     _write_json(output_dir / "manifest.json", metadata)
+    def finite_record_mean(key):
+        values = [
+            float(record[key])
+            for record in records
+            if record.get(key) is not None and np.isfinite(float(record[key]))
+        ]
+        return float(np.mean(values)) if values else None
+
+    lgcv_pre_total = int(
+        sum(record["raw_dense_lgcv_matches_before"] for record in records)
+    )
+    lgcv_retained_total = int(
+        sum(record["raw_dense_lgcv_retained"] for record in records)
+    )
+    lgcv_rejected_total = int(
+        sum(record["raw_dense_lgcv_rejected"] for record in records)
+    )
     summary = {
         "schema_version": 1,
         "experimental_only": True,
@@ -2071,6 +2184,26 @@ def evaluate(args, dataset):
         "raw_avg_pose_delta_from_seed_rotation_deg": float(
             np.mean([record["raw_pose_delta_from_seed_rotation_deg"] for record in records])
         ) if records else 0.0,
+        "raw_lgcv": {
+            "enabled_query_fraction": float(
+                np.mean([record["raw_dense_lgcv_filter"] for record in records])
+            ) if records else 0.0,
+            "pre_matches_total": lgcv_pre_total,
+            "retained_total": lgcv_retained_total,
+            "rejected_total": lgcv_rejected_total,
+            "retained_fraction": float(
+                lgcv_retained_total / max(lgcv_pre_total, 1)
+            ),
+            "reject_fraction": float(
+                lgcv_rejected_total / max(lgcv_pre_total, 1)
+            ),
+            "rejected_gt_reproj_px_median_mean": finite_record_mean(
+                "raw_dense_lgcv_rejected_gt_reproj_px_median"
+            ),
+            "rejected_gt_precision_2px_mean": finite_record_mean(
+                "raw_dense_lgcv_rejected_gt_precision_2px"
+            ),
+        },
     }
     _write_json(summary_path, summary)
     print(f"Output path: {output_dir}")
@@ -2134,7 +2267,8 @@ def main():
         default=False,
         help=(
             "Apply ULF-style local geometric consistency to local dense pairs. "
-            "pair_local and pair_inlier_local enable the same filter unconditionally."
+            "pair_local enables it by default; pair_inlier_local is controlled "
+            "separately by --pair_inlier_lgcv_filter."
         ),
     )
     parser.add_argument(
@@ -2162,6 +2296,17 @@ def main():
         type=int,
         default=2048,
         help="Maximum deduplicated render anchors retained by pair_inlier_local.",
+    )
+    parser.add_argument(
+        "--pair_inlier_lgcv_filter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply the optional LGCV rejection after pair-inlier local matching. "
+            "It is disabled by default because the local RGB-prior sidecar must "
+            "not silently discard otherwise useful sparse-inlier support; enable "
+            "it explicitly for a calibrated LGCV ablation."
+        ),
     )
     parser.add_argument(
         "--prior_rgb_render_resolution",

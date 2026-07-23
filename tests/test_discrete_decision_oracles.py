@@ -5,6 +5,7 @@ import numpy as np
 from scripts.eval_discrete_decision_oracles import (
     _pose_term_metrics,
     nearest_gt_targets,
+    oracle_assignment_candidates,
     pair_is_correct,
     select_candidates,
 )
@@ -64,6 +65,16 @@ class DiscreteDecisionOracleTest(unittest.TestCase):
         )
         np.testing.assert_array_equal(labels, [True, False, True])
         np.testing.assert_allclose(pair_distance, [0.5, 0.0, 1.0])
+
+    def test_oracle_assignment_keeps_only_matchable_native_keypoints(self):
+        candidates = oracle_assignment_candidates(
+            raw_rows=[0, 1, 2, 3],
+            targets=[8, -1, 3, -1],
+            scores=[0.2, 0.1, 0.4, 0.3],
+        )
+        np.testing.assert_array_equal(candidates.keypoint_idx, [0, 2])
+        np.testing.assert_array_equal(candidates.landmark_idx, [8, 3])
+        np.testing.assert_array_equal(candidates.source_idx, [0, 2])
 
 
 if __name__ == "__main__":

@@ -124,6 +124,92 @@ class LandmarkDistillTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "zero or at least one"):
             _validate_distillation_semantics(args)
 
+    def test_global_attractor_prior_reorders_distillation_reservoir(self):
+        from train_lafgs_map import _distill_final_landmark_bank
+
+        count = 5
+        statistics = {
+            "observation_count": torch.full((count,), 4.0),
+            "effective_observation_count": torch.full((count,), 4.0),
+            "matchability": torch.tensor([0.99, 0.90, 0.80, 0.70, 0.60]),
+            "false_top1_rate": torch.zeros(count),
+            "margin": torch.ones(count),
+            "entropy": torch.zeros(count),
+            "reprojection_error": torch.ones(count),
+            "translation_fim": torch.ones(count),
+            "mean_uv": torch.stack(
+                (torch.linspace(0.1, 0.9, count), torch.full((count,), 0.5)),
+                dim=1,
+            ),
+            "mean_depth": torch.linspace(2.0, 6.0, count),
+            "source_identity_rate": torch.ones(count),
+        }
+        args = SimpleNamespace(
+            distill_reprojection_scale_px=2.0,
+            distill_voxel_size=1.0,
+            distill_min_observations=2,
+            distill_matchability_threshold=0.0,
+            distill_false_top1_max=1.0,
+            distill_proposal_weight=1.0,
+            distill_global_attractor_weight=1.0,
+            distill_budget=2,
+            distill_rank_pool_multiplier=1.0,
+            distill_require_exact_budget=True,
+            distill_allow_coverage_fill=False,
+            distill_quality_reservoir_multiplier=1.0,
+            distill_quality_reservoir_score="posterior_mean",
+            distill_quality_reservoir_wilson_z=1.96,
+            distill_hard_matchability_core_ratio=1.0,
+            distill_matchability_preserve_ratio=0.0,
+            distill_utility_preserve_ratio=0.0,
+            distill_high_confidence=0.75,
+            distill_high_confidence_ratio=0.0,
+            distill_max_per_voxel=16,
+            distill_grid_size=0,
+            distill_max_per_grid=0,
+            distill_depth_bins=0,
+            distill_max_per_depth_bin=0,
+            steps=0,
+        )
+        global_statistics = {
+            "score": torch.tensor([4.0, 0.0, 0.0, 0.0, 0.0]),
+            "false_rate": torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0]),
+            "incoming_count": torch.tensor([100.0, 1.0, 1.0, 1.0, 1.0]),
+        }
+        with TemporaryDirectory() as temp_dir:
+            result = _distill_final_landmark_bank(
+                Path(temp_dir),
+                torch.arange(count),
+                torch.eye(count, 4)[:, :4],
+                torch.stack(
+                    (
+                        torch.arange(count, dtype=torch.float32),
+                        torch.zeros(count),
+                        torch.ones(count),
+                    ),
+                    dim=1,
+                ),
+                torch.zeros(count, 3),
+                statistics,
+                args,
+                {},
+                torch.ones(count),
+                None,
+                global_attractor_statistics=global_statistics,
+            )
+            state = torch.load(
+                result["state_path"], map_location="cpu", weights_only=False
+            )
+
+        self.assertEqual(set(state["landmark_indices"].tolist()), {1, 2})
+        self.assertTrue(
+            bool(state["selection_meta"]["global_attractor_selection_active"])
+        )
+        self.assertGreater(
+            float(state["config"]["distillation"]["global_attractor_selection"]["weight"]),
+            0.0,
+        )
+
     def test_ulf_random_knn_vote_sample_matches_generator_seed_and_local_vote(self):
         from localization_training.landmark_distill import ulf_random_knn_vote_sample
 
