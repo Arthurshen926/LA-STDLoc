@@ -6017,7 +6017,12 @@ def build_arg_parser(with_components=False):
     parser.add_argument("--candidate_teacher_validation_ratio", type=float, default=0.0)
     parser.add_argument(
         "--candidate_teacher_split_mode",
-        choices=["random", "sequence_block", "temporal_block"],
+        choices=[
+            "random",
+            "sequence_block",
+            "temporal_block",
+            "stratified_temporal_block",
+        ],
         default="temporal_block",
     )
     parser.add_argument("--candidate_teacher_split_seed", type=int, default=2026)

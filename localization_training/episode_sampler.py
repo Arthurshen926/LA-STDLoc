@@ -135,6 +135,68 @@ def _temporal_block_query_ids(camera_count, query_count, generator):
     return set(range(start, start + query_count))
 
 
+def _stratified_temporal_block_query_ids(cameras, query_count, generator):
+    """Hold out contiguous frames within every available camera trajectory.
+
+    A global temporal block is contiguous in lexical camera order, but that
+    order commonly concatenates Cambridge sequences.  It can therefore put an
+    entire validation set in one trajectory.  This variant preserves temporal
+    separation while allocating the requested holdout budget across sequences
+    and retaining at least one support frame per sequence.
+    """
+    sequence_to_indices = {}
+    for idx, camera in enumerate(cameras):
+        sequence_to_indices.setdefault(_camera_sequence_key(camera), []).append(idx)
+    groups = [indices for indices in sequence_to_indices.values() if len(indices) >= 2]
+    if len(groups) < 2:
+        return _temporal_block_query_ids(len(cameras), query_count, generator)
+
+    capacity = [len(indices) - 1 for indices in groups]
+    total_capacity = sum(capacity)
+    target = min(int(query_count), total_capacity)
+    if target <= 0:
+        return set()
+
+    # Proportional floors make the total deterministic.  We then distribute
+    # the remaining budget by largest fractional allocation, using a seeded
+    # permutation solely to resolve exact ties.
+    total_cameras = sum(len(indices) for indices in groups)
+    ideal = [target * len(indices) / total_cameras for indices in groups]
+    allocation = [min(cap, int(value)) for cap, value in zip(capacity, ideal)]
+    remaining = target - sum(allocation)
+    tie_order = torch.randperm(len(groups), generator=generator).tolist()
+    tie_rank = {group_idx: rank for rank, group_idx in enumerate(tie_order)}
+    priority = sorted(
+        range(len(groups)),
+        key=lambda group_idx: (
+            ideal[group_idx] - allocation[group_idx],
+            -tie_rank[group_idx],
+        ),
+        reverse=True,
+    )
+    while remaining > 0:
+        progressed = False
+        for group_idx in priority:
+            if allocation[group_idx] >= capacity[group_idx]:
+                continue
+            allocation[group_idx] += 1
+            remaining -= 1
+            progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
+            break
+
+    selected = set()
+    for indices, count in zip(groups, allocation):
+        if count <= 0:
+            continue
+        max_start = len(indices) - count
+        start = torch.randint(max_start + 1, (1,), generator=generator).item()
+        selected.update(indices[start : start + count])
+    return selected
+
+
 def split_support_query_cameras(cameras, query_ratio=0.2, seed=0, mode="random"):
     cameras = list(cameras)
     if len(cameras) < 2:
@@ -149,6 +211,12 @@ def split_support_query_cameras(cameras, query_ratio=0.2, seed=0, mode="random")
             query_ids = set(torch.randperm(len(cameras), generator=generator)[:query_count].tolist())
     elif mode == "temporal_block":
         query_ids = _temporal_block_query_ids(len(cameras), query_count, generator)
+    elif mode == "stratified_temporal_block":
+        query_ids = _stratified_temporal_block_query_ids(
+            cameras,
+            query_count,
+            generator,
+        )
     else:
         raise ValueError(f"Unknown support/query split mode: {mode}")
     return _split_by_query_ids(cameras, query_ids)

@@ -153,7 +153,24 @@ class Scene:
         # Forked workers cannot initialize CUDA. Keep the legacy CUDA camera
         # behavior functional by loading in the parent process; formal runs use
         # data_device=cpu and retain parallel image decoding.
-        return 0 if str(self.args.data_device).startswith("cuda") else 4
+        if str(self.args.data_device).startswith("cuda"):
+            return 0
+        configured = os.environ.get("STDLOC_CAMERA_LOADER_WORKERS")
+        if configured is None:
+            return 4
+        try:
+            workers = int(configured)
+        except ValueError as error:
+            raise ValueError(
+                "STDLOC_CAMERA_LOADER_WORKERS must be a non-negative integer, "
+                f"got {configured!r}"
+            ) from error
+        if workers < 0:
+            raise ValueError(
+                "STDLOC_CAMERA_LOADER_WORKERS must be a non-negative integer, "
+                f"got {configured!r}"
+            )
+        return workers
     
 
 class SceneDataset(Dataset):

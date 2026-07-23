@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import pickle
 import random
@@ -30,6 +31,7 @@ from localization_training.detector_free_map import (
     materialize_descriptor_residual,
     multiview_descriptor_loss,
     native_association_geometry_losses,
+    native_association_matches,
     observation_adaptive_trust_weights,
     pose_layer_loss,
     random_negative_retrieval_loss,
@@ -42,23 +44,34 @@ from localization_training.direct_landmark_teacher import (
 from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.landmark_distill import (
     coverage_balanced_score,
+    coverage_ranked_fill,
     coverage_preserving_sample,
+    hard_score_core,
     robust_normalize,
+    top_score_reservoir,
+    ulf_random_knn_vote_sample,
+    wilson_lower_confidence,
 )
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
 from localization_training.surface_anchor import (
+    bounded_surface_local_offsets,
     build_pure_geometric_scaffold,
     materialize_bounded_surface_anchors,
+    validate_surface_anchor_resume_bounds,
 )
 from localization_training.ulf_initializer import (
     PIXEL_CENTER_OFFSET,
+    accumulate_cosine_histogram,
+    consensus_eligibility,
+    cosine_histogram_trim_thresholds,
     geometry_view_weights,
     grid_index_to_physical,
     nearest_keypoint_distance,
     sample_dense_descriptors_at_image_uv,
     sample_mask_at_grid_uv,
     surface_normals_from_rotation,
+    update_weighted_cosine_medoid_state,
 )
 from scene import Scene
 from utils.general_utils import safe_state, seed_everything
@@ -263,6 +276,49 @@ def _native_feature_input(camera, masks, longest_edge):
     return image * valid_mask[None].to(dtype=image.dtype), valid_mask
 
 
+def _ulf_parity_feature_input(camera, masks):
+    """Return ULF-Loc's native-resolution, RGB-masked encoder input.
+
+    Unlike the normal native contract, strict parity neither changes image
+    scale nor filters detected keypoints after masking.  ULF-Loc only masks
+    the RGB image before its SuperPoint call.
+    """
+    return _masked_camera_image(camera, masks)
+
+
+def _resolve_ulf_parity_kcs_mask_policy(policy):
+    """Return the explicit support-mask semantics for strict KCS controls.
+
+    ``rgb_only`` reproduces the ULF KCS convention: validity masks alter the
+    encoder input but do not remove detected keypoints or projected primitive
+    centers afterwards.  ``deployment_post_filter`` uses the production sparse
+    domain at both locations.  Keeping this decision explicit is important:
+    the two choices have identical RGB inputs but different candidate sets.
+    """
+    policy = str(policy)
+    if policy not in {"rgb_only", "deployment_post_filter"}:
+        raise ValueError(f"Unsupported ULF-parity KCS mask policy: {policy!r}")
+    return policy
+
+
+def _ulf_parity_fusion_input(camera, masks):
+    """Return ULF-Loc GWFF's raw RGB and its separate validity mask.
+
+    The reference implementation masks RGB before KCS detection, but GWFF
+    encodes the original support image and applies object/sky/distortion
+    validity only when accumulating projected observations.  Retaining this
+    asymmetry is necessary for a true parity initialization.
+    """
+    image = camera.original_image.cuda()
+    valid_mask = _valid_mask_from_scene_masks(
+        masks,
+        _camera_cache_key(camera),
+        image.shape[-2:],
+        device=image.device,
+    )
+    return image, valid_mask
+
+
 def _query_feature_outputs(
     camera,
     feature_extractor,
@@ -410,6 +466,134 @@ def _uniformly_subsample_cameras(cameras, maximum):
         return cameras
     positions = torch.linspace(0, len(cameras) - 1, maximum).round().long().tolist()
     return [cameras[position] for position in positions]
+
+
+def _pose_diverse_subsample_cameras(cameras, maximum):
+    """Deterministically cover camera-center space with farthest-point sampling."""
+    cameras = list(cameras)
+    maximum = int(maximum)
+    if maximum <= 0 or len(cameras) <= maximum:
+        return cameras
+    centers = []
+    for camera in cameras:
+        center = getattr(camera, "camera_center", None)
+        if center is None:
+            return _uniformly_subsample_cameras(cameras, maximum)
+        center = torch.as_tensor(center).detach().float().cpu().reshape(-1)
+        if center.numel() != 3 or not bool(torch.isfinite(center).all().item()):
+            return _uniformly_subsample_cameras(cameras, maximum)
+        centers.append(center)
+    centers = torch.stack(centers, dim=0)
+    squared_distance_to_centroid = (
+        centers - centers.mean(dim=0, keepdim=True)
+    ).square().sum(dim=1)
+    selected_mask = torch.zeros(len(cameras), dtype=torch.bool)
+    selected_indices = []
+    first_index = int(torch.argmax(squared_distance_to_centroid).item())
+    selected_indices.append(first_index)
+    selected_mask[first_index] = True
+    nearest_selected_distance = (centers - centers[first_index]).square().sum(dim=1)
+    for _ in range(1, maximum):
+        candidate_scores = nearest_selected_distance.masked_fill(
+            selected_mask, -torch.inf
+        )
+        next_index = int(torch.argmax(candidate_scores).item())
+        selected_indices.append(next_index)
+        selected_mask[next_index] = True
+        nearest_selected_distance = torch.minimum(
+            nearest_selected_distance,
+            (centers - centers[next_index]).square().sum(dim=1),
+        )
+    return [cameras[index] for index in sorted(selected_indices)]
+
+
+def _subsample_ulf_support_cameras(cameras, maximum, sampling):
+    sampling = str(sampling)
+    if sampling == "uniform":
+        return _uniformly_subsample_cameras(cameras, maximum)
+    if sampling == "pose_diverse":
+        return _pose_diverse_subsample_cameras(cameras, maximum)
+    raise ValueError(f"Unsupported ULF support-view sampling: {sampling}")
+
+
+def _camera_view_bin_ids(cameras, bin_count):
+    """Assign support cameras to deterministic camera-center coverage bins."""
+    cameras = list(cameras)
+    bin_count = int(bin_count)
+    if bin_count <= 0 or not cameras:
+        return [0] * len(cameras), 0
+    bin_count = min(bin_count, len(cameras))
+    centers = []
+    for camera in cameras:
+        center = getattr(camera, "camera_center", None)
+        if center is None:
+            # A temporal fallback is deterministic, but callers record it so it
+            # can never be mistaken for genuine pose-space coverage.
+            labels = [min(bin_count - 1, index * bin_count // len(cameras)) for index in range(len(cameras))]
+            return labels, bin_count
+        center = torch.as_tensor(center).detach().float().cpu().reshape(-1)
+        if center.numel() != 3 or not bool(torch.isfinite(center).all().item()):
+            labels = [min(bin_count - 1, index * bin_count // len(cameras)) for index in range(len(cameras))]
+            return labels, bin_count
+        centers.append(center)
+    centers = torch.stack(centers, dim=0)
+    selected = []
+    selected_mask = torch.zeros(len(cameras), dtype=torch.bool)
+    first = int(torch.argmax((centers - centers.mean(dim=0)).square().sum(dim=1)).item())
+    selected.append(first)
+    selected_mask[first] = True
+    nearest = (centers - centers[first]).square().sum(dim=1)
+    for _ in range(1, bin_count):
+        next_index = int(torch.argmax(nearest.masked_fill(selected_mask, -torch.inf)).item())
+        selected.append(next_index)
+        selected_mask[next_index] = True
+        nearest = torch.minimum(nearest, (centers - centers[next_index]).square().sum(dim=1))
+    prototypes = centers[torch.as_tensor(selected, dtype=torch.long)]
+    labels = torch.cdist(centers, prototypes).argmin(dim=1).tolist()
+    return [int(label) for label in labels], int(bin_count)
+
+
+def _camera_trajectory_bin_ids(cameras, bin_count):
+    """Split each image trajectory into deterministic chronological support bins."""
+    cameras = list(cameras)
+    bin_count = int(bin_count)
+    if bin_count <= 0 or not cameras:
+        return [0] * len(cameras), 0
+    groups = {}
+    for index, camera in enumerate(cameras):
+        name = _camera_cache_key(camera)
+        parent = str(Path(name).parent).replace("\\", "/")
+        # A flat image directory is still one trajectory; chronological image
+        # names are then split into bins below.
+        groups.setdefault(parent or ".", []).append((name, index))
+    labels = [0] * len(cameras)
+    offset = 0
+    for _, records in sorted(groups.items()):
+        records.sort(key=lambda item: item[0])
+        local_bins = min(bin_count, len(records))
+        for rank, (_, index) in enumerate(records):
+            labels[index] = offset + min(local_bins - 1, rank * local_bins // len(records))
+        offset += local_bins
+    return labels, offset
+
+
+def _ulf_support_feature_input(camera, masks, longest_edge, policy, *, fusion=False):
+    """Make the support-mask choice explicit for robust KCS/GWFF experiments."""
+    policy = str(policy)
+    if policy == "deployment_post_filter":
+        image, valid_mask = _native_feature_input(camera, masks, longest_edge)
+        return image, valid_mask, True
+    if policy == "support_rgb_only":
+        if int(longest_edge) > 0:
+            raise ValueError(
+                "support_rgb_only requires --longest_edge 0 to preserve native ULF support semantics"
+            )
+        if fusion:
+            image, valid_mask = _ulf_parity_fusion_input(camera, masks)
+        else:
+            image, valid_mask = _ulf_parity_feature_input(camera, masks)
+        return image, valid_mask, False
+    raise ValueError(f"Unsupported ULF support mask policy: {policy!r}")
 
 
 def _cache_signature(dataset, args):
@@ -877,6 +1061,300 @@ def _primary_observations(
     return observations, anchor_auxiliary
 
 
+def _native_anchor_auxiliary_scale(args):
+    """Return the configured scale for projection-anchor-only losses."""
+    source = str(args.observation_source)
+    if source == "anchor":
+        return 1.0
+    if source == "native_plus_anchor":
+        return float(args.native_anchor_aux_weight)
+    return 0.0
+
+
+def _native_auxiliary_contract(args):
+    """Persist effective rather than merely parser-default auxiliary weights."""
+    source = str(args.observation_source)
+    anchor_scale = _native_anchor_auxiliary_scale(args)
+    effective_anchor_weights = {
+        "mv": anchor_scale * float(args.mv_weight),
+        "local": anchor_scale * float(args.local_weight),
+        "dustbin": anchor_scale * float(args.dustbin_weight),
+    }
+    return {
+        "schema_version": 1,
+        "observation_source": source,
+        "objective": str(args.objective),
+        "native_outcome_mode": bool(args.native_outcome_mode),
+        "native_sampling_mode": str(args.native_sampling_mode),
+        "anchor_auxiliary_scale": anchor_scale,
+        "anchor_auxiliary_observations_enabled": source == "native_plus_anchor",
+        "effective_anchor_weights": effective_anchor_weights,
+        "effective_native_retrieval_weight": (
+            float(args.retrieval_weight) if source != "anchor" else 0.0
+        ),
+        "effective_trust_weight": float(args.trust_weight),
+        # Trust regularizes descriptor drift but does not introduce projected
+        # anchor observations, so it remains compatible with a pure native run.
+        "pure_native": source == "native"
+        and all(weight == 0.0 for weight in effective_anchor_weights.values()),
+    }
+
+
+def _validate_native_objective_semantics(args):
+    """Fail closed when a native stage records inert auxiliary settings.
+
+    A plain ``native`` source never materializes projected anchor observations.
+    Nonzero anchor-only options would therefore be silently ignored while still
+    appearing in a checkpoint config.  Reject them instead of allowing an
+    experiment to be mislabeled as a mixed or pure-native objective.
+    """
+    source = str(args.observation_source)
+    if source not in {"native", "native_plus_anchor"}:
+        return
+
+    numeric_names = (
+        "native_anchor_aux_weight",
+        "mv_weight",
+        "local_weight",
+        "dustbin_weight",
+        "retrieval_weight",
+        "trust_weight",
+    )
+    for name in numeric_names:
+        value = float(getattr(args, name))
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite for native supervision")
+
+    if bool(args.native_outcome_mode):
+        if str(args.objective) != "hard":
+            raise ValueError("native_outcome_mode requires --objective hard")
+        if str(args.native_sampling_mode) != "detector_grid":
+            raise ValueError(
+                "native_outcome_mode requires --native_sampling_mode detector_grid"
+            )
+
+    if source == "native":
+        inert_anchor_options = {
+            "native_anchor_aux_weight": float(args.native_anchor_aux_weight),
+            "mv_weight": float(args.mv_weight),
+            "local_weight": float(args.local_weight),
+            "dustbin_weight": float(args.dustbin_weight),
+        }
+        nonzero = [
+            name for name, value in inert_anchor_options.items() if value != 0.0
+        ]
+        if nonzero:
+            raise ValueError(
+                "--observation_source native does not create anchor observations; "
+                "set these inert options to zero: " + ", ".join(nonzero)
+            )
+        if not bool(args.native_outcome_mode) and float(args.retrieval_weight) != 0.0:
+            raise ValueError(
+                "--observation_source native without native_outcome_mode has no "
+                "deployment-aligned descriptor objective; set retrieval_weight to "
+                "zero for an initialization-only or fixed-descriptor stage"
+            )
+        return
+
+    if float(args.native_anchor_aux_weight) <= 0.0:
+        raise ValueError(
+            "--observation_source native_plus_anchor requires a positive "
+            "--native_anchor_aux_weight"
+        )
+    if all(
+        float(getattr(args, name)) == 0.0
+        for name in ("mv_weight", "local_weight", "dustbin_weight")
+    ):
+        raise ValueError(
+            "native_plus_anchor requires at least one nonzero anchor loss "
+            "weight: mv_weight, local_weight, or dustbin_weight"
+        )
+
+
+def _validate_distillation_semantics(args):
+    """Reject incomplete quality-reservoir settings before expensive statistics."""
+    budget = int(args.distill_budget)
+    reservoir_multiplier = float(args.distill_quality_reservoir_multiplier)
+    hard_core_ratio = float(args.distill_hard_matchability_core_ratio)
+    reservoir_score = str(args.distill_quality_reservoir_score)
+    wilson_z = float(args.distill_quality_reservoir_wilson_z)
+    if budget < 0:
+        raise ValueError("distill_budget must be non-negative")
+    if not math.isfinite(reservoir_multiplier) or reservoir_multiplier < 0.0:
+        raise ValueError("distill_quality_reservoir_multiplier must be finite and non-negative")
+    if 0.0 < reservoir_multiplier < 1.0:
+        raise ValueError(
+            "distill_quality_reservoir_multiplier must be zero or at least one"
+        )
+    if reservoir_multiplier > 0.0 and budget <= 0:
+        raise ValueError(
+            "distill_quality_reservoir_multiplier requires a positive distill_budget"
+        )
+    if reservoir_score not in {"posterior_mean", "wilson_lower"}:
+        raise ValueError(
+            "distill_quality_reservoir_score must be posterior_mean or wilson_lower"
+        )
+    if not math.isfinite(wilson_z) or wilson_z <= 0.0:
+        raise ValueError(
+            "distill_quality_reservoir_wilson_z must be finite and positive"
+        )
+    if not math.isfinite(hard_core_ratio) or not 0.0 <= hard_core_ratio <= 1.0:
+        raise ValueError(
+            "distill_hard_matchability_core_ratio must lie in [0, 1]"
+        )
+
+
+def _validate_ulf_initializer_semantics(args):
+    """Validate the explicit robust KCS/GWFF extension independently of parity."""
+    robust_scaffold = str(args.scaffold_mode) == "ulf_robust_consensus"
+    robust_fusion = str(args.initialization_mode) == "ulf_robust_geometry"
+    if not (robust_scaffold or robust_fusion):
+        return
+    if float(args.ulf_consensus_radius_px) < 0.0:
+        raise ValueError("ulf_consensus_radius_px must be non-negative")
+    for name in (
+        "ulf_consensus_min_votes",
+        "ulf_consensus_min_visible_views",
+        "ulf_consensus_view_bins",
+        "ulf_consensus_min_distinct_view_bins",
+        "ulf_consensus_trajectory_bins",
+        "ulf_consensus_min_distinct_trajectory_bins",
+    ):
+        if int(getattr(args, name)) < 0:
+            raise ValueError(f"{name} must be non-negative")
+    if not 0.0 <= float(args.ulf_consensus_min_rate) <= 1.0:
+        raise ValueError("ulf_consensus_min_rate must be in [0, 1]")
+    if not -1.0 <= float(args.ulf_fusion_descriptor_min_cosine) <= 1.0:
+        raise ValueError("ulf_fusion_descriptor_min_cosine must be in [-1, 1]")
+    if not 0.0 <= float(args.ulf_fusion_descriptor_trim_fraction) < 1.0:
+        raise ValueError("ulf_fusion_descriptor_trim_fraction must be in [0, 1)")
+    if int(args.ulf_fusion_trim_histogram_bins) < 2:
+        raise ValueError("ulf_fusion_trim_histogram_bins must be at least two")
+    if str(args.ulf_fusion_reference_mode) not in {
+        "mean",
+        "weighted_cosine_medoid",
+    }:
+        raise ValueError(
+            "ulf_fusion_reference_mode must be mean or weighted_cosine_medoid"
+        )
+    if (
+        int(args.ulf_consensus_min_distinct_view_bins) > 0
+        and int(args.ulf_consensus_view_bins) <= 0
+    ):
+        raise ValueError(
+            "ulf_consensus_min_distinct_view_bins requires ulf_consensus_view_bins"
+        )
+    if (
+        int(args.ulf_consensus_min_distinct_trajectory_bins) > 0
+        and int(args.ulf_consensus_trajectory_bins) <= 0
+    ):
+        raise ValueError(
+            "ulf_consensus_min_distinct_trajectory_bins requires "
+            "ulf_consensus_trajectory_bins"
+        )
+    if (
+        str(args.ulf_support_mask_policy) == "support_rgb_only"
+        and int(args.longest_edge) > 0
+    ):
+        raise ValueError("support_rgb_only requires --longest_edge 0")
+
+
+def _native_candidate_loss_kwargs(args):
+    """Return explicit native-candidate weights only for native proposals."""
+    native = str(args.observation_source) in {"native", "native_plus_anchor"}
+    return {
+        "native_outcome_mode": bool(args.native_outcome_mode and native),
+        "native_nce_weight": float(args.native_nce_weight),
+        "native_keep_weight": float(args.native_keep_weight),
+        "native_keep_margin": float(args.native_keep_margin),
+        "native_swap_weight": float(args.native_swap_weight),
+        "native_swap_margin": float(args.native_swap_margin),
+        "native_miss_weight": float(args.native_miss_weight),
+        "native_miss_margin": float(args.native_miss_margin),
+        "native_reject_weight": float(args.native_reject_weight),
+        "native_reject_threshold": float(args.native_reject_threshold),
+    }
+
+
+@torch.no_grad()
+def _native_geometry_support_mask(
+    features,
+    train_names,
+    cache,
+    base_bank_xyz,
+    current_xyz,
+    args,
+    *,
+    visibility_cache=None,
+):
+    """Require native GT-clean top-1 evidence from distinct support cameras.
+
+    This pre-pass is deliberately descriptor-fixed and geometry-gated.  A
+    landmark receives at most one support count per camera, so repeated
+    keypoints in a single image cannot unlock a BA update on their own.
+    """
+    bank_count = int(features.shape[0])
+    counts = torch.zeros(
+        bank_count,
+        dtype=torch.int32,
+        device=features.device,
+    )
+    clean_observations = 0
+    supported_views = 0
+    support_observations = int(args.geometry_association_support_observations)
+    if support_observations <= 0:
+        support_observations = int(args.max_observations)
+    for name in tqdm(train_names, desc="Native BA support qualification"):
+        observations, _ = _primary_observations(
+            cache[name],
+            base_bank_xyz,
+            args,
+            max_observations=support_observations,
+            bank_visibility_mask=(
+                None if visibility_cache is None else visibility_cache[name]
+            ),
+            prediction_bank_xyz=current_xyz,
+        )
+        association = native_association_matches(
+            current_xyz,
+            features,
+            observations,
+            max_reprojection_error_px=args.geometry_association_max_reprojection_px,
+            min_score_margin=args.geometry_association_min_margin,
+            depth_abs_tolerance=args.geometry_association_depth_abs_tolerance,
+            depth_rel_tolerance=args.geometry_association_depth_rel_tolerance,
+            alpha_threshold=args.alpha_threshold,
+        )
+        clean_indices = association.top1_indices[association.clean]
+        clean_observations += int(clean_indices.numel())
+        if clean_indices.numel() == 0:
+            continue
+        unique_indices = torch.unique(clean_indices)
+        counts[unique_indices] += 1
+        supported_views += 1
+    minimum = max(int(args.geometry_association_min_support_views), 1)
+    eligible = counts >= minimum
+    observed = counts > 0
+    diagnostics = {
+        "native_geometry_support_min_views": minimum,
+        "native_geometry_support_observations_per_view": support_observations,
+        "native_geometry_support_train_views": int(len(train_names)),
+        "native_geometry_support_views_with_clean_match": int(supported_views),
+        "native_geometry_support_clean_observations": int(clean_observations),
+        "native_geometry_support_observed_landmarks": int(observed.sum().item()),
+        "native_geometry_support_eligible_landmarks": int(eligible.sum().item()),
+        "native_geometry_support_eligible_ratio": float(
+            eligible.float().mean().item() if bank_count else 0.0
+        ),
+        "native_geometry_support_count_mean": float(counts.float().mean().item()),
+        "native_geometry_support_count_p95": float(
+            torch.quantile(counts.float(), 0.95).item() if bank_count else 0.0
+        ),
+        "native_geometry_support_count_max": int(counts.max().item()) if bank_count else 0,
+    }
+    return eligible, counts, diagnostics
+
+
 @torch.no_grad()
 def _basic_visibility_counts(
     xyz,
@@ -952,6 +1430,374 @@ def _automatic_ulf_voxel_size(xyz, budget):
     extent = (xyz.amax(dim=0) - xyz.amin(dim=0)).clamp_min(1e-4)
     volume = float(extent.prod().item())
     return max((volume / max(int(budget), 1)) ** (1.0 / 3.0), 1e-4)
+
+
+def _ulf_parity_project_pixels(xyz, K, pose_w2c, width, height, *, rounding):
+    """Project surfel centers with the original ULF-Loc KCS/GWFF convention."""
+    xyz = torch.as_tensor(xyz, device=K.device, dtype=K.dtype)
+    pose_w2c = torch.as_tensor(pose_w2c, device=K.device, dtype=K.dtype)
+    homogeneous = torch.cat(
+        [xyz, torch.ones((xyz.shape[0], 1), device=xyz.device, dtype=xyz.dtype)],
+        dim=1,
+    )
+    camera_xyz = (pose_w2c @ homogeneous.T)[:3].T
+    depth = camera_xyz[:, 2]
+    physical_uv = torch.empty((xyz.shape[0], 2), device=xyz.device, dtype=xyz.dtype)
+    physical_uv[:, 0] = K[0, 0] * camera_xyz[:, 0] / depth + K[0, 2]
+    physical_uv[:, 1] = K[1, 1] * camera_xyz[:, 1] / depth + K[1, 2]
+    finite = torch.isfinite(physical_uv).all(dim=1) & torch.isfinite(depth)
+    safe_uv = torch.where(finite[:, None], physical_uv, torch.zeros_like(physical_uv))
+    if rounding == "trunc":
+        pixel_uv = torch.trunc(safe_uv)
+    elif rounding == "round":
+        pixel_uv = torch.round(safe_uv)
+    else:
+        raise ValueError(f"Unsupported ULF parity projection rounding: {rounding}")
+    in_image = (
+        finite
+        & (pixel_uv[:, 0] >= 0)
+        & (pixel_uv[:, 0] < int(width))
+        & (pixel_uv[:, 1] >= 0)
+        & (pixel_uv[:, 1] < int(height))
+    )
+    return pixel_uv, in_image
+
+
+def _ulf_parity_nearest_keypoint_squared_distance(projected_uv, keypoints):
+    """Use FAISS IndexFlatL2, matching ULF-Loc's KCS distance semantics."""
+    projected_uv = torch.as_tensor(projected_uv, dtype=torch.float32)
+    keypoints = torch.as_tensor(
+        keypoints, device=projected_uv.device, dtype=torch.float32
+    )
+    if projected_uv.numel() == 0:
+        return projected_uv.new_zeros((0,))
+    if keypoints.numel() == 0:
+        return projected_uv.new_full((projected_uv.shape[0],), torch.inf)
+    try:
+        import faiss
+
+        index = faiss.IndexFlatL2(2)
+        index.add(keypoints.detach().cpu().contiguous().numpy())
+        distances, _ = index.search(projected_uv.detach().cpu().contiguous().numpy(), 1)
+        return torch.from_numpy(distances[:, 0]).to(device=projected_uv.device)
+    except ImportError:
+        return nearest_keypoint_distance(projected_uv, keypoints).square()
+
+
+def _build_ulf_parity_consensus_landmark_indices(
+    gaussians,
+    cameras,
+    masks,
+    feature_extractor,
+    args,
+):
+    """Strict raw-resolution KCS matching ULF-Loc's random-kNN procedure.
+
+    This intentionally remains separate from ``ulf_consensus``.  The latter
+    is a LaFGS extension with contribution-aware visibility and coverage
+    balancing; it must not be labelled a ULF-parity bootstrap.
+    """
+    if str(feature_extractor.feature_type) != "sp":
+        raise ValueError("ULF parity KCS requires SuperPoint")
+    if int(args.longest_edge) > 0:
+        raise ValueError(
+            "ULF parity KCS requires --longest_edge 0 so support images stay native"
+        )
+    xyz = gaussians.get_xyz.detach().float()
+    requested_budget = int(args.scaffold_budget)
+    if requested_budget <= 0 or requested_budget > int(xyz.shape[0]):
+        raise ValueError(
+            "ULF parity KCS requires a positive scaffold budget no larger than "
+            "the primitive count"
+        )
+    votes = torch.zeros(xyz.shape[0], dtype=torch.int32, device=xyz.device)
+    kcs_mask_policy = _resolve_ulf_parity_kcs_mask_policy(
+        args.ulf_parity_kcs_mask_policy
+    )
+    post_detection_mask_filter = kcs_mask_policy == "deployment_post_filter"
+    cameras = _subsample_ulf_support_cameras(
+        cameras,
+        args.ulf_consensus_max_views,
+        args.ulf_support_view_sampling,
+    )
+    distance_threshold_sq = float(args.ulf_consensus_radius_px)
+    view_records = []
+    for camera in tqdm(cameras, desc="ULF-parity keypoint-consensus sampling"):
+        image, valid_mask = _ulf_parity_feature_input(camera, masks)
+        height, width = image.shape[-2:]
+        if height % 8 or width % 8:
+            raise ValueError(
+                "ULF parity requires native image dimensions divisible by SuperPoint stride 8; "
+                f"got {(height, width)} for {_camera_cache_key(camera)}"
+            )
+        sparse = feature_extractor.detectAndCompute(
+            image[None], top_k=args.ulf_consensus_keypoints
+        )[0]
+        keypoints = sparse["keypoints"]
+        if post_detection_mask_filter:
+            keypoints = keypoints[sample_mask_at_grid_uv(valid_mask, keypoints)]
+        render_visible = _render_full_visibility(gaussians, camera, width, height)
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=xyz.device,
+            dtype=xyz.dtype,
+        )
+        pixel_uv, projected = _ulf_parity_project_pixels(
+            xyz,
+            K,
+            camera.world_view_transform.transpose(0, 1).cuda(),
+            width,
+            height,
+            rounding="trunc",
+        )
+        visible = projected & render_visible
+        if post_detection_mask_filter:
+            visible &= sample_mask_at_grid_uv(valid_mask, pixel_uv)
+        visible_indices = torch.nonzero(visible, as_tuple=False).reshape(-1)
+        matched_count = 0
+        if visible_indices.numel() > 0 and keypoints.numel() > 0:
+            squared_distance = _ulf_parity_nearest_keypoint_squared_distance(
+                pixel_uv[visible_indices], keypoints
+            )
+            # ULF-Loc compares FAISS squared L2 output directly against
+            # ``thre_dis``.  The formal parity configuration fixes it to 1.
+            matched = squared_distance <= distance_threshold_sq
+            if bool(matched.any().item()):
+                votes[visible_indices[matched]] += 1
+                matched_count = int(matched.sum().item())
+        view_records.append(
+            {
+                "image_name": _camera_cache_key(camera),
+                "processed_image_hw": [int(height), int(width)],
+                "sparse_keypoints": int(keypoints.shape[0]),
+                "input_valid_fraction": float(valid_mask.float().mean().item()),
+                "contribution_visible_primitives": int(render_visible.sum().item()),
+                "projected_visible_primitives": int(visible_indices.numel()),
+                "consensus_votes": matched_count,
+            }
+        )
+
+    selected = ulf_random_knn_vote_sample(
+        xyz,
+        requested_budget,
+        votes,
+        k=args.ulf_consensus_knn,
+        seed=args.scaffold_seed,
+    )
+    if int(selected.numel()) != requested_budget:
+        raise RuntimeError(
+            "ULF parity random-kNN sampling produced fewer unique landmarks than "
+            f"requested: requested={requested_budget} selected={selected.numel()}"
+        )
+    selected_votes = votes[selected]
+    diagnostics = {
+        "mode": "ulf_parity_kcs_random_knn_v1",
+        "strict_ulf_parity": kcs_mask_policy == "rgb_only",
+        "budget": int(selected.numel()),
+        "requested_budget": requested_budget,
+        "eligible_primitives": int(xyz.shape[0]),
+        "selected_vote_mean": float(selected_votes.float().mean().item()),
+        "selected_vote_max": int(selected_votes.max().item()),
+        "selected_with_nonzero_vote": int((selected_votes > 0).sum().item()),
+        "consensus_sparse_keypoints": int(args.ulf_consensus_keypoints),
+        "consensus_distance_threshold_squared_px": distance_threshold_sq,
+        "consensus_knn": int(args.ulf_consensus_knn),
+        "consensus_random_seed": int(args.scaffold_seed),
+        "consensus_view_count": int(len(cameras)),
+        "support_view_sampling": str(args.ulf_support_view_sampling),
+        "input_resolution": "native_camera_rgb_no_resize",
+        "input_mask_policy": "rgb_only_object_and_sky_and_distortion_v1",
+        "kcs_mask_policy": kcs_mask_policy,
+        "post_detection_mask_filter": post_detection_mask_filter,
+        "primitive_opacity_filter": False,
+        "visibility": "2dgs_raster_contribution_gradient",
+        "projection_rounding": "truncate_toward_zero",
+        "selection": "uniform_random_seed_then_3d_knn_highest_vote_unique",
+        "views": view_records,
+    }
+    return selected.detach().cpu(), diagnostics
+
+
+def _sample_ulf_parity_dense_features(
+    dense_features,
+    pixel_uv,
+    image_hw,
+    *,
+    channel_chunk,
+):
+    """Exactly sample ULF's native stride-8 descriptor map in channel chunks."""
+    height, width = (int(image_hw[0]), int(image_hw[1]))
+    pixel_uv = torch.as_tensor(
+        pixel_uv, device=dense_features.device, dtype=dense_features.dtype
+    ).reshape(-1, 2)
+    if pixel_uv.numel() == 0:
+        return dense_features.new_zeros((0, dense_features.shape[1]))
+    # ULF samples its stride-8 map directly with physical pixel centers.  Do
+    # not upsample first: interpolation uses edge replication at the border,
+    # whereas the reference grid_sample uses zero padding there.
+    grid = pixel_uv.clone()
+    grid[:, 0] = 2.0 * (grid[:, 0] + 0.5) / float(width) - 1.0
+    grid[:, 1] = 2.0 * (grid[:, 1] + 0.5) / float(height) - 1.0
+    grid = grid.view(1, -1, 1, 2)
+    channel_chunk = max(1, int(channel_chunk))
+    sampled_parts = []
+    for start in range(0, dense_features.shape[1], channel_chunk):
+        sampled_parts.append(
+            F.grid_sample(
+                dense_features[:, start : start + channel_chunk],
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )[0, :, :, 0].T
+        )
+    return torch.cat(sampled_parts, dim=1)
+
+
+def _build_ulf_parity_geometry_features(
+    cameras,
+    gaussians,
+    landmark_indices,
+    masks,
+    feature_extractor,
+    fallback_features,
+    args,
+):
+    """Strict native-resolution ULF-Loc Geometry-Weighted Feature Fusion."""
+    if int(args.longest_edge) > 0:
+        raise ValueError(
+            "ULF parity GWFF requires --longest_edge 0 so support images stay native"
+        )
+    if float(args.ulf_fusion_min_cosine) != 0.0:
+        raise ValueError(
+            "ULF parity GWFF does not support post-hoc cosine trimming; use 0"
+        )
+    landmark_indices_gpu = landmark_indices.to(device=gaussians.get_xyz.device)
+    bank_xyz = gaussians.get_xyz[landmark_indices_gpu].detach().float()
+    rotations = gaussians.get_rotation[landmark_indices_gpu].detach().float()
+    scales = gaussians.get_scaling[landmark_indices_gpu].detach().float()
+    normals = surface_normals_from_rotation(rotations, scales)
+    feature_sum = torch.zeros(
+        (bank_xyz.shape[0], fallback_features.shape[1]),
+        device=bank_xyz.device,
+        dtype=torch.float32,
+    )
+    weight_sum = torch.zeros(bank_xyz.shape[0], device=bank_xyz.device)
+    observation_count = torch.zeros(
+        bank_xyz.shape[0], dtype=torch.long, device=bank_xyz.device
+    )
+    cameras = _subsample_ulf_support_cameras(
+        cameras,
+        args.ulf_fusion_max_views,
+        args.ulf_support_view_sampling,
+    )
+    sampled_weight_sum = 0.0
+    sampled_weight_count = 0
+    view_records = []
+    for camera in tqdm(cameras, desc="ULF-parity geometry-weighted feature fusion"):
+        image, valid_mask = _ulf_parity_fusion_input(camera, masks)
+        height, width = image.shape[-2:]
+        if height % 8 or width % 8:
+            raise ValueError(
+                "ULF parity requires native image dimensions divisible by SuperPoint stride 8; "
+                f"got {(height, width)} for {_camera_cache_key(camera)}"
+            )
+        dense_features, _ = feature_extractor.detectAndComputeDense(image[None])
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=bank_xyz.device,
+            dtype=bank_xyz.dtype,
+        )
+        pixel_uv, projected = _ulf_parity_project_pixels(
+            bank_xyz,
+            K,
+            camera.world_view_transform.transpose(0, 1).cuda(),
+            width,
+            height,
+            rounding="round",
+        )
+        valid = projected & sample_mask_at_grid_uv(valid_mask, pixel_uv)
+        compact_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
+        if compact_indices.numel() == 0:
+            view_records.append(
+                {
+                    "image_name": _camera_cache_key(camera),
+                    "processed_image_hw": [int(height), int(width)],
+                    "valid_projected_landmarks": 0,
+                }
+            )
+            continue
+        sampled = _sample_ulf_parity_dense_features(
+            dense_features,
+            pixel_uv[compact_indices],
+            (height, width),
+            channel_chunk=args.ulf_parity_fusion_channel_chunk,
+        )
+        weights = geometry_view_weights(
+            bank_xyz[compact_indices],
+            normals[compact_indices],
+            camera.camera_center.cuda(),
+        ).float()
+        useful = weights > 0.0
+        compact_indices = compact_indices[useful]
+        sampled = sampled[useful]
+        weights = weights[useful]
+        if compact_indices.numel() > 0:
+            feature_sum.index_add_(0, compact_indices, sampled.float() * weights[:, None])
+            weight_sum.index_add_(0, compact_indices, weights)
+            observation_count.index_add_(
+                0,
+                compact_indices,
+                torch.ones_like(compact_indices, dtype=observation_count.dtype),
+            )
+            sampled_weight_sum += float(weights.sum().item())
+            sampled_weight_count += int(weights.numel())
+        view_records.append(
+            {
+                "image_name": _camera_cache_key(camera),
+                "processed_image_hw": [int(height), int(width)],
+                "valid_projected_landmarks": int(valid.sum().item()),
+                "geometry_weighted_samples": int(compact_indices.numel()),
+            }
+        )
+        del dense_features, sampled
+
+    observed = weight_sum > 1e-8
+    # ULF-Loc leaves unobserved rows at zero.  Do not backfill them from a
+    # rendered feature field in this parity mode.
+    result = torch.zeros_like(fallback_features.float())
+    if bool(observed.any().item()):
+        result[observed] = F.normalize(
+            feature_sum[observed] / weight_sum[observed, None], dim=-1
+        )
+    diagnostics = {
+        "initialization_mode": "ulf_parity_geometry_weighted_fusion_v1",
+        "strict_ulf_parity": True,
+        "observed_landmarks": int(observed.sum().item()),
+        "unobserved_landmarks": int((~observed).sum().item()),
+        "observation_count_mean": float(observation_count.float().mean().item()),
+        "observation_count_median": float(observation_count.float().median().item()),
+        "observation_count_max": int(observation_count.max().item()),
+        "geometry_weight_mean": sampled_weight_sum / max(sampled_weight_count, 1),
+        "geometry_weighted_samples": int(sampled_weight_count),
+        "fusion_view_count": int(len(cameras)),
+        "support_view_sampling": str(args.ulf_support_view_sampling),
+        "input_resolution": "native_camera_rgb_no_resize",
+        "input_mask_policy": "raw_rgb_encoder_validity_mask_only_v1",
+        "visibility": "projection_and_scene_mask_no_raster",
+        "projection_rounding": "round_to_nearest_pixel",
+        "dense_sampling": "direct_native_stride8_grid_sample_physical_pixel_center",
+        "dense_channel_chunk": int(args.ulf_parity_fusion_channel_chunk),
+        "unobserved_feature_policy": "zero_vector",
+        "views": view_records,
+    }
+    return result, observation_count, diagnostics
 
 
 def _build_ulf_consensus_landmark_indices(
@@ -1103,6 +1949,400 @@ def _build_ulf_consensus_landmark_indices(
     return selected.detach().cpu(), diagnostics
 
 
+def _build_ulf_robust_consensus_landmark_indices(
+    gaussians,
+    cameras,
+    masks,
+    feature_extractor,
+    args,
+):
+    """Build a non-parity KCS bank with explicit multi-view consensus gates.
+
+    This deliberately does not alter the strict ULF random-kNN sampler.  It is
+    an experimental LaFGS selection rule whose candidates must demonstrate
+    support across visible views, camera-center bins, and temporal trajectory
+    bins before coverage selection can use them.
+    """
+    if str(feature_extractor.feature_type) != "sp":
+        raise ValueError("Robust ULF consensus sampling currently requires SuperPoint")
+    xyz = gaussians.get_xyz.detach().float()
+    opacity = gaussians.get_opacity.detach().reshape(-1)
+    base_eligible = torch.isfinite(opacity) & (
+        opacity >= float(args.scaffold_min_opacity)
+    )
+    if int(args.scaffold_budget) <= 0:
+        raise ValueError("Robust ULF consensus requires a positive scaffold budget")
+    if int(base_eligible.sum().item()) < int(args.scaffold_budget):
+        raise ValueError(
+            "Robust ULF consensus budget exceeds the opacity-eligible primitive pool"
+        )
+    cameras = _subsample_ulf_support_cameras(
+        cameras,
+        args.ulf_consensus_max_views,
+        args.ulf_support_view_sampling,
+    )
+    view_labels, view_bin_count = _camera_view_bin_ids(
+        cameras, args.ulf_consensus_view_bins
+    )
+    trajectory_labels, trajectory_bin_count = _camera_trajectory_bin_ids(
+        cameras, args.ulf_consensus_trajectory_bins
+    )
+    if int(args.ulf_consensus_min_distinct_view_bins) > 0 and view_bin_count <= 0:
+        raise ValueError("robust KCS distinct-view gate requires --ulf_consensus_view_bins")
+    if (
+        int(args.ulf_consensus_min_distinct_trajectory_bins) > 0
+        and trajectory_bin_count <= 0
+    ):
+        raise ValueError(
+            "robust KCS distinct-trajectory gate requires --ulf_consensus_trajectory_bins"
+        )
+    votes = torch.zeros(xyz.shape[0], dtype=torch.int32, device=xyz.device)
+    visibility_counts = torch.zeros_like(votes)
+    view_vote_mask = (
+        torch.zeros(
+            (xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device
+        )
+        if view_bin_count > 0
+        else None
+    )
+    trajectory_vote_mask = (
+        torch.zeros(
+            (xyz.shape[0], trajectory_bin_count),
+            dtype=torch.bool,
+            device=xyz.device,
+        )
+        if trajectory_bin_count > 0
+        else None
+    )
+    policy = str(args.ulf_support_mask_policy)
+    radius_px = float(args.ulf_consensus_radius_px)
+    view_records = []
+    for view_index, camera in enumerate(
+        tqdm(cameras, desc="Robust ULF keypoint-consensus sampling")
+    ):
+        image, valid_mask, post_detection_filter = _ulf_support_feature_input(
+            camera, masks, args.longest_edge, policy
+        )
+        height, width = image.shape[-2:]
+        sparse = feature_extractor.detectAndCompute(
+            image[None], top_k=args.ulf_consensus_keypoints
+        )[0]
+        keypoints = sparse["keypoints"]
+        if post_detection_filter:
+            keypoints = keypoints[sample_mask_at_grid_uv(valid_mask, keypoints)]
+        render_visible = _render_full_visibility(gaussians, camera, width, height)
+        K = make_intrinsics_from_fov(
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            device=xyz.device,
+            dtype=xyz.dtype,
+        )
+        uv, _, projected = project_landmarks_to_query(
+            xyz,
+            K,
+            camera.world_view_transform.transpose(0, 1).cuda(),
+            height,
+            width,
+            pixel_center_offset=PIXEL_CENTER_OFFSET,
+        )
+        valid_projection = (
+            sample_mask_at_grid_uv(valid_mask, uv)
+            if post_detection_filter
+            else torch.ones_like(projected)
+        )
+        visible = base_eligible & projected & render_visible & valid_projection
+        visible_indices = torch.nonzero(visible, as_tuple=False).reshape(-1)
+        if visible_indices.numel() > int(args.ulf_consensus_max_candidates_per_view) > 0:
+            _, keep = torch.topk(
+                opacity[visible_indices],
+                int(args.ulf_consensus_max_candidates_per_view),
+                largest=True,
+                sorted=False,
+            )
+            visible_indices = visible_indices[keep]
+        if visible_indices.numel() > 0:
+            visibility_counts[visible_indices] += 1
+        matched_indices = visible_indices.new_empty((0,), dtype=torch.long)
+        if visible_indices.numel() > 0 and keypoints.numel() > 0:
+            distance = nearest_keypoint_distance(
+                uv[visible_indices],
+                keypoints,
+                chunk_size=args.ulf_consensus_distance_chunk,
+            )
+            matched_indices = visible_indices[distance <= radius_px]
+            if matched_indices.numel() > 0:
+                votes[matched_indices] += 1
+                if view_vote_mask is not None:
+                    view_vote_mask[matched_indices, view_labels[view_index]] = True
+                if trajectory_vote_mask is not None:
+                    trajectory_vote_mask[
+                        matched_indices, trajectory_labels[view_index]
+                    ] = True
+        view_records.append(
+            {
+                "image_name": _camera_cache_key(camera),
+                "processed_image_hw": [int(height), int(width)],
+                "sparse_keypoints_before_mask": int(sparse["keypoints"].shape[0]),
+                "sparse_keypoints_after_mask": int(keypoints.shape[0]),
+                "contribution_visible_primitives": int(render_visible.sum().item()),
+                "eligible_visible_primitives": int(visible_indices.numel()),
+                "consensus_votes": int(matched_indices.numel()),
+                "view_bin": int(view_labels[view_index]) if view_bin_count else None,
+                "trajectory_bin": (
+                    int(trajectory_labels[view_index]) if trajectory_bin_count else None
+                ),
+            }
+        )
+
+    distinct_views = (
+        view_vote_mask.sum(dim=1, dtype=torch.int32)
+        if view_vote_mask is not None
+        else None
+    )
+    distinct_trajectories = (
+        trajectory_vote_mask.sum(dim=1, dtype=torch.int32)
+        if trajectory_vote_mask is not None
+        else None
+    )
+    min_votes = max(int(args.ulf_consensus_min_votes), 1)
+    consensus_eligible, consensus_rate = consensus_eligibility(
+        votes,
+        visibility_counts,
+        minimum_votes=min_votes,
+        minimum_visible_views=int(args.ulf_consensus_min_visible_views),
+        minimum_rate=float(args.ulf_consensus_min_rate),
+        distinct_view_bins=distinct_views,
+        minimum_distinct_view_bins=int(args.ulf_consensus_min_distinct_view_bins),
+        distinct_trajectory_bins=distinct_trajectories,
+        minimum_distinct_trajectory_bins=int(
+            args.ulf_consensus_min_distinct_trajectory_bins
+        ),
+    )
+    consensus_eligible &= base_eligible
+    requested_budget = int(args.scaffold_budget)
+
+    # Persist gate statistics before enforcing the capacity requirement.  A
+    # strict KCS run can legitimately fail to fill its requested bank; without
+    # this audit it is impossible to distinguish an over-constrained gate from
+    # an implementation or visibility regression.
+    progressive = base_eligible.clone()
+    gate_counts = {"base_eligible": int(progressive.sum().item())}
+    gate_masks = [
+        ("minimum_votes", votes >= min_votes),
+        (
+            "minimum_visible_views",
+            visibility_counts >= int(args.ulf_consensus_min_visible_views),
+        ),
+        ("minimum_consensus_rate", consensus_rate >= float(args.ulf_consensus_min_rate)),
+    ]
+    if int(args.ulf_consensus_min_distinct_view_bins) > 0:
+        gate_masks.append(
+            (
+                "minimum_distinct_view_bins",
+                distinct_views >= int(args.ulf_consensus_min_distinct_view_bins),
+            )
+        )
+    if int(args.ulf_consensus_min_distinct_trajectory_bins) > 0:
+        gate_masks.append(
+            (
+                "minimum_distinct_trajectory_bins",
+                distinct_trajectories
+                >= int(args.ulf_consensus_min_distinct_trajectory_bins),
+            )
+        )
+    for name, gate in gate_masks:
+        progressive &= gate
+        gate_counts[f"after_{name}"] = int(progressive.sum().item())
+
+    def _eligible_count(mask):
+        return int((base_eligible & mask).sum().item())
+
+    def _gate_stat(values):
+        values = values[base_eligible].float()
+        if values.numel() == 0:
+            return {"count": 0, "mean": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
+        quantiles = torch.quantile(
+            values, torch.tensor([0.1, 0.5, 0.9], device=values.device)
+        )
+        return {
+            "count": int(values.numel()),
+            "mean": float(values.mean().item()),
+            "p10": float(quantiles[0].item()),
+            "p50": float(quantiles[1].item()),
+            "p90": float(quantiles[2].item()),
+            "max": float(values.max().item()),
+        }
+
+    gate_audit = {
+        "mode": "ulf_robust_keypoint_consensus_gate_audit_v1",
+        "requested_budget": requested_budget,
+        "support_view_count": int(len(cameras)),
+        "gate_configuration": {
+            "minimum_votes": min_votes,
+            "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
+            "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
+            "minimum_distinct_view_bins": int(
+                args.ulf_consensus_min_distinct_view_bins
+            ),
+            "minimum_distinct_trajectory_bins": int(
+                args.ulf_consensus_min_distinct_trajectory_bins
+            ),
+        },
+        "progressive_eligible_counts": gate_counts,
+        "individual_gate_eligible_counts": {
+            "minimum_votes": _eligible_count(votes >= min_votes),
+            "minimum_visible_views": _eligible_count(
+                visibility_counts >= int(args.ulf_consensus_min_visible_views)
+            ),
+            "minimum_consensus_rate": _eligible_count(
+                consensus_rate >= float(args.ulf_consensus_min_rate)
+            ),
+            "minimum_distinct_view_bins": (
+                _eligible_count(
+                    distinct_views
+                    >= int(args.ulf_consensus_min_distinct_view_bins)
+                )
+                if int(args.ulf_consensus_min_distinct_view_bins) > 0
+                else None
+            ),
+            "minimum_distinct_trajectory_bins": (
+                _eligible_count(
+                    distinct_trajectories
+                    >= int(args.ulf_consensus_min_distinct_trajectory_bins)
+                )
+                if int(args.ulf_consensus_min_distinct_trajectory_bins) > 0
+                else None
+            ),
+        },
+        "rate_sweep_after_minimum_votes_and_visibility": {
+            f"{threshold:g}": int(
+                (
+                    base_eligible
+                    & (votes >= min_votes)
+                    & (
+                        visibility_counts
+                        >= int(args.ulf_consensus_min_visible_views)
+                    )
+                    & (consensus_rate >= threshold)
+                )
+                .sum()
+                .item()
+            )
+            for threshold in (0.0, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1)
+        },
+        "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
+        "vote_statistics_over_base_eligible": _gate_stat(votes),
+        "visibility_statistics_over_base_eligible": _gate_stat(visibility_counts),
+        "consensus_rate_statistics_over_base_eligible": _gate_stat(consensus_rate),
+        "distinct_view_bin_statistics_over_base_eligible": (
+            _gate_stat(distinct_views) if distinct_views is not None else None
+        ),
+        "distinct_trajectory_bin_statistics_over_base_eligible": (
+            _gate_stat(distinct_trajectories)
+            if distinct_trajectories is not None
+            else None
+        ),
+    }
+    gate_audit_path = Path(args.output_dir) / "robust_kcs_gate_audit.json"
+    gate_audit_path.parent.mkdir(parents=True, exist_ok=True)
+    with gate_audit_path.open("w") as handle:
+        json.dump(gate_audit, handle, indent=2, sort_keys=True)
+    print(f"Saved robust KCS gate audit: {gate_audit_path}")
+
+    candidate_eligible = consensus_eligible
+    default_allow_fallback = False
+    allow_fallback = (
+        default_allow_fallback
+        if args.ulf_consensus_allow_nonconsensus_fallback is None
+        else bool(args.ulf_consensus_allow_nonconsensus_fallback)
+    )
+    fallback_to_non_consensus = False
+    if int(candidate_eligible.sum().item()) < requested_budget:
+        if not allow_fallback:
+            raise RuntimeError(
+                "Robust KCS gates produced too few consensus landmarks: "
+                f"eligible={int(candidate_eligible.sum().item())} budget={requested_budget}. "
+                "Relax a named gate explicitly or pass --ulf_consensus_allow_nonconsensus_fallback."
+            )
+        candidate_eligible = base_eligible
+        fallback_to_non_consensus = True
+    # Rate only becomes a score after it has first been enforced as a gate.
+    vote_score = votes.float() + 0.25 * votes.float().max().clamp_min(1.0) * consensus_rate
+    vote_score += 0.01 * visibility_counts.float()
+    voxel_size = float(args.ulf_consensus_voxel_size)
+    if voxel_size <= 0.0:
+        voxel_size = _automatic_ulf_voxel_size(xyz[candidate_eligible], requested_budget)
+    selected = coverage_balanced_score(
+        xyz,
+        requested_budget,
+        vote_score,
+        voxel_size=voxel_size,
+        max_per_voxel=args.ulf_consensus_max_per_voxel,
+        eligible=candidate_eligible,
+        allow_overflow=True,
+    )
+    if selected.numel() != requested_budget:
+        raise RuntimeError(
+            "Robust ULF consensus scaffold could not satisfy the requested budget: "
+            f"requested={requested_budget} selected={selected.numel()}"
+        )
+    selected_votes = votes[selected]
+    selected_rates = consensus_rate[selected]
+    diagnostics = {
+        "mode": "ulf_robust_keypoint_consensus_v1",
+        "strict_ulf_parity": False,
+        "budget": int(selected.numel()),
+        "requested_budget": requested_budget,
+        "eligible_primitives": int(base_eligible.sum().item()),
+        "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
+        "fallback_to_non_consensus": bool(fallback_to_non_consensus),
+        "selected_with_consensus": int((selected_votes >= min_votes).sum().item()),
+        "selected_vote_mean": float(selected_votes.float().mean().item()),
+        "selected_vote_max": int(selected_votes.max().item()),
+        "selected_consensus_rate_mean": float(selected_rates.mean().item()),
+        "selected_consensus_rate_p10": float(torch.quantile(selected_rates, 0.1).item()),
+        "minimum_votes": min_votes,
+        "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
+        "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
+        "distinct_view_bins": int(view_bin_count),
+        "minimum_distinct_view_bins": int(args.ulf_consensus_min_distinct_view_bins),
+        "distinct_trajectory_bins": int(trajectory_bin_count),
+        "minimum_distinct_trajectory_bins": int(
+            args.ulf_consensus_min_distinct_trajectory_bins
+        ),
+        "gate_audit_path": str(gate_audit_path),
+        "selected_distinct_view_bins_mean": (
+            float(distinct_views[selected].float().mean().item())
+            if distinct_views is not None
+            else 0.0
+        ),
+        "selected_distinct_trajectory_bins_mean": (
+            float(distinct_trajectories[selected].float().mean().item())
+            if distinct_trajectories is not None
+            else 0.0
+        ),
+        "consensus_radius_px": radius_px,
+        "consensus_sparse_keypoints": int(args.ulf_consensus_keypoints),
+        "consensus_view_count": int(len(cameras)),
+        "support_view_sampling": str(args.ulf_support_view_sampling),
+        "support_mask_policy": policy,
+        "post_detection_mask_filter": bool(policy == "deployment_post_filter"),
+        "distance_chunk_size": int(args.ulf_consensus_distance_chunk),
+        "candidate_cap_per_view": int(args.ulf_consensus_max_candidates_per_view),
+        "voxel_size": float(voxel_size),
+        "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
+        "visibility": "2dgs_raster_contribution_gradient",
+        "visibility_resolution": "native_support_input_resolution",
+        "query_feature_contract": _QUERY_FEATURE_CONTRACT_NATIVE,
+        "coordinate_convention": "grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
+        "views": view_records,
+    }
+    return selected.detach().cpu(), diagnostics
+
+
 def _build_ulf_geometry_features(
     cameras,
     gaussians,
@@ -1217,6 +2457,283 @@ def _build_ulf_geometry_features(
     return result, observation_count, diagnostics
 
 
+def _build_ulf_robust_geometry_features(
+    cameras,
+    gaussians,
+    landmark_indices,
+    masks,
+    feature_extractor,
+    fallback_features,
+    args,
+):
+    """Fuse GWFF observations after descriptor-prototype outlier trimming.
+
+    The first pass is a conventional geometry-weighted prototype.  A second
+    streaming pass estimates each landmark's descriptor-cosine quantile, and
+    the final pass recomputes the prototype from only retained observations.
+    No observation tensor is retained across cameras, so this remains usable
+    for full-support 2DGS banks.
+    """
+    if float(args.ulf_fusion_min_cosine) != 0.0:
+        raise ValueError(
+            "ulf_fusion_min_cosine is a legacy geometry-weight threshold, not a "
+            "descriptor cosine gate; use --ulf_fusion_descriptor_min_cosine"
+        )
+    landmark_indices_gpu = landmark_indices.to(device=gaussians.get_xyz.device)
+    bank_xyz = gaussians.get_xyz[landmark_indices_gpu].detach().float()
+    rotations = gaussians.get_rotation[landmark_indices_gpu].detach().float()
+    scales = gaussians.get_scaling[landmark_indices_gpu].detach().float()
+    normals = surface_normals_from_rotation(rotations, scales)
+    cameras = _subsample_ulf_support_cameras(
+        cameras, args.ulf_fusion_max_views, args.ulf_support_view_sampling
+    )
+    policy = str(args.ulf_support_mask_policy)
+    feature_dim = int(fallback_features.shape[1])
+    bank_count = int(bank_xyz.shape[0])
+    pretrim_count = torch.zeros(bank_count, dtype=torch.long, device=bank_xyz.device)
+    sampled_weight_sum = 0.0
+    sampled_weight_count = 0
+    native_size_mismatch_views = 0
+    first_pass_records = []
+
+    def for_each_observation(description, callback, *, record_views=False):
+        nonlocal sampled_weight_sum, sampled_weight_count, native_size_mismatch_views
+        records = []
+        for camera in tqdm(cameras, desc=description):
+            image, valid_mask, _ = _ulf_support_feature_input(
+                camera,
+                masks,
+                args.longest_edge,
+                policy,
+                fusion=True,
+            )
+            height, width = image.shape[-2:]
+            dense_features, _ = feature_extractor.detectAndComputeDense(image[None])
+            expected_hw = (
+                int(dense_features.shape[-2]) * 8,
+                int(dense_features.shape[-1]) * 8,
+            )
+            if record_views:
+                native_size_mismatch_views += int(
+                    expected_hw != (int(height), int(width))
+                )
+            visible = _render_full_visibility(gaussians, camera, width, height)[
+                landmark_indices_gpu
+            ]
+            K = make_intrinsics_from_fov(
+                camera.FoVx,
+                camera.FoVy,
+                width,
+                height,
+                device=bank_xyz.device,
+                dtype=bank_xyz.dtype,
+            )
+            grid_uv, _, projected = project_landmarks_to_query(
+                bank_xyz,
+                K,
+                camera.world_view_transform.transpose(0, 1).cuda(),
+                height,
+                width,
+                pixel_center_offset=PIXEL_CENTER_OFFSET,
+            )
+            # Fusion always applies support validity at the projected point.
+            # ``support_rgb_only`` differs from deployment only in the sparse
+            # detector/KCS post-filter, mirroring ULF's RGB-versus-GWFF split.
+            valid = visible & projected & sample_mask_at_grid_uv(valid_mask, grid_uv)
+            compact_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
+            useful_count = 0
+            if compact_indices.numel() > 0:
+                sampled = sample_dense_descriptors_at_image_uv(
+                    dense_features,
+                    grid_index_to_physical(grid_uv[compact_indices]),
+                    (height, width),
+                )
+                weights = geometry_view_weights(
+                    bank_xyz[compact_indices],
+                    normals[compact_indices],
+                    camera.camera_center.cuda(),
+                ).float()
+                useful = weights > 0.0
+                compact_indices = compact_indices[useful]
+                sampled = sampled[useful]
+                weights = weights[useful]
+                useful_count = int(compact_indices.numel())
+                if useful_count:
+                    callback(compact_indices, sampled.float(), weights)
+                    if record_views:
+                        sampled_weight_sum += float(weights.sum().item())
+                        sampled_weight_count += useful_count
+            if record_views:
+                records.append(
+                    {
+                        "image_name": _camera_cache_key(camera),
+                        "processed_image_hw": [int(height), int(width)],
+                        "contribution_visible_landmarks": int(visible.sum().item()),
+                        "valid_projected_landmarks": int(valid.sum().item()),
+                        "geometry_weighted_samples": useful_count,
+                    }
+                )
+            del dense_features
+        return records
+
+    prototype_sum = torch.zeros(
+        (bank_count, feature_dim), device=bank_xyz.device, dtype=torch.float32
+    )
+    prototype_weight = torch.zeros(bank_count, device=bank_xyz.device)
+
+    def accumulate_prototype(indices, sampled, weights):
+        prototype_sum.index_add_(0, indices, sampled * weights[:, None])
+        prototype_weight.index_add_(0, indices, weights)
+        pretrim_count.index_add_(
+            0, indices, torch.ones_like(indices, dtype=pretrim_count.dtype)
+        )
+
+    first_pass_records = for_each_observation(
+        "Robust ULF GWFF prototype", accumulate_prototype, record_views=True
+    )
+    prototype_observed = prototype_weight > 1e-8
+    prototype = F.normalize(fallback_features.float(), dim=-1).clone()
+    if bool(prototype_observed.any().item()):
+        prototype[prototype_observed] = F.normalize(
+            prototype_sum[prototype_observed]
+            / prototype_weight[prototype_observed, None],
+            dim=-1,
+        )
+
+    reference_mode = str(args.ulf_fusion_reference_mode)
+    reference = prototype
+    reference_observed = prototype_observed
+    medoid_observed = torch.zeros_like(prototype_observed)
+    medoid_scores = None
+    if reference_mode == "weighted_cosine_medoid":
+        # The first-pass geometry-weighted mean is sufficient to score the
+        # exact weighted cosine medoid in a second stream over observations.
+        medoid_scores = torch.full(
+            (bank_count,), -torch.inf, device=bank_xyz.device, dtype=torch.float32
+        )
+        medoid_features = prototype.clone()
+
+        def accumulate_medoid(indices, sampled, _weights):
+            update_weighted_cosine_medoid_state(
+                medoid_scores,
+                medoid_features,
+                indices,
+                sampled,
+                prototype,
+            )
+
+        for_each_observation("Robust ULF GWFF weighted cosine medoid", accumulate_medoid)
+        medoid_observed = torch.isfinite(medoid_scores)
+        reference = prototype.clone()
+        if bool(medoid_observed.any().item()):
+            reference[medoid_observed] = F.normalize(
+                medoid_features[medoid_observed], dim=-1
+            )
+        reference_observed = medoid_observed
+
+    trim_fraction = float(args.ulf_fusion_descriptor_trim_fraction)
+    descriptor_min_cosine = float(args.ulf_fusion_descriptor_min_cosine)
+    needs_trim = trim_fraction > 0.0 or descriptor_min_cosine > -1.0
+    thresholds = torch.full((bank_count,), -1.0, device=bank_xyz.device)
+    posttrim_count = pretrim_count.clone()
+    result = reference
+    if needs_trim:
+        histogram = torch.zeros(
+            (bank_count, int(args.ulf_fusion_trim_histogram_bins)),
+            dtype=torch.int32,
+            device=bank_xyz.device,
+        )
+
+        def accumulate_histogram(indices, sampled, _weights):
+            cosine = (sampled * reference[indices]).sum(dim=1)
+            histogram.copy_(accumulate_cosine_histogram(histogram, indices, cosine))
+
+        for_each_observation("Robust ULF GWFF cosine histogram", accumulate_histogram)
+        thresholds = cosine_histogram_trim_thresholds(histogram, trim_fraction).to(
+            device=bank_xyz.device
+        )
+        thresholds = torch.maximum(
+            thresholds,
+            thresholds.new_full(thresholds.shape, descriptor_min_cosine),
+        )
+        trimmed_sum = torch.zeros_like(prototype_sum)
+        trimmed_weight = torch.zeros_like(prototype_weight)
+        posttrim_count = torch.zeros_like(pretrim_count)
+
+        def accumulate_trimmed(indices, sampled, weights):
+            cosine = (sampled * reference[indices]).sum(dim=1)
+            keep = cosine >= thresholds[indices]
+            if not bool(keep.any().item()):
+                return
+            indices = indices[keep]
+            sampled = sampled[keep]
+            weights = weights[keep]
+            trimmed_sum.index_add_(0, indices, sampled * weights[:, None])
+            trimmed_weight.index_add_(0, indices, weights)
+            posttrim_count.index_add_(
+                0, indices, torch.ones_like(indices, dtype=posttrim_count.dtype)
+            )
+
+        for_each_observation("Robust ULF GWFF trimmed fusion", accumulate_trimmed)
+        retained = trimmed_weight > 1e-8
+        result = F.normalize(fallback_features.float(), dim=-1).clone()
+        if bool(retained.any().item()):
+            result[retained] = F.normalize(
+                trimmed_sum[retained] / trimmed_weight[retained, None], dim=-1
+            )
+
+    observed = posttrim_count > 0
+    retained_fraction = float(
+        posttrim_count.sum().item() / max(int(pretrim_count.sum().item()), 1)
+    )
+    diagnostics = {
+        "initialization_mode": "ulf_robust_geometry_weighted_fusion_v1",
+        "strict_ulf_parity": False,
+        "observed_landmarks": int(observed.sum().item()),
+        "unobserved_landmarks": int((~observed).sum().item()),
+        "observation_count_mean": float(posttrim_count.float().mean().item()),
+        "observation_count_median": float(posttrim_count.float().median().item()),
+        "observation_count_max": int(posttrim_count.max().item()),
+        "pretrim_observation_count": int(pretrim_count.sum().item()),
+        "retained_observation_count": int(posttrim_count.sum().item()),
+        "retained_observation_fraction": retained_fraction,
+        "descriptor_trim_enabled": bool(needs_trim),
+        "descriptor_trim_fraction": trim_fraction,
+        "descriptor_min_cosine": descriptor_min_cosine,
+        "descriptor_trim_histogram_bins": int(args.ulf_fusion_trim_histogram_bins),
+        "fusion_reference_mode": reference_mode,
+        "weighted_cosine_medoid_landmarks": int(medoid_observed.sum().item()),
+        "weighted_cosine_medoid_score_mean": (
+            float(medoid_scores[medoid_observed].mean().item())
+            if medoid_scores is not None and bool(medoid_observed.any().item())
+            else None
+        ),
+        "reference_to_prototype_cosine_mean": (
+            float((reference[reference_observed] * prototype[reference_observed]).sum(dim=1).mean().item())
+            if bool(reference_observed.any().item())
+            else None
+        ),
+        "descriptor_threshold_mean_observed": (
+            float(thresholds[reference_observed].mean().item())
+            if bool(reference_observed.any().item())
+            else -1.0
+        ),
+        "geometry_weight_mean": sampled_weight_sum / max(sampled_weight_count, 1),
+        "geometry_weighted_samples": int(sampled_weight_count),
+        "fusion_view_count": int(len(cameras)),
+        "support_view_sampling": str(args.ulf_support_view_sampling),
+        "support_mask_policy": policy,
+        "native_stride8_size_mismatch_views": int(native_size_mismatch_views),
+        "visibility": "2dgs_raster_contribution_gradient",
+        "visibility_resolution": "native_support_input_resolution",
+        "query_feature_contract": _QUERY_FEATURE_CONTRACT_NATIVE,
+        "coordinate_convention": "grid_index_plus_half_physical_v1",
+        "valid_mask_policy": _VALID_MASK_POLICY,
+        "views": first_pass_records,
+    }
+    return result, posttrim_count, diagnostics
+
+
 def _load_or_build_landmark_indices(
     dataset,
     gaussians,
@@ -1257,16 +2774,37 @@ def _load_or_build_landmark_indices(
         metadata.setdefault("budget", int(indices.numel()))
         return indices, path, metadata
 
-    if args.scaffold_mode == "ulf_consensus":
+    if args.scaffold_mode in {
+        "ulf_consensus",
+        "ulf_parity",
+        "ulf_robust_consensus",
+    }:
         if cameras is None or feature_extractor is None:
             raise ValueError("ULF consensus scaffold requires cameras and a feature extractor")
-        indices, diagnostics = _build_ulf_consensus_landmark_indices(
-            gaussians,
-            cameras,
-            masks,
-            feature_extractor,
-            args,
-        )
+        if args.scaffold_mode == "ulf_parity":
+            indices, diagnostics = _build_ulf_parity_consensus_landmark_indices(
+                gaussians,
+                cameras,
+                masks,
+                feature_extractor,
+                args,
+            )
+        elif args.scaffold_mode == "ulf_robust_consensus":
+            indices, diagnostics = _build_ulf_robust_consensus_landmark_indices(
+                gaussians,
+                cameras,
+                masks,
+                feature_extractor,
+                args,
+            )
+        else:
+            indices, diagnostics = _build_ulf_consensus_landmark_indices(
+                gaussians,
+                cameras,
+                masks,
+                feature_extractor,
+                args,
+            )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("wb") as handle:
             pickle.dump(indices, handle)
@@ -1686,6 +3224,41 @@ def _mean_diagnostics(records):
     }
 
 
+def _history_windows(records, window_count=10):
+    """Summarize the full optimization course without storing every record.
+
+    Long native-residual runs retain only ``history_tail`` in their output to
+    keep the artifact compact.  That makes an early instability or a
+    keep/swap/miss/reject collapse invisible after a 5K-step run.  Contiguous
+    record windows preserve the trajectory at fixed size while keeping the
+    complete tail available for detailed late-stage inspection.
+    """
+    window_count = int(window_count)
+    if window_count <= 0:
+        raise ValueError("window_count must be positive")
+    if not records:
+        return []
+    effective_count = min(window_count, len(records))
+    windows = []
+    for window_index in range(effective_count):
+        start = window_index * len(records) // effective_count
+        end = (window_index + 1) * len(records) // effective_count
+        window_records = records[start:end]
+        if not window_records:
+            continue
+        first = window_records[0]
+        last = window_records[-1]
+        windows.append(
+            {
+                "start_step": int(first.get("step", start + 1)),
+                "end_step": int(last.get("step", end)),
+                "record_count": len(window_records),
+                "diagnostics": _mean_diagnostics(window_records),
+            }
+        )
+    return windows
+
+
 def _all_parameter_gradients_finite(parameters):
     for parameter in parameters:
         if parameter.grad is not None and not bool(
@@ -1693,6 +3266,48 @@ def _all_parameter_gradients_finite(parameters):
         ):
             return False
     return True
+
+
+@torch.no_grad()
+def _stable_clip_grad_norm(parameters, max_norm):
+    """Clip finite gradients without float32 norm overflow.
+
+    Native sparse residual updates occasionally produce a few very large but
+    finite descriptor entries. ``torch.nn.utils.clip_grad_norm_`` accumulates
+    the global L2 norm in the gradient dtype, which can overflow in float32
+    before clipping is applied.  Compute the reduction in float64 so those
+    samples receive the intended bounded update instead of being discarded.
+    """
+    gradients = [
+        parameter.grad
+        for parameter in parameters
+        if parameter.grad is not None
+    ]
+    if not gradients:
+        return torch.zeros((), dtype=torch.float64), False
+
+    norms = []
+    for gradient in gradients:
+        values = (
+            gradient.coalesce().values()
+            if gradient.is_sparse
+            else gradient
+        )
+        norms.append(torch.linalg.vector_norm(values.detach(), dtype=torch.float64))
+    total_norm = torch.linalg.vector_norm(torch.stack(norms), dtype=torch.float64)
+    if not bool(torch.isfinite(total_norm).item()):
+        return total_norm, False
+
+    clip_limit = float(max_norm)
+    clipped = bool(total_norm.item() > clip_limit)
+    if clipped:
+        coefficient = (clip_limit / (total_norm + 1e-6)).to(
+            device=gradients[0].device,
+            dtype=gradients[0].dtype,
+        )
+        for gradient in gradients:
+            gradient.mul_(coefficient)
+    return total_norm, clipped
 
 
 def _clear_inactive_phase_gradients(
@@ -1969,6 +3584,7 @@ def _distill_final_landmark_bank(
     )
     eligibility_relaxed = "none"
     rank_pool_size = int(eligible.sum().item())
+    requested_budget = int(args.distill_budget)
     if int(eligible.sum().item()) < int(args.distill_budget):
         observed_indices = torch.nonzero(
             observed_eligible, as_tuple=False
@@ -1994,24 +3610,90 @@ def _distill_final_landmark_bank(
             eligible[observed_indices[reliable_order[:keep]]] = True
             rank_pool_size = keep
         eligibility_relaxed = "matchability_rank_pool"
-    effective_budget = min(int(args.distill_budget), int(eligible.sum().item()))
-    if effective_budget <= 0:
+    # The legacy exact-budget path preserved every >=2-view landmark and then
+    # let coverage fill the remaining one-view capacity.  When that primary
+    # tier is already smaller than K, a hard core cannot change final
+    # membership: both the strict tier and the coverage fill are exhausted.
+    # Restrict all later choices to a matchability-first reservoir over the
+    # genuinely observed source pool, then let the hard core and coverage
+    # policy choose *within* that reservoir.
+    quality_reservoir_multiplier = max(
+        float(args.distill_quality_reservoir_multiplier), 0.0
+    )
+    quality_reservoir = torch.empty(
+        0, dtype=torch.long, device=bank_xyz.device
+    )
+    quality_reservoir_observed_any = torch.zeros_like(eligible)
+    quality_reservoir_active = False
+    quality_reservoir_score_mode = str(
+        args.distill_quality_reservoir_score
+    )
+    quality_reservoir_score = matchability
+    if quality_reservoir_score_mode == "wilson_lower":
+        effective_correct = (
+            (1.0 - false_top1_rate).clamp(0.0, 1.0) * observation_count
+        )
+        quality_reservoir_score = wilson_lower_confidence(
+            effective_correct,
+            observation_count,
+            z=float(args.distill_quality_reservoir_wilson_z),
+        )
+    if quality_reservoir_multiplier > 0.0:
+        quality_reservoir_observed_any = observation_count > 0
+        quality_reservoir = top_score_reservoir(
+            quality_reservoir_score,
+            requested_budget,
+            quality_reservoir_multiplier,
+            eligible=quality_reservoir_observed_any,
+        )
+        if int(quality_reservoir.numel()) >= requested_budget:
+            eligible = torch.zeros_like(eligible)
+            eligible[quality_reservoir] = True
+            rank_pool_size = int(quality_reservoir.numel())
+            eligibility_relaxed = "matchability_quality_reservoir_observed_any"
+            quality_reservoir_active = True
+        else:
+            # Keep the pre-existing explicit coverage-fill route when the
+            # source has fewer observed primitives than the requested bank.
+            quality_reservoir = torch.empty(
+                0, dtype=torch.long, device=bank_xyz.device
+            )
+    strict_budget = min(int(args.distill_budget), int(eligible.sum().item()))
+    if strict_budget <= 0:
         raise ValueError("No observed landmarks are available for final distillation")
-    if effective_budget < int(args.distill_budget):
+    if strict_budget < int(args.distill_budget):
         eligibility_relaxed = "observed_shortfall"
-        if bool(args.distill_require_exact_budget):
+        if bool(args.distill_require_exact_budget) and not bool(
+            args.distill_allow_coverage_fill
+        ):
             raise ValueError(
                 "Final landmark distillation could not satisfy the requested "
-                f"budget ({effective_budget}/{int(args.distill_budget)} observed "
+                f"budget ({strict_budget}/{int(args.distill_budget)} observed "
                 "eligible landmarks). Increase --statistics_observations or use "
-                "a smaller fixed comparison budget."
+                "a smaller fixed comparison budget, or explicitly enable the "
+                "coverage-fill tier."
             )
-    selected, selection_meta = coverage_preserving_sample(
+    hard_core_ratio = min(
+        max(float(args.distill_hard_matchability_core_ratio), 0.0), 1.0
+    )
+    hard_core_count = min(
+        strict_budget, int(round(float(strict_budget) * hard_core_ratio))
+    )
+    hard_core = hard_score_core(
+        matchability,
+        hard_core_count,
+        eligible=eligible,
+    )
+    coverage_eligible = eligible.clone()
+    if hard_core.numel() > 0:
+        coverage_eligible[hard_core] = False
+    coverage_budget = strict_budget - int(hard_core.numel())
+    coverage_selected, selection_meta = coverage_preserving_sample(
         bank_xyz,
         base_score=matchability,
         utility=utility,
-        num=effective_budget,
-        min_observations=eligible,
+        num=coverage_budget,
+        min_observations=coverage_eligible,
         base_preserve_ratio=args.distill_matchability_preserve_ratio,
         utility_preserve_ratio=args.distill_utility_preserve_ratio,
         high_confidence=(matchability >= float(args.distill_high_confidence)),
@@ -2026,6 +3708,166 @@ def _distill_final_landmark_bank(
         depth_bins=args.distill_depth_bins,
         max_per_depth_bin=args.distill_max_per_depth_bin,
         allow_unbalanced_fallback=True,
+    )
+    strict_selected = torch.cat([hard_core, coverage_selected]).unique(
+        sorted=True
+    )
+    if int(strict_selected.numel()) != strict_budget:
+        raise RuntimeError(
+            "Hard matchability core plus coverage selection did not satisfy "
+            f"the strict distillation budget ({int(strict_selected.numel())}/"
+            f"{strict_budget})"
+        )
+    selection_meta = dict(selection_meta)
+    hard_core_mask = torch.zeros(
+        bank_xyz.shape[0], dtype=torch.bool, device=bank_xyz.device
+    )
+    hard_core_mask[hard_core] = True
+    selection_meta.update(
+        {
+            "hard_matchability_core_indices": hard_core.detach().clone(),
+            "hard_matchability_core_ratio": torch.tensor(
+                hard_core_ratio, device=bank_xyz.device
+            ),
+            "hard_matchability_core_count": torch.tensor(
+                int(hard_core.numel()), device=bank_xyz.device
+            ),
+            "hard_matchability_core_cutoff": torch.tensor(
+                float(matchability[hard_core].min().item())
+                if hard_core.numel() > 0
+                else 0.0,
+                device=bank_xyz.device,
+            ),
+        }
+    )
+    # Exact-bank comparisons must not quietly weaken the matchability gate.
+    # When explicitly requested, retain every strict selection first and only
+    # fill a capacity shortfall from the remaining source bank by coverage.
+    # The tier provenance is persisted below so this cannot be confused with a
+    # pure matchability-first distilled bank.
+    selected = strict_selected
+    selection_tier = torch.full(
+        (bank_xyz.shape[0],), -1, dtype=torch.int8, device=bank_xyz.device
+    )
+    selection_tier[strict_selected] = 0
+    coverage_fill_observed = torch.empty(
+        0, dtype=torch.long, device=bank_xyz.device
+    )
+    coverage_fill_unobserved = torch.empty(
+        0, dtype=torch.long, device=bank_xyz.device
+    )
+    remaining_budget = requested_budget - int(selected.numel())
+    if remaining_budget > 0 and bool(args.distill_allow_coverage_fill):
+        observed_any = observation_count > 0
+        support_quality = torch.log1p(observation_count)
+        if bool(observed_any.any().item()):
+            support_quality = support_quality / support_quality[
+                observed_any
+            ].max().clamp_min(1.0)
+        else:
+            support_quality = torch.zeros_like(support_quality)
+        coverage_fill_score = utility + 0.15 * support_quality
+        selected_mask = torch.zeros_like(eligible)
+        selected_mask[selected] = True
+        observed_fill_eligible = observed_any & ~selected_mask
+        coverage_fill_observed = coverage_ranked_fill(
+            bank_xyz,
+            coverage_fill_score,
+            remaining_budget,
+            observed_fill_eligible,
+            voxel_size=voxel_size,
+            max_per_voxel=args.distill_max_per_voxel,
+            selected=selected,
+            uv=statistics["mean_uv"] * 1000.0,
+            image_size=(1000, 1000),
+            grid_size=args.distill_grid_size,
+            max_per_grid=args.distill_max_per_grid,
+            depth=statistics["mean_depth"],
+            depth_bins=args.distill_depth_bins,
+            max_per_depth_bin=args.distill_max_per_depth_bin,
+        )
+        if coverage_fill_observed.numel() > 0:
+            selected = torch.cat([selected, coverage_fill_observed]).unique(
+                sorted=True
+            )
+            selection_tier[coverage_fill_observed] = 1
+        remaining_budget = requested_budget - int(selected.numel())
+        if remaining_budget > 0:
+            selected_mask.zero_()
+            selected_mask[selected] = True
+            unobserved_fill_eligible = ~observed_any & ~selected_mask
+            coverage_fill_unobserved = coverage_ranked_fill(
+                bank_xyz,
+                coverage_fill_score,
+                remaining_budget,
+                unobserved_fill_eligible,
+                voxel_size=voxel_size,
+                max_per_voxel=args.distill_max_per_voxel,
+                selected=selected,
+                uv=statistics["mean_uv"] * 1000.0,
+                image_size=(1000, 1000),
+                grid_size=args.distill_grid_size,
+                max_per_grid=args.distill_max_per_grid,
+                depth=statistics["mean_depth"],
+                depth_bins=args.distill_depth_bins,
+                max_per_depth_bin=args.distill_max_per_depth_bin,
+            )
+            if coverage_fill_unobserved.numel() > 0:
+                selected = torch.cat(
+                    [selected, coverage_fill_unobserved]
+                ).unique(sorted=True)
+                selection_tier[coverage_fill_unobserved] = 2
+            remaining_budget = requested_budget - int(selected.numel())
+        eligibility_relaxed = "matchability_then_explicit_coverage_fill"
+    if remaining_budget > 0 and bool(args.distill_require_exact_budget):
+        raise ValueError(
+            "Final landmark distillation could not satisfy the requested "
+            f"budget after explicit coverage fill ({int(selected.numel())}/"
+            f"{requested_budget})."
+        )
+    selection_meta.update(
+        {
+            "strict_indices": strict_selected.detach().clone(),
+            "final_indices": selected.detach().clone(),
+            "strict_matchability_selected_count": torch.tensor(
+                int(strict_selected.numel()), device=bank_xyz.device
+            ),
+            "coverage_fill_observed_count": torch.tensor(
+                int(coverage_fill_observed.numel()), device=bank_xyz.device
+            ),
+            "coverage_fill_unobserved_count": torch.tensor(
+                int(coverage_fill_unobserved.numel()), device=bank_xyz.device
+            ),
+            "final_selection_tier": selection_tier[selected].detach().clone(),
+            "quality_reservoir_indices": quality_reservoir.detach().clone(),
+            "quality_reservoir_active": torch.tensor(
+                quality_reservoir_active, device=bank_xyz.device
+            ),
+            "quality_reservoir_multiplier": torch.tensor(
+                quality_reservoir_multiplier, device=bank_xyz.device
+            ),
+            "quality_reservoir_score_mode": quality_reservoir_score_mode,
+            "quality_reservoir_wilson_z": torch.tensor(
+                float(args.distill_quality_reservoir_wilson_z),
+                device=bank_xyz.device,
+            ),
+            "quality_reservoir_cutoff": torch.tensor(
+                float(quality_reservoir_score[quality_reservoir].min().item())
+                if quality_reservoir.numel() > 0
+                else 0.0,
+                device=bank_xyz.device,
+            ),
+            "quality_reservoir_matchability_cutoff": torch.tensor(
+                float(matchability[quality_reservoir].min().item())
+                if quality_reservoir.numel() > 0
+                else 0.0,
+                device=bank_xyz.device,
+            ),
+            "quality_reservoir_observed_count": torch.tensor(
+                int(quality_reservoir_observed_any.sum().item()),
+                device=bank_xyz.device,
+            ),
+        }
     )
     output_dir = Path(output_dir)
     selected_global = landmark_indices[selected.cpu()]
@@ -2048,8 +3890,44 @@ def _distill_final_landmark_bank(
         "eligibility_relaxed": eligibility_relaxed,
         "rank_pool_size": int(rank_pool_size),
         "rank_pool_multiplier": float(args.distill_rank_pool_multiplier),
-        "requested_budget": int(args.distill_budget),
-        "observed_budget_shortfall": int(args.distill_budget) - effective_budget,
+        "quality_reservoir_active": quality_reservoir_active,
+        "quality_reservoir_multiplier": quality_reservoir_multiplier,
+        "quality_reservoir_score_mode": quality_reservoir_score_mode,
+        "quality_reservoir_wilson_z": float(
+            args.distill_quality_reservoir_wilson_z
+        ),
+        "quality_reservoir_count": int(quality_reservoir.numel()),
+        "quality_reservoir_observed_count": int(
+            quality_reservoir_observed_any.sum().item()
+        ),
+        "quality_reservoir_cutoff": float(
+            quality_reservoir_score[quality_reservoir].min().item()
+            if quality_reservoir.numel() > 0
+            else 0.0
+        ),
+        "quality_reservoir_matchability_cutoff": float(
+            matchability[quality_reservoir].min().item()
+            if quality_reservoir.numel() > 0
+            else 0.0
+        ),
+        "hard_matchability_core_ratio": hard_core_ratio,
+        "hard_matchability_core_count": int(hard_core.numel()),
+        "hard_matchability_core_cutoff": float(
+            matchability[hard_core].min().item()
+            if hard_core.numel() > 0
+            else 0.0
+        ),
+        "strict_coverage_selected_count": int(coverage_selected.numel()),
+        "requested_budget": requested_budget,
+        "strict_matchability_selected_count": int(strict_selected.numel()),
+        "coverage_fill_enabled": bool(args.distill_allow_coverage_fill),
+        "coverage_fill_observed_count": int(coverage_fill_observed.numel()),
+        "coverage_fill_unobserved_count": int(
+            coverage_fill_unobserved.numel()
+        ),
+        "coverage_fill_count": int(selected.numel() - strict_selected.numel()),
+        "observed_budget_shortfall": requested_budget - int(strict_selected.numel()),
+        "final_budget_shortfall": requested_budget - int(selected.numel()),
     }
     distilled_statistics = {
         key: value[selected].detach().cpu() for key, value in statistics.items()
@@ -2073,6 +3951,27 @@ def _distill_final_landmark_bank(
         "coverage_grid_size": int(args.distill_grid_size),
         "coverage_depth": statistics["mean_depth"][selected].detach().cpu(),
         "coverage_depth_bins": int(args.distill_depth_bins),
+        "distill_selection_tier": selection_tier[selected].detach().cpu(),
+        "distill_support_tier": torch.where(
+            observation_count[selected]
+            >= float(args.distill_min_observations),
+            torch.full_like(observation_count[selected], 2, dtype=torch.int8),
+            torch.where(
+                observation_count[selected] > 0,
+                torch.ones_like(observation_count[selected], dtype=torch.int8),
+                torch.zeros_like(observation_count[selected], dtype=torch.int8),
+            ),
+        ).detach().cpu(),
+        "hard_matchability_core": hard_core_mask[selected].detach().cpu(),
+        "quality_reservoir_score": quality_reservoir_score[selected]
+        .detach()
+        .cpu(),
+        "quality_reservoir_member": torch.zeros_like(
+            eligible, dtype=torch.bool
+        )
+        .scatter_(0, quality_reservoir, True)[selected]
+        .detach()
+        .cpu(),
         "selection_meta": selection_meta,
     }
     meta_path = output_dir / "landmark_meta.pt"
@@ -2101,11 +4000,20 @@ def _distill_final_landmark_bank(
         "selected_count": int(selected.numel()),
         "utility_selected_mean": float(utility[selected].mean().item()),
         "matchability_selected_mean": float(matchability[selected].mean().item()),
+        "hard_matchability_core_count": int(hard_core.numel()),
+        "hard_matchability_core_matchability_mean": float(
+            matchability[hard_core].mean().item()
+            if hard_core.numel() > 0
+            else 0.0
+        ),
         "translation_fim_selected_mean": float(
             statistics["translation_fim"][selected].mean().item()
         ),
         "eligibility_relaxed": eligibility_relaxed,
         "rank_pool_size": int(rank_pool_size),
+        "quality_reservoir_count": int(quality_reservoir.numel()),
+        "quality_reservoir_active": quality_reservoir_active,
+        "quality_reservoir_score_mode": quality_reservoir_score_mode,
     }
 
 
@@ -2147,6 +4055,7 @@ def _validate_descriptor_field(
             unmatched_rejection_weight=args.unmatched_rejection_weight,
             unmatched_max_similarity=args.unmatched_max_similarity,
             dustbin_score=dustbin_score,
+            **_native_candidate_loss_kwargs(args),
         )
         record = dict(retrieval.diagnostics)
         proposal_observations = (
@@ -2168,6 +4077,7 @@ def _validate_descriptor_field(
                 unmatched_rejection_weight=args.unmatched_rejection_weight,
                 unmatched_max_similarity=args.unmatched_max_similarity,
                 dustbin_score=dustbin_score,
+                **_native_candidate_loss_kwargs(args),
             )
             record.update(
                 {
@@ -2183,10 +4093,9 @@ def _validate_descriptor_field(
             )
         if str(args.observation_source) == "anchor":
             auxiliary_observations = observations
-            auxiliary_scale = 1.0
         else:
             auxiliary_observations = anchor_auxiliary
-            auxiliary_scale = float(args.native_anchor_aux_weight)
+        auxiliary_scale = _native_anchor_auxiliary_scale(args)
         if auxiliary_observations is not None:
             record["mv_loss"] = float(
                 auxiliary_scale
@@ -2201,6 +4110,7 @@ def _validate_descriptor_field(
                 target_sigma=args.local_target_sigma,
                 temperature=args.local_temperature,
             )
+            local_loss = auxiliary_scale * local_loss
             record["local_loss"] = float(local_loss.item())
             record.update(local_diagnostics)
         record["visible_observations"] = int(observations.query_features.shape[0])
@@ -2226,7 +4136,45 @@ def _state_config(
     validation_names,
     landmark_path,
     scaffold_diagnostics,
+    *,
+    initial_state=None,
 ):
+    inherited_reject_contract = None
+    if isinstance(initial_state, dict):
+        inherited_config = initial_state.get("config", {})
+        if isinstance(inherited_config, dict):
+            candidate = inherited_config.get("native_reject_contract")
+            if isinstance(candidate, dict) and bool(candidate.get("enabled", False)):
+                inherited_reject_contract = dict(candidate)
+            elif (
+                bool(inherited_config.get("native_outcome_mode", False))
+                and float(inherited_config.get("native_reject_weight", 0.0)) > 0.0
+            ):
+                inherited_reject_contract = {
+                    "enabled": True,
+                    "deployment_match_threshold": float(
+                        inherited_config["native_reject_threshold"]
+                    ),
+                    "source": "legacy_initial_native_residual",
+                }
+    native_reject_enabled = (
+        bool(args.native_outcome_mode)
+        and str(args.observation_source) in {"native", "native_plus_anchor"}
+        and float(args.native_reject_weight) > 0.0
+    )
+    if native_reject_enabled:
+        native_reject_contract = {
+            "enabled": True,
+            "deployment_match_threshold": float(args.native_reject_threshold),
+            "source": "current_native_residual",
+        }
+    elif inherited_reject_contract is not None:
+        native_reject_contract = {
+            **inherited_reject_contract,
+            "source": "inherited_fixed_descriptor_stage",
+        }
+    else:
+        native_reject_contract = {"enabled": False}
     return {
         "method": "lafgs_kcs_gwff_alternating_native_candidate_v1",
         "detector_free": True,
@@ -2242,6 +4190,7 @@ def _state_config(
         "native_unmatched_fraction": float(args.native_unmatched_fraction),
         "native_sampling_mode": str(args.native_sampling_mode),
         "native_anchor_aux_weight": float(args.native_anchor_aux_weight),
+        "native_auxiliary_contract": _native_auxiliary_contract(args),
         "frozen_generic_proposal_head": bool(args.generic_proposal_count > 0),
         "geometry_frozen": not bool(args.geometry_weight > 0.0),
         "raw_xyz_trainable": False,
@@ -2281,6 +4230,19 @@ def _state_config(
         "missed_positive_margin": float(args.missed_positive_margin),
         "unmatched_rejection_weight": float(args.unmatched_rejection_weight),
         "unmatched_max_similarity": float(args.unmatched_max_similarity),
+        "native_outcome_mode": bool(args.native_outcome_mode),
+        "native_nce_weight": float(args.native_nce_weight),
+        "native_keep_weight": float(args.native_keep_weight),
+        "native_keep_margin": float(args.native_keep_margin),
+        "native_swap_weight": float(args.native_swap_weight),
+        "native_swap_margin": float(args.native_swap_margin),
+        "native_miss_weight": float(args.native_miss_weight),
+        "native_miss_margin": float(args.native_miss_margin),
+        "native_reject_weight": float(args.native_reject_weight),
+        "native_reject_threshold": float(args.native_reject_threshold),
+        # A bounded-BA state inherits this from the residual state so the
+        # evaluator can still enforce the descriptor-stage deployment score.
+        "native_reject_contract": native_reject_contract,
         "visibility_mode": str(args.visibility_mode),
         "proposal_jitter_std": float(args.proposal_jitter_std),
         "proposal_jitter_max": float(args.proposal_jitter_max),
@@ -2309,9 +4271,22 @@ def _state_config(
         "geometry_association_min_margin": float(
             args.geometry_association_min_margin
         ),
+        "geometry_association_depth_abs_tolerance": float(
+            args.geometry_association_depth_abs_tolerance
+        ),
+        "geometry_association_depth_rel_tolerance": float(
+            args.geometry_association_depth_rel_tolerance
+        ),
+        "geometry_association_min_support_views": int(
+            args.geometry_association_min_support_views
+        ),
+        "geometry_association_support_observations": int(
+            args.geometry_association_support_observations
+        ),
         "surface_weight": float(args.surface_weight),
         "depth_weight": float(args.depth_weight),
         "reprojection_weight": float(args.reprojection_weight),
+        "surface_anchor_parameterization": "radial_tanh_tangent_plane_v1",
         "tangent_bound_m": float(args.tangent_bound_m),
         "normal_bound_m": float(args.normal_bound_m),
         "pose_start_step": int(args.pose_start_step),
@@ -2329,14 +4304,74 @@ def _state_config(
         "ulf_consensus_keypoints": int(args.ulf_consensus_keypoints),
         "ulf_consensus_radius_px": float(args.ulf_consensus_radius_px),
         "ulf_consensus_min_votes": int(args.ulf_consensus_min_votes),
+        "ulf_consensus_min_visible_views": int(
+            args.ulf_consensus_min_visible_views
+        ),
+        "ulf_consensus_min_rate": float(args.ulf_consensus_min_rate),
+        "ulf_consensus_view_bins": int(args.ulf_consensus_view_bins),
+        "ulf_consensus_min_distinct_view_bins": int(
+            args.ulf_consensus_min_distinct_view_bins
+        ),
+        "ulf_consensus_trajectory_bins": int(args.ulf_consensus_trajectory_bins),
+        "ulf_consensus_min_distinct_trajectory_bins": int(
+            args.ulf_consensus_min_distinct_trajectory_bins
+        ),
+        "ulf_consensus_allow_nonconsensus_fallback": (
+            None
+            if args.ulf_consensus_allow_nonconsensus_fallback is None
+            else bool(args.ulf_consensus_allow_nonconsensus_fallback)
+        ),
+        "ulf_consensus_knn": int(args.ulf_consensus_knn),
         "ulf_fusion_min_cosine": float(args.ulf_fusion_min_cosine),
+        "ulf_fusion_descriptor_min_cosine": float(
+            args.ulf_fusion_descriptor_min_cosine
+        ),
+        "ulf_fusion_descriptor_trim_fraction": float(
+            args.ulf_fusion_descriptor_trim_fraction
+        ),
+        "ulf_fusion_reference_mode": str(args.ulf_fusion_reference_mode),
+        "ulf_fusion_trim_histogram_bins": int(
+            args.ulf_fusion_trim_histogram_bins
+        ),
+        "ulf_support_mask_policy": str(args.ulf_support_mask_policy),
+        "ulf_parity_fusion_channel_chunk": int(
+            args.ulf_parity_fusion_channel_chunk
+        ),
         "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
         "valid_mask_policy": _VALID_MASK_POLICY,
         "distill_budget": int(args.distill_budget),
         "distill_require_exact_budget": bool(args.distill_require_exact_budget),
+        "distill_allow_coverage_fill": bool(args.distill_allow_coverage_fill),
         "distill_rank_pool_multiplier": float(
             args.distill_rank_pool_multiplier
         ),
+        "distill_matchability_preserve_ratio": float(
+            args.distill_matchability_preserve_ratio
+        ),
+        "distill_hard_matchability_core_ratio": float(
+            args.distill_hard_matchability_core_ratio
+        ),
+        "distill_quality_reservoir_multiplier": float(
+            args.distill_quality_reservoir_multiplier
+        ),
+        "distill_quality_reservoir_score": str(
+            args.distill_quality_reservoir_score
+        ),
+        "distill_quality_reservoir_wilson_z": float(
+            args.distill_quality_reservoir_wilson_z
+        ),
+        "distill_utility_preserve_ratio": float(
+            args.distill_utility_preserve_ratio
+        ),
+        "distill_high_confidence": float(args.distill_high_confidence),
+        "distill_high_confidence_ratio": float(
+            args.distill_high_confidence_ratio
+        ),
+        "distill_grid_size": int(args.distill_grid_size),
+        "distill_max_per_grid": int(args.distill_max_per_grid),
+        "distill_depth_bins": int(args.distill_depth_bins),
+        "distill_max_per_depth_bin": int(args.distill_max_per_depth_bin),
+        "distill_max_per_voxel": int(args.distill_max_per_voxel),
         "statistics_observations": int(args.statistics_observations),
         "distill_min_observations": int(args.distill_min_observations),
         "distill_matchability_threshold": float(
@@ -2439,6 +4474,14 @@ def train(dataset, args):
             "generic proposal maps are a dense auxiliary and cannot be mixed "
             "into native candidate supervision; use native_plus_anchor instead"
         )
+    if bool(args.native_outcome_mode) and not native_observation_mode:
+        raise ValueError(
+            "native_outcome_mode requires --observation_source native or "
+            "native_plus_anchor"
+        )
+    _validate_native_objective_semantics(args)
+    _validate_distillation_semantics(args)
+    _validate_ulf_initializer_semantics(args)
     if str(args.geometry_mode) == "native_association" and not native_observation_mode:
         raise ValueError(
             "native_association geometry requires --observation_source native "
@@ -2462,14 +4505,40 @@ def train(dataset, args):
             "native_association is an alternating fixed-descriptor BA stage; "
             "set --descriptor_end_step -1 and run descriptor refresh separately"
         )
-    if (
-        args.scaffold_mode == "ulf_consensus"
-        or args.initialization_mode == "ulf_geometry"
-    ) and str(args.query_feature_contract) != _QUERY_FEATURE_CONTRACT_NATIVE:
+    ulf_mode = (
+        args.scaffold_mode
+        in {"ulf_consensus", "ulf_parity", "ulf_robust_consensus"}
+        or args.initialization_mode
+        in {"ulf_geometry", "ulf_parity", "ulf_robust_geometry"}
+    )
+    if ulf_mode and str(args.query_feature_contract) != _QUERY_FEATURE_CONTRACT_NATIVE:
         raise ValueError(
             "ULF KCS/GWFF requires --query_feature_contract "
             f"{_QUERY_FEATURE_CONTRACT_NATIVE}; otherwise its native sparse "
             "descriptors would be initialized against a different cache contract."
+        )
+    if (
+        args.scaffold_mode == "ulf_parity"
+        or args.initialization_mode == "ulf_parity"
+    ) and int(dataset.longest_edge) > 0:
+        raise ValueError(
+            "Strict ULF parity requires --longest_edge 0; a resized input is "
+            "an extension rather than a parity bootstrap"
+        )
+    if (
+        args.scaffold_mode == "ulf_parity"
+        or args.initialization_mode == "ulf_parity"
+    ) and (
+        float(args.ulf_fusion_descriptor_trim_fraction) != 0.0
+        or float(args.ulf_fusion_descriptor_min_cosine) != -1.0
+        or int(args.ulf_consensus_min_visible_views) != 0
+        or float(args.ulf_consensus_min_rate) != 0.0
+        or int(args.ulf_consensus_min_distinct_view_bins) != 0
+        or int(args.ulf_consensus_min_distinct_trajectory_bins) != 0
+    ):
+        raise ValueError(
+            "Strict ULF parity cannot be combined with robust KCS/GWFF gates; "
+            "use ulf_robust_consensus / ulf_robust_geometry explicitly"
         )
     gaussians = _gaussian_model_for_type(dataset.gaussian_type, dataset.sh_degree)
     scene = Scene(
@@ -2626,7 +4695,38 @@ def train(dataset, args):
                 args,
             )
         )
-    elif args.initialization_mode == "ulf_geometry":
+    elif args.initialization_mode == "ulf_parity" and not state_only_initialization:
+        mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
+            _build_ulf_parity_geometry_features(
+                train_cameras,
+                gaussians,
+                landmark_indices,
+                masks,
+                feature_extractor,
+                fallback,
+                args,
+            )
+        )
+    elif (
+        args.initialization_mode == "ulf_robust_geometry"
+        and not state_only_initialization
+    ):
+        mvinit_features, mvinit_observation_count, mvinit_diagnostics = (
+            _build_ulf_robust_geometry_features(
+                train_cameras,
+                gaussians,
+                landmark_indices,
+                masks,
+                feature_extractor,
+                fallback,
+                args,
+            )
+        )
+    elif args.initialization_mode in {
+        "ulf_geometry",
+        "ulf_parity",
+        "ulf_robust_geometry",
+    }:
         # A descriptor continuation with blend=1 reuses the bootstrap state
         # exactly. Avoid recomputing the frozen ULF fusion merely to construct
         # an unused fallback.
@@ -2635,7 +4735,15 @@ def train(dataset, args):
             fallback.shape[0], dtype=torch.long, device=fallback.device
         )
         mvinit_diagnostics = {
-            "initialization_mode": "ulf_geometry_weighted_fusion",
+            "initialization_mode": (
+                "ulf_parity_geometry_weighted_fusion_v1"
+                if args.initialization_mode == "ulf_parity"
+                else (
+                    "ulf_robust_geometry_weighted_fusion_v1"
+                    if args.initialization_mode == "ulf_robust_geometry"
+                    else "ulf_geometry_weighted_fusion"
+                )
+            ),
             "initializer_reused_from_exact_state": True,
             "observed_landmarks": 0,
             "unobserved_landmarks": int(fallback.shape[0]),
@@ -2677,6 +4785,11 @@ def train(dataset, args):
         mvinit_diagnostics["initial_state_alignment"] = str(
             args.initial_state_alignment
         )
+        validate_surface_anchor_resume_bounds(
+            initial_state,
+            tangent_bound_m=args.tangent_bound_m,
+            normal_bound_m=args.normal_bound_m,
+        )
     else:
         initial_features = mvinit_features
 
@@ -2687,6 +4800,7 @@ def train(dataset, args):
         validation_names,
         landmark_path,
         scaffold_diagnostics,
+        initial_state=initial_state,
     )
     residual = torch.nn.Parameter(torch.zeros_like(initial_features))
     raw_anchor_offset = torch.nn.Parameter(torch.zeros_like(base_bank_xyz))
@@ -2770,6 +4884,41 @@ def train(dataset, args):
         tangent_bound_m=args.tangent_bound_m,
         normal_bound_m=args.normal_bound_m,
     )
+    geometry_support_mask = None
+    geometry_support_counts = None
+    geometry_support_diagnostics = {}
+    if (
+        str(args.geometry_mode) == "native_association"
+        and float(args.geometry_weight) > 0.0
+    ):
+        geometry_support_mask, geometry_support_counts, geometry_support_diagnostics = (
+            _native_geometry_support_mask(
+                initial_features,
+                train_names,
+                cache,
+                base_bank_xyz,
+                initial_xyz.detach(),
+                args,
+                visibility_cache=visibility_cache,
+            )
+        )
+        if not bool(geometry_support_mask.any().item()):
+            raise RuntimeError(
+                "Native BA found no landmarks with the requested number of "
+                "distinct GT-clean support views"
+            )
+        support_path = output_dir / "native_geometry_support.pt"
+        torch.save(
+            {
+                "counts": geometry_support_counts.detach().cpu(),
+                "eligible": geometry_support_mask.detach().cpu(),
+                "diagnostics": dict(geometry_support_diagnostics),
+            },
+            support_path,
+        )
+        geometry_support_diagnostics["native_geometry_support_path"] = str(
+            support_path.resolve()
+        )
     initial_validation = _validate_descriptor_field(
         initial_features,
         validation_names,
@@ -2786,7 +4935,7 @@ def train(dataset, args):
         landmark_indices,
         initial_features,
         config,
-        {**mvinit_diagnostics, **initial_validation},
+        {**mvinit_diagnostics, **geometry_support_diagnostics, **initial_validation},
         mvinit_observation_count,
         dustbin_score=dustbin_score,
         landmark_xyz=initial_xyz,
@@ -2822,7 +4971,7 @@ def train(dataset, args):
             landmark_indices,
             checkpoint_features,
             config,
-            {**mvinit_diagnostics, **recent, **validation},
+            {**mvinit_diagnostics, **geometry_support_diagnostics, **recent, **validation},
             mvinit_observation_count,
             dustbin_score=dustbin_score,
             landmark_xyz=checkpoint_xyz,
@@ -2894,10 +5043,9 @@ def train(dataset, args):
         descriptor_scale = float(descriptor_active)
         if str(args.observation_source) == "anchor":
             auxiliary_observations = observations
-            auxiliary_scale = 1.0
         else:
             auxiliary_observations = anchor_auxiliary
-            auxiliary_scale = float(args.native_anchor_aux_weight)
+        auxiliary_scale = _native_anchor_auxiliary_scale(args)
         if auxiliary_observations is not None:
             mv_loss = auxiliary_scale * multiview_descriptor_loss(
                 features, auxiliary_observations
@@ -2937,6 +5085,7 @@ def train(dataset, args):
                 unmatched_rejection_weight=args.unmatched_rejection_weight,
                 unmatched_max_similarity=args.unmatched_max_similarity,
                 dustbin_score=dustbin_score,
+                **_native_candidate_loss_kwargs(args),
             )
             retrieval_loss = retrieval.loss
             retrieval_diagnostics = retrieval.diagnostics
@@ -2960,6 +5109,7 @@ def train(dataset, args):
                 unmatched_rejection_weight=args.unmatched_rejection_weight,
                 unmatched_max_similarity=args.unmatched_max_similarity,
                 dustbin_score=dustbin_score,
+                **_native_candidate_loss_kwargs(args),
             )
             proposal_retrieval_loss = proposal_retrieval.loss
             proposal_retrieval_diagnostics = {
@@ -2982,6 +5132,7 @@ def train(dataset, args):
                 target_sigma=args.local_target_sigma,
                 temperature=args.local_temperature,
             )
+            local_loss = auxiliary_scale * local_loss
         else:
             local_loss = features.sum() * 0.0
             local_diagnostics = {}
@@ -2998,6 +5149,7 @@ def train(dataset, args):
                 allow_no_anchor=args.dustbin_no_anchor,
                 generator=cuda_generator,
             )
+            dustbin_loss = auxiliary_scale * dustbin_loss
         else:
             dustbin_loss = features.sum() * 0.0
             dustbin_diagnostics = {}
@@ -3021,6 +5173,9 @@ def train(dataset, args):
                     min_score_margin=args.geometry_association_min_margin,
                     alpha_threshold=args.alpha_threshold,
                     depth_scale_floor=args.depth_scale_floor,
+                    depth_abs_tolerance=args.geometry_association_depth_abs_tolerance,
+                    depth_rel_tolerance=args.geometry_association_depth_rel_tolerance,
+                    landmark_support_mask=geometry_support_mask,
                 )
                 local_correspondences = None
             else:
@@ -3118,8 +5273,10 @@ def train(dataset, args):
             )
             + args.pose_weight * pose_loss
         )
+        loss_finite = bool(torch.isfinite(loss.detach()).item())
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        if loss_finite:
+            loss.backward()
         descriptor_update_active = bool(descriptor_active) or (
             pose_active and str(args.pose_gradient_mode) == "feature"
         )
@@ -3134,15 +5291,18 @@ def train(dataset, args):
             geometry_update_active=geometry_update_active,
             dustbin_update_active=bool(descriptor_active),
         )
-        gradients_finite = _all_parameter_gradients_finite(optimizer_parameters)
+        gradients_finite = loss_finite and _all_parameter_gradients_finite(
+            optimizer_parameters
+        )
+        gradient_clipped = False
         if gradients_finite:
-            grad_norm = torch.nn.utils.clip_grad_norm_(
+            grad_norm, gradient_clipped = _stable_clip_grad_norm(
                 optimizer_parameters,
                 args.gradient_clip_norm,
             )
             gradients_finite = bool(torch.isfinite(grad_norm).item())
         else:
-            grad_norm = loss.new_tensor(float("nan"))
+            grad_norm = loss.new_tensor(float("nan"), dtype=torch.float64)
         optimizer_step_skipped = not gradients_finite
         if gradients_finite:
             optimizer.step()
@@ -3158,12 +5318,16 @@ def train(dataset, args):
                 normal_bound_m=args.normal_bound_m,
             )
             displacement = torch.linalg.norm(current_xyz - base_bank_xyz, dim=1)
+        grad_norm_value = float(grad_norm.detach().item())
+        grad_norm_finite = math.isfinite(grad_norm_value)
+        loss_value = float(loss.detach().item())
         record = {
             "step": step,
             "descriptor_active": float(descriptor_active),
             "descriptor_update_active": float(descriptor_update_active),
             "geometry_update_active": float(geometry_update_active),
-            "loss": float(loss.detach().item()),
+            "loss": loss_value if math.isfinite(loss_value) else 0.0,
+            "loss_nonfinite": float(not math.isfinite(loss_value)),
             "mv_loss": float(mv_loss.detach().item()),
             "retrieval_loss": float(retrieval_loss.detach().item()),
             "generic_proposal_loss": float(
@@ -3183,7 +5347,9 @@ def train(dataset, args):
                 torch.quantile(displacement, 0.95).item()
             ),
             "anchor_displacement_max_m": float(displacement.max().item()),
-            "grad_norm": float(grad_norm.detach().item()),
+            "grad_norm": grad_norm_value if grad_norm_finite else 0.0,
+            "grad_norm_nonfinite": float(not grad_norm_finite),
+            "gradient_clip_applied": float(gradient_clipped),
             "optimizer_step_skipped_nonfinite": float(optimizer_step_skipped),
             "visible_observations": int(observations.query_features.shape[0]),
             "matched_observations": int(
@@ -3282,14 +5448,13 @@ def train(dataset, args):
             F.normalize(final_features, dim=-1)
             * F.normalize(initial_features, dim=-1)
         ).sum(dim=-1)
-        bounded_local_offset = torch.tanh(raw_anchor_offset)
-        tangent_offset = (
-            bounded_local_offset[:, :2] * float(args.tangent_bound_m)
-        )
-        normal_offset = (
-            bounded_local_offset[:, 2].abs() * float(args.normal_bound_m)
+        tangent_offset, normal_offset = bounded_surface_local_offsets(
+            raw_anchor_offset,
+            tangent_bound_m=args.tangent_bound_m,
+            normal_bound_m=args.normal_bound_m,
         )
         tangent_norm = torch.linalg.norm(tangent_offset, dim=1)
+        normal_abs = normal_offset.abs()
         summary = {
             "config": config,
             "mvinit": mvinit_diagnostics,
@@ -3297,6 +5462,7 @@ def train(dataset, args):
             "final_validation": final_validation,
             "landmark_statistics": landmark_statistics_summary,
             "distillation": distillation_summary,
+            "native_geometry_support": geometry_support_diagnostics,
             "feature_drift": {
                 "cosine_mean": float(feature_cosine.mean().item()),
                 "cosine_p01": float(torch.quantile(feature_cosine, 0.01).item()),
@@ -3320,6 +5486,7 @@ def train(dataset, args):
                     else float(dustbin_score.detach().item())
                 ),
             },
+            "history_windows": _history_windows(history),
             "history_tail": history[-min(len(history), 200) :],
             "training_control": {
                 "empty_observation_steps": int(empty_observation_steps),
@@ -3353,12 +5520,12 @@ def train(dataset, args):
                 ),
                 "tangent_displacement_max_m": float(tangent_norm.max().item()),
                 "normal_displacement_abs_mean_m": float(
-                    normal_offset.mean().item()
+                    normal_abs.mean().item()
                 ),
                 "normal_displacement_abs_p95_m": float(
-                    torch.quantile(normal_offset, 0.95).item()
+                    torch.quantile(normal_abs, 0.95).item()
                 ),
-                "normal_displacement_abs_max_m": float(normal_offset.max().item()),
+                "normal_displacement_abs_max_m": float(normal_abs.max().item()),
                 "gaussian_parameter_grad_count": int(
                     sum(
                         parameter.grad is not None
@@ -3373,17 +5540,41 @@ def train(dataset, args):
         landmark_indices,
         final_features,
         config,
-        {**mvinit_diagnostics, **_mean_diagnostics(history[-min(len(history), 200):]), **final_validation},
+        {
+            **mvinit_diagnostics,
+            **geometry_support_diagnostics,
+            **_mean_diagnostics(history[-min(len(history), 200):]),
+            **final_validation,
+        },
         mvinit_observation_count,
         dustbin_score=dustbin_score,
         landmark_xyz=final_xyz,
         raw_anchor_offset=raw_anchor_offset,
     )
+    # A fixed-size, non-distilled bank still needs an explicit identity
+    # artifact for downstream evaluation.  Do not fabricate utility/prior
+    # scores here: this map has not run landmark selection and consumers must
+    # not treat it as if it had.  Distilled runs overwrite this file above
+    # with their richer selection metadata.
+    if int(args.distill_budget) <= 0:
+        torch.save(
+            {
+                "version": 1,
+                "landmark_indices": landmark_indices.detach().cpu(),
+                "fixed_bank": True,
+                "one_time_landmark_distillation": False,
+                "feature_dim": int(final_features.shape[1]),
+                "state_path": str(
+                    (output_dir / f"{args.steps}_lafgs_map_state.pt").resolve()
+                ),
+            },
+            output_dir / "landmark_meta.pt",
+        )
     summary["checkpoint_integrity"] = _checkpoint_integrity(
         output_dir, requested_checkpoint_steps
     )
     with (output_dir / "training_summary.json").open("w") as handle:
-        json.dump(summary, handle, indent=2, sort_keys=True)
+        json.dump(summary, handle, indent=2, sort_keys=True, allow_nan=False)
     missing_checkpoint_steps = summary["checkpoint_integrity"]["missing_steps"]
     if missing_checkpoint_steps:
         raise RuntimeError(
@@ -3414,7 +5605,14 @@ def build_parser():
     )
     parser.add_argument(
         "--scaffold_mode",
-        choices=["file", "pure_geometry", "protected_union", "ulf_consensus"],
+        choices=[
+            "file",
+            "pure_geometry",
+            "protected_union",
+            "ulf_consensus",
+            "ulf_parity",
+            "ulf_robust_consensus",
+        ],
         default="ulf_consensus",
     )
     parser.add_argument("--landmark_path", default="detector/sampled_idx.pkl")
@@ -3442,10 +5640,70 @@ def build_parser():
     parser.add_argument("--ulf_consensus_radius_px", type=float, default=1.0)
     parser.add_argument("--ulf_consensus_min_votes", type=int, default=1)
     parser.add_argument(
+        "--ulf_consensus_min_visible_views",
+        type=int,
+        default=0,
+        help="Robust KCS: minimum raster-visible support views before selection.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_min_rate",
+        type=float,
+        default=0.0,
+        help="Robust KCS: minimum keypoint-consensus / visible-view rate.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_view_bins",
+        type=int,
+        default=0,
+        help="Robust KCS: camera-center coverage bins; zero disables the gate.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_min_distinct_view_bins",
+        type=int,
+        default=0,
+        help="Robust KCS: distinct voting camera-center bins required per landmark.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_trajectory_bins",
+        type=int,
+        default=0,
+        help="Robust KCS: chronological bins per camera trajectory; zero disables it.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_min_distinct_trajectory_bins",
+        type=int,
+        default=0,
+        help="Robust KCS: distinct voting trajectory bins required per landmark.",
+    )
+    parser.add_argument(
+        "--ulf_consensus_allow_nonconsensus_fallback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Allow robust KCS to fall back to opacity-only primitives when gates "
+            "cannot fill the budget. Defaults to false for robust mode."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_consensus_knn",
+        type=int,
+        default=32,
+        help="3D kNN size for strict ULF-parity random seed selection.",
+    )
+    parser.add_argument(
         "--ulf_consensus_max_views",
         type=int,
         default=0,
         help="Zero uses every support camera; otherwise uniformly subsample views.",
+    )
+    parser.add_argument(
+        "--ulf_support_view_sampling",
+        choices=["uniform", "pose_diverse"],
+        default="uniform",
+        help=(
+            "Select ULF-parity KCS/GWFF support views uniformly or by "
+            "deterministic camera-center farthest-point sampling."
+        ),
     )
     parser.add_argument("--ulf_consensus_distance_chunk", type=int, default=8192)
     parser.add_argument(
@@ -3457,8 +5715,27 @@ def build_parser():
     parser.add_argument("--ulf_consensus_voxel_size", type=float, default=0.0)
     parser.add_argument("--ulf_consensus_max_per_voxel", type=int, default=8)
     parser.add_argument(
+        "--ulf_support_mask_policy",
+        choices=["deployment_post_filter", "support_rgb_only"],
+        default="deployment_post_filter",
+        help=(
+            "Support KCS/GWFF mask semantics: deployment filters post-detection "
+            "keypoints, while support_rgb_only preserves ULF RGB-only KCS behavior."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_parity_kcs_mask_policy",
+        choices=["rgb_only", "deployment_post_filter"],
+        default="rgb_only",
+        help=(
+            "Strict ULF KCS support-mask semantics: rgb_only preserves the "
+            "reference behavior; deployment_post_filter applies the deployed "
+            "valid mask to detected keypoints and projected primitives."
+        ),
+    )
+    parser.add_argument(
         "--initialization_mode",
-        choices=["mvinit", "ulf_geometry"],
+        choices=["mvinit", "ulf_geometry", "ulf_parity", "ulf_robust_geometry"],
         default="ulf_geometry",
         help="Descriptor initializer for a newly built landmark bank.",
     )
@@ -3469,6 +5746,46 @@ def build_parser():
         help="Zero fuses every support camera; otherwise uniformly subsample views.",
     )
     parser.add_argument("--ulf_fusion_min_cosine", type=float, default=0.0)
+    parser.add_argument(
+        "--ulf_fusion_descriptor_min_cosine",
+        type=float,
+        default=-1.0,
+        help=(
+            "Robust GWFF: descriptor cosine lower bound relative to the first "
+            "geometry-weighted prototype."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_fusion_descriptor_trim_fraction",
+        type=float,
+        default=0.0,
+        help="Robust GWFF: per-landmark bottom cosine fraction removed after prototype fusion.",
+    )
+    parser.add_argument(
+        "--ulf_fusion_reference_mode",
+        choices=["mean", "weighted_cosine_medoid"],
+        default="mean",
+        help=(
+            "Robust GWFF reference before descriptor trimming. "
+            "weighted_cosine_medoid is the exact streaming medoid under the "
+            "geometry-weighted cosine objective."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_fusion_trim_histogram_bins",
+        type=int,
+        default=64,
+        help="Robust GWFF: streaming cosine histogram resolution.",
+    )
+    parser.add_argument(
+        "--ulf_parity_fusion_channel_chunk",
+        type=int,
+        default=32,
+        help=(
+            "Channels processed at once when exactly sampling ULF's full-resolution "
+            "upsampled dense map; does not change the fusion formula."
+        ),
+    )
     parser.add_argument("--initial_state_path", default="")
     parser.add_argument("--initial_state_blend", type=float, default=0.0)
     parser.add_argument(
@@ -3568,6 +5885,24 @@ def build_parser():
     parser.add_argument("--missed_positive_margin", type=float, default=0.05)
     parser.add_argument("--unmatched_rejection_weight", type=float, default=0.0)
     parser.add_argument("--unmatched_max_similarity", type=float, default=0.5)
+    parser.add_argument(
+        "--native_outcome_mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Replace the aggregate hard-candidate objective for native SuperPoint "
+            "proposals with explicit keep/swap/miss/reject ranking losses."
+        ),
+    )
+    parser.add_argument("--native_nce_weight", type=float, default=0.0)
+    parser.add_argument("--native_keep_weight", type=float, default=1.0)
+    parser.add_argument("--native_keep_margin", type=float, default=0.05)
+    parser.add_argument("--native_swap_weight", type=float, default=1.0)
+    parser.add_argument("--native_swap_margin", type=float, default=0.05)
+    parser.add_argument("--native_miss_weight", type=float, default=1.0)
+    parser.add_argument("--native_miss_margin", type=float, default=0.05)
+    parser.add_argument("--native_reject_weight", type=float, default=0.1)
+    parser.add_argument("--native_reject_threshold", type=float, default=0.5)
     parser.add_argument("--proposal_jitter_std", type=float, default=0.0)
     parser.add_argument("--proposal_jitter_max", type=float, default=0.0)
     parser.add_argument("--generic_proposal_weight", type=float, default=0.0)
@@ -3622,6 +5957,43 @@ def build_parser():
     )
     parser.add_argument("--geometry_association_max_reprojection_px", type=float, default=2.0)
     parser.add_argument("--geometry_association_min_margin", type=float, default=0.0)
+    parser.add_argument(
+        "--geometry_association_depth_abs_tolerance",
+        type=float,
+        default=0.0,
+        help=(
+            "Absolute metric-depth gate for native BA associations in metres; "
+            "zero together with the relative tolerance preserves the legacy "
+            "reprojection-only association gate."
+        ),
+    )
+    parser.add_argument(
+        "--geometry_association_depth_rel_tolerance",
+        type=float,
+        default=0.0,
+        help=(
+            "Relative metric-depth gate for native BA associations; enable "
+            "with a positive absolute or relative tolerance."
+        ),
+    )
+    parser.add_argument(
+        "--geometry_association_min_support_views",
+        type=int,
+        default=3,
+        help=(
+            "Distinct GT-clean native support cameras required before a "
+            "landmark may receive a bounded BA update."
+        ),
+    )
+    parser.add_argument(
+        "--geometry_association_support_observations",
+        type=int,
+        default=0,
+        help=(
+            "Native proposals inspected per support view in the fixed BA "
+            "qualification pass; zero reuses --max_observations."
+        ),
+    )
     parser.add_argument("--pose_start_step", type=int, default=3500)
     parser.add_argument("--pose_interval", type=int, default=4)
     parser.add_argument("--pose_weight", type=float, default=0.01)
@@ -3646,6 +6018,15 @@ def build_parser():
         help=(
             "Fail instead of silently shrinking the final distilled bank when "
             "the requested fixed landmark budget is not observed."
+        ),
+    )
+    parser.add_argument(
+        "--distill_allow_coverage_fill",
+        action="store_true",
+        help=(
+            "When an exact final bank is requested but the strict "
+            "matchability pool is short, retain that pool and explicitly fill "
+            "only the shortage with coverage-ranked source-bank landmarks."
         ),
     )
     parser.add_argument(
@@ -3674,6 +6055,41 @@ def build_parser():
     parser.add_argument("--distill_reprojection_scale_px", type=float, default=2.0)
     parser.add_argument(
         "--distill_matchability_preserve_ratio", type=float, default=0.30
+    )
+    parser.add_argument(
+        "--distill_hard_matchability_core_ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Reserve this fraction of the strict distilled bank as the exact "
+            "top-matchability core before coverage/FIM selection."
+        ),
+    )
+    parser.add_argument(
+        "--distill_quality_reservoir_multiplier",
+        type=float,
+        default=0.0,
+        help=(
+            "When positive, restrict hard-core and coverage selection to the "
+            "top observed-native matchability reservoir of this many final "
+            "bank budgets. Zero preserves the legacy explicit-fill policy."
+        ),
+    )
+    parser.add_argument(
+        "--distill_quality_reservoir_score",
+        choices=["posterior_mean", "wilson_lower"],
+        default="posterior_mean",
+        help=(
+            "Reliability score used to form the observed-native quality "
+            "reservoir. Wilson lower confidence avoids one-view posterior "
+            "inflation."
+        ),
+    )
+    parser.add_argument(
+        "--distill_quality_reservoir_wilson_z",
+        type=float,
+        default=1.96,
+        help="Evidence calibration coefficient for the Wilson reservoir score.",
     )
     parser.add_argument("--distill_utility_preserve_ratio", type=float, default=0.35)
     parser.add_argument("--distill_high_confidence", type=float, default=0.75)
@@ -3706,7 +6122,12 @@ def build_parser():
     parser.add_argument("--validation_ratio", type=float, default=0.2)
     parser.add_argument(
         "--split_mode",
-        choices=["random", "sequence_block", "temporal_block"],
+        choices=[
+            "random",
+            "sequence_block",
+            "temporal_block",
+            "stratified_temporal_block",
+        ],
         default="temporal_block",
     )
     parser.add_argument("--split_seed", type=int, default=2026)

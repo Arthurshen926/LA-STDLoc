@@ -178,3 +178,183 @@ def sample_mask_at_grid_uv(valid_mask: torch.Tensor, grid_uv: torch.Tensor) -> t
             index[in_bounds, 1], index[in_bounds, 0]
         ]
     return result
+
+
+def consensus_eligibility(
+    votes: torch.Tensor,
+    visible_views: torch.Tensor,
+    *,
+    minimum_votes: int = 1,
+    minimum_visible_views: int = 0,
+    minimum_rate: float = 0.0,
+    distinct_view_bins: torch.Tensor | None = None,
+    minimum_distinct_view_bins: int = 0,
+    distinct_trajectory_bins: torch.Tensor | None = None,
+    minimum_distinct_trajectory_bins: int = 0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return multi-view KCS eligibility and its per-primitive consensus rate.
+
+    ``votes`` counts support views in which a projected primitive is close to a
+    sparse keypoint, whereas ``visible_views`` counts the raster-contribution
+    support views in which the primitive could have received a vote.  Keeping
+    those quantities separate prevents a frequently visible surface from being
+    treated as reliable after one accidental keypoint coincidence.
+
+    Distinct-bin tensors are counts over *voting* views, not merely visible
+    views.  Passing ``None`` or a non-positive minimum disables the associated
+    criterion and preserves the legacy min-vote behavior.
+    """
+    votes = torch.as_tensor(votes)
+    visible_views = torch.as_tensor(visible_views, device=votes.device)
+    if votes.shape != visible_views.shape:
+        raise ValueError("votes and visible_views must have identical shapes")
+    if float(minimum_rate) < 0.0 or float(minimum_rate) > 1.0:
+        raise ValueError("minimum_rate must be in [0, 1]")
+    if min(int(minimum_votes), int(minimum_visible_views)) < 0:
+        raise ValueError("minimum KCS counts must be non-negative")
+
+    rate = votes.float() / visible_views.float().clamp_min(1.0)
+    eligible = (
+        (votes >= int(minimum_votes))
+        & (visible_views >= int(minimum_visible_views))
+        & (rate >= float(minimum_rate))
+    )
+    if int(minimum_distinct_view_bins) > 0:
+        if distinct_view_bins is None:
+            raise ValueError("distinct view-bin counts are required by the KCS gate")
+        distinct_view_bins = torch.as_tensor(
+            distinct_view_bins, device=votes.device
+        )
+        if distinct_view_bins.shape != votes.shape:
+            raise ValueError("distinct view-bin counts must match votes")
+        eligible &= distinct_view_bins >= int(minimum_distinct_view_bins)
+    if int(minimum_distinct_trajectory_bins) > 0:
+        if distinct_trajectory_bins is None:
+            raise ValueError(
+                "distinct trajectory-bin counts are required by the KCS gate"
+            )
+        distinct_trajectory_bins = torch.as_tensor(
+            distinct_trajectory_bins, device=votes.device
+        )
+        if distinct_trajectory_bins.shape != votes.shape:
+            raise ValueError("distinct trajectory-bin counts must match votes")
+        eligible &= distinct_trajectory_bins >= int(
+            minimum_distinct_trajectory_bins
+        )
+    return eligible, rate
+
+
+def cosine_histogram_bin_indices(cosine: torch.Tensor, bins: int) -> torch.Tensor:
+    """Quantize cosine similarities in ``[-1, 1]`` into stable histogram bins."""
+    bins = int(bins)
+    if bins < 2:
+        raise ValueError("cosine histogram requires at least two bins")
+    cosine = torch.as_tensor(cosine)
+    scaled = ((cosine.clamp(-1.0, 1.0) + 1.0) * 0.5 * bins).floor()
+    return scaled.to(dtype=torch.long).clamp(0, bins - 1)
+
+
+def cosine_histogram_trim_thresholds(
+    histogram: torch.Tensor, trim_fraction: float
+) -> torch.Tensor:
+    """Return conservative lower cosine thresholds for per-landmark trimming.
+
+    The threshold is the lower boundary of the first retained histogram bin.
+    It deliberately keeps ties at the boundary, avoiding random removal of
+    otherwise identical support observations.
+    """
+    histogram = torch.as_tensor(histogram)
+    if histogram.ndim != 2 or histogram.shape[1] < 2:
+        raise ValueError("histogram must have shape [landmarks, bins>=2]")
+    trim_fraction = float(trim_fraction)
+    if not 0.0 <= trim_fraction < 1.0:
+        raise ValueError("trim_fraction must be in [0, 1)")
+    bins = int(histogram.shape[1])
+    counts = histogram.to(dtype=torch.long).clamp_min(0)
+    total = counts.sum(dim=1)
+    drop = torch.floor(total.float() * trim_fraction).to(dtype=torch.long)
+    cumulative = counts.cumsum(dim=1)
+    retained_bin = (cumulative <= drop[:, None]).sum(dim=1).clamp(0, bins - 1)
+    return -1.0 + 2.0 * retained_bin.to(dtype=torch.float32) / float(bins)
+
+
+def accumulate_cosine_histogram(
+    histogram: torch.Tensor,
+    landmark_indices: torch.Tensor,
+    cosine: torch.Tensor,
+) -> torch.Tensor:
+    """Accumulate descriptor-cosine observations without retaining all samples."""
+    histogram = torch.as_tensor(histogram)
+    if histogram.ndim != 2 or histogram.shape[1] < 2:
+        raise ValueError("histogram must have shape [landmarks, bins>=2]")
+    landmark_indices = torch.as_tensor(
+        landmark_indices, device=histogram.device, dtype=torch.long
+    ).reshape(-1)
+    cosine = torch.as_tensor(cosine, device=histogram.device).reshape(-1)
+    if landmark_indices.numel() != cosine.numel():
+        raise ValueError("landmark_indices and cosine must have the same count")
+    if landmark_indices.numel() == 0:
+        return histogram
+    if int(landmark_indices.min().item()) < 0 or int(landmark_indices.max().item()) >= histogram.shape[0]:
+        raise ValueError("landmark index is outside the histogram range")
+    bins = int(histogram.shape[1])
+    bin_ids = cosine_histogram_bin_indices(cosine, bins)
+    flat = landmark_indices * bins + bin_ids
+    updates = torch.bincount(flat, minlength=histogram.numel()).reshape_as(histogram)
+    return histogram + updates.to(dtype=histogram.dtype)
+
+
+def update_weighted_cosine_medoid_state(
+    best_scores: torch.Tensor,
+    best_features: torch.Tensor,
+    landmark_indices: torch.Tensor,
+    descriptors: torch.Tensor,
+    weighted_prototype: torch.Tensor,
+) -> torch.Tensor:
+    """Stream the exact weighted cosine-medoid candidate for each landmark.
+
+    ``weighted_prototype`` must be the normalized geometry-weighted descriptor
+    mean over *all* support observations.  For unit descriptors, maximizing
+    ``d_i^T weighted_prototype`` is equivalent to minimizing the weighted sum
+    of cosine distances from candidate ``d_i`` to every observation.  This
+    lets the caller obtain the medoid in a second streaming pass without
+    retaining the full observation tensor.
+
+    Each callback is expected to contribute at most one descriptor per
+    landmark, which is true for a single projected surfel in one support view.
+    The returned mask identifies candidates that replaced the previous best.
+    """
+    best_scores = torch.as_tensor(best_scores)
+    best_features = torch.as_tensor(best_features, device=best_scores.device)
+    landmark_indices = torch.as_tensor(
+        landmark_indices, device=best_scores.device, dtype=torch.long
+    ).reshape(-1)
+    descriptors = torch.as_tensor(
+        descriptors, device=best_scores.device, dtype=best_features.dtype
+    ).reshape(-1, best_features.shape[-1])
+    weighted_prototype = torch.as_tensor(
+        weighted_prototype, device=best_scores.device, dtype=best_features.dtype
+    )
+    if best_scores.ndim != 1 or best_features.ndim != 2:
+        raise ValueError("medoid state must have shapes [N] and [N,D]")
+    if best_features.shape[0] != best_scores.shape[0]:
+        raise ValueError("medoid score and descriptor states must share landmark count")
+    if weighted_prototype.shape != best_features.shape:
+        raise ValueError("weighted prototype shape must match medoid descriptor state")
+    if descriptors.shape[0] != landmark_indices.numel():
+        raise ValueError("medoid descriptors and landmark indices must have equal length")
+    if landmark_indices.numel() == 0:
+        return torch.zeros(0, dtype=torch.bool, device=best_scores.device)
+    if (
+        int(landmark_indices.min().item()) < 0
+        or int(landmark_indices.max().item()) >= best_scores.numel()
+    ):
+        raise ValueError("medoid landmark index is outside the state range")
+    descriptors = F.normalize(descriptors.float(), dim=-1).to(dtype=best_features.dtype)
+    score = (descriptors * weighted_prototype[landmark_indices]).sum(dim=-1)
+    better = score > best_scores[landmark_indices]
+    if bool(better.any().item()):
+        selected = landmark_indices[better]
+        best_scores[selected] = score[better]
+        best_features[selected] = descriptors[better]
+    return better

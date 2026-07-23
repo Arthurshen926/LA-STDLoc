@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 
 import torch
 import torch.nn.functional as F
@@ -36,7 +37,13 @@ def materialize_bounded_surface_anchors(
     tangent_bound_m,
     normal_bound_m,
 ):
-    """Materialize meter-bounded tangent/tangent/normal localization anchors."""
+    """Materialize meter-bounded tangent/tangent/normal localization anchors.
+
+    The tangent bound is a bound on the *total* displacement in the local
+    tangent plane, rather than an independent bound on each tangent component.
+    This keeps a nominal ``3 mm`` BA update inside a 3 mm disk instead of
+    allowing a diagonal displacement of ``sqrt(2) * 3 mm``.
+    """
     base_xyz = torch.as_tensor(base_xyz)
     raw_offset = torch.as_tensor(
         raw_offset, device=base_xyz.device, dtype=base_xyz.dtype
@@ -50,9 +57,11 @@ def materialize_bounded_surface_anchors(
             base_rotation, device=base_xyz.device, dtype=base_xyz.dtype
         )
     )
-    bounded = torch.tanh(raw_offset)
-    tangent = bounded[:, :2] * float(tangent_bound_m)
-    normal = bounded[:, 2:3] * float(normal_bound_m)
+    tangent, normal = bounded_surface_local_offsets(
+        raw_offset,
+        tangent_bound_m=tangent_bound_m,
+        normal_bound_m=normal_bound_m,
+    )
     return (
         base_xyz
         + rotation[:, :, 0] * tangent[:, 0:1]
@@ -61,11 +70,110 @@ def materialize_bounded_surface_anchors(
     )
 
 
+def bounded_surface_local_offsets(
+    raw_offset,
+    *,
+    tangent_bound_m,
+    normal_bound_m,
+    eps=1e-8,
+):
+    """Return local tangent and normal offsets with explicit metric bounds."""
+    raw_offset = torch.as_tensor(raw_offset)
+    if raw_offset.ndim != 2 or raw_offset.shape[1] != 3:
+        raise ValueError("raw_offset must have shape [N, 3]")
+    tangent_raw = raw_offset[:, :2]
+    tangent_norm = torch.linalg.norm(tangent_raw, dim=1, keepdim=True)
+    tangent_radius = torch.tanh(tangent_norm) * float(tangent_bound_m)
+    # ``tanh(r) / r`` has a finite limit of one at the origin.  Keeping the
+    # clamped denominator alone makes the evaluated scale zero at ``r == 0``
+    # and therefore kills both tangent gradients at the usual zero-offset BA
+    # initialization.  Materialize that analytic limit explicitly so a
+    # tangent reprojection residual can start moving a surface anchor.
+    tangent_scale = torch.where(
+        tangent_norm > float(eps),
+        tangent_radius / tangent_norm.clamp_min(float(eps)),
+        torch.full_like(tangent_norm, float(tangent_bound_m)),
+    )
+    tangent = tangent_raw * tangent_scale
+    normal = torch.tanh(raw_offset[:, 2:3]) * float(normal_bound_m)
+    return tangent, normal
+
+
 def bounded_surface_regularization(raw_offset):
     raw_offset = torch.as_tensor(raw_offset)
     if raw_offset.numel() == 0:
         return raw_offset.sum() * 0.0
     return torch.tanh(raw_offset).square().mean()
+
+
+def validate_surface_anchor_resume_bounds(
+    initial_state,
+    *,
+    tangent_bound_m,
+    normal_bound_m,
+):
+    """Reject a continuation that would reinterpret a saved raw BA offset.
+
+    ``raw_anchor_offset`` is expressed in the unbounded coordinates of the
+    tangent/normal ``tanh`` parameterization. It is therefore not a metric
+    displacement by itself: changing either bound while reusing a nonzero raw
+    tensor moves landmarks even when a descriptor-only stage has no geometry
+    loss. A continuation must preserve the parameterization exactly.
+
+    A zero tensor is deliberately exempt. That permits the first bounded-BA
+    stage to tighten the default bootstrap bounds before it has moved any
+    surface anchor.
+    """
+    if not isinstance(initial_state, dict):
+        return
+    if not bool(initial_state.get("_raw_anchor_offset_alignment_valid", False)):
+        return
+    raw_offset = initial_state.get("raw_anchor_offset")
+    if raw_offset is None:
+        return
+    raw_offset = torch.as_tensor(raw_offset, dtype=torch.float32)
+    if raw_offset.numel() == 0 or not bool(torch.isfinite(raw_offset).all().item()):
+        return
+    if float(raw_offset.abs().max().item()) <= 1e-12:
+        return
+
+    prior_config = initial_state.get("config")
+    if not isinstance(prior_config, dict):
+        raise ValueError(
+            "Initial state has nonzero raw_anchor_offset but no surface-anchor "
+            "bound metadata; refusing to reinterpret its geometry."
+        )
+    try:
+        prior_tangent_bound = float(prior_config["tangent_bound_m"])
+        prior_normal_bound = float(prior_config["normal_bound_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "Initial state has nonzero raw_anchor_offset but is missing "
+            "tangent_bound_m/normal_bound_m metadata."
+        ) from exc
+
+    tangent_bound_m = float(tangent_bound_m)
+    normal_bound_m = float(normal_bound_m)
+    bounds_match = math.isclose(
+        prior_tangent_bound,
+        tangent_bound_m,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ) and math.isclose(
+        prior_normal_bound,
+        normal_bound_m,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+    if not bounds_match:
+        raise ValueError(
+            "Initial state has nonzero raw_anchor_offset encoded with "
+            f"tangent_bound_m={prior_tangent_bound:g}, "
+            f"normal_bound_m={prior_normal_bound:g}, but this run requested "
+            f"tangent_bound_m={tangent_bound_m:g}, "
+            f"normal_bound_m={normal_bound_m:g}. Reuse the saved bounds or "
+            "explicitly reparameterize the anchor offsets."
+        )
 
 
 @dataclass

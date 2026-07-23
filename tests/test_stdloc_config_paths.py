@@ -62,6 +62,42 @@ class STDLocConfigPathTest(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_stratified_direct_candidate_validation_matches_training_holdout(self):
+        from types import SimpleNamespace
+
+        from stdloc import select_candidate_validation_cameras
+        from train_detector import partition_candidate_teacher_cameras
+
+        cameras = [
+            SimpleNamespace(image_name=f"seq0/frame{index:05d}.png")
+            for index in range(8)
+        ] + [
+            SimpleNamespace(image_name=f"seq1/frame{index:05d}.png")
+            for index in range(6)
+        ] + [
+            SimpleNamespace(image_name=f"seq2/frame{index:05d}.png")
+            for index in range(5)
+        ]
+        unordered_cameras = list(reversed(cameras))
+        _, expected, _ = partition_candidate_teacher_cameras(
+            cameras,
+            validation_ratio=0.25,
+            split_mode="stratified_temporal_block",
+            split_seed=2026,
+        )
+        actual = select_candidate_validation_cameras(
+            unordered_cameras,
+            validation_ratio=0.25,
+            split_mode="stratified_temporal_block",
+            split_seed=2026,
+            direct_holdout=True,
+        )
+
+        self.assertEqual(
+            [camera.image_name for camera in actual],
+            [camera.image_name for camera in expected],
+        )
+
     def test_explicit_evaluation_camera_list_preserves_requested_order(self):
         import json
         import tempfile
@@ -196,6 +232,34 @@ class STDLocConfigPathTest(unittest.TestCase):
         mismatched["query_feature_contract"] = "legacy_full_then_resized_map"
         with self.assertRaisesRegex(ValueError, "query feature contract mismatch"):
             validate_detector_query_feature_contract(mismatched)
+
+    def test_native_reject_threshold_must_match_native_deployment(self):
+        from stdloc import validate_native_reject_threshold_contract
+
+        state_config = {
+            "native_reject_contract": {
+                "enabled": True,
+                "deployment_match_threshold": 0.5,
+                "source": "current_native_residual",
+            }
+        }
+        matching = validate_native_reject_threshold_contract(
+            state_config, {"threshold": 0.5}
+        )
+        self.assertTrue(matching["matches"])
+        with self.assertRaisesRegex(ValueError, "does not match deployment"):
+            validate_native_reject_threshold_contract(
+                state_config, {"threshold": 0.0}
+            )
+        with self.assertWarnsRegex(RuntimeWarning, "does not match deployment"):
+            override = validate_native_reject_threshold_contract(
+                state_config,
+                {
+                    "threshold": 0.0,
+                    "allow_native_reject_threshold_mismatch": True,
+                },
+            )
+        self.assertTrue(override["override"])
 
     def test_candidate_teacher_features_require_exact_landmark_alignment(self):
         import tempfile
@@ -367,7 +431,9 @@ class STDLocConfigPathTest(unittest.TestCase):
             )
 
     def test_scene_disables_forked_camera_workers_for_cuda_images(self):
+        import os
         from types import SimpleNamespace
+        from unittest.mock import patch
 
         from scene import Scene
 
@@ -378,6 +444,13 @@ class STDLocConfigPathTest(unittest.TestCase):
         self.assertEqual(scene._camera_loader_num_workers(), 0)
         scene.args.data_device = "cpu"
         self.assertEqual(scene._camera_loader_num_workers(), 4)
+        with patch.dict(os.environ, {"STDLOC_CAMERA_LOADER_WORKERS": "0"}):
+            self.assertEqual(scene._camera_loader_num_workers(), 0)
+        with patch.dict(os.environ, {"STDLOC_CAMERA_LOADER_WORKERS": "3"}):
+            self.assertEqual(scene._camera_loader_num_workers(), 3)
+        with patch.dict(os.environ, {"STDLOC_CAMERA_LOADER_WORKERS": "-1"}):
+            with self.assertRaisesRegex(ValueError, "non-negative integer"):
+                scene._camera_loader_num_workers()
 
     def test_topk_match_preserves_keypoint_ids_for_multiple_matches_per_row(self):
         import torch

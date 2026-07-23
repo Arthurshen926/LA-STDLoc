@@ -1,8 +1,10 @@
 import datetime
 import hashlib
 import json
+import math
 import os
 import pickle
+import time
 import warnings
 from collections import Counter
 from argparse import ArgumentParser
@@ -63,9 +65,17 @@ def select_candidate_validation_cameras(
     split_seed=2026,
     direct_holdout=False,
 ):
+    # Map training partitions a lexical camera order.  Candidate evaluation
+    # must do the same rather than depending on Scene construction order.
+    cameras = list(cameras)
+    if all(hasattr(camera, "image_name") for camera in cameras):
+        cameras = sorted(
+            cameras,
+            key=lambda camera: str(camera.image_name).replace("\\", "/"),
+        )
     if bool(direct_holdout):
         _, validation_cameras = split_support_query_cameras(
-            list(cameras),
+            cameras,
             query_ratio=validation_ratio,
             seed=split_seed + 1,
             mode=split_mode,
@@ -296,6 +306,57 @@ def validate_sparse_frontend_config(sparse_config):
             "set use_landmark_prior=false"
         )
     return frontend
+
+
+def validate_native_reject_threshold_contract(state_config, sparse_config):
+    """Require native reject training to use its deployment cosine threshold.
+
+    Native keep/swap/miss/reject training learns a rejection boundary in the
+    direct cosine-score space.  Evaluating the resulting descriptor map with a
+    different threshold changes the final candidate set, so it is not the
+    training objective anymore.  Fixed-descriptor BA states inherit the
+    residual contract in their checkpoint metadata.
+    """
+    if not isinstance(state_config, dict):
+        return {"enabled": False}
+    contract = state_config.get("native_reject_contract")
+    if isinstance(contract, dict):
+        enabled = bool(contract.get("enabled", False))
+        expected = contract.get("deployment_match_threshold")
+        source = str(contract.get("source", "checkpoint"))
+    else:
+        enabled = bool(state_config.get("native_outcome_mode", False)) and float(
+            state_config.get("native_reject_weight", 0.0)
+        ) > 0.0
+        expected = state_config.get("native_reject_threshold") if enabled else None
+        source = "legacy_native_residual" if enabled else "none"
+    if not enabled:
+        return {"enabled": False, "source": source}
+    if expected is None or not math.isfinite(float(expected)):
+        raise ValueError("native reject contract has no finite deployment threshold")
+    expected = float(expected)
+    evaluated = float(sparse_config.get("threshold", 0.0))
+    matches = math.isclose(expected, evaluated, rel_tol=0.0, abs_tol=1e-8)
+    result = {
+        "enabled": True,
+        "source": source,
+        "trained_reject_threshold": expected,
+        "evaluated_match_threshold": evaluated,
+        "matches": matches,
+    }
+    if matches:
+        return result
+    message = (
+        "native residual reject threshold does not match deployment threshold: "
+        f"trained={expected:g} evaluated={evaluated:g}. "
+        "Use the same score threshold, or explicitly set "
+        "sparse.allow_native_reject_threshold_mismatch=true for a diagnostic-only sweep."
+    )
+    if bool(sparse_config.get("allow_native_reject_threshold_mismatch", False)):
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+        result["override"] = True
+        return result
+    raise ValueError(message)
 
 
 def candidate_direct_holdout_mismatches(
@@ -1753,6 +1814,7 @@ class STDLoc:
 
         self.candidate_teacher_state = None
         self.landmark_feature_override_state = None
+        self.native_reject_threshold_contract = {"enabled": False}
         full_feature_override_path = None
         if override_landmark_features:
             full_feature_override_path = resolve_artifact_path(
@@ -1820,6 +1882,18 @@ class STDLoc:
                     self.landmarks._xyz = torch.nn.Parameter(
                         override_xyz, requires_grad=False
                     )
+
+        if (
+            override_landmark_features
+            and self.sparse_frontend == "ulfloc_native"
+            and isinstance(self.landmark_feature_override_state, dict)
+        ):
+            self.native_reject_threshold_contract = (
+                validate_native_reject_threshold_contract(
+                    self.landmark_feature_override_state.get("config", {}),
+                    sparse_config,
+                )
+            )
 
         landmark_meta_path = sparse_config.get("landmark_meta_path", "detector/landmark_meta.pt")
         full_meta_path = resolve_artifact_path(
@@ -2041,6 +2115,7 @@ class STDLoc:
             "detector_path": detector_path,
             "detector_file_sha256": file_sha256(detector_path),
             "sparse_frontend": self.sparse_frontend,
+            "native_reject_threshold_contract": self.native_reject_threshold_contract,
             "active_vs_map_feature_delta": landmark_feature_delta(
                 map_features_flat, active_features_flat
             ),
@@ -2121,7 +2196,11 @@ class STDLoc:
         """
         image: torch.Tensor, shape (3, H, W)
         """
-        if self.sparse_frontend == "ulfloc_native":
+        # Older serialized/call-site stubs predate the explicit frontend
+        # attribute.  Preserve their detector-path behavior rather than
+        # failing before sparse localization can run.
+        sparse_frontend = getattr(self, "sparse_frontend", "detector")
+        if sparse_frontend == "ulfloc_native":
             sparse_result = self.loc_sparse_ulfloc_native(
                 query_image,
                 fovx,
@@ -3023,13 +3102,22 @@ class STDLoc:
         if self.feature_extractor.feature_type != "sp":
             raise ValueError("ulfloc_native sparse frontend requires SuperPoint")
 
+        def clock():
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            return time.perf_counter()
+
+        total_start = clock()
+
         sparse_image, input_mask = self._prepare_native_sparse_input(
             query_image, valid_mask
         )
         detect_num = int(self.config["sparse"].get("detect_num", 2048))
+        frontend_start = clock()
         sparse = self.feature_extractor.detectAndCompute(
             sparse_image, top_k=detect_num
         )[0]
+        frontend_end = clock()
         keypoints = sparse["keypoints"]
         keypoint_scores = sparse["keypoint_scores"]
         query_features = F.normalize(sparse["descriptors"], dim=1)
@@ -3049,6 +3137,17 @@ class STDLoc:
                 native_before_mask - keypoints.shape[0]
             ),
         }
+        runtime_diagnostics = {
+            "sparse_diag_runtime_frontend_ms": float(
+                (frontend_end - frontend_start) * 1000.0
+            ),
+            "sparse_diag_runtime_matching_ms": 0.0,
+            "sparse_diag_runtime_ransac_ms": 0.0,
+            "sparse_diag_runtime_total_ms": 0.0,
+            "sparse_diag_ransac_actual_hypotheses": -1.0,
+            "sparse_diag_ransac_actual_hypotheses_available": 0.0,
+            "sparse_diag_ransac_required_hypotheses_at_confidence": -1.0,
+        }
         if keypoints.numel() == 0:
             result = {
                 "pose_w2c": np.eye(4, dtype=np.float32),
@@ -3058,8 +3157,13 @@ class STDLoc:
                 "sparse_diag_frontend_ulfloc_native": 1.0,
             }
             result.update(mask_diagnostics)
+            runtime_diagnostics["sparse_diag_runtime_total_ms"] = float(
+                (clock() - total_start) * 1000.0
+            )
+            result.update(runtime_diagnostics)
             return result
 
+        matching_start = clock()
         landmark_features = F.normalize(
             self.landmarks.get_loc_feature.detach().reshape(
                 self.landmarks.get_loc_feature.shape[0], -1
@@ -3117,6 +3221,10 @@ class STDLoc:
             min_match_count=min_candidate_matches,
             refill_trigger_count=candidate_refill_trigger_count,
         )
+        matching_end = clock()
+        runtime_diagnostics["sparse_diag_runtime_matching_ms"] = float(
+            (matching_end - matching_start) * 1000.0
+        )
         if matches.keypoint_idx.numel() == 0:
             result = {
                 "pose_w2c": np.eye(4, dtype=np.float32),
@@ -3126,6 +3234,10 @@ class STDLoc:
                 "sparse_diag_frontend_ulfloc_native": 1.0,
             }
             result.update(mask_diagnostics)
+            runtime_diagnostics["sparse_diag_runtime_total_ms"] = float(
+                (clock() - total_start) * 1000.0
+            )
+            result.update(runtime_diagnostics)
             return result
 
         p2d_matcher_raw = keypoints[raw_matches.keypoint_idx].detach().cpu().float()
@@ -3154,7 +3266,8 @@ class STDLoc:
         scores_np = scores.numpy()
         K = get_intrinsic(fovx, fovy, width, height)
         if p2d_np.shape[0] >= 4:
-            pose_w2c, inliers = solve_pose(
+            ransac_start = time.perf_counter()
+            pose_w2c, inliers, ransac_diagnostics = solve_pose(
                 p2d_np + 0.5,
                 p3d_np,
                 K,
@@ -3165,10 +3278,38 @@ class STDLoc:
                 self.config["sparse"]["min_iterations"],
                 scores=scores_np,
                 ransac_seed=self.config["sparse"].get("ransac_seed", 0),
+                return_diagnostics=True,
+            )
+            runtime_diagnostics["sparse_diag_runtime_ransac_ms"] = float(
+                (time.perf_counter() - ransac_start) * 1000.0
             )
         else:
             pose_w2c = np.eye(4, dtype=np.float32)
             inliers = np.empty(0, dtype=np.int64)
+            ransac_diagnostics = {}
+        actual_hypotheses = ransac_diagnostics.get("ransac_actual_hypotheses")
+        required_hypotheses = ransac_diagnostics.get(
+            "ransac_required_hypotheses_at_confidence"
+        )
+        runtime_diagnostics.update(
+            {
+                "sparse_diag_ransac_actual_hypotheses": float(
+                    actual_hypotheses if actual_hypotheses is not None else -1.0
+                ),
+                "sparse_diag_ransac_actual_hypotheses_available": float(
+                    bool(ransac_diagnostics.get("ransac_actual_hypotheses_available", False))
+                ),
+                "sparse_diag_ransac_required_hypotheses_at_confidence": float(
+                    required_hypotheses if required_hypotheses is not None else -1.0
+                ),
+                "sparse_diag_ransac_inlier_ratio_solver": float(
+                    ransac_diagnostics.get("ransac_inlier_ratio", 0.0)
+                ),
+                "sparse_diag_ransac_refinements": float(
+                    ransac_diagnostics.get("ransac_refinements", 0.0)
+                ),
+            }
+        )
 
         result = {
             "pose_w2c": pose_w2c,
@@ -3287,6 +3428,10 @@ class STDLoc:
                     "geometry_selector_enabled": np.asarray(selector is not None),
                 }
         result.update(mask_diagnostics)
+        runtime_diagnostics["sparse_diag_runtime_total_ms"] = float(
+            (clock() - total_start) * 1000.0
+        )
+        result.update(runtime_diagnostics)
         return result
 
     @torch.no_grad()
@@ -3568,7 +3713,12 @@ if __name__ == "__main__":
     parser.add_argument("--candidate_validation_ratio", type=float, default=0.25)
     parser.add_argument(
         "--candidate_split_mode",
-        choices=["random", "sequence_block", "temporal_block"],
+        choices=[
+            "random",
+            "sequence_block",
+            "temporal_block",
+            "stratified_temporal_block",
+        ],
         default="temporal_block",
     )
     parser.add_argument("--candidate_split_seed", type=int, default=2026)

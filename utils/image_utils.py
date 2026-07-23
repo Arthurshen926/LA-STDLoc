@@ -162,6 +162,19 @@ def render_net_image(render_pkg, render_items, render_mode, camera):
 
 
 def get_resolution_from_longest_edge(height, width, longest_edge=640):
+    """Return the encoder resolution for an optional longest-edge cap.
+
+    A non-positive cap is an explicit no-resize sentinel.  Formal ULF-parity
+    runs need this because their sparse proposals and GWFF descriptors are
+    defined on the native camera image rather than a 640-pixel proxy.
+    """
+    height = int(height)
+    width = int(width)
+    longest_edge = int(longest_edge or 0)
+    if height <= 0 or width <= 0:
+        raise ValueError("image dimensions must be positive")
+    if longest_edge <= 0:
+        return height, width
     if height > width:
         scale = longest_edge / height
         new_height = longest_edge

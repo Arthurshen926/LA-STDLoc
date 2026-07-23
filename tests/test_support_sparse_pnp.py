@@ -90,9 +90,10 @@ class SupportSparsePnpTest(unittest.TestCase):
         loc = object.__new__(STDLoc)
         loc.config = {"sparse": {"sparse_only": False}, "dense": {"iters": 1}}
         loc.feature_extractor = SimpleNamespace()
-        loc.get_feature_map = lambda query_image: (
-                torch.zeros(1, 2, 2),
-                torch.zeros(1, 4, 4),
+        loc.get_feature_map = lambda query_image, **_: (
+            torch.zeros(1, 2, 2),
+            torch.zeros(1, 4, 4),
+            torch.zeros(1, 2, 2),
         )
         seen = {}
 

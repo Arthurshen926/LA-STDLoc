@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -181,6 +183,101 @@ class LocalDenseMatchingTest(unittest.TestCase):
         self.assertIsNotNone(matches)
         query_xy, _, _ = matches
         self.assertTrue(torch.all(query_xy[:, 0] < width // 2))
+
+    def test_local_matching_accepts_distinct_query_and_render_anchors(self):
+        generator = torch.Generator().manual_seed(31)
+        channels, height, width = 32, 12, 16
+        query = F.normalize(
+            torch.randn(channels, height, width, generator=generator), p=2, dim=0
+        )
+        rendered = torch.zeros_like(query)
+        rendered_anchor = torch.tensor([[2, 3], [5, 4], [8, 5], [11, 6]])
+        query_anchor = rendered_anchor + torch.tensor([2, -1])
+        for render_xy, query_xy in zip(rendered_anchor, query_anchor):
+            rendered[:, render_xy[1], render_xy[0]] = query[:, query_xy[1], query_xy[0]]
+
+        matches, diagnostics = dense_eval.build_local_dense_matches(
+            query,
+            rendered,
+            torch.ones(height, width, dtype=torch.bool),
+            radius_px=0,
+            anchor_stride=1,
+            temperature=0.07,
+            batch_size=32,
+            min_similarity=-1.0,
+            max_dense_matches=0,
+            correspondence_mode="hard",
+            rendered_anchor_xy=rendered_anchor,
+            query_anchor_xy=query_anchor,
+        )
+
+        self.assertIsNotNone(matches)
+        matched_query, matched_rendered, _ = matches
+        self.assertEqual(diagnostics["local_anchor_source"], "provided")
+        self.assertTrue(
+            torch.equal(
+                torch.sort(matched_rendered[:, 1] * width + matched_rendered[:, 0]).values,
+                torch.sort(rendered_anchor[:, 1] * width + rendered_anchor[:, 0]).values,
+            )
+        )
+        self.assertTrue(torch.all(matched_query.long() - matched_rendered.long() == torch.tensor([2, -1])))
+
+    def test_pair_inlier_anchors_preserve_pixel_center_resize_and_projected_pair(self):
+        correspondence = {
+            "p2d": [[3.0, 2.0], [4.0, 2.0], [3.0, 3.0], [4.0, 3.0]],
+            # With K=(1, 1, 5, 4), p3d projects to p2d + 0.5.  The paired
+            # anchor conversion subtracts .5 to return feature-grid indices.
+            "p3d": [[-1.5, -1.5, 1.0], [-0.5, -1.5, 1.0], [-1.5, -0.5, 1.0], [-0.5, -0.5, 1.0]],
+            "scores": [0.1, 0.2, 0.3, 0.4],
+            "width": 10,
+            "height": 8,
+        }
+        intrinsic = torch.tensor([[1.0, 0.0, 5.0], [0.0, 1.0, 4.0], [0.0, 0.0, 1.0]])
+        anchors, diagnostics = dense_eval.build_pair_inlier_anchors(
+            correspondence,
+            torch.eye(4),
+            intrinsic,
+            torch.ones(8, 10, dtype=torch.bool),
+            width=10,
+            height=8,
+            expansion_radius_px=0,
+            expansion_stride_px=1,
+            max_anchors=0,
+        )
+
+        self.assertIsNotNone(anchors)
+        rendered_anchor, query_anchor = anchors
+        expected = torch.tensor(correspondence["p2d"], dtype=torch.float32).long()
+        self.assertTrue(
+            torch.equal(
+                torch.sort(rendered_anchor[:, 1] * 10 + rendered_anchor[:, 0]).values,
+                torch.sort(expected[:, 1] * 10 + expected[:, 0]).values,
+            )
+        )
+        self.assertTrue(torch.equal(rendered_anchor, query_anchor))
+        self.assertEqual(diagnostics["pair_inlier_input_count"], 4)
+        self.assertEqual(diagnostics["pair_inlier_anchor_count"], 4)
+
+    def test_pair_correspondence_loader_does_not_require_gt_fields(self):
+        payload = {
+            "image_name": "frame.png",
+            "candidate_stage": "pre_selector",
+            "p2d": [[1.0, 2.0]],
+            "p3d": [[3.0, 4.0, 5.0]],
+            "scores": [0.9],
+            "width": 20,
+            "height": 10,
+            # Presence of this diagnostic-only field must not affect parsing.
+            "gt_pose_w2c": [[1.0, 0.0, 0.0, 0.0]] * 4,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pairs.jsonl"
+            path.write_text(json.dumps(payload) + "\n")
+            records = dense_eval._load_sparse_pair_correspondences(path)
+
+        self.assertEqual(set(records), {"frame.png"})
+        self.assertEqual(records["frame.png"]["candidate_stage"], "pre_selector")
+        self.assertEqual(records["frame.png"]["p2d"].shape, (1, 2))
 
     def test_single_valid_candidate_has_finite_zero_confidence(self):
         """A masked local window must not become an infinite-margin match."""

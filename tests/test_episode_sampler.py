@@ -252,6 +252,46 @@ class EpisodeSamplerTest(unittest.TestCase):
         self.assertEqual(len(query_indices), 3)
         self.assertEqual(query_indices, list(range(query_indices[0], query_indices[0] + len(query_indices))))
 
+    def test_stratified_temporal_block_preserves_each_sequence(self):
+        from localization_training.episode_sampler import split_support_query_cameras
+
+        class Camera:
+            def __init__(self, name):
+                self.image_name = name
+
+        cameras = [
+            Camera(f"seq0/frame{idx:05d}.png") for idx in range(8)
+        ] + [
+            Camera(f"seq1/frame{idx:05d}.png") for idx in range(6)
+        ] + [
+            Camera(f"seq2/frame{idx:05d}.png") for idx in range(5)
+        ]
+        support, query = split_support_query_cameras(
+            cameras,
+            query_ratio=0.25,
+            seed=9,
+            mode="stratified_temporal_block",
+        )
+
+        self.assertEqual(len(query), 5)
+        for sequence in ("seq0", "seq1", "seq2"):
+            query_indices = [
+                int(camera.image_name.split("frame")[1][:5])
+                for camera in query
+                if camera.image_name.startswith(sequence + "/")
+            ]
+            support_indices = [
+                int(camera.image_name.split("frame")[1][:5])
+                for camera in support
+                if camera.image_name.startswith(sequence + "/")
+            ]
+            self.assertTrue(query_indices)
+            self.assertTrue(support_indices)
+            self.assertEqual(
+                query_indices,
+                list(range(query_indices[0], query_indices[0] + len(query_indices))),
+            )
+
     def test_support_query_split_keeps_one_support_and_query_for_extreme_ratios(self):
         from localization_training.episode_sampler import split_support_query_cameras
 

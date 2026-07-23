@@ -162,6 +162,68 @@ def test_hard_hypothesis_reports_true_global_recall_at_fixed_k():
     assert output.diagnostics["retrieval_source_recall_at_4"] == 1.0
 
 
+def test_native_outcome_loss_separates_keep_swap_miss_and_reject():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0, 1, 0, -1]),
+        query_features=torch.nn.functional.normalize(
+            torch.tensor(
+                [
+                    [1.0, 0.0, 0.0, 0.0],       # keep: landmark 0
+                    [0.0, 0.8, 1.0, 0.0],       # swap: 2 -> 1
+                    [0.4, 0.0, 0.6, 1.0],       # miss: 3/2, then 0
+                    [0.0, 0.0, 1.0, 0.0],       # reject: no legal map point
+                ]
+            ),
+            dim=-1,
+        ),
+        query_uv=torch.tensor(
+            [[10.0, 10.0], [20.0, 10.0], [10.0, 10.0], [100.0, 100.0]]
+        ),
+        source_depth=torch.ones(4),
+        bank_uv=torch.tensor(
+            [[10.0, 10.0], [20.0, 10.0], [30.0, 30.0], [40.0, 40.0]]
+        ),
+        bank_depth=torch.ones(4),
+        bank_projected=torch.ones(4, dtype=torch.bool),
+        bank_visible=torch.ones(4, dtype=torch.bool),
+    )
+    features = torch.eye(4, requires_grad=True)
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=2,
+        native_outcome_mode=True,
+        native_nce_weight=0.0,
+        native_keep_weight=1.0,
+        native_keep_margin=1.1,
+        native_swap_weight=1.0,
+        native_swap_margin=0.05,
+        native_miss_weight=1.0,
+        native_miss_margin=0.05,
+        native_reject_weight=1.0,
+        native_reject_threshold=0.5,
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_native_outcome_mode"] == 1.0
+    assert diagnostics["retrieval_native_keep_count"] == 1
+    assert diagnostics["retrieval_native_swap_count"] == 1
+    assert diagnostics["retrieval_native_miss_count"] == 1
+    assert diagnostics["retrieval_native_reject_count"] == 1
+    assert diagnostics["retrieval_native_keep_loss"] > 0.0
+    assert diagnostics["retrieval_native_swap_loss"] > 0.0
+    assert diagnostics["retrieval_native_miss_loss"] > 0.0
+    assert diagnostics["retrieval_native_reject_loss"] > 0.0
+    assert diagnostics["retrieval_candidate_source_injected"] == 0.0
+    output.loss.backward()
+    assert features.grad is not None
+    assert torch.isfinite(features.grad).all()
+
+
 def test_random_retrieval_does_not_treat_unmatched_as_last_landmark():
     from localization_training.detector_free_map import (
         DetectorFreeObservationBatch,
@@ -342,6 +404,8 @@ def test_native_sparse_observations_preserve_detector_coordinates_and_unmatched_
 
 
 def test_native_association_geometry_updates_only_predicted_surface_anchor():
+    from dataclasses import replace
+
     from localization_training.detector_free_map import (
         build_native_sparse_observations,
         native_association_geometry_losses,
@@ -367,6 +431,14 @@ def test_native_association_geometry_updates_only_predicted_surface_anchor():
         max_observations=1,
         positive_radius_px=1.0,
     )
+    # BA must reproject ``predicted_xyz`` itself rather than receiving its
+    # gradient only through the observation batch assembled before the loss.
+    observations = replace(
+        observations,
+        bank_uv=observations.bank_uv.detach(),
+        bank_depth=observations.bank_depth.detach(),
+        bank_projected=observations.bank_projected.detach(),
+    )
     descriptor = torch.tensor([[1.0, 0.0]], requires_grad=True)
     raw_offset = torch.zeros_like(predicted_xyz, requires_grad=True)
     _, depth_loss, reprojection_loss, diagnostics = native_association_geometry_losses(
@@ -381,6 +453,90 @@ def test_native_association_geometry_updates_only_predicted_surface_anchor():
     assert predicted_xyz.grad is not None
     assert predicted_xyz.grad.abs().sum() > 0
     assert descriptor.grad is None
+
+
+def test_native_association_geometry_requires_supported_landmark():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_association_geometry_losses,
+    )
+
+    xyz = torch.tensor([[0.0, 0.0, 2.0]], requires_grad=True)
+    K = torch.tensor(
+        [[50.0, 0.0, 8.5], [0.0, 50.0, 8.5], [0.0, 0.0, 1.0]]
+    )
+    observations = build_native_sparse_observations(
+        xyz.detach(),
+        torch.tensor([[8.0, 8.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1.0]),
+        K,
+        torch.eye(4),
+        image_size=(16, 16),
+        prediction_bank_xyz=xyz,
+        target_depth=torch.full((16, 16), 2.0),
+        target_alpha=torch.ones(16, 16),
+        bank_visibility_mask=torch.tensor([True]),
+        max_observations=1,
+        positive_radius_px=1.0,
+    )
+    raw_offset = torch.zeros_like(xyz, requires_grad=True)
+    _, depth_loss, reprojection_loss, diagnostics = native_association_geometry_losses(
+        xyz,
+        raw_offset,
+        torch.tensor([[1.0, 0.0]]),
+        observations,
+        max_reprojection_error_px=1.0,
+        landmark_support_mask=torch.tensor([False]),
+    )
+    assert diagnostics["native_geometry_clean_before_support"] == 1
+    assert diagnostics["native_geometry_clean_correspondences"] == 0
+    assert diagnostics["native_geometry_support_eligible_landmarks"] == 0
+    assert depth_loss.item() == 0.0
+    assert reprojection_loss.item() == 0.0
+
+
+def test_native_association_depth_gate_rejects_back_surface_match():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_association_geometry_losses,
+    )
+
+    xyz = torch.tensor([[0.0, 0.0, 2.0]], requires_grad=True)
+    K = torch.tensor(
+        [[50.0, 0.0, 8.5], [0.0, 50.0, 8.5], [0.0, 0.0, 1.0]]
+    )
+    observations = build_native_sparse_observations(
+        xyz.detach(),
+        torch.tensor([[8.0, 8.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1.0]),
+        K,
+        torch.eye(4),
+        image_size=(16, 16),
+        prediction_bank_xyz=xyz,
+        target_depth=torch.full((16, 16), 3.0),
+        target_alpha=torch.ones(16, 16),
+        bank_visibility_mask=torch.tensor([True]),
+        max_observations=1,
+        positive_radius_px=1.0,
+    )
+    raw_offset = torch.zeros_like(xyz, requires_grad=True)
+    _, depth_loss, reprojection_loss, diagnostics = native_association_geometry_losses(
+        xyz,
+        raw_offset,
+        torch.tensor([[1.0, 0.0]]),
+        observations,
+        max_reprojection_error_px=1.0,
+        depth_abs_tolerance=0.001,
+        depth_rel_tolerance=0.01,
+    )
+    assert diagnostics["native_geometry_depth_gate_enabled"] == 1.0
+    assert diagnostics["native_geometry_depth_gate_valid_count"] == 1
+    assert diagnostics["native_geometry_depth_gate_rejected_count"] == 1
+    assert diagnostics["native_geometry_clean_correspondences"] == 0
+    assert depth_loss.item() == 0.0
+    assert reprojection_loss.item() == 0.0
 
 
 def test_observation_adaptive_trust_protects_weak_landmarks():
@@ -786,6 +942,41 @@ def test_overlap_initial_state_aligns_descriptors_and_offsets_by_id(tmp_path):
         ),
     )
     assert aligned_state["_raw_anchor_offset_alignment_valid"] is True
+
+
+def test_nonzero_initial_anchor_offset_cannot_change_saved_bounds():
+    import pytest
+
+    from localization_training.surface_anchor import (
+        validate_surface_anchor_resume_bounds,
+    )
+
+    state = {
+        "_raw_anchor_offset_alignment_valid": True,
+        "raw_anchor_offset": torch.tensor([[0.4, -0.2, 0.1]]),
+        "config": {"tangent_bound_m": 0.003, "normal_bound_m": 0.0015},
+    }
+    validate_surface_anchor_resume_bounds(
+        state,
+        tangent_bound_m=0.003,
+        normal_bound_m=0.0015,
+    )
+    with pytest.raises(ValueError, match="nonzero raw_anchor_offset"):
+        validate_surface_anchor_resume_bounds(
+            state,
+            tangent_bound_m=0.005,
+            normal_bound_m=0.002,
+        )
+
+    zero_state = {
+        **state,
+        "raw_anchor_offset": torch.zeros(1, 3),
+    }
+    validate_surface_anchor_resume_bounds(
+        zero_state,
+        tangent_bound_m=0.005,
+        normal_bound_m=0.002,
+    )
 
 
 def test_inactive_phase_gradient_clear_prevents_adamw_weight_decay():

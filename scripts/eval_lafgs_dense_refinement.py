@@ -646,6 +646,14 @@ def build_local_dense_matches(
     max_dense_matches,
     correspondence_mode="hard",
     query_valid=None,
+    geometric_filter=False,
+    geometric_neighbors=8,
+    geometric_support_threshold=4.0,
+    geometric_angle_cos=0.9659,
+    geometric_scale_threshold=0.1,
+    geometric_scale_limit=3.0,
+    rendered_anchor_xy=None,
+    query_anchor_xy=None,
 ):
     """Match each rendered anchor only inside a seed-pose local query window.
 
@@ -678,16 +686,47 @@ def build_local_dense_matches(
     if correspondence_mode not in {"hard", "soft"}:
         raise ValueError(f"Unsupported local correspondence mode: {correspondence_mode}")
 
-    grid_y = torch.arange(0, height, anchor_stride, device=query_fine.device)
-    grid_x = torch.arange(0, width, anchor_stride, device=query_fine.device)
-    yy, xx = torch.meshgrid(grid_y, grid_x, indexing="ij")
-    valid_grid = rendered_valid[yy, xx]
-    rendered_xy = torch.stack([xx[valid_grid], yy[valid_grid]], dim=1).long()
+    if (rendered_anchor_xy is None) != (query_anchor_xy is None):
+        raise ValueError(
+            "rendered_anchor_xy and query_anchor_xy must be supplied together"
+        )
+    if rendered_anchor_xy is None:
+        grid_y = torch.arange(0, height, anchor_stride, device=query_fine.device)
+        grid_x = torch.arange(0, width, anchor_stride, device=query_fine.device)
+        yy, xx = torch.meshgrid(grid_y, grid_x, indexing="ij")
+        valid_grid = rendered_valid[yy, xx]
+        rendered_xy = torch.stack([xx[valid_grid], yy[valid_grid]], dim=1).long()
+        query_anchor_xy = rendered_xy.clone()
+        anchor_source = "render_grid"
+    else:
+        rendered_xy = torch.as_tensor(
+            rendered_anchor_xy, device=query_fine.device, dtype=torch.float32
+        ).reshape(-1, 2).round().long()
+        query_anchor_xy = torch.as_tensor(
+            query_anchor_xy, device=query_fine.device, dtype=torch.float32
+        ).reshape(-1, 2).round().long()
+        if rendered_xy.shape != query_anchor_xy.shape:
+            raise ValueError("rendered and query anchor arrays must have the same shape")
+        inside_render = (
+            (rendered_xy[:, 0] >= 0)
+            & (rendered_xy[:, 0] < width)
+            & (rendered_xy[:, 1] >= 0)
+            & (rendered_xy[:, 1] < height)
+        )
+        rendered_xy = rendered_xy[inside_render]
+        query_anchor_xy = query_anchor_xy[inside_render]
+        if rendered_xy.numel():
+            render_support = rendered_valid[rendered_xy[:, 1], rendered_xy[:, 0]]
+            rendered_xy = rendered_xy[render_support]
+            query_anchor_xy = query_anchor_xy[render_support]
+        anchor_source = "provided"
+    initial_anchor_count = int(rendered_xy.shape[0])
     if rendered_xy.shape[0] < 4:
         return None, {
             "coarse_valid_cells": 0,
             "coarse_matches": 0,
-            "local_anchor_count": int(rendered_xy.shape[0]),
+            "local_anchor_count": initial_anchor_count,
+            "local_anchor_source": anchor_source,
             "fine_matches": 0,
         }
     # Keep the spatial sampling deterministic and bounded before constructing
@@ -700,6 +739,7 @@ def build_local_dense_matches(
             device=query_fine.device,
         ).round().long()
         rendered_xy = rendered_xy[keep]
+        query_anchor_xy = query_anchor_xy[keep]
 
     offsets = torch.arange(
         -radius_px, radius_px + 1, device=query_fine.device, dtype=torch.long
@@ -715,8 +755,9 @@ def build_local_dense_matches(
     candidate_count_parts = []
     for start in range(0, rendered_xy.shape[0], batch_size):
         anchors = rendered_xy[start : start + batch_size]
-        query_x = anchors[:, 0:1] + dx
-        query_y = anchors[:, 1:2] + dy
+        query_anchors = query_anchor_xy[start : start + batch_size]
+        query_x = query_anchors[:, 0:1] + dx
+        query_y = query_anchors[:, 1:2] + dy
         valid_window = (
             (query_x >= 0)
             & (query_x < width)
@@ -790,7 +831,8 @@ def build_local_dense_matches(
         return None, {
             "coarse_valid_cells": 0,
             "coarse_matches": 0,
-            "local_anchor_count": int(rendered_xy.shape[0]),
+            "local_anchor_count": initial_anchor_count,
+            "local_anchor_source": anchor_source,
             "fine_matches": 0,
         }
     query_xy = torch.cat(query_parts, dim=0)
@@ -824,15 +866,39 @@ def build_local_dense_matches(
         margin = margin[keep]
         candidate_count = candidate_count[keep]
 
+    local_before_lgcv = int(query_xy.shape[0])
+    local_lgcv_retained = local_before_lgcv
+    if bool(geometric_filter) and query_xy.shape[0] >= 3:
+        support = _ulfloc_geometric_support(
+            query_xy,
+            rendered_xy,
+            neighbors=int(geometric_neighbors),
+            angle_thresh_cos=float(geometric_angle_cos),
+            scale_thresh=float(geometric_scale_threshold),
+            scale_limit=float(geometric_scale_limit),
+        )
+        keep = support >= float(geometric_support_threshold)
+        query_xy = query_xy[keep]
+        rendered_xy = rendered_xy[keep]
+        score = score[keep]
+        best_similarity = best_similarity[keep]
+        margin = margin[keep]
+        candidate_count = candidate_count[keep]
+        local_lgcv_retained = int(query_xy.shape[0])
+
     rounded_query = query_xy.round().long()
-    rounded_query[:, 0].clamp_(0, width - 1)
-    rounded_query[:, 1].clamp_(0, height - 1)
-    unique_query_cells = torch.unique(rounded_query, dim=0).shape[0]
+    if rounded_query.numel() > 0:
+        rounded_query[:, 0].clamp_(0, width - 1)
+        rounded_query[:, 1].clamp_(0, height - 1)
+        unique_query_cells = torch.unique(rounded_query, dim=0).shape[0]
+    else:
+        unique_query_cells = 0
 
     diagnostics = {
         "coarse_valid_cells": 0,
         "coarse_matches": 0,
-        "local_anchor_count": int(rendered_xy.shape[0]),
+        "local_anchor_count": initial_anchor_count,
+        "local_anchor_source": anchor_source,
         "fine_matches": int(query_xy.shape[0]),
         "fine_score_mean": float(score.mean().item()) if score.numel() else 0.0,
         "local_best_similarity_mean": (
@@ -848,10 +914,185 @@ def build_local_dense_matches(
             unique_query_cells / max(int(query_xy.shape[0]), 1)
         ),
         "local_correspondence_mode": correspondence_mode,
+        "local_lgcv_filter": bool(geometric_filter),
+        "local_matches_before_lgcv": local_before_lgcv,
+        "local_lgcv_retained": local_lgcv_retained,
+        "local_lgcv_retained_fraction": float(
+            local_lgcv_retained / max(local_before_lgcv, 1)
+        ),
     }
     if query_xy.shape[0] < 4:
         return None, diagnostics
     return (query_xy.float(), rendered_xy.float(), score), diagnostics
+
+
+def _resize_pixel_center_coordinates(points_xy, source_width, source_height, width, height):
+    """Map pixel-index coordinates through resize with explicit center semantics."""
+    points_xy = torch.as_tensor(points_xy, dtype=torch.float32)
+    if points_xy.ndim != 2 or points_xy.shape[1] != 2:
+        raise ValueError("points_xy must have shape [N, 2]")
+    source_width = int(source_width)
+    source_height = int(source_height)
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("source correspondence resolution must be positive")
+    scale = points_xy.new_tensor(
+        [float(width) / float(source_width), float(height) / float(source_height)]
+    )
+    return (points_xy + 0.5) * scale - 0.5
+
+
+def _deduplicate_pair_anchors(rendered_xy, query_xy, seed_scores, width):
+    """Keep the highest-scored sparse seed when expanded regions overlap.
+
+    Sparse RANSAC inliers cluster heavily around repeated local texture.  Keeping
+    all overlapping expansions would silently turn them into a density weight in
+    the dense PnP solve.  This deterministic first-winner rule preserves the
+    source score ordering while allowing each rendered grid cell only once.
+    """
+    if rendered_xy.numel() == 0:
+        return rendered_xy, query_xy, seed_scores
+    order = torch.argsort(seed_scores, descending=True, stable=True)
+    rendered_xy = rendered_xy[order]
+    query_xy = query_xy[order]
+    seed_scores = seed_scores[order]
+    linear = (rendered_xy[:, 1] * int(width) + rendered_xy[:, 0]).detach().cpu().tolist()
+    seen = set()
+    keep_list = []
+    for index, value in enumerate(linear):
+        if value not in seen:
+            seen.add(value)
+            keep_list.append(index)
+    keep = torch.as_tensor(keep_list, device=rendered_xy.device, dtype=torch.long)
+    return rendered_xy[keep], query_xy[keep], seed_scores[keep]
+
+
+def build_pair_inlier_anchors(
+    sparse_correspondence,
+    pose_w2c,
+    intrinsic,
+    rendered_valid,
+    *,
+    width,
+    height,
+    expansion_radius_px,
+    expansion_stride_px,
+    max_anchors,
+):
+    """Expand sparse RANSAC inliers into paired local dense anchor regions.
+
+    The query-side anchor is the measured sparse keypoint.  The render-side
+    anchor is the same 3D point projected under the current sparse pose.  Each
+    pair is locally expanded by the same feature-grid offset, so dense matching
+    can refine the local surface while remaining tied to an actual sparse PnP
+    inlier.  No GT pose or GT correspondence is involved.
+    """
+    if not isinstance(sparse_correspondence, dict):
+        raise ValueError("sparse_correspondence must be a dictionary")
+    query_input = torch.as_tensor(
+        sparse_correspondence.get("p2d", []), dtype=torch.float32, device=rendered_valid.device
+    ).reshape(-1, 2)
+    points3d = torch.as_tensor(
+        sparse_correspondence.get("p3d", []), dtype=torch.float32, device=rendered_valid.device
+    ).reshape(-1, 3)
+    if query_input.shape[0] != points3d.shape[0]:
+        raise ValueError("sparse correspondence p2d/p3d counts differ")
+    source_width = int(sparse_correspondence.get("width", 0))
+    source_height = int(sparse_correspondence.get("height", 0))
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("sparse correspondence is missing source width/height")
+    source_scores = torch.as_tensor(
+        sparse_correspondence.get("scores", []), dtype=torch.float32, device=rendered_valid.device
+    ).reshape(-1)
+    if source_scores.numel() == 0:
+        source_scores = torch.ones(query_input.shape[0], dtype=torch.float32, device=rendered_valid.device)
+    if source_scores.shape[0] != query_input.shape[0]:
+        raise ValueError("sparse correspondence score count differs from p2d/p3d")
+    input_count = int(query_input.shape[0])
+    if input_count == 0:
+        return None, {
+            "pair_inlier_input_count": 0,
+            "pair_inlier_projected_count": 0,
+            "pair_inlier_anchor_count": 0,
+        }
+
+    query_seed = _resize_pixel_center_coordinates(
+        query_input, source_width, source_height, width, height
+    ).to(device=rendered_valid.device)
+    projected_uv, projected_valid = project_points(
+        points3d,
+        torch.as_tensor(intrinsic, dtype=torch.float32, device=rendered_valid.device),
+        torch.as_tensor(pose_w2c, dtype=torch.float32, device=rendered_valid.device),
+    )
+    rendered_seed = projected_uv - 0.5
+    finite = (
+        projected_valid
+        & torch.isfinite(query_seed).all(dim=1)
+        & torch.isfinite(rendered_seed).all(dim=1)
+        & torch.isfinite(source_scores)
+    )
+    query_seed = query_seed[finite]
+    rendered_seed = rendered_seed[finite]
+    source_scores = source_scores[finite]
+    projected_count = int(query_seed.shape[0])
+    if projected_count == 0:
+        return None, {
+            "pair_inlier_input_count": input_count,
+            "pair_inlier_projected_count": 0,
+            "pair_inlier_anchor_count": 0,
+        }
+
+    expansion_radius_px = int(expansion_radius_px)
+    expansion_stride_px = int(expansion_stride_px)
+    if expansion_radius_px < 0 or expansion_stride_px <= 0:
+        raise ValueError("pair seed expansion radius/stride are invalid")
+    offsets = torch.arange(
+        -expansion_radius_px,
+        expansion_radius_px + 1,
+        expansion_stride_px,
+        dtype=torch.float32,
+        device=rendered_valid.device,
+    )
+    offset_y, offset_x = torch.meshgrid(offsets, offsets, indexing="ij")
+    offset_xy = torch.stack([offset_x.reshape(-1), offset_y.reshape(-1)], dim=1)
+    rendered_anchor = (rendered_seed[:, None, :] + offset_xy[None]).reshape(-1, 2)
+    query_anchor = (query_seed[:, None, :] + offset_xy[None]).reshape(-1, 2)
+    anchor_scores = source_scores[:, None].expand(-1, offset_xy.shape[0]).reshape(-1)
+    rendered_anchor = rendered_anchor.round().long()
+    query_anchor = query_anchor.round().long()
+    inside = (
+        (rendered_anchor[:, 0] >= 0)
+        & (rendered_anchor[:, 0] < int(width))
+        & (rendered_anchor[:, 1] >= 0)
+        & (rendered_anchor[:, 1] < int(height))
+    )
+    rendered_anchor = rendered_anchor[inside]
+    query_anchor = query_anchor[inside]
+    anchor_scores = anchor_scores[inside]
+    if rendered_anchor.numel():
+        support = rendered_valid[rendered_anchor[:, 1], rendered_anchor[:, 0]]
+        rendered_anchor = rendered_anchor[support]
+        query_anchor = query_anchor[support]
+        anchor_scores = anchor_scores[support]
+    rendered_anchor, query_anchor, anchor_scores = _deduplicate_pair_anchors(
+        rendered_anchor, query_anchor, anchor_scores, width
+    )
+    if int(max_anchors) > 0 and rendered_anchor.shape[0] > int(max_anchors):
+        keep = torch.argsort(anchor_scores, descending=True, stable=True)[: int(max_anchors)]
+        rendered_anchor = rendered_anchor[keep]
+        query_anchor = query_anchor[keep]
+        anchor_scores = anchor_scores[keep]
+    diagnostics = {
+        "pair_inlier_input_count": input_count,
+        "pair_inlier_projected_count": projected_count,
+        "pair_inlier_anchor_count": int(rendered_anchor.shape[0]),
+        "pair_inlier_expansion_radius_px": expansion_radius_px,
+        "pair_inlier_expansion_stride_px": expansion_stride_px,
+        "pair_inlier_source_width": source_width,
+        "pair_inlier_source_height": source_height,
+    }
+    if rendered_anchor.shape[0] < 4:
+        return None, diagnostics
+    return (rendered_anchor, query_anchor), diagnostics
 
 
 def _pose_delta(reference_w2c, candidate_w2c):
@@ -1178,6 +1419,7 @@ def _refine_once(
     gt_pose_w2c=None,
     query_valid_mask=None,
     prior_rgb_source_image_size=None,
+    sparse_pair_correspondence=None,
 ):
     height, width = query_fine.shape[-2:]
     if args.matching_mode == "global" and query_coarse is None:
@@ -1265,6 +1507,46 @@ def _refine_once(
             geometric_scale_limit=float(args.ulfloc_geometric_scale_limit),
             query_valid=query_valid_mask,
         )
+    elif args.matching_mode == "pair_inlier_local":
+        intrinsic = get_intrinsic(fovx, fovy, width, height)
+        anchors, pair_diagnostics = build_pair_inlier_anchors(
+            sparse_pair_correspondence,
+            pose_w2c,
+            intrinsic,
+            rendered_valid,
+            width=width,
+            height=height,
+            expansion_radius_px=int(args.pair_seed_expansion_radius_px),
+            expansion_stride_px=int(args.pair_seed_expansion_stride_px),
+            max_anchors=int(args.pair_seed_max_anchors),
+        )
+        if anchors is None:
+            diagnostics = pair_diagnostics
+            matches = None
+        else:
+            rendered_anchor_xy, query_anchor_xy = anchors
+            matches, diagnostics = build_local_dense_matches(
+                query_fine,
+                rendered_features,
+                rendered_valid,
+                radius_px=int(args.local_radius_px),
+                anchor_stride=int(args.local_anchor_stride),
+                temperature=float(args.local_temperature),
+                batch_size=int(args.local_batch_size),
+                min_similarity=float(args.local_min_similarity),
+                max_dense_matches=int(args.max_dense_matches),
+                correspondence_mode=args.local_correspondence_mode,
+                query_valid=query_valid_mask,
+                geometric_filter=True,
+                geometric_neighbors=int(args.ulfloc_geometric_neighbors),
+                geometric_support_threshold=float(args.ulfloc_geometric_support_threshold),
+                geometric_angle_cos=float(args.ulfloc_geometric_angle_cos),
+                geometric_scale_threshold=float(args.ulfloc_geometric_scale_threshold),
+                geometric_scale_limit=float(args.ulfloc_geometric_scale_limit),
+                rendered_anchor_xy=rendered_anchor_xy,
+                query_anchor_xy=query_anchor_xy,
+            )
+            diagnostics.update(pair_diagnostics)
     else:
         matches, diagnostics = build_local_dense_matches(
             query_fine,
@@ -1278,6 +1560,15 @@ def _refine_once(
             max_dense_matches=int(args.max_dense_matches),
             correspondence_mode=args.local_correspondence_mode,
             query_valid=query_valid_mask,
+            geometric_filter=(
+                bool(args.local_lgcv_filter)
+                or str(args.matching_mode) == "pair_local"
+            ),
+            geometric_neighbors=int(args.ulfloc_geometric_neighbors),
+            geometric_support_threshold=float(args.ulfloc_geometric_support_threshold),
+            geometric_angle_cos=float(args.ulfloc_geometric_angle_cos),
+            geometric_scale_threshold=float(args.ulfloc_geometric_scale_threshold),
+            geometric_scale_limit=float(args.ulfloc_geometric_scale_limit),
         )
     diagnostics.update(
         {
@@ -1443,6 +1734,60 @@ def _load_input_records(path):
     return by_name
 
 
+def _load_sparse_pair_correspondences(path):
+    """Load sparse RANSAC-inlier pairs emitted by ``stdloc.py`` diagnostics.
+
+    The loader intentionally reads only image identity, measured 2D points,
+    selected 3D points, scores, and sparse image resolution.  The JSONL dump
+    also carries GT poses for diagnostics, but those fields never enter the
+    refinement path.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"sparse correspondence dump is missing: {path}")
+    by_name = {}
+    with path.open() as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"sparse correspondence line {line_number} is not an object")
+            image_name = str(payload.get("image_name", ""))
+            if not image_name:
+                raise ValueError(f"sparse correspondence line {line_number} lacks image_name")
+            if image_name in by_name:
+                raise ValueError(f"duplicate sparse correspondence image: {image_name}")
+            p2d = np.asarray(payload.get("p2d", []), dtype=np.float32).reshape(-1, 2)
+            p3d = np.asarray(payload.get("p3d", []), dtype=np.float32).reshape(-1, 3)
+            if p2d.shape[0] != p3d.shape[0]:
+                raise ValueError(
+                    f"sparse correspondence line {line_number} has mismatched p2d/p3d counts"
+                )
+            scores = np.asarray(payload.get("scores", []), dtype=np.float32).reshape(-1)
+            if scores.size not in {0, p2d.shape[0]}:
+                raise ValueError(
+                    f"sparse correspondence line {line_number} has mismatched scores"
+                )
+            width = int(payload.get("width", 0))
+            height = int(payload.get("height", 0))
+            if width <= 0 or height <= 0:
+                raise ValueError(
+                    f"sparse correspondence line {line_number} has invalid resolution"
+                )
+            by_name[image_name] = {
+                "p2d": p2d,
+                "p3d": p3d,
+                "scores": scores,
+                "width": width,
+                "height": height,
+                "candidate_stage": str(payload.get("candidate_stage", "unknown")),
+            }
+    if not by_name:
+        raise ValueError("sparse correspondence dump contains no records")
+    return by_name
+
+
 def _metric_summary(records, pose_key):
     # ``cal_pose_error`` follows the STDLoc result schema: TE is already cm.
     # Keep this standalone experiment byte-for-byte comparable to stdloc.py.
@@ -1490,6 +1835,17 @@ def evaluate(args, dataset):
         }
 
     input_records = _load_input_records(args.input_results)
+    pair_correspondences = {}
+    if args.matching_mode == "pair_inlier_local":
+        pair_correspondences = _load_sparse_pair_correspondences(
+            args.sparse_correspondences
+        )
+        missing_pair_records = sorted(set(input_records).difference(pair_correspondences))
+        if missing_pair_records:
+            raise ValueError(
+                "sparse correspondence dump does not cover every input result image: "
+                f"{missing_pair_records[:3]}"
+            )
     query_valid_masks, query_cache_manifest = _load_query_valid_masks(args.query_cache)
     with open(args.cfg) as handle:
         config = yaml.load(handle, Loader=yaml.FullLoader)
@@ -1508,8 +1864,11 @@ def evaluate(args, dataset):
         if key not in dense_cfg:
             raise ValueError(f"dense config is missing {key}")
     dense_cfg.setdefault("ransac_seed", 0)
-    if args.dense_reprojection_error_override is not None:
-        dense_cfg["reprojection_error"] = float(args.dense_reprojection_error_override)
+    dense_reprojection_error_override = getattr(
+        args, "dense_reprojection_error_override", None
+    )
+    if dense_reprojection_error_override is not None:
+        dense_cfg["reprojection_error"] = float(dense_reprojection_error_override)
 
     gaussians = _make_gaussians(dataset)
     scene = Scene(
@@ -1605,6 +1964,7 @@ def evaluate(args, dataset):
                 gt_pose_w2c=(gt_pose if args.dense_gt_diagnostics else None),
                 query_valid_mask=query_valid_mask,
                 prior_rgb_source_image_size=tuple(int(value) for value in query_image.shape[-2:]),
+                sparse_pair_correspondence=pair_correspondences.get(image_name),
             )
             iterations.append(diagnostics)
             if not diagnostics.get("solver_success", False):
@@ -1661,6 +2021,16 @@ def evaluate(args, dataset):
         "dense_gt_diagnostics_enabled": bool(args.dense_gt_diagnostics),
         "input_results": str(Path(args.input_results).resolve()),
         "input_results_sha256": file_sha256(args.input_results),
+        "sparse_correspondences": (
+            {
+                "path": str(Path(args.sparse_correspondences).resolve()),
+                "sha256": file_sha256(args.sparse_correspondences),
+                "record_count": int(len(pair_correspondences)),
+                "uses_gt_pose_for_refinement": False,
+            }
+            if args.matching_mode == "pair_inlier_local"
+            else None
+        ),
         "query_cache": query_cache_manifest,
         "cfg": str(Path(args.cfg).resolve()),
         "cfg_sha256": file_sha256(args.cfg),
@@ -1734,9 +2104,12 @@ def main():
     parser.add_argument("--max_dense_matches", type=int, default=4096)
     parser.add_argument(
         "--matching_mode",
-        choices=("global", "local", "ulfloc"),
+        choices=("global", "local", "pair_local", "pair_inlier_local", "ulfloc"),
         default="global",
-        help="Global/local LaFGS diagnostics or ULF-Loc RGB coarse-to-fine matching.",
+        help=(
+            "Global/local matching, legacy render-anchored local+LGCV, strict "
+            "sparse-RANSAC-inlier Pair+LGCV, or ULF-Loc RGB matching."
+        ),
     )
     parser.add_argument(
         "--feature_grid",
@@ -1754,6 +2127,41 @@ def main():
         choices=("hard", "soft"),
         default="hard",
         help="Soft uses the local descriptor distribution's subpixel expectation.",
+    )
+    parser.add_argument(
+        "--local_lgcv_filter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply ULF-style local geometric consistency to local dense pairs. "
+            "pair_local and pair_inlier_local enable the same filter unconditionally."
+        ),
+    )
+    parser.add_argument(
+        "--sparse_correspondences",
+        default="",
+        help=(
+            "JSONL sparse correspondence dump from stdloc.py. Required only for "
+            "pair_inlier_local; only RANSAC-inlier p2d/p3d/scores are consumed."
+        ),
+    )
+    parser.add_argument(
+        "--pair_seed_expansion_radius_px",
+        type=int,
+        default=4,
+        help="Feature-grid radius used to expand each sparse RANSAC inlier pair.",
+    )
+    parser.add_argument(
+        "--pair_seed_expansion_stride_px",
+        type=int,
+        default=2,
+        help="Feature-grid stride used to expand each sparse RANSAC inlier pair.",
+    )
+    parser.add_argument(
+        "--pair_seed_max_anchors",
+        type=int,
+        default=2048,
+        help="Maximum deduplicated render anchors retained by pair_inlier_local.",
     )
     parser.add_argument(
         "--prior_rgb_render_resolution",
@@ -1838,6 +2246,12 @@ def main():
         raise ValueError("local anchor stride and batch size must be positive")
     if float(args.local_temperature) <= 0.0:
         raise ValueError("local_temperature must be positive")
+    if int(args.pair_seed_expansion_radius_px) < 0:
+        raise ValueError("pair_seed_expansion_radius_px must be non-negative")
+    if int(args.pair_seed_expansion_stride_px) <= 0:
+        raise ValueError("pair_seed_expansion_stride_px must be positive")
+    if int(args.pair_seed_max_anchors) < 0:
+        raise ValueError("pair_seed_max_anchors must be non-negative")
     if int(args.prior_gn_iterations) <= 0 or int(args.prior_gn_min_matches) < 4:
         raise ValueError("prior-GN iterations/min-matches are invalid")
     if min(
@@ -1853,6 +2267,10 @@ def main():
         raise ValueError("global and ulfloc matching require the fine feature grid")
     if args.matching_mode == "ulfloc" and args.mode != "prior_rgb":
         raise ValueError("ulfloc matching is only valid for the RGB 2DGS-prior mode")
+    if args.matching_mode == "pair_inlier_local" and not str(
+        args.sparse_correspondences
+    ).strip():
+        raise ValueError("pair_inlier_local requires --sparse_correspondences")
     if int(args.ulfloc_geometric_neighbors) <= 0:
         raise ValueError("ulfloc_geometric_neighbors must be positive")
     if not (0.0 < float(args.ulfloc_geometric_angle_cos) <= 1.0):
@@ -1861,9 +2279,12 @@ def main():
         raise ValueError("ulfloc_geometric_scale_threshold must be positive")
     if float(args.ulfloc_geometric_scale_limit) <= 1.0:
         raise ValueError("ulfloc_geometric_scale_limit must exceed one")
+    dense_reprojection_error_override = getattr(
+        args, "dense_reprojection_error_override", None
+    )
     if (
-        args.dense_reprojection_error_override is not None
-        and float(args.dense_reprojection_error_override) <= 0.0
+        dense_reprojection_error_override is not None
+        and float(dense_reprojection_error_override) <= 0.0
     ):
         raise ValueError("dense_reprojection_error_override must be positive")
     dataset = model.extract(args)

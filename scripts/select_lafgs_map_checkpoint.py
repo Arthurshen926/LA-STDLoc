@@ -82,6 +82,7 @@ def select_checkpoint(
     control_state,
     candidates,
     *,
+    control_tag="control_strong",
     min_te_gain_cm=0.02,
     metric_tolerance=1e-9,
     selection_mode="safety",
@@ -95,8 +96,11 @@ def select_checkpoint(
         raise ValueError("mean_te_weight must be non-negative")
     if max_recall_2m_drop < 0.0 or max_recall_5cm_drop < 0.0:
         raise ValueError("recall-drop tolerances must be non-negative")
+    control_tag = str(control_tag)
+    if not control_tag:
+        raise ValueError("control_tag must be non-empty")
     control = {
-        "tag": "control_strong",
+        "tag": control_tag,
         "state": str(Path(control_state).resolve()),
         **load_metrics(control_results, selection_mode=selection_mode),
     }
@@ -104,6 +108,11 @@ def select_checkpoint(
         raise ValueError(
             "selection requires evaluation_protocol.protocol_sha256; "
             "rerun legacy evaluations with the pinned input protocol"
+        )
+    if selection_mode == "performance":
+        control["primary_score"] = (
+            control["metrics"]["median_te_cm"]
+            + float(mean_te_weight) * control["metrics"]["mean_te_cm"]
         )
     evaluated = []
     for tag, results_path, state_path in candidates:
@@ -150,7 +159,17 @@ def select_checkpoint(
                 ),
             }
         else:
+            candidate["primary_score"] = (
+                current["median_te_cm"]
+                + float(mean_te_weight) * current["mean_te_cm"]
+            )
             checks = {
+                "primary_objective_gain": (
+                    candidate["primary_score"]
+                    <= control["primary_score"]
+                    - float(min_te_gain_cm)
+                    + float(metric_tolerance)
+                ),
                 "recall_2m_not_significantly_worse": (
                     current["recall_2m_5deg"]
                     >= baseline["recall_2m_5deg"] - float(max_recall_2m_drop)
@@ -160,35 +179,22 @@ def select_checkpoint(
                     >= baseline["recall_5cm_5deg"] - float(max_recall_5cm_drop)
                 ),
             }
-            candidate["primary_score"] = (
-                current["median_te_cm"]
-                + float(mean_te_weight) * current["mean_te_cm"]
-            )
         candidate["gate_checks"] = checks
         candidate["accepted"] = all(checks.values())
         evaluated.append(candidate)
 
     accepted = [candidate for candidate in evaluated if candidate["accepted"]]
-    if selection_mode == "performance":
-        control["primary_score"] = (
-            control["metrics"]["median_te_cm"]
-            + float(mean_te_weight) * control["metrics"]["mean_te_cm"]
-        )
-    selected = (
-        min(
-            accepted,
-            key=lambda item: (
-                (
-                    item["primary_score"]
-                    if selection_mode == "performance"
-                    else item["metrics"]["median_te_cm"]
-                ),
-                item["metrics"]["median_ae_deg"],
-                item["tag"],
+    selected = min(
+        [control, *accepted],
+        key=lambda item: (
+            (
+                item["primary_score"]
+                if selection_mode == "performance"
+                else item["metrics"]["median_te_cm"]
             ),
-        )
-        if accepted
-        else control
+            item["metrics"]["median_ae_deg"],
+            item["tag"],
+        ),
     )
     protocol = {
         "subset": control["evaluation_camera_subset"],
@@ -215,9 +221,11 @@ def select_checkpoint(
             {
                 "primary_metric": "median_te_cm + mean_te_weight * mean_te_cm",
                 "mean_te_weight": float(mean_te_weight),
+                "min_primary_score_gain_cm": float(min_te_gain_cm),
                 "max_recall_2m_drop": float(max_recall_2m_drop),
                 "max_recall_5cm_drop": float(max_recall_5cm_drop),
                 "deployment_constraints": [
+                    "primary_objective_gain",
                     "recall_2m_not_significantly_worse",
                     "recall_5cm_not_significantly_worse",
                 ],
@@ -230,7 +238,15 @@ def select_checkpoint(
         "selected_tag": selected["tag"],
         "selected_state": selected["state"],
         "selected_metrics": selected["metrics"],
-        "used_strong_fallback": not bool(accepted),
+        # A later alternating stage can legitimately use the selected
+        # residual or BA state as its control.  Keep that identity intact:
+        # calling every control "strong" makes the final test provenance lie
+        # even when the selected state path is correct.
+        "control_tag": control_tag,
+        "used_control_fallback": selected["tag"] == control_tag,
+        # Backward-compatible alias retained for existing readers.  It means
+        # "the control was retained", not necessarily that it was bootstrap.
+        "used_strong_fallback": selected["tag"] == control_tag,
     }
 
 
@@ -243,6 +259,11 @@ def main():
     )
     parser.add_argument("--control_results", required=True, type=Path)
     parser.add_argument("--control_state", required=True, type=Path)
+    parser.add_argument(
+        "--control_tag",
+        default="control_strong",
+        help="Provenance label for the validation control state.",
+    )
     parser.add_argument(
         "--candidate",
         nargs=3,
@@ -268,6 +289,7 @@ def main():
         args.control_results,
         args.control_state,
         args.candidate,
+        control_tag=args.control_tag,
         min_te_gain_cm=args.min_te_gain_cm,
         metric_tolerance=args.metric_tolerance,
         selection_mode=args.selection_mode,

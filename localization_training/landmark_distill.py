@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 
@@ -50,6 +51,75 @@ def spatial_knn_score(points, npoints, score, k=32, eligible=None):
                 break
 
     return torch.tensor(selected, dtype=torch.long, device=points.device).sort().values
+
+
+def ulf_random_knn_vote_sample(points, npoints, vote_score, k=32, seed=0):
+    """Reproduce ULF-Loc's random-seed 3D kNN vote selection.
+
+    ULF-Loc samples ``npoints`` primitive seeds uniformly, finds each seed's
+    ``k`` nearest neighbours in the *entire* primitive cloud, and keeps the
+    highest-vote previously unselected neighbour.  This intentionally does
+    not apply opacity, visibility, voxel, or consensus eligibility filtering.
+    ``seed`` only makes the original randomized procedure reproducible.
+    """
+    points = torch.as_tensor(points, dtype=torch.float32)
+    vote_score = torch.as_tensor(vote_score, dtype=torch.float32).reshape(-1)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape [N, 3]")
+    if vote_score.numel() != points.shape[0]:
+        raise ValueError("vote_score must have one value per point")
+    if not torch.isfinite(points).all():
+        raise ValueError("ULF parity selection requires finite primitive coordinates")
+
+    point_count = int(points.shape[0])
+    sample_count = min(max(int(npoints), 0), point_count)
+    if sample_count == 0:
+        return torch.empty(0, dtype=torch.long, device=points.device)
+
+    # The official implementation uses NumPy random sampling and FAISS
+    # IndexFlatL2.  Keep both semantics here, with an exact but slower torch
+    # fallback for environments where FAISS is unavailable.
+    # ULF-Loc's reproducible path uses NumPy's Generator API rather than the
+    # legacy RandomState API.  The two produce different seed subsets for the
+    # same integer seed, which changes the entire KCS bank.
+    rng = np.random.default_rng(int(seed))
+    seed_indices = rng.choice(point_count, size=sample_count, replace=False)
+    points_cpu = points.detach().cpu().contiguous()
+    k_eff = max(1, min(int(k), point_count))
+    try:
+        import faiss
+
+        index = faiss.IndexFlatL2(points_cpu.shape[1])
+        points_np = points_cpu.numpy()
+        index.add(points_np)
+        _, neighbour_indices = index.search(points_np[seed_indices], k_eff)
+    except ImportError:
+        # This path is deliberately bounded by seed batches to avoid forming a
+        # full ``sample_count x point_count`` matrix at once.
+        chunks = []
+        for start in range(0, sample_count, 256):
+            distances = torch.cdist(
+                points_cpu[torch.from_numpy(seed_indices[start : start + 256])],
+                points_cpu,
+            )
+            chunks.append(torch.topk(distances, k_eff, largest=False, dim=1).indices.numpy())
+        neighbour_indices = np.concatenate(chunks, axis=0)
+
+    scores = vote_score.detach().cpu().numpy()
+    selected = []
+    selected_set = set()
+    for neighbours in neighbour_indices:
+        # Stable ordering makes ties deterministic while retaining the
+        # highest-vote-neighbour rule used by ULF-Loc.
+        for index in neighbours[np.argsort(-scores[neighbours], kind="stable")]:
+            index = int(index)
+            if index not in selected_set:
+                selected_set.add(index)
+                selected.append(index)
+                break
+    return torch.as_tensor(
+        sorted(selected), dtype=torch.long, device=points.device
+    )
 
 
 def voxel_balanced_score(
@@ -241,6 +311,54 @@ def coverage_balanced_score(
     return torch.tensor(selected, dtype=torch.long, device=points.device).sort().values
 
 
+def coverage_ranked_fill(
+    xyz,
+    score,
+    num,
+    eligible,
+    *,
+    selected=None,
+    voxel_size=0.25,
+    max_per_voxel=8,
+    uv=None,
+    image_size=None,
+    grid_size=0,
+    max_per_grid=0,
+    depth=None,
+    depth_bins=0,
+    max_per_depth_bin=0,
+):
+    """Fill a fixed landmark budget without replacing an existing core.
+
+    ``selected`` is excluded from the fill pool and seeds the coverage counters,
+    so a transparent fallback cannot silently displace the strict primary tier.
+    """
+    score = torch.as_tensor(score, dtype=torch.float32)
+    fill_eligible = torch.as_tensor(
+        eligible, dtype=torch.bool, device=score.device
+    ).clone()
+    if selected is not None and selected.numel() > 0:
+        selected = selected.to(device=score.device, dtype=torch.long)
+        fill_eligible[selected] = False
+    return coverage_balanced_score(
+        xyz,
+        num,
+        score,
+        voxel_size=voxel_size,
+        max_per_voxel=max_per_voxel,
+        eligible=fill_eligible,
+        seed_indices=selected,
+        uv=uv,
+        image_size=image_size,
+        grid_size=grid_size,
+        max_per_grid=max_per_grid,
+        depth=depth,
+        depth_bins=depth_bins,
+        max_per_depth_bin=max_per_depth_bin,
+        allow_overflow=True,
+    )
+
+
 def _topk_eligible(score, npoints, eligible, exclude=None):
     score = score.float()
     eligible = eligible.to(device=score.device, dtype=torch.bool).clone()
@@ -252,6 +370,92 @@ def _topk_eligible(score, npoints, eligible, exclude=None):
     count = min(int(npoints), int(valid_idx.numel()))
     order = torch.argsort(score[valid_idx], descending=True)
     return valid_idx[order[:count]]
+
+
+def hard_score_core(score, npoints, eligible=None):
+    """Return a deterministic top-score core before any coverage balancing.
+
+    This is intentionally separate from ``coverage_balanced_score``.  Some
+    map-building objectives need to guarantee that proven high-quality
+    landmarks survive a later coverage pass rather than merely giving their
+    score a soft preference.
+    """
+    score = torch.as_tensor(score, dtype=torch.float32)
+    if eligible is None:
+        eligible = torch.ones_like(score, dtype=torch.bool)
+    else:
+        eligible = torch.as_tensor(
+            eligible, dtype=torch.bool, device=score.device
+        ).reshape(-1)
+    score = score.reshape(-1)
+    if score.numel() != eligible.numel():
+        raise ValueError("score and eligible must have matching lengths")
+    valid_idx = torch.nonzero(eligible, as_tuple=False).squeeze(1)
+    count = min(max(int(npoints), 0), int(valid_idx.numel()))
+    if count == 0:
+        return torch.empty(0, dtype=torch.long, device=score.device)
+    order = torch.argsort(score[valid_idx], descending=True, stable=True)
+    return valid_idx[order[:count]].sort().values
+
+
+def top_score_reservoir(score, budget, multiplier, eligible=None):
+    """Build a bounded matchability reservoir before coverage selection.
+
+    A hard core only has an effect when its remaining coverage candidates are
+    also restricted.  This helper keeps the top ``ceil(budget * multiplier)``
+    eligible entries, with at least ``budget`` entries whenever possible.  It
+    deliberately returns indices rather than a score threshold so ties remain
+    deterministic and the exact membership can be persisted by the caller.
+    """
+    score = torch.as_tensor(score, dtype=torch.float32)
+    if eligible is None:
+        eligible = torch.ones_like(score, dtype=torch.bool)
+    else:
+        eligible = torch.as_tensor(
+            eligible, dtype=torch.bool, device=score.device
+        ).reshape(-1)
+    if score.numel() != eligible.numel():
+        raise ValueError("score and eligible must have matching lengths")
+    requested_budget = max(int(budget), 0)
+    multiplier = max(float(multiplier), 1.0)
+    reservoir_size = max(
+        requested_budget, int(np.ceil(float(requested_budget) * multiplier))
+    )
+    return hard_score_core(score, reservoir_size, eligible=eligible)
+
+
+def wilson_lower_confidence(score_successes, observation_count, z=1.96):
+    """Return a count-aware lower confidence bound for observed clean matches.
+
+    Raw posterior means over-rank one clean observation. The Wilson lower
+    bound is a deterministic, scene-independent calibration: candidates with
+    the same observed precision are ranked by how much evidence supports it.
+    ``score_successes`` may be fractional when proposal observations carry a
+    fixed weight, which is a standard continuous approximation here.
+    """
+    successes = torch.as_tensor(score_successes, dtype=torch.float32)
+    count = torch.as_tensor(
+        observation_count, dtype=torch.float32, device=successes.device
+    )
+    if successes.shape != count.shape:
+        raise ValueError(
+            "score_successes and observation_count must have matching shapes"
+        )
+    z = float(z)
+    if not np.isfinite(z) or z <= 0.0:
+        raise ValueError("Wilson z must be finite and positive")
+    valid = count > 0.0
+    safe_count = count.clamp_min(1e-8)
+    precision = (successes / safe_count).clamp(0.0, 1.0)
+    z2 = z * z
+    denominator = 1.0 + z2 / safe_count
+    center = precision + z2 / (2.0 * safe_count)
+    radius = z * torch.sqrt(
+        (precision * (1.0 - precision) + z2 / (4.0 * safe_count))
+        / safe_count
+    )
+    lower = ((center - radius) / denominator).clamp(0.0, 1.0)
+    return torch.where(valid, lower, torch.zeros_like(lower))
 
 
 def _unique_cat(parts, device):

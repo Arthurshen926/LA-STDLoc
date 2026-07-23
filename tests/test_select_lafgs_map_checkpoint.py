@@ -67,6 +67,38 @@ def test_joint_gate_rejects_pose_gain_that_loses_inlier_cleanliness(tmp_path):
     assert report["used_strong_fallback"] is True
 
 
+def test_selector_preserves_nonbootstrap_control_identity(tmp_path):
+    from scripts.select_lafgs_map_checkpoint import select_checkpoint
+
+    control = _summary(
+        tmp_path / "residual.json",
+        te=3.0,
+        ae=0.15,
+        raw=0.10,
+        inlier=0.40,
+        logdet=12.0,
+    )
+    candidate = _summary(
+        tmp_path / "ba.json",
+        te=2.8,
+        ae=0.20,
+        raw=0.10,
+        inlier=0.39,
+        logdet=12.0,
+    )
+
+    report = select_checkpoint(
+        control,
+        tmp_path / "residual.pt",
+        [("ba", candidate, tmp_path / "ba.pt")],
+        control_tag="residual_5000",
+    )
+
+    assert report["control_tag"] == "residual_5000"
+    assert report["selected_tag"] == "residual_5000"
+    assert report["used_control_fallback"] is True
+
+
 def test_joint_gate_accepts_synchronized_improvement(tmp_path):
     from scripts.select_lafgs_map_checkpoint import select_checkpoint
 
@@ -245,3 +277,55 @@ def test_performance_selector_uses_pose_objective_with_deployment_recall_guard(
     assert report["candidates"][0]["accepted"] is True
     assert report["candidates"][1]["accepted"] is False
     assert report["selection_protocol"]["test_metrics_used"] is False
+
+
+def test_performance_selector_keeps_control_when_candidate_loses_primary_score(
+    tmp_path,
+):
+    from scripts.select_lafgs_map_checkpoint import select_checkpoint
+
+    def write_per_query_results(summary_path, errors):
+        summary_path.with_name("results.json").write_text(
+            json.dumps([{"sparse_TE": error} for error in errors])
+        )
+
+    control = _summary(
+        tmp_path / "control.json",
+        te=3.0,
+        ae=0.15,
+        raw=0.10,
+        inlier=0.40,
+        logdet=12.0,
+    )
+    control_payload = json.loads(control.read_text())
+    control_payload["sparse"].update({"recall_2m_5d": 0.95, "recall_5cm_5d": 0.20})
+    control.write_text(json.dumps(control_payload))
+    write_per_query_results(control, [2.0, 4.0])
+
+    worse = _summary(
+        tmp_path / "worse.json",
+        te=3.2,
+        ae=0.10,
+        raw=0.20,
+        inlier=0.60,
+        logdet=15.0,
+    )
+    worse_payload = json.loads(worse.read_text())
+    worse_payload["sparse"].update({"recall_2m_5d": 0.95, "recall_5cm_5d": 0.20})
+    worse.write_text(json.dumps(worse_payload))
+    write_per_query_results(worse, [2.0, 4.0])
+
+    report = select_checkpoint(
+        control,
+        tmp_path / "control.pt",
+        [("worse", worse, tmp_path / "worse.pt")],
+        selection_mode="performance",
+        mean_te_weight=0.05,
+        max_recall_2m_drop=0.01,
+        max_recall_5cm_drop=0.01,
+    )
+
+    assert report["candidates"][0]["gate_checks"]["primary_objective_gain"] is False
+    assert report["candidates"][0]["accepted"] is False
+    assert report["selected_tag"] == "control_strong"
+    assert report["used_strong_fallback"] is True

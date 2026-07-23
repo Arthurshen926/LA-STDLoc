@@ -17,6 +17,7 @@ def solve_pose(
     progressive_sampling=False,
     max_prosac_iterations=100000,
     ransac_seed=0,
+    return_diagnostics=False,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
@@ -24,9 +25,52 @@ def solve_pose(
     if ransac_seed < 0:
         raise ValueError("ransac_seed must be non-negative")
     match_num = p2d.shape[0]
+    diagnostics = {
+        "solver": str(solver),
+        "ransac_candidate_count": int(match_num),
+        "ransac_configured_max_iterations": int(max_iterations),
+        "ransac_configured_min_iterations": int(min_iterations),
+        "ransac_confidence": float(confidence),
+        "ransac_progressive_sampling": bool(progressive_sampling),
+        "ransac_max_prosac_iterations": int(max_prosac_iterations),
+        "ransac_seed": ransac_seed,
+        "ransac_actual_hypotheses": None,
+        "ransac_actual_hypotheses_available": False,
+        "ransac_inlier_ratio": 0.0,
+        "ransac_required_hypotheses_at_confidence": None,
+    }
+
+    def finish(pose, inliers, *, info=None):
+        inliers = np.asarray(inliers).reshape(-1)
+        inlier_ratio = float(inliers.shape[0] / max(match_num, 1))
+        diagnostics["ransac_inlier_ratio"] = inlier_ratio
+        if info is not None:
+            # Poselib exposes the number of sampled RANSAC hypotheses as
+            # ``iterations``. Preserve it verbatim instead of presenting a
+            # confidence-derived estimate as an actual count.
+            iterations = info.get("iterations") if isinstance(info, dict) else None
+            if iterations is not None:
+                diagnostics["ransac_actual_hypotheses"] = int(iterations)
+                diagnostics["ransac_actual_hypotheses_available"] = True
+            if isinstance(info, dict):
+                diagnostics["ransac_refinements"] = int(info.get("refinements", 0))
+                diagnostics["ransac_model_score"] = float(info.get("model_score", 0.0))
+        if inlier_ratio > 0.0:
+            success_probability = min(max(float(confidence), 1e-12), 1.0 - 1e-12)
+            all_inlier_probability = min(max(inlier_ratio**4, 1e-12), 1.0 - 1e-12)
+            diagnostics["ransac_required_hypotheses_at_confidence"] = int(
+                math.ceil(
+                    math.log(1.0 - success_probability)
+                    / math.log(1.0 - all_inlier_probability)
+                )
+            )
+        if return_diagnostics:
+            return pose, inliers, diagnostics
+        return pose, inliers
+
     if match_num < 4:
         print("[SKIP] No enough matches")
-        return np.eye(4, dtype=np.float32), np.array([])
+        return finish(np.eye(4, dtype=np.float32), np.array([]))
 
     solver_to_input = np.arange(match_num, dtype=np.int64)
     if progressive_sampling:
@@ -58,7 +102,7 @@ def solve_pose(
             w2c[:3, -1] = tvec.flatten()
             w2c = w2c.astype(np.float32)
             inliers = solver_to_input[np.asarray(inliers).reshape(-1)]
-            return w2c, inliers
+            return finish(w2c, inliers)
 
     elif solver == "poselib":
         camera = {
@@ -97,9 +141,9 @@ def solve_pose(
             inliers = info["inliers"]
             indices = np.where(inliers)[0]
             inliers = solver_to_input[indices].reshape(-1, 1).astype(np.int32)
-            return w2c, inliers.flatten()
+            return finish(w2c, inliers.flatten(), info=info)
 
-    return np.eye(4, dtype=np.float32), np.array([])
+    return finish(np.eye(4, dtype=np.float32), np.array([]))
 
 
 def covariance_weighted_pose_refinement(

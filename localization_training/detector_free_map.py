@@ -45,6 +45,25 @@ class DetectorFreeRetrievalOutput:
 
 
 @dataclass
+class NativeAssociationResult:
+    """Detached-descriptor native top-1 associations for surface BA."""
+
+    top1_indices: torch.Tensor
+    top1_scores: torch.Tensor
+    top1_margins: torch.Tensor
+    projected_uv: torch.Tensor
+    projected_depth: torch.Tensor
+    projected: torch.Tensor
+    visible: torch.Tensor
+    reprojection_error: torch.Tensor
+    depth_sample_valid: torch.Tensor
+    depth_compatible: torch.Tensor
+    depth_abs_error: torch.Tensor
+    depth_gate_enabled: bool
+    clean: torch.Tensor
+
+
+@dataclass
 class LocalSoftCorrespondenceOutput:
     expected_uv: torch.Tensor
     confidence: torch.Tensor
@@ -1115,6 +1134,193 @@ def bounded_geometry_losses(
     return surface_loss, depth_loss, reprojection_loss, local, diagnostics
 
 
+def _native_observation_image_size(observations):
+    """Recover the native SuperPoint grid size carried by an observation batch."""
+    for value in (
+        observations.query_valid_mask,
+        observations.target_depth_map,
+        observations.target_alpha_map,
+    ):
+        if value is None:
+            continue
+        value = torch.as_tensor(value)
+        if value.ndim >= 2:
+            return int(value.shape[-2]), int(value.shape[-1])
+    raise ValueError(
+        "Native association BA requires a query valid/depth/alpha map to "
+        "recover the native image resolution"
+    )
+
+
+def native_association_matches(
+    current_xyz,
+    bank_features,
+    observations,
+    *,
+    max_reprojection_error_px=2.0,
+    min_score_margin=0.0,
+    depth_abs_tolerance=0.0,
+    depth_rel_tolerance=0.0,
+    alpha_threshold=0.2,
+):
+    """Retrieve native top-1 matches and gate them with the GT geometry.
+
+    The descriptor bank is deliberately detached.  The returned projection is
+    recomputed from ``current_xyz`` rather than borrowed from a cached
+    observation batch, so the BA residual has an explicit, auditable gradient
+    path to the bounded surface anchor.  An optional rendered-depth gate
+    rejects a reprojection-clean association when its primitive is not on the
+    front surface at the native query proposal.  It is opt-in to preserve the
+    historical position-only BA protocol.
+    """
+    query_count = int(observations.query_features.shape[0])
+    bank_count = int(bank_features.shape[0])
+    if query_count == 0 or bank_count == 0:
+        empty_long = torch.empty(0, dtype=torch.long, device=current_xyz.device)
+        empty_float = current_xyz.new_zeros((0,))
+        empty_uv = current_xyz.new_zeros((0, 2))
+        empty_bool = torch.empty(0, dtype=torch.bool, device=current_xyz.device)
+        return NativeAssociationResult(
+            top1_indices=empty_long,
+            top1_scores=empty_float,
+            top1_margins=empty_float,
+            projected_uv=empty_uv,
+            projected_depth=empty_float,
+            projected=empty_bool,
+            visible=empty_bool,
+            reprojection_error=empty_float,
+            depth_sample_valid=empty_bool,
+            depth_compatible=empty_bool,
+            depth_abs_error=empty_float,
+            depth_gate_enabled=False,
+            clean=empty_bool,
+        )
+    if observations.K is None or observations.pose_w2c is None:
+        raise ValueError("Native association BA requires camera intrinsics and pose")
+
+    query = F.normalize(observations.query_features.detach(), dim=-1)
+    bank = F.normalize(bank_features.detach(), dim=-1)
+    scores = query @ bank.T
+    top_count = min(2, bank_count)
+    top_scores, top_indices = torch.topk(scores, k=top_count, dim=1)
+    top1 = top_indices[:, 0]
+    top1_score = top_scores[:, 0]
+    if top_count > 1:
+        score_margin = top_scores[:, 0] - top_scores[:, 1]
+    else:
+        score_margin = torch.full_like(top1_score, torch.inf)
+
+    height, width = _native_observation_image_size(observations)
+    projected_uv, projected_depth, projected = project_landmarks_to_query(
+        current_xyz,
+        observations.K,
+        observations.pose_w2c,
+        height,
+        width,
+        # Native sparse coordinates are grid indices. The frontend adds 0.5
+        # only for PnP, so projections use the matching grid-index convention.
+        pixel_center_offset=0.5,
+    )
+    base_visible = observations.base_bank_visible
+    if base_visible is None:
+        base_visible = observations.bank_visible
+    base_visible = torch.as_tensor(
+        base_visible, device=current_xyz.device, dtype=torch.bool
+    ).reshape(-1)
+    if base_visible.numel() != bank_count:
+        raise ValueError("native association visibility must match bank size")
+    visible = base_visible & projected
+    if observations.query_valid_mask is not None and bool(visible.any().item()):
+        visible = visible & _mask_at_uv(
+            observations.query_valid_mask,
+            projected_uv,
+        )
+
+    predicted_uv = projected_uv[top1]
+    reprojection_error = torch.linalg.norm(
+        predicted_uv - observations.query_uv.detach(), dim=1
+    )
+    depth_gate_enabled = (
+        float(depth_abs_tolerance) > 0.0 or float(depth_rel_tolerance) > 0.0
+    )
+    depth_sample_valid = torch.ones(
+        query_count, dtype=torch.bool, device=current_xyz.device
+    )
+    depth_compatible = depth_sample_valid
+    depth_abs_error = torch.zeros_like(top1_score)
+    if depth_gate_enabled:
+        if observations.target_depth_map is None:
+            raise ValueError(
+                "Native association depth gating requires target_depth_map"
+            )
+        depth_map = torch.as_tensor(
+            observations.target_depth_map,
+            device=current_xyz.device,
+            dtype=current_xyz.dtype,
+        ).squeeze()
+        rendered_depth = bilinear_sample_features(
+            depth_map[None], observations.query_uv.detach()
+        )[:, 0]
+        predicted_depth = projected_depth[top1]
+        depth_sample_valid = (
+            torch.isfinite(rendered_depth)
+            & (rendered_depth > 0)
+            & torch.isfinite(predicted_depth)
+            & (predicted_depth > 0)
+        )
+        if observations.target_alpha_map is not None:
+            alpha_map = torch.as_tensor(
+                observations.target_alpha_map,
+                device=current_xyz.device,
+                dtype=current_xyz.dtype,
+            ).squeeze()
+            alpha = bilinear_sample_features(
+                alpha_map[None], observations.query_uv.detach()
+            )[:, 0]
+            depth_sample_valid &= torch.isfinite(alpha) & (
+                alpha >= float(alpha_threshold)
+            )
+        depth_abs_error = (predicted_depth - rendered_depth.detach()).abs()
+        depth_tolerance = torch.maximum(
+            depth_abs_error.new_full(
+                depth_abs_error.shape, float(depth_abs_tolerance)
+            ),
+            rendered_depth.detach().abs() * float(depth_rel_tolerance),
+        )
+        depth_compatible = depth_sample_valid & (
+            depth_abs_error.detach() <= depth_tolerance
+        )
+    source_valid = observations.source_indices >= 0
+    clean = (
+        source_valid
+        & visible[top1]
+        & torch.isfinite(reprojection_error)
+        & (reprojection_error.detach() <= float(max_reprojection_error_px))
+        & (score_margin.detach() >= float(min_score_margin))
+        & depth_compatible
+    )
+    if observations.query_valid_mask is not None and bool(clean.any().item()):
+        clean = clean & _mask_at_uv(
+            observations.query_valid_mask,
+            observations.query_uv,
+        )
+    return NativeAssociationResult(
+        top1_indices=top1,
+        top1_scores=top1_score,
+        top1_margins=score_margin,
+        projected_uv=projected_uv,
+        projected_depth=projected_depth,
+        projected=projected,
+        visible=visible,
+        reprojection_error=reprojection_error,
+        depth_sample_valid=depth_sample_valid,
+        depth_compatible=depth_compatible,
+        depth_abs_error=depth_abs_error,
+        depth_gate_enabled=depth_gate_enabled,
+        clean=clean,
+    )
+
+
 def native_association_geometry_losses(
     current_xyz,
     raw_offset,
@@ -1125,6 +1331,9 @@ def native_association_geometry_losses(
     min_score_margin=0.0,
     alpha_threshold=0.2,
     depth_scale_floor=0.25,
+    depth_abs_tolerance=0.0,
+    depth_rel_tolerance=0.0,
+    landmark_support_mask=None,
 ):
     """Fixed-descriptor, native-match-driven bounded surface BA loss.
 
@@ -1144,32 +1353,35 @@ def native_association_geometry_losses(
             "native_geometry_candidate_count": 0,
             "native_geometry_clean_correspondences": 0,
         }
-    query = F.normalize(observations.query_features.detach(), dim=-1)
-    bank = F.normalize(bank_features.detach(), dim=-1)
-    scores = query @ bank.T
-    top_count = min(2, bank_count)
-    top_scores, top_indices = torch.topk(scores, k=top_count, dim=1)
-    top1 = top_indices[:, 0]
-    top1_score = top_scores[:, 0]
-    if top_count > 1:
-        score_margin = top_scores[:, 0] - top_scores[:, 1]
-    else:
-        score_margin = torch.full_like(top1_score, torch.inf)
-    predicted_uv = observations.bank_uv[top1]
-    reprojection_error = torch.linalg.norm(
-        predicted_uv - observations.query_uv.detach(), dim=1
+    association = native_association_matches(
+        current_xyz,
+        bank_features,
+        observations,
+        max_reprojection_error_px=max_reprojection_error_px,
+        min_score_margin=min_score_margin,
+        depth_abs_tolerance=depth_abs_tolerance,
+        depth_rel_tolerance=depth_rel_tolerance,
+        alpha_threshold=alpha_threshold,
     )
-    source_valid = observations.source_indices >= 0
-    clean = (
-        source_valid
-        & observations.bank_visible[top1]
-        & observations.bank_projected[top1]
-        & torch.isfinite(reprojection_error)
-        & (reprojection_error.detach() <= float(max_reprojection_error_px))
-        & (score_margin.detach() >= float(min_score_margin))
-    )
-    if observations.query_valid_mask is not None and bool(clean.any().item()):
-        clean = clean & _mask_at_uv(observations.query_valid_mask, observations.query_uv)
+    top1 = association.top1_indices
+    top1_score = association.top1_scores
+    score_margin = association.top1_margins
+    predicted_uv = association.projected_uv[top1]
+    predicted_depth_all = association.projected_depth
+    reprojection_error = association.reprojection_error
+    clean_before_support = association.clean
+    clean = clean_before_support
+    support_eligible_count = bank_count
+    if landmark_support_mask is not None:
+        landmark_support_mask = torch.as_tensor(
+            landmark_support_mask,
+            device=current_xyz.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        if landmark_support_mask.numel() != bank_count:
+            raise ValueError("landmark_support_mask must match bank size")
+        support_eligible_count = int(landmark_support_mask.sum().item())
+        clean = clean & landmark_support_mask[top1]
 
     reprojection_loss = zero
     if bool(clean.any().item()):
@@ -1191,7 +1403,7 @@ def native_association_geometry_losses(
         rendered_depth = bilinear_sample_features(
             depth_map[None], observations.query_uv[clean].detach()
         )[:, 0]
-        predicted_depth = observations.bank_depth[top1[clean]]
+        predicted_depth = predicted_depth_all[top1[clean]]
         depth_valid = (
             torch.isfinite(rendered_depth)
             & (rendered_depth > 0)
@@ -1225,13 +1437,17 @@ def native_association_geometry_losses(
     source_identity = (
         (top1[clean] == observations.source_indices[clean]).float().mean()
         if bool(clean.any().item())
-        else scores.new_zeros(())
+        else current_xyz.new_zeros(())
     )
     diagnostics = {
         "native_geometry_active": 1.0,
         "native_geometry_candidate_count": query_count,
+        "native_geometry_clean_before_support": int(
+            clean_before_support.sum().detach().item()
+        ),
         "native_geometry_clean_correspondences": int(clean.sum().detach().item()),
         "native_geometry_clean_ratio": float(clean.float().mean().detach().item()),
+        "native_geometry_support_eligible_landmarks": support_eligible_count,
         "native_geometry_reprojection_median_px": float(
             reprojection_error[clean].detach().median().item()
             if bool(clean.any().item())
@@ -1240,6 +1456,42 @@ def native_association_geometry_losses(
         "native_geometry_reprojection_loss": float(reprojection_loss.detach().item()),
         "native_geometry_depth_loss": float(depth_loss.detach().item()),
         "native_geometry_depth_count": depth_count,
+        "native_geometry_depth_gate_enabled": float(association.depth_gate_enabled),
+        "native_geometry_depth_gate_valid_count": int(
+            association.depth_sample_valid.sum().detach().item()
+        ),
+        "native_geometry_depth_gate_pass_count": int(
+            association.depth_compatible.sum().detach().item()
+        ),
+        "native_geometry_depth_gate_rejected_count": int(
+            (
+                association.depth_sample_valid & ~association.depth_compatible
+            ).sum().detach().item()
+        ),
+        "native_geometry_depth_gate_abs_error_median_m": float(
+            association.depth_abs_error[association.depth_sample_valid]
+            .detach()
+            .median()
+            .item()
+            if bool(association.depth_sample_valid.any().item())
+            else 0.0
+        ),
+        "native_geometry_depth_gate_abs_error_p95_m": float(
+            torch.quantile(
+                association.depth_abs_error[association.depth_sample_valid].detach(),
+                0.95,
+            ).item()
+            if bool(association.depth_sample_valid.any().item())
+            else 0.0
+        ),
+        "native_geometry_depth_gate_abs_error_max_m": float(
+            association.depth_abs_error[association.depth_sample_valid]
+            .detach()
+            .max()
+            .item()
+            if bool(association.depth_sample_valid.any().item())
+            else 0.0
+        ),
         "native_geometry_top1_score_mean": float(top1_score.detach().mean().item()),
         "native_geometry_top1_margin_mean": float(score_margin.detach().mean().item()),
         "native_geometry_source_identity_ratio": float(source_identity.detach().item()),
@@ -1577,6 +1829,16 @@ def hard_hypothesis_retrieval_loss(
     unmatched_rejection_weight=0.0,
     unmatched_max_similarity=0.5,
     dustbin_score=None,
+    native_outcome_mode=False,
+    native_nce_weight=0.0,
+    native_keep_weight=1.0,
+    native_keep_margin=0.05,
+    native_swap_weight=1.0,
+    native_swap_margin=0.05,
+    native_miss_weight=1.0,
+    native_miss_margin=0.05,
+    native_reject_weight=0.1,
+    native_reject_threshold=0.5,
 ):
     query_count = int(observations.source_indices.numel())
     bank_count = int(bank_features.shape[0])
@@ -1605,21 +1867,14 @@ def hard_hypothesis_retrieval_loss(
         else torch.as_tensor(dustbin_score, device=logits.device, dtype=logits.dtype)
         / max(float(temperature), 1e-6)
     )
-    loss, valid_rows = _masked_multi_positive_nce(
+    nce_loss, valid_rows = _masked_multi_positive_nce(
         logits,
         positive,
         negative,
         dustbin_logit=dustbin_logit,
     )
-    if float(margin) > 0.0 and bool(valid_rows.any().item()):
-        positive_score = raw_logits.masked_fill(~positive, -torch.inf).max(dim=1).values
-        negative_score = raw_logits.masked_fill(~negative, -torch.inf).max(dim=1).values
-        finite = torch.isfinite(positive_score) & torch.isfinite(negative_score)
-        if bool(finite.any().item()):
-            loss = loss + F.relu(
-                float(margin) + negative_score[finite] - positive_score[finite]
-            ).mean()
     source_valid = observations.source_indices >= 0
+    unmatched = ~source_valid
     source_retrieved = torch.zeros(
         query_count, dtype=torch.bool, device=full_scores.device
     )
@@ -1633,49 +1888,135 @@ def hard_hypothesis_retrieval_loss(
     # landmark set, while exact source-ID recall remains a diagnostic only.
     geometric_retrieved = positive.any(dim=1)
     missed_positive = source_valid & ~geometric_retrieved
-    missed_positive_loss = full_scores.sum() * 0.0
-    if float(missed_positive_weight) > 0.0 and bool(missed_positive.any().item()):
+
+    # The deployed candidate set is the detached full-bank top-K above.  Its
+    # four outcomes are mutually exclusive for a native proposal with a valid
+    # GT association: a correct top-1 is kept, a wrong top-1 with a retained
+    # positive is swapped, and a positive outside top-K is a miss.  Proposals
+    # without a valid association are rejected only when the candidate set is
+    # likewise geometrically empty.  This protects already clean pairs while
+    # retaining a direct gradient for false positives and false negatives.
+    top1_positive = positive[:, 0]
+    keep = source_valid & top1_positive
+    swap = source_valid & ~top1_positive & geometric_retrieved
+    reject = ~source_valid & ~geometric_retrieved
+    zero = full_scores.sum() * 0.0
+
+    candidate_positive_score = raw_logits.masked_fill(
+        ~positive, -torch.inf
+    ).max(dim=1).values
+    candidate_negative_score = raw_logits.masked_fill(
+        ~negative, -torch.inf
+    ).max(dim=1).values
+    keep_valid = keep & torch.isfinite(candidate_negative_score)
+    keep_loss = (
+        F.relu(
+            float(native_keep_margin)
+            + candidate_negative_score[keep_valid]
+            - raw_logits[keep_valid, 0]
+        ).mean()
+        if bool(keep_valid.any().item())
+        else zero
+    )
+    swap_loss = (
+        F.relu(
+            float(native_swap_margin)
+            + raw_logits[swap, 0]
+            - candidate_positive_score[swap]
+        ).mean()
+        if bool(swap.any().item())
+        else zero
+    )
+
+    full_positive_scores = None
+    def _full_positive_best(rows):
+        nonlocal full_positive_scores
+        if not bool(rows.any().item()):
+            return full_scores.new_zeros((0,)), rows
         bank_uv = observations.bank_uv
-        query_uv = observations.query_uv[missed_positive]
+        query_uv = observations.query_uv[rows]
         distance_squared = (
             query_uv.square().sum(dim=1, keepdim=True)
             + bank_uv.square().sum(dim=1)[None]
             - 2.0 * (query_uv @ bank_uv.T)
         ).clamp_min(0.0)
-        full_positive = (
+        full_positive_scores = (
             observations.bank_visible[None]
             & torch.isfinite(distance_squared)
             & (distance_squared <= float(positive_radius_px) ** 2)
         )
-        positive_scores = full_scores[missed_positive].masked_fill(
-            ~full_positive, -torch.inf
-        ).max(dim=1).values
-        retrieved_best = full_scores[missed_positive].gather(
-            1, top_indices[missed_positive, :1]
-        ).squeeze(1)
+        return (
+            full_scores[rows].masked_fill(~full_positive_scores, -torch.inf)
+            .max(dim=1)
+            .values,
+            rows,
+        )
+
+    missed_positive_loss = zero
+    if bool(missed_positive.any().item()):
+        positive_scores, missed_rows = _full_positive_best(missed_positive)
+        retrieved_best = raw_logits[missed_rows, 0]
         valid_miss = torch.isfinite(positive_scores)
         if bool(valid_miss.any().item()):
             missed_positive_loss = F.relu(
-                float(missed_positive_margin)
+                float(native_miss_margin)
                 + retrieved_best[valid_miss]
                 - positive_scores[valid_miss]
             ).mean()
-            loss = loss + float(missed_positive_weight) * missed_positive_loss
 
-    unmatched = ~source_valid
-    unmatched_loss = full_scores.sum() * 0.0
-    if float(unmatched_rejection_weight) > 0.0 and bool(unmatched.any().item()):
-        unmatched_positive = positive[unmatched].any(dim=1)
-        truly_unmatched = unmatched.clone()
-        truly_unmatched[unmatched] = ~unmatched_positive
-        if bool(truly_unmatched.any().item()):
-            best_similarity = full_scores[truly_unmatched].gather(
-                1, top_indices[truly_unmatched, :1]
-            ).squeeze(1)
-            unmatched_loss = F.relu(
-                best_similarity - float(unmatched_max_similarity)
-            ).mean()
-            loss = loss + float(unmatched_rejection_weight) * unmatched_loss
+    unmatched_loss = zero
+    if bool(reject.any().item()):
+        unmatched_loss = F.relu(
+            raw_logits[reject, 0] - float(native_reject_threshold)
+        ).mean()
+
+    if native_outcome_mode:
+        loss = (
+            float(native_nce_weight) * nce_loss
+            + float(native_keep_weight) * keep_loss
+            + float(native_swap_weight) * swap_loss
+            + float(native_miss_weight) * missed_positive_loss
+            + float(native_reject_weight) * unmatched_loss
+        )
+    else:
+        # Preserve the original hard candidate objective for existing
+        # experiments. The explicit outcome terms above are diagnostics until
+        # the native-outcome curriculum is selected by the caller.
+        loss = nce_loss
+        if float(margin) > 0.0 and bool(valid_rows.any().item()):
+            positive_score = raw_logits.masked_fill(~positive, -torch.inf).max(dim=1).values
+            negative_score = raw_logits.masked_fill(~negative, -torch.inf).max(dim=1).values
+            finite = torch.isfinite(positive_score) & torch.isfinite(negative_score)
+            if bool(finite.any().item()):
+                loss = loss + F.relu(
+                    float(margin) + negative_score[finite] - positive_score[finite]
+                ).mean()
+        if float(missed_positive_weight) > 0.0 and bool(missed_positive.any().item()):
+            positive_scores, missed_rows = _full_positive_best(missed_positive)
+            retrieved_best = raw_logits[missed_rows, 0]
+            valid_miss = torch.isfinite(positive_scores)
+            if bool(valid_miss.any().item()):
+                legacy_missed_loss = F.relu(
+                    float(missed_positive_margin)
+                    + retrieved_best[valid_miss]
+                    - positive_scores[valid_miss]
+                ).mean()
+                loss = loss + float(missed_positive_weight) * legacy_missed_loss
+                missed_positive_loss = legacy_missed_loss
+
+        legacy_unmatched_loss = zero
+        if float(unmatched_rejection_weight) > 0.0 and bool(unmatched.any().item()):
+            unmatched_positive = positive[unmatched].any(dim=1)
+            truly_unmatched = unmatched.clone()
+            truly_unmatched[unmatched] = ~unmatched_positive
+            if bool(truly_unmatched.any().item()):
+                best_similarity = raw_logits[truly_unmatched, 0]
+                legacy_unmatched_loss = F.relu(
+                    best_similarity - float(unmatched_max_similarity)
+                ).mean()
+                loss = loss + float(unmatched_rejection_weight) * legacy_unmatched_loss
+                unmatched_loss = legacy_unmatched_loss
+
     diagnostics = _retrieval_diagnostics(
         full_scores.detach(), observations, candidate_indices=None
     )
@@ -1713,6 +2054,16 @@ def hard_hypothesis_retrieval_loss(
                 unmatched_loss.detach().item()
             ),
             "retrieval_candidate_source_injected": 0.0,
+            "retrieval_native_outcome_mode": float(bool(native_outcome_mode)),
+            "retrieval_native_nce_loss": float(nce_loss.detach().item()),
+            "retrieval_native_keep_count": int(keep.sum().item()),
+            "retrieval_native_keep_loss": float(keep_loss.detach().item()),
+            "retrieval_native_swap_count": int(swap.sum().item()),
+            "retrieval_native_swap_loss": float(swap_loss.detach().item()),
+            "retrieval_native_miss_count": int(missed_positive.sum().item()),
+            "retrieval_native_miss_loss": float(missed_positive_loss.detach().item()),
+            "retrieval_native_reject_count": int(reject.sum().item()),
+            "retrieval_native_reject_loss": float(unmatched_loss.detach().item()),
         }
     )
     return DetectorFreeRetrievalOutput(loss, diagnostics)
