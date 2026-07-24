@@ -7,7 +7,7 @@ set -euo pipefail
 # Both residual branches share one immutable all-train KCS/GWFF bootstrap.
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: bash $0 <OldHospital> <gpu> <control|protected>" >&2
+  echo "Usage: bash $0 <OldHospital> <gpu> <control|protected|semantic_control|semantic_full|semantic_full_lgcv>" >&2
   exit 2
 fi
 
@@ -23,9 +23,12 @@ case "$GPU" in
   *) echo "GPU must be 1 or 2" >&2; exit 2 ;;
 esac
 case "$VARIANT" in
-  control) SEMIDENSE_WEIGHT=0 ;;
-  protected) SEMIDENSE_WEIGHT=0.01 ;;
-  *) echo "Variant must be control or protected" >&2; exit 2 ;;
+  control) SEMIDENSE_WEIGHT=0; PROTECTED_SET_WEIGHT=0; LGCV_WEIGHT=0; NEGATIVE_RADIUS=6; REJECT_WEIGHT=0.05 ;;
+  protected) SEMIDENSE_WEIGHT=0.01; PROTECTED_SET_WEIGHT=0; LGCV_WEIGHT=0; NEGATIVE_RADIUS=6; REJECT_WEIGHT=0.05 ;;
+  semantic_control) SEMIDENSE_WEIGHT=0; PROTECTED_SET_WEIGHT=0; LGCV_WEIGHT=0; NEGATIVE_RADIUS=8; REJECT_WEIGHT=0 ;;
+  semantic_full) SEMIDENSE_WEIGHT=0.01; PROTECTED_SET_WEIGHT=0.02; LGCV_WEIGHT=0; NEGATIVE_RADIUS=8; REJECT_WEIGHT=0 ;;
+  semantic_full_lgcv) SEMIDENSE_WEIGHT=0.01; PROTECTED_SET_WEIGHT=0.02; LGCV_WEIGHT=0.1; NEGATIVE_RADIUS=8; REJECT_WEIGHT=0 ;;
+  *) echo "Unknown variant: $VARIANT" >&2; exit 2 ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -111,7 +114,23 @@ numeric("validation_camera_count", 0)
 numeric("native_sparse_keypoint_count", 2048)
 numeric("max_observations", 2048)
 numeric("native_global_attractor_weight", 0.25)
-numeric("native_semidense_weight", 0.0 if variant == "control" else 0.01)
+numeric(
+    "native_semidense_weight",
+    0.01 if variant in {"protected", "semantic_full", "semantic_full_lgcv"} else 0.0,
+)
+numeric(
+    "native_protected_set_weight",
+    0.02 if variant in {"semantic_full", "semantic_full_lgcv"} else 0.0,
+)
+numeric("native_semidense_lgcv_weight", 0.1 if variant == "semantic_full_lgcv" else 0.0)
+numeric(
+    "negative_radius_px",
+    8.0 if variant.startswith("semantic_") else 6.0,
+)
+numeric(
+    "native_reject_weight",
+    0.0 if variant.startswith("semantic_") else 0.05,
+)
 exact("observation_source", "native")
 exact("native_outcome_mode", True)
 exact("geometry_frozen", True)
@@ -125,7 +144,7 @@ PY
 FINAL_STATE="$STATE_ROOT/${STEPS}_lafgs_map_state.pt"
 if [[ ! -f "$FINAL_STATE" ]]; then
   SEMIDENSE_ARGS=()
-  if [[ "$VARIANT" == "protected" ]]; then
+  if [[ "$VARIANT" == "protected" || "$VARIANT" == semantic_full* ]]; then
     SEMIDENSE_ARGS=(
       --native_semidense_weight "$SEMIDENSE_WEIGHT"
       --native_semidense_start_step 1000
@@ -137,7 +156,7 @@ if [[ ! -f "$FINAL_STATE" ]]; then
       --native_semidense_temperature 0.07
       --native_semidense_pose_safe_max_delete_gain_m -1
       --no-native_semidense_pose_safe_teacher_pairs
-      --native_semidense_lgcv_weight 0
+      --native_semidense_lgcv_weight "$LGCV_WEIGHT"
       --native_semidense_lgcv_minimum_edge_px 1
       --native_semidense_protected_v2
       --native_semidense_measurement_min_reprojection_px 2
@@ -150,6 +169,28 @@ if [[ ! -f "$FINAL_STATE" ]]; then
       --native_semidense_margin_preservation_weight 4
       --native_semidense_gradient_audit
     )
+    if [[ "$VARIANT" == semantic_full* ]]; then
+      SEMIDENSE_ARGS+=(
+        --native_semidense_reference_refresh_steps 500
+        --native_semidense_alternate_global
+        --native_semidense_max_gradient_ratio 0.25
+        --native_protected_set_weight "$PROTECTED_SET_WEIGHT"
+        --native_protected_set_start_step 1000
+        --native_protected_set_interval 5
+        --native_protected_set_refresh_visits 1
+        --native_protected_set_ransac_seed 0
+        --native_protected_set_ransac_reprojection_px 8
+        --native_protected_set_ransac_max_iterations 5000
+        --native_protected_set_ransac_min_iterations 100
+        --native_protected_set_max_useful 96
+        --native_protected_set_max_harmful 96
+        --native_protected_set_grid_rows 4
+        --native_protected_set_grid_cols 4
+        --native_protected_set_depth_bins 4
+        --native_protected_set_surface_voxel_m 0.25
+        --native_protected_set_max_per_surface_group 2
+      )
+    fi
   fi
   run_logged train \
     "$PYTHON" train_lafgs_map.py \
@@ -170,7 +211,7 @@ if [[ ! -f "$FINAL_STATE" ]]; then
     --native_keep_weight 1 --native_keep_margin 0.05 \
     --native_swap_weight 1 --native_swap_margin 0.05 \
     --native_miss_weight 1 --native_miss_margin 0.05 \
-    --native_reject_weight 0.05 --native_reject_threshold 0 \
+    --native_reject_weight "$REJECT_WEIGHT" --native_reject_threshold 0 \
     --native_global_attractor_weight 0.25 \
     --native_global_attractor_min_incoming 4 \
     --native_global_attractor_support_power 0.5 \
@@ -180,7 +221,7 @@ if [[ ! -f "$FINAL_STATE" ]]; then
     --dustbin_weight 0 --generic_proposal_count 0 --distill_budget 0 \
     --geometry_weight 0 --pose_weight 0 --pose_gradient_mode off \
     --feature_lr 5e-5 --weight_decay 1e-4 \
-    --hypothesis_topk 32 --positive_radius_px 2 --negative_radius_px 6 \
+    --hypothesis_topk 32 --positive_radius_px 2 --negative_radius_px "$NEGATIVE_RADIUS" \
     --validation_ratio 0 --split_mode stratified_temporal_block \
     --split_seed 2026 --train_seed 2026 \
     --steps "$STEPS" --save_steps 1000 2500 "$STEPS" --log_interval 100

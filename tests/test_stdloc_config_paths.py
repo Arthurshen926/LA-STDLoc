@@ -860,6 +860,53 @@ class STDLocConfigPathTest(unittest.TestCase):
             places=5,
         )
 
+    def test_sparse_matchability_diagnostics_separates_coverage_and_recall(self):
+        import numpy as np
+
+        from stdloc import sparse_matchability_diagnostics
+
+        K = np.array(
+            [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+        )
+        xyz = np.array(
+            [
+                [0.0, 0.0, 5.0],
+                [0.5, 0.0, 5.0],
+                [-0.5, 0.0, 5.0],
+            ]
+        )
+        keypoints = np.array([[49.5, 49.5], [10.0, 10.0]])
+        topk = np.array([[1, 0, 2], [1, 2, 0]])
+        diagnostics = sparse_matchability_diagnostics(
+            keypoints,
+            topk,
+            xyz,
+            K,
+            np.eye(4),
+            100,
+            100,
+            grid_rows=2,
+            grid_cols=2,
+        )
+        self.assertAlmostEqual(
+            diagnostics["sparse_diag_matchable_rate_2px"], 0.5
+        )
+        self.assertAlmostEqual(
+            diagnostics[
+                "sparse_diag_conditional_recall_at_1_given_matchable_2px"
+            ],
+            0.0,
+        )
+        self.assertAlmostEqual(
+            diagnostics[
+                "sparse_diag_conditional_recall_at_4_given_matchable_2px"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            diagnostics["sparse_diag_unmatchable_count_2px"], 1
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -306,6 +306,66 @@ def test_native_global_attractor_prior_reweights_only_known_false_targets():
     assert features.grad[2].abs().sum() > 0.0
 
 
+def test_native_outcome_ignores_measurement_limited_top1_globally():
+    from localization_training.detector_free_map import (
+        DetectorFreeObservationBatch,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    observations = DetectorFreeObservationBatch(
+        source_indices=torch.tensor([0]),
+        query_features=torch.tensor([[1.0, 0.0]]),
+        query_uv=torch.tensor([[10.0, 10.0]]),
+        source_depth=torch.ones(1),
+        bank_uv=torch.tensor([[10.0, 10.0], [15.0, 10.0], [30.0, 30.0]]),
+        bank_depth=torch.ones(3),
+        bank_projected=torch.ones(3, dtype=torch.bool),
+        bank_visible=torch.ones(3, dtype=torch.bool),
+    )
+    features = torch.tensor(
+        [[0.0, 1.0], [1.0, 0.0], [0.8, 0.2]], requires_grad=True
+    )
+    output = hard_hypothesis_retrieval_loss(
+        features,
+        observations,
+        hypothesis_topk=1,
+        positive_radius_px=2.0,
+        negative_radius_px=8.0,
+        native_outcome_mode=True,
+        native_nce_weight=0.0,
+        native_keep_weight=1.0,
+        native_swap_weight=1.0,
+        native_miss_weight=1.0,
+        native_reject_weight=1.0,
+        native_attractor_weight=1.0,
+    )
+    diagnostics = output.diagnostics
+    assert diagnostics["retrieval_native_ambiguous_top1_count"] == 1
+    assert diagnostics["retrieval_native_keep_count"] == 0
+    assert diagnostics["retrieval_native_swap_count"] == 0
+    assert diagnostics["retrieval_native_miss_count"] == 0
+    assert diagnostics["retrieval_native_reject_count"] == 0
+    assert diagnostics["retrieval_native_reject_enabled"] == 1.0
+    assert diagnostics["retrieval_native_reject_weight"] == 1.0
+    assert diagnostics["retrieval_native_attractor_count"] == 0
+    assert output.loss.item() == 0.0
+
+
+def test_native_outcome_api_defaults_to_forced_top1_without_reject():
+    import inspect
+
+    from localization_training.detector_free_map import (
+        hard_hypothesis_retrieval_loss,
+    )
+
+    assert (
+        inspect.signature(hard_hypothesis_retrieval_loss)
+        .parameters["native_reject_weight"]
+        .default
+        == 0.0
+    )
+
+
 def test_native_loose_keep_preserves_a_2_to_4_pixel_top1():
     from localization_training.detector_free_map import (
         DetectorFreeObservationBatch,
@@ -781,6 +841,60 @@ def test_protected_semidense_v2_excludes_current_query_protected_neighbors():
     assert features.grad is not None
     assert features.grad[0].abs().sum() > 0
     assert torch.allclose(features.grad[1], torch.zeros_like(features.grad[1]))
+
+
+def test_protected_semidense_accepts_any_csr_positive_surface():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_semidense_neighborhood_loss,
+    )
+
+    # Landmark 0 is the nearest reprojection positive but lies on a different
+    # depth surface. Landmark 1 is another legal positive on the same surface
+    # as the current 2--8 px top-1 landmark 2.
+    bank_xyz = torch.tensor(
+        [[0.0, 0.0, 5.0], [0.06, 0.0, 2.0], [0.12, 0.0, 2.0]]
+    )
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    dense = torch.zeros(2, 4, 4)
+    dense[0] = 1.0
+    observations = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.ones(1),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(3, dtype=torch.bool),
+        query_feature_map=dense,
+        positive_radius_px=2.0,
+        max_observations=1,
+    )
+    assert observations.source_indices.tolist() == [0]
+    assert set(observations.positive_indices.tolist()) == {0, 1}
+    features = torch.tensor(
+        [[0.0, 1.0], [0.0, 1.0], [1.0, 0.0]], requires_grad=True
+    )
+    _, diagnostics = native_semidense_neighborhood_loss(
+        features,
+        bank_xyz,
+        torch.tensor([[0.0, 0.0, 1.0]]).repeat(3, 1),
+        observations,
+        protected_v2=True,
+        measurement_min_reprojection_px=2.0,
+        measurement_max_reprojection_px=8.0,
+        neighbors_per_anchor=1,
+        surface_max_distance_m=0.15,
+        surface_normal_cosine=0.95,
+        surface_point_plane_m=0.03,
+    )
+
+    assert diagnostics["native_semidense_csr_surface_reference"] == 1.0
+    assert diagnostics["native_semidense_measurement_limited_count"] == 1
+    assert diagnostics["native_semidense_anchor_is_deployment_top1"] == 1.0
 
 
 def test_native_semidense_teacher_updates_same_descriptor_field():

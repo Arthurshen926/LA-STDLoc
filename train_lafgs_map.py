@@ -54,6 +54,10 @@ from localization_training.landmark_distill import (
     ulf_random_knn_vote_sample,
     wilson_lower_confidence,
 )
+from localization_training.hard_candidate_teacher import (
+    HardCandidateTeacherCache,
+    hard_candidate_preservation_loss,
+)
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
 from localization_training.surface_anchor import (
@@ -1334,6 +1338,15 @@ def _validate_ulf_initializer_semantics(args):
             "ulf_consensus_trajectory_bins"
         )
     if (
+        bool(args.ulf_consensus_independent_bin_scoring)
+        and int(args.ulf_consensus_view_bins) <= 0
+        and int(args.ulf_consensus_trajectory_bins) <= 0
+    ):
+        raise ValueError(
+            "ulf_consensus_independent_bin_scoring requires "
+            "ulf_consensus_view_bins or ulf_consensus_trajectory_bins"
+        )
+    if (
         str(args.ulf_support_mask_policy) == "support_rgb_only"
         and int(args.longest_edge) > 0
     ):
@@ -2101,7 +2114,23 @@ def _build_ulf_robust_consensus_landmark_indices(
         if view_bin_count > 0
         else None
     )
+    view_visibility_mask = (
+        torch.zeros(
+            (xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device
+        )
+        if view_bin_count > 0
+        else None
+    )
     trajectory_vote_mask = (
+        torch.zeros(
+            (xyz.shape[0], trajectory_bin_count),
+            dtype=torch.bool,
+            device=xyz.device,
+        )
+        if trajectory_bin_count > 0
+        else None
+    )
+    trajectory_visibility_mask = (
         torch.zeros(
             (xyz.shape[0], trajectory_bin_count),
             dtype=torch.bool,
@@ -2160,6 +2189,14 @@ def _build_ulf_robust_consensus_landmark_indices(
             visible_indices = visible_indices[keep]
         if visible_indices.numel() > 0:
             visibility_counts[visible_indices] += 1
+            if view_visibility_mask is not None:
+                view_visibility_mask[
+                    visible_indices, view_labels[view_index]
+                ] = True
+            if trajectory_visibility_mask is not None:
+                trajectory_visibility_mask[
+                    visible_indices, trajectory_labels[view_index]
+                ] = True
         matched_indices = visible_indices.new_empty((0,), dtype=torch.long)
         if visible_indices.numel() > 0 and keypoints.numel() > 0:
             distance = nearest_keypoint_distance(
@@ -2197,15 +2234,43 @@ def _build_ulf_robust_consensus_landmark_indices(
         if view_vote_mask is not None
         else None
     )
+    visible_view_bins = (
+        view_visibility_mask.sum(dim=1, dtype=torch.int32)
+        if view_visibility_mask is not None
+        else None
+    )
     distinct_trajectories = (
         trajectory_vote_mask.sum(dim=1, dtype=torch.int32)
         if trajectory_vote_mask is not None
         else None
     )
+    visible_trajectory_bins = (
+        trajectory_visibility_mask.sum(dim=1, dtype=torch.int32)
+        if trajectory_visibility_mask is not None
+        else None
+    )
+    independent_bin_scoring = bool(args.ulf_consensus_independent_bin_scoring)
+    if independent_bin_scoring:
+        if distinct_views is not None:
+            consensus_votes = distinct_views
+            consensus_visibility = visible_view_bins
+            consensus_evidence = "camera_center_bins"
+        elif distinct_trajectories is not None:
+            consensus_votes = distinct_trajectories
+            consensus_visibility = visible_trajectory_bins
+            consensus_evidence = "trajectory_bins"
+        else:
+            raise ValueError(
+                "independent-bin KCS scoring requires camera-center or trajectory bins"
+            )
+    else:
+        consensus_votes = votes
+        consensus_visibility = visibility_counts
+        consensus_evidence = "frames"
     min_votes = max(int(args.ulf_consensus_min_votes), 1)
     consensus_eligible, consensus_rate = consensus_eligibility(
-        votes,
-        visibility_counts,
+        consensus_votes,
+        consensus_visibility,
         minimum_votes=min_votes,
         minimum_visible_views=int(args.ulf_consensus_min_visible_views),
         minimum_rate=float(args.ulf_consensus_min_rate),
@@ -2226,10 +2291,10 @@ def _build_ulf_robust_consensus_landmark_indices(
     progressive = base_eligible.clone()
     gate_counts = {"base_eligible": int(progressive.sum().item())}
     gate_masks = [
-        ("minimum_votes", votes >= min_votes),
+        ("minimum_votes", consensus_votes >= min_votes),
         (
             "minimum_visible_views",
-            visibility_counts >= int(args.ulf_consensus_min_visible_views),
+            consensus_visibility >= int(args.ulf_consensus_min_visible_views),
         ),
         ("minimum_consensus_rate", consensus_rate >= float(args.ulf_consensus_min_rate)),
     ]
@@ -2288,9 +2353,9 @@ def _build_ulf_robust_consensus_landmark_indices(
         },
         "progressive_eligible_counts": gate_counts,
         "individual_gate_eligible_counts": {
-            "minimum_votes": _eligible_count(votes >= min_votes),
+            "minimum_votes": _eligible_count(consensus_votes >= min_votes),
             "minimum_visible_views": _eligible_count(
-                visibility_counts >= int(args.ulf_consensus_min_visible_views)
+                consensus_visibility >= int(args.ulf_consensus_min_visible_views)
             ),
             "minimum_consensus_rate": _eligible_count(
                 consensus_rate >= float(args.ulf_consensus_min_rate)
@@ -2316,9 +2381,9 @@ def _build_ulf_robust_consensus_landmark_indices(
             f"{threshold:g}": int(
                 (
                     base_eligible
-                    & (votes >= min_votes)
+                    & (consensus_votes >= min_votes)
                     & (
-                        visibility_counts
+                        consensus_visibility
                         >= int(args.ulf_consensus_min_visible_views)
                     )
                     & (consensus_rate >= threshold)
@@ -2331,6 +2396,14 @@ def _build_ulf_robust_consensus_landmark_indices(
         "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
         "vote_statistics_over_base_eligible": _gate_stat(votes),
         "visibility_statistics_over_base_eligible": _gate_stat(visibility_counts),
+        "consensus_evidence": consensus_evidence,
+        "independent_bin_scoring": independent_bin_scoring,
+        "independent_vote_statistics_over_base_eligible": _gate_stat(
+            consensus_votes
+        ),
+        "independent_visibility_statistics_over_base_eligible": _gate_stat(
+            consensus_visibility
+        ),
         "consensus_rate_statistics_over_base_eligible": _gate_stat(consensus_rate),
         "distinct_view_bin_statistics_over_base_eligible": (
             _gate_stat(distinct_views) if distinct_views is not None else None
@@ -2338,6 +2411,14 @@ def _build_ulf_robust_consensus_landmark_indices(
         "distinct_trajectory_bin_statistics_over_base_eligible": (
             _gate_stat(distinct_trajectories)
             if distinct_trajectories is not None
+            else None
+        ),
+        "visible_view_bin_statistics_over_base_eligible": (
+            _gate_stat(visible_view_bins) if visible_view_bins is not None else None
+        ),
+        "visible_trajectory_bin_statistics_over_base_eligible": (
+            _gate_stat(visible_trajectory_bins)
+            if visible_trajectory_bins is not None
             else None
         ),
     }
@@ -2365,8 +2446,13 @@ def _build_ulf_robust_consensus_landmark_indices(
         candidate_eligible = base_eligible
         fallback_to_non_consensus = True
     # Rate only becomes a score after it has first been enforced as a gate.
-    vote_score = votes.float() + 0.25 * votes.float().max().clamp_min(1.0) * consensus_rate
-    vote_score += 0.01 * visibility_counts.float()
+    vote_score = (
+        consensus_votes.float()
+        + 0.25
+        * consensus_votes.float().max().clamp_min(1.0)
+        * consensus_rate
+    )
+    vote_score += 0.01 * consensus_visibility.float()
     voxel_size = float(args.ulf_consensus_voxel_size)
     if voxel_size <= 0.0:
         voxel_size = _automatic_ulf_voxel_size(xyz[candidate_eligible], requested_budget)
@@ -2384,7 +2470,7 @@ def _build_ulf_robust_consensus_landmark_indices(
             "Robust ULF consensus scaffold could not satisfy the requested budget: "
             f"requested={requested_budget} selected={selected.numel()}"
         )
-    selected_votes = votes[selected]
+    selected_votes = consensus_votes[selected]
     selected_rates = consensus_rate[selected]
     diagnostics = {
         "mode": "ulf_robust_keypoint_consensus_v1",
@@ -2402,6 +2488,8 @@ def _build_ulf_robust_consensus_landmark_indices(
         "minimum_votes": min_votes,
         "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
         "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
+        "consensus_evidence": consensus_evidence,
+        "independent_bin_scoring": independent_bin_scoring,
         "distinct_view_bins": int(view_bin_count),
         "minimum_distinct_view_bins": int(args.ulf_consensus_min_distinct_view_bins),
         "distinct_trajectory_bins": int(trajectory_bin_count),
@@ -2583,6 +2671,25 @@ def _build_ulf_robust_geometry_features(
     cameras = _subsample_ulf_support_cameras(
         cameras, args.ulf_fusion_max_views, args.ulf_support_view_sampling
     )
+    fusion_view_labels, fusion_view_bin_count = _camera_view_bin_ids(
+        cameras, args.ulf_fusion_view_bins
+    )
+    exact_bin_balance = (
+        bool(args.ulf_fusion_exact_bin_balance) and fusion_view_bin_count > 0
+    )
+    fusion_view_balance = None
+    if fusion_view_bin_count > 0 and not exact_bin_balance:
+        label_tensor = torch.as_tensor(
+            fusion_view_labels, dtype=torch.long, device=bank_xyz.device
+        )
+        bin_counts = torch.bincount(
+            label_tensor, minlength=fusion_view_bin_count
+        ).clamp_min(1)
+        fusion_view_balance = (
+            float(len(cameras))
+            / float(fusion_view_bin_count)
+            / bin_counts[label_tensor].float()
+        )
     policy = str(args.ulf_support_mask_policy)
     feature_dim = int(fallback_features.shape[1])
     bank_count = int(bank_xyz.shape[0])
@@ -2595,7 +2702,7 @@ def _build_ulf_robust_geometry_features(
     def for_each_observation(description, callback, *, record_views=False):
         nonlocal sampled_weight_sum, sampled_weight_count, native_size_mismatch_views
         records = []
-        for camera in tqdm(cameras, desc=description):
+        for view_index, camera in enumerate(tqdm(cameras, desc=description)):
             image, valid_mask, _ = _ulf_support_feature_input(
                 camera,
                 masks,
@@ -2649,13 +2756,24 @@ def _build_ulf_robust_geometry_features(
                     normals[compact_indices],
                     camera.camera_center.cuda(),
                 ).float()
+                if fusion_view_balance is not None:
+                    weights = weights * fusion_view_balance[view_index]
                 useful = weights > 0.0
                 compact_indices = compact_indices[useful]
                 sampled = sampled[useful]
                 weights = weights[useful]
                 useful_count = int(compact_indices.numel())
                 if useful_count:
-                    callback(compact_indices, sampled.float(), weights)
+                    callback(
+                        compact_indices,
+                        sampled.float(),
+                        weights,
+                        (
+                            int(fusion_view_labels[view_index])
+                            if fusion_view_bin_count > 0
+                            else -1
+                        ),
+                    )
                     if record_views:
                         sampled_weight_sum += float(weights.sum().item())
                         sampled_weight_count += useful_count
@@ -2672,14 +2790,74 @@ def _build_ulf_robust_geometry_features(
             del dense_features
         return records
 
-    prototype_sum = torch.zeros(
-        (bank_count, feature_dim), device=bank_xyz.device, dtype=torch.float32
+    accumulator_leading_shape = (
+        (fusion_view_bin_count, bank_count)
+        if exact_bin_balance
+        else (bank_count,)
     )
-    prototype_weight = torch.zeros(bank_count, device=bank_xyz.device)
+    prototype_sum = torch.zeros(
+        (*accumulator_leading_shape, feature_dim),
+        device=bank_xyz.device,
+        dtype=torch.float32,
+    )
+    prototype_weight = torch.zeros(
+        accumulator_leading_shape,
+        device=bank_xyz.device,
+        dtype=torch.float32,
+    )
 
-    def accumulate_prototype(indices, sampled, weights):
-        prototype_sum.index_add_(0, indices, sampled * weights[:, None])
-        prototype_weight.index_add_(0, indices, weights)
+    def accumulate_weighted(
+        descriptor_sum,
+        weight_sum,
+        indices,
+        sampled,
+        weights,
+        view_bin,
+    ):
+        if exact_bin_balance:
+            descriptor_sum[view_bin].index_add_(
+                0, indices, sampled * weights[:, None]
+            )
+            weight_sum[view_bin].index_add_(0, indices, weights)
+        else:
+            descriptor_sum.index_add_(0, indices, sampled * weights[:, None])
+            weight_sum.index_add_(0, indices, weights)
+
+    def finalize_weighted(descriptor_sum, weight_sum, fallback):
+        if not exact_bin_balance:
+            observed = weight_sum > 1e-8
+            result = F.normalize(fallback.float(), dim=-1).clone()
+            if bool(observed.any().item()):
+                result[observed] = F.normalize(
+                    descriptor_sum[observed] / weight_sum[observed, None],
+                    dim=-1,
+                )
+            return result, observed
+        observed_by_bin = weight_sum > 1e-8
+        observed = observed_by_bin.any(dim=0)
+        result = F.normalize(fallback.float(), dim=-1).clone()
+        if bool(observed.any().item()):
+            per_bin = F.normalize(
+                descriptor_sum
+                / weight_sum.clamp_min(1e-8)[..., None],
+                dim=-1,
+            )
+            per_bin = per_bin * observed_by_bin[..., None]
+            equal_bin_mean = per_bin.sum(dim=0) / observed_by_bin.sum(
+                dim=0
+            ).clamp_min(1)[..., None]
+            result[observed] = F.normalize(equal_bin_mean[observed], dim=-1)
+        return result, observed
+
+    def accumulate_prototype(indices, sampled, weights, view_bin):
+        accumulate_weighted(
+            prototype_sum,
+            prototype_weight,
+            indices,
+            sampled,
+            weights,
+            view_bin,
+        )
         pretrim_count.index_add_(
             0, indices, torch.ones_like(indices, dtype=pretrim_count.dtype)
         )
@@ -2687,14 +2865,9 @@ def _build_ulf_robust_geometry_features(
     first_pass_records = for_each_observation(
         "Robust ULF GWFF prototype", accumulate_prototype, record_views=True
     )
-    prototype_observed = prototype_weight > 1e-8
-    prototype = F.normalize(fallback_features.float(), dim=-1).clone()
-    if bool(prototype_observed.any().item()):
-        prototype[prototype_observed] = F.normalize(
-            prototype_sum[prototype_observed]
-            / prototype_weight[prototype_observed, None],
-            dim=-1,
-        )
+    prototype, prototype_observed = finalize_weighted(
+        prototype_sum, prototype_weight, fallback_features
+    )
 
     reference_mode = str(args.ulf_fusion_reference_mode)
     reference = prototype
@@ -2709,7 +2882,7 @@ def _build_ulf_robust_geometry_features(
         )
         medoid_features = prototype.clone()
 
-        def accumulate_medoid(indices, sampled, _weights):
+        def accumulate_medoid(indices, sampled, _weights, _view_bin):
             update_weighted_cosine_medoid_state(
                 medoid_scores,
                 medoid_features,
@@ -2750,7 +2923,7 @@ def _build_ulf_robust_geometry_features(
             device=bank_xyz.device,
         )
 
-        def accumulate_histogram(indices, sampled, _weights):
+        def accumulate_histogram(indices, sampled, _weights, _view_bin):
             cosine = (sampled * reference[indices]).sum(dim=1)
             histogram.copy_(accumulate_cosine_histogram(histogram, indices, cosine))
 
@@ -2784,7 +2957,7 @@ def _build_ulf_robust_geometry_features(
         trimmed_weight = torch.zeros_like(prototype_weight)
         posttrim_count = torch.zeros_like(pretrim_count)
 
-        def accumulate_trimmed(indices, sampled, weights):
+        def accumulate_trimmed(indices, sampled, weights, view_bin):
             cosine = (sampled * reference[indices]).sum(dim=1)
             keep = cosine >= thresholds[indices]
             if not bool(keep.any().item()):
@@ -2792,19 +2965,22 @@ def _build_ulf_robust_geometry_features(
             indices = indices[keep]
             sampled = sampled[keep]
             weights = weights[keep]
-            trimmed_sum.index_add_(0, indices, sampled * weights[:, None])
-            trimmed_weight.index_add_(0, indices, weights)
+            accumulate_weighted(
+                trimmed_sum,
+                trimmed_weight,
+                indices,
+                sampled,
+                weights,
+                view_bin,
+            )
             posttrim_count.index_add_(
                 0, indices, torch.ones_like(indices, dtype=posttrim_count.dtype)
             )
 
         for_each_observation("Robust ULF GWFF trimmed fusion", accumulate_trimmed)
-        retained = trimmed_weight > 1e-8
-        result = F.normalize(fallback_features.float(), dim=-1).clone()
-        if bool(retained.any().item()):
-            result[retained] = F.normalize(
-                trimmed_sum[retained] / trimmed_weight[retained, None], dim=-1
-            )
+        result, retained = finalize_weighted(
+            trimmed_sum, trimmed_weight, fallback_features
+        )
 
     observed = posttrim_count > 0
     retained_fraction = float(
@@ -2893,6 +3069,17 @@ def _build_ulf_robust_geometry_features(
         "geometry_weight_mean": sampled_weight_sum / max(sampled_weight_count, 1),
         "geometry_weighted_samples": int(sampled_weight_count),
         "fusion_view_count": int(len(cameras)),
+        "fusion_view_bin_count": int(fusion_view_bin_count),
+        "fusion_view_bin_balanced": bool(fusion_view_bin_count > 0),
+        "fusion_view_bin_balance_mode": (
+            "per_landmark_bin_then_equal_bin"
+            if exact_bin_balance
+            else (
+                "inverse_global_frame_count"
+                if fusion_view_bin_count > 0
+                else "frame_weighted"
+            )
+        ),
         "support_view_sampling": str(args.ulf_support_view_sampling),
         "support_mask_policy": policy,
         "native_stride8_size_mismatch_views": int(native_size_mismatch_views),
@@ -3528,6 +3715,7 @@ def _collect_landmark_statistics(
     identity_sources = []
     identity_predictions = []
     benign_switch_count = torch.zeros(count, device=device)
+    ambiguous_switch_count = torch.zeros(count, device=device)
     harmful_switch_count = torch.zeros(count, device=device)
     recall_at_k_sum = {1: 0.0, 4: 0.0, 8: 0.0, 16: 0.0}
     recall_at_k_queries = 0
@@ -3571,12 +3759,18 @@ def _collect_landmark_statistics(
         else:
             candidate_positive = top_indices == source[:, None]
         top1_positive = candidate_positive[:, 0]
-        raw_switch = top1 != source
-        benign_switch = raw_switch & top1_positive
-        harmful_switch = ~top1_positive
         top1_distance = torch.linalg.norm(
             observations.bank_uv[top1] - observations.query_uv, dim=1
         )
+        top1_projected = observations.bank_projected[top1]
+        raw_switch = top1 != source
+        benign_switch = raw_switch & top1_positive
+        ambiguous_switch = (
+            ~top1_positive
+            & top1_projected
+            & (top1_distance < float(args.negative_radius_px))
+        )
+        harmful_switch = ~top1_positive & ~ambiguous_switch
         clean = observations.bank_visible[top1] & (
             top1_distance <= float(args.positive_radius_px)
         )
@@ -3601,7 +3795,6 @@ def _collect_landmark_statistics(
         local_error = torch.linalg.norm(
             local.expected_uv - observations.query_uv, dim=1
         )
-        top1_projected = observations.bank_projected[top1]
         finite_top1_distance = top1_distance[
             top1_projected & torch.isfinite(top1_distance)
         ]
@@ -3610,6 +3803,7 @@ def _collect_landmark_statistics(
         correct_count.index_add_(0, source, clean.float())
         source_top1_count.index_add_(0, source, (top1 == source).float())
         benign_switch_count.index_add_(0, source, benign_switch.float())
+        ambiguous_switch_count.index_add_(0, source, ambiguous_switch.float())
         harmful_switch_count.index_add_(0, source, harmful_switch.float())
         identity_sources.append(source.detach().cpu())
         identity_predictions.append(top1.detach().cpu())
@@ -3728,6 +3922,9 @@ def _collect_landmark_statistics(
     identity_dominance = identity_dominant_count / observation_count.clamp_min(1.0)
     identity_switch_rate = (1.0 - identity_dominance).clamp(0.0, 1.0)
     benign_switch_rate = benign_switch_count / observation_count.clamp_min(1.0)
+    ambiguous_switch_rate = (
+        ambiguous_switch_count / observation_count.clamp_min(1.0)
+    )
     harmful_switch_rate = harmful_switch_count / observation_count.clamp_min(1.0)
     statistics = {
         "observation_count": observation_count,
@@ -3739,6 +3936,7 @@ def _collect_landmark_statistics(
         "cross_view_top1_identity_dominance": identity_dominance,
         "cross_view_top1_identity_switch_rate": identity_switch_rate,
         "cross_view_top1_benign_positive_switch_rate": benign_switch_rate,
+        "cross_view_top1_ambiguous_switch_rate": ambiguous_switch_rate,
         "cross_view_top1_harmful_switch_rate": harmful_switch_rate,
         "proposal_observation_count": proposal_observation_count,
         "proposal_correct_count": proposal_correct_count,
@@ -3782,6 +3980,11 @@ def _collect_landmark_statistics(
                 if bool((observation_count > 0).any())
                 else 0.0
             ),
+            "cross_view_top1_ambiguous_switch_rate_mean": float(
+                ambiguous_switch_rate[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
+                else 0.0
+            ),
             "cross_view_top1_harmful_switch_rate_mean": float(
                 harmful_switch_rate[observation_count > 0].mean().item()
                 if bool((observation_count > 0).any())
@@ -3822,6 +4025,8 @@ def _collect_native_global_attractor_statistics(
     landmark_count = int(bank_xyz.shape[0])
     device = bank_xyz.device
     incoming_count = torch.zeros(landmark_count, device=device)
+    decisive_count = torch.zeros(landmark_count, device=device)
+    ambiguous_count = torch.zeros(landmark_count, device=device)
     false_count = torch.zeros(landmark_count, device=device)
     correct_count = torch.zeros(landmark_count, device=device)
     normalized_features = F.normalize(features.detach(), dim=1)
@@ -3857,10 +4062,18 @@ def _collect_native_global_attractor_statistics(
         clean = observations.bank_visible[top1] & (
             top1_distance <= float(args.positive_radius_px)
         )
+        ambiguous = (
+            ~clean
+            & observations.bank_projected[top1]
+            & (top1_distance < float(args.negative_radius_px))
+        )
+        false = ~clean & ~ambiguous
         ones = torch.ones_like(top1, dtype=incoming_count.dtype)
         incoming_count.index_add_(0, top1, ones)
+        decisive_count.index_add_(0, top1[~ambiguous], ones[~ambiguous])
+        ambiguous_count.index_add_(0, top1[ambiguous], ones[ambiguous])
         correct_count.index_add_(0, top1[clean], ones[clean])
-        false_count.index_add_(0, top1[~clean], ones[~clean])
+        false_count.index_add_(0, top1[false], ones[false])
         records.append(
             {
                 "observations": int(top1.numel()),
@@ -3869,9 +4082,9 @@ def _collect_native_global_attractor_statistics(
             }
         )
 
-    observed = incoming_count > 0
+    observed = decisive_count > 0
     false_rate = torch.zeros_like(incoming_count)
-    false_rate[observed] = false_count[observed] / incoming_count[observed]
+    false_rate[observed] = false_count[observed] / decisive_count[observed]
     min_incoming = max(int(args.native_global_attractor_min_incoming), 1)
     eligible = incoming_count >= float(min_incoming)
     support_reference = (
@@ -3904,9 +4117,12 @@ def _collect_native_global_attractor_statistics(
             "native_global_attractor_prior_false_count": int(
                 false_count.sum().item()
             ),
+            "native_global_attractor_prior_ambiguous_count": int(
+                ambiguous_count.sum().item()
+            ),
             "native_global_attractor_prior_raw_false_rate": float(
                 false_count.sum().item()
-                / incoming_count.sum().clamp_min(1.0).item()
+                / decisive_count.sum().clamp_min(1.0).item()
             ),
             "native_global_attractor_prior_eligible_landmarks": int(
                 eligible.sum().item()
@@ -3925,6 +4141,8 @@ def _collect_native_global_attractor_statistics(
     )
     return {
         "incoming_count": incoming_count,
+        "decisive_count": decisive_count,
+        "ambiguous_count": ambiguous_count,
         "false_count": false_count,
         "correct_count": correct_count,
         "false_rate": false_rate,
@@ -4832,6 +5050,44 @@ def _state_config(
         "native_semidense_gradient_audit": bool(
             args.native_semidense_gradient_audit
         ),
+        "native_semidense_reference_refresh_steps": int(
+            args.native_semidense_reference_refresh_steps
+        ),
+        "native_semidense_alternate_global": bool(
+            args.native_semidense_alternate_global
+        ),
+        "native_semidense_max_gradient_ratio": float(
+            args.native_semidense_max_gradient_ratio
+        ),
+        "native_protected_set_weight": float(
+            args.native_protected_set_weight
+        ),
+        "native_protected_set_start_step": int(
+            args.native_protected_set_start_step
+        ),
+        "native_protected_set_interval": int(
+            args.native_protected_set_interval
+        ),
+        "native_protected_set_refresh_visits": int(
+            args.native_protected_set_refresh_visits
+        ),
+        "native_protected_set_contract": {
+            "fixed_seed_ransac": True,
+            "ransac_seed": int(args.native_protected_set_ransac_seed),
+            "strong_positive_radius_px": float(args.positive_radius_px),
+            "neutral_radius_px": float(args.negative_radius_px),
+            "max_useful": int(args.native_protected_set_max_useful),
+            "max_harmful": int(args.native_protected_set_max_harmful),
+            "grid_rows": int(args.native_protected_set_grid_rows),
+            "grid_cols": int(args.native_protected_set_grid_cols),
+            "depth_bins": int(args.native_protected_set_depth_bins),
+            "surface_voxel_m": float(
+                args.native_protected_set_surface_voxel_m
+            ),
+            "max_per_surface_group": int(
+                args.native_protected_set_max_per_surface_group
+            ),
+        },
         "temperature": float(args.temperature),
         "hypothesis_topk": int(args.hypothesis_topk),
         "random_negative_count": int(args.random_negative_count),
@@ -4945,6 +5201,9 @@ def _state_config(
         "ulf_consensus_min_distinct_trajectory_bins": int(
             args.ulf_consensus_min_distinct_trajectory_bins
         ),
+        "ulf_consensus_independent_bin_scoring": bool(
+            args.ulf_consensus_independent_bin_scoring
+        ),
         "ulf_consensus_allow_nonconsensus_fallback": (
             None
             if args.ulf_consensus_allow_nonconsensus_fallback is None
@@ -4978,6 +5237,10 @@ def _state_config(
         "ulf_fusion_reference_mode": str(args.ulf_fusion_reference_mode),
         "ulf_fusion_trim_histogram_bins": int(
             args.ulf_fusion_trim_histogram_bins
+        ),
+        "ulf_fusion_view_bins": int(args.ulf_fusion_view_bins),
+        "ulf_fusion_exact_bin_balance": bool(
+            args.ulf_fusion_exact_bin_balance
         ),
         "ulf_support_mask_policy": str(args.ulf_support_mask_policy),
         "ulf_parity_fusion_channel_chunk": int(
@@ -5185,6 +5448,7 @@ def train(dataset, args):
         or float(args.ulf_consensus_min_rate) != 0.0
         or int(args.ulf_consensus_min_distinct_view_bins) != 0
         or int(args.ulf_consensus_min_distinct_trajectory_bins) != 0
+        or bool(args.ulf_consensus_independent_bin_scoring)
     ):
         raise ValueError(
             "Strict ULF parity cannot be combined with robust KCS/GWFF gates; "
@@ -5652,6 +5916,34 @@ def train(dataset, args):
     empty_observation_steps = 0
     empty_observation_checkpoint_steps = []
     semidense_reference_features = initial_features.detach().clone()
+    protected_set_teacher = None
+    if (
+        native_observation_mode
+        and float(args.native_protected_set_weight) > 0.0
+    ):
+        protected_set_teacher = HardCandidateTeacherCache(
+            refresh_visits=args.native_protected_set_refresh_visits,
+            solver="poselib",
+            reprojection_error=args.native_protected_set_ransac_reprojection_px,
+            confidence=0.99999,
+            max_iterations=args.native_protected_set_ransac_max_iterations,
+            min_iterations=args.native_protected_set_ransac_min_iterations,
+            ransac_seed=args.native_protected_set_ransac_seed,
+            min_inliers=4,
+            max_pose_error_cm=args.native_protected_set_max_pose_error_cm,
+            max_useful=args.native_protected_set_max_useful,
+            max_harmful=args.native_protected_set_max_harmful,
+            useful_grid_rows=args.native_protected_set_grid_rows,
+            useful_grid_cols=args.native_protected_set_grid_cols,
+            useful_depth_bins=args.native_protected_set_depth_bins,
+            useful_surface_voxel_m=(
+                args.native_protected_set_surface_voxel_m
+            ),
+            useful_max_per_surface_group=(
+                args.native_protected_set_max_per_surface_group
+            ),
+            harmful_mode="all_false",
+        )
 
     def save_checkpoint(step, checkpoint_xyz, *, after_empty_observation=False):
         checkpoint_features = materialize_descriptor_residual(
@@ -5838,6 +6130,91 @@ def train(dataset, args):
             initial_features,
             weights=trust_weights,
         )
+        protected_set_active = (
+            descriptor_active
+            and protected_set_teacher is not None
+            and step >= int(args.native_protected_set_start_step)
+            and step
+            % max(int(args.native_protected_set_interval), 1)
+            == 0
+        )
+        if protected_set_active:
+            normalized_query = F.normalize(
+                observations.query_features.detach(), dim=1
+            )
+            protected_scores = normalized_query @ F.normalize(
+                features, dim=1
+            ).T
+            protected_top1_scores, protected_top1_indices = (
+                protected_scores.max(dim=1)
+            )
+            protected_distance = torch.linalg.norm(
+                observations.bank_uv[protected_top1_indices]
+                - observations.query_uv,
+                dim=1,
+            )
+            protected_projected = observations.bank_projected[
+                protected_top1_indices
+            ]
+            protected_visible = observations.bank_visible[
+                protected_top1_indices
+            ]
+            protected_correct = protected_visible & (
+                protected_distance <= float(args.positive_radius_px)
+            )
+            protected_neutral = (
+                ~protected_correct
+                & protected_projected
+                & (
+                    protected_distance
+                    < float(args.negative_radius_px)
+                )
+            )
+            protected_rows = torch.arange(
+                observations.query_uv.shape[0],
+                device=features.device,
+                dtype=torch.long,
+            )
+            protected_targets = protected_set_teacher.build(
+                query_name,
+                keypoint_xy=observations.query_uv,
+                keypoint_ids=protected_rows,
+                candidate_keypoint_idx=protected_rows,
+                candidate_landmark_idx=protected_top1_indices.detach(),
+                candidate_scores=protected_top1_scores.detach(),
+                deployment_mask=torch.ones_like(
+                    protected_rows, dtype=torch.bool
+                ),
+                gt_correct_mask=protected_correct.detach(),
+                gt_neutral_mask=protected_neutral.detach(),
+                landmark_xyz=current_xyz.detach(),
+                K=observations.K,
+                pose_gt_w2c=observations.pose_w2c,
+            )
+            (
+                protected_set_loss,
+                protected_set_loss_diagnostics,
+            ) = hard_candidate_preservation_loss(
+                protected_top1_scores,
+                protected_targets,
+                temperature=args.native_protected_set_temperature,
+                margin=args.native_protected_set_margin,
+                score_target=args.native_protected_set_score_target,
+            )
+            protected_set_diagnostics = {
+                "native_protected_set_active": 1.0,
+                **{
+                    key: value
+                    for key, value in protected_targets.diagnostics.items()
+                    if isinstance(value, (bool, int, float))
+                },
+                **protected_set_loss_diagnostics,
+            }
+        else:
+            protected_set_loss = features.sum() * 0.0
+            protected_set_diagnostics = {
+                "native_protected_set_active": 0.0
+            }
         native_semidense_active = (
             descriptor_active
             and str(args.observation_source) in {"native", "native_plus_anchor"}
@@ -6040,9 +6417,17 @@ def train(dataset, args):
             "native_semidense_local_grad_norm": 0.0,
             "native_semidense_global_local_grad_cosine": 0.0,
             "native_semidense_gradient_conflict": 0.0,
+            "native_semidense_effective_weight_scale": 1.0,
+            "native_semidense_gradient_ratio_after_cap": 0.0,
+            "native_semidense_alternating_local_step": float(
+                native_semidense_active
+                and args.native_semidense_alternate_global
+            ),
         }
-        if native_semidense_active and bool(
-            args.native_semidense_gradient_audit
+        semidense_weight_scale = 1.0
+        if native_semidense_active and (
+            bool(args.native_semidense_gradient_audit)
+            or float(args.native_semidense_max_gradient_ratio) > 0.0
         ):
             global_gradient = torch.autograd.grad(
                 args.retrieval_weight * retrieval_loss,
@@ -6063,6 +6448,21 @@ def train(dataset, args):
                 local_norm = torch.linalg.norm(local_flat)
                 denominator = (global_norm * local_norm).clamp_min(1e-12)
                 cosine = torch.dot(global_flat, local_flat) / denominator
+                maximum_ratio = float(
+                    args.native_semidense_max_gradient_ratio
+                )
+                if maximum_ratio > 0.0:
+                    if float(local_norm.item()) <= 0.0:
+                        semidense_weight_scale = 1.0
+                    elif float(global_norm.item()) <= 0.0:
+                        semidense_weight_scale = 0.0
+                    else:
+                        semidense_weight_scale = min(
+                            1.0,
+                            maximum_ratio
+                            * float(global_norm.item())
+                            / float(local_norm.item()),
+                        )
                 semidense_gradient_diagnostics = {
                     "native_semidense_gradient_audit_active": 1.0,
                     "native_semidense_global_grad_norm": float(
@@ -6077,16 +6477,39 @@ def train(dataset, args):
                     "native_semidense_gradient_conflict": float(
                         cosine.item() < 0.0
                     ),
+                    "native_semidense_effective_weight_scale": float(
+                        semidense_weight_scale
+                    ),
+                    "native_semidense_gradient_ratio_after_cap": float(
+                        semidense_weight_scale
+                        * float(local_norm.item())
+                        / max(float(global_norm.item()), 1e-12)
+                    ),
+                    "native_semidense_alternating_local_step": float(
+                        args.native_semidense_alternate_global
+                    ),
                 }
+        global_retrieval_scale = float(
+            not (
+                native_semidense_active
+                and bool(args.native_semidense_alternate_global)
+            )
+        )
         loss = (
             descriptor_scale
             * (
                 args.mv_weight * mv_loss
-                + args.retrieval_weight * retrieval_loss
+                + global_retrieval_scale
+                * args.retrieval_weight
+                * retrieval_loss
                 + args.generic_proposal_weight * proposal_retrieval_loss
                 + args.local_weight * local_loss
-                + args.native_semidense_weight * native_semidense_loss
+                + semidense_weight_scale
+                * args.native_semidense_weight
+                * native_semidense_loss
                 + args.trust_weight * trust_loss
+                + args.native_protected_set_weight
+                * protected_set_loss
                 + args.dustbin_weight * dustbin_loss
             )
             + (
@@ -6144,7 +6567,15 @@ def train(dataset, args):
                 normal_bound_m=args.normal_bound_m,
             )
             displacement = torch.linalg.norm(current_xyz - base_bank_xyz, dim=1)
-            if gradients_finite and native_semidense_active:
+            if (
+                gradients_finite
+                and native_semidense_active
+                and step
+                % max(
+                    int(args.native_semidense_reference_refresh_steps), 1
+                )
+                == 0
+            ):
                 semidense_reference_features.copy_(
                     materialize_descriptor_residual(
                         initial_features,
@@ -6173,6 +6604,9 @@ def train(dataset, args):
                 native_semidense_loss.detach().item()
             ),
             "trust_loss": float(trust_loss.detach().item()),
+            "native_protected_set_loss": float(
+                protected_set_loss.detach().item()
+            ),
             "dustbin_loss": float(dustbin_loss.detach().item()),
             "surface_loss": float(surface_loss.detach().item()),
             "depth_loss": float(depth_loss.detach().item()),
@@ -6214,6 +6648,21 @@ def train(dataset, args):
                 if observations.native_selected_count is not None
                 else observations.query_features.shape[0]
             ),
+            "native_selected_input_ratio": float(
+                (
+                    observations.native_selected_count
+                    if observations.native_selected_count is not None
+                    else observations.query_features.shape[0]
+                )
+                / max(
+                    int(
+                        observations.native_input_count
+                        if observations.native_input_count is not None
+                        else observations.query_features.shape[0]
+                    ),
+                    1,
+                )
+            ),
             "configured_max_observations": int(
                 observations.configured_max_observations
                 if observations.configured_max_observations is not None
@@ -6244,6 +6693,7 @@ def train(dataset, args):
             **proposal_retrieval_diagnostics,
             **local_diagnostics,
             **native_semidense_diagnostics,
+            **protected_set_diagnostics,
             **semidense_gradient_diagnostics,
             **dustbin_diagnostics,
             **geometry_diagnostics,
@@ -6600,6 +7050,16 @@ def build_parser():
         help="Robust KCS: distinct voting trajectory bins required per landmark.",
     )
     parser.add_argument(
+        "--ulf_consensus_independent_bin_scoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use independent camera-center bins (or trajectory bins when camera "
+            "bins are disabled) for KCS votes, visibility rates, and ranking "
+            "instead of counting correlated frames repeatedly."
+        ),
+    )
+    parser.add_argument(
         "--ulf_consensus_allow_nonconsensus_fallback",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -6668,6 +7128,24 @@ def build_parser():
         type=int,
         default=0,
         help="Zero fuses every support camera; otherwise uniformly subsample views.",
+    )
+    parser.add_argument(
+        "--ulf_fusion_view_bins",
+        type=int,
+        default=0,
+        help=(
+            "Equalize robust GWFF camera contribution across deterministic "
+            "camera-center bins; zero preserves frame-weighted fusion."
+        ),
+    )
+    parser.add_argument(
+        "--ulf_fusion_exact_bin_balance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Fuse each landmark within each observed camera-center bin first, "
+            "then average those per-bin prototypes equally."
+        ),
     )
     parser.add_argument("--ulf_fusion_min_cosine", type=float, default=0.0)
     parser.add_argument(
@@ -6951,6 +7429,91 @@ def build_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--native_semidense_reference_refresh_steps",
+        type=int,
+        default=500,
+        help="Refresh the frozen semidense descriptor teacher at this interval.",
+    )
+    parser.add_argument(
+        "--native_semidense_alternate_global",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use semidense-only updates on its scheduled steps; the remaining "
+            "steps retain the global assignment objective."
+        ),
+    )
+    parser.add_argument(
+        "--native_semidense_max_gradient_ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Cap the weighted semidense descriptor-gradient norm to this "
+            "fraction of the global retrieval gradient; zero disables."
+        ),
+    )
+    parser.add_argument("--native_protected_set_weight", type=float, default=0.0)
+    parser.add_argument("--native_protected_set_start_step", type=int, default=1000)
+    parser.add_argument("--native_protected_set_interval", type=int, default=5)
+    parser.add_argument(
+        "--native_protected_set_refresh_visits", type=int, default=1
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_seed", type=int, default=0
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_reprojection_px",
+        type=float,
+        default=8.0,
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_max_iterations",
+        type=int,
+        default=5000,
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_min_iterations",
+        type=int,
+        default=100,
+    )
+    parser.add_argument(
+        "--native_protected_set_max_pose_error_cm",
+        type=float,
+        default=100.0,
+    )
+    parser.add_argument(
+        "--native_protected_set_max_useful", type=int, default=96
+    )
+    parser.add_argument(
+        "--native_protected_set_max_harmful", type=int, default=96
+    )
+    parser.add_argument(
+        "--native_protected_set_grid_rows", type=int, default=4
+    )
+    parser.add_argument(
+        "--native_protected_set_grid_cols", type=int, default=4
+    )
+    parser.add_argument(
+        "--native_protected_set_depth_bins", type=int, default=4
+    )
+    parser.add_argument(
+        "--native_protected_set_surface_voxel_m", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--native_protected_set_max_per_surface_group",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--native_protected_set_temperature", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--native_protected_set_margin", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--native_protected_set_score_target", type=float, default=0.5
+    )
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--hypothesis_topk", type=int, default=32)
     parser.add_argument("--random_negative_count", type=int, default=32)
@@ -6980,7 +7543,7 @@ def build_parser():
     parser.add_argument("--native_swap_margin", type=float, default=0.05)
     parser.add_argument("--native_miss_weight", type=float, default=1.0)
     parser.add_argument("--native_miss_margin", type=float, default=0.05)
-    parser.add_argument("--native_reject_weight", type=float, default=0.1)
+    parser.add_argument("--native_reject_weight", type=float, default=0.0)
     parser.add_argument("--native_reject_threshold", type=float, default=0.5)
     parser.add_argument("--native_attractor_weight", type=float, default=0.0)
     parser.add_argument("--native_attractor_margin", type=float, default=0.05)

@@ -64,6 +64,40 @@ def test_discrete_teacher_labels_useful_and_harmful_ransac_inliers():
     assert targets.diagnostics["hard_teacher_valid"] == 1.0
 
 
+def test_discrete_teacher_keeps_measurement_band_neutral():
+    inputs = _teacher_inputs()
+    inputs["gt_neutral_mask"] = torch.tensor(
+        [False, False, False, False, True, False]
+    )
+    targets = derive_hard_candidate_targets(
+        **inputs,
+        max_useful=8,
+        max_harmful=8,
+        pose_solver=_fake_solver,
+    )
+    assert not bool(targets.harmful_mask.any())
+    assert targets.diagnostics["hard_teacher_neutral_ransac_inlier_count"] == 1.0
+
+
+def test_protected_useful_set_enforces_surface_group_cap():
+    targets = derive_hard_candidate_targets(
+        **_teacher_inputs(),
+        max_useful=8,
+        max_harmful=8,
+        useful_grid_rows=2,
+        useful_grid_cols=2,
+        useful_depth_bins=2,
+        useful_surface_voxel_m=100.0,
+        useful_max_per_surface_group=1,
+        pose_solver=_fake_solver,
+    )
+    assert int(targets.useful_mask.sum().item()) == 1
+    assert (
+        targets.diagnostics["hard_teacher_protected_max_per_surface_group"]
+        == 1.0
+    )
+
+
 def test_hard_preservation_loss_moves_useful_up_and_harmful_down():
     targets = derive_hard_candidate_targets(
         **_teacher_inputs(),

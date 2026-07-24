@@ -358,7 +358,12 @@ def test_formal_lafgs_runners_default_to_stratified_temporal_holdout():
     assert 'export STDLOC_CAMERA_LOADER_WORKERS="$CAMERA_LOADER_WORKERS"' in robust
     assert "select_residual) select_residual" in robust
     assert "validation_only_performance_v1" in robust
-    assert 'ROBUST_PROTOCOL_VERSION="v2_split${SPLIT_MODE}_seed${SPLIT_SEED}_fullres_native_uncapped"' in robust
+    assert (
+        'ROBUST_PROTOCOL_VERSION="v4_exact_fusion_bins_split${SPLIT_MODE}_seed${SPLIT_SEED}_fullres_native_uncapped"'
+        in robust
+    )
+    assert "LAFGS_ROBUST_INDEPENDENT_BIN_SCORING:-1" in robust
+    assert '--ulf_fusion_view_bins "$FUSION_VIEW_BINS"' in robust
     assert "verify_state_protocol" in robust
     assert "verify_eval_protocol" in robust
     assert "verify_eval_config_binding" in robust

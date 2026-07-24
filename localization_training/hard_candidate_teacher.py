@@ -58,6 +58,116 @@ def _ranked_subset(indices, scores, limit):
     return indices[order[: int(limit)]]
 
 
+def _protected_useful_subset(
+    indices,
+    scores,
+    *,
+    candidate_keypoint_idx,
+    candidate_landmark_idx,
+    keypoint_xy,
+    landmark_xyz,
+    pose_w2c,
+    limit,
+    grid_rows=0,
+    grid_cols=0,
+    depth_bins=0,
+    surface_voxel_m=0.0,
+    max_per_surface_group=0,
+):
+    """Greedily retain clean PnP support with image/depth/surface diversity."""
+    indices = torch.as_tensor(indices, dtype=torch.long, device=scores.device)
+    limit = int(limit)
+    if indices.numel() == 0 or limit <= 0:
+        return indices[:0]
+    if (
+        int(grid_rows) <= 0
+        and int(grid_cols) <= 0
+        and int(depth_bins) <= 0
+        and float(surface_voxel_m) <= 0.0
+    ):
+        return _ranked_subset(indices, scores, limit)
+
+    keypoint_index = candidate_keypoint_idx[indices]
+    landmark_index = candidate_landmark_idx[indices]
+    uv = keypoint_xy[keypoint_index]
+    xyz = landmark_xyz[landmark_index]
+    width = max(float(uv[:, 0].max().item()) + 1.0, 1.0)
+    height = max(float(uv[:, 1].max().item()) + 1.0, 1.0)
+    rows = max(int(grid_rows), 1)
+    cols = max(int(grid_cols), 1)
+    grid_x = torch.clamp((uv[:, 0] / width * cols).long(), 0, cols - 1)
+    grid_y = torch.clamp((uv[:, 1] / height * rows).long(), 0, rows - 1)
+    grid_id = grid_y * cols + grid_x
+
+    pose = torch.as_tensor(
+        pose_w2c, device=xyz.device, dtype=xyz.dtype
+    ).reshape(4, 4)
+    depth = (xyz @ pose[:3, :3].T + pose[:3, 3])[..., 2]
+    depth_id = torch.zeros_like(grid_id)
+    if int(depth_bins) > 1 and depth.numel() > 1:
+        quantiles = torch.linspace(
+            0.0,
+            1.0,
+            int(depth_bins) + 1,
+            device=depth.device,
+            dtype=depth.dtype,
+        )[1:-1]
+        boundaries = torch.quantile(depth, quantiles)
+        depth_id = torch.bucketize(depth.contiguous(), boundaries)
+
+    if float(surface_voxel_m) > 0.0:
+        voxel = torch.round(xyz / float(surface_voxel_m)).long()
+        _, surface_id = torch.unique(voxel, dim=0, return_inverse=True)
+    else:
+        surface_id = torch.arange(indices.numel(), device=indices.device)
+
+    selected = []
+    remaining = set(range(int(indices.numel())))
+    used_grid = set()
+    used_depth = set()
+    surface_counts = {}
+    while remaining and len(selected) < limit:
+        best_local = None
+        best_key = None
+        for local in remaining:
+            surface = int(surface_id[local].item())
+            if (
+                int(max_per_surface_group) > 0
+                and surface_counts.get(surface, 0)
+                >= int(max_per_surface_group)
+            ):
+                continue
+            novelty = (
+                int(int(grid_id[local].item()) not in used_grid)
+                + int(int(depth_id[local].item()) not in used_depth)
+                + int(surface_counts.get(surface, 0) == 0)
+            )
+            key = (
+                novelty,
+                float(scores[indices[local]].detach().item()),
+                -int(indices[local].item()),
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best_local = local
+        if best_local is None:
+            break
+        selected.append(best_local)
+        remaining.remove(best_local)
+        grid = int(grid_id[best_local].item())
+        depth_bin = int(depth_id[best_local].item())
+        surface = int(surface_id[best_local].item())
+        used_grid.add(grid)
+        used_depth.add(depth_bin)
+        surface_counts[surface] = surface_counts.get(surface, 0) + 1
+    if not selected:
+        return indices[:0]
+    selected = torch.as_tensor(
+        selected, device=indices.device, dtype=torch.long
+    )
+    return indices[selected]
+
+
 def _candidate_keys(keypoint_ids, candidate_keypoint_idx, candidate_landmark_idx, landmark_count):
     keypoint_ids = torch.as_tensor(keypoint_ids, dtype=torch.long).reshape(-1)
     candidate_keypoint_idx = torch.as_tensor(
@@ -299,6 +409,7 @@ def derive_hard_candidate_targets(
     candidate_scores,
     deployment_mask,
     gt_correct_mask,
+    gt_neutral_mask=None,
     landmark_xyz,
     K,
     pose_gt_w2c,
@@ -312,6 +423,11 @@ def derive_hard_candidate_targets(
     max_pose_error_cm=100.0,
     max_useful=96,
     max_harmful=96,
+    useful_grid_rows=0,
+    useful_grid_cols=0,
+    useful_depth_bins=0,
+    useful_surface_voxel_m=0.0,
+    useful_max_per_surface_group=0,
     translation_scale=0.02,
     rotation_scale_degrees=2.0,
     harmful_mode="all_false",
@@ -371,6 +487,8 @@ def derive_hard_candidate_targets(
         "deployment_mask": deployment_mask,
         "gt_correct_mask": gt_correct_mask,
     }
+    if gt_neutral_mask is not None:
+        tensors["gt_neutral_mask"] = gt_neutral_mask
     for name, value in tensors.items():
         if torch.as_tensor(value).numel() != count:
             raise ValueError(f"{name} must have one entry per candidate")
@@ -428,6 +546,15 @@ def derive_hard_candidate_targets(
     gt_correct_mask = torch.as_tensor(
         gt_correct_mask, device=device, dtype=torch.bool
     ).reshape(-1)
+    gt_neutral_mask = (
+        torch.zeros_like(gt_correct_mask)
+        if gt_neutral_mask is None
+        else torch.as_tensor(
+            gt_neutral_mask, device=device, dtype=torch.bool
+        ).reshape(-1)
+    )
+    if bool((gt_correct_mask & gt_neutral_mask).any()):
+        raise ValueError("correct and neutral candidate labels must be disjoint")
     keypoint_xy = torch.as_tensor(keypoint_xy, device=device, dtype=dtype)
     landmark_xyz = torch.as_tensor(landmark_xyz, device=device, dtype=dtype)
     if keypoint_xy.ndim != 2 or keypoint_xy.shape[1] != 2:
@@ -518,7 +645,9 @@ def derive_hard_candidate_targets(
     inlier_indices = selected[inlier_selected]
     inlier_correct = gt_correct_mask[inlier_indices]
     useful_indices = inlier_indices[inlier_correct]
-    false_inlier_indices = inlier_indices[~inlier_correct]
+    inlier_neutral = gt_neutral_mask[inlier_indices]
+    inlier_false = ~inlier_correct & ~inlier_neutral
+    false_inlier_indices = inlier_indices[inlier_false]
     harmful_indices = false_inlier_indices
     useful_weights = torch.zeros(count, dtype=dtype, device=device)
     harmful_weights = torch.zeros(count, dtype=dtype, device=device)
@@ -589,7 +718,7 @@ def derive_hard_candidate_targets(
                 torch.as_tensor(gt_pose_cpu, dtype=torch.float64),
             ).to(dtype=dtype, device=device)
             harmful_delete_evaluable = True
-            false_gains = harmful_translation_gains[~inlier_correct]
+            false_gains = harmful_translation_gains[inlier_false]
             bias_improving = false_gains > float(
                 harmful_min_translation_delete_gain_m
             )
@@ -620,7 +749,7 @@ def derive_hard_candidate_targets(
             )
             exact_replay_graph_checked = True
             exact_replay_graph_aligned = exact_replay_graph_mismatch_count == 0
-            false_local = torch.nonzero(~inlier_correct, as_tuple=False).reshape(-1)
+            false_local = torch.nonzero(inlier_false, as_tuple=False).reshape(-1)
             if exact_replay_graph_aligned and false_local.numel() > 0:
                 # Candidate score only bounds the replay budget. The label
                 # itself comes from a full deterministic deployment-graph PnP
@@ -714,8 +843,20 @@ def derive_hard_candidate_targets(
             exact_replay_exception = exc
             harmful_rank_scores = harmful_weights
     harmful_eligible_count = int(harmful_indices.numel())
-    useful_indices = _ranked_subset(
-        useful_indices, useful_weights, max_useful
+    useful_indices = _protected_useful_subset(
+        useful_indices,
+        useful_weights,
+        candidate_keypoint_idx=candidate_keypoint_idx,
+        candidate_landmark_idx=candidate_landmark_idx,
+        keypoint_xy=keypoint_xy,
+        landmark_xyz=landmark_xyz,
+        pose_w2c=pose_gt_w2c,
+        limit=max_useful,
+        grid_rows=useful_grid_rows,
+        grid_cols=useful_grid_cols,
+        depth_bins=useful_depth_bins,
+        surface_voxel_m=useful_surface_voxel_m,
+        max_per_surface_group=useful_max_per_surface_group,
     )
     harmful_indices = _ranked_subset(
         harmful_indices, harmful_rank_scores, max_harmful
@@ -740,10 +881,22 @@ def derive_hard_candidate_targets(
             ),
             "hard_teacher_useful_count": float((inlier_correct).sum().item()),
             "hard_teacher_false_ransac_inlier_count": float(
-                (~inlier_correct).sum().item()
+                inlier_false.sum().item()
+            ),
+            "hard_teacher_neutral_ransac_inlier_count": float(
+                inlier_neutral.sum().item()
             ),
             "hard_teacher_harmful_count": float(harmful_eligible_count),
             "hard_teacher_selected_useful_count": float(useful_mask.sum().item()),
+            "hard_teacher_protected_grid_rows": float(useful_grid_rows),
+            "hard_teacher_protected_grid_cols": float(useful_grid_cols),
+            "hard_teacher_protected_depth_bins": float(useful_depth_bins),
+            "hard_teacher_protected_surface_voxel_m": float(
+                useful_surface_voxel_m
+            ),
+            "hard_teacher_protected_max_per_surface_group": float(
+                useful_max_per_surface_group
+            ),
             "hard_teacher_selected_harmful_count": float(harmful_mask.sum().item()),
             "hard_teacher_translation_delete_gain_mean": float(
                 translation_scores[inlier_correct].mean().item()
@@ -759,15 +912,15 @@ def derive_hard_candidate_targets(
                 harmful_delete_evaluable
             ),
             "hard_teacher_harmful_translation_delete_gain_mean": float(
-                harmful_translation_gains[~inlier_correct].mean().item()
+                harmful_translation_gains[inlier_false].mean().item()
                 if harmful_mode == "translation_delete"
-                and bool((~inlier_correct).any())
+                and bool(inlier_false.any())
                 else 0.0
             ),
             "hard_teacher_harmful_translation_delete_gain_max": float(
-                harmful_translation_gains[~inlier_correct].max().item()
+                harmful_translation_gains[inlier_false].max().item()
                 if harmful_mode == "translation_delete"
-                and bool((~inlier_correct).any())
+                and bool(inlier_false.any())
                 else 0.0
             ),
             "hard_teacher_selected_harmful_translation_delete_gain_mean": float(
@@ -787,7 +940,7 @@ def derive_hard_candidate_targets(
             ),
             "hard_teacher_harmful_bias_improving_count": float(
                 (
-                    harmful_translation_gains[~inlier_correct]
+                    harmful_translation_gains[inlier_false]
                     > float(harmful_min_translation_delete_gain_m)
                 )
                 .sum()

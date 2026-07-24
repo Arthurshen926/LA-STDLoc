@@ -64,6 +64,9 @@ VIEW_BINS="${LAFGS_ROBUST_VIEW_BINS:-4}"
 MIN_VIEW_BINS="${LAFGS_ROBUST_MIN_VIEW_BINS:-2}"
 TRAJECTORY_BINS="${LAFGS_ROBUST_TRAJECTORY_BINS:-4}"
 MIN_TRAJECTORY_BINS="${LAFGS_ROBUST_MIN_TRAJECTORY_BINS:-2}"
+INDEPENDENT_BIN_SCORING="${LAFGS_ROBUST_INDEPENDENT_BIN_SCORING:-1}"
+FUSION_VIEW_BINS="${LAFGS_ROBUST_FUSION_VIEW_BINS:-$VIEW_BINS}"
+FUSION_EXACT_BIN_BALANCE="${LAFGS_ROBUST_FUSION_EXACT_BIN_BALANCE:-0}"
 TRIM_FRACTION="${LAFGS_ROBUST_TRIM_FRACTION:-0.1}"
 DESCRIPTOR_MIN_COSINE="${LAFGS_ROBUST_DESCRIPTOR_MIN_COSINE:--1.0}"
 TRIM_HIST_BINS="${LAFGS_ROBUST_TRIM_HIST_BINS:-64}"
@@ -98,7 +101,7 @@ NATIVE_SWAP_WEIGHT="${LAFGS_ROBUST_NATIVE_SWAP_WEIGHT:-1.0}"
 NATIVE_SWAP_MARGIN="${LAFGS_ROBUST_NATIVE_SWAP_MARGIN:-0.05}"
 NATIVE_MISS_WEIGHT="${LAFGS_ROBUST_NATIVE_MISS_WEIGHT:-1.0}"
 NATIVE_MISS_MARGIN="${LAFGS_ROBUST_NATIVE_MISS_MARGIN:-0.05}"
-NATIVE_REJECT_WEIGHT="${LAFGS_ROBUST_NATIVE_REJECT_WEIGHT:-0.05}"
+NATIVE_REJECT_WEIGHT="${LAFGS_ROBUST_NATIVE_REJECT_WEIGHT:-0.0}"
 NATIVE_REJECT_THRESHOLD="${LAFGS_ROBUST_NATIVE_REJECT_THRESHOLD:-$MATCH_THRESHOLD}"
 NATIVE_GLOBAL_ATTRACTOR_WEIGHT="${LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_WEIGHT:-0.0}"
 NATIVE_GLOBAL_ATTRACTOR_MIN_INCOMING="${LAFGS_ROBUST_NATIVE_GLOBAL_ATTRACTOR_MIN_INCOMING:-4}"
@@ -128,6 +131,14 @@ esac
 case "$ADAPTIVE_TRIM" in
   0|1) ;;
   *) echo "LAFGS_ROBUST_ADAPTIVE_TRIM must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$INDEPENDENT_BIN_SCORING" in
+  0|1) ;;
+  *) echo "LAFGS_ROBUST_INDEPENDENT_BIN_SCORING must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$FUSION_EXACT_BIN_BALANCE" in
+  0|1) ;;
+  *) echo "LAFGS_ROBUST_FUSION_EXACT_BIN_BALANCE must be 0 or 1" >&2; exit 2 ;;
 esac
 if [[ "$ADAPTIVE_TRIM" == "1" ]]; then
   "$PYTHON" - "$TRIM_FRACTION" "$ADAPTIVE_TRIM_MIN_FRACTION" \
@@ -235,11 +246,11 @@ if [[ -n "$LANDMARK_SOURCE_PATH" ]]; then
   LANDMARK_SOURCE_TAG="_ids$(sha256sum "$LANDMARK_SOURCE_PATH" | awk '{print substr($1, 1, 12)}')"
 fi
 RESIDUAL_PROFILE_TAG="nk$(tag_value "$NATIVE_KEEP_WEIGHT")m$(tag_value "$NATIVE_KEEP_MARGIN")_kl$(tag_value "$NATIVE_KEEP_LOOSE_WEIGHT")r$(tag_value "$NATIVE_KEEP_LOOSE_RADIUS_PX")m$(tag_value "$NATIVE_KEEP_LOOSE_MARGIN")_ns$(tag_value "$NATIVE_SWAP_WEIGHT")m$(tag_value "$NATIVE_SWAP_MARGIN")_nm$(tag_value "$NATIVE_MISS_WEIGHT")m$(tag_value "$NATIVE_MISS_MARGIN")_nr$(tag_value "$NATIVE_REJECT_WEIGHT")t$(tag_value "$NATIVE_REJECT_THRESHOLD")_ga$(tag_value "$NATIVE_GLOBAL_ATTRACTOR_WEIGHT")i${NATIVE_GLOBAL_ATTRACTOR_MIN_INCOMING}p$(tag_value "$NATIVE_GLOBAL_ATTRACTOR_SUPPORT_POWER")m$(tag_value "$NATIVE_GLOBAL_ATTRACTOR_MAX_SCORE")"
-TAG="robustkcs_gwff${LANDMARK_BUDGET}${LANDMARK_SOURCE_TAG}_s${SUPPORT_VIEWS}_${SUPPORT_SAMPLING}_mv$(tag_value "$MIN_VISIBLE_VIEWS")_v$(tag_value "$MIN_VOTES")_r$(tag_value "$MIN_RATE")_vb${VIEW_BINS}m${MIN_VIEW_BINS}_tb${TRAJECTORY_BINS}m${MIN_TRAJECTORY_BINS}_t$(tag_value "$TRIM_FRACTION")_dc$(tag_value "$DESCRIPTOR_MIN_COSINE")_h${TRIM_HIST_BINS}_ref${FUSION_REFERENCE_MODE}_${ADAPTIVE_TRIM_TAG}_${MASK_POLICY}"
+TAG="robustkcs_gwff${LANDMARK_BUDGET}${LANDMARK_SOURCE_TAG}_s${SUPPORT_VIEWS}_${SUPPORT_SAMPLING}_mv$(tag_value "$MIN_VISIBLE_VIEWS")_v$(tag_value "$MIN_VOTES")_r$(tag_value "$MIN_RATE")_vb${VIEW_BINS}m${MIN_VIEW_BINS}_tb${TRAJECTORY_BINS}m${MIN_TRAJECTORY_BINS}_ib${INDEPENDENT_BIN_SCORING}_fvb${FUSION_VIEW_BINS}eb${FUSION_EXACT_BIN_BALANCE}_t$(tag_value "$TRIM_FRACTION")_dc$(tag_value "$DESCRIPTOR_MIN_COSINE")_h${TRIM_HIST_BINS}_ref${FUSION_REFERENCE_MODE}_${ADAPTIVE_TRIM_TAG}_${MASK_POLICY}"
 # Historical tags did not encode the validation split, so temporal-block
 # outputs could collide with the frozen stratified protocol.  Version the root
 # explicitly and verify every reusable artifact below.
-ROBUST_PROTOCOL_VERSION="v2_split${SPLIT_MODE}_seed${SPLIT_SEED}_fullres_native_uncapped"
+ROBUST_PROTOCOL_VERSION="v4_exact_fusion_bins_split${SPLIT_MODE}_seed${SPLIT_SEED}_fullres_native_uncapped"
 DEFAULT_RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/${TAG}_${ROBUST_PROTOCOL_VERSION}"
 if [[ "$TRAIN_SEED" != "2026" ]]; then
   DEFAULT_RUN_ROOT="${DEFAULT_RUN_ROOT}_trainseed${TRAIN_SEED}"
@@ -318,7 +329,7 @@ verify_state_protocol() {
   require_file "$state"
   "$PYTHON" - "$label" "$state" "$SPLIT_MODE" "$SPLIT_SEED" \
     "$expected_native_outcome" "$expected_retrieval_weight" "$expected_trust_weight" \
-    "$NATIVE_KEYPOINTS" <<'PY'
+    "$NATIVE_KEYPOINTS" "$VALIDATION_RATIO" "$FUSION_EXACT_BIN_BALANCE" <<'PY'
 import math
 import sys
 
@@ -333,6 +344,8 @@ import torch
     expected_retrieval_weight,
     expected_trust_weight,
     expected_keypoints,
+    expected_validation_ratio,
+    expected_exact_fusion,
 ) = sys.argv[1:]
 config = dict(torch.load(state_path, map_location='cpu').get('config', {}))
 errors = []
@@ -356,7 +369,13 @@ numeric('split_seed', int(expected_split_seed))
 exact('query_feature_contract', 'native_resized_input')
 exact('observation_source', 'native')
 numeric('native_sparse_keypoint_count', int(expected_keypoints))
+numeric('validation_ratio', float(expected_validation_ratio))
 numeric('native_anchor_aux_weight', 0.0)
+if label == 'bootstrap':
+    exact(
+        'ulf_fusion_exact_bin_balance',
+        bool(int(expected_exact_fusion)),
+    )
 if bool(config.get('native_outcome_mode')) != bool(int(expected_native_outcome)):
     errors.append('native_outcome_mode does not match this stage')
 for key in ('mv_weight', 'local_weight', 'dustbin_weight', 'geometry_weight', 'pose_weight'):
@@ -503,6 +522,9 @@ payload = {
         "minimum_distinct_view_bins": ${MIN_VIEW_BINS},
         "trajectory_bins": ${TRAJECTORY_BINS},
         "minimum_distinct_trajectory_bins": ${MIN_TRAJECTORY_BINS},
+        "independent_bin_scoring": bool(${INDEPENDENT_BIN_SCORING}),
+        "fusion_view_bins": ${FUSION_VIEW_BINS},
+        "fusion_exact_bin_balance": bool(${FUSION_EXACT_BIN_BALANCE}),
         "allow_nonconsensus_fallback": False,
         "descriptor_trim_fraction": ${TRIM_FRACTION},
         "descriptor_min_cosine": ${DESCRIPTOR_MIN_COSINE},
@@ -588,11 +610,17 @@ bootstrap() {
   fi
   local fusion_args=(
     --ulf_fusion_min_cosine 0
+    --ulf_fusion_view_bins "$FUSION_VIEW_BINS"
     --ulf_fusion_descriptor_trim_fraction "$TRIM_FRACTION"
     --ulf_fusion_descriptor_min_cosine "$DESCRIPTOR_MIN_COSINE"
     --ulf_fusion_trim_histogram_bins "$TRIM_HIST_BINS"
     --ulf_fusion_reference_mode "$FUSION_REFERENCE_MODE"
   )
+  if [[ "$FUSION_EXACT_BIN_BALANCE" == "1" ]]; then
+    fusion_args+=(--ulf_fusion_exact_bin_balance)
+  else
+    fusion_args+=(--no-ulf_fusion_exact_bin_balance)
+  fi
   if [[ "$ADAPTIVE_TRIM" == "1" ]]; then
     fusion_args+=(
       --ulf_fusion_adaptive_trim
@@ -603,6 +631,10 @@ bootstrap() {
       --ulf_fusion_adaptive_trim_mode "$ADAPTIVE_TRIM_MODE"
       --ulf_fusion_adaptive_trim_mad_scale "$ADAPTIVE_TRIM_MAD_SCALE"
     )
+  fi
+  local independent_bin_args=(--no-ulf_consensus_independent_bin_scoring)
+  if [[ "$INDEPENDENT_BIN_SCORING" == "1" ]]; then
+    independent_bin_args=(--ulf_consensus_independent_bin_scoring)
   fi
   run_logged bootstrap \
     "$PYTHON" train_lafgs_map.py \
@@ -619,6 +651,7 @@ bootstrap() {
     --ulf_consensus_min_distinct_view_bins "$MIN_VIEW_BINS" \
     --ulf_consensus_trajectory_bins "$TRAJECTORY_BINS" \
     --ulf_consensus_min_distinct_trajectory_bins "$MIN_TRAJECTORY_BINS" \
+    "${independent_bin_args[@]}" \
     --no-ulf_consensus_allow_nonconsensus_fallback \
     --ulf_support_view_sampling "$SUPPORT_SAMPLING" --ulf_support_mask_policy "$MASK_POLICY" \
     --ulf_consensus_max_views "$SUPPORT_VIEWS" --ulf_fusion_max_views "$SUPPORT_VIEWS" \
@@ -630,7 +663,8 @@ bootstrap() {
     --native_anchor_aux_weight 0 --no-native_outcome_mode \
     --steps 0 --save_steps 0 --distill_budget 0 \
     --validation_ratio "$VALIDATION_RATIO" --split_mode "$SPLIT_MODE" --split_seed "$SPLIT_SEED" \
-    --train_seed "$TRAIN_SEED" --max_observations 512 --validation_observations 512 \
+    --train_seed "$TRAIN_SEED" --max_observations "$NATIVE_KEYPOINTS" \
+    --validation_observations "$NATIVE_KEYPOINTS" \
     --mv_weight 0 --retrieval_weight 0 --trust_weight 0 --local_weight 0 \
     --dustbin_weight 0 --geometry_weight 0 --pose_weight 0 --pose_gradient_mode off
   require_file "$BOOTSTRAP_STATE"

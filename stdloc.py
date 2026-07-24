@@ -1148,6 +1148,131 @@ def sparse_correspondence_diagnostics(
     return diagnostics
 
 
+def sparse_matchability_diagnostics(
+    keypoint_xy,
+    topk_landmark_idx,
+    landmark_xyz,
+    K,
+    gt_pose_w2c,
+    width,
+    height,
+    *,
+    grid_rows=4,
+    grid_cols=4,
+    surface_voxel_m=0.25,
+):
+    """Decompose bank coverage from conditional descriptor assignment quality."""
+    from scipy.spatial import cKDTree
+
+    keypoint_xy = np.asarray(keypoint_xy, dtype=np.float64).reshape(-1, 2)
+    topk_landmark_idx = np.asarray(topk_landmark_idx, dtype=np.int64)
+    landmark_xyz = np.asarray(landmark_xyz, dtype=np.float64).reshape(-1, 3)
+    result = {
+        "sparse_diag_matchability_query_count": int(keypoint_xy.shape[0]),
+        "sparse_diag_matchability_visibility_proxy_projected": 1.0,
+    }
+    if (
+        keypoint_xy.shape[0] == 0
+        or topk_landmark_idx.ndim != 2
+        or landmark_xyz.shape[0] == 0
+    ):
+        return result
+
+    projected, depth = _project_points_np(
+        landmark_xyz, K, gt_pose_w2c
+    )
+    valid = (
+        np.isfinite(projected).all(axis=1)
+        & np.isfinite(depth)
+        & (depth > 1e-8)
+        & (projected[:, 0] >= 0.5)
+        & (projected[:, 0] <= float(width) - 0.5)
+        & (projected[:, 1] >= 0.5)
+        & (projected[:, 1] <= float(height) - 0.5)
+    )
+    valid_indices = np.flatnonzero(valid)
+    if valid_indices.size == 0:
+        for radius in (2, 4, 8):
+            result[f"sparse_diag_matchable_rate_{radius}px"] = 0.0
+            result[f"sparse_diag_unmatchable_count_{radius}px"] = int(
+                keypoint_xy.shape[0]
+            )
+        return result
+
+    observed = keypoint_xy + 0.5
+    tree = cKDTree(projected[valid])
+    nearest_distance, nearest_local = tree.query(observed, k=1)
+    nearest_landmark = valid_indices[nearest_local]
+    clipped_topk = np.clip(
+        topk_landmark_idx, 0, max(landmark_xyz.shape[0] - 1, 0)
+    )
+    candidate_distance = np.linalg.norm(
+        projected[clipped_topk] - observed[:, None],
+        axis=2,
+    )
+    candidate_distance[~valid[clipped_topk]] = np.inf
+    for radius in (2, 4, 8):
+        matchable = nearest_distance <= float(radius)
+        result[f"sparse_diag_matchable_rate_{radius}px"] = float(
+            np.mean(matchable)
+        )
+        result[f"sparse_diag_unmatchable_count_{radius}px"] = int(
+            np.count_nonzero(~matchable)
+        )
+        for requested_k in (1, 4, 16):
+            width_k = min(requested_k, candidate_distance.shape[1])
+            recalled = np.any(
+                candidate_distance[:, :width_k] <= float(radius), axis=1
+            )
+            result[
+                f"sparse_diag_conditional_recall_at_{requested_k}"
+                f"_given_matchable_{radius}px"
+            ] = float(
+                np.mean(recalled[matchable])
+                if np.any(matchable)
+                else 0.0
+            )
+
+    strong_matchable = nearest_distance <= 2.0
+    top1 = clipped_topk[:, 0]
+    top1_distance = candidate_distance[:, 0]
+    voxel_size = max(float(surface_voxel_m), 1e-6)
+    source_voxel = np.floor(
+        landmark_xyz[nearest_landmark] / voxel_size
+    ).astype(np.int64)
+    top1_voxel = np.floor(
+        landmark_xyz[top1] / voxel_size
+    ).astype(np.int64)
+    cross_group = np.any(source_voxel != top1_voxel, axis=1)
+    harmful = strong_matchable & (top1_distance > 8.0) & cross_group
+    result["sparse_diag_harmful_cross_group_switch_count"] = int(
+        harmful.sum()
+    )
+    result["sparse_diag_harmful_cross_group_switch_rate"] = float(
+        harmful.sum() / max(float(strong_matchable.sum()), 1.0)
+    )
+
+    rows = max(int(grid_rows), 1)
+    cols = max(int(grid_cols), 1)
+    gx = np.clip((keypoint_xy[:, 0] / max(float(width), 1.0) * cols).astype(int), 0, cols - 1)
+    gy = np.clip((keypoint_xy[:, 1] / max(float(height), 1.0) * rows).astype(int), 0, rows - 1)
+    region_rates = []
+    for region in range(rows * cols):
+        region_mask = gy * cols + gx == region
+        if np.any(region_mask):
+            region_rates.append(float(np.mean(strong_matchable[region_mask])))
+    result["sparse_diag_matchable2_region_rate_min"] = float(
+        min(region_rates) if region_rates else 0.0
+    )
+    result["sparse_diag_matchable2_region_rate_mean"] = float(
+        np.mean(region_rates) if region_rates else 0.0
+    )
+    result["sparse_diag_coverage_miss_region_rate_max"] = float(
+        1.0 - min(region_rates) if region_rates else 1.0
+    )
+    return result
+
+
 def resize_sparse_valid_mask_to_feature_grid(valid_mask, height, width, min_fraction=0.5):
     if valid_mask is None:
         return None
@@ -3311,6 +3436,9 @@ class STDLoc:
         )
         diag_cfg = self.config["sparse"].get("diagnostics", {})
         dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
+        diagnostic_topk = (
+            16 if bool(diag_cfg.get("gt_metrics", True)) else 0
+        )
         oracle_topk = min(
             max(int(diag_cfg.get("oracle_topk", 32)), 1),
             int(landmark_features.shape[0]),
@@ -3319,6 +3447,7 @@ class STDLoc:
             configured_topk,
             oracle_topk if dump_discrete_oracle else 0,
             native_matchability_topk,
+            diagnostic_topk,
         )
         retrieval = chunked_exact_topk(
             query_features,
@@ -3632,6 +3761,16 @@ class STDLoc:
                 "K": K,
                 "width": width,
                 "height": height,
+                "matchability_keypoint_xy": keypoints.detach().cpu().numpy(),
+                "matchability_topk_landmark_idx": retrieval.indices[
+                    :, : min(16, retrieval.indices.shape[1])
+                ]
+                .detach()
+                .cpu()
+                .numpy(),
+                "matchability_landmark_xyz": self.landmarks.get_xyz.detach()
+                .cpu()
+                .numpy(),
             }
             if dump_discrete_oracle:
                 result["_debug_sparse_matches"]["discrete_oracle"] = {
@@ -4166,6 +4305,23 @@ if __name__ == "__main__":
         loc_res["sparse"]["sparse_valid_mask_source"] = evaluation_masks_path
         sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
         if sparse_debug is not None:
+            if "matchability_keypoint_xy" in sparse_debug:
+                loc_res["sparse"].update(
+                    sparse_matchability_diagnostics(
+                        sparse_debug["matchability_keypoint_xy"],
+                        sparse_debug["matchability_topk_landmark_idx"],
+                        sparse_debug["matchability_landmark_xyz"],
+                        sparse_debug["K"],
+                        gt_w2c,
+                        sparse_debug["width"],
+                        sparse_debug["height"],
+                        grid_rows=sparse_diag_cfg.get("grid_rows", 4),
+                        grid_cols=sparse_diag_cfg.get("grid_cols", 4),
+                        surface_voxel_m=sparse_diag_cfg.get(
+                            "voxel_size", 0.25
+                        ),
+                    )
+                )
             post_selector_diagnostics = sparse_correspondence_diagnostics(
                 sparse_debug["p2d"],
                 sparse_debug["p3d"],

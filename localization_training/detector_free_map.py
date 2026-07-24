@@ -1062,6 +1062,7 @@ def local_correlation_peak_loss(
     radius=3,
     target_sigma=1.0,
     temperature=0.07,
+    row_weights=None,
 ):
     """Concentrate each anchor's frozen-image correlation peak at its GT projection."""
     feature_map = observations.query_feature_map
@@ -1114,7 +1115,22 @@ def local_correlation_peak_loss(
     target = torch.softmax(target_logits, dim=-1)
     log_probability = torch.log_softmax(logits, dim=-1)
     log_probability = log_probability.masked_fill(~patch_valid, 0.0)
-    loss = -(target * log_probability).sum(dim=-1).mean()
+    per_row_loss = -(target * log_probability).sum(dim=-1)
+    if row_weights is None:
+        loss = per_row_loss.mean()
+    else:
+        row_weights = torch.as_tensor(
+            row_weights,
+            device=per_row_loss.device,
+            dtype=per_row_loss.dtype,
+        ).reshape(-1)
+        if row_weights.numel() != query_count:
+            raise ValueError("row_weights must have one value per local query")
+        row_weights = row_weights.clamp_min(0.0)
+        loss = (
+            (per_row_loss * row_weights).sum()
+            / row_weights.sum().clamp_min(1e-8)
+        )
 
     with torch.no_grad():
         probability = torch.softmax(logits, dim=-1)
@@ -1511,6 +1527,7 @@ def native_semidense_neighborhood_loss(
     deployment candidate graph.
     """
     zero = bank_features.sum() * 0.0
+    csr_surface_reference = False
     if observations.query_feature_map is None:
         return zero, {"native_semidense_active": 0.0}
     query_count = int(observations.query_features.shape[0])
@@ -1561,27 +1578,82 @@ def native_semidense_neighborhood_loss(
         )
         protected_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
         if bool(protected_v2):
-            source = observations.source_indices
-            source_valid = source >= 0
-            safe_source = source.clamp_min(0)
-            delta = bank_xyz[top1] - bank_xyz[safe_source]
-            distance_3d = torch.linalg.norm(delta, dim=1)
-            normal_agreement = (
-                bank_normals[top1] * bank_normals[safe_source]
-            ).sum(dim=1).abs()
-            source_plane = (
-                delta * bank_normals[safe_source]
-            ).sum(dim=1).abs()
-            target_plane = (
-                delta * bank_normals[top1]
-            ).sum(dim=1).abs()
-            same_surface = (
-                source_valid
-                & (distance_3d <= float(surface_max_distance_m))
-                & (normal_agreement >= float(surface_normal_cosine))
-                & (source_plane <= float(surface_point_plane_m))
-                & (target_plane <= float(surface_point_plane_m))
+            same_surface = torch.zeros(
+                query_count, dtype=torch.bool, device=bank_features.device
             )
+            if (
+                observations.positive_offsets is not None
+                and observations.positive_indices is not None
+            ):
+                csr_surface_reference = True
+                positive_counts = (
+                    observations.positive_offsets[1:]
+                    - observations.positive_offsets[:-1]
+                )
+                positive_rows = torch.repeat_interleave(
+                    torch.arange(query_count, device=bank_features.device),
+                    positive_counts,
+                )
+                positive_indices = observations.positive_indices
+                if positive_indices.numel() > 0:
+                    edge_top1 = top1[positive_rows]
+                    delta = (
+                        bank_xyz[edge_top1] - bank_xyz[positive_indices]
+                    )
+                    distance_3d = torch.linalg.norm(delta, dim=1)
+                    normal_agreement = (
+                        bank_normals[edge_top1]
+                        * bank_normals[positive_indices]
+                    ).sum(dim=1).abs()
+                    source_plane = (
+                        delta * bank_normals[positive_indices]
+                    ).sum(dim=1).abs()
+                    target_plane = (
+                        delta * bank_normals[edge_top1]
+                    ).sum(dim=1).abs()
+                    edge_same_surface = (
+                        (distance_3d <= float(surface_max_distance_m))
+                        & (
+                            normal_agreement
+                            >= float(surface_normal_cosine)
+                        )
+                        & (source_plane <= float(surface_point_plane_m))
+                        & (target_plane <= float(surface_point_plane_m))
+                    )
+                    same_surface_count = torch.zeros(
+                        query_count,
+                        dtype=torch.long,
+                        device=bank_features.device,
+                    )
+                    same_surface_count.index_add_(
+                        0, positive_rows, edge_same_surface.long()
+                    )
+                    same_surface = same_surface_count > 0
+            else:
+                source = observations.source_indices
+                source_valid = source >= 0
+                safe_source = source.clamp_min(0)
+                delta = bank_xyz[top1] - bank_xyz[safe_source]
+                distance_3d = torch.linalg.norm(delta, dim=1)
+                normal_agreement = (
+                    bank_normals[top1] * bank_normals[safe_source]
+                ).sum(dim=1).abs()
+                source_plane = (
+                    delta * bank_normals[safe_source]
+                ).sum(dim=1).abs()
+                target_plane = (
+                    delta * bank_normals[top1]
+                ).sum(dim=1).abs()
+                same_surface = (
+                    source_valid
+                    & (distance_3d <= float(surface_max_distance_m))
+                    & (
+                        normal_agreement
+                        >= float(surface_normal_cosine)
+                    )
+                    & (source_plane <= float(surface_point_plane_m))
+                    & (target_plane <= float(surface_point_plane_m))
+                )
             measurement_limited = (
                 observations.bank_visible[top1]
                 & same_surface
@@ -1671,11 +1743,11 @@ def native_semidense_neighborhood_loss(
         anchor_rows = torch.as_tensor(
             anchor_rows, device=bank_features.device, dtype=torch.long
         )
-        anchor_indices = (
-            observations.source_indices[anchor_rows]
-            if bool(protected_v2)
-            else top1[anchor_rows]
-        )
+        # Protected-v2 is a measurement refinement stage. The surface check
+        # above establishes that the current top-1 belongs to a legal CSR
+        # positive surface; the local graph must therefore be centered on that
+        # deployed top-1, not silently redirected to the nearest 2 px source.
+        anchor_indices = top1[anchor_rows]
 
         neighbors_per_anchor = max(int(neighbors_per_anchor), 1)
         if neighbors_per_anchor == 1:
@@ -1869,12 +1941,20 @@ def native_semidense_neighborhood_loss(
                 **pose_safe_diagnostics,
                 **pair_pose_safe_diagnostics,
             }
+    anchor_pair_count = torch.bincount(
+        teacher_anchor_ids,
+        minlength=max(int(anchor_indices.numel()), 1),
+    ).clamp_min(1)
+    teacher_row_weights = torch.reciprocal(
+        anchor_pair_count[teacher_anchor_ids].to(dtype=bank_features.dtype)
+    )
     loss, diagnostics = local_correlation_peak_loss(
         bank_features,
         teacher_observations,
         radius=local_radius_px,
         target_sigma=target_sigma_px,
         temperature=temperature,
+        row_weights=teacher_row_weights,
     )
     teacher_features = teacher_observations.query_features
     if float(local_identity_weight) > 0.0:
@@ -1947,6 +2027,7 @@ def native_semidense_neighborhood_loss(
             "native_semidense_anchor_group_count": int(
                 torch.unique(teacher_anchor_ids).numel()
             ),
+            "native_semidense_per_anchor_normalized": 1.0,
             "native_semidense_measurement_limited_count": int(
                 anchor_indices.numel() if bool(protected_v2) else 0
             ),
@@ -1954,6 +2035,10 @@ def native_semidense_neighborhood_loss(
                 protected_rows.numel()
             ),
             "native_semidense_protected_v2": float(bool(protected_v2)),
+            "native_semidense_csr_surface_reference": float(
+                csr_surface_reference
+            ),
+            "native_semidense_anchor_is_deployment_top1": 1.0,
             "native_semidense_protected_neighbor_excluded_count": int(
                 protected_neighbor_excluded_count
             ),
@@ -2890,7 +2975,7 @@ def hard_hypothesis_retrieval_loss(
     native_swap_margin=0.05,
     native_miss_weight=1.0,
     native_miss_margin=0.05,
-    native_reject_weight=0.1,
+    native_reject_weight=0.0,
     native_reject_threshold=0.5,
     native_attractor_weight=0.0,
     native_attractor_margin=0.05,
@@ -2918,6 +3003,7 @@ def hard_hypothesis_retrieval_loss(
         positive_radius_px=positive_radius_px,
         negative_radius_px=negative_radius_px,
     )
+    ambiguous = ~positive & ~negative
     dustbin_logit = (
         None
         if dustbin_score is None
@@ -2944,7 +3030,7 @@ def hard_hypothesis_retrieval_loss(
     # surfels. Retrieval supervision therefore uses the full GT-consistent
     # landmark set, while exact source-ID recall remains a diagnostic only.
     geometric_retrieved = positive.any(dim=1)
-    missed_positive = source_valid & ~geometric_retrieved
+    ambiguous_retrieved = ambiguous.any(dim=1)
 
     # The deployed candidate set is the detached full-bank top-K above.  Its
     # four outcomes are mutually exclusive for a native proposal with a valid
@@ -2954,9 +3040,21 @@ def hard_hypothesis_retrieval_loss(
     # likewise geometrically empty.  This protects already clean pairs while
     # retaining a direct gradient for false positives and false negatives.
     top1_positive = positive[:, 0]
+    top1_negative = negative[:, 0]
+    top1_ambiguous = ambiguous[:, 0]
     keep = source_valid & top1_positive
-    swap = source_valid & ~top1_positive & geometric_retrieved
-    reject = ~source_valid & ~geometric_retrieved
+    swap = source_valid & top1_negative & geometric_retrieved
+    missed_positive = source_valid & top1_negative & ~geometric_retrieved
+    # The 2--negative_radius band is measurement-limited, not a global
+    # assignment error. It is ignored here and routed to the local
+    # measurement objective. Reject likewise applies only when every retained
+    # hypothesis is decisively negative.
+    reject = (
+        ~source_valid
+        & top1_negative
+        & ~geometric_retrieved
+        & ~ambiguous_retrieved
+    )
     zero = full_scores.sum() * 0.0
 
     candidate_positive_score = raw_logits.masked_fill(
@@ -3088,7 +3186,7 @@ def hard_hypothesis_retrieval_loss(
                     "landmark"
                 )
             global_scores = global_scores.detach().clamp_min(0.0)
-        false_attractor = source_valid & ~top1_positive
+        false_attractor = source_valid & top1_negative
         if bool(false_attractor.any().item()):
             attractor_positive_score, attractor_rows = _full_positive_best(
                 false_attractor
@@ -3251,6 +3349,19 @@ def hard_hypothesis_retrieval_loss(
             "retrieval_native_miss_count": int(missed_positive.sum().item()),
             "retrieval_native_miss_loss": float(missed_positive_loss.detach().item()),
             "retrieval_native_reject_count": int(reject.sum().item()),
+            "retrieval_native_reject_weight": float(native_reject_weight),
+            "retrieval_native_reject_enabled": float(
+                float(native_reject_weight) > 0.0
+            ),
+            "retrieval_native_ambiguous_top1_count": int(
+                top1_ambiguous.sum().item()
+            ),
+            "retrieval_native_ambiguous_retrieved_count": int(
+                ambiguous_retrieved.sum().item()
+            ),
+            "retrieval_native_global_ignored_ambiguous_count": int(
+                top1_ambiguous.sum().item()
+            ),
             "retrieval_native_reject_loss": float(unmatched_loss.detach().item()),
             "retrieval_native_attractor_count": attractor_count,
             "retrieval_native_attractor_unique_count": attractor_unique_count,
