@@ -568,6 +568,221 @@ def test_native_sparse_observations_expose_all_geometric_positives_as_csr():
     assert retrieval.diagnostics["retrieval_multi_positive_query_fraction"] == 1.0
 
 
+def test_native_sparse_observation_default_and_coverage_counts():
+    import inspect
+
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+    )
+
+    assert (
+        inspect.signature(build_native_sparse_observations)
+        .parameters["max_observations"]
+        .default
+        == 2048
+    )
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    batch = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0], [4.0, 4.0], [40.0, 40.0]]),
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]),
+        torch.ones(3),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(1, dtype=torch.bool),
+    )
+
+    assert batch.native_input_count == 3
+    assert batch.native_valid_count == 2
+    assert batch.native_selected_count == 2
+    assert batch.configured_max_observations == 2048
+
+
+def test_local_group_identity_assignment_prefers_distinct_identity():
+    from localization_training.detector_free_map import (
+        local_group_identity_assignment_loss,
+    )
+
+    teacher = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    distinct = teacher.clone().requires_grad_()
+    collapsed = torch.tensor(
+        [[1.0, 0.0], [1.0, 0.0]], requires_grad=True
+    )
+    indices = torch.arange(2)
+    uv = torch.tensor([[4.0, 4.0], [12.0, 4.0]])
+    groups = torch.zeros(2, dtype=torch.long)
+    distinct_loss, diagnostics = local_group_identity_assignment_loss(
+        distinct,
+        teacher,
+        indices,
+        uv,
+        groups,
+        temperature=0.1,
+        positive_radius_px=2.0,
+    )
+    collapsed_loss, _ = local_group_identity_assignment_loss(
+        collapsed,
+        teacher,
+        indices,
+        uv,
+        groups,
+        temperature=0.1,
+        positive_radius_px=2.0,
+    )
+    collapsed_loss.backward()
+
+    assert distinct_loss < collapsed_loss
+    assert diagnostics["native_semidense_local_identity_group_count"] == 1
+    assert collapsed.grad is not None
+    assert collapsed.grad.abs().sum() > 0
+
+
+def test_global_margin_preservation_penalizes_only_margin_degradation():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        global_margin_preservation_loss,
+    )
+
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0], [0.2, 0.0, 2.0]])
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    observations = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.ones(1),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(2, dtype=torch.bool),
+        max_observations=1,
+    )
+    reference = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    degraded = torch.tensor(
+        [[0.8, 0.6], [0.7, 0.714]], requires_grad=True
+    )
+    loss, diagnostics = global_margin_preservation_loss(
+        degraded,
+        reference,
+        observations,
+        torch.tensor([0]),
+        torch.tensor([0]),
+    )
+    loss.backward()
+
+    assert loss > 0
+    assert diagnostics["native_semidense_margin_preserve_count"] == 1
+    assert diagnostics["native_semidense_margin_preserve_violation_rate"] == 1.0
+    assert degraded.grad is not None
+    assert degraded.grad.abs().sum() > 0
+
+
+def test_protected_semidense_v2_routes_high_precision_to_margin_only():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_semidense_neighborhood_loss,
+    )
+
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0], [0.2, 0.0, 2.0]])
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    dense = torch.zeros(2, 4, 4)
+    dense[0] = 1.0
+    observations = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.ones(1),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(2, dtype=torch.bool),
+        query_feature_map=dense,
+        max_observations=1,
+    )
+    reference = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    degraded = torch.tensor(
+        [[0.8, 0.6], [0.7, 0.714]], requires_grad=True
+    )
+    loss, diagnostics = native_semidense_neighborhood_loss(
+        degraded,
+        bank_xyz,
+        torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+        observations,
+        protected_v2=True,
+        measurement_min_reprojection_px=2.0,
+        measurement_max_reprojection_px=8.0,
+        margin_preservation_weight=1.0,
+        reference_bank_features=reference,
+    )
+    loss.backward()
+
+    assert diagnostics["native_semidense_measurement_limited_count"] == 0
+    assert diagnostics["native_semidense_protected_high_precision_count"] == 1
+    assert diagnostics["native_semidense_teacher_pair_count"] == 0
+    assert diagnostics["native_semidense_margin_preserve_count"] == 1
+    assert loss > 0
+    assert degraded.grad is not None
+    assert degraded.grad.abs().sum() > 0
+
+
+def test_protected_semidense_v2_excludes_current_query_protected_neighbors():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_semidense_neighborhood_loss,
+    )
+
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0], [0.12, 0.0, 2.0]])
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    dense = torch.zeros(2, 4, 4)
+    dense[0] = 1.0
+    observations = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0], [19.0, 16.0]]),
+        torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        torch.ones(2),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(2, dtype=torch.bool),
+        query_feature_map=dense,
+        max_observations=2,
+    )
+    features = torch.tensor(
+        [[0.0, 1.0], [1.0, 0.0]], requires_grad=True
+    )
+    loss, diagnostics = native_semidense_neighborhood_loss(
+        features,
+        bank_xyz,
+        torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+        observations,
+        protected_v2=True,
+        measurement_min_reprojection_px=2.0,
+        measurement_max_reprojection_px=8.0,
+        neighbors_per_anchor=2,
+        surface_max_distance_m=0.15,
+        surface_normal_cosine=0.95,
+        surface_point_plane_m=0.03,
+    )
+    loss.backward()
+
+    assert diagnostics["native_semidense_measurement_limited_count"] == 1
+    assert diagnostics["native_semidense_protected_high_precision_count"] == 1
+    assert diagnostics["native_semidense_protected_neighbor_excluded_count"] == 1
+    assert diagnostics["native_semidense_teacher_pair_count"] == 1
+    assert features.grad is not None
+    assert features.grad[0].abs().sum() > 0
+    assert torch.allclose(features.grad[1], torch.zeros_like(features.grad[1]))
+
+
 def test_native_semidense_teacher_updates_same_descriptor_field():
     from localization_training.detector_free_map import (
         build_native_sparse_observations,

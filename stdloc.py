@@ -644,6 +644,33 @@ def _occupancy_stats_3d(prefix, p3d, voxel_size=0.25):
     }
 
 
+def _group_clean_stats(prefix, p3d, clean, candidate_count, voxel_size=0.25):
+    """Report a conservative spatial-group proxy for independent clean support."""
+    p3d = np.asarray(p3d, dtype=np.float64).reshape(-1, 3)
+    clean = np.asarray(clean, dtype=bool).reshape(-1)
+    if p3d.shape[0] != clean.shape[0] or not np.any(clean):
+        return {
+            f"{prefix}_unique_groups": 0,
+            f"{prefix}_group_ess": 0.0,
+            f"{prefix}_effective_ratio": 0.0,
+        }
+    voxel_size = max(float(voxel_size or 0.0), 1e-6)
+    voxels = np.floor(p3d[clean] / voxel_size).astype(np.int64)
+    _, counts = np.unique(voxels, axis=0, return_counts=True)
+    counts = counts.astype(np.float64)
+    group_ess = float(
+        np.square(np.sum(counts)) / max(float(np.sum(np.square(counts))), 1e-12)
+    )
+    unique_groups = int(counts.shape[0])
+    return {
+        f"{prefix}_unique_groups": unique_groups,
+        f"{prefix}_group_ess": group_ess,
+        f"{prefix}_effective_ratio": float(
+            unique_groups / max(float(candidate_count), 1.0)
+        ),
+    }
+
+
 def _pose_information_stats(
     prefix,
     p3d,
@@ -1019,7 +1046,7 @@ def sparse_correspondence_diagnostics(
             np.mean(gt_valid_projection)
         )
         diagnostics.update(_residual_stats("sparse_diag_all_gt_reproj_px", gt_residual))
-        for threshold in (2.0, 4.0, 6.0):
+        for threshold in (2.0, 4.0, 6.0, 12.0):
             diagnostics[f"sparse_diag_all_gt_precision_{int(threshold)}px"] = float(
                 np.mean(gt_residual <= threshold)
             )
@@ -1028,9 +1055,18 @@ def sparse_correspondence_diagnostics(
                 np.mean(gt_valid_projection[inliers])
             )
             diagnostics.update(_residual_stats("sparse_diag_inlier_gt_reproj_px", gt_residual[inliers]))
-            for threshold in (2.0, 4.0, 6.0):
+            for threshold in (2.0, 4.0, 6.0, 12.0):
                 diagnostics[f"sparse_diag_inlier_gt_precision_{int(threshold)}px"] = float(
                     np.mean(gt_residual[inliers] <= threshold)
+                )
+                diagnostics.update(
+                    _group_clean_stats(
+                        f"sparse_diag_inlier_gt_clean{int(threshold)}",
+                        p3d[inliers],
+                        gt_residual[inliers] <= threshold,
+                        p2d.shape[0],
+                        voxel_size=voxel_size,
+                    )
                 )
         diagnostics.update(
             _pose_bias_stats(

@@ -17,6 +17,7 @@ from arguments import ModelParams
 from encoders.feature_extractor import FeatureExtractor
 from gaussian_renderer import get_render_visible_mask, render_from_pose_gsplat
 from localization_training.detector_free_map import (
+    _select_observation_rows,
     background_dustbin_loss,
     bounded_geometry_losses,
     build_detector_free_observations,
@@ -3526,6 +3527,10 @@ def _collect_landmark_statistics(
     records = []
     identity_sources = []
     identity_predictions = []
+    benign_switch_count = torch.zeros(count, device=device)
+    harmful_switch_count = torch.zeros(count, device=device)
+    recall_at_k_sum = {1: 0.0, 4: 0.0, 8: 0.0, 16: 0.0}
+    recall_at_k_queries = 0
     for name in tqdm(query_names, desc="One-time landmark statistics"):
         observations = _cached_observations(
             cache[name],
@@ -3538,6 +3543,10 @@ def _collect_landmark_statistics(
             prediction_bank_xyz=bank_xyz,
         )
         source = observations.source_indices
+        source_valid = source >= 0
+        if not bool(source_valid.all().item()):
+            observations = _select_observation_rows(observations, source_valid)
+            source = observations.source_indices
         if source.numel() == 0:
             continue
         query = F.normalize(observations.query_features, dim=1)
@@ -3545,6 +3554,26 @@ def _collect_landmark_statistics(
         score_topk = min(max(int(args.statistics_hypothesis_topk), 2), count)
         top_values, top_indices = torch.topk(scores, score_topk, dim=1)
         top1 = top_indices[:, 0]
+        positive_offsets = observations.positive_offsets
+        positive_indices = observations.positive_indices
+        if positive_offsets is not None and positive_indices is not None:
+            positive_counts = positive_offsets[1:] - positive_offsets[:-1]
+            positive_rows = torch.repeat_interleave(
+                torch.arange(source.numel(), device=device),
+                positive_counts,
+            )
+            positive_keys = positive_rows * count + positive_indices
+            candidate_keys = (
+                torch.arange(source.numel(), device=device)[:, None] * count
+                + top_indices
+            )
+            candidate_positive = torch.isin(candidate_keys, positive_keys)
+        else:
+            candidate_positive = top_indices == source[:, None]
+        top1_positive = candidate_positive[:, 0]
+        raw_switch = top1 != source
+        benign_switch = raw_switch & top1_positive
+        harmful_switch = ~top1_positive
         top1_distance = torch.linalg.norm(
             observations.bank_uv[top1] - observations.query_uv, dim=1
         )
@@ -3580,8 +3609,16 @@ def _collect_landmark_statistics(
         observation_count.index_add_(0, source, ones)
         correct_count.index_add_(0, source, clean.float())
         source_top1_count.index_add_(0, source, (top1 == source).float())
+        benign_switch_count.index_add_(0, source, benign_switch.float())
+        harmful_switch_count.index_add_(0, source, harmful_switch.float())
         identity_sources.append(source.detach().cpu())
         identity_predictions.append(top1.detach().cpu())
+        for recall_k in recall_at_k_sum:
+            width_k = min(recall_k, candidate_positive.shape[1])
+            recall_at_k_sum[recall_k] += float(
+                candidate_positive[:, :width_k].any(dim=1).float().mean().item()
+            )
+        recall_at_k_queries += 1
         margin_sum.index_add_(0, source, margin)
         entropy_sum.index_add_(0, source, entropy)
         reprojection_sum.index_add_(0, source, local_error)
@@ -3690,6 +3727,8 @@ def _collect_landmark_statistics(
         identity_dominant_count = dominant_cpu.to(device)
     identity_dominance = identity_dominant_count / observation_count.clamp_min(1.0)
     identity_switch_rate = (1.0 - identity_dominance).clamp(0.0, 1.0)
+    benign_switch_rate = benign_switch_count / observation_count.clamp_min(1.0)
+    harmful_switch_rate = harmful_switch_count / observation_count.clamp_min(1.0)
     statistics = {
         "observation_count": observation_count,
         "correct_count": correct_count,
@@ -3699,6 +3738,8 @@ def _collect_landmark_statistics(
         "cross_view_top1_identity_distinct_count": identity_distinct_count,
         "cross_view_top1_identity_dominance": identity_dominance,
         "cross_view_top1_identity_switch_rate": identity_switch_rate,
+        "cross_view_top1_benign_positive_switch_rate": benign_switch_rate,
+        "cross_view_top1_harmful_switch_rate": harmful_switch_rate,
         "proposal_observation_count": proposal_observation_count,
         "proposal_correct_count": proposal_correct_count,
         "effective_observation_count": effective_count,
@@ -3736,6 +3777,22 @@ def _collect_landmark_statistics(
                 if bool((observation_count > 0).any())
                 else 0.0
             ),
+            "cross_view_top1_benign_positive_switch_rate_mean": float(
+                benign_switch_rate[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
+                else 0.0
+            ),
+            "cross_view_top1_harmful_switch_rate_mean": float(
+                harmful_switch_rate[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
+                else 0.0
+            ),
+            **{
+                f"gt_recall_at_{recall_k}": (
+                    recall_at_k_sum[recall_k] / max(recall_at_k_queries, 1)
+                )
+                for recall_k in recall_at_k_sum
+            },
         }
     )
     return statistics, diagnostics
@@ -4069,8 +4126,11 @@ def _distill_final_landmark_bank(
         strict_budget, int(round(float(strict_budget) * hard_core_ratio))
     )
     identity_switch_rate = statistics.get(
-        "cross_view_top1_identity_switch_rate",
+        "cross_view_top1_harmful_switch_rate",
+        statistics.get(
+            "cross_view_top1_identity_switch_rate",
         (1.0 - statistics["source_identity_rate"]).clamp(0.0, 1.0),
+        ),
     )
     protected_core_ratio = min(
         max(float(getattr(args, "distill_protected_core_ratio", 0.0)), 0.0), 1.0
@@ -4719,6 +4779,59 @@ def _state_config(
         "local_radius": int(args.local_radius),
         "local_target_sigma": float(args.local_target_sigma),
         "local_temperature": float(args.local_temperature),
+        "native_semidense_weight": float(args.native_semidense_weight),
+        "native_semidense_start_step": int(args.native_semidense_start_step),
+        "native_semidense_interval": int(args.native_semidense_interval),
+        "native_semidense_max_anchors": int(args.native_semidense_max_anchors),
+        "native_semidense_neighbors": int(args.native_semidense_neighbors),
+        "native_semidense_neighborhood_radius_m": float(
+            args.native_semidense_neighborhood_radius_m
+        ),
+        "native_semidense_normal_cosine": float(
+            args.native_semidense_normal_cosine
+        ),
+        "native_semidense_local_radius_px": int(
+            args.native_semidense_local_radius_px
+        ),
+        "native_semidense_target_sigma_px": float(
+            args.native_semidense_target_sigma_px
+        ),
+        "native_semidense_temperature": float(
+            args.native_semidense_temperature
+        ),
+        "native_semidense_lgcv_weight": float(
+            args.native_semidense_lgcv_weight
+        ),
+        "native_semidense_protected_v2": bool(
+            args.native_semidense_protected_v2
+        ),
+        "native_semidense_measurement_min_reprojection_px": float(
+            args.native_semidense_measurement_min_reprojection_px
+        ),
+        "native_semidense_measurement_max_reprojection_px": float(
+            args.native_semidense_measurement_max_reprojection_px
+        ),
+        "native_semidense_surface_point_plane_m": float(
+            args.native_semidense_surface_point_plane_m
+        ),
+        "native_semidense_surface_max_distance_m": float(
+            args.native_semidense_surface_max_distance_m
+        ),
+        "native_semidense_surface_normal_cosine": float(
+            args.native_semidense_surface_normal_cosine
+        ),
+        "native_semidense_projected_neighbor_radius_px": float(
+            args.native_semidense_projected_neighbor_radius_px
+        ),
+        "native_semidense_local_identity_weight": float(
+            args.native_semidense_local_identity_weight
+        ),
+        "native_semidense_margin_preservation_weight": float(
+            args.native_semidense_margin_preservation_weight
+        ),
+        "native_semidense_gradient_audit": bool(
+            args.native_semidense_gradient_audit
+        ),
         "temperature": float(args.temperature),
         "hypothesis_topk": int(args.hypothesis_topk),
         "random_negative_count": int(args.random_negative_count),
@@ -5538,6 +5651,7 @@ def train(dataset, args):
 
     empty_observation_steps = 0
     empty_observation_checkpoint_steps = []
+    semidense_reference_features = initial_features.detach().clone()
 
     def save_checkpoint(step, checkpoint_xyz, *, after_empty_observation=False):
         checkpoint_features = materialize_descriptor_residual(
@@ -5759,6 +5873,32 @@ def train(dataset, args):
                 ),
                 lgcv_weight=args.native_semidense_lgcv_weight,
                 lgcv_minimum_edge_px=args.native_semidense_lgcv_minimum_edge_px,
+                protected_v2=args.native_semidense_protected_v2,
+                measurement_min_reprojection_px=(
+                    args.native_semidense_measurement_min_reprojection_px
+                ),
+                measurement_max_reprojection_px=(
+                    args.native_semidense_measurement_max_reprojection_px
+                ),
+                surface_point_plane_m=(
+                    args.native_semidense_surface_point_plane_m
+                ),
+                surface_max_distance_m=(
+                    args.native_semidense_surface_max_distance_m
+                ),
+                surface_normal_cosine=(
+                    args.native_semidense_surface_normal_cosine
+                ),
+                projected_neighbor_radius_px=(
+                    args.native_semidense_projected_neighbor_radius_px
+                ),
+                local_identity_weight=(
+                    args.native_semidense_local_identity_weight
+                ),
+                margin_preservation_weight=(
+                    args.native_semidense_margin_preservation_weight
+                ),
+                reference_bank_features=semidense_reference_features,
             )
         else:
             native_semidense_loss = features.sum() * 0.0
@@ -5894,6 +6034,50 @@ def train(dataset, args):
         else:
             pose_loss = raw_anchor_offset.sum() * 0.0
             pose_diagnostics = {"pose_layer_active": 0.0}
+        semidense_gradient_diagnostics = {
+            "native_semidense_gradient_audit_active": 0.0,
+            "native_semidense_global_grad_norm": 0.0,
+            "native_semidense_local_grad_norm": 0.0,
+            "native_semidense_global_local_grad_cosine": 0.0,
+            "native_semidense_gradient_conflict": 0.0,
+        }
+        if native_semidense_active and bool(
+            args.native_semidense_gradient_audit
+        ):
+            global_gradient = torch.autograd.grad(
+                args.retrieval_weight * retrieval_loss,
+                residual,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            local_gradient = torch.autograd.grad(
+                args.native_semidense_weight * native_semidense_loss,
+                residual,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            if global_gradient is not None and local_gradient is not None:
+                global_flat = global_gradient.detach().reshape(-1).float()
+                local_flat = local_gradient.detach().reshape(-1).float()
+                global_norm = torch.linalg.norm(global_flat)
+                local_norm = torch.linalg.norm(local_flat)
+                denominator = (global_norm * local_norm).clamp_min(1e-12)
+                cosine = torch.dot(global_flat, local_flat) / denominator
+                semidense_gradient_diagnostics = {
+                    "native_semidense_gradient_audit_active": 1.0,
+                    "native_semidense_global_grad_norm": float(
+                        global_norm.item()
+                    ),
+                    "native_semidense_local_grad_norm": float(
+                        local_norm.item()
+                    ),
+                    "native_semidense_global_local_grad_cosine": float(
+                        cosine.item()
+                    ),
+                    "native_semidense_gradient_conflict": float(
+                        cosine.item() < 0.0
+                    ),
+                }
         loss = (
             descriptor_scale
             * (
@@ -5960,6 +6144,15 @@ def train(dataset, args):
                 normal_bound_m=args.normal_bound_m,
             )
             displacement = torch.linalg.norm(current_xyz - base_bank_xyz, dim=1)
+            if gradients_finite and native_semidense_active:
+                semidense_reference_features.copy_(
+                    materialize_descriptor_residual(
+                        initial_features,
+                        residual,
+                        residual_scale=args.residual_scale,
+                        max_residual_norm=args.max_residual_norm,
+                    )
+                )
         grad_norm_value = float(grad_norm.detach().item())
         grad_norm_finite = math.isfinite(grad_norm_value)
         loss_value = float(loss.detach().item())
@@ -6006,6 +6199,37 @@ def train(dataset, args):
             "native_candidate_observations": float(
                 str(args.observation_source) != "anchor"
             ),
+            "native_input_count": int(
+                observations.native_input_count
+                if observations.native_input_count is not None
+                else observations.query_features.shape[0]
+            ),
+            "native_valid_count": int(
+                observations.native_valid_count
+                if observations.native_valid_count is not None
+                else observations.query_features.shape[0]
+            ),
+            "native_selected_count": int(
+                observations.native_selected_count
+                if observations.native_selected_count is not None
+                else observations.query_features.shape[0]
+            ),
+            "configured_max_observations": int(
+                observations.configured_max_observations
+                if observations.configured_max_observations is not None
+                else args.max_observations
+            ),
+            "native_selection_coverage_ratio": float(
+                observations.query_features.shape[0]
+                / max(
+                    int(
+                        observations.native_valid_count
+                        if observations.native_valid_count is not None
+                        else observations.query_features.shape[0]
+                    ),
+                    1,
+                )
+            ),
             "anchor_auxiliary_observations": (
                 0
                 if anchor_auxiliary is None
@@ -6020,6 +6244,7 @@ def train(dataset, args):
             **proposal_retrieval_diagnostics,
             **local_diagnostics,
             **native_semidense_diagnostics,
+            **semidense_gradient_diagnostics,
             **dustbin_diagnostics,
             **geometry_diagnostics,
             **pose_diagnostics,
@@ -6671,6 +6896,60 @@ def build_parser():
         "--native_semidense_lgcv_minimum_edge_px",
         type=float,
         default=1.0,
+    )
+    parser.add_argument(
+        "--native_semidense_protected_v2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Route local supervision only to measurement-limited, same-surface "
+            "matches and preserve high-precision global assignment margins."
+        ),
+    )
+    parser.add_argument(
+        "--native_semidense_measurement_min_reprojection_px",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--native_semidense_measurement_max_reprojection_px",
+        type=float,
+        default=8.0,
+    )
+    parser.add_argument(
+        "--native_semidense_surface_point_plane_m",
+        type=float,
+        default=0.03,
+    )
+    parser.add_argument(
+        "--native_semidense_surface_max_distance_m",
+        type=float,
+        default=0.15,
+    )
+    parser.add_argument(
+        "--native_semidense_surface_normal_cosine",
+        type=float,
+        default=0.95,
+    )
+    parser.add_argument(
+        "--native_semidense_projected_neighbor_radius_px",
+        type=float,
+        default=64.0,
+    )
+    parser.add_argument(
+        "--native_semidense_local_identity_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--native_semidense_margin_preservation_weight",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--native_semidense_gradient_audit",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--hypothesis_topk", type=int, default=32)

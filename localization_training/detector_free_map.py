@@ -47,6 +47,10 @@ class DetectorFreeObservationBatch:
     positive_indices: Optional[torch.Tensor] = None
     positive_reprojection_errors: Optional[torch.Tensor] = None
     query_feature_image_size: Optional[tuple] = None
+    native_input_count: Optional[int] = None
+    native_valid_count: Optional[int] = None
+    native_selected_count: Optional[int] = None
+    configured_max_observations: Optional[int] = None
 
 
 @dataclass
@@ -153,6 +157,10 @@ def _select_observation_rows(observations, rows):
         positive_indices=positive_indices,
         positive_reprojection_errors=positive_reprojection_errors,
         query_feature_image_size=observations.query_feature_image_size,
+        native_input_count=observations.native_input_count,
+        native_valid_count=observations.native_valid_count,
+        native_selected_count=int(row_indices.numel()),
+        configured_max_observations=observations.configured_max_observations,
     )
 
 
@@ -544,7 +552,7 @@ def build_native_sparse_observations(
     bank_visibility_mask=None,
     query_valid_mask=None,
     query_feature_map=None,
-    max_observations=512,
+    max_observations=2048,
     grid_rows=8,
     grid_cols=8,
     positive_radius_px=2.0,
@@ -572,6 +580,7 @@ def build_native_sparse_observations(
     native_scores = torch.as_tensor(
         native_scores, device=native_keypoints.device, dtype=native_keypoints.dtype
     ).reshape(-1)
+    native_input_count = int(native_keypoints.shape[0])
     if native_keypoints.ndim != 2 or native_keypoints.shape[1] != 2:
         raise ValueError("native_keypoints must have shape [N, 2]")
     if native_descriptors.ndim != 2 or native_descriptors.shape[0] != native_keypoints.shape[0]:
@@ -695,6 +704,10 @@ def build_native_sparse_observations(
             query_feature_image_size=(
                 None if native_feature_map is None else (height, width)
             ),
+            native_input_count=native_input_count,
+            native_valid_count=0,
+            native_selected_count=0,
+            configured_max_observations=int(max_observations),
         )
 
     sampling_mode = str(sampling_mode)
@@ -717,6 +730,17 @@ def build_native_sparse_observations(
         grid_cols=grid_cols,
     )
     selected = valid_indices[selected_local]
+    if sampling_mode == "detector_grid":
+        expected_count = (
+            min(int(valid_indices.numel()), int(max_observations))
+            if int(max_observations) > 0
+            else int(valid_indices.numel())
+        )
+        if int(selected.numel()) != expected_count:
+            raise RuntimeError(
+                "native detector-grid proposal coverage changed unexpectedly: "
+                f"selected={int(selected.numel())} expected={expected_count}"
+            )
     query_uv = native_keypoints[selected]
     query_features = F.normalize(native_descriptors[selected], dim=-1)
     query_scores = native_scores[selected]
@@ -821,6 +845,10 @@ def build_native_sparse_observations(
         query_feature_image_size=(
             None if native_feature_map is None else (height, width)
         ),
+        native_input_count=native_input_count,
+        native_valid_count=int(valid_indices.numel()),
+        native_selected_count=int(query_uv.shape[0]),
+        configured_max_observations=int(max_observations),
     )
 
 
@@ -1318,6 +1346,131 @@ def counterfactual_pose_safe_mask(
     return safe, diagnostics
 
 
+def local_group_identity_assignment_loss(
+    bank_features,
+    teacher_features,
+    teacher_indices,
+    teacher_uv,
+    group_ids,
+    *,
+    temperature=0.07,
+    positive_radius_px=2.0,
+):
+    """Preserve one-to-one local identity inside each projected surface group."""
+    losses = []
+    group_count = 0
+    row_count = 0
+    for group_id in torch.unique(group_ids).tolist():
+        rows = torch.nonzero(
+            group_ids == int(group_id), as_tuple=False
+        ).reshape(-1)
+        if rows.numel() < 2:
+            continue
+        descriptors = F.normalize(bank_features[teacher_indices[rows]], dim=1)
+        targets = F.normalize(teacher_features[rows].detach(), dim=1)
+        logits = descriptors @ targets.T
+        logits = logits / max(float(temperature), 1e-6)
+        positive = torch.cdist(
+            teacher_uv[rows].float(), teacher_uv[rows].float()
+        ) <= float(positive_radius_px)
+        positive.fill_diagonal_(True)
+        positive_logits = logits.masked_fill(~positive, -torch.inf)
+        row_loss = torch.logsumexp(logits, dim=1) - torch.logsumexp(
+            positive_logits, dim=1
+        )
+        # Symmetric supervision prevents several landmarks from collapsing
+        # onto the same query location.
+        column_loss = torch.logsumexp(logits, dim=0) - torch.logsumexp(
+            positive_logits, dim=0
+        )
+        losses.append(0.5 * (row_loss + column_loss))
+        group_count += 1
+        row_count += int(rows.numel())
+    zero = bank_features.sum() * 0.0
+    loss = torch.cat(losses).mean() if losses else zero
+    return loss, {
+        "native_semidense_local_identity_group_count": group_count,
+        "native_semidense_local_identity_row_count": row_count,
+        "native_semidense_local_identity_loss": float(loss.detach().item()),
+    }
+
+
+def global_margin_preservation_loss(
+    bank_features,
+    reference_bank_features,
+    observations,
+    rows,
+    positive_landmarks,
+):
+    """Prevent a protected local step from reducing an existing clean margin."""
+    rows = torch.as_tensor(
+        rows, device=bank_features.device, dtype=torch.long
+    ).reshape(-1)
+    if rows.numel() == 0 or reference_bank_features is None:
+        zero = bank_features.sum() * 0.0
+        return zero, {
+            "native_semidense_margin_preserve_count": 0,
+            "native_semidense_margin_preserve_violation_rate": 0.0,
+            "native_semidense_margin_preserve_loss": 0.0,
+        }
+    query = F.normalize(observations.query_features[rows].detach(), dim=1)
+    current = F.normalize(bank_features, dim=1)
+    reference = F.normalize(reference_bank_features.detach(), dim=1)
+    current_scores = query @ current.T
+    with torch.no_grad():
+        reference_scores = query @ reference.T
+    positive_landmarks = torch.as_tensor(
+        positive_landmarks, device=bank_features.device, dtype=torch.long
+    ).reshape(-1)
+    negative_mask = torch.ones_like(current_scores, dtype=torch.bool)
+    negative_mask[
+        torch.arange(rows.numel(), device=bank_features.device),
+        positive_landmarks,
+    ] = False
+    if (
+        observations.positive_offsets is not None
+        and observations.positive_indices is not None
+    ):
+        offsets = observations.positive_offsets
+        for output_row, observation_row in enumerate(rows.tolist()):
+            start = int(offsets[observation_row].item())
+            end = int(offsets[observation_row + 1].item())
+            if end > start:
+                negative_mask[
+                    output_row,
+                    observations.positive_indices[start:end],
+                ] = False
+    current_positive = current_scores.gather(
+        1, positive_landmarks[:, None]
+    ).squeeze(1)
+    reference_positive = reference_scores.gather(
+        1, positive_landmarks[:, None]
+    ).squeeze(1)
+    current_negative = current_scores.masked_fill(
+        ~negative_mask, -torch.inf
+    ).max(dim=1).values
+    reference_negative = reference_scores.masked_fill(
+        ~negative_mask, -torch.inf
+    ).max(dim=1).values
+    current_margin = current_positive - current_negative
+    reference_margin = reference_positive - reference_negative
+    degradation = reference_margin - current_margin
+    loss = F.relu(degradation).mean()
+    return loss, {
+        "native_semidense_margin_preserve_count": int(rows.numel()),
+        "native_semidense_margin_preserve_violation_rate": float(
+            (degradation > 0).float().mean().detach().item()
+        ),
+        "native_semidense_margin_reference_mean": float(
+            reference_margin.mean().detach().item()
+        ),
+        "native_semidense_margin_current_mean": float(
+            current_margin.mean().detach().item()
+        ),
+        "native_semidense_margin_preserve_loss": float(loss.detach().item()),
+    }
+
+
 def native_semidense_neighborhood_loss(
     bank_features,
     bank_xyz,
@@ -1337,6 +1490,16 @@ def native_semidense_neighborhood_loss(
     pose_safe_teacher_pairs=False,
     lgcv_weight=0.0,
     lgcv_minimum_edge_px=1.0,
+    protected_v2=False,
+    measurement_min_reprojection_px=2.0,
+    measurement_max_reprojection_px=8.0,
+    surface_point_plane_m=0.03,
+    surface_max_distance_m=0.15,
+    surface_normal_cosine=0.95,
+    projected_neighbor_radius_px=64.0,
+    local_identity_weight=0.0,
+    margin_preservation_weight=0.0,
+    reference_bank_features=None,
 ):
     """Distill local surface structure from real native-query proposals.
 
@@ -1396,12 +1559,84 @@ def native_semidense_neighborhood_loss(
         clean = observations.bank_visible[top1] & (
             top1_distance <= float(positive_radius_px)
         )
-        clean_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
+        protected_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
+        if bool(protected_v2):
+            source = observations.source_indices
+            source_valid = source >= 0
+            safe_source = source.clamp_min(0)
+            delta = bank_xyz[top1] - bank_xyz[safe_source]
+            distance_3d = torch.linalg.norm(delta, dim=1)
+            normal_agreement = (
+                bank_normals[top1] * bank_normals[safe_source]
+            ).sum(dim=1).abs()
+            source_plane = (
+                delta * bank_normals[safe_source]
+            ).sum(dim=1).abs()
+            target_plane = (
+                delta * bank_normals[top1]
+            ).sum(dim=1).abs()
+            same_surface = (
+                source_valid
+                & (distance_3d <= float(surface_max_distance_m))
+                & (normal_agreement >= float(surface_normal_cosine))
+                & (source_plane <= float(surface_point_plane_m))
+                & (target_plane <= float(surface_point_plane_m))
+            )
+            measurement_limited = (
+                observations.bank_visible[top1]
+                & same_surface
+                & (
+                    top1_distance
+                    > float(measurement_min_reprojection_px)
+                )
+                & (
+                    top1_distance
+                    <= float(measurement_max_reprojection_px)
+                )
+            )
+            clean_rows = torch.nonzero(
+                measurement_limited, as_tuple=False
+            ).reshape(-1)
+        else:
+            clean_rows = protected_rows
         if clean_rows.numel() == 0:
-            return zero, {
+            margin_diagnostics = {
+                "native_semidense_margin_preserve_count": 0,
+                "native_semidense_margin_preserve_violation_rate": 0.0,
+                "native_semidense_margin_preserve_loss": 0.0,
+            }
+            margin_only_loss = zero
+            if (
+                bool(protected_v2)
+                and protected_rows.numel() > 0
+                and float(margin_preservation_weight) > 0.0
+            ):
+                margin_rows = protected_rows[: max(int(max_anchors), 1)]
+                # The routing decision is detached, but the preservation loss
+                # must remain differentiable even inside this no-grad block.
+                with torch.enable_grad():
+                    margin_only_loss, margin_diagnostics = (
+                        global_margin_preservation_loss(
+                            bank_features,
+                            reference_bank_features,
+                            observations,
+                            margin_rows,
+                            top1[margin_rows],
+                        )
+                    )
+                    margin_only_loss = (
+                        float(margin_preservation_weight) * margin_only_loss
+                    )
+            return margin_only_loss, {
                 "native_semidense_active": 1.0,
                 "native_semidense_clean_anchor_count": 0,
                 "native_semidense_teacher_pair_count": 0,
+                "native_semidense_measurement_limited_count": 0,
+                "native_semidense_protected_high_precision_count": int(
+                    protected_rows.numel()
+                ),
+                "native_semidense_protected_v2": float(bool(protected_v2)),
+                **margin_diagnostics,
             }
         if float(pose_safe_max_delete_gain_m) >= 0.0:
             safe, pose_safe_diagnostics = counterfactual_pose_safe_mask(
@@ -1436,7 +1671,11 @@ def native_semidense_neighborhood_loss(
         anchor_rows = torch.as_tensor(
             anchor_rows, device=bank_features.device, dtype=torch.long
         )
-        anchor_indices = top1[anchor_rows]
+        anchor_indices = (
+            observations.source_indices[anchor_rows]
+            if bool(protected_v2)
+            else top1[anchor_rows]
+        )
 
         neighbors_per_anchor = max(int(neighbors_per_anchor), 1)
         if neighbors_per_anchor == 1:
@@ -1449,18 +1688,48 @@ def native_semidense_neighborhood_loss(
             )
         else:
             distance = torch.cdist(
-                bank_xyz[anchor_indices].float(),
-                bank_xyz.float(),
+                bank_xyz[anchor_indices].float(), bank_xyz.float()
             )
             normal_support = (
                 bank_normals[anchor_indices] @ bank_normals.T
-            ).abs() >= float(normal_cosine)
-            eligible = (
-                observations.bank_visible[None]
-                & normal_support
-                & (distance <= float(neighborhood_radius_m))
+            ).abs()
+            if bool(protected_v2):
+                delta = (
+                    bank_xyz[None]
+                    - bank_xyz[anchor_indices, None]
+                )
+                anchor_plane = (
+                    delta * bank_normals[anchor_indices, None]
+                ).sum(dim=2).abs()
+                target_plane = (
+                    delta * bank_normals[None]
+                ).sum(dim=2).abs()
+                projected_distance = torch.cdist(
+                    observations.bank_uv[anchor_indices].float(),
+                    observations.bank_uv.float(),
+                )
+                eligible = (
+                    observations.bank_visible[None]
+                    & (normal_support >= float(surface_normal_cosine))
+                    & (distance <= float(surface_max_distance_m))
+                    & (anchor_plane <= float(surface_point_plane_m))
+                    & (target_plane <= float(surface_point_plane_m))
+                    & (
+                        projected_distance
+                        <= float(projected_neighbor_radius_px)
+                    )
+                )
+                ranking_distance = projected_distance
+            else:
+                eligible = (
+                    observations.bank_visible[None]
+                    & (normal_support >= float(normal_cosine))
+                    & (distance <= float(neighborhood_radius_m))
+                )
+                ranking_distance = distance
+            masked_distance = ranking_distance.masked_fill(
+                ~eligible, torch.inf
             )
-            masked_distance = distance.masked_fill(~eligible, torch.inf)
             neighbor_count = min(neighbors_per_anchor, bank_count)
             neighbor_distance, neighbor_indices = torch.topk(
                 masked_distance,
@@ -1501,12 +1770,27 @@ def native_semidense_neighborhood_loss(
         teacher_indices = teacher_indices[teacher_valid]
         teacher_uv = teacher_uv[teacher_valid]
         teacher_anchor_ids = teacher_anchor_ids[teacher_valid]
+        protected_neighbor_excluded_count = 0
+        if bool(protected_v2) and protected_rows.numel() > 0:
+            protected_landmarks = torch.unique(top1[protected_rows])
+            protected_teacher = torch.isin(
+                teacher_indices, protected_landmarks
+            )
+            protected_neighbor_excluded_count = int(
+                protected_teacher.sum().item()
+            )
+            teacher_indices = teacher_indices[~protected_teacher]
+            teacher_uv = teacher_uv[~protected_teacher]
+            teacher_anchor_ids = teacher_anchor_ids[~protected_teacher]
 
     if teacher_indices.numel() == 0:
         return zero, {
             "native_semidense_active": 1.0,
             "native_semidense_clean_anchor_count": int(anchor_indices.numel()),
             "native_semidense_teacher_pair_count": 0,
+            "native_semidense_protected_neighbor_excluded_count": int(
+                protected_neighbor_excluded_count
+            ),
         }
     teacher_observations = DetectorFreeObservationBatch(
         source_indices=teacher_indices,
@@ -1592,6 +1876,41 @@ def native_semidense_neighborhood_loss(
         target_sigma=target_sigma_px,
         temperature=temperature,
     )
+    teacher_features = teacher_observations.query_features
+    if float(local_identity_weight) > 0.0:
+        identity_loss, identity_diagnostics = (
+            local_group_identity_assignment_loss(
+                bank_features,
+                teacher_features,
+                teacher_indices,
+                teacher_uv,
+                teacher_anchor_ids,
+                temperature=temperature,
+                positive_radius_px=positive_radius_px,
+            )
+        )
+        loss = loss + float(local_identity_weight) * identity_loss
+    else:
+        identity_diagnostics = {
+            "native_semidense_local_identity_group_count": 0,
+            "native_semidense_local_identity_row_count": 0,
+            "native_semidense_local_identity_loss": 0.0,
+        }
+    if float(margin_preservation_weight) > 0.0:
+        margin_loss, margin_diagnostics = global_margin_preservation_loss(
+            bank_features,
+            reference_bank_features,
+            observations,
+            protected_rows[: max(int(max_anchors), 1)],
+            top1[protected_rows[: max(int(max_anchors), 1)]],
+        )
+        loss = loss + float(margin_preservation_weight) * margin_loss
+    else:
+        margin_diagnostics = {
+            "native_semidense_margin_preserve_count": 0,
+            "native_semidense_margin_preserve_violation_rate": 0.0,
+            "native_semidense_margin_preserve_loss": 0.0,
+        }
     if float(lgcv_weight) > 0.0:
         local = local_soft_correspondences(
             bank_features,
@@ -1628,8 +1947,30 @@ def native_semidense_neighborhood_loss(
             "native_semidense_anchor_group_count": int(
                 torch.unique(teacher_anchor_ids).numel()
             ),
+            "native_semidense_measurement_limited_count": int(
+                anchor_indices.numel() if bool(protected_v2) else 0
+            ),
+            "native_semidense_protected_high_precision_count": int(
+                protected_rows.numel()
+            ),
+            "native_semidense_protected_v2": float(bool(protected_v2)),
+            "native_semidense_protected_neighbor_excluded_count": int(
+                protected_neighbor_excluded_count
+            ),
+            "native_semidense_neighborhood_overlap_mean": float(
+                torch.bincount(
+                    teacher_indices, minlength=bank_count
+                ).float()[torch.unique(teacher_indices)].mean().item()
+            ),
+            "native_semidense_neighborhood_overlap_max": int(
+                torch.bincount(
+                    teacher_indices, minlength=bank_count
+                ).max().item()
+            ),
             **pose_safe_diagnostics,
             **pair_pose_safe_diagnostics,
+            **identity_diagnostics,
+            **margin_diagnostics,
             **lgcv_diagnostics,
         }
     )
