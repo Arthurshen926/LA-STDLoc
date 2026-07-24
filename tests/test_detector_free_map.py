@@ -522,6 +522,188 @@ def test_native_sparse_observations_preserve_detector_coordinates_and_unmatched_
     assert batch.query_feature_map is None
 
 
+def test_native_sparse_observations_expose_all_geometric_positives_as_csr():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        hard_hypothesis_retrieval_loss,
+    )
+
+    bank_xyz = torch.tensor(
+        [
+            [0.0, 0.0, 2.0],
+            [0.01, 0.0, 2.0],
+            [0.5, 0.0, 2.0],
+        ]
+    )
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    batch = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1.0]),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(3, dtype=torch.bool),
+        positive_radius_px=1.0,
+        max_observations=1,
+    )
+
+    assert batch.source_indices.tolist() == [0]
+    assert batch.positive_offsets.tolist() == [0, 2]
+    assert batch.positive_indices.tolist() == [0, 1]
+    assert torch.all(batch.positive_reprojection_errors <= 1.0)
+
+    retrieval = hard_hypothesis_retrieval_loss(
+        torch.tensor([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]),
+        batch,
+        hypothesis_topk=3,
+        positive_radius_px=1.0,
+        negative_radius_px=2.0,
+        native_outcome_mode=True,
+    )
+    assert retrieval.diagnostics["retrieval_positive_multiplicity_p50"] == 2.0
+    assert retrieval.diagnostics["retrieval_multi_positive_query_fraction"] == 1.0
+
+
+def test_native_semidense_teacher_updates_same_descriptor_field():
+    from localization_training.detector_free_map import (
+        build_native_sparse_observations,
+        native_semidense_neighborhood_loss,
+    )
+
+    bank_xyz = torch.tensor([[0.0, 0.0, 2.0], [0.04, 0.0, 2.0]])
+    K = torch.tensor(
+        [[50.0, 0.0, 16.5], [0.0, 50.0, 16.5], [0.0, 0.0, 1.0]]
+    )
+    dense = torch.zeros(2, 4, 4)
+    dense[0] = torch.tensor(
+        [
+            [1.0, 1.0, 0.5, 0.0],
+            [1.0, 1.0, 0.5, 0.0],
+            [0.5, 0.5, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    dense[1] = 1.0 - dense[0]
+    dense = torch.nn.functional.normalize(dense, dim=0)
+    observations = build_native_sparse_observations(
+        bank_xyz,
+        torch.tensor([[16.0, 16.0]]),
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1.0]),
+        K,
+        torch.eye(4),
+        image_size=(32, 32),
+        bank_visibility_mask=torch.ones(2, dtype=torch.bool),
+        query_valid_mask=torch.ones(32, 32, dtype=torch.bool),
+        query_feature_map=dense,
+        positive_radius_px=2.0,
+        max_observations=1,
+    )
+    features = torch.tensor(
+        [[1.0, 0.0], [0.8, 0.2]], requires_grad=True
+    )
+    loss, diagnostics = native_semidense_neighborhood_loss(
+        features,
+        bank_xyz,
+        torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+        observations,
+        positive_radius_px=2.0,
+        max_anchors=1,
+        neighbors_per_anchor=2,
+        neighborhood_radius_m=0.1,
+        local_radius_px=8,
+        target_sigma_px=2.0,
+        pose_safe_max_delete_gain_m=0.0,
+        pose_safe_teacher_pairs=True,
+        lgcv_weight=0.25,
+    )
+    loss.backward()
+
+    assert diagnostics["native_semidense_clean_anchor_count"] == 1
+    assert diagnostics["native_semidense_teacher_pair_count"] == 2
+    assert diagnostics["native_semidense_unique_landmarks"] == 2
+    assert diagnostics["native_semidense_lgcv_loss"] == 0.0
+    assert diagnostics["native_semidense_pair_pose_safe_enabled"] == 1.0
+    assert torch.isfinite(loss)
+    assert features.grad is not None
+    assert features.grad.abs().sum() > 0
+
+
+def test_group_geometric_consistency_penalizes_direction_scale_and_orientation():
+    from localization_training.detector_free_map import (
+        group_geometric_consistency_loss,
+    )
+
+    target = torch.tensor(
+        [[4.0, 4.0], [8.0, 4.0], [4.0, 8.0], [8.0, 8.0]]
+    )
+    exact = target.clone().requires_grad_()
+    exact_loss, exact_diagnostics = group_geometric_consistency_loss(
+        exact,
+        target,
+        torch.zeros(4, dtype=torch.long),
+    )
+    distorted = target.clone()
+    distorted[1] += torch.tensor([1.5, 1.0])
+    distorted[2] += torch.tensor([0.5, -1.0])
+    distorted.requires_grad_()
+    distorted_loss, diagnostics = group_geometric_consistency_loss(
+        distorted,
+        target,
+        torch.zeros(4, dtype=torch.long),
+    )
+
+    assert exact_loss.item() < 1e-7
+    assert distorted_loss > exact_loss
+    assert exact_diagnostics["native_semidense_lgcv_group_count"] == 1
+    assert diagnostics["native_semidense_lgcv_edge_count"] == 6
+    assert diagnostics["native_semidense_lgcv_triangle_count"] > 0
+    distorted_loss.backward()
+    assert distorted.grad is not None
+    assert distorted.grad.abs().sum() > 0
+
+
+def test_counterfactual_pose_gate_rejects_bias_improving_deletions():
+    from localization_training.detector_free_map import (
+        counterfactual_pose_safe_mask,
+    )
+    from localization_training.pose_refiner import project_points
+
+    xy = torch.cartesian_prod(
+        torch.linspace(-0.8, 0.8, 4),
+        torch.linspace(-0.5, 0.5, 3),
+    )
+    points = torch.cat(
+        [xy, torch.linspace(2.5, 5.0, xy.shape[0])[:, None]], dim=1
+    )
+    K = torch.tensor(
+        [[300.0, 0.0, 160.0], [0.0, 300.0, 120.0], [0.0, 0.0, 1.0]]
+    )
+    pose = torch.eye(4)
+    observed, _ = project_points(points, K, pose)
+    observed = observed - 0.5
+    observed[-1] += torch.tensor([2.0, -1.5])
+
+    safe, diagnostics = counterfactual_pose_safe_mask(
+        points,
+        torch.arange(points.shape[0]),
+        observed,
+        K,
+        pose,
+        maximum_delete_gain_m=0.0,
+        minimum_correspondences=6,
+    )
+
+    assert diagnostics["native_semidense_pose_safe_evaluable"] == 1.0
+    assert diagnostics["native_semidense_pose_harmful_count"] > 0
+    assert diagnostics["native_semidense_pose_delete_gain_max_m"] > 0.0
+    assert safe.sum() < safe.numel()
+
+
 def test_native_association_geometry_updates_only_predicted_surface_anchor():
     from dataclasses import replace
 

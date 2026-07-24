@@ -223,6 +223,25 @@ def _linearized_translation_delete_gains(
     return gains
 
 
+def linearized_translation_delete_gains(
+    points_world,
+    observed_xy,
+    K,
+    pose_w2c,
+    gt_pose_w2c,
+    damping=1e-4,
+):
+    """Public detached-label API for counterfactual translation safety."""
+    return _linearized_translation_delete_gains(
+        points_world,
+        observed_xy,
+        K,
+        pose_w2c,
+        gt_pose_w2c,
+        damping=damping,
+    )
+
+
 def _default_pose_solver(
     p2d,
     p3d,

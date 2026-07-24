@@ -32,6 +32,7 @@ from localization_training.detector_free_map import (
     multiview_descriptor_loss,
     native_association_geometry_losses,
     native_association_matches,
+    native_semidense_neighborhood_loss,
     observation_adaptive_trust_weights,
     pose_layer_loss,
     random_negative_retrieval_loss,
@@ -981,6 +982,8 @@ def _cached_native_observations(
     prediction_bank_xyz=None,
 ):
     required = {
+        "feature_map",
+        "frontend_metadata",
         "native_keypoints",
         "native_descriptors",
         "native_scores",
@@ -997,6 +1000,12 @@ def _cached_native_observations(
             f"missing: {', '.join(missing)}"
         )
     native_height, native_width = map(int, cached["native_input_hw"])
+    frontend_metadata = cached["frontend_metadata"]
+    if str(frontend_metadata.get("query_feature_contract")) != _QUERY_FEATURE_CONTRACT_NATIVE:
+        raise ValueError(
+            "Native semidense supervision requires a dense SuperPoint map "
+            "computed from the same resized RGB input as detectAndCompute"
+        )
     return build_native_sparse_observations(
         base_bank_xyz,
         cached["native_keypoints"].cuda().float(),
@@ -1010,6 +1019,7 @@ def _cached_native_observations(
         target_alpha=cached["native_alpha"].cuda().float(),
         bank_visibility_mask=bank_visibility_mask,
         query_valid_mask=cached["native_valid_mask"].cuda().bool(),
+        query_feature_map=cached["feature_map"].cuda().float(),
         max_observations=max_observations,
         grid_rows=args.grid_rows,
         grid_cols=args.grid_cols,
@@ -1205,6 +1215,7 @@ def _validate_distillation_semantics(args):
     global_attractor_weight = float(
         getattr(args, "distill_global_attractor_weight", 0.0)
     )
+    protected_ratio = float(getattr(args, "distill_protected_core_ratio", 0.0))
     if budget < 0:
         raise ValueError("distill_budget must be non-negative")
     if not math.isfinite(reservoir_multiplier) or reservoir_multiplier < 0.0:
@@ -1239,6 +1250,12 @@ def _validate_distillation_semantics(args):
     if global_attractor_weight > 0.0 and budget <= 0:
         raise ValueError(
             "distill_global_attractor_weight requires a positive distill_budget"
+        )
+    if not math.isfinite(protected_ratio) or not 0.0 <= protected_ratio <= 1.0:
+        raise ValueError("distill_protected_core_ratio must lie in [0, 1]")
+    if protected_ratio > 0.0 and budget <= 0:
+        raise ValueError(
+            "distill_protected_core_ratio requires a positive distill_budget"
         )
 
 
@@ -3507,6 +3524,8 @@ def _collect_landmark_statistics(
     depth_sum = torch.zeros(count, device=device)
     normalized_features = F.normalize(features, dim=1)
     records = []
+    identity_sources = []
+    identity_predictions = []
     for name in tqdm(query_names, desc="One-time landmark statistics"):
         observations = _cached_observations(
             cache[name],
@@ -3561,6 +3580,8 @@ def _collect_landmark_statistics(
         observation_count.index_add_(0, source, ones)
         correct_count.index_add_(0, source, clean.float())
         source_top1_count.index_add_(0, source, (top1 == source).float())
+        identity_sources.append(source.detach().cpu())
+        identity_predictions.append(top1.detach().cpu())
         margin_sum.index_add_(0, source, margin)
         entropy_sum.index_add_(0, source, entropy)
         reprojection_sum.index_add_(0, source, local_error)
@@ -3645,12 +3666,39 @@ def _collect_landmark_statistics(
     denominator = observation_count.clamp_min(1.0)
     effective_denominator = effective_count.clamp_min(1.0)
     matchability = (effective_correct + 1.0) / (effective_count + 2.0)
+    identity_distinct_count = torch.zeros(count, device=device)
+    identity_dominant_count = torch.zeros(count, device=device)
+    if identity_sources:
+        all_sources = torch.cat(identity_sources).long()
+        all_predictions = torch.cat(identity_predictions).long()
+        pair_keys = all_sources * count + all_predictions
+        unique_keys, pair_counts = torch.unique(pair_keys, return_counts=True)
+        pair_sources = torch.div(unique_keys, count, rounding_mode="floor")
+        distinct_cpu = torch.zeros(count, dtype=torch.float32)
+        distinct_cpu.index_add_(
+            0, pair_sources, torch.ones_like(pair_sources, dtype=torch.float32)
+        )
+        dominant_cpu = torch.zeros(count, dtype=torch.float32)
+        dominant_cpu.scatter_reduce_(
+            0,
+            pair_sources,
+            pair_counts.float(),
+            reduce="amax",
+            include_self=True,
+        )
+        identity_distinct_count = distinct_cpu.to(device)
+        identity_dominant_count = dominant_cpu.to(device)
+    identity_dominance = identity_dominant_count / observation_count.clamp_min(1.0)
+    identity_switch_rate = (1.0 - identity_dominance).clamp(0.0, 1.0)
     statistics = {
         "observation_count": observation_count,
         "correct_count": correct_count,
         "source_top1_count": source_top1_count,
         "source_identity_rate": (source_top1_count + 1.0)
         / (observation_count + 2.0),
+        "cross_view_top1_identity_distinct_count": identity_distinct_count,
+        "cross_view_top1_identity_dominance": identity_dominance,
+        "cross_view_top1_identity_switch_rate": identity_switch_rate,
         "proposal_observation_count": proposal_observation_count,
         "proposal_correct_count": proposal_correct_count,
         "effective_observation_count": effective_count,
@@ -3676,6 +3724,16 @@ def _collect_landmark_statistics(
             "matchability_mean": float(
                 matchability[effective_count > 0].mean().item()
                 if bool((effective_count > 0).any())
+                else 0.0
+            ),
+            "cross_view_top1_identity_switch_rate_mean": float(
+                identity_switch_rate[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
+                else 0.0
+            ),
+            "cross_view_top1_identity_dominance_mean": float(
+                identity_dominance[observation_count > 0].mean().item()
+                if bool((observation_count > 0).any())
                 else 0.0
             ),
         }
@@ -4010,11 +4068,62 @@ def _distill_final_landmark_bank(
     hard_core_count = min(
         strict_budget, int(round(float(strict_budget) * hard_core_ratio))
     )
-    hard_core = hard_score_core(
-        selection_score,
-        hard_core_count,
-        eligible=eligible,
+    identity_switch_rate = statistics.get(
+        "cross_view_top1_identity_switch_rate",
+        (1.0 - statistics["source_identity_rate"]).clamp(0.0, 1.0),
     )
+    protected_core_ratio = min(
+        max(float(getattr(args, "distill_protected_core_ratio", 0.0)), 0.0), 1.0
+    )
+    protected_core_budget = min(
+        strict_budget,
+        int(round(float(strict_budget) * protected_core_ratio)),
+    )
+    protected_correct_count = statistics.get(
+        "correct_count",
+        (1.0 - false_top1_rate).clamp(0.0, 1.0) * observation_count,
+    )
+    protected_eligible = (
+        eligible
+        & (
+            protected_correct_count
+            >= float(getattr(args, "distill_protected_min_correct", 3))
+        )
+        & (
+            matchability
+            >= float(getattr(args, "distill_protected_matchability", 0.75))
+        )
+        & (
+            identity_switch_rate
+            <= float(
+                getattr(args, "distill_protected_identity_switch_max", 0.25)
+            )
+        )
+    )
+    protected_score = (
+        wilson_lower_confidence(
+            protected_correct_count,
+            observation_count,
+            z=float(args.distill_quality_reservoir_wilson_z),
+        )
+        * (1.0 - identity_switch_rate).clamp(0.0, 1.0)
+        * torch.log1p(protected_correct_count)
+        * global_attractor_reliability
+    )
+    protected_core = hard_score_core(
+        protected_score,
+        protected_core_budget,
+        eligible=protected_eligible,
+    )
+    regular_core_eligible = eligible.clone()
+    if protected_core.numel() > 0:
+        regular_core_eligible[protected_core] = False
+    regular_hard_core = hard_score_core(
+        selection_score,
+        max(hard_core_count - int(protected_core.numel()), 0),
+        eligible=regular_core_eligible,
+    )
+    hard_core = torch.cat([protected_core, regular_hard_core]).unique(sorted=True)
     coverage_eligible = eligible.clone()
     if hard_core.numel() > 0:
         coverage_eligible[hard_core] = False
@@ -4054,6 +4163,8 @@ def _distill_final_landmark_bank(
         bank_xyz.shape[0], dtype=torch.bool, device=bank_xyz.device
     )
     hard_core_mask[hard_core] = True
+    protected_core_mask = torch.zeros_like(hard_core_mask)
+    protected_core_mask[protected_core] = True
     selection_meta.update(
         {
             "hard_matchability_core_indices": hard_core.detach().clone(),
@@ -4068,6 +4179,13 @@ def _distill_final_landmark_bank(
                 if hard_core.numel() > 0
                 else 0.0,
                 device=bank_xyz.device,
+            ),
+            "protected_core_indices": protected_core.detach().clone(),
+            "protected_core_ratio": torch.tensor(
+                protected_core_ratio, device=bank_xyz.device
+            ),
+            "protected_core_count": torch.tensor(
+                int(protected_core.numel()), device=bank_xyz.device
             ),
         }
     )
@@ -4265,6 +4383,11 @@ def _distill_final_landmark_bank(
             if hard_core.numel() > 0
             else 0.0
         ),
+        "protected_core_count": int(protected_core.numel()),
+        "protected_core_ratio": protected_core_ratio,
+        "protected_identity_switch_max": float(
+            getattr(args, "distill_protected_identity_switch_max", 0.25)
+        ),
         "strict_coverage_selected_count": int(coverage_selected.numel()),
         "requested_budget": requested_budget,
         "strict_matchability_selected_count": int(strict_selected.numel()),
@@ -4311,6 +4434,10 @@ def _distill_final_landmark_bank(
             ),
         ).detach().cpu(),
         "hard_matchability_core": hard_core_mask[selected].detach().cpu(),
+        "protected_core": protected_core_mask[selected].detach().cpu(),
+        "cross_view_top1_identity_switch_rate": identity_switch_rate[selected]
+        .detach()
+        .cpu(),
         "quality_reservoir_score": quality_reservoir_score[selected]
         .detach()
         .cpu(),
@@ -4360,6 +4487,12 @@ def _distill_final_landmark_bank(
         "utility_selected_mean": float(utility[selected].mean().item()),
         "matchability_selected_mean": float(matchability[selected].mean().item()),
         "hard_matchability_core_count": int(hard_core.numel()),
+        "protected_core_count": int(protected_core.numel()),
+        "protected_core_switch_rate_mean": float(
+            identity_switch_rate[protected_core].mean().item()
+            if protected_core.numel() > 0
+            else 0.0
+        ),
         "hard_matchability_core_matchability_mean": float(
             matchability[hard_core].mean().item()
             if hard_core.numel() > 0
@@ -5059,6 +5192,7 @@ def train(dataset, args):
     base_bank_rotation = (
         gaussians.get_rotation[landmark_indices.cuda()].detach().float()
     )
+    base_bank_normals = surface_normals_from_rotation(base_bank_rotation).detach()
     visibility_cache = None
     if args.visibility_mode == "rasterizer":
         visibility_signature, visibility_payload = _visibility_signature(
@@ -5590,6 +5724,47 @@ def train(dataset, args):
             initial_features,
             weights=trust_weights,
         )
+        native_semidense_active = (
+            descriptor_active
+            and str(args.observation_source) in {"native", "native_plus_anchor"}
+            and float(args.native_semidense_weight) > 0.0
+            and step >= int(args.native_semidense_start_step)
+            and step % max(int(args.native_semidense_interval), 1) == 0
+        )
+        if native_semidense_active:
+            (
+                native_semidense_loss,
+                native_semidense_diagnostics,
+            ) = native_semidense_neighborhood_loss(
+                features,
+                current_xyz.detach(),
+                base_bank_normals,
+                observations,
+                positive_radius_px=args.positive_radius_px,
+                max_anchors=args.native_semidense_max_anchors,
+                neighbors_per_anchor=args.native_semidense_neighbors,
+                neighborhood_radius_m=args.native_semidense_neighborhood_radius_m,
+                normal_cosine=args.native_semidense_normal_cosine,
+                local_radius_px=args.native_semidense_local_radius_px,
+                target_sigma_px=args.native_semidense_target_sigma_px,
+                temperature=args.native_semidense_temperature,
+                pose_safe_max_delete_gain_m=(
+                    args.native_semidense_pose_safe_max_delete_gain_m
+                ),
+                pose_safe_min_correspondences=(
+                    args.native_semidense_pose_safe_min_correspondences
+                ),
+                pose_safe_teacher_pairs=(
+                    args.native_semidense_pose_safe_teacher_pairs
+                ),
+                lgcv_weight=args.native_semidense_lgcv_weight,
+                lgcv_minimum_edge_px=args.native_semidense_lgcv_minimum_edge_px,
+            )
+        else:
+            native_semidense_loss = features.sum() * 0.0
+            native_semidense_diagnostics = {
+                "native_semidense_active": 0.0
+            }
         if args.local_weight > 0.0 and auxiliary_observations is not None:
             local_loss, local_diagnostics = local_correlation_peak_loss(
                 features,
@@ -5726,6 +5901,7 @@ def train(dataset, args):
                 + args.retrieval_weight * retrieval_loss
                 + args.generic_proposal_weight * proposal_retrieval_loss
                 + args.local_weight * local_loss
+                + args.native_semidense_weight * native_semidense_loss
                 + args.trust_weight * trust_loss
                 + args.dustbin_weight * dustbin_loss
             )
@@ -5800,6 +5976,9 @@ def train(dataset, args):
                 proposal_retrieval_loss.detach().item()
             ),
             "local_loss": float(local_loss.detach().item()),
+            "native_semidense_loss": float(
+                native_semidense_loss.detach().item()
+            ),
             "trust_loss": float(trust_loss.detach().item()),
             "dustbin_loss": float(dustbin_loss.detach().item()),
             "surface_loss": float(surface_loss.detach().item()),
@@ -5840,6 +6019,7 @@ def train(dataset, args):
             **retrieval_diagnostics,
             **proposal_retrieval_diagnostics,
             **local_diagnostics,
+            **native_semidense_diagnostics,
             **dustbin_diagnostics,
             **geometry_diagnostics,
             **pose_diagnostics,
@@ -5853,6 +6033,7 @@ def train(dataset, args):
                 retr=f"{recent.get('retrieval_loss', 0.0):.4f}",
                 prop=f"{recent.get('generic_proposal_loss', 0.0):.4f}",
                 local=f"{recent.get('local_loss', 0.0):.4f}",
+                semi=f"{recent.get('native_semidense_loss', 0.0):.4f}",
                 geo=f"{recent.get('geometry_reprojection_loss', 0.0):.3f}",
                 pose=f"{recent.get('pose_loss', 0.0):.3f}",
             )
@@ -6424,6 +6605,73 @@ def build_parser():
     parser.add_argument("--local_radius", type=int, default=3)
     parser.add_argument("--local_target_sigma", type=float, default=1.0)
     parser.add_argument("--local_temperature", type=float, default=0.07)
+    parser.add_argument(
+        "--native_semidense_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Training-only weight for local peak distillation seeded by "
+            "GT-clean native top-1 matches. Deployment remains one sparse "
+            "top-1 retrieval and one RANSAC/PnP."
+        ),
+    )
+    parser.add_argument("--native_semidense_start_step", type=int, default=2500)
+    parser.add_argument("--native_semidense_interval", type=int, default=1)
+    parser.add_argument("--native_semidense_max_anchors", type=int, default=64)
+    parser.add_argument("--native_semidense_neighbors", type=int, default=1)
+    parser.add_argument(
+        "--native_semidense_neighborhood_radius_m", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--native_semidense_normal_cosine", type=float, default=0.8
+    )
+    parser.add_argument(
+        "--native_semidense_local_radius_px", type=int, default=8
+    )
+    parser.add_argument(
+        "--native_semidense_target_sigma_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--native_semidense_temperature", type=float, default=0.07
+    )
+    parser.add_argument(
+        "--native_semidense_pose_safe_max_delete_gain_m",
+        type=float,
+        default=-1.0,
+        help=(
+            "Reject a GT-clean semidense seed when deleting it improves the "
+            "linearized translation bias by more than this many metres. A "
+            "negative value disables the detached counterfactual gate."
+        ),
+    )
+    parser.add_argument(
+        "--native_semidense_pose_safe_min_correspondences",
+        type=int,
+        default=6,
+    )
+    parser.add_argument(
+        "--native_semidense_pose_safe_teacher_pairs",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply the counterfactual translation-bias gate again to every "
+            "expanded semidense soft correspondence, not only its sparse seed."
+        ),
+    )
+    parser.add_argument(
+        "--native_semidense_lgcv_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Relative training-only B3 group geometry weight inside the "
+            "semidense teacher."
+        ),
+    )
+    parser.add_argument(
+        "--native_semidense_lgcv_minimum_edge_px",
+        type=float,
+        default=1.0,
+    )
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--hypothesis_topk", type=int, default=32)
     parser.add_argument("--random_negative_count", type=int, default=32)
@@ -6647,6 +6895,22 @@ def build_parser():
         ),
     )
     parser.add_argument(
+        "--distill_protected_core_ratio",
+        type=float,
+        default=0.0,
+        help=(
+            "Reserve this fraction of the final bank for train-only, "
+            "high-precision landmarks with stable cross-view top-1 identity."
+        ),
+    )
+    parser.add_argument("--distill_protected_min_correct", type=int, default=3)
+    parser.add_argument(
+        "--distill_protected_matchability", type=float, default=0.75
+    )
+    parser.add_argument(
+        "--distill_protected_identity_switch_max", type=float, default=0.25
+    )
+    parser.add_argument(
         "--distill_quality_reservoir_multiplier",
         type=float,
         default=0.0,
@@ -6692,8 +6956,21 @@ def build_parser():
         choices=["mean", "medoid"],
         default="mean",
     )
-    parser.add_argument("--max_observations", type=int, default=512)
-    parser.add_argument("--validation_observations", type=int, default=512)
+    parser.add_argument(
+        "--max_observations",
+        type=int,
+        default=2048,
+        help=(
+            "Native proposals inspected per training view. The formal sparse "
+            "protocol uses all 2048 deployment SuperPoint proposals."
+        ),
+    )
+    parser.add_argument(
+        "--validation_observations",
+        type=int,
+        default=2048,
+        help="Native proposals inspected per held-out validation view.",
+    )
     parser.add_argument("--grid_rows", type=int, default=8)
     parser.add_argument("--grid_cols", type=int, default=8)
     parser.add_argument("--depth_bins", type=int, default=4)

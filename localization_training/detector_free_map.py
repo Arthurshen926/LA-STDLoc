@@ -10,9 +10,16 @@ from localization_training.direct_landmark_teacher import (
     project_landmarks_to_query,
 )
 from localization_training.sparse_frontend import simple_nms
+from localization_training.ulf_initializer import (
+    grid_index_to_physical,
+    sample_dense_descriptors_at_image_uv,
+)
 from localization_training.pose_refiner import (
     camera_center_from_w2c,
     weighted_gauss_newton_refine,
+)
+from localization_training.hard_candidate_teacher import (
+    linearized_translation_delete_gains,
 )
 
 
@@ -36,6 +43,10 @@ class DetectorFreeObservationBatch:
     query_valid_mask: Optional[torch.Tensor] = None
     K: Optional[torch.Tensor] = None
     pose_w2c: Optional[torch.Tensor] = None
+    positive_offsets: Optional[torch.Tensor] = None
+    positive_indices: Optional[torch.Tensor] = None
+    positive_reprojection_errors: Optional[torch.Tensor] = None
+    query_feature_image_size: Optional[tuple] = None
 
 
 @dataclass
@@ -74,11 +85,56 @@ class LocalSoftCorrespondenceOutput:
 
 def _select_observation_rows(observations, rows):
     """Select query rows while preserving per-camera bank state."""
+    query_count = int(observations.source_indices.numel())
+    row_indices = torch.arange(
+        query_count,
+        device=observations.source_indices.device,
+        dtype=torch.long,
+    )[rows]
+    positive_offsets = None
+    positive_indices = None
+    positive_reprojection_errors = None
+    if observations.positive_offsets is not None:
+        offsets = torch.as_tensor(
+            observations.positive_offsets,
+            device=observations.source_indices.device,
+            dtype=torch.long,
+        ).reshape(-1)
+        if offsets.numel() != query_count + 1:
+            raise ValueError("positive_offsets must have one entry per query plus one")
+        counts = offsets[1:] - offsets[:-1]
+        selected_counts = counts[row_indices]
+        positive_offsets = torch.cat(
+            [
+                offsets.new_zeros(1),
+                selected_counts.cumsum(dim=0),
+            ]
+        )
+        edge_ranges = [
+            torch.arange(
+                int(offsets[index].item()),
+                int(offsets[index + 1].item()),
+                device=offsets.device,
+                dtype=torch.long,
+            )
+            for index in row_indices.tolist()
+            if int(counts[index].item()) > 0
+        ]
+        edge_indices = (
+            torch.cat(edge_ranges)
+            if edge_ranges
+            else offsets.new_empty((0,))
+        )
+        positive_indices = observations.positive_indices[edge_indices]
+        if observations.positive_reprojection_errors is not None:
+            positive_reprojection_errors = (
+                observations.positive_reprojection_errors[edge_indices]
+            )
     return DetectorFreeObservationBatch(
-        source_indices=observations.source_indices[rows],
-        query_features=observations.query_features[rows],
-        query_uv=observations.query_uv[rows],
-        source_depth=observations.source_depth[rows],
+        source_indices=observations.source_indices[row_indices],
+        query_features=observations.query_features[row_indices],
+        query_uv=observations.query_uv[row_indices],
+        source_depth=observations.source_depth[row_indices],
         bank_uv=observations.bank_uv,
         bank_depth=observations.bank_depth,
         bank_projected=observations.bank_projected,
@@ -93,6 +149,10 @@ def _select_observation_rows(observations, rows):
         query_valid_mask=observations.query_valid_mask,
         K=observations.K,
         pose_w2c=observations.pose_w2c,
+        positive_offsets=positive_offsets,
+        positive_indices=positive_indices,
+        positive_reprojection_errors=positive_reprojection_errors,
+        query_feature_image_size=observations.query_feature_image_size,
     )
 
 
@@ -241,7 +301,7 @@ def build_detector_free_observations(
     alpha_threshold=0.2,
     depth_abs_tolerance=1e-3,
     depth_rel_tolerance=0.01,
-    max_observations=512,
+    max_observations=2048,
     grid_rows=8,
     grid_cols=8,
     depth_bins=4,
@@ -483,6 +543,7 @@ def build_native_sparse_observations(
     target_alpha=None,
     bank_visibility_mask=None,
     query_valid_mask=None,
+    query_feature_map=None,
     max_observations=512,
     grid_rows=8,
     grid_cols=8,
@@ -584,6 +645,28 @@ def build_native_sparse_observations(
         valid &= _mask_at_uv(query_valid_mask, native_keypoints)
     valid_indices = torch.nonzero(valid, as_tuple=False).reshape(-1)
     empty_features = native_descriptors.new_zeros((0, native_descriptors.shape[1]))
+    native_feature_map = None
+    if query_feature_map is not None:
+        native_feature_map = torch.as_tensor(
+            query_feature_map,
+            device=device,
+            dtype=native_descriptors.dtype,
+        ).squeeze(0)
+        if native_feature_map.ndim != 3:
+            raise ValueError("query_feature_map must have shape [C, H, W]")
+        if native_feature_map.shape[0] != native_descriptors.shape[1]:
+            raise ValueError(
+                "query_feature_map channels must match native descriptor dimension"
+            )
+        effective_hw = (
+            int(native_feature_map.shape[-2]) * 8,
+            int(native_feature_map.shape[-1]) * 8,
+        )
+        if effective_hw != (height, width):
+            raise ValueError(
+                "native query feature map must be the stride-8 map from the "
+                f"same resized RGB input: effective={effective_hw} image={(height, width)}"
+            )
     if valid_indices.numel() == 0:
         return DetectorFreeObservationBatch(
             source_indices=torch.empty(0, dtype=torch.long, device=device),
@@ -603,6 +686,15 @@ def build_native_sparse_observations(
             query_valid_mask=query_valid_mask,
             K=K,
             pose_w2c=pose_w2c,
+            positive_offsets=torch.zeros(1, dtype=torch.long, device=device),
+            positive_indices=torch.empty(0, dtype=torch.long, device=device),
+            positive_reprojection_errors=native_keypoints.new_zeros((0,)),
+            query_feature_map=(
+                None if native_feature_map is None else native_feature_map.detach()
+            ),
+            query_feature_image_size=(
+                None if native_feature_map is None else (height, width)
+            ),
         )
 
     sampling_mode = str(sampling_mode)
@@ -632,6 +724,7 @@ def build_native_sparse_observations(
         (selected.numel(),), -1, dtype=torch.long, device=device
     )
     visible_indices = torch.nonzero(base_bank_visible, as_tuple=False).reshape(-1)
+    distance = None
     if visible_indices.numel() > 0 and selected.numel() > 0:
         distance = torch.cdist(query_uv.float(), base_bank_uv[visible_indices].float())
         nearest_distance, nearest_position = distance.min(dim=1)
@@ -671,6 +764,31 @@ def build_native_sparse_observations(
         query_features = query_features[chosen]
         query_scores = query_scores[chosen]
         source_indices = source_indices[chosen]
+        if distance is not None:
+            distance = distance[chosen]
+
+    if distance is None:
+        positive_offsets = torch.zeros(
+            source_indices.numel() + 1,
+            dtype=torch.long,
+            device=device,
+        )
+        positive_indices = torch.empty(0, dtype=torch.long, device=device)
+        positive_reprojection_errors = query_uv.new_zeros((0,))
+    else:
+        positive_mask = distance <= float(positive_radius_px)
+        positive_edges = torch.nonzero(positive_mask, as_tuple=False)
+        positive_counts = positive_mask.sum(dim=1, dtype=torch.long)
+        positive_offsets = torch.cat(
+            [
+                positive_counts.new_zeros(1),
+                positive_counts.cumsum(dim=0),
+            ]
+        )
+        positive_indices = visible_indices[positive_edges[:, 1]]
+        positive_reprojection_errors = distance[
+            positive_edges[:, 0], positive_edges[:, 1]
+        ].to(dtype=query_uv.dtype)
 
     source_depth = query_uv.new_zeros(source_indices.shape[0])
     source_valid = source_indices >= 0
@@ -689,15 +807,20 @@ def build_native_sparse_observations(
         base_bank_depth=base_bank_depth,
         base_bank_projected=base_bank_projected,
         base_bank_visible=base_bank_visible,
-        # Native descriptors are already the deployment sparse measurement;
-        # attaching a stride-8 map here would make jitter/local-anchor losses
-        # silently sample in the wrong coordinate system.
-        query_feature_map=None,
+        query_feature_map=(
+            None if native_feature_map is None else native_feature_map.detach()
+        ),
         target_depth_map=None if target_depth is None else torch.as_tensor(target_depth).detach(),
         target_alpha_map=None if target_alpha is None else torch.as_tensor(target_alpha).detach(),
         query_valid_mask=query_valid_mask,
         K=K,
         pose_w2c=pose_w2c,
+        positive_offsets=positive_offsets,
+        positive_indices=positive_indices,
+        positive_reprojection_errors=positive_reprojection_errors,
+        query_feature_image_size=(
+            None if native_feature_map is None else (height, width)
+        ),
     )
 
 
@@ -729,7 +852,7 @@ def jitter_detector_free_observations(
         max=1.0,
     )
     query_uv = observations.query_uv + offsets
-    height, width = feature_map.shape[-2:]
+    height, width = _query_feature_domain(observations)
     query_uv[:, 0].clamp_(0.0, float(width - 1))
     query_uv[:, 1].clamp_(0.0, float(height - 1))
     query_features = bilinear_sample_features(feature_map.detach(), query_uv)
@@ -881,6 +1004,29 @@ def multiview_descriptor_loss(bank_features, observations):
     return (1.0 - (source * query).sum(dim=-1)).mean()
 
 
+def _query_feature_domain(observations):
+    feature_map = observations.query_feature_map
+    if feature_map is None:
+        raise ValueError("A frozen query feature map is required")
+    if observations.query_feature_image_size is None:
+        return int(feature_map.shape[-2]), int(feature_map.shape[-1])
+    height, width = observations.query_feature_image_size
+    return int(height), int(width)
+
+
+def _sample_observation_features(observations, uv):
+    feature_map = observations.query_feature_map
+    if feature_map is None:
+        raise ValueError("A frozen query feature map is required")
+    if observations.query_feature_image_size is None:
+        return bilinear_sample_features(feature_map.detach(), uv)
+    return sample_dense_descriptors_at_image_uv(
+        feature_map.detach(),
+        grid_index_to_physical(uv),
+        observations.query_feature_image_size,
+    )
+
+
 def local_correlation_peak_loss(
     bank_features,
     observations,
@@ -914,15 +1060,15 @@ def local_correlation_peak_loss(
     offset_y, offset_x = torch.meshgrid(axis, axis, indexing="ij")
     offsets = torch.stack([offset_x.reshape(-1), offset_y.reshape(-1)], dim=-1)
     patch_uv = observations.query_uv[:, None, :] + offsets[None, :, :]
-    height, width = feature_map.shape[-2:]
+    height, width = _query_feature_domain(observations)
     patch_valid = (
         (patch_uv[..., 0] >= 0.0)
         & (patch_uv[..., 0] <= float(width - 1))
         & (patch_uv[..., 1] >= 0.0)
         & (patch_uv[..., 1] <= float(height - 1))
     )
-    patch_features = bilinear_sample_features(
-        feature_map.detach(),
+    patch_features = _sample_observation_features(
+        observations,
         patch_uv.reshape(-1, 2),
     ).reshape(query_count, offsets.shape[0], -1)
     patch_features = F.normalize(patch_features, dim=-1)
@@ -963,6 +1109,533 @@ def local_correlation_peak_loss(
     return loss, diagnostics
 
 
+def group_geometric_consistency_loss(
+    predicted_uv,
+    target_uv,
+    group_ids,
+    *,
+    valid=None,
+    minimum_edge_px=1.0,
+):
+    """Preserve local direction, scale, and orientation within teacher groups."""
+    predicted_uv = torch.as_tensor(predicted_uv)
+    target_uv = torch.as_tensor(
+        target_uv, device=predicted_uv.device, dtype=predicted_uv.dtype
+    )
+    group_ids = torch.as_tensor(
+        group_ids, device=predicted_uv.device, dtype=torch.long
+    ).reshape(-1)
+    if predicted_uv.shape != target_uv.shape or predicted_uv.shape[-1] != 2:
+        raise ValueError("predicted_uv and target_uv must be aligned Nx2 tensors")
+    if group_ids.numel() != predicted_uv.shape[0]:
+        raise ValueError("group_ids must align with predicted_uv")
+    if valid is None:
+        valid = torch.ones(
+            predicted_uv.shape[0], device=predicted_uv.device, dtype=torch.bool
+        )
+    else:
+        valid = torch.as_tensor(
+            valid, device=predicted_uv.device, dtype=torch.bool
+        ).reshape(-1)
+    valid = (
+        valid
+        & torch.isfinite(predicted_uv).all(dim=1)
+        & torch.isfinite(target_uv).all(dim=1)
+    )
+
+    direction_terms = []
+    scale_terms = []
+    orientation_terms = []
+    group_count = 0
+    edge_count = 0
+    triangle_count = 0
+    for group_id in torch.unique(group_ids[valid]).tolist():
+        members = torch.nonzero(
+            valid & (group_ids == int(group_id)), as_tuple=False
+        ).reshape(-1)
+        if members.numel() < 3:
+            continue
+        pair_indices = torch.combinations(members, r=2)
+        target_edges = target_uv[pair_indices[:, 1]] - target_uv[pair_indices[:, 0]]
+        predicted_edges = (
+            predicted_uv[pair_indices[:, 1]] - predicted_uv[pair_indices[:, 0]]
+        )
+        target_lengths = torch.linalg.norm(target_edges, dim=1)
+        predicted_lengths = torch.linalg.norm(predicted_edges, dim=1)
+        edge_valid = (
+            torch.isfinite(target_lengths)
+            & torch.isfinite(predicted_lengths)
+            & (target_lengths >= float(minimum_edge_px))
+            & (predicted_lengths > 1e-6)
+        )
+        if int(edge_valid.sum().item()) < 2:
+            continue
+        target_edges = target_edges[edge_valid]
+        predicted_edges = predicted_edges[edge_valid]
+        target_lengths = target_lengths[edge_valid]
+        predicted_lengths = predicted_lengths[edge_valid]
+        direction_terms.append(
+            1.0
+            - (
+                F.normalize(predicted_edges, dim=1)
+                * F.normalize(target_edges, dim=1)
+            ).sum(dim=1)
+        )
+        scale_terms.append(
+            F.smooth_l1_loss(
+                torch.log(predicted_lengths / target_lengths.clamp_min(1e-6)),
+                torch.zeros_like(predicted_lengths),
+                reduction="none",
+                beta=0.1,
+            )
+        )
+        edge_count += int(edge_valid.sum().item())
+
+        root = members[0]
+        other = members[1:]
+        triangle_pairs = torch.combinations(other, r=2)
+        if triangle_pairs.numel() > 0:
+            target_a = target_uv[triangle_pairs[:, 0]] - target_uv[root]
+            target_b = target_uv[triangle_pairs[:, 1]] - target_uv[root]
+            predicted_a = predicted_uv[triangle_pairs[:, 0]] - predicted_uv[root]
+            predicted_b = predicted_uv[triangle_pairs[:, 1]] - predicted_uv[root]
+            target_denominator = (
+                torch.linalg.norm(target_a, dim=1)
+                * torch.linalg.norm(target_b, dim=1)
+            ).clamp_min(1e-6)
+            predicted_denominator = (
+                torch.linalg.norm(predicted_a, dim=1)
+                * torch.linalg.norm(predicted_b, dim=1)
+            ).clamp_min(1e-6)
+            target_sine = (
+                target_a[:, 0] * target_b[:, 1]
+                - target_a[:, 1] * target_b[:, 0]
+            ) / target_denominator
+            predicted_sine = (
+                predicted_a[:, 0] * predicted_b[:, 1]
+                - predicted_a[:, 1] * predicted_b[:, 0]
+            ) / predicted_denominator
+            triangle_valid = (
+                torch.isfinite(target_sine)
+                & torch.isfinite(predicted_sine)
+                & (target_sine.abs() >= 0.05)
+            )
+            if bool(triangle_valid.any()):
+                orientation_terms.append(
+                    F.smooth_l1_loss(
+                        predicted_sine[triangle_valid],
+                        target_sine[triangle_valid],
+                        reduction="none",
+                        beta=0.1,
+                    )
+                )
+                triangle_count += int(triangle_valid.sum().item())
+        group_count += 1
+
+    zero = predicted_uv.sum() * 0.0
+    direction_loss = (
+        torch.cat(direction_terms).mean() if direction_terms else zero
+    )
+    scale_loss = torch.cat(scale_terms).mean() if scale_terms else zero
+    orientation_loss = (
+        torch.cat(orientation_terms).mean() if orientation_terms else zero
+    )
+    loss = direction_loss + 0.5 * scale_loss + 0.25 * orientation_loss
+    diagnostics = {
+        "native_semidense_lgcv_group_count": group_count,
+        "native_semidense_lgcv_edge_count": edge_count,
+        "native_semidense_lgcv_triangle_count": triangle_count,
+        "native_semidense_lgcv_direction_loss": float(
+            direction_loss.detach().item()
+        ),
+        "native_semidense_lgcv_scale_loss": float(scale_loss.detach().item()),
+        "native_semidense_lgcv_orientation_loss": float(
+            orientation_loss.detach().item()
+        ),
+        "native_semidense_lgcv_loss": float(loss.detach().item()),
+    }
+    return loss, diagnostics
+
+
+@torch.no_grad()
+def counterfactual_pose_safe_mask(
+    bank_xyz,
+    landmark_indices,
+    observed_uv,
+    K,
+    pose_w2c,
+    *,
+    maximum_delete_gain_m=0.0,
+    minimum_correspondences=6,
+):
+    """Keep observations whose deletion cannot improve linearized pose bias."""
+    landmark_indices = torch.as_tensor(
+        landmark_indices, device=bank_xyz.device, dtype=torch.long
+    ).reshape(-1)
+    count = int(landmark_indices.numel())
+    safe = torch.ones(count, device=bank_xyz.device, dtype=torch.bool)
+    diagnostics = {
+        "native_semidense_pose_safe_evaluable": 0.0,
+        "native_semidense_pose_safe_input_count": count,
+        "native_semidense_pose_safe_count": count,
+        "native_semidense_pose_harmful_count": 0,
+        "native_semidense_pose_delete_gain_mean_m": 0.0,
+        "native_semidense_pose_delete_gain_p50_m": 0.0,
+        "native_semidense_pose_delete_gain_p90_m": 0.0,
+        "native_semidense_pose_delete_gain_max_m": 0.0,
+    }
+    if (
+        count < max(int(minimum_correspondences), 4)
+        or K is None
+        or pose_w2c is None
+    ):
+        return safe, diagnostics
+    gains = linearized_translation_delete_gains(
+        bank_xyz[landmark_indices].detach().double(),
+        torch.as_tensor(observed_uv).detach().double() + 0.5,
+        torch.as_tensor(K).detach().double(),
+        torch.as_tensor(pose_w2c).detach().double(),
+        torch.as_tensor(pose_w2c).detach().double(),
+    ).to(device=bank_xyz.device, dtype=bank_xyz.dtype)
+    safe = gains <= float(maximum_delete_gain_m)
+    diagnostics.update(
+        {
+            "native_semidense_pose_safe_evaluable": 1.0,
+            "native_semidense_pose_safe_count": int(safe.sum().item()),
+            "native_semidense_pose_harmful_count": int((~safe).sum().item()),
+            "native_semidense_pose_delete_gain_mean_m": float(
+                gains.mean().item()
+            ),
+            "native_semidense_pose_delete_gain_p50_m": float(
+                gains.quantile(0.5).item()
+            ),
+            "native_semidense_pose_delete_gain_p90_m": float(
+                gains.quantile(0.9).item()
+            ),
+            "native_semidense_pose_delete_gain_max_m": float(gains.max().item()),
+        }
+    )
+    return safe, diagnostics
+
+
+def native_semidense_neighborhood_loss(
+    bank_features,
+    bank_xyz,
+    bank_normals,
+    observations,
+    *,
+    positive_radius_px=2.0,
+    max_anchors=64,
+    neighbors_per_anchor=1,
+    neighborhood_radius_m=0.25,
+    normal_cosine=0.8,
+    local_radius_px=8,
+    target_sigma_px=2.0,
+    temperature=0.07,
+    pose_safe_max_delete_gain_m=-1.0,
+    pose_safe_min_correspondences=6,
+    pose_safe_teacher_pairs=False,
+    lgcv_weight=0.0,
+    lgcv_minimum_edge_px=1.0,
+):
+    """Distill local surface structure from real native-query proposals.
+
+    Candidate mining uses the current deployment descriptor field. Only
+    current top-1 pairs that are already GT-reprojection clean seed the
+    teacher. Their surface neighbors are projected with the training GT pose
+    and supervised against the frozen dense SuperPoint map from the exact same
+    resized RGB input. This branch is training-only and never changes the
+    deployment candidate graph.
+    """
+    zero = bank_features.sum() * 0.0
+    if observations.query_feature_map is None:
+        return zero, {"native_semidense_active": 0.0}
+    query_count = int(observations.query_features.shape[0])
+    bank_count = int(bank_features.shape[0])
+    if query_count == 0 or bank_count == 0:
+        return zero, {
+            "native_semidense_active": 1.0,
+            "native_semidense_clean_anchor_count": 0,
+            "native_semidense_teacher_pair_count": 0,
+        }
+
+    bank_xyz = torch.as_tensor(
+        bank_xyz, device=bank_features.device, dtype=bank_features.dtype
+    ).reshape(-1, 3)
+    bank_normals = F.normalize(
+        torch.as_tensor(
+            bank_normals,
+            device=bank_features.device,
+            dtype=bank_features.dtype,
+        ).reshape(-1, 3),
+        dim=-1,
+    )
+    if bank_xyz.shape[0] != bank_count or bank_normals.shape[0] != bank_count:
+        raise ValueError("native semidense geometry must match the descriptor bank")
+
+    pose_safe_diagnostics = {
+        "native_semidense_pose_safe_enabled": float(
+            float(pose_safe_max_delete_gain_m) >= 0.0
+        )
+    }
+    with torch.no_grad():
+        query = F.normalize(observations.query_features.detach(), dim=-1)
+        bank = F.normalize(bank_features.detach(), dim=-1)
+        top_count = min(2, bank_count)
+        top_scores, top_indices = torch.topk(query @ bank.T, k=top_count, dim=1)
+        top1 = top_indices[:, 0]
+        margin = (
+            top_scores[:, 0] - top_scores[:, 1]
+            if top_count > 1
+            else torch.full_like(top_scores[:, 0], torch.inf)
+        )
+        top1_distance = torch.linalg.norm(
+            observations.bank_uv[top1] - observations.query_uv,
+            dim=-1,
+        )
+        clean = observations.bank_visible[top1] & (
+            top1_distance <= float(positive_radius_px)
+        )
+        clean_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
+        if clean_rows.numel() == 0:
+            return zero, {
+                "native_semidense_active": 1.0,
+                "native_semidense_clean_anchor_count": 0,
+                "native_semidense_teacher_pair_count": 0,
+            }
+        if float(pose_safe_max_delete_gain_m) >= 0.0:
+            safe, pose_safe_diagnostics = counterfactual_pose_safe_mask(
+                bank_xyz,
+                top1[clean_rows],
+                observations.query_uv[clean_rows],
+                observations.K,
+                observations.pose_w2c,
+                maximum_delete_gain_m=pose_safe_max_delete_gain_m,
+                minimum_correspondences=pose_safe_min_correspondences,
+            )
+            pose_safe_diagnostics["native_semidense_pose_safe_enabled"] = 1.0
+            clean_rows = clean_rows[safe]
+            if clean_rows.numel() == 0:
+                return zero, {
+                    "native_semidense_active": 1.0,
+                    "native_semidense_clean_anchor_count": 0,
+                    "native_semidense_teacher_pair_count": 0,
+                    **pose_safe_diagnostics,
+                }
+        order = clean_rows[torch.argsort(margin[clean_rows], descending=True)]
+        anchor_rows = []
+        seen_landmarks = set()
+        for row in order.tolist():
+            landmark = int(top1[row].item())
+            if landmark in seen_landmarks:
+                continue
+            seen_landmarks.add(landmark)
+            anchor_rows.append(row)
+            if 0 < int(max_anchors) <= len(anchor_rows):
+                break
+        anchor_rows = torch.as_tensor(
+            anchor_rows, device=bank_features.device, dtype=torch.long
+        )
+        anchor_indices = top1[anchor_rows]
+
+        neighbors_per_anchor = max(int(neighbors_per_anchor), 1)
+        if neighbors_per_anchor == 1:
+            teacher_indices = anchor_indices
+            teacher_uv = observations.query_uv[anchor_rows]
+            teacher_anchor_ids = torch.arange(
+                anchor_indices.numel(),
+                device=bank_features.device,
+                dtype=torch.long,
+            )
+        else:
+            distance = torch.cdist(
+                bank_xyz[anchor_indices].float(),
+                bank_xyz.float(),
+            )
+            normal_support = (
+                bank_normals[anchor_indices] @ bank_normals.T
+            ).abs() >= float(normal_cosine)
+            eligible = (
+                observations.bank_visible[None]
+                & normal_support
+                & (distance <= float(neighborhood_radius_m))
+            )
+            masked_distance = distance.masked_fill(~eligible, torch.inf)
+            neighbor_count = min(neighbors_per_anchor, bank_count)
+            neighbor_distance, neighbor_indices = torch.topk(
+                masked_distance,
+                k=neighbor_count,
+                dim=1,
+                largest=False,
+            )
+            neighbor_valid = torch.isfinite(neighbor_distance)
+            teacher_indices = neighbor_indices[neighbor_valid]
+            teacher_anchor_ids = (
+                torch.arange(
+                    anchor_indices.numel(),
+                    device=bank_features.device,
+                    dtype=torch.long,
+                )[:, None]
+                .expand_as(neighbor_indices)[neighbor_valid]
+            )
+            teacher_uv = observations.bank_uv[teacher_indices].detach().clone()
+            anchor_member = teacher_indices == anchor_indices[teacher_anchor_ids]
+            if bool(anchor_member.any().item()):
+                teacher_uv[anchor_member] = observations.query_uv[
+                    anchor_rows[teacher_anchor_ids[anchor_member]]
+                ]
+
+        domain_height, domain_width = _query_feature_domain(observations)
+        teacher_valid = (
+            torch.isfinite(teacher_uv).all(dim=1)
+            & (teacher_uv[:, 0] >= 0.0)
+            & (teacher_uv[:, 0] <= float(domain_width - 1))
+            & (teacher_uv[:, 1] >= 0.0)
+            & (teacher_uv[:, 1] <= float(domain_height - 1))
+        )
+        if observations.query_valid_mask is not None and bool(teacher_valid.any()):
+            teacher_valid &= _mask_at_uv(
+                observations.query_valid_mask,
+                teacher_uv,
+            )
+        teacher_indices = teacher_indices[teacher_valid]
+        teacher_uv = teacher_uv[teacher_valid]
+        teacher_anchor_ids = teacher_anchor_ids[teacher_valid]
+
+    if teacher_indices.numel() == 0:
+        return zero, {
+            "native_semidense_active": 1.0,
+            "native_semidense_clean_anchor_count": int(anchor_indices.numel()),
+            "native_semidense_teacher_pair_count": 0,
+        }
+    teacher_observations = DetectorFreeObservationBatch(
+        source_indices=teacher_indices,
+        query_features=_sample_observation_features(
+            observations, teacher_uv
+        ).detach(),
+        query_uv=teacher_uv,
+        source_depth=observations.bank_depth[teacher_indices].detach(),
+        bank_uv=observations.bank_uv,
+        bank_depth=observations.bank_depth,
+        bank_projected=observations.bank_projected,
+        bank_visible=observations.bank_visible,
+        base_bank_uv=observations.base_bank_uv,
+        base_bank_depth=observations.base_bank_depth,
+        base_bank_projected=observations.base_bank_projected,
+        base_bank_visible=observations.base_bank_visible,
+        query_feature_map=observations.query_feature_map,
+        target_depth_map=observations.target_depth_map,
+        target_alpha_map=observations.target_alpha_map,
+        query_valid_mask=observations.query_valid_mask,
+        K=observations.K,
+        pose_w2c=observations.pose_w2c,
+        query_feature_image_size=observations.query_feature_image_size,
+    )
+    pair_pose_safe_diagnostics = {
+        "native_semidense_pair_pose_safe_enabled": float(
+            bool(pose_safe_teacher_pairs)
+            and float(pose_safe_max_delete_gain_m) >= 0.0
+        )
+    }
+    if (
+        bool(pose_safe_teacher_pairs)
+        and float(pose_safe_max_delete_gain_m) >= 0.0
+    ):
+        current_local = local_soft_correspondences(
+            bank_features.detach(),
+            teacher_observations,
+            radius=local_radius_px,
+            temperature=temperature,
+        )
+        pair_safe, raw_pair_diagnostics = counterfactual_pose_safe_mask(
+            bank_xyz,
+            teacher_indices,
+            current_local.expected_uv.detach(),
+            observations.K,
+            observations.pose_w2c,
+            maximum_delete_gain_m=pose_safe_max_delete_gain_m,
+            minimum_correspondences=pose_safe_min_correspondences,
+        )
+        pair_safe &= current_local.valid
+        pair_pose_safe_diagnostics.update(
+            {
+                key.replace(
+                    "native_semidense_pose_",
+                    "native_semidense_pair_pose_",
+                ): value
+                for key, value in raw_pair_diagnostics.items()
+            }
+        )
+        pair_pose_safe_diagnostics[
+            "native_semidense_pair_pose_safe_enabled"
+        ] = 1.0
+        teacher_observations = _select_observation_rows(
+            teacher_observations, pair_safe
+        )
+        teacher_indices = teacher_indices[pair_safe]
+        teacher_uv = teacher_uv[pair_safe]
+        teacher_anchor_ids = teacher_anchor_ids[pair_safe]
+        if teacher_indices.numel() == 0:
+            return zero, {
+                "native_semidense_active": 1.0,
+                "native_semidense_clean_anchor_count": int(
+                    anchor_indices.numel()
+                ),
+                "native_semidense_teacher_pair_count": 0,
+                **pose_safe_diagnostics,
+                **pair_pose_safe_diagnostics,
+            }
+    loss, diagnostics = local_correlation_peak_loss(
+        bank_features,
+        teacher_observations,
+        radius=local_radius_px,
+        target_sigma=target_sigma_px,
+        temperature=temperature,
+    )
+    if float(lgcv_weight) > 0.0:
+        local = local_soft_correspondences(
+            bank_features,
+            teacher_observations,
+            radius=local_radius_px,
+            temperature=temperature,
+        )
+        lgcv_loss, lgcv_diagnostics = group_geometric_consistency_loss(
+            local.expected_uv,
+            teacher_uv,
+            teacher_anchor_ids,
+            valid=local.valid,
+            minimum_edge_px=lgcv_minimum_edge_px,
+        )
+        loss = loss + float(lgcv_weight) * lgcv_loss
+    else:
+        lgcv_diagnostics = {
+            "native_semidense_lgcv_group_count": 0,
+            "native_semidense_lgcv_edge_count": 0,
+            "native_semidense_lgcv_triangle_count": 0,
+            "native_semidense_lgcv_loss": 0.0,
+        }
+    diagnostics.update(
+        {
+            "native_semidense_active": 1.0,
+            "native_semidense_clean_anchor_count": int(anchor_indices.numel()),
+            "native_semidense_teacher_pair_count": int(teacher_indices.numel()),
+            "native_semidense_unique_landmarks": int(
+                torch.unique(teacher_indices).numel()
+            ),
+            "native_semidense_neighbors_per_anchor_mean": float(
+                teacher_indices.numel() / max(anchor_indices.numel(), 1)
+            ),
+            "native_semidense_anchor_group_count": int(
+                torch.unique(teacher_anchor_ids).numel()
+            ),
+            **pose_safe_diagnostics,
+            **pair_pose_safe_diagnostics,
+            **lgcv_diagnostics,
+        }
+    )
+    return loss, diagnostics
+
+
 def local_soft_correspondences(
     bank_features,
     observations,
@@ -995,20 +1668,21 @@ def local_soft_correspondences(
     offset_y, offset_x = torch.meshgrid(axis, axis, indexing="ij")
     offsets = torch.stack([offset_x.reshape(-1), offset_y.reshape(-1)], dim=-1)
     patch_uv = observations.query_uv[:, None, :] + offsets[None]
-    height, width = feature_map.shape[-2:]
+    height, width = _query_feature_domain(observations)
     patch_valid = (
         (patch_uv[..., 0] >= 0.0)
         & (patch_uv[..., 0] <= float(width - 1))
         & (patch_uv[..., 1] >= 0.0)
         & (patch_uv[..., 1] <= float(height - 1))
     )
-    patch_features = bilinear_sample_features(
-        feature_map.detach(), patch_uv.reshape(-1, 2)
+    patch_features = _sample_observation_features(
+        observations, patch_uv.reshape(-1, 2)
     ).reshape(query_count, offsets.shape[0], -1)
     feature_valid = torch.isfinite(patch_features).all(dim=-1) & (
         torch.linalg.norm(patch_features, dim=-1) > 1e-6
     )
-    patch_valid &= feature_valid
+    # Keep the mask immutable after masked_fill records it for backward.
+    patch_valid = patch_valid & feature_valid
     patch_features = F.normalize(
         torch.nan_to_num(patch_features, nan=0.0, posinf=0.0, neginf=0.0), dim=-1
     )
@@ -1706,6 +2380,41 @@ def _retrieval_diagnostics(scores, observations, candidate_indices=None):
             valid_distance.float().mean().detach().item()
         ),
     }
+    if observations.positive_offsets is not None:
+        offsets = torch.as_tensor(
+            observations.positive_offsets,
+            device=scores.device,
+            dtype=torch.long,
+        ).reshape(-1)
+        positive_count = offsets[1:] - offsets[:-1]
+        matched_count = positive_count[positive_count > 0].float()
+        diagnostics.update(
+            {
+                "retrieval_positive_multiplicity_mean": float(
+                    matched_count.mean().item() if matched_count.numel() else 0.0
+                ),
+                "retrieval_positive_multiplicity_p50": float(
+                    torch.quantile(matched_count, 0.50).item()
+                    if matched_count.numel()
+                    else 0.0
+                ),
+                "retrieval_positive_multiplicity_p90": float(
+                    torch.quantile(matched_count, 0.90).item()
+                    if matched_count.numel()
+                    else 0.0
+                ),
+                "retrieval_positive_multiplicity_p99": float(
+                    torch.quantile(matched_count, 0.99).item()
+                    if matched_count.numel()
+                    else 0.0
+                ),
+                "retrieval_multi_positive_query_fraction": float(
+                    (positive_count > 1).float().mean().item()
+                    if positive_count.numel()
+                    else 0.0
+                ),
+            }
+        )
     if candidate_indices is None:
         max_k = min(64, int(scores.shape[1]))
         top_indices = torch.topk(scores, k=max_k, dim=1).indices

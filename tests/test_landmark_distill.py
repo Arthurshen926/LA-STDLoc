@@ -110,6 +110,91 @@ class LandmarkDistillTest(unittest.TestCase):
         self.assertNotIn(6, selected)
         self.assertTrue(bool(state["config"]["distillation"]["quality_reservoir_active"]))
 
+    def test_protected_core_preserves_stable_high_precision_landmark(self):
+        from train_lafgs_map import _distill_final_landmark_bank
+
+        count = 6
+        observations = torch.full((count,), 10.0)
+        statistics = {
+            "observation_count": observations,
+            "effective_observation_count": observations,
+            "correct_count": torch.tensor([9.0, 8.0, 8.0, 8.0, 8.0, 8.0]),
+            "matchability": torch.tensor([0.80, 0.99, 0.98, 0.97, 0.96, 0.95]),
+            "false_top1_rate": torch.tensor([0.10, 0.20, 0.20, 0.20, 0.20, 0.20]),
+            "margin": torch.ones(count),
+            "entropy": torch.zeros(count),
+            "reprojection_error": torch.ones(count),
+            "translation_fim": torch.ones(count),
+            "mean_uv": torch.stack(
+                (torch.linspace(0.1, 0.9, count), torch.full((count,), 0.5)),
+                dim=1,
+            ),
+            "mean_depth": torch.linspace(2.0, 7.0, count),
+            "source_identity_rate": torch.ones(count),
+            "cross_view_top1_identity_switch_rate": torch.tensor(
+                [0.0, 0.8, 0.8, 0.8, 0.8, 0.8]
+            ),
+        }
+        args = SimpleNamespace(
+            distill_reprojection_scale_px=2.0,
+            distill_voxel_size=1.0,
+            distill_min_observations=2,
+            distill_matchability_threshold=0.0,
+            distill_false_top1_max=1.0,
+            distill_proposal_weight=1.0,
+            distill_budget=3,
+            distill_rank_pool_multiplier=2.0,
+            distill_require_exact_budget=True,
+            distill_allow_coverage_fill=False,
+            distill_quality_reservoir_multiplier=0.0,
+            distill_quality_reservoir_score="wilson_lower",
+            distill_quality_reservoir_wilson_z=1.96,
+            distill_hard_matchability_core_ratio=0.0,
+            distill_protected_core_ratio=0.34,
+            distill_protected_min_correct=3,
+            distill_protected_matchability=0.75,
+            distill_protected_identity_switch_max=0.25,
+            distill_matchability_preserve_ratio=0.0,
+            distill_utility_preserve_ratio=0.0,
+            distill_high_confidence=0.75,
+            distill_high_confidence_ratio=0.0,
+            distill_max_per_voxel=16,
+            distill_grid_size=0,
+            distill_max_per_grid=0,
+            distill_depth_bins=0,
+            distill_max_per_depth_bin=0,
+            steps=0,
+        )
+        with TemporaryDirectory() as temp_dir:
+            result = _distill_final_landmark_bank(
+                Path(temp_dir),
+                torch.arange(count),
+                torch.eye(count, 4)[:, :4],
+                torch.stack(
+                    (
+                        torch.arange(count, dtype=torch.float32),
+                        torch.zeros(count),
+                        torch.ones(count),
+                    ),
+                    dim=1,
+                ),
+                torch.zeros(count, 3),
+                statistics,
+                args,
+                {},
+                torch.ones(count),
+                None,
+            )
+            state = torch.load(
+                result["state_path"], map_location="cpu", weights_only=False
+            )
+
+        self.assertIn(0, state["landmark_indices"].tolist())
+        self.assertEqual(result["protected_core_count"], 1)
+        self.assertEqual(
+            state["selection_meta"]["protected_core_indices"].tolist(), [0]
+        )
+
     def test_quality_reservoir_rejects_subunit_multiplier(self):
         from train_lafgs_map import _validate_distillation_semantics
 
