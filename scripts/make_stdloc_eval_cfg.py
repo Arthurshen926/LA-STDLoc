@@ -90,6 +90,20 @@ def make_stdloc_eval_cfg(
     full_primitive_max_per_surface=None,
     sparse_query_feature_contract=None,
     sparse_frontend=None,
+    rerank_topk=None,
+    rerank_patch_radius=None,
+    rerank_patch_step_px=None,
+    rerank_global_weight=None,
+    rerank_local_peak_weight=None,
+    rerank_local_margin_weight=None,
+    rerank_local_entropy_weight=None,
+    rerank_offset_weight=None,
+    rerank_local_temperature=None,
+    rerank_null_score_threshold=None,
+    rerank_null_margin_threshold=None,
+    rerank_state_path=None,
+    rerank_use_learned_null=None,
+    rerank_assignment_global_preserve_scale=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -153,6 +167,9 @@ def make_stdloc_eval_cfg(
         sparse["query_feature_contract"] = str(sparse_query_feature_contract)
     if sparse_frontend is not None:
         sparse["sparse_frontend"] = str(sparse_frontend)
+    if rerank_state_path is not None:
+        sparse["rerank_state_path"] = str(rerank_state_path)
+        sparse["rerank_state_model_path"] = artifact_model_path
     detector_summary_path = os.path.join(
         artifact_model_path,
         detector_folder,
@@ -324,6 +341,31 @@ def make_stdloc_eval_cfg(
         "full_primitive_max_per_surface": (
             full_primitive_max_per_surface,
             int,
+        ),
+        "rerank_topk": (rerank_topk, int),
+        "rerank_patch_radius": (rerank_patch_radius, int),
+        "rerank_patch_step_px": (rerank_patch_step_px, float),
+        "rerank_global_weight": (rerank_global_weight, float),
+        "rerank_local_peak_weight": (rerank_local_peak_weight, float),
+        "rerank_local_margin_weight": (rerank_local_margin_weight, float),
+        "rerank_local_entropy_weight": (
+            rerank_local_entropy_weight,
+            float,
+        ),
+        "rerank_offset_weight": (rerank_offset_weight, float),
+        "rerank_local_temperature": (rerank_local_temperature, float),
+        "rerank_null_score_threshold": (
+            rerank_null_score_threshold,
+            float,
+        ),
+        "rerank_null_margin_threshold": (
+            rerank_null_margin_threshold,
+            float,
+        ),
+        "rerank_use_learned_null": (rerank_use_learned_null, bool),
+        "rerank_assignment_global_preserve_scale": (
+            rerank_assignment_global_preserve_scale,
+            float,
         ),
     }
     for key, (value, converter) in optional_sparse.items():
@@ -664,7 +706,29 @@ def main():
     )
     parser.add_argument(
         "--sparse_frontend",
-        choices=["detector", "ulfloc_native"],
+        choices=["detector", "ulfloc_native", "ulfloc_native_rerank"],
+        default=None,
+    )
+    parser.add_argument("--rerank_topk", type=int, default=None)
+    parser.add_argument("--rerank_patch_radius", type=int, default=None)
+    parser.add_argument("--rerank_patch_step_px", type=float, default=None)
+    parser.add_argument("--rerank_global_weight", type=float, default=None)
+    parser.add_argument("--rerank_local_peak_weight", type=float, default=None)
+    parser.add_argument("--rerank_local_margin_weight", type=float, default=None)
+    parser.add_argument("--rerank_local_entropy_weight", type=float, default=None)
+    parser.add_argument("--rerank_offset_weight", type=float, default=None)
+    parser.add_argument("--rerank_local_temperature", type=float, default=None)
+    parser.add_argument("--rerank_null_score_threshold", type=float, default=None)
+    parser.add_argument("--rerank_null_margin_threshold", type=float, default=None)
+    parser.add_argument("--rerank_state_path", default=None)
+    parser.add_argument(
+        "--rerank_use_learned_null",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--rerank_assignment_global_preserve_scale",
+        type=float,
         default=None,
     )
     parser.add_argument("--summary_json", default="")
@@ -806,6 +870,22 @@ def main():
         full_primitive_max_per_surface=args.full_primitive_max_per_surface,
         sparse_query_feature_contract=args.sparse_query_feature_contract,
         sparse_frontend=args.sparse_frontend,
+        rerank_topk=args.rerank_topk,
+        rerank_patch_radius=args.rerank_patch_radius,
+        rerank_patch_step_px=args.rerank_patch_step_px,
+        rerank_global_weight=args.rerank_global_weight,
+        rerank_local_peak_weight=args.rerank_local_peak_weight,
+        rerank_local_margin_weight=args.rerank_local_margin_weight,
+        rerank_local_entropy_weight=args.rerank_local_entropy_weight,
+        rerank_offset_weight=args.rerank_offset_weight,
+        rerank_local_temperature=args.rerank_local_temperature,
+        rerank_null_score_threshold=args.rerank_null_score_threshold,
+        rerank_null_margin_threshold=args.rerank_null_margin_threshold,
+        rerank_state_path=args.rerank_state_path,
+        rerank_use_learned_null=args.rerank_use_learned_null,
+        rerank_assignment_global_preserve_scale=(
+            args.rerank_assignment_global_preserve_scale
+        ),
     )
     if args.summary_json:
         os.makedirs(os.path.dirname(os.path.abspath(args.summary_json)), exist_ok=True)

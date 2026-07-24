@@ -6,6 +6,7 @@ from scripts.eval_discrete_decision_oracles import (
     _pose_term_metrics,
     nearest_gt_targets,
     oracle_assignment_candidates,
+    oracle_topk_candidates,
     pair_is_correct,
     select_candidates,
 )
@@ -75,6 +76,20 @@ class DiscreteDecisionOracleTest(unittest.TestCase):
         np.testing.assert_array_equal(candidates.keypoint_idx, [0, 2])
         np.testing.assert_array_equal(candidates.landmark_idx, [8, 3])
         np.testing.assert_array_equal(candidates.source_idx, [0, 2])
+
+    def test_one_of_k_oracle_emits_one_candidate_or_null_per_keypoint(self):
+        candidates = oracle_topk_candidates(
+            topk_landmark_idx=[[4, 8, 9], [2, 3, 5], [7, 1, 6]],
+            topk_scores=[[0.9, 0.8, 0.7], [0.6, 0.5, 0.4], [0.3, 0.2, 0.1]],
+            candidate_correct=[
+                [False, True, True],
+                [False, False, False],
+                [True, False, False],
+            ],
+        )
+        np.testing.assert_array_equal(candidates.keypoint_idx, [0, 2])
+        np.testing.assert_array_equal(candidates.landmark_idx, [8, 7])
+        np.testing.assert_allclose(candidates.scores, [0.8, 0.3])
 
 
 if __name__ == "__main__":

@@ -1221,6 +1221,10 @@ def _validate_distillation_semantics(args):
         getattr(args, "distill_global_attractor_weight", 0.0)
     )
     protected_ratio = float(getattr(args, "distill_protected_core_ratio", 0.0))
+    rescue_weight = float(getattr(args, "distill_rescue_weight", 0.0))
+    harmful_switch_weight = float(
+        getattr(args, "distill_harmful_switch_weight", 0.0)
+    )
     if budget < 0:
         raise ValueError("distill_budget must be non-negative")
     if not math.isfinite(reservoir_multiplier) or reservoir_multiplier < 0.0:
@@ -1261,6 +1265,14 @@ def _validate_distillation_semantics(args):
     if protected_ratio > 0.0 and budget <= 0:
         raise ValueError(
             "distill_protected_core_ratio requires a positive distill_budget"
+        )
+    if int(getattr(args, "distill_rescue_max_positives", 4)) < 1:
+        raise ValueError("distill_rescue_max_positives must be positive")
+    if not math.isfinite(rescue_weight) or rescue_weight < 0.0:
+        raise ValueError("distill_rescue_weight must be finite and non-negative")
+    if not math.isfinite(harmful_switch_weight) or harmful_switch_weight < 0.0:
+        raise ValueError(
+            "distill_harmful_switch_weight must be finite and non-negative"
         )
 
 
@@ -3717,10 +3729,13 @@ def _collect_landmark_statistics(
     benign_switch_count = torch.zeros(count, device=device)
     ambiguous_switch_count = torch.zeros(count, device=device)
     harmful_switch_count = torch.zeros(count, device=device)
+    rescue_utility = torch.zeros(count, device=device)
+    rescue_query_count = torch.zeros(count, device=device)
+    target_correct_hit_count = torch.zeros(count, device=device)
     recall_at_k_sum = {1: 0.0, 4: 0.0, 8: 0.0, 16: 0.0}
     recall_at_k_queries = 0
     for name in tqdm(query_names, desc="One-time landmark statistics"):
-        observations = _cached_observations(
+        observations, _ = _primary_observations(
             cache[name],
             bank_xyz if base_bank_xyz is None else base_bank_xyz,
             args,
@@ -3730,6 +3745,48 @@ def _collect_landmark_statistics(
             ),
             prediction_bank_xyz=bank_xyz,
         )
+        positive_offsets = observations.positive_offsets
+        positive_indices = observations.positive_indices
+        if positive_offsets is not None and positive_indices is not None:
+            all_positive_counts = positive_offsets[1:] - positive_offsets[:-1]
+            all_positive_rows = torch.repeat_interleave(
+                torch.arange(
+                    all_positive_counts.numel(),
+                    device=device,
+                ),
+                all_positive_counts,
+            )
+            # A landmark that is the only, or one of very few, legal anchors
+            # for a native keypoint is coverage reserve evidence. Split one
+            # unit across the row's CSR positives so dense primitive clusters
+            # cannot manufacture utility merely by duplicating anchors.
+            scarce = (
+                (all_positive_counts > 0)
+                & (
+                    all_positive_counts
+                    <= int(getattr(args, "distill_rescue_max_positives", 4))
+                )
+            )
+            if bool(scarce.any().item()):
+                scarce_edges = scarce[all_positive_rows]
+                scarce_landmarks = positive_indices[scarce_edges]
+                scarce_rows = all_positive_rows[scarce_edges]
+                edge_weight = torch.reciprocal(
+                    all_positive_counts[scarce_rows].float()
+                )
+                rescue_utility.index_add_(
+                    0,
+                    scarce_landmarks,
+                    edge_weight,
+                )
+                rescue_query_count.index_add_(
+                    0,
+                    torch.unique(scarce_landmarks),
+                    torch.ones(
+                        torch.unique(scarce_landmarks).numel(),
+                        device=device,
+                    ),
+                )
         source = observations.source_indices
         source_valid = source >= 0
         if not bool(source_valid.all().item()):
@@ -3759,6 +3816,15 @@ def _collect_landmark_statistics(
         else:
             candidate_positive = top_indices == source[:, None]
         top1_positive = candidate_positive[:, 0]
+        if bool(top1_positive.any().item()):
+            target_correct_hit_count.index_add_(
+                0,
+                top1[top1_positive],
+                torch.ones_like(
+                    top1[top1_positive],
+                    dtype=target_correct_hit_count.dtype,
+                ),
+            )
         top1_distance = torch.linalg.norm(
             observations.bank_uv[top1] - observations.query_uv, dim=1
         )
@@ -3938,6 +4004,9 @@ def _collect_landmark_statistics(
         "cross_view_top1_benign_positive_switch_rate": benign_switch_rate,
         "cross_view_top1_ambiguous_switch_rate": ambiguous_switch_rate,
         "cross_view_top1_harmful_switch_rate": harmful_switch_rate,
+        "rescue_utility": rescue_utility,
+        "rescue_query_count": rescue_query_count,
+        "target_correct_hit_count": target_correct_hit_count,
         "proposal_observation_count": proposal_observation_count,
         "proposal_correct_count": proposal_correct_count,
         "effective_observation_count": effective_count,
@@ -3965,6 +4034,8 @@ def _collect_landmark_statistics(
                 if bool((effective_count > 0).any())
                 else 0.0
             ),
+            "rescue_landmark_count": int((rescue_utility > 0).sum().item()),
+            "rescue_utility_sum": float(rescue_utility.sum().item()),
             "cross_view_top1_identity_switch_rate_mean": float(
                 identity_switch_rate[observation_count > 0].mean().item()
                 if bool((observation_count > 0).any())
@@ -4029,6 +4100,9 @@ def _collect_native_global_attractor_statistics(
     ambiguous_count = torch.zeros(landmark_count, device=device)
     false_count = torch.zeros(landmark_count, device=device)
     correct_count = torch.zeros(landmark_count, device=device)
+    visible_proposal_opportunity_count = torch.zeros(
+        landmark_count, device=device
+    )
     normalized_features = F.normalize(features.detach(), dim=1)
     records = []
     observation_limit = (
@@ -4047,16 +4121,15 @@ def _collect_native_global_attractor_statistics(
             ),
             prediction_bank_xyz=bank_xyz,
         )
-        source_valid = observations.source_indices >= 0
-        if not bool(source_valid.any().item()):
+        if observations.query_features.numel() == 0:
             continue
         query = F.normalize(
-            observations.query_features[source_valid].detach(), dim=1
+            observations.query_features.detach(), dim=1
         )
         top1 = (query @ normalized_features.T).argmax(dim=1)
         top1_distance = torch.linalg.norm(
             observations.bank_uv[top1]
-            - observations.query_uv[source_valid],
+            - observations.query_uv,
             dim=1,
         )
         clean = observations.bank_visible[top1] & (
@@ -4074,6 +4147,9 @@ def _collect_native_global_attractor_statistics(
         ambiguous_count.index_add_(0, top1[ambiguous], ones[ambiguous])
         correct_count.index_add_(0, top1[clean], ones[clean])
         false_count.index_add_(0, top1[false], ones[false])
+        visible_proposal_opportunity_count.add_(
+            observations.bank_visible.float() * float(top1.numel())
+        )
         records.append(
             {
                 "observations": int(top1.numel()),
@@ -4083,8 +4159,16 @@ def _collect_native_global_attractor_statistics(
         )
 
     observed = decisive_count > 0
+    false_incoming_rate = torch.zeros_like(incoming_count)
+    false_incoming_rate[observed] = (
+        false_count[observed] / decisive_count[observed]
+    )
+    opportunity_observed = visible_proposal_opportunity_count > 0
     false_rate = torch.zeros_like(incoming_count)
-    false_rate[observed] = false_count[observed] / decisive_count[observed]
+    false_rate[opportunity_observed] = (
+        false_count[opportunity_observed]
+        / visible_proposal_opportunity_count[opportunity_observed]
+    )
     min_incoming = max(int(args.native_global_attractor_min_incoming), 1)
     eligible = incoming_count >= float(min_incoming)
     support_reference = (
@@ -4124,6 +4208,9 @@ def _collect_native_global_attractor_statistics(
                 false_count.sum().item()
                 / decisive_count.sum().clamp_min(1.0).item()
             ),
+            "native_global_attractor_prior_visible_opportunities": float(
+                visible_proposal_opportunity_count.sum().item()
+            ),
             "native_global_attractor_prior_eligible_landmarks": int(
                 eligible.sum().item()
             ),
@@ -4145,6 +4232,8 @@ def _collect_native_global_attractor_statistics(
         "ambiguous_count": ambiguous_count,
         "false_count": false_count,
         "correct_count": correct_count,
+        "visible_proposal_opportunity_count": visible_proposal_opportunity_count,
+        "false_incoming_rate": false_incoming_rate,
         "false_rate": false_rate,
         "score": score,
     }, diagnostics
@@ -4234,7 +4323,27 @@ def _distill_final_landmark_bank(
         )
         utility = utility * global_attractor_reliability
         global_attractor_active = True
-    selection_score = matchability * global_attractor_reliability
+    identity_switch_rate = statistics.get(
+        "cross_view_top1_harmful_switch_rate",
+        statistics.get(
+            "cross_view_top1_identity_switch_rate",
+            (1.0 - statistics["source_identity_rate"]).clamp(0.0, 1.0),
+        ),
+    )
+    harmful_reliability = torch.pow(
+        (1.0 - identity_switch_rate).clamp_min(1e-3),
+        float(getattr(args, "distill_harmful_switch_weight", 0.0)),
+    )
+    rescue_utility = statistics.get(
+        "rescue_utility", torch.zeros_like(matchability)
+    )
+    rescue_quality = torch.sigmoid(robust_normalize(rescue_utility))
+    utility = utility * (
+        1.0 + float(getattr(args, "distill_rescue_weight", 0.0)) * rescue_quality
+    )
+    selection_score = (
+        matchability * global_attractor_reliability * harmful_reliability
+    )
     extent = bank_xyz.quantile(0.99, dim=0) - bank_xyz.quantile(0.01, dim=0)
     voxel_size = float(args.distill_voxel_size)
     if voxel_size <= 0.0:
@@ -4342,13 +4451,6 @@ def _distill_final_landmark_bank(
     )
     hard_core_count = min(
         strict_budget, int(round(float(strict_budget) * hard_core_ratio))
-    )
-    identity_switch_rate = statistics.get(
-        "cross_view_top1_harmful_switch_rate",
-        statistics.get(
-            "cross_view_top1_identity_switch_rate",
-        (1.0 - statistics["source_identity_rate"]).clamp(0.0, 1.0),
-        ),
     )
     protected_core_ratio = min(
         max(float(getattr(args, "distill_protected_core_ratio", 0.0)), 0.0), 1.0
@@ -4729,6 +4831,11 @@ def _distill_final_landmark_bank(
         "global_attractor_reliability": global_attractor_reliability[selected]
         .detach()
         .cpu(),
+        "harmful_switch_reliability": harmful_reliability[selected]
+        .detach()
+        .cpu(),
+        "rescue_utility": rescue_utility[selected].detach().cpu(),
+        "rescue_quality": rescue_quality[selected].detach().cpu(),
         "selection_score": selection_score[selected].detach().cpu(),
         "quality_reservoir_member": torch.zeros_like(
             eligible, dtype=torch.bool
@@ -5287,6 +5394,15 @@ def _state_config(
             args.distill_matchability_threshold
         ),
         "distill_false_top1_max": float(args.distill_false_top1_max),
+        "distill_rescue_max_positives": int(
+            getattr(args, "distill_rescue_max_positives", 4)
+        ),
+        "distill_rescue_weight": float(
+            getattr(args, "distill_rescue_weight", 0.0)
+        ),
+        "distill_harmful_switch_weight": float(
+            getattr(args, "distill_harmful_switch_weight", 0.0)
+        ),
         "distill_proposal_weight": float(args.distill_proposal_weight),
         "distill_global_attractor_weight": float(
             args.distill_global_attractor_weight
@@ -6750,6 +6866,20 @@ def train(dataset, args):
             visibility_cache=visibility_cache,
             base_bank_xyz=base_bank_xyz,
         )
+        torch.save(
+            {
+                "version": 1,
+                "split": "train_only",
+                "train_camera_names_sha256": _camera_names_sha256(train_names),
+                "landmark_indices": landmark_indices.detach().cpu(),
+                "statistics": {
+                    name: value.detach().cpu()
+                    for name, value in statistics.items()
+                },
+                "diagnostics": dict(landmark_statistics_summary),
+            },
+            output_dir / "landmark_statistics_full.pt",
+        )
         distill_global_attractor_statistics = None
         distill_global_attractor_diagnostics = {
             "distill_global_attractor_prior_enabled": 0.0,
@@ -7708,6 +7838,30 @@ def build_parser():
         "--distill_matchability_threshold", type=float, default=0.5
     )
     parser.add_argument("--distill_false_top1_max", type=float, default=0.5)
+    parser.add_argument(
+        "--distill_rescue_max_positives",
+        type=int,
+        default=4,
+        help=(
+            "Treat native rows with at most this many CSR positives as scarce "
+            "coverage opportunities for the reserve bank."
+        ),
+    )
+    parser.add_argument(
+        "--distill_rescue_weight",
+        type=float,
+        default=0.0,
+        help="Weight query-level scarce-positive rescue utility in coverage selection.",
+    )
+    parser.add_argument(
+        "--distill_harmful_switch_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Exponent for cross-surface harmful-switch reliability in the "
+            "distinctiveness core; zero disables the penalty."
+        ),
+    )
     parser.add_argument(
         "--distill_global_attractor_weight",
         type=float,

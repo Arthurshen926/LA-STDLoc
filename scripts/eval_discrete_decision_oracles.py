@@ -178,6 +178,35 @@ def oracle_assignment_candidates(raw_rows, targets, scores):
     )
 
 
+def oracle_topk_candidates(topk_landmark_idx, topk_scores, candidate_correct):
+    """Select at most one GT-valid hypothesis per native keypoint.
+
+    This is the upper bound for the proposed one-of-K reranker. It never
+    duplicates a 2D measurement and emits null for a row whose retrieved
+    hypotheses contain no geometrically valid landmark.
+    """
+    topk_landmark_idx = np.asarray(topk_landmark_idx, dtype=np.int64)
+    topk_scores = np.asarray(topk_scores, dtype=np.float64)
+    candidate_correct = np.asarray(candidate_correct, dtype=bool)
+    if not (
+        topk_landmark_idx.ndim == 2
+        and topk_landmark_idx.shape == topk_scores.shape
+        and topk_landmark_idx.shape == candidate_correct.shape
+    ):
+        raise ValueError("top-K oracle arrays must have identical NxK shapes")
+    has_positive = candidate_correct.any(axis=1)
+    rows = np.flatnonzero(has_positive)
+    # Retrieval is score sorted. argmax on the boolean mask therefore returns
+    # the highest-ranked valid hypothesis and preserves deployment ordering.
+    positions = candidate_correct[rows].argmax(axis=1)
+    return CandidateSet(
+        keypoint_idx=rows,
+        landmark_idx=topk_landmark_idx[rows, positions],
+        scores=topk_scores[rows, positions],
+        source_idx=rows,
+    )
+
+
 def run_pose(candidates, keypoint_xy, landmark_xyz, K, query, seed):
     cv2.setRNGSeed(int(seed))
     p2d = np.asarray(keypoint_xy, dtype=np.float64)[candidates.keypoint_idx]
@@ -534,6 +563,7 @@ def evaluate(
     with np.load(dump_dir / manifest["landmark_bank"]) as bank_file:
         landmark_xyz = np.asarray(bank_file["landmark_xyz"], dtype=np.float64)
 
+    oracle_assignment_ks = (1, 2, 4, 8, 16)
     methods = (
         "actual",
         "replay",
@@ -548,9 +578,13 @@ def evaluate(
         "O5_signed_coordinate",
         "O6_best_single_swap",
         "O6_all_strict_swaps",
-    )
+    ) + tuple(f"OK{topk}_one_of_k" for topk in oracle_assignment_ks)
     errors = {name: {"ae": [], "te": []} for name in methods}
-    retrieval = {2.0: {1: [], 4: [], 8: [], 32: []}, 4.0: {1: [], 4: [], 8: [], 32: []}}
+    retrieval_ks = (1, 2, 4, 8, 16, 32)
+    retrieval = {
+        2.0: {k: [] for k in retrieval_ks},
+        4.0: {k: [] for k in retrieval_ks},
+    }
     query_records = []
     hard_precision = []
     inlier_precision = []
@@ -597,7 +631,7 @@ def evaluate(
             )
             candidate_correct = valid[topk_lm] & (candidate_distance <= eval_radius)
             denom = max(int(matchable[eval_radius].sum()), 1)
-            for recall_k in (1, 4, 8, 32):
+            for recall_k in retrieval_ks:
                 k = min(recall_k, topk_lm.shape[1])
                 retrieval[eval_radius][recall_k].append(
                     float(candidate_correct[:, :k].any(axis=1)[matchable[eval_radius]].sum() / denom)
@@ -713,6 +747,30 @@ def evaluate(
             strict_target[raw_rows],
             raw_scores,
         )
+        strict_candidate_distance = np.linalg.norm(
+            keypoint_xy[:, None, :] - projected[topk_lm], axis=2
+        )
+        strict_candidate_correct = (
+            valid[topk_lm] & (strict_candidate_distance <= float(radius))
+        )
+        topk_oracle_poses = {}
+        topk_oracle_counts = {}
+        for topk in oracle_assignment_ks:
+            width_k = min(topk, topk_lm.shape[1])
+            oracle_candidates = oracle_topk_candidates(
+                topk_lm[:, :width_k],
+                topk_scores[:, :width_k],
+                strict_candidate_correct[:, :width_k],
+            )
+            topk_oracle_counts[topk] = int(oracle_candidates.scores.size)
+            topk_oracle_poses[topk] = run_pose(
+                oracle_candidates,
+                keypoint_xy,
+                landmark_xyz,
+                K,
+                query,
+                seed + query_index,
+            )[0]
 
         actual_pose = np.asarray(query["pred_pose_w2c"], dtype=np.float64)
         replay_pose, replay_inliers = run_pose(
@@ -886,6 +944,10 @@ def evaluate(
             "O5_signed_coordinate": signed_pose,
             "O6_best_single_swap": best_pose,
             "O6_all_strict_swaps": all_pose,
+            **{
+                f"OK{topk}_one_of_k": topk_oracle_poses[topk]
+                for topk in oracle_assignment_ks
+            },
         }
         per_query_errors = {}
         for method, pose in poses.items():
@@ -899,6 +961,10 @@ def evaluate(
                 "image_name": image_name,
                 "matchable_rows_2px": int(strict_matchable.sum()),
                 "oracle_assignment_matches": int(len(assignment_oracle.scores)),
+                "one_of_k_oracle_matches": {
+                    str(topk): topk_oracle_counts[topk]
+                    for topk in oracle_assignment_ks
+                },
                 "hard_matches": int(len(baseline.scores)),
                 "hard_gt_precision_2px": float(hard_correct.mean()),
                 "ransac_inliers": int(len(inlier_set.scores)),
@@ -988,6 +1054,10 @@ def evaluate(
             ],
             "O3_oracle_2d_measurement": summaries["O3_oracle_2d_measurement"],
             "counterfactual_enabled": bool(not skip_counterfactual),
+            "one_of_k": {
+                str(topk): summaries[f"OK{topk}_one_of_k"]
+                for topk in oracle_assignment_ks
+            },
         },
         "discrete_diagnostics": {
             "hard_top1_gt_precision_mean": float(np.mean(hard_precision)),
