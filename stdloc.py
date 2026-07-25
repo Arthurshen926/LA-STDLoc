@@ -2063,6 +2063,25 @@ def landmark_prior_from_meta(meta, landmark_count, sampled_indices=None):
     return None
 
 
+def validate_one_of_k_topk_contract(
+    trained_topk,
+    evaluation_topk,
+    *,
+    allow_candidate_only_mismatch=False,
+    use_learned_null=True,
+):
+    """Validate an explicit candidate-only train/eval width ablation."""
+    if int(trained_topk) == int(evaluation_topk):
+        return False
+    if not bool(allow_candidate_only_mismatch):
+        raise ValueError("one-of-K reranker train/eval top-K mismatch")
+    if bool(use_learned_null):
+        raise ValueError(
+            "top-K mismatch ablation is invalid with a learned null logit"
+        )
+    return True
+
+
 class STDLoc:
     def __init__(self, gaussians, config):
         self.gaussians = gaussians
@@ -2224,6 +2243,7 @@ class STDLoc:
         self.local_assignment_head = None
         self.local_assignment_landmark_statistics = None
         self.local_assignment_runtime_config = {}
+        self.local_assignment_topk_mismatch = False
         rerank_state_path = str(sparse_config.get("rerank_state_path", ""))
         if self.sparse_frontend == "ulfloc_native_rerank" and rerank_state_path:
             full_rerank_state_path = resolve_artifact_path(
@@ -2237,8 +2257,21 @@ class STDLoc:
             rerank_state = torch.load(full_rerank_state_path, map_location="cpu")
             rerank_config = rerank_state.get("config", {})
             expected_topk = int(sparse_config.get("rerank_topk", 4))
-            if int(rerank_config.get("topk", expected_topk)) != expected_topk:
-                raise ValueError("one-of-K reranker train/eval top-K mismatch")
+            self.local_assignment_topk_mismatch = (
+                validate_one_of_k_topk_contract(
+                    rerank_config.get("topk", expected_topk),
+                    expected_topk,
+                    allow_candidate_only_mismatch=bool(
+                        sparse_config.get(
+                            "rerank_allow_candidate_only_topk_mismatch",
+                            False,
+                        )
+                    ),
+                    use_learned_null=bool(
+                        sparse_config.get("rerank_use_learned_null", True)
+                    ),
+                )
+            )
             head_config = rerank_state.get("head_config", {})
             self.local_assignment_runtime_config = dict(rerank_config)
             self.local_assignment_head = OneOfKAssignmentHead(
@@ -4023,6 +4056,9 @@ class STDLoc:
             )
         rerank_diagnostics = {
             "sparse_diag_native_rerank_enabled": float(rerank_enabled),
+            "sparse_diag_native_rerank_topk_mismatch": float(
+                self.local_assignment_topk_mismatch
+            ),
             "sparse_diag_native_rerank_topk": 0.0,
             "sparse_diag_native_rerank_kept_ratio": 1.0,
             "sparse_diag_native_rerank_local_peak_mean": 0.0,
@@ -4180,11 +4216,21 @@ class STDLoc:
                 .detach()
                 .cpu()
                 .numpy(),
+                "candidate_logits": reranked.candidate_logits.detach()
+                .cpu()
+                .float()
+                .numpy(),
                 "selected_position": reranked.selected_position.detach()
                 .cpu()
                 .numpy(),
                 "null_selected": reranked.null_selected.detach()
                 .cpu()
+                .numpy(),
+                "keep": reranked.keep.detach().cpu().numpy(),
+                "ambiguous": reranked.ambiguous.detach().cpu().numpy(),
+                "global_margin": reranked.global_margin.detach()
+                .cpu()
+                .float()
                 .numpy(),
             }
             rerank_diagnostics.update(
@@ -5115,6 +5161,7 @@ if __name__ == "__main__":
         )
         loc_res["sparse"]["sparse_valid_mask_source"] = evaluation_masks_path
         sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
+        assignment_debug = None
         if sparse_debug is not None:
             if "one_of_k_assignment" in sparse_debug:
                 assignment_debug = sparse_debug["one_of_k_assignment"]
@@ -5313,6 +5360,32 @@ if __name__ == "__main__":
                 oracle_payload = {
                     key: np.asarray(value) for key, value in oracle_debug.items()
                 }
+                if assignment_debug is not None:
+                    oracle_payload.update(
+                        {
+                            "assignment_topk_landmark_idx": np.asarray(
+                                assignment_debug["topk_landmark_idx"]
+                            ),
+                            "assignment_candidate_logits": np.asarray(
+                                assignment_debug["candidate_logits"]
+                            ),
+                            "assignment_selected_position": np.asarray(
+                                assignment_debug["selected_position"]
+                            ),
+                            "assignment_null_selected": np.asarray(
+                                assignment_debug["null_selected"]
+                            ),
+                            "assignment_keep": np.asarray(
+                                assignment_debug["keep"]
+                            ),
+                            "assignment_ambiguous": np.asarray(
+                                assignment_debug["ambiguous"]
+                            ),
+                            "assignment_global_margin": np.asarray(
+                                assignment_debug["global_margin"]
+                            ),
+                        }
+                    )
                 oracle_payload.update(
                     {
                         "image_name": np.asarray(camera_info.image_name),
@@ -5383,7 +5456,7 @@ if __name__ == "__main__":
         ) as f:
             json.dump(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "landmark_bank": "landmark_bank.npz",
                     "query_files": discrete_oracle_query_files,
                     "query_count": len(discrete_oracle_query_files),

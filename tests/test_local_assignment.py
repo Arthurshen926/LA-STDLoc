@@ -5,7 +5,10 @@ from localization_training.local_assignment import (
     OneOfKAssignmentHead,
     rerank_one_of_k,
 )
-from stdloc import one_of_k_assignment_gt_diagnostics
+from stdloc import (
+    one_of_k_assignment_gt_diagnostics,
+    validate_one_of_k_topk_contract,
+)
 
 
 def test_one_of_k_reranker_never_duplicates_query_rows():
@@ -29,6 +32,7 @@ def test_one_of_k_reranker_never_duplicates_query_rows():
     )
     assert output.landmark_idx.shape == (2,)
     assert output.keep.shape == (2,)
+    assert output.candidate_logits.shape == (2, 2)
 
 
 def test_one_of_k_null_threshold_rejects_uncertain_row():
@@ -108,6 +112,7 @@ def test_ambiguity_gate_forces_high_margin_global_top1():
     )
     assert output.selected_position.tolist() == [0, 1]
     assert output.ambiguous.tolist() == [False, True]
+    assert output.candidate_logits.tolist() == [[0.0, 10.0], [0.0, 10.0]]
 
 
 def test_assignment_gt_diagnostics_identify_beneficial_and_harmful_swap():
@@ -156,3 +161,21 @@ def test_null_rejection_respects_global_cap_and_grid_floor():
     )
     assert int(output.null_selected.sum()) <= 2
     assert int(output.keep.sum()) >= 2
+
+
+def test_topk_mismatch_requires_explicit_candidate_only_ablation():
+    with np.testing.assert_raises_regex(ValueError, "top-K mismatch"):
+        validate_one_of_k_topk_contract(4, 8)
+    assert validate_one_of_k_topk_contract(
+        4,
+        8,
+        allow_candidate_only_mismatch=True,
+        use_learned_null=False,
+    )
+    with np.testing.assert_raises_regex(ValueError, "learned null"):
+        validate_one_of_k_topk_contract(
+            4,
+            8,
+            allow_candidate_only_mismatch=True,
+            use_learned_null=True,
+        )

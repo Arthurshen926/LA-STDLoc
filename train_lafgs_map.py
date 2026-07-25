@@ -1101,6 +1101,7 @@ def _native_auxiliary_contract(args):
         "observation_source": source,
         "objective": str(args.objective),
         "native_outcome_mode": bool(args.native_outcome_mode),
+        "native_rank_budget_mode": bool(args.native_rank_budget_mode),
         "native_sampling_mode": str(args.native_sampling_mode),
         "anchor_auxiliary_scale": anchor_scale,
         "anchor_auxiliary_observations_enabled": source == "native_plus_anchor",
@@ -1140,6 +1141,48 @@ def _validate_native_objective_semantics(args):
         value = float(getattr(args, name))
         if not math.isfinite(value):
             raise ValueError(f"{name} must be finite for native supervision")
+
+    if bool(args.native_rank_budget_mode):
+        if bool(args.native_outcome_mode):
+            raise ValueError(
+                "native_rank_budget_mode replaces rather than augments "
+                "native_outcome_mode"
+            )
+        if str(args.objective) != "hard":
+            raise ValueError("native_rank_budget_mode requires --objective hard")
+        if str(args.native_sampling_mode) != "detector_grid":
+            raise ValueError(
+                "native_rank_budget_mode requires --native_sampling_mode detector_grid"
+            )
+        if float(args.native_rank_temperature) <= 0.0:
+            raise ValueError("native_rank_temperature must be positive")
+        rank_values = (
+            float(args.native_rank_margin_at1),
+            float(args.native_rank_margin_at4),
+            float(args.native_rank_margin_at8),
+            float(args.native_rank_margin_at32),
+            float(args.native_rank_top1_weight),
+            float(args.native_rank_keep_weight),
+            float(args.native_rank_reference_clean_weight),
+            float(args.native_rank_reference_clean_margin),
+            float(args.native_rank_band_rank1),
+            float(args.native_rank_band_rank2_4),
+            float(args.native_rank_band_rank5_32),
+            float(args.native_rank_band_rank33_plus),
+        )
+        if any(not math.isfinite(value) or value < 0.0 for value in rank_values):
+            raise ValueError("native rank margins, weights, and quotas must be finite and non-negative")
+        if sum(rank_values[-4:]) <= 0.0:
+            raise ValueError("native rank band quotas must have a positive sum")
+        if (
+            float(args.native_rank_reference_clean_weight) > 0.0
+            and float(args.trust_weight) <= 0.0
+            and float(args.max_residual_norm) <= 0.0
+        ):
+            raise ValueError(
+                "reference-clean rank protection requires descriptor trust "
+                "or a positive residual norm cap"
+            )
 
     if bool(args.native_outcome_mode):
         if str(args.objective) != "hard":
@@ -1187,7 +1230,11 @@ def _validate_native_objective_semantics(args):
                 "--observation_source native does not create anchor observations; "
                 "set these inert options to zero: " + ", ".join(nonzero)
             )
-        if not bool(args.native_outcome_mode) and float(args.retrieval_weight) != 0.0:
+        if (
+            not bool(args.native_outcome_mode)
+            and not bool(args.native_rank_budget_mode)
+            and float(args.retrieval_weight) != 0.0
+        ):
             raise ValueError(
                 "--observation_source native without native_outcome_mode has no "
                 "deployment-aligned descriptor objective; set retrieval_weight to "
@@ -1365,7 +1412,13 @@ def _validate_ulf_initializer_semantics(args):
         raise ValueError("support_rgb_only requires --longest_edge 0")
 
 
-def _native_candidate_loss_kwargs(args, *, global_attractor_scores=None):
+def _native_candidate_loss_kwargs(
+    args,
+    *,
+    global_attractor_scores=None,
+    rank_reference_bank_features=None,
+    rank_landmark_opportunities=None,
+):
     """Return explicit native-candidate weights only for native proposals."""
     native = str(args.observation_source) in {"native", "native_plus_anchor"}
     # The global false-attractor prior is a train-split artifact.  Validation
@@ -1394,6 +1447,34 @@ def _native_candidate_loss_kwargs(args, *, global_attractor_scores=None):
             else 0.0
         ),
         "native_global_attractor_scores": global_attractor_scores,
+        "native_rank_budget_mode": bool(args.native_rank_budget_mode and native),
+        "native_rank_temperature": float(args.native_rank_temperature),
+        "native_rank_margins": (
+            float(args.native_rank_margin_at1),
+            float(args.native_rank_margin_at4),
+            float(args.native_rank_margin_at8),
+            float(args.native_rank_margin_at32),
+        ),
+        "native_rank_top1_weight": float(args.native_rank_top1_weight),
+        "native_rank_keep_weight": float(args.native_rank_keep_weight),
+        "native_rank_band_proportions": (
+            float(args.native_rank_band_rank1),
+            float(args.native_rank_band_rank2_4),
+            float(args.native_rank_band_rank5_32),
+            float(args.native_rank_band_rank33_plus),
+        ),
+        "native_rank_landmark_opportunities": (
+            rank_landmark_opportunities
+            if bool(args.native_rank_landmark_balance)
+            else None
+        ),
+        "native_rank_reference_bank_features": rank_reference_bank_features,
+        "native_rank_reference_clean_weight": float(
+            args.native_rank_reference_clean_weight
+        ),
+        "native_rank_reference_clean_margin": float(
+            args.native_rank_reference_clean_margin
+        ),
     }
 
 
@@ -5206,6 +5287,31 @@ def _state_config(
         "unmatched_rejection_weight": float(args.unmatched_rejection_weight),
         "unmatched_max_similarity": float(args.unmatched_max_similarity),
         "native_outcome_mode": bool(args.native_outcome_mode),
+        "native_rank_budget_mode": bool(args.native_rank_budget_mode),
+        "native_rank_temperature": float(args.native_rank_temperature),
+        "native_rank_margins": {
+            "at1": float(args.native_rank_margin_at1),
+            "at4": float(args.native_rank_margin_at4),
+            "at8": float(args.native_rank_margin_at8),
+            "at32": float(args.native_rank_margin_at32),
+        },
+        "native_rank_top1_weight": float(args.native_rank_top1_weight),
+        "native_rank_keep_weight": float(args.native_rank_keep_weight),
+        "native_rank_reference_clean_weight": float(
+            args.native_rank_reference_clean_weight
+        ),
+        "native_rank_reference_clean_margin": float(
+            args.native_rank_reference_clean_margin
+        ),
+        "native_rank_landmark_balance": bool(
+            args.native_rank_landmark_balance
+        ),
+        "native_rank_band_proportions": {
+            "rank1": float(args.native_rank_band_rank1),
+            "rank2_4": float(args.native_rank_band_rank2_4),
+            "rank5_32": float(args.native_rank_band_rank5_32),
+            "rank33_plus": float(args.native_rank_band_rank33_plus),
+        },
         "native_nce_weight": float(args.native_nce_weight),
         "native_keep_weight": float(args.native_keep_weight),
         "native_keep_margin": float(args.native_keep_margin),
@@ -5505,6 +5611,11 @@ def train(dataset, args):
     if bool(args.native_outcome_mode) and not native_observation_mode:
         raise ValueError(
             "native_outcome_mode requires --observation_source native or "
+            "native_plus_anchor"
+        )
+    if bool(args.native_rank_budget_mode) and not native_observation_mode:
+        raise ValueError(
+            "native_rank_budget_mode requires --observation_source native or "
             "native_plus_anchor"
         )
     _validate_native_objective_semantics(args)
@@ -6000,6 +6111,16 @@ def train(dataset, args):
     native_loss_kwargs = _native_candidate_loss_kwargs(
         args,
         global_attractor_scores=native_global_attractor_scores,
+        rank_reference_bank_features=(
+            initial_features.detach()
+            if float(args.native_rank_reference_clean_weight) > 0.0
+            else None
+        ),
+        rank_landmark_opportunities=(
+            mvinit_observation_count.detach()
+            if bool(args.native_rank_landmark_balance)
+            else None
+        ),
     )
     initial_validation = _validate_descriptor_field(
         initial_features,
@@ -7686,6 +7807,37 @@ def build_parser():
             "it preserves the deployed candidate set and only reweights ranking."
         ),
     )
+    parser.add_argument(
+        "--native_rank_budget_mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Replace the native residual objective with exact multi-positive "
+            "rank-budget curriculum supervision."
+        ),
+    )
+    parser.add_argument("--native_rank_temperature", type=float, default=0.03)
+    parser.add_argument("--native_rank_margin_at1", type=float, default=0.02)
+    parser.add_argument("--native_rank_margin_at4", type=float, default=0.02)
+    parser.add_argument("--native_rank_margin_at8", type=float, default=0.02)
+    parser.add_argument("--native_rank_margin_at32", type=float, default=0.02)
+    parser.add_argument("--native_rank_top1_weight", type=float, default=0.25)
+    parser.add_argument("--native_rank_keep_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--native_rank_reference_clean_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--native_rank_reference_clean_margin", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--native_rank_landmark_balance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--native_rank_band_rank1", type=float, default=0.25)
+    parser.add_argument("--native_rank_band_rank2_4", type=float, default=0.25)
+    parser.add_argument("--native_rank_band_rank5_32", type=float, default=0.30)
+    parser.add_argument("--native_rank_band_rank33_plus", type=float, default=0.20)
     parser.add_argument(
         "--native_global_attractor_min_incoming", type=int, default=4
     )

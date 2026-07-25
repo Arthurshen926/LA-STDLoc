@@ -9,6 +9,7 @@ from torch import nn
 class OneOfKRerankOutput:
     landmark_idx: torch.Tensor
     selected_position: torch.Tensor
+    candidate_logits: torch.Tensor
     scores: torch.Tensor
     keep: torch.Tensor
     local_peak: torch.Tensor
@@ -394,6 +395,7 @@ def rerank_one_of_k(
     return OneOfKRerankOutput(
         landmark_idx=best_landmark,
         selected_position=best_position,
+        candidate_logits=logits,
         scores=best_score,
         keep=keep,
         local_peak=local_peak[row, best_position],

@@ -21,6 +21,7 @@ from localization_training.pose_refiner import (
 from localization_training.hard_candidate_teacher import (
     linearized_translation_delete_gains,
 )
+from localization_training.rank_budget import multi_positive_rank_budget_loss
 
 
 @dataclass
@@ -2981,6 +2982,16 @@ def hard_hypothesis_retrieval_loss(
     native_attractor_margin=0.05,
     native_global_attractor_weight=0.0,
     native_global_attractor_scores=None,
+    native_rank_budget_mode=False,
+    native_rank_temperature=0.03,
+    native_rank_margins=(0.02, 0.02, 0.02, 0.02),
+    native_rank_top1_weight=0.25,
+    native_rank_keep_weight=1.0,
+    native_rank_band_proportions=(0.25, 0.25, 0.30, 0.20),
+    native_rank_landmark_opportunities=None,
+    native_rank_reference_bank_features=None,
+    native_rank_reference_clean_weight=0.0,
+    native_rank_reference_clean_margin=0.02,
 ):
     query_count = int(observations.source_indices.numel())
     bank_count = int(bank_features.shape[0])
@@ -3004,6 +3015,40 @@ def hard_hypothesis_retrieval_loss(
         negative_radius_px=negative_radius_px,
     )
     ambiguous = ~positive & ~negative
+    rank_budget = None
+    if bool(native_rank_budget_mode):
+        if (
+            observations.positive_offsets is None
+            or observations.positive_indices is None
+        ):
+            raise ValueError(
+                "native rank-budget mode requires CSR multi-positive labels"
+            )
+        rank_budget = multi_positive_rank_budget_loss(
+            full_scores,
+            positive_offsets=observations.positive_offsets,
+            positive_indices=observations.positive_indices,
+            query_uv=observations.query_uv,
+            bank_uv=observations.bank_uv,
+            bank_projected=observations.bank_projected,
+            negative_radius_px=negative_radius_px,
+            margins=native_rank_margins,
+            temperature=native_rank_temperature,
+            top1_weight=native_rank_top1_weight,
+            keep_weight=native_rank_keep_weight,
+            band_proportions=native_rank_band_proportions,
+            landmark_opportunities=native_rank_landmark_opportunities,
+            reference_scores=(
+                None
+                if native_rank_reference_bank_features is None
+                else query
+                @ F.normalize(
+                    native_rank_reference_bank_features.detach(), dim=-1
+                ).T
+            ),
+            reference_clean_weight=native_rank_reference_clean_weight,
+            reference_clean_margin=native_rank_reference_clean_margin,
+        )
     dustbin_logit = (
         None
         if dustbin_score is None
@@ -3249,7 +3294,9 @@ def hard_hypothesis_retrieval_loss(
                             global_row_weights.mean().detach().item()
                         )
 
-    if native_outcome_mode:
+    if native_rank_budget_mode:
+        loss = rank_budget.loss
+    elif native_outcome_mode:
         loss = (
             float(native_nce_weight) * nce_loss
             + float(native_keep_weight) * keep_loss
@@ -3379,6 +3426,8 @@ def hard_hypothesis_retrieval_loss(
             ),
         }
     )
+    if rank_budget is not None:
+        diagnostics.update(rank_budget.diagnostics)
     return DetectorFreeRetrievalOutput(loss, diagnostics)
 
 
