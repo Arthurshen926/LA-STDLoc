@@ -23,6 +23,8 @@ from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.geometry_selector import GeometryBalancedSelector
 from localization_training.full_primitive_retrieval import (
     chunked_exact_topk,
+    chunked_exact_topk_dual_prototype,
+    conditional_core_reserve_topk,
     suppress_redundant_hypotheses,
 )
 from localization_training.native_matchability import (
@@ -33,6 +35,10 @@ from localization_training.native_matchability import (
 from localization_training.local_assignment import (
     OneOfKAssignmentHead,
     rerank_one_of_k,
+)
+from localization_training.local_context_adapter import (
+    LocalContextMetricAdapter,
+    pool_local_query_context,
 )
 from localization_training.pair_scorer import SparsePairScorer
 from localization_training.pair_measurement import (
@@ -284,13 +290,18 @@ def validate_sparse_frontend_config(sparse_config):
         "detector",
         "ulfloc_native",
         "ulfloc_native_rerank",
+        "ulfloc_native_adapter",
     }:
         raise ValueError(
             "sparse_frontend must be detector, ulfloc_native, or "
-            "ulfloc_native_rerank, got "
+            "ulfloc_native_rerank/adapter, got "
             f"{frontend!r}"
         )
-    if frontend not in {"ulfloc_native", "ulfloc_native_rerank"}:
+    if frontend not in {
+        "ulfloc_native",
+        "ulfloc_native_rerank",
+        "ulfloc_native_adapter",
+    }:
         return frontend
     contract = str(
         sparse_config.get("query_feature_contract", "legacy_full_then_resized_map")
@@ -328,6 +339,15 @@ def validate_sparse_frontend_config(sparse_config):
             raise ValueError(
                 "ulfloc_native_rerank emits one hypothesis per keypoint; "
                 "topk must remain 1"
+            )
+    if frontend == "ulfloc_native_adapter":
+        if int(sparse_config.get("topk", 1)) != 1:
+            raise ValueError(
+                "ulfloc_native_adapter uses global cosine top-1; topk must be 1"
+            )
+        if not str(sparse_config.get("adapter_state_path", "")):
+            raise ValueError(
+                "ulfloc_native_adapter requires adapter_state_path"
             )
     if bool(sparse_config.get("use_native_matchability", False)):
         state_path = str(sparse_config.get("native_matchability_state_path", ""))
@@ -1166,6 +1186,80 @@ def sparse_correspondence_diagnostics(
     return diagnostics
 
 
+def one_of_k_assignment_gt_diagnostics(
+    keypoint_xy,
+    topk_landmark_idx,
+    selected_position,
+    null_selected,
+    landmark_xyz,
+    K,
+    gt_pose_w2c,
+    *,
+    threshold_px=2.0,
+):
+    keypoint_xy = np.asarray(keypoint_xy, dtype=np.float64).reshape(-1, 2)
+    topk_landmark_idx = np.asarray(
+        topk_landmark_idx, dtype=np.int64
+    )
+    selected_position = np.asarray(
+        selected_position, dtype=np.int64
+    ).reshape(-1)
+    null_selected = np.asarray(null_selected, dtype=bool).reshape(-1)
+    landmark_xyz = np.asarray(landmark_xyz, dtype=np.float64).reshape(-1, 3)
+    if (
+        topk_landmark_idx.ndim != 2
+        or topk_landmark_idx.shape[0] != keypoint_xy.shape[0]
+        or selected_position.shape[0] != keypoint_xy.shape[0]
+    ):
+        raise ValueError("one-of-K assignment diagnostics do not align")
+    candidate_xyz = landmark_xyz[topk_landmark_idx]
+    projected, depth = _project_points_np(
+        candidate_xyz.reshape(-1, 3), K, gt_pose_w2c
+    )
+    projected = projected.reshape(candidate_xyz.shape[0], candidate_xyz.shape[1], 2)
+    depth = depth.reshape(candidate_xyz.shape[:2])
+    error = np.linalg.norm(
+        projected - (keypoint_xy[:, None, :] + 0.5), axis=2
+    )
+    positive = (
+        np.isfinite(error)
+        & (depth > 1e-8)
+        & (error <= float(threshold_px))
+    )
+    row = np.arange(keypoint_xy.shape[0])
+    top1_positive = positive[:, 0]
+    selected_positive = positive[row, selected_position] & ~null_selected
+    has_positive = positive.any(axis=1)
+    swapped = selected_position != 0
+    beneficial = swapped & ~top1_positive & selected_positive
+    harmful = swapped & top1_positive & ~selected_positive
+    true_null = ~has_positive
+    true_null_selected = null_selected & true_null
+    prefix = "sparse_diag_native_rerank_gt_"
+    return {
+        prefix + "positive_in_topk_rate": float(np.mean(has_positive)),
+        prefix + "conditional_selection_accuracy": float(
+            np.sum(selected_positive) / max(np.sum(has_positive), 1)
+        ),
+        prefix + "clean_top1_retention": float(
+            np.sum(top1_positive & ~swapped & ~null_selected)
+            / max(np.sum(top1_positive), 1)
+        ),
+        prefix + "beneficial_swap_rate": float(np.mean(beneficial)),
+        prefix + "harmful_swap_rate": float(np.mean(harmful)),
+        prefix + "null_selection_rate": float(np.mean(null_selected)),
+        prefix + "null_precision": float(
+            np.sum(true_null_selected) / max(np.sum(null_selected), 1)
+        ),
+        prefix + "null_recall": float(
+            np.sum(true_null_selected) / max(np.sum(true_null), 1)
+        ),
+        prefix + "matchable_false_rejection_rate": float(
+            np.sum(null_selected & has_positive) / max(np.sum(has_positive), 1)
+        ),
+    }
+
+
 def sparse_matchability_diagnostics(
     keypoint_xy,
     topk_landmark_idx,
@@ -1973,6 +2067,7 @@ class STDLoc:
         if self.sparse_frontend in {
             "ulfloc_native",
             "ulfloc_native_rerank",
+            "ulfloc_native_adapter",
         } and str(
             config.get("feature_type", "")
         ).lower() not in {"sp", "superpoint"}:
@@ -2123,6 +2218,7 @@ class STDLoc:
         self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
         self.local_assignment_head = None
         self.local_assignment_landmark_statistics = None
+        self.local_assignment_runtime_config = {}
         rerank_state_path = str(sparse_config.get("rerank_state_path", ""))
         if self.sparse_frontend == "ulfloc_native_rerank" and rerank_state_path:
             full_rerank_state_path = resolve_artifact_path(
@@ -2139,6 +2235,7 @@ class STDLoc:
             if int(rerank_config.get("topk", expected_topk)) != expected_topk:
                 raise ValueError("one-of-K reranker train/eval top-K mismatch")
             head_config = rerank_state.get("head_config", {})
+            self.local_assignment_runtime_config = dict(rerank_config)
             self.local_assignment_head = OneOfKAssignmentHead(
                 hidden_dim=int(
                     head_config.get("hidden_dim", 32)
@@ -2147,6 +2244,16 @@ class STDLoc:
                 global_skip_scale=float(
                     head_config.get("global_skip_scale", 0.0)
                 ),
+                bounded_residual_max=float(
+                    head_config.get("bounded_residual_max", 0.0)
+                ),
+                logit_temperature=float(
+                    head_config.get("logit_temperature", 1.0)
+                ),
+                null_temperature=float(
+                    head_config.get("null_temperature", 1.0)
+                ),
+                null_bias=float(head_config.get("null_bias", 0.0)),
             ).to(self.landmarks.get_xyz.device)
             self.local_assignment_head.load_state_dict(
                 rerank_state["head_state_dict"]
@@ -2168,6 +2275,139 @@ class STDLoc:
                     rerank_state["landmark_statistics"],
                     device=self.landmarks.get_xyz.device,
                     dtype=self.landmarks.get_loc_feature.dtype,
+                )
+        self.local_context_adapter = None
+        adapter_state_path = str(sparse_config.get("adapter_state_path", ""))
+        if self.sparse_frontend == "ulfloc_native_adapter":
+            full_adapter_state_path = resolve_artifact_path(
+                config["model_path"],
+                adapter_state_path,
+                sparse_config.get(
+                    "adapter_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            adapter_state = torch.load(
+                full_adapter_state_path, map_location="cpu"
+            )
+            adapter_indices = torch.as_tensor(
+                adapter_state["landmark_indices"]
+            ).reshape(-1)
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu()
+            if not torch.equal(adapter_indices.cpu(), active_indices):
+                raise ValueError(
+                    "local-context adapter does not align with the active bank"
+                )
+            self.local_context_adapter = LocalContextMetricAdapter(
+                **adapter_state["adapter_config"]
+            ).to(self.landmarks.get_xyz.device)
+            self.local_context_adapter.load_state_dict(
+                adapter_state["adapter_state_dict"]
+            )
+            self.local_context_adapter.eval()
+
+        self.dual_prototype_features = None
+        self.dual_prototype_mask = None
+        dual_prototype_state_path = str(
+            sparse_config.get("dual_prototype_state_path", "")
+        )
+        if dual_prototype_state_path:
+            if self.sparse_frontend == "ulfloc_native_rerank":
+                raise ValueError(
+                    "dual-prototype retrieval must be validated before combining "
+                    "it with a bank-specific reranker"
+                )
+            full_dual_prototype_state_path = resolve_artifact_path(
+                config["model_path"],
+                dual_prototype_state_path,
+                sparse_config.get(
+                    "dual_prototype_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            dual_state = torch.load(
+                full_dual_prototype_state_path, map_location="cpu"
+            )
+            dual_indices = torch.as_tensor(
+                dual_state["landmark_indices"]
+            ).reshape(-1)
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu()
+            if not torch.equal(dual_indices.cpu(), active_indices):
+                raise ValueError(
+                    "dual-prototype state does not align with the active bank"
+                )
+            secondary = torch.as_tensor(dual_state["secondary_features"])
+            active_features = self.landmarks.get_loc_feature.detach().reshape(
+                self.landmarks.get_loc_feature.shape[0], -1
+            )
+            if secondary.shape != active_features.shape:
+                raise ValueError(
+                    "dual-prototype descriptors do not match the active bank"
+                )
+            self.dual_prototype_features = secondary.to(
+                device=active_features.device, dtype=active_features.dtype
+            )
+            self.dual_prototype_mask = torch.as_tensor(
+                dual_state["secondary_mask"],
+                device=active_features.device,
+                dtype=torch.bool,
+            ).reshape(-1)
+
+        self.conditional_core_mask = None
+        conditional_core_state_path = str(
+            sparse_config.get("conditional_core_state_path", "")
+        )
+        if conditional_core_state_path:
+            full_conditional_core_state_path = resolve_artifact_path(
+                config["model_path"],
+                conditional_core_state_path,
+                sparse_config.get(
+                    "conditional_core_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            core_state = torch.load(
+                full_conditional_core_state_path, map_location="cpu"
+            )
+            core_indices = torch.as_tensor(
+                core_state["landmark_indices"]
+            ).reshape(-1).tolist()
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu().tolist()
+            active_lookup = {
+                int(landmark_id): row
+                for row, landmark_id in enumerate(active_indices)
+            }
+            missing = [
+                int(landmark_id)
+                for landmark_id in core_indices
+                if int(landmark_id) not in active_lookup
+            ]
+            if missing:
+                raise ValueError(
+                    "conditional core contains landmark IDs outside the active bank"
+                )
+            self.conditional_core_mask = torch.zeros(
+                len(active_indices),
+                dtype=torch.bool,
+                device=self.landmarks.get_xyz.device,
+            )
+            self.conditional_core_mask[
+                torch.as_tensor(
+                    [active_lookup[int(index)] for index in core_indices],
+                    device=self.landmarks.get_xyz.device,
+                    dtype=torch.long,
+                )
+            ] = True
+            if self.dual_prototype_features is not None:
+                raise ValueError(
+                    "dual-prototype and conditional-reserve retrieval cannot "
+                    "be enabled in the same ablation"
                 )
 
         self.pair_scorer = None
@@ -2524,7 +2764,11 @@ class STDLoc:
         # attribute.  Preserve their detector-path behavior rather than
         # failing before sparse localization can run.
         sparse_frontend = getattr(self, "sparse_frontend", "detector")
-        if sparse_frontend in {"ulfloc_native", "ulfloc_native_rerank"}:
+        if sparse_frontend in {
+            "ulfloc_native",
+            "ulfloc_native_rerank",
+            "ulfloc_native_adapter",
+        }:
             sparse_result = self.loc_sparse_ulfloc_native(
                 query_image,
                 fovx,
@@ -3439,11 +3683,12 @@ class STDLoc:
         detect_num = int(self.config["sparse"].get("detect_num", 2048))
         frontend_start = clock()
         rerank_enabled = self.sparse_frontend == "ulfloc_native_rerank"
+        adapter_enabled = self.sparse_frontend == "ulfloc_native_adapter"
         sparse = self.feature_extractor.detectAndCompute(
             sparse_image, top_k=detect_num
         )[0]
         dense_feature_map = None
-        if rerank_enabled:
+        if rerank_enabled or adapter_enabled:
             dense_feature_map = self.feature_extractor.detectAndComputeDense(
                 sparse_image
             )[0][0]
@@ -3459,6 +3704,26 @@ class STDLoc:
             query_features = query_features[keep]
 
         height, width = map(int, sparse_image.shape[-2:])
+        adapter_residual_norm = 0.0
+        if adapter_enabled and query_features.numel() > 0:
+            local_context = pool_local_query_context(
+                dense_feature_map,
+                keypoints,
+                (height, width),
+                radius=int(
+                    self.config["sparse"].get("adapter_patch_radius", 2)
+                ),
+                step_px=float(
+                    self.config["sparse"].get("adapter_patch_step_px", 8.0)
+                ),
+            )
+            with torch.no_grad():
+                query_features, adapter_residual = self.local_context_adapter(
+                    query_features, local_context
+                )
+            adapter_residual_norm = float(
+                torch.linalg.norm(adapter_residual, dim=1).mean().item()
+            )
         mask_diagnostics = {
             "sparse_diag_valid_mask_enabled": float(input_mask is not None),
             "sparse_diag_valid_mask_input_keypoints": native_before_mask,
@@ -3487,6 +3752,9 @@ class STDLoc:
                 "sparse_diag_frontend_ulfloc_native": 1.0,
                 "sparse_diag_frontend_ulfloc_native_rerank": float(
                     rerank_enabled
+                ),
+                "sparse_diag_frontend_ulfloc_native_adapter": float(
+                    adapter_enabled
                 ),
             }
             result.update(mask_diagnostics)
@@ -3533,12 +3801,42 @@ class STDLoc:
             native_matchability_topk,
             diagnostic_topk,
         )
-        retrieval = chunked_exact_topk(
-            query_features,
-            landmark_features,
-            topk=retrieval_topk,
-            chunk_size=self.config["sparse"].get("full_primitive_chunk_size", 8192),
-        )
+        retrieval_args = {
+            "topk": retrieval_topk,
+            "chunk_size": self.config["sparse"].get(
+                "full_primitive_chunk_size", 8192
+            ),
+        }
+        conditional_ambiguous = None
+        conditional_core_margin = None
+        if self.conditional_core_mask is not None:
+            retrieval, conditional_ambiguous, conditional_core_margin = (
+                conditional_core_reserve_topk(
+                    query_features,
+                    landmark_features,
+                    self.conditional_core_mask,
+                    margin_threshold=float(
+                        self.config["sparse"].get(
+                            "conditional_reserve_margin_threshold", 0.01
+                        )
+                    ),
+                    **retrieval_args,
+                )
+            )
+        elif self.dual_prototype_features is None:
+            retrieval = chunked_exact_topk(
+                query_features,
+                landmark_features,
+                **retrieval_args,
+            )
+        else:
+            retrieval = chunked_exact_topk_dual_prototype(
+                query_features,
+                landmark_features,
+                self.dual_prototype_features,
+                self.dual_prototype_mask,
+                **retrieval_args,
+            )
         rerank_diagnostics = {
             "sparse_diag_native_rerank_enabled": float(rerank_enabled),
             "sparse_diag_native_rerank_topk": 0.0,
@@ -3547,7 +3845,33 @@ class STDLoc:
             "sparse_diag_native_rerank_local_margin_mean": 0.0,
             "sparse_diag_native_rerank_local_entropy_mean": 0.0,
             "sparse_diag_native_rerank_peak_offset_norm_mean": 0.0,
+            "sparse_diag_native_adapter_enabled": float(adapter_enabled),
+            "sparse_diag_native_adapter_residual_norm_mean": (
+                adapter_residual_norm
+            ),
+            "sparse_diag_native_dual_prototype_enabled": float(
+                self.dual_prototype_features is not None
+            ),
+            "sparse_diag_native_dual_prototype_anchor_fraction": float(
+                self.dual_prototype_mask.float().mean().item()
+                if self.dual_prototype_mask is not None
+                else 0.0
+            ),
+            "sparse_diag_native_conditional_reserve_enabled": float(
+                self.conditional_core_mask is not None
+            ),
+            "sparse_diag_native_conditional_reserve_query_fraction": float(
+                conditional_ambiguous.float().mean().item()
+                if conditional_ambiguous is not None
+                else 0.0
+            ),
+            "sparse_diag_native_conditional_core_margin_mean": float(
+                conditional_core_margin.mean().item()
+                if conditional_core_margin is not None
+                else 0.0
+            ),
         }
+        assignment_debug = None
         if rerank_enabled:
             rerank_topk = min(
                 int(self.config["sparse"].get("rerank_topk", 4)),
@@ -3616,6 +3940,30 @@ class STDLoc:
                         "rerank_assignment_global_preserve_scale", 0.0
                     )
                 ),
+                ambiguity_margin_threshold=float(
+                    self.config["sparse"].get(
+                        "rerank_ambiguity_margin_threshold",
+                        self.local_assignment_runtime_config.get(
+                            "ambiguity_margin_threshold", float("inf")
+                        ),
+                    )
+                ),
+                max_null_fraction=float(
+                    self.config["sparse"].get(
+                        "rerank_null_max_fraction", 1.0
+                    )
+                ),
+                null_grid_rows=int(
+                    self.config["sparse"].get("rerank_null_grid_rows", 0)
+                ),
+                null_grid_cols=int(
+                    self.config["sparse"].get("rerank_null_grid_cols", 0)
+                ),
+                null_min_kept_per_grid=int(
+                    self.config["sparse"].get(
+                        "rerank_null_min_kept_per_grid", 0
+                    )
+                ),
             )
             raw_keypoint_idx = torch.nonzero(
                 reranked.keep, as_tuple=False
@@ -3625,6 +3973,19 @@ class STDLoc:
                 reranked.landmark_idx[raw_keypoint_idx],
                 reranked.scores[raw_keypoint_idx],
             )
+            assignment_debug = {
+                "keypoint_xy": keypoints.detach().cpu().numpy(),
+                "topk_landmark_idx": retrieval.indices[:, :rerank_topk]
+                .detach()
+                .cpu()
+                .numpy(),
+                "selected_position": reranked.selected_position.detach()
+                .cpu()
+                .numpy(),
+                "null_selected": reranked.null_selected.detach()
+                .cpu()
+                .numpy(),
+            }
             rerank_diagnostics.update(
                 {
                     "sparse_diag_native_rerank_topk": float(rerank_topk),
@@ -3659,6 +4020,19 @@ class STDLoc:
                     ),
                     "sparse_diag_native_rerank_swap_ratio": float(
                         (reranked.selected_position != 0).float().mean().item()
+                    ),
+                    "sparse_diag_native_rerank_ambiguous_ratio": float(
+                        reranked.ambiguous.float().mean().item()
+                    ),
+                    "sparse_diag_native_rerank_global_margin_mean": float(
+                        reranked.global_margin[
+                            torch.isfinite(reranked.global_margin)
+                        ].mean().item()
+                        if bool(torch.isfinite(reranked.global_margin).any())
+                        else 0.0
+                    ),
+                    "sparse_diag_native_rerank_hard_protected_ratio": float(
+                        (~reranked.ambiguous).float().mean().item()
                     ),
                     "sparse_diag_native_rerank_assignment_global_preserve_scale": float(
                         self.config["sparse"].get(
@@ -3910,6 +4284,9 @@ class STDLoc:
             "sparse_diag_frontend_ulfloc_native_rerank": float(
                 rerank_enabled
             ),
+            "sparse_diag_frontend_ulfloc_native_adapter": float(
+                adapter_enabled
+            ),
             "sparse_diag_matches_before_landmark_limit": raw_match_count,
             "sparse_diag_matches_after_landmark_limit": int(matches.scores.numel()),
             "sparse_diag_max_matches_per_keypoint": max_matches_per_keypoint,
@@ -3989,6 +4366,10 @@ class STDLoc:
                 .cpu()
                 .numpy(),
             }
+            if assignment_debug is not None:
+                result["_debug_sparse_matches"][
+                    "one_of_k_assignment"
+                ] = assignment_debug
             if dump_discrete_oracle:
                 result["_debug_sparse_matches"]["discrete_oracle"] = {
                     "keypoint_xy": keypoints.detach().cpu().numpy(),
@@ -4317,6 +4698,14 @@ if __name__ == "__main__":
             "test/candidate-validation camera subset."
         ),
     )
+    parser.add_argument(
+        "--evaluation_camera_list_test_only",
+        action="store_true",
+        help=(
+            "Declare that an explicit camera list contains official test "
+            "images only, allowing the reader to skip mapping cameras."
+        ),
+    )
     parser.add_argument("--candidate_query_ratio", type=float, default=0.2)
     parser.add_argument("--candidate_validation_ratio", type=float, default=0.25)
     parser.add_argument(
@@ -4344,8 +4733,12 @@ if __name__ == "__main__":
     # test-image list".  An explicit camera list may intentionally target
     # train images (for example, to collect sparse priors for dense-field
     # training), so it must load the normal train/test split first.
-    args.eval = args.evaluation_camera_subset == "test" and not bool(
-        args.evaluation_camera_list
+    args.eval = (
+        args.evaluation_camera_subset == "test"
+        and (
+            not bool(args.evaluation_camera_list)
+            or bool(args.evaluation_camera_list_test_only)
+        )
     )
 
     results_root = os.environ.get("STDLOC_RESULTS_ROOT", "results")
@@ -4522,6 +4915,19 @@ if __name__ == "__main__":
         loc_res["sparse"]["sparse_valid_mask_source"] = evaluation_masks_path
         sparse_debug = loc_res["sparse"].pop("_debug_sparse_matches", None)
         if sparse_debug is not None:
+            if "one_of_k_assignment" in sparse_debug:
+                assignment_debug = sparse_debug["one_of_k_assignment"]
+                loc_res["sparse"].update(
+                    one_of_k_assignment_gt_diagnostics(
+                        assignment_debug["keypoint_xy"],
+                        assignment_debug["topk_landmark_idx"],
+                        assignment_debug["selected_position"],
+                        assignment_debug["null_selected"],
+                        sparse_debug["matchability_landmark_xyz"],
+                        sparse_debug["K"],
+                        gt_w2c,
+                    )
+                )
             if "matchability_keypoint_xy" in sparse_debug:
                 loc_res["sparse"].update(
                     sparse_matchability_diagnostics(

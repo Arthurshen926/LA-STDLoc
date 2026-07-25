@@ -3,6 +3,8 @@ import torch.nn.functional as F
 
 from localization_training.full_primitive_retrieval import (
     chunked_exact_topk,
+    chunked_exact_topk_dual_prototype,
+    conditional_core_reserve_topk,
     suppress_redundant_hypotheses,
 )
 
@@ -18,6 +20,41 @@ def test_chunked_exact_topk_matches_dense_cosine():
     assert torch.equal(result.indices, expected_indices)
     assert torch.allclose(result.scores, expected_scores, atol=1e-6)
     assert result.chunks == 4
+
+
+def test_dual_prototype_retrieval_uses_max_score_per_anchor():
+    query = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+    primary = torch.tensor([[1.0, 0.0], [-1.0, 0.0]])
+    secondary = torch.tensor([[0.0, 1.0], [0.0, -1.0]])
+    result = chunked_exact_topk_dual_prototype(
+        query,
+        primary,
+        secondary,
+        torch.tensor([True, False]),
+        topk=2,
+        chunk_size=1,
+    )
+    assert result.indices[:, 0].tolist() == [0, 0]
+    assert torch.allclose(result.scores[:, 0], torch.ones(2))
+
+
+def test_conditional_reserve_only_changes_ambiguous_core_rows():
+    query = torch.tensor([[1.0, 0.0], [0.7, 0.7]])
+    features = torch.tensor(
+        [[1.0, 0.0], [0.0, 1.0], [0.7, 0.7], [-1.0, 0.0]]
+    )
+    result, ambiguous, margin = conditional_core_reserve_topk(
+        query,
+        features,
+        torch.tensor([True, True, False, False]),
+        margin_threshold=0.1,
+        topk=2,
+        chunk_size=2,
+    )
+    assert ambiguous.tolist() == [False, True]
+    assert result.indices[0].tolist() == [0, 1]
+    assert result.indices[1, 0].item() == 2
+    assert margin[0] > margin[1]
 
 
 def test_surface_suppression_keeps_distinct_voxels_and_sources():
