@@ -17,9 +17,12 @@ def test_csr_best_positive_uses_all_positives():
     scores = torch.tensor([[0.1, 0.7, 0.4], [0.8, 0.2, 0.3]])
     offsets = torch.tensor([0, 2, 3])
     indices = torch.tensor([0, 1, 2])
-    best, valid = csr_best_positive_scores(scores, offsets, indices)
+    best, valid, best_indices = csr_best_positive_scores(
+        scores, offsets, indices
+    )
     torch.testing.assert_close(best, torch.tensor([0.7, 0.3]))
     assert valid.tolist() == [True, True]
+    assert best_indices.tolist() == [1, 2]
 
 
 def test_rank_budget_reports_exact_recall_and_bands():
@@ -61,6 +64,7 @@ def test_rank_budget_ignores_near_ambiguous_landmark():
         negative_radius_px=6.0,
     )
     assert result.ranks.item() == 1
+    assert result.strict_ranks.item() == 2
 
 
 def test_rank_budget_empty_positive_rows_are_excluded():

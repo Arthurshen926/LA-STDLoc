@@ -72,11 +72,38 @@ def _native_args(**overrides):
         "retrieval_weight": 1.0,
         "trust_weight": 0.02,
         "native_outcome_mode": True,
+        "native_rank_budget_mode": False,
+        "native_rank_stage_a_steps": 0,
+        "native_rank_steps": 1,
         "objective": "hard",
         "native_sampling_mode": "detector_grid",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_native_rank_can_alternate_with_stage_a():
+    args = _native_args(
+        native_rank_budget_mode=True,
+        native_rank_stage_a_steps=4,
+        native_rank_steps=1,
+        native_rank_temperature=0.03,
+        native_rank_margin_at1=0.02,
+        native_rank_margin_at4=0.02,
+        native_rank_margin_at8=0.02,
+        native_rank_margin_at32=0.02,
+        native_rank_top1_weight=0.25,
+        native_rank_keep_weight=1.0,
+        native_rank_reference_clean_weight=0.0,
+        native_rank_reference_clean_margin=0.02,
+        native_rank_band_rank1=0.25,
+        native_rank_band_rank2_4=0.25,
+        native_rank_band_rank5_32=0.30,
+        native_rank_band_rank33_plus=0.20,
+        max_residual_norm=0.05,
+    )
+
+    _validate_native_objective_semantics(args)
 
 
 def test_pure_native_contract_records_effective_zero_anchor_losses():

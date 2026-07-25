@@ -56,7 +56,12 @@ from localization_training.landmark_distill import (
 )
 from localization_training.hard_candidate_teacher import (
     HardCandidateTeacherCache,
+    derive_hard_candidate_targets,
     hard_candidate_preservation_loss,
+)
+from localization_training.functional_replay import (
+    per_landmark_gradient_conflict,
+    protected_functional_replay_loss,
 )
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
@@ -1077,6 +1082,219 @@ def _primary_observations(
     return observations, anchor_auxiliary
 
 
+def _build_functional_replay_bank(
+    reference_features,
+    train_names,
+    cache,
+    bank_xyz,
+    args,
+    *,
+    visibility_cache=None,
+    base_bank_xyz=None,
+):
+    """Freeze deployment behavior from every training query for later replay."""
+    topm = min(int(args.functional_replay_topm), int(reference_features.shape[0]))
+    rows_per_query = int(args.functional_replay_rows_per_query)
+    query_features = []
+    protected_ids = []
+    candidate_ids = []
+    candidate_logits = []
+    reference_margins = []
+    importance = []
+    core_masks = []
+    query_indices = []
+    diagnostics = {
+        "functional_replay_source_query_count": 0.0,
+        "functional_replay_source_clean_count": 0.0,
+        "functional_replay_source_core_count": 0.0,
+        "functional_replay_source_selected_count": 0.0,
+    }
+    reference_bank = F.normalize(reference_features.detach(), dim=1)
+    for query_index, query_name in enumerate(
+        tqdm(train_names, desc="Functional replay bank")
+    ):
+        observations, _ = _primary_observations(
+            cache[query_name],
+            bank_xyz,
+            args,
+            max_observations=args.max_observations,
+            bank_visibility_mask=(
+                None
+                if visibility_cache is None
+                else visibility_cache[query_name]
+            ),
+            prediction_bank_xyz=(
+                bank_xyz if base_bank_xyz is None else bank_xyz
+            ),
+        )
+        if observations.query_features.numel() == 0:
+            continue
+        normalized_query = F.normalize(
+            observations.query_features.detach(), dim=1
+        )
+        scores = normalized_query @ reference_bank.T
+        top_logits, top_indices = torch.topk(scores, k=topm, dim=1)
+        top1 = top_indices[:, 0]
+        top1_distance = torch.linalg.norm(
+            observations.bank_uv[top1] - observations.query_uv, dim=1
+        )
+        top1_correct = observations.bank_visible[top1] & (
+            top1_distance <= float(args.positive_radius_px)
+        )
+        clean_rows = torch.nonzero(top1_correct, as_tuple=False).reshape(-1)
+        diagnostics["functional_replay_source_query_count"] += 1.0
+        diagnostics["functional_replay_source_clean_count"] += float(
+            clean_rows.numel()
+        )
+        if clean_rows.numel() == 0:
+            continue
+
+        core_weights = scores.new_zeros(scores.shape[0])
+        if bool(args.functional_replay_build_pnp_core):
+            projected = observations.bank_projected[top1]
+            neutral = (
+                ~top1_correct
+                & projected
+                & (top1_distance < float(args.negative_radius_px))
+            )
+            row_ids = torch.arange(
+                scores.shape[0], device=scores.device, dtype=torch.long
+            )
+            targets = derive_hard_candidate_targets(
+                keypoint_xy=observations.query_uv,
+                keypoint_ids=row_ids,
+                candidate_keypoint_idx=row_ids,
+                candidate_landmark_idx=top1.detach(),
+                candidate_scores=top_logits[:, 0].detach(),
+                deployment_mask=torch.ones_like(row_ids, dtype=torch.bool),
+                gt_correct_mask=top1_correct.detach(),
+                gt_neutral_mask=neutral.detach(),
+                landmark_xyz=bank_xyz.detach(),
+                K=observations.K,
+                pose_gt_w2c=observations.pose_w2c,
+                solver="poselib",
+                reprojection_error=float(
+                    args.functional_replay_ransac_reprojection_px
+                ),
+                confidence=0.99999,
+                max_iterations=int(
+                    args.functional_replay_ransac_max_iterations
+                ),
+                min_iterations=int(
+                    args.functional_replay_ransac_min_iterations
+                ),
+                ransac_seed=int(args.train_seed),
+                min_inliers=4,
+                max_pose_error_cm=float(
+                    args.functional_replay_max_pose_error_cm
+                ),
+                max_useful=int(
+                    args.functional_replay_core_rows_per_query
+                ),
+                max_harmful=0,
+                useful_grid_rows=int(args.functional_replay_grid_rows),
+                useful_grid_cols=int(args.functional_replay_grid_cols),
+                useful_depth_bins=int(args.functional_replay_depth_bins),
+                useful_surface_voxel_m=float(
+                    args.functional_replay_surface_voxel_m
+                ),
+                useful_max_per_surface_group=int(
+                    args.functional_replay_max_per_surface_group
+                ),
+                harmful_mode="all_false",
+            )
+            core_weights = targets.useful_weights.detach()
+
+        core_rows = torch.nonzero(
+            (core_weights > 0.0) & top1_correct, as_tuple=False
+        ).reshape(-1)
+        margins = top_logits[:, 0] - top_logits[:, 1]
+        # Core rows are always retained. Remaining capacity protects the
+        # narrowest clean margins, which are the first to flip under rank
+        # promotion.
+        selected = core_rows
+        if selected.numel() > rows_per_query:
+            order = torch.argsort(
+                core_weights[selected], descending=True, stable=True
+            )
+            selected = selected[order[:rows_per_query]]
+        remaining = rows_per_query - int(selected.numel())
+        if remaining > 0:
+            noncore_clean = clean_rows[core_weights[clean_rows] <= 0.0]
+            if noncore_clean.numel() > 0:
+                order = torch.argsort(
+                    margins[noncore_clean], descending=False, stable=True
+                )
+                selected = torch.cat(
+                    [selected, noncore_clean[order[:remaining]]]
+                )
+        if selected.numel() == 0:
+            continue
+        selected_core = core_weights[selected] > 0.0
+        selected_importance = torch.ones_like(margins[selected])
+        selected_importance[selected_core] += float(
+            args.functional_replay_pnp_core_weight
+        ) * core_weights[selected][selected_core]
+        query_features.append(normalized_query[selected].cpu())
+        protected_ids.append(top1[selected].cpu())
+        candidate_ids.append(top_indices[selected].cpu())
+        candidate_logits.append(top_logits[selected].cpu())
+        reference_margins.append(margins[selected].cpu())
+        importance.append(selected_importance.cpu())
+        core_masks.append(selected_core.cpu())
+        query_indices.append(
+            torch.full(
+                (selected.numel(),), query_index, dtype=torch.long
+            )
+        )
+        diagnostics["functional_replay_source_core_count"] += float(
+            selected_core.sum().item()
+        )
+        diagnostics["functional_replay_source_selected_count"] += float(
+            selected.numel()
+        )
+
+    if not query_features:
+        raise RuntimeError(
+            "Functional replay requested but no GT-clean deployment rows were found"
+        )
+    return {
+        "version": 1,
+        "split": "all_train",
+        "train_camera_names": list(train_names),
+        "query_features": torch.cat(query_features),
+        "protected_landmark_indices": torch.cat(protected_ids),
+        "reference_candidate_indices": torch.cat(candidate_ids),
+        "reference_candidate_logits": torch.cat(candidate_logits),
+        "reference_margins": torch.cat(reference_margins),
+        "importance": torch.cat(importance),
+        "pnp_core_mask": torch.cat(core_masks),
+        "query_indices": torch.cat(query_indices),
+        "diagnostics": diagnostics,
+    }
+
+
+def _sample_functional_replay(replay_bank, batch_size, generator, device):
+    count = int(replay_bank["query_features"].shape[0])
+    sample_count = min(int(batch_size), count)
+    indices = torch.randint(
+        count, (sample_count,), generator=generator, device="cpu"
+    )
+    keys = (
+        "query_features",
+        "protected_landmark_indices",
+        "reference_candidate_indices",
+        "reference_candidate_logits",
+        "reference_margins",
+        "importance",
+        "pnp_core_mask",
+    )
+    return {
+        key: replay_bank[key][indices].to(device=device, non_blocking=True)
+        for key in keys
+    }
+
+
 def _native_anchor_auxiliary_scale(args):
     """Return the configured scale for projection-anchor-only losses."""
     source = str(args.observation_source)
@@ -1101,7 +1319,13 @@ def _native_auxiliary_contract(args):
         "observation_source": source,
         "objective": str(args.objective),
         "native_outcome_mode": bool(args.native_outcome_mode),
-        "native_rank_budget_mode": bool(args.native_rank_budget_mode),
+        "native_rank_budget_mode": bool(
+            getattr(args, "native_rank_budget_mode", False)
+        ),
+        "native_rank_stage_a_steps": int(
+            getattr(args, "native_rank_stage_a_steps", 0)
+        ),
+        "native_rank_steps": int(getattr(args, "native_rank_steps", 1)),
         "native_sampling_mode": str(args.native_sampling_mode),
         "anchor_auxiliary_scale": anchor_scale,
         "anchor_auxiliary_observations_enabled": source == "native_plus_anchor",
@@ -1142,11 +1366,18 @@ def _validate_native_objective_semantics(args):
         if not math.isfinite(value):
             raise ValueError(f"{name} must be finite for native supervision")
 
-    if bool(args.native_rank_budget_mode):
-        if bool(args.native_outcome_mode):
+    native_rank_budget_mode = bool(
+        getattr(args, "native_rank_budget_mode", False)
+    )
+    native_rank_stage_a_steps = int(
+        getattr(args, "native_rank_stage_a_steps", 0)
+    )
+    native_rank_steps = int(getattr(args, "native_rank_steps", 1))
+    if native_rank_budget_mode:
+        if bool(args.native_outcome_mode) and native_rank_stage_a_steps <= 0:
             raise ValueError(
                 "native_rank_budget_mode replaces rather than augments "
-                "native_outcome_mode"
+                "native_outcome_mode unless rank/Stage-A alternation is enabled"
             )
         if str(args.objective) != "hard":
             raise ValueError("native_rank_budget_mode requires --objective hard")
@@ -1174,6 +1405,10 @@ def _validate_native_objective_semantics(args):
             raise ValueError("native rank margins, weights, and quotas must be finite and non-negative")
         if sum(rank_values[-4:]) <= 0.0:
             raise ValueError("native rank band quotas must have a positive sum")
+        if native_rank_stage_a_steps < 0:
+            raise ValueError("native_rank_stage_a_steps must be non-negative")
+        if native_rank_steps <= 0:
+            raise ValueError("native_rank_steps must be positive")
         if (
             float(args.native_rank_reference_clean_weight) > 0.0
             and float(args.trust_weight) <= 0.0
@@ -1182,6 +1417,40 @@ def _validate_native_objective_semantics(args):
             raise ValueError(
                 "reference-clean rank protection requires descriptor trust "
                 "or a positive residual norm cap"
+            )
+    functional_replay_weight = float(
+        getattr(args, "functional_replay_weight", 0.0)
+    )
+    if functional_replay_weight < 0.0 or not math.isfinite(
+        functional_replay_weight
+    ):
+        raise ValueError("functional_replay_weight must be finite and non-negative")
+    if functional_replay_weight > 0.0:
+        if str(args.objective) != "hard":
+            raise ValueError("functional replay requires --objective hard")
+        if int(getattr(args, "functional_replay_topm", 64)) < 2:
+            raise ValueError("functional_replay_topm must be at least two")
+        if int(getattr(args, "functional_replay_rows_per_query", 64)) <= 0:
+            raise ValueError(
+                "functional_replay_rows_per_query must be positive"
+            )
+        core_rows = int(
+            getattr(args, "functional_replay_core_rows_per_query", 16)
+        )
+        if core_rows <= 0 or core_rows > int(
+            getattr(args, "functional_replay_rows_per_query", 64)
+        ):
+            raise ValueError(
+                "functional_replay_core_rows_per_query must be positive and "
+                "not exceed functional_replay_rows_per_query"
+            )
+        if int(getattr(args, "functional_replay_batch_size", 256)) <= 0:
+            raise ValueError("functional_replay_batch_size must be positive")
+        if float(getattr(args, "functional_replay_temperature", 0.05)) <= 0.0:
+            raise ValueError("functional_replay_temperature must be positive")
+        if float(getattr(args, "functional_replay_margin_slack", 0.005)) < 0.0:
+            raise ValueError(
+                "functional_replay_margin_slack must be non-negative"
             )
 
     if bool(args.native_outcome_mode):
@@ -1232,7 +1501,7 @@ def _validate_native_objective_semantics(args):
             )
         if (
             not bool(args.native_outcome_mode)
-            and not bool(args.native_rank_budget_mode)
+            and not native_rank_budget_mode
             and float(args.retrieval_weight) != 0.0
         ):
             raise ValueError(
@@ -5288,6 +5557,8 @@ def _state_config(
         "unmatched_max_similarity": float(args.unmatched_max_similarity),
         "native_outcome_mode": bool(args.native_outcome_mode),
         "native_rank_budget_mode": bool(args.native_rank_budget_mode),
+        "native_rank_stage_a_steps": int(args.native_rank_stage_a_steps),
+        "native_rank_steps": int(args.native_rank_steps),
         "native_rank_temperature": float(args.native_rank_temperature),
         "native_rank_margins": {
             "at1": float(args.native_rank_margin_at1),
@@ -6122,6 +6393,78 @@ def train(dataset, args):
             else None
         ),
     )
+    functional_replay_bank = None
+    functional_replay_rng = torch.Generator(device="cpu")
+    functional_replay_rng.manual_seed(int(args.train_seed) + 17041)
+    if float(args.functional_replay_weight) > 0.0:
+        replay_path = (
+            Path(args.functional_replay_cache_path).expanduser().resolve()
+            if str(args.functional_replay_cache_path).strip()
+            else output_dir / "functional_replay_bank.pt"
+        )
+        if replay_path.exists():
+            functional_replay_bank = torch.load(
+                replay_path, map_location="cpu"
+            )
+            expected_names = list(train_names)
+            if functional_replay_bank.get("train_camera_names") != expected_names:
+                raise ValueError(
+                    "Functional replay cache train-camera contract does not "
+                    "match the current all-train split"
+                )
+            if int(
+                functional_replay_bank["reference_candidate_indices"].shape[1]
+            ) != int(args.functional_replay_topm):
+                raise ValueError(
+                    "Functional replay cache top-M does not match "
+                    "--functional_replay_topm"
+                )
+        else:
+            replay_path.parent.mkdir(parents=True, exist_ok=True)
+            functional_replay_bank = _build_functional_replay_bank(
+                initial_features,
+                train_names,
+                cache,
+                initial_xyz,
+                args,
+                visibility_cache=visibility_cache,
+                base_bank_xyz=base_bank_xyz,
+            )
+            torch.save(functional_replay_bank, replay_path)
+        replay_diagnostics = dict(
+            functional_replay_bank.get("diagnostics", {})
+        )
+        config["functional_replay"] = {
+            "enabled": True,
+            "path": str(replay_path),
+            "row_count": int(
+                functional_replay_bank["query_features"].shape[0]
+            ),
+            "core_rows_per_query": int(
+                args.functional_replay_core_rows_per_query
+            ),
+            "weight": float(args.functional_replay_weight),
+            "batch_size": int(args.functional_replay_batch_size),
+            "topm": int(args.functional_replay_topm),
+            "temperature": float(args.functional_replay_temperature),
+            "margin_slack": float(args.functional_replay_margin_slack),
+            "distribution_weight": float(
+                args.functional_replay_distribution_weight
+            ),
+            "pnp_core_weight": float(
+                args.functional_replay_pnp_core_weight
+            ),
+            "build_pnp_core": bool(
+                args.functional_replay_build_pnp_core
+            ),
+            "gradient_projection": bool(
+                args.functional_replay_gradient_projection
+            ),
+            **replay_diagnostics,
+        }
+    else:
+        replay_diagnostics = {}
+        config["functional_replay"] = {"enabled": False}
     initial_validation = _validate_descriptor_field(
         initial_features,
         validation_names,
@@ -6142,6 +6485,7 @@ def train(dataset, args):
             **mvinit_diagnostics,
             **geometry_support_diagnostics,
             **native_global_attractor_diagnostics,
+            **replay_diagnostics,
             **initial_validation,
         },
         mvinit_observation_count,
@@ -6315,6 +6659,24 @@ def train(dataset, args):
             retrieval_loss = retrieval.loss
             retrieval_diagnostics = retrieval.diagnostics
         elif args.objective == "hard":
+            step_native_loss_kwargs = dict(native_loss_kwargs)
+            if (
+                bool(args.native_rank_budget_mode)
+                and bool(args.native_outcome_mode)
+                and int(args.native_rank_stage_a_steps) > 0
+            ):
+                alternation_period = (
+                    int(args.native_rank_stage_a_steps)
+                    + int(args.native_rank_steps)
+                )
+                rank_step = (
+                    (step - 1) % alternation_period
+                    >= int(args.native_rank_stage_a_steps)
+                )
+                step_native_loss_kwargs["native_rank_budget_mode"] = rank_step
+                step_native_loss_kwargs["native_outcome_mode"] = not rank_step
+            else:
+                rank_step = bool(args.native_rank_budget_mode)
             retrieval = hard_hypothesis_retrieval_loss(
                 features,
                 retrieval_observations,
@@ -6328,10 +6690,14 @@ def train(dataset, args):
                 unmatched_rejection_weight=args.unmatched_rejection_weight,
                 unmatched_max_similarity=args.unmatched_max_similarity,
                 dustbin_score=dustbin_score,
-                **native_loss_kwargs,
+                **step_native_loss_kwargs,
             )
             retrieval_loss = retrieval.loss
-            retrieval_diagnostics = retrieval.diagnostics
+            retrieval_diagnostics = {
+                **retrieval.diagnostics,
+                "native_rank_alternation_rank_step": float(rank_step),
+                "native_rank_alternation_stage_a_step": float(not rank_step),
+            }
         else:
             raise ValueError(f"Unknown objective: {args.objective}")
         if (
@@ -6367,6 +6733,48 @@ def train(dataset, args):
             initial_features,
             weights=trust_weights,
         )
+        if descriptor_active and functional_replay_bank is not None:
+            replay_batch = _sample_functional_replay(
+                functional_replay_bank,
+                args.functional_replay_batch_size,
+                functional_replay_rng,
+                features.device,
+            )
+            functional_replay = protected_functional_replay_loss(
+                features,
+                replay_batch["query_features"],
+                replay_batch["protected_landmark_indices"],
+                replay_batch["reference_candidate_indices"],
+                replay_batch["reference_candidate_logits"],
+                replay_batch["reference_margins"],
+                importance=replay_batch["importance"],
+                temperature=args.functional_replay_temperature,
+                margin_slack=args.functional_replay_margin_slack,
+                distribution_weight=(
+                    args.functional_replay_distribution_weight
+                ),
+            )
+            functional_replay_loss = functional_replay.loss
+            core_mask = replay_batch["pnp_core_mask"].bool()
+            core_retention = (
+                functional_replay.retained[core_mask].float().mean()
+                if bool(core_mask.any().item())
+                else functional_replay_loss.new_tensor(0.0)
+            )
+            functional_replay_diagnostics = {
+                **functional_replay.diagnostics,
+                "functional_replay_core_row_count": float(
+                    core_mask.sum().item()
+                ),
+                "functional_replay_core_retention": float(
+                    core_retention.detach().item()
+                ),
+            }
+        else:
+            functional_replay_loss = features.sum() * 0.0
+            functional_replay_diagnostics = {
+                "functional_replay_active": 0.0
+            }
         protected_set_active = (
             descriptor_active
             and protected_set_teacher is not None
@@ -6745,6 +7153,8 @@ def train(dataset, args):
                 * args.native_semidense_weight
                 * native_semidense_loss
                 + args.trust_weight * trust_loss
+                + args.functional_replay_weight
+                * functional_replay_loss
                 + args.native_protected_set_weight
                 * protected_set_loss
                 + args.dustbin_weight * dustbin_loss
@@ -6761,8 +7171,73 @@ def train(dataset, args):
         )
         loss_finite = bool(torch.isfinite(loss.detach()).item())
         optimizer.zero_grad(set_to_none=True)
+        replay_projection_diagnostics = {
+            "functional_replay_gradient_projection_active": 0.0,
+            "functional_replay_gradient_conflict_landmarks": 0.0,
+            "functional_replay_gradient_conflict_fraction": 0.0,
+        }
+        promotion_gradient = None
+        protection_gradient = None
+        replay_projection_active = bool(
+            loss_finite
+            and descriptor_active
+            and functional_replay_bank is not None
+            and args.functional_replay_gradient_projection
+        )
+        if replay_projection_active:
+            protection_term = (
+                descriptor_scale
+                * args.functional_replay_weight
+                * functional_replay_loss
+            )
+            promotion_gradient = torch.autograd.grad(
+                loss - protection_term,
+                residual,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
+            protection_gradient = torch.autograd.grad(
+                protection_term,
+                residual,
+                retain_graph=True,
+                allow_unused=True,
+            )[0]
         if loss_finite:
             loss.backward()
+        if (
+            replay_projection_active
+            and promotion_gradient is not None
+            and protection_gradient is not None
+        ):
+            projected_gradient, conflict_mask = (
+                per_landmark_gradient_conflict(
+                    promotion_gradient.detach(),
+                    protection_gradient.detach(),
+                )
+            )
+            combined_gradient = projected_gradient + protection_gradient
+            if residual.grad is None:
+                residual.grad = combined_gradient
+            else:
+                residual.grad.copy_(combined_gradient)
+            protection_active_landmarks = (
+                protection_gradient.detach().reshape(
+                    protection_gradient.shape[0], -1
+                ).square().sum(dim=1) > 1e-20
+            )
+            conflict_count = int(conflict_mask.sum().item())
+            replay_projection_diagnostics = {
+                "functional_replay_gradient_projection_active": 1.0,
+                "functional_replay_gradient_conflict_landmarks": float(
+                    conflict_count
+                ),
+                "functional_replay_gradient_conflict_fraction": float(
+                    conflict_count
+                    / max(
+                        int(protection_active_landmarks.sum().item()), 1
+                    )
+                ),
+            }
         descriptor_update_active = bool(descriptor_active) or (
             pose_active and str(args.pose_gradient_mode) == "feature"
         )
@@ -6841,6 +7316,9 @@ def train(dataset, args):
                 native_semidense_loss.detach().item()
             ),
             "trust_loss": float(trust_loss.detach().item()),
+            "functional_replay_loss": float(
+                functional_replay_loss.detach().item()
+            ),
             "native_protected_set_loss": float(
                 protected_set_loss.detach().item()
             ),
@@ -6931,6 +7409,8 @@ def train(dataset, args):
             **local_diagnostics,
             **native_semidense_diagnostics,
             **protected_set_diagnostics,
+            **functional_replay_diagnostics,
+            **replay_projection_diagnostics,
             **semidense_gradient_diagnostics,
             **dustbin_diagnostics,
             **geometry_diagnostics,
@@ -7552,6 +8032,57 @@ def build_parser():
     parser.add_argument("--mv_weight", type=float, default=1.0)
     parser.add_argument("--retrieval_weight", type=float, default=0.5)
     parser.add_argument("--trust_weight", type=float, default=0.02)
+    parser.add_argument("--functional_replay_weight", type=float, default=0.0)
+    parser.add_argument("--functional_replay_cache_path", default="")
+    parser.add_argument(
+        "--functional_replay_rows_per_query", type=int, default=64
+    )
+    parser.add_argument(
+        "--functional_replay_core_rows_per_query", type=int, default=16
+    )
+    parser.add_argument("--functional_replay_batch_size", type=int, default=256)
+    parser.add_argument("--functional_replay_topm", type=int, default=64)
+    parser.add_argument(
+        "--functional_replay_temperature", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--functional_replay_margin_slack", type=float, default=0.005
+    )
+    parser.add_argument(
+        "--functional_replay_distribution_weight", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--functional_replay_pnp_core_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--functional_replay_build_pnp_core", action="store_true"
+    )
+    parser.add_argument(
+        "--functional_replay_gradient_projection", action="store_true"
+    )
+    parser.add_argument("--functional_replay_grid_rows", type=int, default=4)
+    parser.add_argument("--functional_replay_grid_cols", type=int, default=4)
+    parser.add_argument("--functional_replay_depth_bins", type=int, default=4)
+    parser.add_argument(
+        "--functional_replay_surface_voxel_m", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--functional_replay_max_per_surface_group", type=int, default=4
+    )
+    parser.add_argument(
+        "--functional_replay_ransac_reprojection_px",
+        type=float,
+        default=12.0,
+    )
+    parser.add_argument(
+        "--functional_replay_ransac_max_iterations", type=int, default=100000
+    )
+    parser.add_argument(
+        "--functional_replay_ransac_min_iterations", type=int, default=1000
+    )
+    parser.add_argument(
+        "--functional_replay_max_pose_error_cm", type=float, default=100.0
+    )
     parser.add_argument("--trust_observation_power", type=float, default=0.5)
     parser.add_argument("--trust_weight_min", type=float, default=0.25)
     parser.add_argument("--trust_weight_max", type=float, default=4.0)
@@ -7815,6 +8346,21 @@ def build_parser():
             "Replace the native residual objective with exact multi-positive "
             "rank-budget curriculum supervision."
         ),
+    )
+    parser.add_argument(
+        "--native_rank_stage_a_steps",
+        type=int,
+        default=0,
+        help=(
+            "When rank and native outcome modes are both enabled, run this "
+            "many Stage-A steps before each rank block."
+        ),
+    )
+    parser.add_argument(
+        "--native_rank_steps",
+        type=int,
+        default=1,
+        help="Rank-promotion steps per Stage-A/rank alternation period.",
     )
     parser.add_argument("--native_rank_temperature", type=float, default=0.03)
     parser.add_argument("--native_rank_margin_at1", type=float, default=0.02)

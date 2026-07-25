@@ -3031,6 +3031,7 @@ def hard_hypothesis_retrieval_loss(
             query_uv=observations.query_uv,
             bank_uv=observations.bank_uv,
             bank_projected=observations.bank_projected,
+            bank_visible=observations.bank_visible,
             negative_radius_px=negative_radius_px,
             margins=native_rank_margins,
             temperature=native_rank_temperature,
