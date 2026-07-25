@@ -102,6 +102,88 @@ def chunked_exact_topk_dual_prototype(
     )
 
 
+def chunked_exact_topk_with_bias(
+    query_features,
+    map_features,
+    map_bias,
+    topk=1,
+    chunk_size=8192,
+):
+    """Exact cosine top-k with one query-global additive map bias."""
+    map_bias = torch.as_tensor(
+        map_bias, device=map_features.device, dtype=torch.float32
+    ).reshape(-1)
+    if map_bias.numel() != map_features.shape[0]:
+        raise ValueError("map_bias must have one value per map anchor")
+    if query_features.ndim != 2 or map_features.ndim != 2:
+        raise ValueError("query_features and map_features must be 2D")
+    count = int(map_features.shape[0])
+    topk = min(max(int(topk), 1), count)
+    chunk_size = max(int(chunk_size), topk)
+    query = F.normalize(query_features.float(), dim=1)
+    best_scores = query.new_full((query.shape[0], topk), -torch.inf)
+    best_indices = torch.zeros(
+        (query.shape[0], topk), dtype=torch.long, device=query.device
+    )
+    start_time = time.perf_counter()
+    for start in range(0, count, chunk_size):
+        stop = min(start + chunk_size, count)
+        features = F.normalize(map_features[start:stop].float(), dim=1)
+        scores = query @ features.T
+        scores = scores + map_bias[start:stop][None]
+        indices = torch.arange(
+            start, stop, device=query.device, dtype=torch.long
+        )[None].expand(query.shape[0], -1)
+        merged_scores = torch.cat([best_scores, scores], dim=1)
+        merged_indices = torch.cat([best_indices, indices], dim=1)
+        best_scores, positions = torch.topk(merged_scores, topk, dim=1)
+        best_indices = torch.gather(merged_indices, 1, positions)
+    return RetrievalResult(
+        best_scores,
+        best_indices,
+        (time.perf_counter() - start_time) * 1000.0,
+        int(math.ceil(count / chunk_size)),
+    )
+
+
+def ambiguity_gated_context_topk(
+    query_features,
+    map_features,
+    map_bias,
+    *,
+    margin_threshold,
+    topk=1,
+    chunk_size=8192,
+):
+    """Apply query context only to rows ambiguous under raw cosine."""
+    baseline = chunked_exact_topk(
+        query_features,
+        map_features,
+        topk=max(int(topk), 2),
+        chunk_size=chunk_size,
+    )
+    margin = baseline.scores[:, 0] - baseline.scores[:, 1]
+    ambiguous = margin < float(margin_threshold)
+    output_topk = min(max(int(topk), 1), int(map_features.shape[0]))
+    scores = baseline.scores[:, :output_topk].clone()
+    indices = baseline.indices[:, :output_topk].clone()
+    elapsed_ms = baseline.elapsed_ms
+    chunks = baseline.chunks
+    if bool(ambiguous.any().item()):
+        contextual = chunked_exact_topk_with_bias(
+            query_features[ambiguous],
+            map_features,
+            map_bias,
+            topk=output_topk,
+            chunk_size=chunk_size,
+        )
+        scores[ambiguous] = contextual.scores
+        indices[ambiguous] = contextual.indices
+        elapsed_ms += contextual.elapsed_ms
+        chunks += contextual.chunks
+    return RetrievalResult(scores, indices, elapsed_ms, chunks), ambiguous, margin
+
+
 def conditional_core_reserve_topk(
     query_features,
     map_features,

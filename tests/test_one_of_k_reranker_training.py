@@ -8,6 +8,7 @@ from scripts.train_one_of_k_reranker import (
     normalized_landmark_statistics,
     summarize_assignment_counts,
 )
+from scripts.distill_one_of_k_to_field import load_teacher_head
 
 
 def test_multi_positive_assignment_accepts_any_positive_and_null():
@@ -60,6 +61,29 @@ def test_global_skip_preserves_cosine_order_at_initialization():
     logits, _ = head(features)
     assert logits.argmax(dim=1).item() == 0
     assert torch.allclose(logits[0], torch.tensor([8.0, 6.0]))
+
+
+def test_distillation_teacher_reload_has_exact_logit_parity():
+    torch.manual_seed(9)
+    original = OneOfKAssignmentHead(
+        hidden_dim=7,
+        feature_dim=6,
+        global_skip_scale=3.0,
+        bounded_residual_max=0.03,
+        logit_temperature=0.7,
+        null_temperature=1.4,
+        null_bias=-0.25,
+    )
+    state = {
+        "head_config": original.export_config(),
+        "head_state_dict": original.state_dict(),
+    }
+    reloaded = load_teacher_head(state)
+    features = torch.randn(11, 4, 6)
+    expected = original(features)
+    actual = reloaded(features)
+    assert torch.equal(expected[0], actual[0])
+    assert torch.equal(expected[1], actual[1])
 
 
 def test_landmark_statistics_are_id_aligned_and_bounded(tmp_path):

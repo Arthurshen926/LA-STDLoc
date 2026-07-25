@@ -28,8 +28,9 @@ def collect_clean_observations(cache, visibility, bank_xyz, maximum):
         native_unmatched_fraction=0.5,
         native_sampling_mode="detector_grid",
     )
-    source_parts = []
     feature_parts = []
+    positive_count_parts = []
+    positive_index_parts = []
     for name in tqdm(
         sorted(set(cache) & set(visibility)), desc="Prototype observations"
     ):
@@ -41,17 +42,83 @@ def collect_clean_observations(cache, visibility, bank_xyz, maximum):
             bank_visibility_mask=visibility[name].cuda(),
             prediction_bank_xyz=bank_xyz,
         )
-        clean = observations.source_indices >= 0
+        offsets = observations.positive_offsets
+        counts = offsets[1:] - offsets[:-1]
+        clean = counts > 0
         if bool(clean.any().item()):
-            source_parts.append(observations.source_indices[clean].cpu())
             feature_parts.append(
                 F.normalize(observations.query_features[clean], dim=1)
                 .half()
                 .cpu()
             )
-    if not source_parts:
+            positive_count_parts.append(counts[clean].cpu())
+            positive_index_parts.append(
+                observations.positive_indices.cpu()
+            )
+    if not feature_parts:
         raise RuntimeError("no GT-clean native observations were found")
-    return torch.cat(source_parts), torch.cat(feature_parts).float()
+    counts = torch.cat(positive_count_parts)
+    offsets = torch.cat(
+        [counts.new_zeros(1), counts.cumsum(dim=0)]
+    )
+    return (
+        torch.cat(feature_parts).float(),
+        offsets,
+        torch.cat(positive_index_parts),
+    )
+
+
+def csr_candidate_membership(
+    candidate_indices,
+    row_ids,
+    positive_offsets,
+    positive_indices,
+    landmark_count,
+):
+    candidate_indices = torch.as_tensor(candidate_indices)
+    positive_offsets = torch.as_tensor(
+        positive_offsets,
+        device=candidate_indices.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    positive_indices = torch.as_tensor(
+        positive_indices,
+        device=candidate_indices.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    row_ids = torch.as_tensor(
+        row_ids, device=candidate_indices.device, dtype=torch.long
+    ).reshape(-1)
+    if candidate_indices.ndim == 1:
+        candidate_indices = candidate_indices[:, None]
+        squeeze = True
+    else:
+        squeeze = False
+    counts = positive_offsets[1:] - positive_offsets[:-1]
+    positive_rows = torch.repeat_interleave(
+        torch.arange(
+            counts.numel(), device=candidate_indices.device, dtype=torch.long
+        ),
+        counts,
+    )
+    positive_keys = (
+        positive_rows * int(landmark_count) + positive_indices
+    )
+    candidate_keys = (
+        row_ids[:, None] * int(landmark_count) + candidate_indices
+    )
+    result = torch.isin(candidate_keys, positive_keys)
+    return result[:, 0] if squeeze else result
+
+
+def sampled_row_ids(row_count, maximum_rows, device):
+    rows = torch.arange(row_count, device=device, dtype=torch.long)
+    if int(maximum_rows) > 0 and row_count > int(maximum_rows):
+        generator = torch.Generator(device=device).manual_seed(2026)
+        rows = torch.randperm(
+            row_count, generator=generator, device=device
+        )[: int(maximum_rows)]
+    return rows
 
 
 def build_secondary_prototypes(
@@ -123,43 +190,56 @@ def build_secondary_prototypes(
 
 
 def retrieval_diagnostics(
-    primary, secondary, mask, sources, observations, maximum_rows=20000
+    primary,
+    secondary,
+    mask,
+    observations,
+    positive_offsets,
+    positive_indices,
+    maximum_rows=20000,
 ):
-    if int(maximum_rows) > 0 and sources.numel() > int(maximum_rows):
-        generator = torch.Generator(device=sources.device).manual_seed(2026)
-        rows = torch.randperm(
-            sources.numel(), generator=generator, device=sources.device
-        )[: int(maximum_rows)]
-        sources = sources[rows]
-        observations = observations[rows]
+    rows = sampled_row_ids(
+        observations.shape[0], maximum_rows, observations.device
+    )
+    sampled_observations = observations[rows]
     baseline = chunked_exact_topk(
-        observations, primary, topk=4, chunk_size=8192
+        sampled_observations, primary, topk=4, chunk_size=8192
     )
     dual = chunked_exact_topk_dual_prototype(
-        observations,
+        sampled_observations,
         primary,
         secondary,
         mask,
         topk=4,
         chunk_size=8192,
     )
+    baseline_positive = csr_candidate_membership(
+        baseline.indices,
+        rows,
+        positive_offsets,
+        positive_indices,
+        primary.shape[0],
+    )
+    dual_positive = csr_candidate_membership(
+        dual.indices,
+        rows,
+        positive_offsets,
+        positive_indices,
+        primary.shape[0],
+    )
     return {
-        "rows": int(sources.numel()),
+        "rows": int(rows.numel()),
         "baseline_recall_at_1": float(
-            (baseline.indices[:, 0] == sources).float().mean().item()
+            baseline_positive[:, 0].float().mean().item()
         ),
         "baseline_recall_at_4": float(
-            (baseline.indices == sources[:, None])
-            .any(dim=1)
-            .float()
-            .mean()
-            .item()
+            baseline_positive.any(dim=1).float().mean().item()
         ),
         "dual_recall_at_1": float(
-            (dual.indices[:, 0] == sources).float().mean().item()
+            dual_positive[:, 0].float().mean().item()
         ),
         "dual_recall_at_4": float(
-            (dual.indices == sources[:, None]).any(dim=1).float().mean().item()
+            dual_positive.any(dim=1).float().mean().item()
         ),
         "top1_changed_rate": float(
             (dual.indices[:, 0] != baseline.indices[:, 0])
@@ -174,25 +254,23 @@ def calibrate_secondary_activation(
     primary,
     secondary,
     initial_mask,
-    sources,
     observations,
+    positive_offsets,
+    positive_indices,
     *,
     maximum_rows,
     minimum_benefits,
     minimum_precision,
 ):
-    if int(maximum_rows) > 0 and sources.numel() > int(maximum_rows):
-        generator = torch.Generator(device=sources.device).manual_seed(2026)
-        rows = torch.randperm(
-            sources.numel(), generator=generator, device=sources.device
-        )[: int(maximum_rows)]
-        sources = sources[rows]
-        observations = observations[rows]
+    rows = sampled_row_ids(
+        observations.shape[0], maximum_rows, observations.device
+    )
+    sampled_observations = observations[rows]
     baseline = chunked_exact_topk(
-        observations, primary, topk=1, chunk_size=8192
+        sampled_observations, primary, topk=1, chunk_size=8192
     )
     dual = chunked_exact_topk_dual_prototype(
-        observations,
+        sampled_observations,
         primary,
         secondary,
         initial_mask,
@@ -201,9 +279,23 @@ def calibrate_secondary_activation(
     )
     baseline_top1 = baseline.indices[:, 0]
     dual_top1 = dual.indices[:, 0]
+    baseline_positive = csr_candidate_membership(
+        baseline_top1,
+        rows,
+        positive_offsets,
+        positive_indices,
+        primary.shape[0],
+    )
+    dual_positive = csr_candidate_membership(
+        dual_top1,
+        rows,
+        positive_offsets,
+        positive_indices,
+        primary.shape[0],
+    )
     changed = dual_top1 != baseline_top1
-    beneficial = changed & (dual_top1 == sources) & (baseline_top1 != sources)
-    harmful = changed & (dual_top1 != sources)
+    beneficial = changed & dual_positive & ~baseline_positive
+    harmful = changed & ~dual_positive
     landmark_count = int(primary.shape[0])
     benefit_count = torch.bincount(
         dual_top1[beneficial], minlength=landmark_count
@@ -256,15 +348,27 @@ def main():
     visibility = torch.load(args.visibility_cache, map_location="cpu")[
         "visibility"
     ]
-    sources, observations = collect_clean_observations(
+    observations, positive_offsets, positive_indices = collect_clean_observations(
         cache, visibility, bank_xyz, args.max_observations
     )
-    sources = sources.cuda()
     observations = observations.cuda()
+    positive_offsets = positive_offsets.cuda()
+    positive_indices = positive_indices.cuda()
+    positive_counts = positive_offsets[1:] - positive_offsets[:-1]
+    positive_rows = torch.repeat_interleave(
+        torch.arange(
+            positive_counts.numel(),
+            device=observations.device,
+            dtype=torch.long,
+        ),
+        positive_counts,
+    )
+    sources = positive_indices
+    prototype_observations = observations[positive_rows]
     secondary, mask, statistics = build_secondary_prototypes(
         primary,
         sources,
-        observations,
+        prototype_observations,
         minimum_observations=args.minimum_observations,
         minimum_secondary_observations=args.minimum_secondary_observations,
         maximum_primary_secondary_cosine=args.maximum_primary_secondary_cosine,
@@ -276,8 +380,9 @@ def main():
             primary,
             secondary,
             initial_mask,
-            sources,
             observations,
+            positive_offsets,
+            positive_indices,
             maximum_rows=args.diagnostic_rows,
             minimum_benefits=args.activation_minimum_benefits,
             minimum_precision=args.activation_minimum_precision,
@@ -286,8 +391,9 @@ def main():
         primary,
         secondary,
         mask,
-        sources,
         observations,
+        positive_offsets,
+        positive_indices,
         maximum_rows=args.diagnostic_rows,
     )
     diagnostics.update(

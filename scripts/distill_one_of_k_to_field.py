@@ -25,6 +25,28 @@ from scripts.train_one_of_k_reranker import candidate_positive_mask
 from train_lafgs_map import _cached_native_observations
 
 
+def load_teacher_head(teacher_state, device="cpu"):
+    head_config = teacher_state["head_config"]
+    head = OneOfKAssignmentHead(
+        hidden_dim=int(head_config["hidden_dim"]),
+        feature_dim=int(head_config["feature_dim"]),
+        global_skip_scale=float(head_config.get("global_skip_scale", 0.0)),
+        bounded_residual_max=float(
+            head_config.get("bounded_residual_max", 0.0)
+        ),
+        logit_temperature=float(
+            head_config.get("logit_temperature", 1.0)
+        ),
+        null_temperature=float(
+            head_config.get("null_temperature", 1.0)
+        ),
+        null_bias=float(head_config.get("null_bias", 0.0)),
+    ).to(device)
+    head.load_state_dict(teacher_state["head_state_dict"])
+    head.eval()
+    return head
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query_cache", required=True)
@@ -65,14 +87,7 @@ def main():
     map_statistics = teacher_state.get("landmark_statistics")
     if map_statistics is not None:
         map_statistics = torch.as_tensor(map_statistics).float().to(device)
-    head_config = teacher_state["head_config"]
-    head = OneOfKAssignmentHead(
-        hidden_dim=int(head_config["hidden_dim"]),
-        feature_dim=int(head_config["feature_dim"]),
-        global_skip_scale=float(head_config.get("global_skip_scale", 0.0)),
-    ).to(device)
-    head.load_state_dict(teacher_state["head_state_dict"])
-    head.eval()
+    head = load_teacher_head(teacher_state, device)
     for parameter in head.parameters():
         parameter.requires_grad_(False)
     teacher_config = teacher_state["config"]

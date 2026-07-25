@@ -22,6 +22,7 @@ from localization_training.direct_landmark_teacher import gaussian_localization_
 from localization_training.episode_sampler import split_support_query_cameras
 from localization_training.geometry_selector import GeometryBalancedSelector
 from localization_training.full_primitive_retrieval import (
+    ambiguity_gated_context_topk,
     chunked_exact_topk,
     chunked_exact_topk_dual_prototype,
     conditional_core_reserve_topk,
@@ -39,6 +40,10 @@ from localization_training.local_assignment import (
 from localization_training.local_context_adapter import (
     LocalContextMetricAdapter,
     pool_local_query_context,
+)
+from localization_training.query_context import (
+    spatial_pyramid_global_descriptor,
+    visibility_context_bias,
 )
 from localization_training.pair_scorer import SparsePairScorer
 from localization_training.pair_measurement import (
@@ -2410,6 +2415,105 @@ class STDLoc:
                     "be enabled in the same ablation"
                 )
 
+        self.query_context_embeddings = None
+        self.query_context_visibility = None
+        self.query_context_grid_rows = 2
+        self.query_context_grid_cols = 2
+        full_query_context_state_path = None
+        query_context_state_path = str(
+            sparse_config.get("query_context_state_path", "")
+        )
+        if query_context_state_path:
+            if (
+                self.dual_prototype_features is not None
+                or self.conditional_core_mask is not None
+            ):
+                raise ValueError(
+                    "query-context, dual-prototype, and conditional-reserve "
+                    "retrieval must be validated in separate ablations"
+                )
+            full_query_context_state_path = resolve_artifact_path(
+                config["model_path"],
+                query_context_state_path,
+                sparse_config.get(
+                    "query_context_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            query_context_state = torch.load(
+                full_query_context_state_path, map_location="cpu"
+            )
+            context_indices = torch.as_tensor(
+                query_context_state["landmark_indices"]
+            ).reshape(-1)
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu()
+            if not torch.equal(context_indices.cpu(), active_indices):
+                raise ValueError(
+                    "query-context state does not align with the active bank"
+                )
+            context_embeddings = torch.as_tensor(
+                query_context_state["support_embeddings"]
+            )
+            context_visibility = torch.as_tensor(
+                query_context_state["support_visibility"]
+            )
+            context_state_config = query_context_state.get("config", {})
+            self.query_context_grid_rows = int(
+                context_state_config.get("grid_rows", 2)
+            )
+            self.query_context_grid_cols = int(
+                context_state_config.get("grid_cols", 2)
+            )
+            configured_grid_rows = int(
+                sparse_config.get(
+                    "query_context_grid_rows",
+                    self.query_context_grid_rows,
+                )
+            )
+            configured_grid_cols = int(
+                sparse_config.get(
+                    "query_context_grid_cols",
+                    self.query_context_grid_cols,
+                )
+            )
+            if (
+                configured_grid_rows != self.query_context_grid_rows
+                or configured_grid_cols != self.query_context_grid_cols
+            ):
+                raise ValueError(
+                    "query-context build/runtime spatial grids do not match"
+                )
+            expected_embedding_dim = int(
+                self.landmarks.get_loc_feature.reshape(
+                    self.landmarks.get_loc_feature.shape[0], -1
+                ).shape[1]
+            ) * (
+                1
+                + self.query_context_grid_rows
+                * self.query_context_grid_cols
+            )
+            if (
+                context_embeddings.ndim != 2
+                or context_visibility.ndim != 2
+                or context_embeddings.shape[0] != context_visibility.shape[0]
+                or context_embeddings.shape[1] != expected_embedding_dim
+                or context_visibility.shape[1] != active_indices.numel()
+            ):
+                raise ValueError(
+                    "query-context support embeddings and visibility are malformed"
+                )
+            context_device = self.landmarks.get_xyz.device
+            self.query_context_embeddings = context_embeddings.to(
+                device=context_device,
+                dtype=torch.float32,
+            )
+            self.query_context_visibility = context_visibility.to(
+                device=context_device,
+                dtype=torch.bool,
+            )
+
         self.pair_scorer = None
         self.pair_scorer_threshold = float(
             sparse_config.get("pair_scorer_threshold", 0.0)
@@ -2674,6 +2778,10 @@ class STDLoc:
             "native_matchability_state_path": full_native_matchability_state_path,
             "native_matchability_state_file_sha256": file_sha256(
                 full_native_matchability_state_path
+            ),
+            "query_context_state_path": full_query_context_state_path,
+            "query_context_state_file_sha256": file_sha256(
+                full_query_context_state_path
             ),
             "detector_path": detector_path,
             "detector_file_sha256": file_sha256(detector_path),
@@ -3807,9 +3915,85 @@ class STDLoc:
                 "full_primitive_chunk_size", 8192
             ),
         }
+        query_context_bias = None
+        query_context_diagnostics = {
+            "nearest_similarity_mean": 0.0,
+            "nearest_similarity_max": 0.0,
+            "nearest_weight_entropy": 0.0,
+            "visible_prior_mean": 0.0,
+            "visible_prior_positive_fraction": 0.0,
+            "global_visible_prior_mean": 0.0,
+            "context_signal_abs_q75": 0.0,
+            "context_bias_std": 0.0,
+            "context_bias_saturation_fraction": 0.0,
+        }
+        if self.query_context_embeddings is not None:
+            query_embedding = spatial_pyramid_global_descriptor(
+                query_features,
+                keypoints,
+                keypoint_scores,
+                (height, width),
+                grid_rows=self.query_context_grid_rows,
+                grid_cols=self.query_context_grid_cols,
+            )
+            query_context_bias, query_context_diagnostics = (
+                visibility_context_bias(
+                    query_embedding,
+                    self.query_context_embeddings,
+                    self.query_context_visibility,
+                    nearest_views=int(
+                        self.config["sparse"].get(
+                            "query_context_nearest_views", 8
+                        )
+                    ),
+                    temperature=float(
+                        self.config["sparse"].get(
+                            "query_context_temperature", 0.05
+                        )
+                    ),
+                    delta_max=float(
+                        self.config["sparse"].get(
+                            "query_context_delta_max", 0.01
+                        )
+                    ),
+                    prior_center=float(
+                        self.config["sparse"].get(
+                            "query_context_prior_center", 0.1
+                        )
+                    ),
+                    prior_scale=float(
+                        self.config["sparse"].get(
+                            "query_context_prior_scale", 0.1
+                        )
+                    ),
+                    normalization=str(
+                        self.config["sparse"].get(
+                            "query_context_normalization", "absolute"
+                        )
+                    ),
+                )
+            )
+        query_context_ambiguous = None
+        query_context_margin = None
         conditional_ambiguous = None
         conditional_core_margin = None
-        if self.conditional_core_mask is not None:
+        if query_context_bias is not None:
+            (
+                retrieval,
+                query_context_ambiguous,
+                query_context_margin,
+            ) = ambiguity_gated_context_topk(
+                query_features,
+                landmark_features,
+                query_context_bias,
+                margin_threshold=float(
+                    self.config["sparse"].get(
+                        "query_context_margin_threshold", 0.01
+                    )
+                ),
+                **retrieval_args,
+            )
+        elif self.conditional_core_mask is not None:
             retrieval, conditional_ambiguous, conditional_core_margin = (
                 conditional_core_reserve_topk(
                     query_features,
@@ -3870,6 +4054,23 @@ class STDLoc:
                 if conditional_core_margin is not None
                 else 0.0
             ),
+            "sparse_diag_native_query_context_enabled": float(
+                self.query_context_embeddings is not None
+            ),
+            "sparse_diag_native_query_context_ambiguous_fraction": float(
+                query_context_ambiguous.float().mean().item()
+                if query_context_ambiguous is not None
+                else 0.0
+            ),
+            "sparse_diag_native_query_context_margin_mean": float(
+                query_context_margin.mean().item()
+                if query_context_margin is not None
+                else 0.0
+            ),
+            **{
+                f"sparse_diag_native_query_context_{key}": float(value)
+                for key, value in query_context_diagnostics.items()
+            },
         }
         assignment_debug = None
         if rerank_enabled:
