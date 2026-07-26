@@ -4662,6 +4662,7 @@ def _collect_track_first_geometry_teacher(
     args,
     *,
     provenance_context=None,
+    return_track_payload=False,
 ):
     """Build G2 image-side tracks, triangulate them, then associate geometry."""
     descriptors = []
@@ -4953,7 +4954,29 @@ def _collect_track_first_geometry_teacher(
                 ),
             }
         )
-    return statistics, geometry, diagnostics
+    if not bool(return_track_payload):
+        return statistics, geometry, diagnostics
+    track_payload = {
+        "version": 1,
+        "schema": "lafgs_track_first_payload",
+        "query_names": list(query_names),
+        "tracks": {
+            name: torch.as_tensor(value).detach().cpu()
+            for name, value in tracks.items()
+        },
+        "track_geometry": {
+            name: torch.as_tensor(value).detach().cpu()
+            for name, value in track_geometry.items()
+        },
+        "assignment": {
+            name: torch.as_tensor(value).detach().cpu()
+            for name, value in assignment.items()
+            if torch.is_tensor(value)
+        },
+        "query_bins": query_bins.detach().cpu(),
+        "diagnostics": dict(diagnostics),
+    }
+    return statistics, geometry, diagnostics, track_payload
 
 
 def _csr_positive_responsibilities(
@@ -8624,6 +8647,7 @@ def train(dataset, args):
             base_bank_xyz=base_bank_xyz,
         )
         independent_geometry_evidence = {}
+        track_micro_anchor_payload = None
         if bool(args.save_independent_geometry_teacher):
             if str(args.geometry_teacher_identity_mode) in {
                 "track_first",
@@ -8648,17 +8672,23 @@ def train(dataset, args):
                         "landmark_global_indices": landmark_indices_cuda,
                         "background": background,
                     }
-                (
-                    independent_statistics,
-                    independent_geometry_evidence,
-                    independent_diagnostics,
-                ) = _collect_track_first_geometry_teacher(
+                track_teacher_output = _collect_track_first_geometry_teacher(
                     train_names,
                     cache,
                     final_xyz,
                     args,
                     provenance_context=provenance_context,
+                    return_track_payload=bool(
+                        args.save_track_micro_anchor_payload
+                    ),
                 )
+                (
+                    independent_statistics,
+                    independent_geometry_evidence,
+                    independent_diagnostics,
+                ) = track_teacher_output[:3]
+                if len(track_teacher_output) == 4:
+                    track_micro_anchor_payload = track_teacher_output[3]
             else:
                 (
                     independent_statistics,
@@ -8758,6 +8788,17 @@ def train(dataset, args):
                 }
             )
             landmark_statistics_summary.update(independent_diagnostics)
+            if track_micro_anchor_payload is not None:
+                torch.save(
+                    {
+                        **track_micro_anchor_payload,
+                        "train_camera_names_sha256": _camera_names_sha256(
+                            train_names
+                        ),
+                        "landmark_indices": landmark_indices.detach().cpu(),
+                    },
+                    output_dir / "track_micro_anchor_payload.pt",
+                )
         raster_visibility_count = torch.zeros_like(base_bank_opacity)
         if visibility_cache is not None:
             for name in train_names:
@@ -9944,6 +9985,15 @@ def build_parser():
         help=(
             "During an offline statistics sweep, triangulate descriptor-only "
             "cross-view native associations and save query-level coverage."
+        ),
+    )
+    parser.add_argument(
+        "--save_track_micro_anchor_payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Persist independent Track-First observations, triangulation, and "
+            "source-primitive assignments for add-only micro-anchor creation."
         ),
     )
     parser.add_argument(

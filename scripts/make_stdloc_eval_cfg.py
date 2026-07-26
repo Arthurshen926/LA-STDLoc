@@ -18,6 +18,7 @@ def make_stdloc_eval_cfg(
     pair_scorer_state_path=None,
     landmark_feature_override_path=None,
     override_landmark_features=None,
+    materialized_anchor_map_path=None,
     pair_measurement_state_path=None,
     detect_num=None,
     reprojection_error=None,
@@ -210,6 +211,11 @@ def make_stdloc_eval_cfg(
         sparse["landmark_feature_override_model_path"] = artifact_model_path
     if override_landmark_features is not None:
         sparse["override_landmark_features"] = bool(override_landmark_features)
+    if materialized_anchor_map_path is not None:
+        sparse["materialized_anchor_map_path"] = str(
+            materialized_anchor_map_path
+        )
+        sparse["materialized_anchor_map_model_path"] = artifact_model_path
     if pair_measurement_state_path:
         sparse["pair_measurement_state_path"] = str(
             pair_measurement_state_path
@@ -437,6 +443,9 @@ def make_stdloc_eval_cfg(
         "override_landmark_features": sparse.get(
             "override_landmark_features", False
         ),
+        "materialized_anchor_map_path": sparse.get(
+            "materialized_anchor_map_path"
+        ),
         "pair_measurement_state_path": sparse.get(
             "pair_measurement_state_path"
         ),
@@ -566,6 +575,7 @@ def main():
     parser.add_argument(
         "--override_landmark_features", action="store_true", default=None
     )
+    parser.add_argument("--materialized_anchor_map_path", default=None)
     parser.add_argument("--pair_measurement_state_path", default="")
     parser.add_argument("--detect_num", type=int, default=None)
     parser.add_argument("--reprojection_error", type=float, default=None)
@@ -746,6 +756,7 @@ def main():
         pair_scorer_state_path=args.pair_scorer_state_path,
         landmark_feature_override_path=args.landmark_feature_override_path,
         override_landmark_features=args.override_landmark_features,
+        materialized_anchor_map_path=args.materialized_anchor_map_path,
         pair_measurement_state_path=args.pair_measurement_state_path,
         detect_num=args.detect_num,
         reprojection_error=args.reprojection_error,

@@ -1817,6 +1817,79 @@ def load_sparse_candidate_state(path):
     return state
 
 
+def load_materialized_anchor_map(
+    path,
+    *,
+    point_count,
+    expected_feature_dim=None,
+    device=None,
+    feature_dtype=torch.float32,
+    xyz_dtype=torch.float32,
+):
+    """Load localization-anchor rows independently of Gaussian identities."""
+    state = load_sparse_candidate_state(path)
+    if str(state.get("schema", "")) != "lafgs_materialized_anchor_map":
+        raise ValueError(
+            "materialized anchor map has an unsupported schema: "
+            f"{state.get('schema')!r}"
+        )
+    anchor_ids = torch.as_tensor(
+        state.get("anchor_ids", []), dtype=torch.long
+    ).reshape(-1)
+    source_ids = torch.as_tensor(
+        state.get("source_primitive_ids", []), dtype=torch.long
+    ).reshape(-1)
+    features = torch.as_tensor(
+        state.get("anchor_features", []), dtype=feature_dtype
+    )
+    xyz = torch.as_tensor(state.get("anchor_xyz", []), dtype=xyz_dtype)
+    count = int(anchor_ids.numel())
+    if count == 0:
+        raise ValueError("materialized anchor map is empty")
+    if source_ids.numel() != count:
+        raise ValueError("materialized anchor source/count mismatch")
+    if features.ndim < 2 or features.shape[0] != count:
+        raise ValueError("materialized anchor feature/count mismatch")
+    features = features.reshape(count, -1)
+    if xyz.numel() != count * 3:
+        raise ValueError("materialized anchor geometry/count mismatch")
+    xyz = xyz.reshape(count, 3)
+    if torch.unique(anchor_ids).numel() != count:
+        raise ValueError("materialized anchor IDs must be unique")
+    if int(anchor_ids.min()) < 0:
+        raise ValueError("materialized anchor IDs must be non-negative")
+    if int(source_ids.min()) < 0 or int(source_ids.max()) >= int(point_count):
+        raise ValueError(
+            "materialized anchor source primitive is out of bounds: "
+            f"point_count={int(point_count)}, min={int(source_ids.min())}, "
+            f"max={int(source_ids.max())}"
+        )
+    if expected_feature_dim is not None and features.shape[1] != int(
+        expected_feature_dim
+    ):
+        raise ValueError(
+            "materialized anchor feature dimension mismatch: "
+            f"state={features.shape[1]} expected={int(expected_feature_dim)}"
+        )
+    if not bool(torch.isfinite(features).all()):
+        raise ValueError("materialized anchor features contain non-finite values")
+    if not bool(torch.isfinite(xyz).all()):
+        raise ValueError("materialized anchor geometry contains non-finite values")
+    features = F.normalize(features, dim=1)
+    if device is not None:
+        anchor_ids = anchor_ids.to(device=device)
+        source_ids = source_ids.to(device=device)
+        features = features.to(device=device, dtype=feature_dtype)
+        xyz = xyz.to(device=device, dtype=xyz_dtype)
+    return {
+        **state,
+        "anchor_ids": anchor_ids,
+        "source_primitive_ids": source_ids,
+        "anchor_features": features,
+        "anchor_xyz": xyz,
+    }
+
+
 def validate_sampled_indices(sampled_idx, point_count):
     if isinstance(sampled_idx, torch.Tensor):
         idx = sampled_idx.detach().reshape(-1).to(dtype=torch.long)
@@ -2109,7 +2182,52 @@ class STDLoc:
         self.full_primitive_retrieval = bool(
             sparse_config.get("full_primitive_retrieval", False)
         )
-        if self.full_primitive_retrieval:
+        materialized_anchor_path = sparse_config.get(
+            "materialized_anchor_map_path", ""
+        )
+        full_materialized_anchor_path = None
+        self.materialized_anchor_map_state = None
+        self.source_primitive_indices = None
+        if materialized_anchor_path:
+            if self.full_primitive_retrieval:
+                raise ValueError(
+                    "materialized_anchor_map_path is incompatible with "
+                    "full_primitive_retrieval"
+                )
+            full_materialized_anchor_path = resolve_artifact_path(
+                config["model_path"],
+                materialized_anchor_path,
+                sparse_config.get(
+                    "materialized_anchor_map_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            primitive_feature_dim = gaussians.get_loc_feature.reshape(
+                gaussians.get_loc_feature.shape[0], -1
+            ).shape[1]
+            materialized = load_materialized_anchor_map(
+                full_materialized_anchor_path,
+                point_count=gaussians.get_xyz.shape[0],
+                expected_feature_dim=primitive_feature_dim,
+                device=gaussians.get_xyz.device,
+                feature_dtype=gaussians.get_loc_feature.dtype,
+                xyz_dtype=gaussians.get_xyz.dtype,
+            )
+            source_ids = materialized["source_primitive_ids"]
+            self.landmarks = sample_gaussians(gaussians, source_ids)
+            self.landmarks._xyz = torch.nn.Parameter(
+                materialized["anchor_xyz"], requires_grad=False
+            )
+            self.landmarks._loc_feature = torch.nn.Parameter(
+                materialized["anchor_features"].reshape(
+                    materialized["anchor_features"].shape[0], -1, 1
+                ),
+                requires_grad=False,
+            )
+            self.landmark_indices = materialized["anchor_ids"].detach().cpu()
+            self.source_primitive_indices = source_ids.detach().cpu()
+            self.materialized_anchor_map_state = materialized
+        elif self.full_primitive_retrieval:
             self.landmark_indices = torch.arange(
                 gaussians.get_xyz.shape[0], dtype=torch.long
             )
@@ -2127,6 +2245,13 @@ class STDLoc:
         override_landmark_features = bool(
             sparse_config.get("override_landmark_features", False)
         )
+        if materialized_anchor_path and (
+            override_landmark_features or feature_override_path
+        ):
+            raise ValueError(
+                "materialized_anchor_map_path already supplies descriptor and "
+                "geometry rows; feature override must be disabled"
+            )
         if override_landmark_features and not feature_override_path:
             if legacy_state_path:
                 feature_override_path = legacy_state_path
@@ -2796,7 +2921,16 @@ class STDLoc:
             "map_checkpoint_sha256": file_sha256(config.get("_map_checkpoint_path")),
             "sampled_idx_path": sampled_idx_path,
             "sampled_idx_sha256": file_sha256(sampled_idx_path),
+            "materialized_anchor_map_path": full_materialized_anchor_path,
+            "materialized_anchor_map_file_sha256": file_sha256(
+                full_materialized_anchor_path
+            ),
             "landmark_indices_sha256": tensor_sha256(self.landmark_indices),
+            "source_primitive_indices_sha256": (
+                None
+                if self.source_primitive_indices is None
+                else tensor_sha256(self.source_primitive_indices)
+            ),
             "map_landmark_features_sha256": tensor_sha256(map_features_flat),
             "active_landmark_features_sha256": tensor_sha256(active_features_flat),
             "override_landmark_features": override_landmark_features,
