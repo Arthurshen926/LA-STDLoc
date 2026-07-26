@@ -3,8 +3,11 @@ import torch
 from localization_training.micro_anchors import (
     build_add_only_materialized_anchor_map,
     compute_track_coverage_gain,
+    compute_track_functional_statistics,
     protected_micro_anchor_descriptor_loss,
     robust_fuse_track_descriptors,
+    select_micro_anchor_set,
+    truncate_materialized_anchor_extension,
     truncate_materialized_anchor_map,
 )
 from stdloc import load_materialized_anchor_map
@@ -221,6 +224,45 @@ def test_coverage_gain_respects_raster_visibility():
     assert bool(raster_hidden["raster_visibility_enabled"])
 
 
+def test_functional_gap_uses_visibility_and_opportunity_denominator():
+    payload = {
+        "query_names": ["q0"],
+        "query_bins": torch.tensor([0]),
+        "tracks": {
+            "track_index": torch.tensor([0]),
+            "query_index": torch.tensor([0]),
+            "keypoint_index": torch.tensor([0]),
+        },
+        "track_geometry": {
+            "triangulated_xyz": torch.tensor([[0.0, 0.0, 2.0]])
+        },
+    }
+    query_cache = {
+        "q0": {
+            "native_K": torch.eye(3),
+            "pose_w2c": torch.eye(4),
+            "native_keypoints": torch.tensor([[0.0, 0.0]]),
+            "native_descriptors": torch.tensor([[1.0, 0.0]]),
+            "native_depth": torch.full((2, 2), 2.0),
+            "pixel_center_offset": 0.0,
+        }
+    }
+    statistics = compute_track_functional_statistics(
+        payload=payload,
+        query_cache=query_cache,
+        base_xyz=torch.tensor([[0.0, 0.0, 2.0]]),
+        base_features=torch.tensor([[0.9, 0.1]]),
+        track_indices=torch.tensor([0]),
+        track_features=torch.tensor([[1.0, 0.0]]),
+        visibility_cache={"q0": torch.tensor([False])},
+        device="cpu",
+    )
+    assert statistics["functional_gap"].tolist() == [1]
+    assert statistics["candidate_opportunity_count"].tolist() == [1]
+    assert statistics["false_attractor_incoming_count"].tolist() == [0]
+    assert statistics["false_attractor_opportunity_rate"].tolist() == [0.0]
+
+
 def test_truncate_materialized_anchor_map_preserves_csr_alignment():
     state = {
         "schema": "lafgs_materialized_anchor_map",
@@ -250,3 +292,60 @@ def test_truncate_materialized_anchor_map_preserves_csr_alignment():
     assert truncated["source_group_offsets"].tolist() == [0, 1, 2, 4]
     assert truncated["source_group_primitive_ids"].tolist() == [1, 2, 3, 30]
     assert truncated["micro_anchor_quality"]["coverage_gain"].tolist() == [7]
+
+
+def test_truncate_materialized_anchor_extension_freezes_canonical_prefix():
+    state = {
+        "schema": "lafgs_materialized_anchor_map",
+        "anchor_ids": torch.arange(8),
+        "source_primitive_ids": torch.arange(8) + 10,
+        "track_cluster_ids": torch.arange(8) - 4,
+        "anchor_xyz": torch.arange(24).reshape(8, 3),
+        "anchor_features": torch.arange(32).reshape(8, 4),
+        "anchor_type": torch.tensor([0, 0, 0, 1, 1, 3, 3, 3]),
+        "base_anchor_count": 3,
+        "canonical_anchor_count": 5,
+        "micro_anchor_count": 5,
+        "full_prior_quality": {
+            "coverage_gain": torch.tensor([9, 7, 3]),
+        },
+        "full_prior_source_group_offsets": torch.tensor([0, 2, 3, 5]),
+        "full_prior_source_group_primitive_ids": torch.tensor(
+            [31, 32, 41, 51, 52]
+        ),
+        "full_prior_source_group_responsibilities": torch.tensor(
+            [0.6, 0.4, 1.0, 0.7, 0.3]
+        ),
+    }
+
+    truncated = truncate_materialized_anchor_extension(state, 2)
+
+    assert truncated["anchor_ids"].tolist() == list(range(7))
+    assert truncated["canonical_anchor_count"] == 5
+    assert truncated["selected_extension_count"] == 2
+    assert truncated["micro_anchor_count"] == 4
+    assert truncated["full_prior_quality"]["coverage_gain"].tolist() == [9, 7]
+    assert truncated["full_prior_source_group_offsets"].tolist() == [0, 2, 3]
+    assert truncated["full_prior_source_group_primitive_ids"].tolist() == [
+        31,
+        32,
+        41,
+    ]
+
+
+def test_query_saturated_selection_prefers_complementary_query():
+    selected, diagnostics = select_micro_anchor_set(
+        candidate_gap_observations=[
+            [0, 1],
+            [2, 3],
+            [4],
+        ],
+        observation_query_indices=torch.tensor([0, 0, 0, 0, 1]),
+        query_sequence_indices=torch.tensor([0, 1]),
+        budget=2,
+        profile="query_saturated",
+        false_attractor_rates=torch.zeros(3),
+    )
+    assert selected.tolist() == [0, 2]
+    assert diagnostics["covered_query_count"] == 2
+    assert diagnostics["covered_gap_observation_count"] == 3

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 from collections import defaultdict
 
 import numpy as np
@@ -368,6 +369,9 @@ def compute_track_functional_statistics(
     track_indices: torch.Tensor,
     track_features: torch.Tensor,
     radius_px: float = 2.0,
+    depth_abs_tolerance_m: float = 0.05,
+    depth_rel_tolerance: float = 0.02,
+    visibility_cache: dict | None = None,
     device: str | torch.device | None = None,
 ) -> dict[str, torch.Tensor]:
     """Measure rank gaps and false-attractor behavior against the frozen bank."""
@@ -430,12 +434,47 @@ def compute_track_functional_statistics(
             cached["native_K"],
             cached["pose_w2c"],
         )
+        native_keypoints = torch.as_tensor(
+            cached["native_keypoints"]
+        ).float()[keypoint_index.cpu()]
         physical = (
-            torch.as_tensor(cached["native_keypoints"]).float()[keypoint_index]
+            native_keypoints
             + float(cached.get("pixel_center_offset", 0.5))
         ).numpy()
-        clean = (depth > 0) & (
-            np.linalg.norm(projected - physical, axis=1) <= float(radius_px)
+        native_depth = torch.as_tensor(cached["native_depth"]).float()
+        x = native_keypoints[:, 0].round().long().clamp(
+            0, native_depth.shape[1] - 1
+        )
+        y = native_keypoints[:, 1].round().long().clamp(
+            0, native_depth.shape[0] - 1
+        )
+        reference_depth = native_depth[y, x].numpy()
+        tolerance = float(depth_abs_tolerance_m) + (
+            float(depth_rel_tolerance) * np.abs(reference_depth)
+        )
+        visible = np.ones(len(observations), dtype=bool)
+        if visibility_cache is not None:
+            name = query_names[query]
+            if name not in visibility_cache:
+                raise KeyError(f"visibility cache is missing query {name}")
+            query_visibility = torch.as_tensor(
+                visibility_cache[name], dtype=torch.bool
+            ).reshape(-1)
+            if query_visibility.numel() != old_xyz.shape[0]:
+                raise ValueError(
+                    f"visibility rows for {name} do not align with base anchors"
+                )
+            visible = query_visibility[old_index.cpu()].numpy()
+        clean = (
+            visible
+            & (depth > 0)
+            & np.isfinite(reference_depth)
+            & (reference_depth > 0)
+            & (np.abs(depth - reference_depth) <= tolerance)
+            & (
+                np.linalg.norm(projected - physical, axis=1)
+                <= float(radius_px)
+            )
         )
         target_row = track_to_row[
             tracks["track_index"][observation_tensor].long()
@@ -457,6 +496,7 @@ def compute_track_functional_statistics(
     positive_margin_sum = torch.zeros(track_count)
     positive_count = torch.zeros(track_count, dtype=torch.long)
     false_incoming = torch.zeros(track_count, dtype=torch.long)
+    candidate_opportunities = torch.zeros(track_count, dtype=torch.long)
     promoted_correct = torch.zeros(track_count, dtype=torch.long)
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
     for observation in selected_observations.tolist():
@@ -479,10 +519,12 @@ def compute_track_functional_statistics(
             observation_candidate_best[observation]
             > observation_old_best[observation]
         )
+        if beats_old and predicted_row >= 0:
+            predicted_track = int(track_indices[predicted_row])
+            candidate_opportunities[predicted_track] += 1
         if beats_old and predicted_row == target_row:
             promoted_correct[track] += 1
         elif beats_old and predicted_row >= 0:
-            predicted_track = int(track_indices[predicted_row])
             false_incoming[predicted_track] += 1
     return {
         "functional_gap": functional_gain,
@@ -496,6 +538,11 @@ def compute_track_functional_statistics(
         "positive_hardnegative_margin_mean": positive_margin_sum
         / positive_count.clamp_min(1),
         "false_attractor_incoming_count": false_incoming,
+        "candidate_opportunity_count": candidate_opportunities,
+        "false_attractor_opportunity_rate": (
+            false_incoming.float()
+            / candidate_opportunities.clamp_min(1).float()
+        ),
         "promoted_correct_count": promoted_correct,
         "observation_count": positive_count,
         "observation_old_best_score": observation_old_best,
@@ -797,6 +844,7 @@ def build_v2_materialized_anchor_map(
         track_indices=track_indices,
         track_features=track_features,
         radius_px=radius_px,
+        visibility_cache=visibility_cache,
         device=device,
     )
     feature_by_track = {
@@ -813,6 +861,9 @@ def build_v2_materialized_anchor_map(
     }
 
     parent = {int(track): int(track) for track in track_indices.tolist()}
+    component_members = {
+        int(track): {int(track)} for track in track_indices.tolist()
+    }
 
     def find(value):
         root = value
@@ -830,14 +881,20 @@ def build_v2_materialized_anchor_map(
             return
         if left_root < right_root:
             parent[right_root] = left_root
+            component_members[left_root].update(
+                component_members.pop(right_root)
+            )
         else:
             parent[left_root] = right_root
+            component_members[right_root].update(
+                component_members.pop(left_root)
+            )
 
     selected_xyz_np = track_xyz[track_indices].numpy()
     spatial_pairs = cKDTree(selected_xyz_np).query_pairs(
         r=float(cluster_radius_m)
     )
-    clustered_pair_count = 0
+    eligible_pairs = set()
     for left_row, right_row in sorted(spatial_pairs):
         left = int(track_indices[left_row])
         right = int(track_indices[right_row])
@@ -847,6 +904,21 @@ def build_v2_materialized_anchor_map(
             torch.dot(feature_by_track[left], feature_by_track[right])
         )
         if cosine < float(cluster_min_descriptor_cosine):
+            continue
+        eligible_pairs.add((min(left, right), max(left, right)))
+    clustered_pair_count = 0
+    rejected_single_linkage_pair_count = 0
+    for left, right in sorted(eligible_pairs):
+        left_root, right_root = find(left), find(right)
+        if left_root == right_root:
+            continue
+        complete_link = all(
+            (min(a, b), max(a, b)) in eligible_pairs
+            for a in component_members[left_root]
+            for b in component_members[right_root]
+        )
+        if not complete_link:
+            rejected_single_linkage_pair_count += 1
             continue
         union(left, right)
         clustered_pair_count += 1
@@ -968,6 +1040,9 @@ def build_v2_materialized_anchor_map(
         false_incoming = int(
             functional["false_attractor_incoming_count"][member_tensor].sum()
         )
+        candidate_opportunities = int(
+            functional["candidate_opportunity_count"][member_tensor].sum()
+        )
         promoted = int(
             functional["promoted_correct_count"][member_tensor].sum()
         )
@@ -983,7 +1058,33 @@ def build_v2_materialized_anchor_map(
             ).sum()
             / functional["observation_count"][member_tensor].sum().clamp_min(1)
         )
-        false_rate = false_incoming / max(observation_count, 1)
+        false_rate = false_incoming / max(candidate_opportunities, 1)
+        cluster_xyz = track_xyz[member_tensor]
+        cluster_diameter = float(
+            torch.cdist(cluster_xyz, cluster_xyz).max()
+            if member_tensor.numel() > 1
+            else 0.0
+        )
+        cluster_features = torch.stack(
+            [feature_by_track[member] for member in members]
+        )
+        cluster_min_cosine = float(
+            (cluster_features @ cluster_features.T).min()
+            if member_tensor.numel() > 1
+            else 1.0
+        )
+        member_query_sets = [
+            {
+                int(tracks["query_index"][observation])
+                for observation in observation_by_track[member]
+            }
+            for member in members
+        ]
+        same_query_collisions = sum(
+            len(member_query_sets[left] & member_query_sets[right])
+            for left in range(len(members))
+            for right in range(left + 1, len(members))
+        )
         if score_mode == "coverage_count":
             score = (
                 1000.0 * geo_gain
@@ -1024,9 +1125,14 @@ def build_v2_materialized_anchor_map(
                 "geo_bins": geo_bins,
                 "func_bins": func_bins,
                 "false_incoming": false_incoming,
+                "candidate_opportunities": candidate_opportunities,
                 "promoted_correct": promoted,
                 "observation_count": observation_count,
                 "margin": margin,
+                "track_count": len(members),
+                "cluster_diameter_m": cluster_diameter,
+                "cluster_min_descriptor_cosine": cluster_min_cosine,
+                "same_query_collision_count": same_query_collisions,
                 "covariance_trace": float(
                     covariance[member_tensor].mean()
                 ),
@@ -1158,6 +1264,19 @@ def build_v2_materialized_anchor_map(
             "false_attractor_incoming_count": torch.as_tensor(
                 [value["false_incoming"] for value in selected_clusters]
             ),
+            "candidate_opportunity_count": torch.as_tensor(
+                [
+                    value["candidate_opportunities"]
+                    for value in selected_clusters
+                ]
+            ),
+            "false_attractor_opportunity_rate": torch.as_tensor(
+                [
+                    value["false_incoming"]
+                    / max(value["candidate_opportunities"], 1)
+                    for value in selected_clusters
+                ]
+            ),
             "promoted_correct_count": torch.as_tensor(
                 [value["promoted_correct"] for value in selected_clusters]
             ),
@@ -1173,6 +1292,27 @@ def build_v2_materialized_anchor_map(
                     for value in selected_clusters
                 ]
             ),
+            "cluster_track_count": torch.as_tensor(
+                [value["track_count"] for value in selected_clusters]
+            ),
+            "cluster_diameter_m": torch.as_tensor(
+                [
+                    value["cluster_diameter_m"]
+                    for value in selected_clusters
+                ]
+            ),
+            "cluster_min_descriptor_cosine": torch.as_tensor(
+                [
+                    value["cluster_min_descriptor_cosine"]
+                    for value in selected_clusters
+                ]
+            ),
+            "cluster_same_query_collision_count": torch.as_tensor(
+                [
+                    value["same_query_collision_count"]
+                    for value in selected_clusters
+                ]
+            ),
         },
     }
     diagnostics = {
@@ -1180,8 +1320,19 @@ def build_v2_materialized_anchor_map(
         "eligible_level_a_track_count": int(track_indices.numel()),
         "cluster_count": len(members_by_root),
         "clustered_pair_count": clustered_pair_count,
+        "eligible_cluster_pair_count": len(eligible_pairs),
+        "rejected_single_linkage_pair_count": (
+            rejected_single_linkage_pair_count
+        ),
         "multi_track_cluster_count": sum(
             len(value) > 1 for value in members_by_root.values()
+        ),
+        "cluster_diameter_max_m": max(
+            (value["cluster_diameter_m"] for value in clusters),
+            default=0.0,
+        ),
+        "cluster_same_query_collision_count": sum(
+            value["same_query_collision_count"] for value in clusters
         ),
         "candidate_anchor_count": len(clusters),
         "selected_micro_anchor_count": len(selected_clusters),
@@ -1249,3 +1400,233 @@ def truncate_materialized_anchor_map(
     output["micro_anchor_count"] = keep_micro
     output["truncated_from_micro_anchor_count"] = available
     return output
+
+
+def truncate_materialized_anchor_extension(
+    state: dict, extension_budget: int
+) -> dict:
+    """Keep a frozen canonical prefix and a deterministic extension prefix."""
+    if state.get("schema") != "lafgs_materialized_anchor_map":
+        raise ValueError("unsupported materialized anchor schema")
+    if "canonical_anchor_count" not in state:
+        raise ValueError("state does not define a canonical anchor prefix")
+    canonical_count = int(state["canonical_anchor_count"])
+    total_rows = int(torch.as_tensor(state["anchor_ids"]).numel())
+    if canonical_count < 0 or canonical_count > total_rows:
+        raise ValueError("canonical anchor count is outside the map")
+    available = total_rows - canonical_count
+    keep_extension = min(max(int(extension_budget), 0), available)
+    keep_rows = canonical_count + keep_extension
+    output = dict(state)
+    row_fields = (
+        "anchor_ids",
+        "source_primitive_ids",
+        "track_cluster_ids",
+        "anchor_xyz",
+        "anchor_features",
+        "anchor_type",
+    )
+    for key in row_fields:
+        if key in output:
+            output[key] = torch.as_tensor(output[key])[:keep_rows].clone()
+    output["full_prior_quality"] = {
+        key: torch.as_tensor(value)[:keep_extension].clone()
+        for key, value in state.get("full_prior_quality", {}).items()
+    }
+    for prefix, value_key in (
+        ("source_group", "source_group_primitive_ids"),
+        ("full_prior_source_group", "full_prior_source_group_primitive_ids"),
+    ):
+        offset_key = f"{prefix}_offsets"
+        if offset_key not in state or value_key not in state:
+            continue
+        offsets = torch.as_tensor(state[offset_key], dtype=torch.long)
+        if offsets.numel() == total_rows + 1:
+            end = int(offsets[keep_rows])
+            output[offset_key] = offsets[: keep_rows + 1].clone()
+        elif offsets.numel() == available + 1:
+            end = int(offsets[keep_extension])
+            output[offset_key] = offsets[: keep_extension + 1].clone()
+        else:
+            raise ValueError(f"{offset_key} does not align with map rows")
+        output[value_key] = torch.as_tensor(state[value_key])[:end].clone()
+        for suffix in ("responsibilities", "costs"):
+            aligned_key = f"{prefix}_{suffix}"
+            if aligned_key in state:
+                output[aligned_key] = torch.as_tensor(
+                    state[aligned_key]
+                )[:end].clone()
+    base_count = int(state["base_anchor_count"])
+    output["anchor_ids"] = torch.arange(keep_rows, dtype=torch.long)
+    output["requested_extension_budget"] = int(extension_budget)
+    output["selected_extension_count"] = keep_extension
+    output["micro_anchor_count"] = keep_rows - base_count
+    output["truncated_from_extension_count"] = available
+    return output
+
+
+def select_micro_anchor_set(
+    *,
+    candidate_gap_observations: list[list[int]],
+    observation_query_indices: torch.Tensor,
+    query_sequence_indices: torch.Tensor,
+    budget: int,
+    profile: str,
+    false_attractor_rates: torch.Tensor | None = None,
+    false_attractor_penalty: float = 0.25,
+) -> tuple[torch.Tensor, dict]:
+    """Lazy-greedy marginal coverage selection over sparse gap observations."""
+    if profile not in {"unique_gap", "query_saturated", "sequence_tail"}:
+        raise ValueError(f"unsupported marginal coverage profile: {profile}")
+    candidate_count = len(candidate_gap_observations)
+    observation_query_indices = torch.as_tensor(
+        observation_query_indices, dtype=torch.long
+    ).reshape(-1)
+    query_sequence_indices = torch.as_tensor(
+        query_sequence_indices, dtype=torch.long
+    ).reshape(-1)
+    query_count = int(query_sequence_indices.numel())
+    if observation_query_indices.numel():
+        if int(observation_query_indices.min()) < 0:
+            raise ValueError("observation query indices must be non-negative")
+        if int(observation_query_indices.max()) >= query_count:
+            raise ValueError("observation query index exceeds query metadata")
+    if false_attractor_rates is None:
+        false_attractor_rates = torch.zeros(candidate_count)
+    false_attractor_rates = torch.as_tensor(
+        false_attractor_rates, dtype=torch.float32
+    ).reshape(-1)
+    if false_attractor_rates.numel() != candidate_count:
+        raise ValueError("false-attractor rates must align with candidates")
+
+    observation_count = int(observation_query_indices.numel())
+    covered = torch.zeros(observation_count, dtype=torch.bool)
+    selected_query_count = torch.zeros(query_count, dtype=torch.long)
+    sequence_count = (
+        int(query_sequence_indices.max()) + 1
+        if query_sequence_indices.numel()
+        else 0
+    )
+    sequence_event_count = torch.zeros(sequence_count, dtype=torch.float32)
+    if observation_count:
+        observation_sequences = query_sequence_indices[
+            observation_query_indices
+        ]
+        sequence_event_count.scatter_add_(
+            0,
+            observation_sequences,
+            torch.ones(observation_count),
+        )
+    else:
+        observation_sequences = torch.zeros(0, dtype=torch.long)
+    positive_sequence_counts = sequence_event_count[
+        sequence_event_count > 0
+    ]
+    sequence_reference = float(
+        positive_sequence_counts.mean()
+        if positive_sequence_counts.numel()
+        else 1.0
+    )
+    sequence_weight = (
+        (
+            sequence_reference
+            / sequence_event_count.clamp_min(1.0)
+        )
+        .sqrt()
+        .clamp(0.5, 3.0)
+    )
+    query_alpha = 0.0 if profile == "unique_gap" else 0.5
+    query_first_bonus = 0.0 if profile == "unique_gap" else 1.0
+
+    candidate_observations = []
+    for observations in candidate_gap_observations:
+        tensor = torch.unique(
+            torch.as_tensor(observations, dtype=torch.long), sorted=True
+        )
+        if tensor.numel() and (
+            int(tensor.min()) < 0 or int(tensor.max()) >= observation_count
+        ):
+            raise ValueError("candidate references an invalid observation")
+        candidate_observations.append(tensor)
+
+    def marginal_gain(candidate: int) -> float:
+        observations = candidate_observations[candidate]
+        if observations.numel() == 0:
+            return -float(false_attractor_penalty) * float(
+                false_attractor_rates[candidate]
+            )
+        observations = observations[~covered[observations]]
+        if observations.numel() == 0:
+            gain = 0.0
+        else:
+            queries = observation_query_indices[observations]
+            saturation = (
+                selected_query_count[queries].float() + 1.0
+            ).pow(-query_alpha)
+            weight = saturation
+            if profile == "sequence_tail":
+                weight = weight * sequence_weight[
+                    observation_sequences[observations]
+                ]
+            gain = float(weight.sum())
+            if query_first_bonus:
+                unique_queries = torch.unique(queries)
+                gain += query_first_bonus * float(
+                    (selected_query_count[unique_queries] == 0).sum()
+                )
+        false_cost = (
+            float(false_attractor_penalty)
+            * float(false_attractor_rates[candidate])
+            * max(int(candidate_observations[candidate].numel()), 1)
+        )
+        return gain - false_cost
+
+    heap = [
+        (-marginal_gain(candidate), candidate, 0)
+        for candidate in range(candidate_count)
+    ]
+    heapq.heapify(heap)
+    selected = []
+    selection_gain = []
+    revision = 0
+    target = min(max(int(budget), 0), candidate_count)
+    selected_mask = torch.zeros(candidate_count, dtype=torch.bool)
+    while len(selected) < target and heap:
+        _, candidate, evaluated_revision = heapq.heappop(heap)
+        if bool(selected_mask[candidate]):
+            continue
+        gain = marginal_gain(candidate)
+        if evaluated_revision != revision:
+            heapq.heappush(heap, (-gain, candidate, revision))
+            continue
+        selected.append(candidate)
+        selection_gain.append(gain)
+        selected_mask[candidate] = True
+        observations = candidate_observations[candidate]
+        new_observations = observations[~covered[observations]]
+        if new_observations.numel():
+            covered[new_observations] = True
+            selected_query_count.scatter_add_(
+                0,
+                observation_query_indices[new_observations],
+                torch.ones(new_observations.numel(), dtype=torch.long),
+            )
+        revision += 1
+
+    selected_tensor = torch.as_tensor(selected, dtype=torch.long)
+    diagnostics = {
+        "profile": profile,
+        "requested_budget": int(budget),
+        "selected_count": len(selected),
+        "covered_gap_observation_count": int(covered.sum()),
+        "covered_query_count": int((selected_query_count > 0).sum()),
+        "selection_gain_sum": float(sum(selection_gain)),
+        "selection_gain_min": float(min(selection_gain, default=0.0)),
+        "selected_false_attractor_rate_mean": float(
+            false_attractor_rates[selected_tensor].mean()
+            if selected_tensor.numel()
+            else 0.0
+        ),
+        "false_attractor_penalty": float(false_attractor_penalty),
+    }
+    return selected_tensor, diagnostics
