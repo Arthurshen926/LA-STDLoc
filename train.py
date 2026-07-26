@@ -12,6 +12,7 @@
 import os
 import sys
 import uuid
+import json
 from argparse import ArgumentParser, Namespace
 from random import randint
 
@@ -51,7 +52,12 @@ def training(
     detector_folder="detector",
     landmark_num=16384,
     landmark_k=32,
+    rgb_only_reconstruction=False,
 ):
+    if rgb_only_reconstruction and train_detector:
+        raise ValueError(
+            "RGB-only reconstruction cannot train a localization detector"
+        )
     print(opt)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -86,12 +92,55 @@ def training(
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))
 
-    feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
+    feature_extractor = (
+        None
+        if rgb_only_reconstruction
+        else FeatureExtractor(dataset.feature_type).cuda().eval()
+    )
 
+    if rgb_only_reconstruction:
+        # Densification helpers preserve localization tensors alongside RGB
+        # tensors, so their optimizer groups remain structurally present.
+        # Zero learning rates plus an RGB-only renderer ensure they receive no
+        # gradient and cannot affect geometry or topology.
+        opt.loc_feature_lr = 0.0
+        opt.loc_opacity_lr = 0.0
+        if hasattr(opt, "loc_anchor_lr"):
+            opt.loc_anchor_lr = 0.0
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+    if rgb_only_reconstruction:
+        with open(
+            os.path.join(dataset.model_path, "rgb_reconstruction_manifest.json"),
+            "w",
+        ) as handle:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "gaussian_type": str(dataset.gaussian_type),
+                    "iterations": int(opt.iterations),
+                    "source_path": str(dataset.source_path),
+                    "images": str(dataset.images),
+                    "prior_training_used_feature_loss": False,
+                    "localization_feature_rendered": False,
+                    "localization_feature_optimizer_lr": 0.0,
+                    "localization_feature_optimizer_has_gradient": False,
+                    "detector_trained": False,
+                    "rgb_map_objective": (
+                        "RGB L1+DSSIM+2DGS normal/distortion"
+                        if str(dataset.gaussian_type) == "2dgs"
+                        else "RGB L1+DSSIM"
+                    ),
+                    "rgb_densification": True,
+                    "initialization": "SfM point cloud",
+                },
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -123,7 +172,7 @@ def training(
             viewpoint_cam,
             gaussians,
             background,
-            rgb_only=False,
+            rgb_only=rgb_only_reconstruction,
             norm_feat_bf_render=dataset.norm_before_render,
             longest_edge=dataset.longest_edge,
             rasterize_mode="antialiased",
@@ -251,6 +300,7 @@ def training(
                 dataset,
                 feature_extractor=feature_extractor,
                 masks=masks,
+                rgb_only_reconstruction=rgb_only_reconstruction,
             )
             if iteration in saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -348,6 +398,7 @@ def training_report(
     dataset,
     feature_extractor,
     masks=None,
+    rgb_only_reconstruction=False,
 ):
     if tb_writer:
         tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
@@ -384,7 +435,7 @@ def training_report(
                         viewpoint,
                         scene.gaussians,
                         background,
-                        rgb_only=False,
+                        rgb_only=rgb_only_reconstruction,
                         norm_feat_bf_render=dataset.norm_before_render,
                         longest_edge=dataset.longest_edge,
                         rasterize_mode="antialiased",
@@ -401,9 +452,11 @@ def training_report(
                         mode="bilinear",
                         align_corners=False,
                     ).squeeze(0)
-                    gt_feature_map = feature_extractor(original_image[None])[
-                        "feature_map"
-                    ][0]
+                    gt_feature_map = (
+                        feature_extractor(original_image[None])["feature_map"][0]
+                        if feature_extractor is not None
+                        else None
+                    )
 
                     if masks is not None:
                         mask = masks[viewpoint.image_name][0].cuda()[None]
@@ -411,7 +464,7 @@ def training_report(
                         distort_mask = masks[viewpoint.image_name][2].cuda()[None]
                         mask = mask & distort_mask
 
-                    if feature_map is not None:
+                    if feature_map is not None and gt_feature_map is not None:
                         gt_feature_map = F.interpolate(
                             gt_feature_map.unsqueeze(0),
                             size=(feature_map.shape[1], feature_map.shape[2]),
@@ -520,6 +573,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--train_detector", action="store_true", default=False)
     parser.add_argument(
+        "--rgb_only_reconstruction",
+        action="store_true",
+        default=False,
+        help=(
+            "Train only the RGB Gaussian map. Disable localization feature "
+            "rendering, feature loss, feature extraction, and detector training."
+        ),
+    )
+    parser.add_argument(
         "--test_detector_iterations", nargs="+", type=int, default=[7000, 30000]
     )
     parser.add_argument(
@@ -557,6 +619,7 @@ if __name__ == "__main__":
         args.detector_folder,
         args.landmark_num,
         args.landmark_k,
+        args.rgb_only_reconstruction,
     )
 
     # All done

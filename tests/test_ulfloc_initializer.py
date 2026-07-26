@@ -1,5 +1,42 @@
+import pytest
 import torch
 from pathlib import Path
+
+
+def test_automatic_ulf_voxel_size_can_ignore_extreme_floaters():
+    from train_lafgs_map import _automatic_ulf_voxel_size
+
+    clean = torch.stack(
+        torch.meshgrid(
+            torch.linspace(0.0, 1.0, 10),
+            torch.linspace(0.0, 1.0, 10),
+            torch.linspace(0.0, 1.0, 10),
+            indexing="ij",
+        ),
+        dim=-1,
+    ).reshape(-1, 3)
+    xyz = torch.cat([clean, torch.tensor([[1000.0, 1000.0, 1000.0]])], dim=0)
+
+    untrimmed = _automatic_ulf_voxel_size(xyz, budget=100)
+    robust = _automatic_ulf_voxel_size(
+        xyz,
+        budget=100,
+        extent_quantile=0.01,
+    )
+
+    assert robust < 1.0
+    assert untrimmed > 100.0
+
+
+def test_automatic_ulf_voxel_size_rejects_invalid_quantile():
+    from train_lafgs_map import _automatic_ulf_voxel_size
+
+    with pytest.raises(ValueError, match="extent_quantile"):
+        _automatic_ulf_voxel_size(
+            torch.zeros(4, 3),
+            budget=4,
+            extent_quantile=0.5,
+        )
 
 
 def test_ulf_parity_dense_sampler_matches_reference_grid_sample():

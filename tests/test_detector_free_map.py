@@ -1538,6 +1538,7 @@ def test_overlap_initial_state_aligns_descriptors_and_offsets_by_id(tmp_path):
             "raw_anchor_offset": torch.tensor(
                 [[5.0, 5.1, 5.2], [2.0, 2.1, 2.2]]
             ),
+            "mvinit_observation_count": torch.tensor([50, 20]),
         },
         state_path,
     )
@@ -1572,6 +1573,11 @@ def test_overlap_initial_state_aligns_descriptors_and_offsets_by_id(tmp_path):
         ),
     )
     assert aligned_state["_raw_anchor_offset_alignment_valid"] is True
+    assert aligned_state["_mvinit_observation_count_alignment_valid"] is True
+    assert torch.equal(
+        aligned_state["mvinit_observation_count"],
+        torch.tensor([20, 50, 0]),
+    )
 
 
 def test_nonzero_initial_anchor_offset_cannot_change_saved_bounds():

@@ -63,13 +63,15 @@ from localization_training.functional_replay import (
     per_landmark_gradient_conflict,
     protected_functional_replay_loss,
 )
+from localization_training.gaussian_prior import (
+    GaussianPriorGeometry,
+    validate_gaussian_anchor_resume,
+)
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
 from localization_training.surface_anchor import (
     bounded_surface_local_offsets,
     build_pure_geometric_scaffold,
-    materialize_bounded_surface_anchors,
-    validate_surface_anchor_resume_bounds,
 )
 from localization_training.ulf_initializer import (
     PIXEL_CENTER_OFFSET,
@@ -115,6 +117,75 @@ def _file_sha256(path, chunk_size=1024 * 1024):
     return digest.hexdigest()
 
 
+def _load_rgb_prior_contract(dataset, args, primitive_count):
+    requested = str(args.rgb_prior_manifest_path or "").strip()
+    manifest_path = (
+        Path(requested).expanduser()
+        if requested
+        else Path(dataset.model_path) / "rgb_prior_manifest.json"
+    )
+    if not manifest_path.is_absolute():
+        manifest_path = Path(dataset.model_path) / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.is_file():
+        if bool(args.require_rgb_prior_manifest):
+            raise FileNotFoundError(
+                "RGB Gaussian prior manifest is required but missing: "
+                f"{manifest_path}"
+            )
+        return {
+            "validated": False,
+            "manifest_path": str(manifest_path),
+            "prior_kind": "unverified_legacy",
+        }
+
+    with manifest_path.open() as handle:
+        manifest = json.load(handle)
+    if bool(manifest.get("localization_state_present", True)):
+        raise ValueError("RGB prior manifest still contains localization state")
+    if bool(manifest.get("detector_state_present", True)):
+        raise ValueError("RGB prior manifest still contains detector state")
+    if str(manifest.get("gaussian_type", "")).lower() != str(
+        dataset.gaussian_type
+    ).lower():
+        raise ValueError(
+            "RGB prior Gaussian type does not match the requested loader"
+        )
+    if int(manifest.get("primitive_count", -1)) != int(primitive_count):
+        raise ValueError(
+            "RGB prior primitive count does not match the loaded checkpoint"
+        )
+    used_feature_loss = bool(
+        manifest.get("prior_training_used_feature_loss", True)
+    )
+    if used_feature_loss and not bool(args.allow_feature_stripped_prior):
+        raise ValueError(
+            "The prior geometry/topology was trained with feature loss. "
+            "Use a true rgb_only prior or explicitly pass "
+            "--allow_feature_stripped_prior for the compatibility ablation."
+        )
+    exported_ply = Path(str(manifest.get("exported_ply", ""))).resolve()
+    if not exported_ply.is_file():
+        raise FileNotFoundError(
+            f"Manifest-exported Gaussian PLY is missing: {exported_ply}"
+        )
+    expected_sha = str(manifest.get("exported_ply_sha256", ""))
+    actual_sha = _file_sha256(exported_ply)
+    if not expected_sha or actual_sha != expected_sha:
+        raise ValueError("RGB prior PLY hash does not match its manifest")
+    expected_model_root = exported_ply.parents[2]
+    if expected_model_root != Path(dataset.model_path).resolve():
+        raise ValueError(
+            "RGB prior manifest belongs to a different model root: "
+            f"{expected_model_root} != {Path(dataset.model_path).resolve()}"
+        )
+    return {
+        **manifest,
+        "validated": True,
+        "manifest_path": str(manifest_path),
+    }
+
+
 def _git_output(*args):
     try:
         return subprocess.check_output(
@@ -134,6 +205,7 @@ def _write_reproducibility_manifest(
     *,
     landmark_path=None,
     scaffold_diagnostics=None,
+    rgb_prior_contract=None,
 ):
     paths = {
         "landmark_path": None if landmark_path is None else str(landmark_path),
@@ -168,6 +240,7 @@ def _write_reproducibility_manifest(
             for key, value in paths.items()
         },
         "scaffold": dict(scaffold_diagnostics or {}),
+        "rgb_prior": dict(rgb_prior_contract or {}),
         "git": {
             "commit": _git_output("rev-parse", "HEAD"),
             "branch": _git_output("branch", "--show-current"),
@@ -1612,6 +1685,10 @@ def _validate_ulf_initializer_semantics(args):
             raise ValueError(f"{name} must be non-negative")
     if not 0.0 <= float(args.ulf_consensus_min_rate) <= 1.0:
         raise ValueError("ulf_consensus_min_rate must be in [0, 1]")
+    if not 0.0 <= float(args.ulf_consensus_extent_quantile) < 0.5:
+        raise ValueError("ulf_consensus_extent_quantile must be in [0, 0.5)")
+    if not 0.0 <= float(args.scaffold_opacity_keep_quantile) < 1.0:
+        raise ValueError("scaffold_opacity_keep_quantile must be in [0, 1)")
     if not -1.0 <= float(args.ulf_fusion_descriptor_min_cosine) <= 1.0:
         raise ValueError("ulf_fusion_descriptor_min_cosine must be in [-1, 1]")
     if not 0.0 <= float(args.ulf_fusion_descriptor_trim_fraction) < 1.0:
@@ -1894,11 +1971,27 @@ def _render_full_visibility(gaussians, camera, width, height):
     return visible.detach().bool()
 
 
-def _automatic_ulf_voxel_size(xyz, budget):
+def _automatic_ulf_voxel_size(xyz, budget, extent_quantile=0.0):
     xyz = torch.as_tensor(xyz).float()
     if xyz.numel() == 0:
         return 1.0
-    extent = (xyz.amax(dim=0) - xyz.amin(dim=0)).clamp_min(1e-4)
+    extent_quantile = float(extent_quantile)
+    if not 0.0 <= extent_quantile < 0.5:
+        raise ValueError("extent_quantile must be in [0, 0.5)")
+    if extent_quantile > 0.0:
+        bounds = torch.quantile(
+            xyz,
+            torch.tensor(
+                [extent_quantile, 1.0 - extent_quantile],
+                device=xyz.device,
+                dtype=xyz.dtype,
+            ),
+            dim=0,
+        )
+        extent = bounds[1] - bounds[0]
+    else:
+        extent = xyz.amax(dim=0) - xyz.amin(dim=0)
+    extent = extent.clamp_min(1e-4)
     volume = float(extent.prod().item())
     return max((volume / max(int(budget), 1)) ** (1.0 / 3.0), 1e-4)
 
@@ -2376,7 +2469,11 @@ def _build_ulf_consensus_landmark_indices(
     vote_score = votes.float() + 0.01 * visibility_counts.float()
     voxel_size = float(args.ulf_consensus_voxel_size)
     if voxel_size <= 0.0:
-        voxel_size = _automatic_ulf_voxel_size(xyz[candidate_eligible], requested_budget)
+        voxel_size = _automatic_ulf_voxel_size(
+            xyz[candidate_eligible],
+            requested_budget,
+            extent_quantile=args.ulf_consensus_extent_quantile,
+        )
     selected = coverage_balanced_score(
         xyz,
         requested_budget,
@@ -2409,6 +2506,7 @@ def _build_ulf_consensus_landmark_indices(
         "distance_chunk_size": int(args.ulf_consensus_distance_chunk),
         "candidate_cap_per_view": int(args.ulf_consensus_max_candidates_per_view),
         "voxel_size": float(voxel_size),
+        "voxel_extent_quantile": float(args.ulf_consensus_extent_quantile),
         "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
         "visibility": "2dgs_raster_contribution_gradient",
         "visibility_resolution": "resized_feature_input_resolution",
@@ -2438,9 +2536,18 @@ def _build_ulf_robust_consensus_landmark_indices(
         raise ValueError("Robust ULF consensus sampling currently requires SuperPoint")
     xyz = gaussians.get_xyz.detach().float()
     opacity = gaussians.get_opacity.detach().reshape(-1)
-    base_eligible = torch.isfinite(opacity) & (
-        opacity >= float(args.scaffold_min_opacity)
-    )
+    finite_opacity = torch.isfinite(opacity)
+    opacity_threshold = float(args.scaffold_min_opacity)
+    opacity_quantile = float(args.scaffold_opacity_keep_quantile)
+    if opacity_quantile > 0.0:
+        finite_values = opacity[finite_opacity]
+        if finite_values.numel() == 0:
+            raise ValueError("Robust ULF consensus found no finite opacity values")
+        quantile_threshold = float(
+            torch.quantile(finite_values.float(), opacity_quantile).item()
+        )
+        opacity_threshold = max(opacity_threshold, quantile_threshold)
+    base_eligible = finite_opacity & (opacity >= opacity_threshold)
     if int(args.scaffold_budget) <= 0:
         raise ValueError("Robust ULF consensus requires a positive scaffold budget")
     if int(base_eligible.sum().item()) < int(args.scaffold_budget):
@@ -2703,6 +2810,8 @@ def _build_ulf_robust_consensus_landmark_indices(
         "requested_budget": requested_budget,
         "support_view_count": int(len(cameras)),
         "gate_configuration": {
+            "minimum_opacity": opacity_threshold,
+            "opacity_keep_quantile": opacity_quantile,
             "minimum_votes": min_votes,
             "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
             "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
@@ -2790,7 +2899,6 @@ def _build_ulf_robust_consensus_landmark_indices(
         json.dump(gate_audit, handle, indent=2, sort_keys=True)
     print(f"Saved robust KCS gate audit: {gate_audit_path}")
 
-    candidate_eligible = consensus_eligible
     default_allow_fallback = False
     allow_fallback = (
         default_allow_fallback
@@ -2798,14 +2906,14 @@ def _build_ulf_robust_consensus_landmark_indices(
         else bool(args.ulf_consensus_allow_nonconsensus_fallback)
     )
     fallback_to_non_consensus = False
-    if int(candidate_eligible.sum().item()) < requested_budget:
+    consensus_count = int(consensus_eligible.sum().item())
+    if consensus_count < requested_budget:
         if not allow_fallback:
             raise RuntimeError(
                 "Robust KCS gates produced too few consensus landmarks: "
-                f"eligible={int(candidate_eligible.sum().item())} budget={requested_budget}. "
+                f"eligible={consensus_count} budget={requested_budget}. "
                 "Relax a named gate explicitly or pass --ulf_consensus_allow_nonconsensus_fallback."
             )
-        candidate_eligible = base_eligible
         fallback_to_non_consensus = True
     # Rate only becomes a score after it has first been enforced as a gate.
     vote_score = (
@@ -2817,16 +2925,39 @@ def _build_ulf_robust_consensus_landmark_indices(
     vote_score += 0.01 * consensus_visibility.float()
     voxel_size = float(args.ulf_consensus_voxel_size)
     if voxel_size <= 0.0:
-        voxel_size = _automatic_ulf_voxel_size(xyz[candidate_eligible], requested_budget)
-    selected = coverage_balanced_score(
-        xyz,
-        requested_budget,
-        vote_score,
-        voxel_size=voxel_size,
-        max_per_voxel=args.ulf_consensus_max_per_voxel,
-        eligible=candidate_eligible,
-        allow_overflow=True,
-    )
+        voxel_size = _automatic_ulf_voxel_size(
+            xyz[base_eligible],
+            requested_budget,
+            extent_quantile=args.ulf_consensus_extent_quantile,
+        )
+    if fallback_to_non_consensus:
+        # Preserve every primitive that passed the named consensus gates.
+        # Capacity-only fallback points fill the remaining fixed protocol
+        # budget without displacing that reliable core.
+        consensus_core = torch.nonzero(
+            consensus_eligible, as_tuple=False
+        ).reshape(-1)
+        fill_budget = requested_budget - int(consensus_core.numel())
+        coverage_fill = coverage_balanced_score(
+            xyz,
+            fill_budget,
+            vote_score,
+            voxel_size=voxel_size,
+            max_per_voxel=args.ulf_consensus_max_per_voxel,
+            eligible=base_eligible & ~consensus_eligible,
+            allow_overflow=True,
+        )
+        selected = torch.cat((consensus_core, coverage_fill))
+    else:
+        selected = coverage_balanced_score(
+            xyz,
+            requested_budget,
+            vote_score,
+            voxel_size=voxel_size,
+            max_per_voxel=args.ulf_consensus_max_per_voxel,
+            eligible=consensus_eligible,
+            allow_overflow=True,
+        )
     if selected.numel() != requested_budget:
         raise RuntimeError(
             "Robust ULF consensus scaffold could not satisfy the requested budget: "
@@ -2842,6 +2973,13 @@ def _build_ulf_robust_consensus_landmark_indices(
         "eligible_primitives": int(base_eligible.sum().item()),
         "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
         "fallback_to_non_consensus": bool(fallback_to_non_consensus),
+        "fallback_nonconsensus_count": int(
+            requested_budget - consensus_count
+            if fallback_to_non_consensus
+            else 0
+        ),
+        "effective_minimum_opacity": opacity_threshold,
+        "opacity_keep_quantile": opacity_quantile,
         "selected_with_consensus": int((selected_votes >= min_votes).sum().item()),
         "selected_vote_mean": float(selected_votes.float().mean().item()),
         "selected_vote_max": int(selected_votes.max().item()),
@@ -2878,6 +3016,7 @@ def _build_ulf_robust_consensus_landmark_indices(
         "distance_chunk_size": int(args.ulf_consensus_distance_chunk),
         "candidate_cap_per_view": int(args.ulf_consensus_max_candidates_per_view),
         "voxel_size": float(voxel_size),
+        "voxel_extent_quantile": float(args.ulf_consensus_extent_quantile),
         "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
         "visibility": "2dgs_raster_contribution_gradient",
         "visibility_resolution": "native_support_input_resolution",
@@ -3735,7 +3874,7 @@ def _load_or_build_visibility_cache(
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "version": 2,
+                "version": 3,
                 "signature": signature,
                 "signature_payload": signature_payload,
                 "visibility": visibility,
@@ -3848,6 +3987,15 @@ def _load_initial_features(
     landmark_indices_cpu = landmark_indices.cpu().reshape(-1)
     state_indices = state_indices.reshape(-1)
     state = dict(state)
+    mvinit_observation_count = state.get("mvinit_observation_count")
+    mvinit_count_valid = False
+    if mvinit_observation_count is not None:
+        mvinit_observation_count = torch.as_tensor(
+            mvinit_observation_count, dtype=torch.long
+        ).reshape(-1)
+        mvinit_count_valid = (
+            mvinit_observation_count.numel() == state_indices.numel()
+        )
     raw_anchor_offset = state.get("raw_anchor_offset")
     raw_offset_valid = False
     if raw_anchor_offset is not None:
@@ -3862,6 +4010,9 @@ def _load_initial_features(
                 state_indices.numel(), 3
             )
     if torch.equal(state_indices, landmark_indices_cpu):
+        if mvinit_count_valid:
+            state["mvinit_observation_count"] = mvinit_observation_count
+        state["_mvinit_observation_count_alignment_valid"] = mvinit_count_valid
         if raw_offset_valid:
             state["raw_anchor_offset"] = raw_anchor_offset
         state["_raw_anchor_offset_alignment_valid"] = raw_offset_valid
@@ -3881,11 +4032,19 @@ def _load_initial_features(
         sorted_indices[positions[in_range]] == landmark_indices_cpu[in_range]
     )
     result = F.normalize(fallback_features.float(), dim=-1).clone()
+    if mvinit_count_valid:
+        aligned_mvinit_count = torch.zeros(
+            landmark_indices.numel(), dtype=torch.long
+        )
     if bool(matched.any().item()):
         source_position = order[positions[matched]]
         result[matched.to(device=result.device)] = F.normalize(
             features[source_position].to(device), dim=-1
         )
+        if mvinit_count_valid:
+            aligned_mvinit_count[matched] = mvinit_observation_count[
+                source_position
+            ]
         if raw_offset_valid:
             aligned_offset = torch.zeros(
                 landmark_indices.numel(),
@@ -3900,6 +4059,9 @@ def _load_initial_features(
             3,
             dtype=raw_anchor_offset.dtype,
         )
+    if mvinit_count_valid:
+        state["mvinit_observation_count"] = aligned_mvinit_count
+    state["_mvinit_observation_count_alignment_valid"] = mvinit_count_valid
     state["_raw_anchor_offset_alignment_valid"] = raw_offset_valid
     return result, state, int(matched.sum().item())
 
@@ -4082,6 +4244,8 @@ def _collect_landmark_statistics(
     rescue_utility = torch.zeros(count, device=device)
     rescue_query_count = torch.zeros(count, device=device)
     target_correct_hit_count = torch.zeros(count, device=device)
+    target_false_hit_count = torch.zeros(count, device=device)
+    target_incoming_count = torch.zeros(count, device=device)
     recall_at_k_sum = {1: 0.0, 4: 0.0, 8: 0.0, 16: 0.0}
     recall_at_k_queries = 0
     for name in tqdm(query_names, desc="One-time landmark statistics"):
@@ -4187,6 +4351,18 @@ def _collect_landmark_statistics(
             & (top1_distance < float(args.negative_radius_px))
         )
         harmful_switch = ~top1_positive & ~ambiguous_switch
+        target_incoming_count.index_add_(
+            0,
+            top1,
+            torch.ones_like(top1, dtype=target_incoming_count.dtype),
+        )
+        target_false_hit_count.index_add_(
+            0,
+            top1[harmful_switch],
+            torch.ones_like(
+                top1[harmful_switch], dtype=target_false_hit_count.dtype
+            ),
+        )
         clean = observations.bank_visible[top1] & (
             top1_distance <= float(args.positive_radius_px)
         )
@@ -4357,6 +4533,8 @@ def _collect_landmark_statistics(
         "rescue_utility": rescue_utility,
         "rescue_query_count": rescue_query_count,
         "target_correct_hit_count": target_correct_hit_count,
+        "target_false_hit_count": target_false_hit_count,
+        "target_incoming_count": target_incoming_count,
         "proposal_observation_count": proposal_observation_count,
         "proposal_correct_count": proposal_correct_count,
         "effective_observation_count": effective_count,
@@ -5372,6 +5550,7 @@ def _state_config(
     scaffold_diagnostics,
     *,
     initial_state=None,
+    rgb_prior_contract=None,
 ):
     inherited_reject_contract = None
     if isinstance(initial_state, dict):
@@ -5428,9 +5607,13 @@ def _state_config(
         "frozen_generic_proposal_head": bool(args.generic_proposal_count > 0),
         "geometry_frozen": not bool(args.geometry_weight > 0.0),
         "raw_xyz_trainable": False,
+        "localization_base_from_initial_state": bool(
+            args.initial_state_geometry_as_base
+        ),
         "bounded_anchor_trainable": bool(args.geometry_weight > 0.0),
         "dynamic_landmark_selection": False,
         "one_time_landmark_distillation": bool(args.distill_budget > 0),
+        "landmark_statistics_saved": bool(args.save_landmark_statistics),
         "online_rendering": False,
         "fim_loss_enabled": False,
         "pair_enabled": False,
@@ -5655,9 +5838,18 @@ def _state_config(
         "surface_weight": float(args.surface_weight),
         "depth_weight": float(args.depth_weight),
         "reprojection_weight": float(args.reprojection_weight),
-        "surface_anchor_parameterization": "radial_tanh_tangent_plane_v1",
+        "surface_anchor_parameterization": (
+            "radial_tanh_tangent_plane_v1"
+            if str(dataset.gaussian_type).lower() == "2dgs"
+            else "covariance_bounded_tanh_v1"
+        ),
         "tangent_bound_m": float(args.tangent_bound_m),
         "normal_bound_m": float(args.normal_bound_m),
+        "covariance_anchor_scale": float(args.covariance_anchor_scale),
+        "covariance_anchor_absolute_bound_m": float(
+            args.covariance_anchor_absolute_bound_m
+        ),
+        "rgb_prior_contract": dict(rgb_prior_contract or {}),
         "pose_start_step": int(args.pose_start_step),
         "pose_interval": int(args.pose_interval),
         "pose_weight": float(args.pose_weight),
@@ -5671,6 +5863,10 @@ def _state_config(
         "descriptor_end_step": int(args.descriptor_end_step),
         "mvinit_max_observations": int(args.mvinit_max_observations),
         "ulf_consensus_keypoints": int(args.ulf_consensus_keypoints),
+        "scaffold_min_opacity": float(args.scaffold_min_opacity),
+        "scaffold_opacity_keep_quantile": float(
+            args.scaffold_opacity_keep_quantile
+        ),
         "ulf_consensus_radius_px": float(args.ulf_consensus_radius_px),
         "ulf_consensus_min_votes": int(args.ulf_consensus_min_votes),
         "ulf_consensus_min_visible_views": int(
@@ -5965,6 +6161,18 @@ def train(dataset, args):
         raise ValueError("A pretrained Gaussian map checkpoint is required")
     for parameter in gaussians.parameters():
         parameter.requires_grad_(False)
+    rgb_prior_contract = _load_rgb_prior_contract(
+        dataset,
+        args,
+        primitive_count=gaussians.get_xyz.shape[0],
+    )
+    print(
+        "RGB Gaussian prior contract: "
+        f"validated={rgb_prior_contract.get('validated', False)} "
+        f"kind={rgb_prior_contract.get('prior_kind', 'unknown')} "
+        f"type={dataset.gaussian_type} "
+        f"primitives={gaussians.get_xyz.shape[0]}"
+    )
 
     feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
     for parameter in feature_extractor.parameters():
@@ -6062,12 +6270,70 @@ def train(dataset, args):
         args,
         landmark_path=landmark_path,
         scaffold_diagnostics=scaffold_diagnostics,
+        rgb_prior_contract=rgb_prior_contract,
     )
-    base_bank_xyz = gaussians.get_xyz[landmark_indices.cuda()].detach().float()
+    landmark_indices_cuda = landmark_indices.cuda()
+    rgb_bank_xyz = gaussians.get_xyz[landmark_indices_cuda].detach().float()
+    base_bank_xyz = rgb_bank_xyz
+    if bool(args.initial_state_geometry_as_base):
+        if not args.initial_state_path:
+            raise ValueError(
+                "--initial_state_geometry_as_base requires --initial_state_path"
+            )
+        geometry_state = torch.load(
+            args.initial_state_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        geometry_indices = torch.as_tensor(
+            geometry_state.get("landmark_indices"), dtype=torch.long
+        ).reshape(-1)
+        if not torch.equal(geometry_indices, landmark_indices.cpu()):
+            raise ValueError(
+                "Initial-state localization geometry is not exactly aligned "
+                "with the requested landmark bank"
+            )
+        geometry_xyz = torch.as_tensor(
+            geometry_state.get("landmark_xyz"), dtype=torch.float32
+        )
+        if geometry_xyz.shape != base_bank_xyz.shape:
+            raise ValueError(
+                "Initial-state landmark_xyz must match the landmark bank"
+            )
+        if not bool(torch.isfinite(geometry_xyz).all()):
+            raise ValueError("Initial-state landmark_xyz contains non-finite values")
+        base_bank_xyz = geometry_xyz.to(base_bank_xyz.device)
     base_bank_rotation = (
-        gaussians.get_rotation[landmark_indices.cuda()].detach().float()
+        gaussians.get_rotation[landmark_indices_cuda].detach().float()
     )
-    base_bank_normals = surface_normals_from_rotation(base_bank_rotation).detach()
+    base_bank_scaling = (
+        gaussians.get_scaling[landmark_indices_cuda].detach().float()
+    )
+    base_bank_opacity = (
+        gaussians.get_opacity[landmark_indices_cuda].detach().float().reshape(-1)
+    )
+    prior_geometry = GaussianPriorGeometry(
+        str(dataset.gaussian_type),
+        xyz=base_bank_xyz,
+        rotation=base_bank_rotation,
+        scaling=base_bank_scaling,
+    )
+    rgb_prior_geometry = GaussianPriorGeometry(
+        str(dataset.gaussian_type),
+        xyz=rgb_bank_xyz,
+        rotation=base_bank_rotation,
+        scaling=base_bank_scaling,
+    )
+    base_bank_normals = prior_geometry.proxy_normals.detach()
+
+    def materialize_anchor(raw_offset):
+        return prior_geometry.materialize_anchor(
+            raw_offset,
+            tangent_bound_m=args.tangent_bound_m,
+            normal_bound_m=args.normal_bound_m,
+            covariance_scale=args.covariance_anchor_scale,
+            absolute_bound_m=args.covariance_anchor_absolute_bound_m,
+        )
     visibility_cache = None
     if args.visibility_mode == "rasterizer":
         visibility_signature, visibility_payload = _visibility_signature(
@@ -6198,10 +6464,49 @@ def train(dataset, args):
         mvinit_diagnostics["initial_state_alignment"] = str(
             args.initial_state_alignment
         )
-        validate_surface_anchor_resume_bounds(
+        if bool(
+            initial_state.get(
+                "_mvinit_observation_count_alignment_valid", False
+            )
+        ):
+            inherited_mvinit_count = torch.as_tensor(
+                initial_state["mvinit_observation_count"],
+                dtype=torch.long,
+                device=base_bank_xyz.device,
+            ).reshape(-1)
+            if inherited_mvinit_count.numel() != landmark_indices.numel():
+                raise ValueError(
+                    "Aligned MVInit observation counts do not match the "
+                    "fixed landmark bank"
+                )
+            mvinit_observation_count = inherited_mvinit_count
+            mvinit_diagnostics.update(
+                {
+                    "inherited_mvinit_observation_count": True,
+                    "observation_count_mean": float(
+                        mvinit_observation_count.float().mean().item()
+                    ),
+                    "observation_count_median": float(
+                        mvinit_observation_count.float().median().item()
+                    ),
+                    "observation_count_max": int(
+                        mvinit_observation_count.max().item()
+                    ),
+                    "observed_landmarks": int(
+                        (mvinit_observation_count > 0).sum().item()
+                    ),
+                    "unobserved_landmarks": int(
+                        (mvinit_observation_count == 0).sum().item()
+                    ),
+                }
+            )
+        validate_gaussian_anchor_resume(
             initial_state,
+            gaussian_type=dataset.gaussian_type,
             tangent_bound_m=args.tangent_bound_m,
             normal_bound_m=args.normal_bound_m,
+            covariance_scale=args.covariance_anchor_scale,
+            absolute_bound_m=args.covariance_anchor_absolute_bound_m,
         )
     else:
         initial_features = mvinit_features
@@ -6214,6 +6519,7 @@ def train(dataset, args):
         landmark_path,
         scaffold_diagnostics,
         initial_state=initial_state,
+        rgb_prior_contract=rgb_prior_contract,
     )
     residual = torch.nn.Parameter(torch.zeros_like(initial_features))
     raw_anchor_offset = torch.nn.Parameter(torch.zeros_like(base_bank_xyz))
@@ -6290,13 +6596,7 @@ def train(dataset, args):
     )
     save_steps = set(requested_checkpoint_steps)
 
-    initial_xyz = materialize_bounded_surface_anchors(
-        base_bank_xyz,
-        base_bank_rotation,
-        raw_anchor_offset,
-        tangent_bound_m=args.tangent_bound_m,
-        normal_bound_m=args.normal_bound_m,
-    )
+    initial_xyz = materialize_anchor(raw_anchor_offset)
     geometry_support_mask = None
     geometry_support_counts = None
     geometry_support_diagnostics = {}
@@ -6572,13 +6872,7 @@ def train(dataset, args):
             order_position = 0
         query_name = train_order[order_position]
         order_position += 1
-        current_xyz = materialize_bounded_surface_anchors(
-            base_bank_xyz,
-            base_bank_rotation,
-            raw_anchor_offset,
-            tangent_bound_m=args.tangent_bound_m,
-            normal_bound_m=args.normal_bound_m,
-        )
+        current_xyz = materialize_anchor(raw_anchor_offset)
         observations, anchor_auxiliary = _primary_observations(
             cache[query_name],
             base_bank_xyz,
@@ -6997,6 +7291,18 @@ def train(dataset, args):
                     local_temperature=args.local_temperature,
                     depth_scale_floor=args.depth_scale_floor,
                 )
+            if str(dataset.gaussian_type).lower() == "3dgs":
+                surface_loss = prior_geometry.mahalanobis_anchor_prior(
+                    current_xyz
+                ).mean()
+                geometry_diagnostics.update(
+                    {
+                        "geometry_prior_kind": "gaussian_mahalanobis",
+                        "geometry_mahalanobis_loss": float(
+                            surface_loss.detach().item()
+                        ),
+                    }
+                )
         else:
             surface_loss = raw_anchor_offset.sum() * 0.0
             depth_loss = raw_anchor_offset.sum() * 0.0
@@ -7271,13 +7577,7 @@ def train(dataset, args):
             optimizer.zero_grad(set_to_none=True)
         with torch.no_grad():
             raw_anchor_offset.clamp_(-float(args.raw_offset_clip), float(args.raw_offset_clip))
-            current_xyz = materialize_bounded_surface_anchors(
-                base_bank_xyz,
-                base_bank_rotation,
-                raw_anchor_offset,
-                tangent_bound_m=args.tangent_bound_m,
-                normal_bound_m=args.normal_bound_m,
-            )
+            current_xyz = materialize_anchor(raw_anchor_offset)
             displacement = torch.linalg.norm(current_xyz - base_bank_xyz, dim=1)
             if (
                 gradients_finite
@@ -7438,13 +7738,7 @@ def train(dataset, args):
         residual_scale=args.residual_scale,
         max_residual_norm=args.max_residual_norm,
     )
-    final_xyz = materialize_bounded_surface_anchors(
-        base_bank_xyz,
-        base_bank_rotation,
-        raw_anchor_offset,
-        tangent_bound_m=args.tangent_bound_m,
-        normal_bound_m=args.normal_bound_m,
-    )
+    final_xyz = materialize_anchor(raw_anchor_offset)
     final_validation = _validate_descriptor_field(
         final_features,
         validation_names,
@@ -7457,6 +7751,67 @@ def train(dataset, args):
     )
     distillation_summary = {"enabled": False}
     landmark_statistics_summary = {}
+    if bool(args.save_landmark_statistics) and int(args.distill_budget) <= 0:
+        statistics, landmark_statistics_summary = _collect_landmark_statistics(
+            final_features,
+            train_names,
+            cache,
+            final_xyz,
+            args,
+            visibility_cache=visibility_cache,
+            base_bank_xyz=base_bank_xyz,
+        )
+        raster_visibility_count = torch.zeros_like(base_bank_opacity)
+        if visibility_cache is not None:
+            for name in train_names:
+                raster_visibility_count.add_(
+                    torch.as_tensor(
+                        visibility_cache[name],
+                        device=base_bank_opacity.device,
+                        dtype=base_bank_opacity.dtype,
+                    )
+                )
+        torch.save(
+            {
+                "version": 2,
+                "split": "train_only",
+                "train_camera_names_sha256": _camera_names_sha256(train_names),
+                "landmark_indices": landmark_indices.detach().cpu(),
+                "statistics": {
+                    name: value.detach().cpu()
+                    for name, value in statistics.items()
+                },
+                "geometry_evidence": {
+                    "gaussian_type": str(dataset.gaussian_type),
+                    "opacity": base_bank_opacity.detach().cpu(),
+                    "scaling": base_bank_scaling.detach().cpu(),
+                    "planarity": prior_geometry.planarity.detach().cpu(),
+                    "raster_visibility_count": (
+                        raster_visibility_count.detach().cpu()
+                    ),
+                    "mvinit_observation_count": (
+                        mvinit_observation_count.detach().cpu()
+                    ),
+                    "rgb_center_offset_mahalanobis": (
+                        rgb_prior_geometry.mahalanobis_anchor_prior(
+                            base_bank_xyz
+                        )
+                        .detach()
+                        .cpu()
+                    ),
+                    "rgb_center_offset_m": (
+                        torch.linalg.norm(
+                            base_bank_xyz - rgb_bank_xyz,
+                            dim=1,
+                        )
+                        .detach()
+                        .cpu()
+                    ),
+                },
+                "diagnostics": dict(landmark_statistics_summary),
+            },
+            output_dir / "landmark_statistics_full.pt",
+        )
     if int(args.distill_budget) > 0:
         statistics, landmark_statistics_summary = _collect_landmark_statistics(
             final_features,
@@ -7551,13 +7906,22 @@ def train(dataset, args):
             F.normalize(final_features, dim=-1)
             * F.normalize(initial_features, dim=-1)
         ).sum(dim=-1)
-        tangent_offset, normal_offset = bounded_surface_local_offsets(
-            raw_anchor_offset,
-            tangent_bound_m=args.tangent_bound_m,
-            normal_bound_m=args.normal_bound_m,
+        anchor_displacement = final_xyz - base_bank_xyz
+        local_anchor_displacement = torch.einsum(
+            "nji,nj->ni",
+            prior_geometry.frame,
+            anchor_displacement,
         )
-        tangent_norm = torch.linalg.norm(tangent_offset, dim=1)
-        normal_abs = normal_offset.abs()
+        if str(dataset.gaussian_type).lower() == "2dgs":
+            tangent_norm = torch.linalg.norm(
+                local_anchor_displacement[:, :2], dim=1
+            )
+            normal_abs = local_anchor_displacement[:, 2].abs()
+        else:
+            tangent_norm = torch.linalg.norm(
+                local_anchor_displacement, dim=1
+            )
+            normal_abs = local_anchor_displacement.abs().max(dim=1).values
         summary = {
             "config": config,
             "mvinit": mvinit_diagnostics,
@@ -7605,6 +7969,9 @@ def train(dataset, args):
                 # descriptor-only phase unless a configured loss can update it.
                 "bounded_anchor_parameter_requires_grad": bool(
                     raw_anchor_offset.requires_grad
+                ),
+                "localization_anchor_parameterization": (
+                    config["surface_anchor_parameterization"]
                 ),
                 "bounded_anchor_trainable": bool(args.geometry_weight > 0.0),
                 "anchor_displacement_mean_m": float(
@@ -7697,6 +8064,37 @@ def build_parser():
     parser.add_argument("--load_iteration", type=int, default=30000)
     parser.add_argument("--output_dir", required=True)
     parser.add_argument(
+        "--rgb_prior_manifest_path",
+        default="",
+        help=(
+            "Export manifest proving that the frozen Gaussian input does not "
+            "contain a localization feature, detector, or prior landmark bank."
+        ),
+    )
+    parser.add_argument(
+        "--require_rgb_prior_manifest",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--allow_feature_stripped_prior",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Allow a compatibility prior whose geometry/topology was previously "
+            "trained with feature loss. It must not be labelled rgb_only."
+        ),
+    )
+    parser.add_argument(
+        "--initial_state_geometry_as_base",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use an exactly aligned initial state's localization-only xyz as "
+            "the base anchor while leaving the frozen RGB Gaussian map intact."
+        ),
+    )
+    parser.add_argument(
         "--query_feature_contract",
         choices=[
             _QUERY_FEATURE_CONTRACT_LEGACY,
@@ -7730,6 +8128,15 @@ def build_parser():
     parser.add_argument("--regenerate_scaffold", action="store_true")
     parser.add_argument("--scaffold_budget", type=int, default=16384)
     parser.add_argument("--scaffold_min_opacity", type=float, default=0.05)
+    parser.add_argument(
+        "--scaffold_opacity_keep_quantile",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional scene-normalized opacity floor. The effective floor is "
+            "max(scaffold_min_opacity, this finite-opacity quantile)."
+        ),
+    )
     parser.add_argument("--scaffold_min_visible_views", type=int, default=1)
     parser.add_argument("--scaffold_visibility_chunk_size", type=int, default=262144)
     parser.add_argument("--scaffold_normal_bins", type=int, default=6)
@@ -7828,6 +8235,15 @@ def build_parser():
         help="Optional opacity-ranked cap for KCS; zero preserves all visible primitives.",
     )
     parser.add_argument("--ulf_consensus_voxel_size", type=float, default=0.0)
+    parser.add_argument(
+        "--ulf_consensus_extent_quantile",
+        type=float,
+        default=0.0,
+        help=(
+            "Symmetric quantile trimmed from each side when deriving the "
+            "automatic KCS coverage voxel size. Zero preserves min/max extent."
+        ),
+    )
     parser.add_argument("--ulf_consensus_max_per_voxel", type=int, default=8)
     parser.add_argument(
         "--ulf_support_mask_policy",
@@ -8433,6 +8849,18 @@ def build_parser():
     parser.add_argument("--reprojection_weight", type=float, default=1.0)
     parser.add_argument("--tangent_bound_m", type=float, default=0.005)
     parser.add_argument("--normal_bound_m", type=float, default=0.002)
+    parser.add_argument(
+        "--covariance_anchor_scale",
+        type=float,
+        default=0.5,
+        help="Per-axis 3DGS localization-anchor radius as a scale multiple.",
+    )
+    parser.add_argument(
+        "--covariance_anchor_absolute_bound_m",
+        type=float,
+        default=0.03,
+        help="Absolute per-axis cap for covariance-bounded 3DGS anchors.",
+    )
     parser.add_argument("--raw_offset_clip", type=float, default=3.0)
     parser.add_argument("--depth_scale_floor", type=float, default=0.25)
     parser.add_argument(
@@ -8502,6 +8930,15 @@ def build_parser():
     parser.add_argument("--pose_rotation_scale_deg", type=float, default=2.0)
     parser.add_argument("--pose_max_condition_number", type=float, default=5e4)
     parser.add_argument("--distill_budget", type=int, default=0)
+    parser.add_argument(
+        "--save_landmark_statistics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Persist train-only localization and Gaussian-geometry evidence "
+            "without changing the deployed landmark bank."
+        ),
+    )
     parser.add_argument(
         "--distill_require_exact_budget",
         action="store_true",
