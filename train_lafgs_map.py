@@ -67,6 +67,10 @@ from localization_training.gaussian_prior import (
     GaussianPriorGeometry,
     validate_gaussian_anchor_resume,
 )
+from localization_training.geometry_teacher import (
+    camera_center_bins,
+    robust_triangulate_associations,
+)
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
 from localization_training.surface_anchor import (
@@ -4212,6 +4216,164 @@ def _clear_inactive_phase_gradients(
 
 
 @torch.no_grad()
+def _collect_independent_geometry_teacher(
+    features,
+    query_names,
+    cache,
+    bank_xyz,
+    args,
+):
+    """Triangulate descriptor-only top-1 associations without center gating."""
+    normalized_features = F.normalize(features.detach(), dim=1)
+    landmark_indices = []
+    query_indices = []
+    pixels = []
+    confidences = []
+    rendered_depths = []
+    camera_intrinsics = []
+    camera_poses = []
+    query_support_offsets = [0]
+    query_support_indices = []
+    candidate_count = 0
+    support_count = 0
+    for query_index, name in enumerate(
+        tqdm(query_names, desc="Independent descriptor-ray teacher")
+    ):
+        cached = cache[name]
+        query = F.normalize(
+            cached["native_descriptors"].cuda().float(), dim=1
+        )
+        keypoints = cached["native_keypoints"].cuda().float()
+        K = cached["native_K"].cuda().float()
+        pose_w2c = cached["pose_w2c"].cuda().float()
+        height, width = map(int, cached["native_input_hw"])
+        top_values, top_indices = torch.topk(
+            query @ normalized_features.T, k=2, dim=1
+        )
+        top1 = top_indices[:, 0]
+        margin = top_values[:, 0] - top_values[:, 1]
+        association_valid = (
+            (top_values[:, 0] >= float(args.geometry_teacher_min_similarity))
+            & (margin >= float(args.geometry_teacher_min_margin))
+        )
+        detector_score = cached["native_scores"].cuda().float().clamp(0.0, 1.0)
+        confidence = (
+            torch.sigmoid(
+                (top_values[:, 0] - float(args.geometry_teacher_min_similarity))
+                / 0.05
+            )
+            * torch.sigmoid(
+                (margin - float(args.geometry_teacher_min_margin)) / 0.02
+            )
+            * detector_score.clamp_min(0.05)
+        )
+        physical_keypoints = keypoints + float(PIXEL_CENTER_OFFSET)
+        projected, _, projected_valid = project_landmarks_to_query(
+            bank_xyz[top1],
+            K,
+            pose_w2c,
+            height,
+            width,
+            pixel_center_offset=0.0,
+        )
+        clean = projected_valid & (
+            torch.linalg.norm(projected - physical_keypoints, dim=1)
+            <= float(args.positive_radius_px)
+        )
+        support = torch.unique(top1[clean]).detach().cpu()
+        query_support_indices.append(support)
+        support_count += int(support.numel())
+        query_support_offsets.append(support_count)
+
+        if bool(association_valid.any()):
+            selected = torch.nonzero(
+                association_valid, as_tuple=False
+            ).reshape(-1)
+            native_depth = cached["native_depth"].cuda().float()
+            depth_xy = keypoints[selected].round().long()
+            depth_xy[:, 0].clamp_(0, width - 1)
+            depth_xy[:, 1].clamp_(0, height - 1)
+            sampled_depth = native_depth[depth_xy[:, 1], depth_xy[:, 0]]
+            landmark_indices.append(top1[selected].detach().cpu())
+            query_indices.append(
+                torch.full(
+                    (selected.numel(),), query_index, dtype=torch.long
+                )
+            )
+            pixels.append(physical_keypoints[selected].detach().cpu())
+            confidences.append(confidence[selected].detach().cpu())
+            rendered_depths.append(sampled_depth.detach().cpu())
+            candidate_count += int(selected.numel())
+        camera_intrinsics.append(cached["native_K"].float())
+        camera_poses.append(cached["pose_w2c"].float())
+
+    if not landmark_indices:
+        raise RuntimeError(
+            "Independent geometry teacher found no descriptor associations; "
+            "relax its absolute similarity or margin threshold"
+        )
+    camera_intrinsics = torch.stack(camera_intrinsics)
+    camera_poses = torch.stack(camera_poses)
+    query_bins = camera_center_bins(
+        camera_poses, int(args.geometry_teacher_view_bins)
+    )
+    geometry = robust_triangulate_associations(
+        landmark_count=int(bank_xyz.shape[0]),
+        landmark_index=torch.cat(landmark_indices),
+        query_index=torch.cat(query_indices),
+        uv=torch.cat(pixels),
+        confidence=torch.cat(confidences),
+        camera_K=camera_intrinsics,
+        pose_w2c=camera_poses,
+        query_bin=query_bins,
+        rendered_depth=torch.cat(rendered_depths),
+        maximum_observations_per_landmark=(
+            args.geometry_teacher_max_observations_per_landmark
+        ),
+        minimum_views=args.geometry_teacher_min_views,
+        minimum_view_bins=args.geometry_teacher_min_view_bins,
+        huber_delta_px=args.geometry_teacher_huber_delta_px,
+        iterations=args.geometry_teacher_iterations,
+        minimum_parallax_deg=args.geometry_teacher_min_parallax_deg,
+        maximum_reprojection_px=args.geometry_teacher_max_reprojection_px,
+        maximum_condition_number=args.geometry_teacher_max_condition_number,
+    )
+    support_indices = (
+        torch.cat(query_support_indices)
+        if query_support_indices
+        else torch.zeros(0, dtype=torch.long)
+    )
+    statistics = {
+        "query_support_offsets": torch.as_tensor(
+            query_support_offsets, dtype=torch.long
+        ),
+        "query_support_indices": support_indices,
+        "query_support_query_count": torch.as_tensor(
+            len(query_names), dtype=torch.long
+        ),
+    }
+    diagnostics = {
+        "geometry_teacher_candidate_association_count": candidate_count,
+        "geometry_teacher_query_support_edge_count": int(
+            support_indices.numel()
+        ),
+        "geometry_teacher_triangulated_landmark_count": int(
+            geometry["triangulated"].sum().item()
+        ),
+        "geometry_teacher_high_confidence_landmark_count": int(
+            geometry["triangulation_high_confidence"].sum().item()
+        ),
+        "geometry_teacher_similarity_threshold": float(
+            args.geometry_teacher_min_similarity
+        ),
+        "geometry_teacher_margin_threshold": float(
+            args.geometry_teacher_min_margin
+        ),
+    }
+    return statistics, geometry, diagnostics
+
+
+@torch.no_grad()
 def _collect_landmark_statistics(
     features,
     query_names,
@@ -7761,6 +7923,76 @@ def train(dataset, args):
             visibility_cache=visibility_cache,
             base_bank_xyz=base_bank_xyz,
         )
+        independent_geometry_evidence = {}
+        if bool(args.save_independent_geometry_teacher):
+            (
+                independent_statistics,
+                independent_geometry_evidence,
+                independent_diagnostics,
+            ) = _collect_independent_geometry_teacher(
+                final_features,
+                train_names,
+                cache,
+                final_xyz,
+                args,
+            )
+            statistics.update(independent_statistics)
+            triangulated_xyz = independent_geometry_evidence[
+                "triangulated_xyz"
+            ].to(device=final_xyz.device, dtype=final_xyz.dtype)
+            triangulated = independent_geometry_evidence["triangulated"].to(
+                device=final_xyz.device
+            )
+            safe_triangulated_xyz = torch.where(
+                triangulated[:, None], triangulated_xyz, final_xyz
+            )
+            current_center_geometry = GaussianPriorGeometry(
+                gaussian_type=str(dataset.gaussian_type),
+                xyz=final_xyz,
+                rotation=rgb_prior_geometry.rotation,
+                scaling=rgb_prior_geometry.scaling,
+            )
+            independent_geometry_evidence.update(
+                {
+                    "triangulation_current_center_offset_m": torch.where(
+                        triangulated,
+                        torch.linalg.norm(
+                            safe_triangulated_xyz - final_xyz, dim=1
+                        ),
+                        torch.full_like(
+                            triangulated_xyz[:, 0], float("inf")
+                        ),
+                    ).cpu(),
+                    "triangulation_rgb_center_offset_m": torch.where(
+                        triangulated,
+                        torch.linalg.norm(
+                            safe_triangulated_xyz - rgb_bank_xyz, dim=1
+                        ),
+                        torch.full_like(
+                            triangulated_xyz[:, 0], float("inf")
+                        ),
+                    ).cpu(),
+                    "triangulation_current_center_mahalanobis": torch.where(
+                        triangulated,
+                        current_center_geometry.mahalanobis_anchor_prior(
+                            safe_triangulated_xyz
+                        ),
+                        torch.full_like(
+                            triangulated_xyz[:, 0], float("inf")
+                        ),
+                    ).cpu(),
+                    "triangulation_rgb_center_mahalanobis": torch.where(
+                        triangulated,
+                        rgb_prior_geometry.mahalanobis_anchor_prior(
+                            safe_triangulated_xyz
+                        ),
+                        torch.full_like(
+                            triangulated_xyz[:, 0], float("inf")
+                        ),
+                    ).cpu(),
+                }
+            )
+            landmark_statistics_summary.update(independent_diagnostics)
         raster_visibility_count = torch.zeros_like(base_bank_opacity)
         if visibility_cache is not None:
             for name in train_names:
@@ -7771,6 +8003,32 @@ def train(dataset, args):
                         dtype=base_bank_opacity.dtype,
                     )
                 )
+        geometry_evidence = {
+            "gaussian_type": str(dataset.gaussian_type),
+            "opacity": base_bank_opacity.detach().cpu(),
+            "scaling": base_bank_scaling.detach().cpu(),
+            "planarity": prior_geometry.planarity.detach().cpu(),
+            "raster_visibility_count": (
+                raster_visibility_count.detach().cpu()
+            ),
+            "mvinit_observation_count": (
+                mvinit_observation_count.detach().cpu()
+            ),
+            "rgb_center_offset_mahalanobis": (
+                rgb_prior_geometry.mahalanobis_anchor_prior(base_bank_xyz)
+                .detach()
+                .cpu()
+            ),
+            "rgb_center_offset_m": (
+                torch.linalg.norm(
+                    base_bank_xyz - rgb_bank_xyz,
+                    dim=1,
+                )
+                .detach()
+                .cpu()
+            ),
+        }
+        geometry_evidence.update(independent_geometry_evidence)
         torch.save(
             {
                 "version": 2,
@@ -7781,33 +8039,7 @@ def train(dataset, args):
                     name: value.detach().cpu()
                     for name, value in statistics.items()
                 },
-                "geometry_evidence": {
-                    "gaussian_type": str(dataset.gaussian_type),
-                    "opacity": base_bank_opacity.detach().cpu(),
-                    "scaling": base_bank_scaling.detach().cpu(),
-                    "planarity": prior_geometry.planarity.detach().cpu(),
-                    "raster_visibility_count": (
-                        raster_visibility_count.detach().cpu()
-                    ),
-                    "mvinit_observation_count": (
-                        mvinit_observation_count.detach().cpu()
-                    ),
-                    "rgb_center_offset_mahalanobis": (
-                        rgb_prior_geometry.mahalanobis_anchor_prior(
-                            base_bank_xyz
-                        )
-                        .detach()
-                        .cpu()
-                    ),
-                    "rgb_center_offset_m": (
-                        torch.linalg.norm(
-                            base_bank_xyz - rgb_bank_xyz,
-                            dim=1,
-                        )
-                        .detach()
-                        .cpu()
-                    ),
-                },
+                "geometry_evidence": geometry_evidence,
                 "diagnostics": dict(landmark_statistics_summary),
             },
             output_dir / "landmark_statistics_full.pt",
@@ -8938,6 +9170,48 @@ def build_parser():
             "Persist train-only localization and Gaussian-geometry evidence "
             "without changing the deployed landmark bank."
         ),
+    )
+    parser.add_argument(
+        "--save_independent_geometry_teacher",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "During an offline statistics sweep, triangulate descriptor-only "
+            "cross-view native associations and save query-level coverage."
+        ),
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_similarity", type=float, default=0.7
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_margin", type=float, default=0.03
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_observations_per_landmark",
+        type=int,
+        default=32,
+    )
+    parser.add_argument("--geometry_teacher_min_views", type=int, default=3)
+    parser.add_argument(
+        "--geometry_teacher_view_bins", type=int, default=8
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_view_bins", type=int, default=2
+    )
+    parser.add_argument(
+        "--geometry_teacher_huber_delta_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_iterations", type=int, default=3
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_parallax_deg", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_reprojection_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_condition_number", type=float, default=1e6
     )
     parser.add_argument(
         "--distill_require_exact_budget",

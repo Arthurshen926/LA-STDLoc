@@ -35,7 +35,14 @@ def main():
     parser.add_argument("--output_dir", required=True)
     parser.add_argument(
         "--mode",
-        choices=["loc", "loc_geo", "loc_geo_coverage"],
+        choices=[
+            "loc",
+            "loc_query_coverage",
+            "hard_geo_loc",
+            "hard_geo_loc_query_coverage",
+            "loc_geo",
+            "loc_geo_coverage",
+        ],
         required=True,
     )
     parser.add_argument("--budget", type=int, default=24000)
@@ -104,7 +111,8 @@ def main():
             ("localization_excluded", 0),
             ("keep", 1),
             ("repairable", 2),
-            ("reject", 3),
+            ("geometry_reject", 3),
+            ("unknown", 4),
         )
     }
     selected_mask = torch.zeros(source_indices.numel(), dtype=torch.bool)
@@ -219,6 +227,56 @@ def main():
                 selected_mask[~outlier_label].float().mean().item()
             ),
         }
+        triangulation_high_confidence = scores.components.get(
+            "triangulation_high_confidence"
+        )
+        triangulation_center_offset = scores.components.get(
+            "triangulation_center_offset_m"
+        )
+        if (
+            triangulation_high_confidence is not None
+            and triangulation_center_offset is not None
+        ):
+            high_confidence = torch.as_tensor(
+                triangulation_high_confidence, dtype=torch.bool
+            )
+            center_offset = torch.as_tensor(
+                triangulation_center_offset, dtype=torch.float32
+            )
+            all_landmark_score = torch.where(
+                high_confidence,
+                center_offset.nan_to_num(posinf=0.0),
+                torch.zeros_like(center_offset),
+            )
+            independent_metrics = binary_ranking_metrics(
+                all_landmark_score, outlier_label
+            )
+            conditional_metrics = None
+            conditional_label = outlier_label[high_confidence]
+            if (
+                bool(conditional_label.any())
+                and bool((~conditional_label).any())
+            ):
+                conditional_metrics = binary_ranking_metrics(
+                    center_offset[high_confidence], conditional_label
+                )
+            report["controlled_outlier_evaluation"].update(
+                {
+                    "independent_triangulation_outlier": independent_metrics,
+                    "independent_triangulation_outlier_conditional": (
+                        conditional_metrics
+                    ),
+                    "independent_triangulation_coverage": float(
+                        high_confidence.float().mean().item()
+                    ),
+                    "independent_triangulation_outlier_coverage": float(
+                        high_confidence[outlier_label].float().mean().item()
+                    ),
+                    "independent_triangulation_clean_coverage": float(
+                        high_confidence[~outlier_label].float().mean().item()
+                    ),
+                }
+            )
     (output_dir / "sanitization_report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )

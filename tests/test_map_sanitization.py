@@ -120,3 +120,30 @@ def test_geometry_selection_cannot_reintroduce_large_anchor_drift():
         scores, statistics, mode="loc_geo", budget=18
     )
     assert not bool(torch.isin(torch.tensor([0, 1]), selected).any())
+
+
+def test_independent_geometry_uses_five_states_and_hard_reject_gate():
+    statistics, geometry = _inputs(count=20)
+    geometry["rgb_center_offset_m"].zero_()
+    geometry["triangulation_high_confidence"] = torch.ones(20, dtype=torch.bool)
+    geometry["triangulation_current_center_offset_m"] = torch.zeros(20)
+    geometry["triangulation_current_center_offset_m"][0] = 0.2
+    scores = build_sanitization_scores(statistics, geometry)
+    assert scores.state[0] == 3
+    selected = select_sanitized_landmarks(
+        scores, statistics, mode="hard_geo_loc", budget=19
+    )
+    assert 0 not in selected
+
+
+def test_query_level_coverage_reserves_supported_landmarks():
+    statistics, geometry = _inputs(count=20)
+    geometry["rgb_center_offset_m"].zero_()
+    statistics["query_support_offsets"] = torch.tensor([0, 2, 4])
+    statistics["query_support_indices"] = torch.tensor([0, 1, 2, 3])
+    scores = build_sanitization_scores(statistics, geometry)
+    selected = select_sanitized_landmarks(
+        scores, statistics, mode="loc_query_coverage", budget=10
+    )
+    assert bool(torch.isin(torch.tensor([0, 1]), selected).any())
+    assert bool(torch.isin(torch.tensor([2, 3]), selected).any())

@@ -6,6 +6,9 @@ import torch
 
 
 METRIC_ANCHOR_MIN_CONSISTENCY = 0.05
+TRIANGULATION_KEEP_OFFSET_M = 0.03
+TRIANGULATION_REPAIR_OFFSET_M = 0.05
+TRIANGULATION_REPAIR_MAX_OFFSET_M = 0.15
 
 
 def _as_float(value):
@@ -95,7 +98,17 @@ def binary_ranking_metrics(outlier_score, outlier_label):
         (recall_with_origin[1:] - recall_with_origin[:-1])
         * precision_with_origin[1:]
     ).sum()
-    return {"auroc": float(auroc), "auprc": float(auprc)}
+    recall_95 = torch.nonzero(recall >= 0.95, as_tuple=False).reshape(-1)
+    fpr_at_95_tpr = (
+        float(false_positive_rate[recall_95[0]].item())
+        if recall_95.numel()
+        else 1.0
+    )
+    return {
+        "auroc": float(auroc),
+        "auprc": float(auprc),
+        "fpr_at_95_tpr": fpr_at_95_tpr,
+    }
 
 
 def build_sanitization_scores(statistics, geometry_evidence):
@@ -198,42 +211,92 @@ def build_sanitization_scores(statistics, geometry_evidence):
     loc_q20, loc_q50, loc_q70 = torch.quantile(
         localization_reliability, torch.tensor([0.2, 0.5, 0.7])
     )
-    geo_q20, geo_q30 = torch.quantile(
-        geometry_reliability, torch.tensor([0.2, 0.3])
+    components = {
+        "source_precision_wilson": source_precision,
+        "identity_stability": identity_stability,
+        "target_precision_wilson": target_precision,
+        "margin_quality": margin_quality,
+        "observation_support": observation_support,
+        "visibility_support": visibility_support,
+        "mv_support": mv_support,
+        "opacity_quality": opacity_quality,
+        "scale_quality": scale_quality,
+        "planarity_quality": planarity_quality,
+        "reprojection_quality": reprojection_quality,
+        "rgb_center_consistency": rgb_center_consistency,
+        "rgb_center_metric_consistency": rgb_center_metric_consistency,
+    }
+    triangulation_high_confidence = geometry_evidence.get(
+        "triangulation_high_confidence"
     )
-    # 0: localization-excluded, 1: keep, 2: repairable, 3: reject.
-    state = torch.zeros_like(observations, dtype=torch.int64)
-    state[
-        (localization_reliability >= loc_q50)
-        & (geometry_reliability >= geo_q20)
-    ] = 1
-    state[
-        (localization_reliability >= loc_q70)
-        & (geometry_reliability < geo_q30)
-        & (visibility >= 4)
-    ] = 2
-    state[
-        (localization_reliability < loc_q20)
-        & (geometry_reliability < geo_q20)
-    ] = 3
+    if triangulation_high_confidence is None:
+        geo_q20, geo_q30 = torch.quantile(
+            geometry_reliability, torch.tensor([0.2, 0.3])
+        )
+        # Legacy diagnostic states for old statistics without an independent
+        # geometry teacher: 0 loc-exclude, 1 keep, 2 repair, 3 geo-reject.
+        state = torch.zeros_like(observations, dtype=torch.int64)
+        state[
+            (localization_reliability >= loc_q50)
+            & (geometry_reliability >= geo_q20)
+        ] = 1
+        state[
+            (localization_reliability >= loc_q70)
+            & (geometry_reliability < geo_q30)
+            & (visibility >= 4)
+        ] = 2
+        state[
+            (localization_reliability < loc_q20)
+            & (geometry_reliability < geo_q20)
+        ] = 3
+    else:
+        triangulation_high_confidence = torch.as_tensor(
+            triangulation_high_confidence, dtype=torch.bool
+        ).reshape(-1)
+        center_offset = _as_float(
+            geometry_evidence["triangulation_current_center_offset_m"]
+        )
+        center_consistent = (
+            triangulation_high_confidence
+            & (center_offset <= float(TRIANGULATION_KEEP_OFFSET_M))
+        )
+        repairable = (
+            triangulation_high_confidence
+            & (localization_reliability >= loc_q70)
+            & (center_offset >= float(TRIANGULATION_REPAIR_OFFSET_M))
+            & (center_offset <= float(TRIANGULATION_REPAIR_MAX_OFFSET_M))
+        )
+        geometry_mismatch = (
+            triangulation_high_confidence
+            & (center_offset >= float(TRIANGULATION_REPAIR_OFFSET_M))
+        )
+        hard_reject = geometry_mismatch & (
+            ~repairable
+            | (center_offset > float(TRIANGULATION_REPAIR_MAX_OFFSET_M))
+        )
+        # 0 loc-exclude, 1 keep, 2 repair, 3 geo-reject, 4 unknown.
+        state = torch.full_like(observations, 4, dtype=torch.int64)
+        state[localization_reliability < loc_q20] = 0
+        state[
+            center_consistent & (localization_reliability >= loc_q50)
+        ] = 1
+        state[repairable] = 2
+        state[hard_reject] = 3
+        components.update(
+            {
+                "triangulation_high_confidence": (
+                    triangulation_high_confidence.float()
+                ),
+                "triangulation_center_offset_m": center_offset,
+                "triangulation_center_consistent": center_consistent.float(),
+                "triangulation_repairable": repairable.float(),
+                "triangulation_hard_reject": hard_reject.float(),
+            }
+        )
     return SanitizationScores(
         localization_reliability=localization_reliability,
         geometry_reliability=geometry_reliability,
-        components={
-            "source_precision_wilson": source_precision,
-            "identity_stability": identity_stability,
-            "target_precision_wilson": target_precision,
-            "margin_quality": margin_quality,
-            "observation_support": observation_support,
-            "visibility_support": visibility_support,
-            "mv_support": mv_support,
-            "opacity_quality": opacity_quality,
-            "scale_quality": scale_quality,
-            "planarity_quality": planarity_quality,
-            "reprojection_quality": reprojection_quality,
-            "rgb_center_consistency": rgb_center_consistency,
-            "rgb_center_metric_consistency": rgb_center_metric_consistency,
-        },
+        components=components,
         state=state,
     )
 
@@ -261,16 +324,84 @@ def _coverage_reserve(score, mean_uv, mean_depth, count):
     return torch.as_tensor(selected, dtype=torch.long)
 
 
+def _query_coverage_reserve(score, statistics, eligible, count):
+    offsets = statistics.get("query_support_offsets")
+    indices = statistics.get("query_support_indices")
+    if offsets is None or indices is None:
+        raise ValueError(
+            "Query-level coverage requires offline query_support_offsets/indices"
+        )
+    score = _as_float(score)
+    offsets = torch.as_tensor(offsets, dtype=torch.long).reshape(-1)
+    indices = torch.as_tensor(indices, dtype=torch.long).reshape(-1)
+    if offsets.numel() < 2 or int(offsets[-1]) != int(indices.numel()):
+        raise ValueError("Malformed query-level support CSR")
+    query_candidates = []
+    for query in range(offsets.numel() - 1):
+        candidates = torch.unique(
+            indices[int(offsets[query]) : int(offsets[query + 1])]
+        )
+        candidates = candidates[eligible[candidates]]
+        if candidates.numel() > 0:
+            order = torch.argsort(
+                score[candidates], descending=True, stable=True
+            )
+            candidates = candidates[order]
+        query_candidates.append(candidates)
+    selected = []
+    chosen = torch.zeros(score.numel(), dtype=torch.bool)
+    cursors = [0] * len(query_candidates)
+    while len(selected) < int(count):
+        added = False
+        for query, candidates in enumerate(query_candidates):
+            cursor = cursors[query]
+            while cursor < candidates.numel() and bool(
+                chosen[candidates[cursor]]
+            ):
+                cursor += 1
+            cursors[query] = cursor
+            if cursor >= candidates.numel():
+                continue
+            index = int(candidates[cursor])
+            cursors[query] += 1
+            if not bool(chosen[index]):
+                selected.append(index)
+                chosen[index] = True
+                added = True
+                if len(selected) >= int(count):
+                    break
+        if not added:
+            break
+    return torch.as_tensor(selected, dtype=torch.long)
+
+
 def select_sanitized_landmarks(scores, statistics, *, mode, budget):
-    if mode not in {"loc", "loc_geo", "loc_geo_coverage"}:
+    supported_modes = {
+        "loc",
+        "loc_query_coverage",
+        "hard_geo_loc",
+        "hard_geo_loc_query_coverage",
+        "loc_geo",
+        "loc_geo_coverage",
+    }
+    if mode not in supported_modes:
         raise ValueError(f"Unsupported sanitization mode: {mode}")
     count = int(scores.localization_reliability.numel())
     budget = min(max(int(budget), 1), count)
     loc = scores.localization_reliability
     geo = scores.geometry_reliability
-    if mode == "loc":
+    if mode in {"loc", "loc_query_coverage"}:
         utility = loc
         eligible = torch.ones(count, dtype=torch.bool)
+        preferred = eligible
+    elif mode in {"hard_geo_loc", "hard_geo_loc_query_coverage"}:
+        hard_reject = scores.components.get("triangulation_hard_reject")
+        if hard_reject is None:
+            raise ValueError(
+                "hard_geo modes require independent triangulation evidence"
+            )
+        utility = loc
+        eligible = torch.as_tensor(hard_reject) < 0.5
         preferred = eligible
     else:
         utility = loc * (0.5 + 0.5 * geo)
@@ -307,16 +438,28 @@ def select_sanitized_landmarks(scores, statistics, *, mode, budget):
             fallback_indices[fallback_order],
         )
     )
-    if mode != "loc_geo_coverage":
+    if mode not in {
+        "loc_query_coverage",
+        "hard_geo_loc_query_coverage",
+        "loc_geo_coverage",
+    }:
         return ranked[:budget]
 
     reserve_count = min(max(int(round(0.1 * budget)), 64), budget)
-    reserve = _coverage_reserve(
-        utility,
-        statistics["mean_uv"],
-        statistics["mean_depth"],
-        reserve_count,
-    )
+    if mode == "loc_geo_coverage":
+        reserve = _coverage_reserve(
+            utility,
+            statistics["mean_uv"],
+            statistics["mean_depth"],
+            reserve_count,
+        )
+    else:
+        reserve = _query_coverage_reserve(
+            utility,
+            statistics,
+            eligible,
+            reserve_count,
+        )
     reserve = reserve[eligible[reserve]]
     chosen = torch.zeros(count, dtype=torch.bool)
     chosen[reserve] = True

@@ -6,7 +6,7 @@ set -euo pipefail
 # rendering, descriptors, and the 895/182 protocol remain fixed.
 
 if [[ $# -ne 4 ]]; then
-  echo "Usage: bash $0 <rgb_nosky|rgb_sky_dirty> <gpu> <fraction> <magnitude_m>" >&2
+  echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty> <gpu> <fraction> <magnitude_m>" >&2
   exit 2
 fi
 
@@ -15,9 +15,28 @@ GPU="$2"
 FRACTION="$3"
 MAGNITUDE_M="$4"
 case "$VARIANT" in
-  rgb_nosky) MODEL_NAME="rgb_only_3dgs_nosky" ;;
-  rgb_sky_dirty) MODEL_NAME="rgb_only_3dgs_sky_dirty" ;;
-  *) echo "Controlled anchor pilot currently requires a 3DGS RGB prior" >&2; exit 2 ;;
+  rgb_2dgs)
+    MODEL_NAME="rgb_only_2dgs_stdloc"
+    GAUSSIAN_TYPE="2dgs"
+    SH_DEGREE=3
+    DEFAULT_SCAFFOLD_BUDGET=48000
+    DEFAULT_FINAL_BUDGET=32000
+    ;;
+  rgb_nosky)
+    MODEL_NAME="rgb_only_3dgs_nosky"
+    GAUSSIAN_TYPE="3dgs"
+    SH_DEGREE=0
+    DEFAULT_SCAFFOLD_BUDGET=32000
+    DEFAULT_FINAL_BUDGET=24000
+    ;;
+  rgb_sky_dirty)
+    MODEL_NAME="rgb_only_3dgs_sky_dirty"
+    GAUSSIAN_TYPE="3dgs"
+    SH_DEGREE=0
+    DEFAULT_SCAFFOLD_BUDGET=32000
+    DEFAULT_FINAL_BUDGET=24000
+    ;;
+  *) echo "Unknown RGB prior variant" >&2; exit 2 ;;
 esac
 case "$GPU" in 0|1|2) ;; *) echo "GPU must be 0, 1, or 2" >&2; exit 2 ;; esac
 
@@ -27,23 +46,26 @@ DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 EXPERIMENT_ROOT="${LAFGS_SANITIZATION_ROOT:-/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725}"
 SCENE="OldHospital"
 MODEL_ROOT="$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME"
-RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/runs/$VARIANT"
+BASE_RUN_TAG="${LAFGS_CONTROLLED_BASE_RUN_TAG:-$VARIANT}"
+RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/runs/$BASE_RUN_TAG"
+SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-$DEFAULT_SCAFFOLD_BUDGET}"
 BOOTSTRAP_DIR="$RUN_ROOT/bootstrap"
 STAGE_A_DIR="$RUN_ROOT/stage_a_2500"
 STAGE_A_STATE="$STAGE_A_DIR/2500_lafgs_map_state.pt"
 LANDMARK_IDS="$BOOTSTRAP_DIR/sampled_idx.pkl"
 LANDMARK_META="$BOOTSTRAP_DIR/landmark_meta.pt"
 QUERY_CACHE="${LAFGS_QUERY_CACHE_PATH:-$RUN_ROOT/query_cache_native_fullres_k2048.pt}"
-VISIBILITY_CACHE="$RUN_ROOT/visibility_32000_native.pt"
+VISIBILITY_CACHE="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native.pt"
 PRIOR_MANIFEST="$MODEL_ROOT/rgb_prior_manifest.json"
 TAG_F="${FRACTION//./p}"
 TAG_M="${MAGNITUDE_M//./p}"
-SANITIZED_BUDGET="${LAFGS_CONTROLLED_FINAL_BUDGET:-28800}"
-if ! [[ "$SANITIZED_BUDGET" =~ ^[1-9][0-9]*$ ]] || (( SANITIZED_BUDGET > 32000 )); then
-  echo "LAFGS_CONTROLLED_FINAL_BUDGET must be in [1, 32000]" >&2
+PROTOCOL_TAG="${LAFGS_CONTROLLED_PROTOCOL_TAG:-independent_v2}"
+SANITIZED_BUDGET="${LAFGS_CONTROLLED_FINAL_BUDGET:-$DEFAULT_FINAL_BUDGET}"
+if ! [[ "$SANITIZED_BUDGET" =~ ^[1-9][0-9]*$ ]] || (( SANITIZED_BUDGET > SCAFFOLD_BUDGET )); then
+  echo "LAFGS_CONTROLLED_FINAL_BUDGET must be in [1, $SCAFFOLD_BUDGET]" >&2
   exit 2
 fi
-CONTROL_ROOT="$RUN_ROOT/controlled_anchor_f${TAG_F}_m${TAG_M}_b${SANITIZED_BUDGET}"
+CONTROL_ROOT="$RUN_ROOT/controlled_anchor_f${TAG_F}_m${TAG_M}_b${SANITIZED_BUDGET}_${PROTOCOL_TAG}"
 CORRUPT_DIR="$CONTROL_ROOT/corrupted"
 STATS_DIR="$CONTROL_ROOT/statistics"
 CONFIG_ROOT="$CONTROL_ROOT/configs"
@@ -53,6 +75,7 @@ STDLOC_RESULTS_ROOT="$CONTROL_ROOT/stdloc_results"
 CORRUPT_STATE="$CORRUPT_DIR/corrupted_lafgs_map_state.pt"
 LABELS="$CORRUPT_DIR/corruption_labels.pt"
 STATISTICS="$STATS_DIR/landmark_statistics_full.pt"
+BASE_STATISTICS="${LAFGS_CONTROLLED_BASE_STATISTICS:-}"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export CUDA_HOME=/usr/local/cuda-11.8
@@ -76,7 +99,9 @@ run_logged() {
 }
 
 if [[ ! -f "$STAGE_A_STATE" ]]; then
-  LAFGS_QUERY_CACHE_PATH="$QUERY_CACHE" \
+  LAFGS_SANITIZATION_RUN_TAG="$BASE_RUN_TAG" \
+    LAFGS_SANITIZATION_SCAFFOLD_BUDGET="$SCAFFOLD_BUDGET" \
+    LAFGS_QUERY_CACHE_PATH="$QUERY_CACHE" \
     bash scripts/run_lafgs_v2_rgb_prior_sanitization.sh "$VARIANT" "$GPU" stage_a
 fi
 
@@ -88,15 +113,21 @@ if [[ ! -f "$CORRUPT_STATE" ]]; then
 fi
 
 if [[ ! -f "$STATISTICS" ]]; then
-  run_logged statistics \
-    "$PYTHON" train_lafgs_map.py \
+  if [[ -n "$BASE_STATISTICS" ]]; then
+    run_logged statistics_rebind \
+      "$PYTHON" scripts/rebind_geometry_teacher_to_state.py \
+      --statistics "$BASE_STATISTICS" --state "$CORRUPT_STATE" \
+      --output "$STATISTICS"
+  else
+    run_logged statistics \
+      "$PYTHON" train_lafgs_map.py \
     --model_path "$MODEL_ROOT" --source_path "$DATA_ROOT/$SCENE" \
-    --images processed --data_device cpu --gaussian_type 3dgs --sh_degree 0 \
+    --images processed --data_device cpu --gaussian_type "$GAUSSIAN_TYPE" --sh_degree "$SH_DEGREE" \
     --feature_type sp --resolution 1 --longest_edge 0 --norm_before_render \
     --load_iteration 30000 --require_rgb_prior_manifest \
     --rgb_prior_manifest_path "$PRIOR_MANIFEST" \
     --query_feature_contract native_resized_input \
-    --query_cache_path "$QUERY_CACHE" --query_cache_policy readonly \
+    --query_cache_path "$QUERY_CACHE" --query_cache_policy reuse_or_build \
     --visibility_cache_path "$VISIBILITY_CACHE" --visibility_mode rasterizer \
     --objective hard --observation_source native --native_keypoint_count 2048 \
     --max_observations 2048 --validation_observations 2048 \
@@ -113,11 +144,13 @@ if [[ ! -f "$STATISTICS" ]]; then
     --mv_weight 0 --local_weight 0 --dustbin_weight 0 \
     --geometry_weight 0 --pose_weight 0 --pose_gradient_mode off \
     --positive_radius_px 2 --negative_radius_px 8 \
-    --save_landmark_statistics --statistics_observations 2048 \
-    --steps 0 --save_steps 0
+    --save_landmark_statistics --save_independent_geometry_teacher \
+    --statistics_observations 2048 \
+      --steps 0 --save_steps 0
+  fi
 fi
 
-for mode in loc_geo loc_geo_coverage; do
+for mode in loc hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage loc_geo; do
   output_dir="$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}"
   if [[ ! -f "$output_dir/sanitized_lafgs_map_state.pt" ]]; then
     run_logged "sanitize_${mode}" \
@@ -157,8 +190,8 @@ eval_state() {
   run_logged "eval_${label}" \
     "$PYTHON" stdloc.py \
     --model_path "$MODEL_ROOT" --source_path "$DATA_ROOT/$SCENE" \
-    --images processed --data_device cpu --gaussian_type 3dgs \
-    --sh_degree 0 --feature_type sp --resolution 1 --longest_edge 0 \
+    --images processed --data_device cpu --gaussian_type "$GAUSSIAN_TYPE" \
+    --sh_degree "$SH_DEGREE" --feature_type sp --resolution 1 --longest_edge 0 \
     --norm_before_render --iteration 30000 --cfg "$cfg" \
     --prefix "lafgs-v2-controlled-${VARIANT}-${TAG_F}-${TAG_M}-${label}" \
     --sparse_only --evaluation_camera_subset test
@@ -169,12 +202,11 @@ eval_state() {
 }
 
 eval_state corrupted "$CORRUPT_STATE" "$CORRUPT_DIR"
-eval_state sanitize_loc_geo \
-  "$CONTROL_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-  "$CONTROL_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}"
-eval_state sanitize_loc_geo_coverage \
-  "$CONTROL_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-  "$CONTROL_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}"
+for mode in loc hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage loc_geo; do
+  eval_state "sanitize_${mode}" \
+    "$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
+    "$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}"
+done
 
 "$PYTHON" - "$CONTROL_ROOT" "$FRACTION" "$MAGNITUDE_M" "$SANITIZED_BUDGET" <<'PY'
 import json

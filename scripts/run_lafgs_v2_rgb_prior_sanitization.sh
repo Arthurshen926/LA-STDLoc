@@ -53,6 +53,11 @@ MODEL_ROOT="$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME"
 RUN_TAG="${LAFGS_SANITIZATION_RUN_TAG:-$VARIANT}"
 SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-32000}"
 SANITIZED_BUDGET="${LAFGS_SANITIZATION_FINAL_BUDGET:-24000}"
+STAGE_A_PROFILE="${LAFGS_STAGE_A_PROFILE:-combined}"
+STAGE_A_STEPS="${LAFGS_STAGE_A_STEPS:-2500}"
+SANITIZATION_SOURCE_STEP="${LAFGS_SANITIZATION_SOURCE_STEP:-$STAGE_A_STEPS}"
+STATISTICS_CHECKPOINT_STEP="${LAFGS_STATISTICS_CHECKPOINT_STEP:-$SANITIZATION_SOURCE_STEP}"
+SANITIZATION_MODES="${LAFGS_SANITIZATION_MODES:-loc hard_geo_loc loc_geo loc_query_coverage hard_geo_loc_query_coverage}"
 KCS_EXTENT_QUANTILE="${LAFGS_SANITIZATION_KCS_EXTENT_QUANTILE:-0.01}"
 SUPPORT_MASK_POLICY="${LAFGS_SANITIZATION_SUPPORT_MASK_POLICY:-support_rgb_only}"
 if ! [[ "$SCAFFOLD_BUDGET" =~ ^[1-9][0-9]*$ ]]; then
@@ -71,9 +76,28 @@ case "$SUPPORT_MASK_POLICY" in
   support_rgb_only|deployment_post_filter) ;;
   *) echo "Unknown support mask policy: $SUPPORT_MASK_POLICY" >&2; exit 2 ;;
 esac
+case "$STAGE_A_PROFILE" in
+  pure|semidense|protected|combined) ;;
+  *) echo "Unknown Stage-A profile: $STAGE_A_PROFILE" >&2; exit 2 ;;
+esac
+for value in "$STAGE_A_STEPS" "$SANITIZATION_SOURCE_STEP" "$STATISTICS_CHECKPOINT_STEP"; do
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Stage-A and sanitization checkpoint steps must be positive integers" >&2
+    exit 2
+  fi
+done
+if (( SANITIZATION_SOURCE_STEP > STAGE_A_STEPS || STATISTICS_CHECKPOINT_STEP > STAGE_A_STEPS )); then
+  echo "Requested source/statistics checkpoint exceeds Stage-A training steps" >&2
+  exit 2
+fi
 RUN_ROOT="$EXPERIMENT_ROOT/$SCENE/runs/$RUN_TAG"
 BOOTSTRAP_DIR="$RUN_ROOT/bootstrap"
-STAGE_A_DIR="$RUN_ROOT/stage_a_2500"
+if [[ "$STAGE_A_PROFILE" == "combined" && "$STAGE_A_STEPS" == "2500" ]]; then
+  STAGE_A_DIR="$RUN_ROOT/stage_a_2500"
+else
+  STAGE_A_DIR="$RUN_ROOT/stage_a_${STAGE_A_PROFILE}_${STAGE_A_STEPS}"
+fi
+STATISTICS_DIR="$RUN_ROOT/statistics_${STAGE_A_PROFILE}_${STATISTICS_CHECKPOINT_STEP}_frozen_independent"
 CONFIG_ROOT="$RUN_ROOT/configs"
 LOG_ROOT="$RUN_ROOT/logs"
 RESULT_ROOT="$RUN_ROOT/results"
@@ -84,8 +108,10 @@ PRIOR_MANIFEST="$MODEL_ROOT/rgb_prior_manifest.json"
 LANDMARK_IDS="$BOOTSTRAP_DIR/sampled_idx.pkl"
 LANDMARK_META="$BOOTSTRAP_DIR/landmark_meta.pt"
 BOOTSTRAP_STATE="$BOOTSTRAP_DIR/0_lafgs_map_state.pt"
-STAGE_A_STATE="$STAGE_A_DIR/2500_lafgs_map_state.pt"
-STATISTICS_PATH="$STAGE_A_DIR/landmark_statistics_full.pt"
+STAGE_A_FINAL_STATE="$STAGE_A_DIR/${STAGE_A_STEPS}_lafgs_map_state.pt"
+SANITIZATION_SOURCE_STATE="$STAGE_A_DIR/${SANITIZATION_SOURCE_STEP}_lafgs_map_state.pt"
+STATISTICS_SOURCE_STATE="$STAGE_A_DIR/${STATISTICS_CHECKPOINT_STEP}_lafgs_map_state.pt"
+STATISTICS_PATH="$STATISTICS_DIR/landmark_statistics_full.pt"
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export CUDA_HOME=/usr/local/cuda-11.8
@@ -97,7 +123,7 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export STDLOC_CAMERA_LOADER_WORKERS=0
 export STDLOC_RESULTS_ROOT
 
-mkdir -p "$BOOTSTRAP_DIR" "$STAGE_A_DIR" "$CONFIG_ROOT" "$LOG_ROOT" "$RESULT_ROOT" "$STDLOC_RESULTS_ROOT"
+mkdir -p "$BOOTSTRAP_DIR" "$STAGE_A_DIR" "$STATISTICS_DIR" "$CONFIG_ROOT" "$LOG_ROOT" "$RESULT_ROOT" "$STDLOC_RESULTS_ROOT"
 cd "$REPO_ROOT"
 
 PRIOR_ARGS=(--require_rgb_prior_manifest --rgb_prior_manifest_path "$PRIOR_MANIFEST")
@@ -168,23 +194,58 @@ bootstrap() {
 
 stage_a() {
   bootstrap
-  if [[ -f "$STAGE_A_STATE" ]]; then
-    echo "Reusing Stage-A: $STAGE_A_STATE"
-    if [[ ! -f "$STATISTICS_PATH" ]]; then
-      run_logged stage_a_statistics \
-        "$PYTHON" train_lafgs_map.py \
-        "${common_train_args[@]}" --query_cache_policy readonly \
-        --output_dir "$STAGE_A_DIR" --scaffold_mode file \
-        --landmark_path "$LANDMARK_IDS" \
-        --initial_state_path "$STAGE_A_STATE" \
-        --initial_state_blend 1 --initial_state_alignment exact \
-        --initialization_mode ulf_robust_geometry \
-        --native_outcome_mode --retrieval_weight 0 --trust_weight 0 \
-        --positive_radius_px 2 --negative_radius_px 8 \
-        --save_landmark_statistics --statistics_observations 2048 \
-        --steps 0 --save_steps 0
-    fi
+  if [[ -f "$STAGE_A_FINAL_STATE" ]]; then
+    echo "Reusing Stage-A: $STAGE_A_FINAL_STATE"
     return
+  fi
+  local profile_args=()
+  if [[ "$STAGE_A_PROFILE" == "semidense" || "$STAGE_A_PROFILE" == "combined" ]]; then
+    profile_args+=(
+      --native_semidense_weight 0.01 --native_semidense_start_step 500
+      --native_semidense_interval 5 --native_semidense_max_anchors 64
+      --native_semidense_neighbors 8 --native_semidense_local_radius_px 8
+      --native_semidense_target_sigma_px 2 --native_semidense_temperature 0.07
+      --native_semidense_lgcv_weight 0 --native_semidense_protected_v2
+      --native_semidense_measurement_min_reprojection_px 2
+      --native_semidense_measurement_max_reprojection_px 8
+      --native_semidense_surface_point_plane_m 0.03
+      --native_semidense_surface_max_distance_m 0.15
+      --native_semidense_surface_normal_cosine 0.95
+      --native_semidense_projected_neighbor_radius_px 64
+      --native_semidense_local_identity_weight 0.25
+      --native_semidense_margin_preservation_weight 4
+      --native_semidense_reference_refresh_steps 500
+      --native_semidense_alternate_global
+      --native_semidense_max_gradient_ratio 0.25
+    )
+  else
+    profile_args+=(--native_semidense_weight 0)
+  fi
+  if [[ "$STAGE_A_PROFILE" == "protected" || "$STAGE_A_PROFILE" == "combined" ]]; then
+    profile_args+=(
+      --native_protected_set_weight 0.02
+      --native_protected_set_start_step 500
+      --native_protected_set_interval 5
+      --native_protected_set_refresh_visits 1
+      --native_protected_set_ransac_seed 0
+      --native_protected_set_ransac_reprojection_px 8
+      --native_protected_set_ransac_max_iterations 5000
+      --native_protected_set_ransac_min_iterations 100
+      --native_protected_set_max_pose_error_cm
+      "${LAFGS_PROTECTED_MAX_POSE_ERROR_CM:-100}"
+      --native_protected_set_max_useful 96
+      --native_protected_set_max_harmful 96
+      --native_protected_set_grid_rows 4 --native_protected_set_grid_cols 4
+      --native_protected_set_depth_bins 4
+      --native_protected_set_surface_voxel_m 0.25
+      --native_protected_set_max_per_surface_group 2
+    )
+  else
+    profile_args+=(--native_protected_set_weight 0)
+  fi
+  local save_steps=("$STAGE_A_STEPS")
+  if (( STAGE_A_STEPS > 1000 )); then
+    save_steps=(1000 "$STAGE_A_STEPS")
   fi
   run_logged stage_a \
     "$PYTHON" train_lafgs_map.py \
@@ -203,62 +264,72 @@ stage_a() {
     --native_global_attractor_min_incoming 4 \
     --native_global_attractor_support_power 0.5 \
     --native_global_attractor_max_score 4 \
-    --native_semidense_weight 0.01 --native_semidense_start_step 500 \
-    --native_semidense_interval 5 --native_semidense_max_anchors 64 \
-    --native_semidense_neighbors 8 --native_semidense_local_radius_px 8 \
-    --native_semidense_target_sigma_px 2 --native_semidense_temperature 0.07 \
-    --native_semidense_lgcv_weight 0 --native_semidense_protected_v2 \
-    --native_semidense_measurement_min_reprojection_px 2 \
-    --native_semidense_measurement_max_reprojection_px 8 \
-    --native_semidense_surface_point_plane_m 0.03 \
-    --native_semidense_surface_max_distance_m 0.15 \
-    --native_semidense_surface_normal_cosine 0.95 \
-    --native_semidense_projected_neighbor_radius_px 64 \
-    --native_semidense_local_identity_weight 0.25 \
-    --native_semidense_margin_preservation_weight 4 \
-    --native_semidense_reference_refresh_steps 500 \
-    --native_semidense_alternate_global \
-    --native_semidense_max_gradient_ratio 0.25 \
-    --native_protected_set_weight 0.02 \
-    --native_protected_set_start_step 500 \
-    --native_protected_set_interval 5 \
-    --native_protected_set_refresh_visits 1 \
-    --native_protected_set_ransac_seed 0 \
-    --native_protected_set_ransac_reprojection_px 8 \
-    --native_protected_set_ransac_max_iterations 5000 \
-    --native_protected_set_ransac_min_iterations 100 \
-    --native_protected_set_max_useful 96 \
-    --native_protected_set_max_harmful 96 \
-    --native_protected_set_grid_rows 4 --native_protected_set_grid_cols 4 \
-    --native_protected_set_depth_bins 4 \
-    --native_protected_set_surface_voxel_m 0.25 \
-    --native_protected_set_max_per_surface_group 2 \
+    "${profile_args[@]}" \
     --retrieval_weight 1 --trust_weight 0.02 \
     --feature_lr 5e-5 --weight_decay 1e-4 \
-    --save_landmark_statistics --statistics_observations 2048 \
     --hypothesis_topk 32 --positive_radius_px 2 --negative_radius_px 8 \
-    --steps 2500 --save_steps 1000 2500 --log_interval 100
-  if [[ ! -f "$STATISTICS_PATH" ]]; then
-    echo "Stage-A completed without landmark statistics" >&2
+    --steps "$STAGE_A_STEPS" --save_steps "${save_steps[@]}" --log_interval 100
+  if [[ ! -f "$STAGE_A_FINAL_STATE" ]]; then
+    echo "Stage-A completed without final checkpoint: $STAGE_A_FINAL_STATE" >&2
     exit 1
   fi
 }
 
-sanitize() {
+offline_statistics() {
   stage_a
+  [[ -f "$STATISTICS_SOURCE_STATE" ]] || {
+    echo "Missing frozen statistics checkpoint: $STATISTICS_SOURCE_STATE" >&2
+    exit 1
+  }
+  if [[ -f "$STATISTICS_PATH" ]]; then
+    echo "Reusing frozen independent statistics: $STATISTICS_PATH"
+    return
+  fi
+  run_logged "statistics_${STAGE_A_PROFILE}_${STATISTICS_CHECKPOINT_STEP}" \
+    "$PYTHON" train_lafgs_map.py \
+    "${common_train_args[@]}" --query_cache_policy reuse_or_build \
+    --output_dir "$STATISTICS_DIR" --scaffold_mode file \
+    --landmark_path "$LANDMARK_IDS" \
+    --initial_state_path "$STATISTICS_SOURCE_STATE" \
+    --initial_state_blend 1 --initial_state_alignment exact \
+    --initialization_mode ulf_robust_geometry \
+    --native_outcome_mode --retrieval_weight 0 --trust_weight 0 \
+    --positive_radius_px 2 --negative_radius_px 8 \
+    --save_landmark_statistics --save_independent_geometry_teacher \
+    --statistics_observations 2048 \
+    --geometry_teacher_min_similarity "${LAFGS_GEOMETRY_TEACHER_MIN_SIMILARITY:-0.7}" \
+    --geometry_teacher_min_margin "${LAFGS_GEOMETRY_TEACHER_MIN_MARGIN:-0.03}" \
+    --geometry_teacher_min_views "${LAFGS_GEOMETRY_TEACHER_MIN_VIEWS:-3}" \
+    --geometry_teacher_min_view_bins "${LAFGS_GEOMETRY_TEACHER_MIN_VIEW_BINS:-2}" \
+    --geometry_teacher_min_parallax_deg "${LAFGS_GEOMETRY_TEACHER_MIN_PARALLAX_DEG:-1}" \
+    --geometry_teacher_max_reprojection_px "${LAFGS_GEOMETRY_TEACHER_MAX_REPROJECTION_PX:-2}" \
+    --steps 0 --save_steps 0
   [[ -f "$STATISTICS_PATH" ]] || {
-    echo "Missing Stage-A landmark statistics: $STATISTICS_PATH" >&2
+    echo "Offline statistics sweep did not produce: $STATISTICS_PATH" >&2
+    exit 1
+  }
+}
+
+sanitize() {
+  offline_statistics
+  [[ -f "$SANITIZATION_SOURCE_STATE" ]] || {
+    echo "Missing sanitization descriptor checkpoint: $SANITIZATION_SOURCE_STATE" >&2
+    exit 1
+  }
+  [[ -f "$STATISTICS_PATH" ]] || {
+    echo "Missing offline landmark statistics: $STATISTICS_PATH" >&2
     exit 1
   }
   local mode
-  for mode in loc loc_geo loc_geo_coverage; do
-    local output_dir="$RUN_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}"
+  for mode in $SANITIZATION_MODES; do
+    local label="src${SANITIZATION_SOURCE_STEP}_stats${STATISTICS_CHECKPOINT_STEP}_${mode}_${SANITIZED_BUDGET}"
+    local output_dir="$RUN_ROOT/sanitize_${label}"
     if [[ -f "$output_dir/sanitized_lafgs_map_state.pt" ]]; then
       continue
     fi
-    run_logged "sanitize_${mode}" \
+    run_logged "sanitize_${label}" \
       "$PYTHON" scripts/sanitize_lafgs_landmarks.py \
-      --source_state "$STAGE_A_STATE" --statistics "$STATISTICS_PATH" \
+      --source_state "$SANITIZATION_SOURCE_STATE" --statistics "$STATISTICS_PATH" \
       --output_dir "$output_dir" --mode "$mode" --budget "$SANITIZED_BUDGET"
   done
 }
@@ -267,7 +338,7 @@ eval_state() {
   local label="$1"
   local state="$2"
   local bank_dir="${3:-$BOOTSTRAP_DIR}"
-  [[ -f "$state" ]] || return
+  [[ -f "$state" ]] || return 0
   local pointer="$RESULT_ROOT/${label}.path"
   if [[ -f "$pointer" ]] && [[ -f "$(<"$pointer")/results_summary.json" ]]; then
     echo "Reusing evaluation: $(<"$pointer")"
@@ -308,37 +379,31 @@ eval_state() {
   printf '%s\n' "$output_path" > "$pointer"
 }
 
+eval_sanitized_states() {
+  local mode
+  for mode in $SANITIZATION_MODES; do
+    local label="src${SANITIZATION_SOURCE_STEP}_stats${STATISTICS_CHECKPOINT_STEP}_${mode}_${SANITIZED_BUDGET}"
+    local bank_dir="$RUN_ROOT/sanitize_${label}"
+    eval_state "sanitize_${label}" \
+      "$bank_dir/sanitized_lafgs_map_state.pt" "$bank_dir"
+  done
+}
+
 case "$MODE" in
   bootstrap) bootstrap ;;
   stage_a) stage_a ;;
   sanitize) sanitize ;;
   eval)
     eval_state bootstrap "$BOOTSTRAP_STATE"
-    eval_state stage_a_1000 "$STAGE_A_DIR/1000_lafgs_map_state.pt"
-    eval_state stage_a_2500 "$STAGE_A_STATE"
-    eval_state "sanitize_loc_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_${SANITIZED_BUDGET}"
-    eval_state "sanitize_loc_geo_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}"
-    eval_state "sanitize_loc_geo_coverage_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}"
+    eval_state "stage_a_${STAGE_A_PROFILE}_${SANITIZATION_SOURCE_STEP}" \
+      "$SANITIZATION_SOURCE_STATE"
+    eval_sanitized_states
     ;;
   all)
     sanitize
     eval_state bootstrap "$BOOTSTRAP_STATE"
-    eval_state stage_a_1000 "$STAGE_A_DIR/1000_lafgs_map_state.pt"
-    eval_state stage_a_2500 "$STAGE_A_STATE"
-    eval_state "sanitize_loc_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_${SANITIZED_BUDGET}"
-    eval_state "sanitize_loc_geo_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_geo_${SANITIZED_BUDGET}"
-    eval_state "sanitize_loc_geo_coverage_${SANITIZED_BUDGET}" \
-      "$RUN_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
-      "$RUN_ROOT/sanitize_loc_geo_coverage_${SANITIZED_BUDGET}"
+    eval_state "stage_a_${STAGE_A_PROFILE}_${SANITIZATION_SOURCE_STEP}" \
+      "$SANITIZATION_SOURCE_STATE"
+    eval_sanitized_states
     ;;
 esac
