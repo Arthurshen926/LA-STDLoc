@@ -2,8 +2,10 @@ import torch
 
 from localization_training.micro_anchors import (
     build_add_only_materialized_anchor_map,
+    compute_track_coverage_gain,
     protected_micro_anchor_descriptor_loss,
     robust_fuse_track_descriptors,
+    truncate_materialized_anchor_map,
 )
 from stdloc import load_materialized_anchor_map
 
@@ -174,3 +176,77 @@ def test_protected_descriptor_loss_rewards_target_and_preserves_guard():
     assert after["loss"] < before["loss"]
     assert after["guard_loss"] <= before["guard_loss"] + 1e-6
     assert after["positive_loss"] < 0.005
+
+
+def test_coverage_gain_respects_raster_visibility():
+    payload = {
+        "query_names": ["q0"],
+        "query_bins": torch.tensor([0]),
+        "tracks": {
+            "track_index": torch.tensor([0]),
+            "query_index": torch.tensor([0]),
+            "keypoint_index": torch.tensor([0]),
+        },
+        "track_geometry": {
+            "triangulated_xyz": torch.tensor([[0.0, 0.0, 2.0]])
+        },
+    }
+    query_cache = {
+        "q0": {
+            "native_K": torch.eye(3),
+            "pose_w2c": torch.eye(4),
+            "native_keypoints": torch.tensor([[0.0, 0.0]]),
+            "native_depth": torch.full((2, 2), 2.0),
+            "pixel_center_offset": 0.0,
+        }
+    }
+    base_xyz = torch.tensor([[0.0, 0.0, 2.0]])
+
+    center_visible = compute_track_coverage_gain(
+        payload=payload,
+        query_cache=query_cache,
+        base_xyz=base_xyz,
+    )
+    raster_hidden = compute_track_coverage_gain(
+        payload=payload,
+        query_cache=query_cache,
+        base_xyz=base_xyz,
+        visibility_cache={"q0": torch.tensor([False])},
+    )
+
+    assert center_visible["represented_observations"].tolist() == [1]
+    assert center_visible["coverage_gain"].tolist() == [0]
+    assert raster_hidden["represented_observations"].tolist() == [0]
+    assert raster_hidden["coverage_gain"].tolist() == [1]
+    assert bool(raster_hidden["raster_visibility_enabled"])
+
+
+def test_truncate_materialized_anchor_map_preserves_csr_alignment():
+    state = {
+        "schema": "lafgs_materialized_anchor_map",
+        "base_anchor_count": 2,
+        "micro_anchor_count": 2,
+        "anchor_ids": torch.arange(4),
+        "source_primitive_ids": torch.tensor([1, 2, 3, 4]),
+        "track_cluster_ids": torch.tensor([-1, -1, 10, 11]),
+        "anchor_xyz": torch.zeros(4, 3),
+        "anchor_features": torch.zeros(4, 2),
+        "anchor_type": torch.tensor([0, 0, 1, 2]),
+        "track_cluster_member_offsets": torch.tensor([0, 0, 0, 2, 3]),
+        "track_cluster_member_ids": torch.tensor([20, 21, 22]),
+        "source_group_offsets": torch.tensor([0, 1, 2, 4, 5]),
+        "source_group_primitive_ids": torch.tensor([1, 2, 3, 30, 4]),
+        "micro_anchor_quality": {
+            "coverage_gain": torch.tensor([7, 5]),
+        },
+    }
+
+    truncated = truncate_materialized_anchor_map(state, 1)
+
+    assert truncated["anchor_ids"].tolist() == [0, 1, 2]
+    assert truncated["micro_anchor_count"] == 1
+    assert truncated["track_cluster_member_offsets"].tolist() == [0, 0, 0, 2]
+    assert truncated["track_cluster_member_ids"].tolist() == [20, 21]
+    assert truncated["source_group_offsets"].tolist() == [0, 1, 2, 4]
+    assert truncated["source_group_primitive_ids"].tolist() == [1, 2, 3, 30]
+    assert truncated["micro_anchor_quality"]["coverage_gain"].tolist() == [7]
