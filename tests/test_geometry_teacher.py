@@ -1,8 +1,15 @@
 import torch
 
 from localization_training.geometry_teacher import (
+    build_cycle_consistent_tracks,
     camera_center_bins,
+    camera_pose_bins,
+    fundamental_from_known_poses,
+    local_geometric_match_support,
+    reciprocal_epipolar_matches,
     robust_triangulate_associations,
+    symmetric_epipolar_distance,
+    transfer_triangulated_track_groups_to_landmarks,
 )
 
 
@@ -85,3 +92,246 @@ def test_camera_center_bins_are_deterministic_and_nonempty():
     second = camera_center_bins(poses, 3)
     assert torch.equal(first, second)
     assert torch.unique(first).numel() == 3
+
+
+def test_epipolar_matching_and_cycle_tracks_are_map_independent():
+    point = torch.tensor([0.2, -0.1, 4.0], dtype=torch.float64)
+    centers = [
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.2, 0.0],
+        [1.0, 0.0, 0.0],
+    ]
+    poses = torch.stack([_look_at_pose(center, point) for center in centers])
+    K = torch.tensor(
+        [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    ).repeat(3, 1, 1)
+    keypoints = []
+    descriptors = []
+    for index in range(3):
+        pixel, _ = _project(point, K[index], poses[index])
+        keypoints.append(
+            torch.stack(
+                (
+                    pixel,
+                    pixel
+                    + torch.tensor(
+                        [35.0 + 17.0 * index, 15.0 - 11.0 * index]
+                    ),
+                )
+            )
+        )
+        descriptor = torch.eye(2, 4)
+        descriptors.append(descriptor)
+    fundamental = fundamental_from_known_poses(
+        K[0], poses[0], K[1], poses[1]
+    )
+    epipolar = symmetric_epipolar_distance(
+        keypoints[0][:1], keypoints[1][:1], fundamental
+    )
+    assert epipolar.item() < 1e-6
+    match_device = "cuda" if torch.cuda.is_available() else "cpu"
+    source, target, _ = reciprocal_epipolar_matches(
+        descriptors[0].to(match_device),
+        descriptors[1].to(match_device),
+        keypoints[0],
+        keypoints[1],
+        K[0],
+        poses[0],
+        K[1],
+        poses[1],
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+        maximum_epipolar_error_px=1.0,
+    )
+    assert source.tolist() == [0]
+    assert target.tolist() == [0]
+    tracks, diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=poses,
+        pair_neighbors=2,
+        minimum_baseline_m=0.01,
+        maximum_baseline_m=3.0,
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+        maximum_epipolar_error_px=1.0,
+        minimum_track_views=3,
+        device="cpu",
+    )
+    assert diagnostics["track_count"] == 1
+    assert tracks["query_index"].tolist() == [0, 1, 2]
+
+
+def test_local_geometric_match_support_is_translation_invariant_and_rejects_outlier():
+    uv_a = torch.tensor(
+        [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [20.0, 0.0],
+            [0.0, 20.0],
+            [20.0, 10.0],
+            [10.0, 20.0],
+        ]
+    )
+    angle = torch.deg2rad(torch.tensor(12.0))
+    rotation = torch.tensor(
+        [
+            [torch.cos(angle), -torch.sin(angle)],
+            [torch.sin(angle), torch.cos(angle)],
+        ]
+    )
+    uv_b = 1.1 * (uv_a @ rotation.T) + torch.tensor([300.0, -120.0])
+    coherent = local_geometric_match_support(uv_a, uv_b, neighbors=5)
+    translated = local_geometric_match_support(
+        uv_a + torch.tensor([-700.0, 400.0]),
+        uv_b + torch.tensor([900.0, -200.0]),
+        neighbors=5,
+    )
+    torch.testing.assert_close(coherent, translated)
+    assert bool((coherent > 0).all())
+
+    corrupted = uv_b.clone()
+    corrupted[-1] += torch.tensor([35.0, -25.0])
+    outlier_support = local_geometric_match_support(
+        uv_a, corrupted, neighbors=5
+    )
+    assert outlier_support[-1] < coherent[-1]
+
+
+def test_soft_local_geometry_weights_tracks_without_removing_cycle_edges():
+    points = torch.tensor(
+        [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [20.0, 0.0],
+            [0.0, 20.0],
+            [20.0, 10.0],
+            [10.0, 20.0],
+        ]
+    )
+    descriptors = [torch.eye(8) for _ in range(3)]
+    keypoints = [
+        points,
+        points + torch.tensor([2.0, -1.0]),
+        points + torch.tensor([4.0, -2.0]),
+    ]
+    pose = torch.eye(4, dtype=torch.float64).repeat(3, 1, 1)
+    pose[1, 0, 3] = -0.1
+    pose[2, 0, 3] = -0.2
+    K = torch.tensor(
+        [[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    ).repeat(3, 1, 1)
+    tracks, diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=pose,
+        pair_neighbors=2,
+        minimum_baseline_m=0.01,
+        maximum_baseline_m=1.0,
+        maximum_epipolar_error_px=5.0,
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+        local_geometry_filter=True,
+        local_geometry_mode="soft",
+        local_geometry_minimum_matches=3,
+        minimum_track_views=3,
+        device="cpu",
+    )
+    assert diagnostics["track_lgcv_mode"] == "soft"
+    assert diagnostics["track_lgcv_rejected_edge_count"] >= 0
+    assert diagnostics["track_cycle_supported_edge_count"] == 24
+    assert tracks["track_index"].unique().numel() == 8
+
+
+def test_high_confidence_uses_covariance_and_depth_corroboration():
+    point = torch.tensor([0.2, -0.1, 4.0], dtype=torch.float64)
+    centers = [
+        [-1.0, 0.0, 0.0],
+        [0.0, 0.2, 0.0],
+        [1.0, 0.0, 0.0],
+    ]
+    poses = torch.stack([_look_at_pose(center, point) for center in centers])
+    K = torch.tensor(
+        [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    ).repeat(3, 1, 1)
+    projected = [_project(point, K[i], poses[i]) for i in range(3)]
+    uv = torch.stack([item[0] for item in projected])
+    depth = torch.stack([item[1] for item in projected])
+    accepted = robust_triangulate_associations(
+        landmark_count=1,
+        landmark_index=torch.zeros(3, dtype=torch.long),
+        query_index=torch.arange(3),
+        uv=uv,
+        confidence=torch.ones(3),
+        camera_K=K,
+        pose_w2c=poses,
+        query_bin=camera_pose_bins(poses, 3),
+        rendered_depth=depth,
+        minimum_views=3,
+        minimum_view_bins=2,
+        maximum_reprojection_px=1.0,
+        maximum_covariance_trace_m2=0.01,
+        maximum_rendered_depth_residual_m=0.01,
+        minimum_rendered_depth_observations=3,
+    )
+    assert accepted["triangulation_high_confidence"].item()
+    rejected = robust_triangulate_associations(
+        landmark_count=1,
+        landmark_index=torch.zeros(3, dtype=torch.long),
+        query_index=torch.arange(3),
+        uv=uv,
+        confidence=torch.ones(3),
+        camera_K=K,
+        pose_w2c=poses,
+        query_bin=camera_pose_bins(poses, 3),
+        rendered_depth=depth + 1.0,
+        minimum_views=3,
+        minimum_view_bins=2,
+        maximum_reprojection_px=1.0,
+        maximum_covariance_trace_m2=0.01,
+        maximum_rendered_depth_residual_m=0.01,
+        minimum_rendered_depth_observations=3,
+    )
+    assert not rejected["triangulation_high_confidence"].item()
+
+
+def test_track_group_transfer_preserves_original_track_identity():
+    track_geometry = {
+        "triangulated_xyz": torch.tensor(
+            [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        ),
+        "triangulated": torch.tensor([True, True]),
+        "triangulation_high_confidence": torch.tensor([True, True]),
+    }
+    geometry, assignment = transfer_triangulated_track_groups_to_landmarks(
+        track_geometry,
+        edge_track_index=torch.tensor([0, 0, 1]),
+        edge_landmark_index=torch.tensor([2, 3, 2]),
+        landmark_count=5,
+        edge_assignment_cost=torch.tensor([0.2, 0.3, 0.1]),
+    )
+    assert geometry["track_assigned"].tolist() == [
+        False,
+        False,
+        True,
+        True,
+        False,
+    ]
+    assert geometry["triangulated_xyz"][2].tolist() == [2.0, 0.0, 0.0]
+    assert geometry["triangulated_xyz"][3].tolist() == [1.0, 0.0, 0.0]
+    assert assignment["landmark_best_track_index"].tolist() == [
+        -1,
+        -1,
+        1,
+        0,
+        -1,
+    ]

@@ -7,6 +7,7 @@ import pickle
 import random
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -68,8 +69,14 @@ from localization_training.gaussian_prior import (
     validate_gaussian_anchor_resume,
 )
 from localization_training.geometry_teacher import (
-    camera_center_bins,
+    assign_triangulated_tracks_to_landmarks,
+    build_cycle_consistent_tracks,
+    camera_pose_bins,
     robust_triangulate_associations,
+    transfer_triangulated_track_groups_to_landmarks,
+)
+from localization_training.splat_provenance import (
+    bank_splat_provenance_2dgs,
 )
 from localization_training.pose_information import compute_pose_information
 from localization_training.pose_refiner import se3_exp
@@ -4223,7 +4230,13 @@ def _collect_independent_geometry_teacher(
     bank_xyz,
     args,
 ):
-    """Triangulate descriptor-only top-1 associations without center gating."""
+    """Build the explicit G0/G1 map-identity geometry-teacher controls."""
+    teacher_mode = str(args.geometry_teacher_identity_mode)
+    if teacher_mode not in {"map_top1", "gt_clean_map_top1"}:
+        raise ValueError(
+            "_collect_independent_geometry_teacher only supports map_top1 "
+            "and gt_clean_map_top1"
+        )
     normalized_features = F.normalize(features.detach(), dim=1)
     landmark_indices = []
     query_indices = []
@@ -4285,9 +4298,14 @@ def _collect_independent_geometry_teacher(
         support_count += int(support.numel())
         query_support_offsets.append(support_count)
 
-        if bool(association_valid.any()):
+        triangulation_valid = (
+            association_valid & clean
+            if teacher_mode == "gt_clean_map_top1"
+            else association_valid
+        )
+        if bool(triangulation_valid.any()):
             selected = torch.nonzero(
-                association_valid, as_tuple=False
+                triangulation_valid, as_tuple=False
             ).reshape(-1)
             native_depth = cached["native_depth"].cuda().float()
             depth_xy = keypoints[selected].round().long()
@@ -4314,8 +4332,10 @@ def _collect_independent_geometry_teacher(
         )
     camera_intrinsics = torch.stack(camera_intrinsics)
     camera_poses = torch.stack(camera_poses)
-    query_bins = camera_center_bins(
-        camera_poses, int(args.geometry_teacher_view_bins)
+    query_bins = camera_pose_bins(
+        camera_poses,
+        int(args.geometry_teacher_view_bins),
+        direction_weight=float(args.geometry_teacher_view_direction_weight),
     )
     geometry = robust_triangulate_associations(
         landmark_count=int(bank_xyz.shape[0]),
@@ -4335,8 +4355,18 @@ def _collect_independent_geometry_teacher(
         huber_delta_px=args.geometry_teacher_huber_delta_px,
         iterations=args.geometry_teacher_iterations,
         minimum_parallax_deg=args.geometry_teacher_min_parallax_deg,
+        parallax_quantile=args.geometry_teacher_parallax_quantile,
         maximum_reprojection_px=args.geometry_teacher_max_reprojection_px,
         maximum_condition_number=args.geometry_teacher_max_condition_number,
+        maximum_covariance_trace_m2=(
+            args.geometry_teacher_max_covariance_trace_m2
+        ),
+        maximum_rendered_depth_residual_m=(
+            args.geometry_teacher_max_rendered_depth_residual_m
+        ),
+        minimum_rendered_depth_observations=(
+            args.geometry_teacher_min_rendered_depth_observations
+        ),
     )
     support_indices = (
         torch.cat(query_support_indices)
@@ -4369,8 +4399,520 @@ def _collect_independent_geometry_teacher(
         "geometry_teacher_margin_threshold": float(
             args.geometry_teacher_min_margin
         ),
+        "geometry_teacher_identity_mode": teacher_mode,
     }
     return statistics, geometry, diagnostics
+
+
+@torch.no_grad()
+def _assign_tracks_by_splat_provenance(
+    *,
+    tracks,
+    track_geometry,
+    keypoints,
+    query_names,
+    cache,
+    bank_xyz,
+    gaussians,
+    cameras_by_name,
+    landmark_global_indices,
+    background,
+    args,
+):
+    """Assign independent tracks using frozen 2DGS composition provenance."""
+    track_count = int(track_geometry["triangulated_xyz"].shape[0])
+    high_confidence = torch.as_tensor(
+        track_geometry["triangulation_high_confidence"], dtype=torch.bool
+    )
+    track_candidates = [defaultdict(float) for _ in range(track_count)]
+    track_candidate_views = [defaultdict(set) for _ in range(track_count)]
+    observations_by_query = defaultdict(list)
+    for observation, (track, query) in enumerate(
+        zip(tracks["track_index"].tolist(), tracks["query_index"].tolist())
+    ):
+        if bool(high_confidence[track]):
+            observations_by_query[query].append(observation)
+    valid_observations = 0
+    for query, observations in tqdm(
+        sorted(observations_by_query.items()),
+        desc="G3 frozen 2DGS provenance assignment",
+    ):
+        name = query_names[query]
+        camera = cameras_by_name[name]
+        cached = cache[name]
+        height, width = map(int, cached["native_input_hw"])
+        render_pkg = render_from_pose_gsplat(
+            gaussians,
+            cached["pose_w2c"].cuda().float(),
+            camera.FoVx,
+            camera.FoVy,
+            width,
+            height,
+            bg_color=background,
+            render_mode="RGB+ED",
+            rgb_only=True,
+            return_rgb_meta=True,
+            rasterize_mode="antialiased",
+        )
+        observation_tensor = torch.as_tensor(
+            observations, dtype=torch.long
+        )
+        local_keypoint_indices = tracks["keypoint_index"][observation_tensor]
+        query_keypoints = (
+            keypoints[query][local_keypoint_indices]
+            - float(PIXEL_CENTER_OFFSET)
+        ).cuda()
+        local_ids, weights, valid = bank_splat_provenance_2dgs(
+            query_keypoints,
+            landmark_global_indices,
+            render_pkg["rgb_meta"],
+            rendered_depth=render_pkg.get("depth"),
+            topk=args.geometry_teacher_provenance_topk,
+            candidate_topk=max(
+                int(args.geometry_teacher_provenance_topk) * 8, 32
+            ),
+            depth_abs_tolerance=(
+                args.geometry_teacher_provenance_depth_abs_tolerance_m
+            ),
+            depth_rel_tolerance=(
+                args.geometry_teacher_provenance_depth_rel_tolerance
+            ),
+        )
+        for row, observation in enumerate(observations):
+            if not bool(valid[row]):
+                continue
+            track = int(tracks["track_index"][observation])
+            valid_observations += 1
+            for landmark, weight in zip(
+                local_ids[row].tolist(), weights[row].tolist()
+            ):
+                if weight <= 0.0:
+                    continue
+                track_candidates[track][landmark] += float(weight)
+                track_candidate_views[track][landmark].add(query)
+        del render_pkg, local_ids, weights, valid
+
+    track_landmark = torch.full((track_count,), -1, dtype=torch.long)
+    assignment_cost = torch.full(
+        (track_count,), float("inf"), dtype=torch.float32
+    )
+    consensus_rate = torch.zeros(track_count, dtype=torch.float32)
+    support_views = torch.zeros(track_count, dtype=torch.long)
+    group_offsets = [0]
+    group_landmarks = []
+    group_costs = []
+    group_rates = []
+    group_support_views = []
+    assigned = 0
+    group_assigned_tracks = 0
+    for track in range(track_count):
+        if not bool(high_confidence[track]):
+            group_offsets.append(group_offsets[-1])
+            continue
+        candidates = track_candidates[track]
+        if not candidates:
+            group_offsets.append(group_offsets[-1])
+            continue
+        ordered_candidates = sorted(
+            candidates.items(), key=lambda item: (-item[1], item[0])
+        )
+        landmark, mass = ordered_candidates[0]
+        track_observations = int(
+            (tracks["track_index"] == track).sum().item()
+        )
+        rate = float(mass) / max(track_observations, 1)
+        views = len(track_candidate_views[track][landmark])
+        if (
+            rate < float(args.geometry_teacher_provenance_min_consensus_rate)
+            or views < int(args.geometry_teacher_provenance_min_views)
+        ):
+            group_offsets.append(group_offsets[-1])
+            continue
+        track_landmark[track] = int(landmark)
+        consensus_rate[track] = rate
+        support_views[track] = views
+        assignment_cost[track] = 1.0 - min(rate, 1.0)
+        assigned += 1
+
+        accepted = []
+        maximum_group = max(
+            int(args.geometry_teacher_provenance_group_max_landmarks), 1
+        )
+        for candidate_landmark, candidate_mass in ordered_candidates:
+            candidate_rate = float(candidate_mass) / max(
+                track_observations, 1
+            )
+            candidate_views = len(
+                track_candidate_views[track][candidate_landmark]
+            )
+            if (
+                candidate_rate
+                < float(
+                    args.geometry_teacher_provenance_group_min_consensus_rate
+                )
+                or candidate_mass
+                < float(
+                    args.geometry_teacher_provenance_group_min_relative_mass
+                )
+                * float(mass)
+                or candidate_views
+                < int(args.geometry_teacher_provenance_min_views)
+            ):
+                continue
+            accepted.append(
+                (
+                    int(candidate_landmark),
+                    1.0 - min(candidate_rate, 1.0),
+                    candidate_rate,
+                    candidate_views,
+                )
+            )
+            if len(accepted) >= maximum_group:
+                break
+        if not accepted:
+            accepted.append((int(landmark), 1.0 - min(rate, 1.0), rate, views))
+        group_landmarks.extend(item[0] for item in accepted)
+        group_costs.extend(item[1] for item in accepted)
+        group_rates.extend(item[2] for item in accepted)
+        group_support_views.extend(item[3] for item in accepted)
+        group_offsets.append(group_offsets[-1] + len(accepted))
+        group_assigned_tracks += 1
+
+    group_offsets = torch.as_tensor(group_offsets, dtype=torch.long)
+    group_landmarks = torch.as_tensor(group_landmarks, dtype=torch.long)
+    group_costs = torch.as_tensor(group_costs, dtype=torch.float32)
+    group_rates = torch.as_tensor(group_rates, dtype=torch.float32)
+    group_support_views = torch.as_tensor(
+        group_support_views, dtype=torch.long
+    )
+    edge_tracks = torch.repeat_interleave(
+        torch.arange(track_count, dtype=torch.long),
+        group_offsets[1:] - group_offsets[:-1],
+    )
+    geometry, group_assignment = (
+        transfer_triangulated_track_groups_to_landmarks(
+            track_geometry,
+            edge_track_index=edge_tracks,
+            edge_landmark_index=group_landmarks,
+            landmark_count=int(bank_xyz.shape[0]),
+            edge_assignment_cost=group_costs,
+        )
+    )
+    best_edge_all = group_assignment["landmark_best_edge_index"]
+    selected = best_edge_all >= 0
+    best_edge = best_edge_all[selected]
+    best_track = edge_tracks[best_edge]
+    assignment_distance = torch.full(
+        (bank_xyz.shape[0],), float("inf"), dtype=torch.float32
+    )
+    assignment_distance[selected] = torch.linalg.norm(
+        track_geometry["triangulated_xyz"][best_track]
+        - bank_xyz.detach().cpu()[selected],
+        dim=1,
+    )
+    geometry["track_assignment_distance_m"] = assignment_distance
+    geometry["track_provenance_consensus_rate"] = torch.zeros(
+        bank_xyz.shape[0], dtype=torch.float32
+    )
+    geometry["track_provenance_support_views"] = torch.zeros(
+        bank_xyz.shape[0], dtype=torch.long
+    )
+    geometry["track_provenance_consensus_rate"][selected] = (
+        group_rates[best_edge]
+    )
+    geometry["track_provenance_support_views"][selected] = (
+        group_support_views[best_edge]
+    )
+    assignment = {
+        "track_landmark_index": track_landmark,
+        "track_assignment_cost": assignment_cost,
+        "landmark_best_track_index": (
+            group_assignment["landmark_best_track_index"]
+        ),
+        "track_landmark_offsets": group_offsets,
+        "track_landmark_indices": group_landmarks,
+        "track_landmark_costs": group_costs,
+    }
+    diagnostics = {
+        "geometry_teacher_provenance_valid_observation_count": valid_observations,
+        "geometry_teacher_provenance_assigned_track_count": assigned,
+        "geometry_teacher_provenance_assigned_landmark_count": int(
+            selected.sum().item()
+        ),
+        "geometry_teacher_provenance_group_assigned_track_count": (
+            group_assigned_tracks
+        ),
+        "geometry_teacher_provenance_group_edge_count": int(
+            group_landmarks.numel()
+        ),
+        "geometry_teacher_provenance_group_size_mean": (
+            float(group_landmarks.numel()) / max(group_assigned_tracks, 1)
+        ),
+    }
+    return geometry, assignment, diagnostics
+
+
+@torch.no_grad()
+def _collect_track_first_geometry_teacher(
+    query_names,
+    cache,
+    bank_xyz,
+    args,
+    *,
+    provenance_context=None,
+):
+    """Build G2 image-side tracks, triangulate them, then associate geometry."""
+    descriptors = []
+    keypoints = []
+    detector_scores = []
+    camera_intrinsics = []
+    camera_poses = []
+    depth_maps = []
+    for name in query_names:
+        cached = cache[name]
+        descriptors.append(cached["native_descriptors"].float())
+        keypoints.append(
+            cached["native_keypoints"].float() + float(PIXEL_CENTER_OFFSET)
+        )
+        detector_scores.append(cached["native_scores"].float())
+        camera_intrinsics.append(cached["native_K"].float())
+        camera_poses.append(cached["pose_w2c"].float())
+        depth_maps.append(cached["native_depth"])
+    camera_intrinsics = torch.stack(camera_intrinsics)
+    camera_poses = torch.stack(camera_poses)
+    tracks, track_diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        detector_scores=detector_scores,
+        camera_K=camera_intrinsics,
+        pose_w2c=camera_poses,
+        pair_neighbors=args.geometry_teacher_track_pair_neighbors,
+        minimum_baseline_m=args.geometry_teacher_track_min_baseline_m,
+        maximum_baseline_m=args.geometry_teacher_track_max_baseline_m,
+        maximum_axis_angle_deg=args.geometry_teacher_track_max_axis_angle_deg,
+        minimum_similarity=args.geometry_teacher_track_min_similarity,
+        minimum_margin=args.geometry_teacher_track_min_margin,
+        maximum_epipolar_error_px=(
+            args.geometry_teacher_track_max_epipolar_error_px
+        ),
+        local_geometry_filter=args.geometry_teacher_track_lgcv,
+        local_geometry_neighbors=args.geometry_teacher_track_lgcv_neighbors,
+        local_geometry_support_threshold=(
+            args.geometry_teacher_track_lgcv_support_threshold
+        ),
+        local_geometry_angle_cosine=(
+            args.geometry_teacher_track_lgcv_angle_cosine
+        ),
+        local_geometry_scale_threshold=(
+            args.geometry_teacher_track_lgcv_scale_threshold
+        ),
+        local_geometry_scale_limit=(
+            args.geometry_teacher_track_lgcv_scale_limit
+        ),
+        local_geometry_maximum_edge_px=(
+            args.geometry_teacher_track_lgcv_maximum_edge_px
+        ),
+        local_geometry_minimum_matches=(
+            args.geometry_teacher_track_lgcv_minimum_matches
+        ),
+        local_geometry_mode=args.geometry_teacher_track_lgcv_mode,
+        local_geometry_confidence_floor=(
+            args.geometry_teacher_track_lgcv_confidence_floor
+        ),
+        minimum_track_views=args.geometry_teacher_min_views,
+        require_cycle=args.geometry_teacher_track_require_cycle,
+        device="cuda",
+    )
+    if int(track_diagnostics["track_count"]) == 0:
+        raise RuntimeError("Track-first geometry teacher produced no tracks")
+    observation_query = tracks["query_index"]
+    observation_keypoint = tracks["keypoint_index"]
+    observation_uv = torch.stack(
+        [
+            keypoints[int(query)][int(keypoint)]
+            for query, keypoint in zip(
+                observation_query.tolist(), observation_keypoint.tolist()
+            )
+        ]
+    )
+    rendered_depth_samples = []
+    for query, keypoint in zip(
+        observation_query.tolist(), observation_keypoint.tolist()
+    ):
+        depth_map = depth_maps[int(query)]
+        keypoint_xy = (
+            keypoints[int(query)][int(keypoint)] - float(PIXEL_CENTER_OFFSET)
+        )
+        x = min(
+            max(int(round(float(keypoint_xy[0]))), 0),
+            int(depth_map.shape[1]) - 1,
+        )
+        y = min(
+            max(int(round(float(keypoint_xy[1]))), 0),
+            int(depth_map.shape[0]) - 1,
+        )
+        rendered_depth_samples.append(depth_map[y, x])
+    rendered_depth = torch.stack(rendered_depth_samples).float()
+    query_bins = camera_pose_bins(
+        camera_poses,
+        int(args.geometry_teacher_view_bins),
+        direction_weight=float(args.geometry_teacher_view_direction_weight),
+    )
+    track_geometry = robust_triangulate_associations(
+        landmark_count=int(track_diagnostics["track_count"]),
+        landmark_index=tracks["track_index"],
+        query_index=observation_query,
+        uv=observation_uv,
+        confidence=tracks["confidence"],
+        camera_K=camera_intrinsics,
+        pose_w2c=camera_poses,
+        query_bin=query_bins,
+        rendered_depth=rendered_depth,
+        maximum_observations_per_landmark=(
+            args.geometry_teacher_max_observations_per_landmark
+        ),
+        minimum_views=args.geometry_teacher_min_views,
+        minimum_view_bins=args.geometry_teacher_min_view_bins,
+        huber_delta_px=args.geometry_teacher_huber_delta_px,
+        iterations=args.geometry_teacher_iterations,
+        minimum_parallax_deg=args.geometry_teacher_min_parallax_deg,
+        parallax_quantile=args.geometry_teacher_parallax_quantile,
+        maximum_reprojection_px=args.geometry_teacher_max_reprojection_px,
+        maximum_condition_number=args.geometry_teacher_max_condition_number,
+        maximum_covariance_trace_m2=(
+            args.geometry_teacher_max_covariance_trace_m2
+        ),
+        maximum_rendered_depth_residual_m=(
+            args.geometry_teacher_max_rendered_depth_residual_m
+        ),
+        minimum_rendered_depth_observations=(
+            args.geometry_teacher_min_rendered_depth_observations
+        ),
+    )
+    provenance_diagnostics = {}
+    if str(args.geometry_teacher_identity_mode) == "track_first_provenance":
+        if provenance_context is None:
+            raise ValueError(
+                "track_first_provenance requires frozen renderer context"
+            )
+        geometry, assignment, provenance_diagnostics = (
+            _assign_tracks_by_splat_provenance(
+                tracks=tracks,
+                track_geometry=track_geometry,
+                keypoints=keypoints,
+                query_names=query_names,
+                cache=cache,
+                bank_xyz=bank_xyz,
+                args=args,
+                **provenance_context,
+            )
+        )
+    else:
+        geometry, assignment = assign_triangulated_tracks_to_landmarks(
+            track_geometry,
+            bank_xyz,
+            maximum_distance_m=(
+                args.geometry_teacher_track_assignment_max_distance_m
+            ),
+            require_high_confidence=True,
+            device="cuda",
+        )
+    track_landmark = assignment["track_landmark_index"]
+    track_high_confidence = track_geometry[
+        "triangulation_high_confidence"
+    ]
+    support_by_query = [[] for _ in query_names]
+    track_group_offsets = assignment.get("track_landmark_offsets")
+    track_group_indices = assignment.get("track_landmark_indices")
+    for track, query in zip(
+        tracks["track_index"].tolist(), observation_query.tolist()
+    ):
+        if not bool(track_high_confidence[track]):
+            continue
+        if track_group_offsets is not None and track_group_indices is not None:
+            begin = int(track_group_offsets[track])
+            end = int(track_group_offsets[track + 1])
+            support_by_query[query].extend(
+                track_group_indices[begin:end].tolist()
+            )
+        else:
+            landmark = int(track_landmark[track])
+            if landmark >= 0:
+                support_by_query[query].append(landmark)
+    support_offsets = [0]
+    support_indices = []
+    for support in support_by_query:
+        unique = torch.unique(torch.as_tensor(support, dtype=torch.long))
+        support_indices.append(unique)
+        support_offsets.append(support_offsets[-1] + int(unique.numel()))
+    support_indices = (
+        torch.cat(support_indices)
+        if support_indices
+        else torch.zeros(0, dtype=torch.long)
+    )
+    statistics = {
+        "query_support_offsets": torch.as_tensor(
+            support_offsets, dtype=torch.long
+        ),
+        "query_support_indices": support_indices,
+        "query_support_query_count": torch.as_tensor(
+            len(query_names), dtype=torch.long
+        ),
+    }
+    diagnostics = {
+        **track_diagnostics,
+        "geometry_teacher_identity_mode": str(
+            args.geometry_teacher_identity_mode
+        ),
+        "geometry_teacher_triangulated_track_count": int(
+            track_geometry["triangulated"].sum().item()
+        ),
+        "geometry_teacher_high_confidence_track_count": int(
+            track_high_confidence.sum().item()
+        ),
+        "geometry_teacher_assigned_landmark_count": int(
+            geometry["track_assigned"].sum().item()
+        ),
+        "geometry_teacher_high_confidence_landmark_count": int(
+            geometry["triangulation_high_confidence"].sum().item()
+        ),
+        "geometry_teacher_query_support_edge_count": int(
+            support_indices.numel()
+        ),
+        **provenance_diagnostics,
+    }
+    return statistics, geometry, diagnostics
+
+
+def _csr_positive_responsibilities(
+    positive_offsets,
+    positive_reprojection_errors,
+    *,
+    sigma_px,
+):
+    """Normalize Gaussian reprojection responsibilities within each CSR row."""
+    offsets = torch.as_tensor(positive_offsets, dtype=torch.long)
+    errors = torch.as_tensor(
+        positive_reprojection_errors,
+        device=offsets.device,
+        dtype=torch.float32,
+    ).reshape(-1)
+    counts = offsets[1:] - offsets[:-1]
+    rows = torch.repeat_interleave(
+        torch.arange(counts.numel(), device=offsets.device), counts
+    )
+    if rows.numel() != errors.numel():
+        raise ValueError("Positive CSR offsets/errors are inconsistent")
+    if rows.numel() == 0:
+        return rows, errors
+    sigma = max(float(sigma_px), 1e-6)
+    unnormalized = torch.exp(-0.5 * (errors / sigma).square())
+    denominator = torch.zeros(
+        counts.numel(), device=errors.device, dtype=errors.dtype
+    )
+    denominator.index_add_(0, rows, unnormalized)
+    weights = unnormalized / denominator[rows].clamp_min(1e-12)
+    return rows, weights
 
 
 @torch.no_grad()
@@ -4400,6 +4942,7 @@ def _collect_landmark_statistics(
     records = []
     identity_sources = []
     identity_predictions = []
+    identity_weights = []
     benign_switch_count = torch.zeros(count, device=device)
     ambiguous_switch_count = torch.zeros(count, device=device)
     harmful_switch_count = torch.zeros(count, device=device)
@@ -4505,8 +5048,6 @@ def _collect_landmark_statistics(
             observations.bank_uv[top1] - observations.query_uv, dim=1
         )
         top1_projected = observations.bank_projected[top1]
-        raw_switch = top1 != source
-        benign_switch = raw_switch & top1_positive
         ambiguous_switch = (
             ~top1_positive
             & top1_projected
@@ -4528,13 +5069,43 @@ def _collect_landmark_statistics(
         clean = observations.bank_visible[top1] & (
             top1_distance <= float(args.positive_radius_px)
         )
-        source_score = scores.gather(1, source[:, None]).squeeze(1)
-        competitor = torch.where(
-            top1 == source,
-            top_values[:, 1],
-            top_values[:, 0],
+        if (
+            positive_offsets is not None
+            and positive_indices is not None
+            and observations.positive_reprojection_errors is not None
+        ):
+            responsibility_rows, responsibility = (
+                _csr_positive_responsibilities(
+                    positive_offsets,
+                    observations.positive_reprojection_errors,
+                    sigma_px=getattr(
+                        args, "statistics_responsibility_sigma_px", 1.0
+                    ),
+                )
+            )
+            responsibility_landmarks = positive_indices
+        else:
+            responsibility_rows = torch.arange(source.numel(), device=device)
+            responsibility_landmarks = source
+            responsibility = torch.ones(
+                source.numel(), device=device, dtype=torch.float32
+            )
+        edge_top1 = top1[responsibility_rows]
+        edge_same_identity = edge_top1 == responsibility_landmarks
+        edge_benign_switch = (
+            top1_positive[responsibility_rows] & ~edge_same_identity
         )
-        margin = source_score - competitor
+        edge_ambiguous_switch = ambiguous_switch[responsibility_rows]
+        edge_harmful_switch = harmful_switch[responsibility_rows]
+        edge_source_score = scores[
+            responsibility_rows, responsibility_landmarks
+        ]
+        edge_competitor = torch.where(
+            edge_same_identity,
+            top_values[responsibility_rows, 1],
+            top_values[responsibility_rows, 0],
+        )
+        edge_margin = edge_source_score - edge_competitor
         probability = torch.softmax(
             top_values / max(float(args.temperature), 1e-6), dim=1
         )
@@ -4552,43 +5123,89 @@ def _collect_landmark_statistics(
         finite_top1_distance = top1_distance[
             top1_projected & torch.isfinite(top1_distance)
         ]
-        ones = torch.ones_like(source, dtype=torch.float32)
-        observation_count.index_add_(0, source, ones)
-        correct_count.index_add_(0, source, clean.float())
-        source_top1_count.index_add_(0, source, (top1 == source).float())
-        benign_switch_count.index_add_(0, source, benign_switch.float())
-        ambiguous_switch_count.index_add_(0, source, ambiguous_switch.float())
-        harmful_switch_count.index_add_(0, source, harmful_switch.float())
-        identity_sources.append(source.detach().cpu())
-        identity_predictions.append(top1.detach().cpu())
+        observation_count.index_add_(
+            0, responsibility_landmarks, responsibility
+        )
+        correct_count.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * top1_positive[responsibility_rows].float(),
+        )
+        source_top1_count.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * edge_same_identity.float(),
+        )
+        benign_switch_count.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * edge_benign_switch.float(),
+        )
+        ambiguous_switch_count.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * edge_ambiguous_switch.float(),
+        )
+        harmful_switch_count.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * edge_harmful_switch.float(),
+        )
+        identity_sources.append(responsibility_landmarks.detach().cpu())
+        identity_predictions.append(edge_top1.detach().cpu())
+        identity_weights.append(responsibility.detach().cpu())
         for recall_k in recall_at_k_sum:
             width_k = min(recall_k, candidate_positive.shape[1])
             recall_at_k_sum[recall_k] += float(
                 candidate_positive[:, :width_k].any(dim=1).float().mean().item()
             )
         recall_at_k_queries += 1
-        margin_sum.index_add_(0, source, margin)
-        entropy_sum.index_add_(0, source, entropy)
-        reprojection_sum.index_add_(0, source, local_error)
+        margin_sum.index_add_(
+            0, responsibility_landmarks, responsibility * edge_margin
+        )
+        entropy_sum.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * entropy[responsibility_rows],
+        )
+        reprojection_sum.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility * local_error[responsibility_rows],
+        )
         height, width = observations.query_feature_map.shape[-2:]
         normalized_uv = observations.query_uv.clone()
         normalized_uv[:, 0] /= max(float(width - 1), 1.0)
         normalized_uv[:, 1] /= max(float(height - 1), 1.0)
-        uv_sum.index_add_(0, source, normalized_uv)
-        depth_sum.index_add_(0, source, observations.source_depth)
-        if source.numel() >= 6:
+        uv_sum.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility[:, None] * normalized_uv[responsibility_rows],
+        )
+        depth_sum.index_add_(
+            0,
+            responsibility_landmarks,
+            responsibility
+            * observations.bank_depth[responsibility_landmarks],
+        )
+        if responsibility_landmarks.numel() >= 6:
             information = compute_pose_information(
-                bank_xyz[source],
+                bank_xyz[responsibility_landmarks],
                 observations.K,
                 observations.pose_w2c,
-                weights=clean.float().clamp_min(0.05),
+                weights=(
+                    responsibility
+                    * top1_positive[responsibility_rows].float().clamp_min(0.05)
+                ),
                 translation_scale=args.pose_translation_scale_m,
                 rotation_scale=float(
                     torch.deg2rad(torch.tensor(args.pose_rotation_scale_deg)).item()
                 ),
             )
             translation_fim_sum.index_add_(
-                0, source, information.translation_scores
+                0,
+                responsibility_landmarks,
+                information.translation_scores,
             )
         proposal_observations = _cached_score_proposal_observations(
             cache[name],
@@ -4639,7 +5256,10 @@ def _collect_landmark_statistics(
                     else 0.0
                 ),
                 "top1_projected_ratio": float(top1_projected.float().mean().item()),
-                "source_margin_mean": float(margin.mean().item()),
+                "source_margin_mean": float(
+                    (responsibility * edge_margin).sum().item()
+                    / responsibility.sum().clamp_min(1e-8).item()
+                ),
                 "hypothesis_entropy_mean": float(entropy.mean().item()),
                 "proposal_matched_observations": proposal_count,
                 "proposal_top1_clean_precision": proposal_precision,
@@ -4656,8 +5276,13 @@ def _collect_landmark_statistics(
     if identity_sources:
         all_sources = torch.cat(identity_sources).long()
         all_predictions = torch.cat(identity_predictions).long()
+        all_identity_weights = torch.cat(identity_weights).float()
         pair_keys = all_sources * count + all_predictions
-        unique_keys, pair_counts = torch.unique(pair_keys, return_counts=True)
+        unique_keys, inverse = torch.unique(pair_keys, return_inverse=True)
+        pair_counts = torch.zeros(
+            unique_keys.numel(), dtype=torch.float32
+        )
+        pair_counts.index_add_(0, inverse, all_identity_weights)
         pair_sources = torch.div(unique_keys, count, rounding_mode="floor")
         distinct_cpu = torch.zeros(count, dtype=torch.float32)
         distinct_cpu.index_add_(
@@ -4667,7 +5292,7 @@ def _collect_landmark_statistics(
         dominant_cpu.scatter_reduce_(
             0,
             pair_sources,
-            pair_counts.float(),
+            pair_counts,
             reduce="amax",
             include_self=True,
         )
@@ -6124,6 +6749,9 @@ def _state_config(
         "distill_max_per_depth_bin": int(args.distill_max_per_depth_bin),
         "distill_max_per_voxel": int(args.distill_max_per_voxel),
         "statistics_observations": int(args.statistics_observations),
+        "statistics_responsibility_sigma_px": float(
+            args.statistics_responsibility_sigma_px
+        ),
         "distill_min_observations": int(args.distill_min_observations),
         "distill_matchability_threshold": float(
             args.distill_matchability_threshold
@@ -7925,17 +8553,52 @@ def train(dataset, args):
         )
         independent_geometry_evidence = {}
         if bool(args.save_independent_geometry_teacher):
-            (
-                independent_statistics,
-                independent_geometry_evidence,
-                independent_diagnostics,
-            ) = _collect_independent_geometry_teacher(
-                final_features,
-                train_names,
-                cache,
-                final_xyz,
-                args,
-            )
+            if str(args.geometry_teacher_identity_mode) in {
+                "track_first",
+                "track_first_provenance",
+            }:
+                provenance_context = None
+                if (
+                    str(args.geometry_teacher_identity_mode)
+                    == "track_first_provenance"
+                ):
+                    if str(dataset.gaussian_type) != "2dgs":
+                        raise ValueError(
+                            "Exact splat-provenance geometry assignment is "
+                            "currently defined only for 2DGS"
+                        )
+                    provenance_context = {
+                        "gaussians": gaussians,
+                        "cameras_by_name": {
+                            _camera_cache_key(camera): camera
+                            for camera in train_cameras
+                        },
+                        "landmark_global_indices": landmark_indices_cuda,
+                        "background": background,
+                    }
+                (
+                    independent_statistics,
+                    independent_geometry_evidence,
+                    independent_diagnostics,
+                ) = _collect_track_first_geometry_teacher(
+                    train_names,
+                    cache,
+                    final_xyz,
+                    args,
+                    provenance_context=provenance_context,
+                )
+            else:
+                (
+                    independent_statistics,
+                    independent_geometry_evidence,
+                    independent_diagnostics,
+                ) = _collect_independent_geometry_teacher(
+                    final_features,
+                    train_names,
+                    cache,
+                    final_xyz,
+                    args,
+                )
             statistics.update(independent_statistics)
             triangulated_xyz = independent_geometry_evidence[
                 "triangulated_xyz"
@@ -7952,6 +8615,24 @@ def train(dataset, args):
                 rotation=rgb_prior_geometry.rotation,
                 scaling=rgb_prior_geometry.scaling,
             )
+            current_surface_residual = (
+                current_center_geometry.surface_residual_components(
+                    safe_triangulated_xyz
+                )
+            )
+            rgb_surface_residual = (
+                rgb_prior_geometry.surface_residual_components(
+                    safe_triangulated_xyz
+                )
+            )
+
+            def _masked_surface_value(value):
+                invalid = torch.full_like(value, float("inf"))
+                mask = triangulated
+                while mask.ndim < value.ndim:
+                    mask = mask.unsqueeze(-1)
+                return torch.where(mask, value, invalid).cpu()
+
             independent_geometry_evidence.update(
                 {
                     "triangulation_current_center_offset_m": torch.where(
@@ -7990,6 +8671,18 @@ def train(dataset, args):
                             triangulated_xyz[:, 0], float("inf")
                         ),
                     ).cpu(),
+                    **{
+                        f"triangulation_current_{name}": (
+                            _masked_surface_value(value)
+                        )
+                        for name, value in current_surface_residual.items()
+                    },
+                    **{
+                        f"triangulation_rgb_{name}": (
+                            _masked_surface_value(value)
+                        )
+                        for name, value in rgb_surface_residual.items()
+                    },
                 }
             )
             landmark_statistics_summary.update(independent_diagnostics)
@@ -8007,6 +8700,7 @@ def train(dataset, args):
             "gaussian_type": str(dataset.gaussian_type),
             "opacity": base_bank_opacity.detach().cpu(),
             "scaling": base_bank_scaling.detach().cpu(),
+            "rotation": rgb_prior_geometry.rotation.detach().cpu(),
             "planarity": prior_geometry.planarity.detach().cpu(),
             "raster_visibility_count": (
                 raster_visibility_count.detach().cpu()
@@ -9214,6 +9908,160 @@ def build_parser():
         "--geometry_teacher_max_condition_number", type=float, default=1e6
     )
     parser.add_argument(
+        "--geometry_teacher_identity_mode",
+        choices=[
+            "map_top1",
+            "gt_clean_map_top1",
+            "track_first",
+            "track_first_provenance",
+        ],
+        default="map_top1",
+        help=(
+            "G0 map top-1, G1 GT-clean map top-1, or G2 reciprocal "
+            "epipolar/cycle image tracks built before Gaussian assignment."
+        ),
+    )
+    parser.add_argument(
+        "--geometry_teacher_view_direction_weight", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--geometry_teacher_parallax_quantile", type=float, default=0.75
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_covariance_trace_m2",
+        type=float,
+        default=0.01,
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_rendered_depth_residual_m",
+        type=float,
+        default=0.15,
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_rendered_depth_observations",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_neighbors", type=int, default=6
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_min_baseline_m", type=float, default=0.03
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_max_baseline_m", type=float, default=5.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_max_axis_angle_deg",
+        type=float,
+        default=75.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_min_similarity", type=float, default=0.65
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_min_margin", type=float, default=0.01
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_max_epipolar_error_px",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_require_cycle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_neighbors", type=int, default=8
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_support_threshold",
+        type=float,
+        default=4.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_angle_cosine",
+        type=float,
+        default=0.9659,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_scale_threshold",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_scale_limit",
+        type=float,
+        default=3.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_maximum_edge_px",
+        type=float,
+        default=50.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_minimum_matches",
+        type=int,
+        default=8,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_mode",
+        choices=["hard", "soft"],
+        default="hard",
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_lgcv_confidence_floor",
+        type=float,
+        default=0.25,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_assignment_max_distance_m",
+        type=float,
+        default=0.20,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_topk", type=int, default=4
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_min_consensus_rate",
+        type=float,
+        default=0.35,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_min_views", type=int, default=2
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_max_landmarks",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_min_relative_mass",
+        type=float,
+        default=0.25,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_min_consensus_rate",
+        type=float,
+        default=0.10,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_depth_abs_tolerance_m",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_depth_rel_tolerance",
+        type=float,
+        default=0.02,
+    )
+    parser.add_argument(
         "--distill_require_exact_budget",
         action="store_true",
         help=(
@@ -9242,6 +10090,15 @@ def build_parser():
     )
     parser.add_argument("--statistics_observations", type=int, default=1024)
     parser.add_argument("--statistics_hypothesis_topk", type=int, default=32)
+    parser.add_argument(
+        "--statistics_responsibility_sigma_px",
+        type=float,
+        default=1.0,
+        help=(
+            "Gaussian reprojection scale used to distribute source-side "
+            "landmark statistics across every legal CSR positive."
+        ),
+    )
     parser.add_argument("--distill_min_observations", type=int, default=2)
     parser.add_argument(
         "--distill_matchability_threshold", type=float, default=0.5

@@ -136,6 +136,30 @@ def test_independent_geometry_uses_five_states_and_hard_reject_gate():
     assert 0 not in selected
 
 
+def test_2dgs_surface_residual_ignores_native_patch_extent_but_rejects_drift():
+    statistics, geometry = _inputs(count=20)
+    geometry["gaussian_type"] = "2dgs"
+    geometry["scaling"] = torch.full((20, 2), 0.05)
+    geometry["rgb_center_offset_m"].zero_()
+    geometry["triangulation_high_confidence"] = torch.ones(20, dtype=torch.bool)
+    geometry["triangulation_current_center_offset_m"] = torch.full((20,), 0.2)
+    geometry["triangulation_rgb_normal_distance_m"] = torch.zeros(20)
+    geometry["triangulation_current_normal_distance_m"] = torch.zeros(20)
+    geometry["triangulation_rgb_tangent_normalized"] = torch.full((20,), 4.0)
+    geometry["triangulation_current_tangent_normalized"] = torch.full(
+        (20,), 4.0
+    )
+    scores = build_sanitization_scores(statistics, geometry)
+    assert scores.components["triangulation_surface_aware"].all()
+    assert scores.components["triangulation_geometry_mismatch_score"].max() == 0
+    assert not bool(scores.components["triangulation_hard_reject"].any())
+
+    geometry["triangulation_current_normal_distance_m"][0] = 0.1
+    scores = build_sanitization_scores(statistics, geometry)
+    assert scores.components["triangulation_geometry_mismatch_score"][0] == 5
+    assert scores.state[0] == 3
+
+
 def test_query_level_coverage_reserves_supported_landmarks():
     statistics, geometry = _inputs(count=20)
     geometry["rgb_center_offset_m"].zero_()

@@ -2,13 +2,28 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from train_lafgs_map import (
     _checkpoint_integrity,
+    _csr_positive_responsibilities,
     _history_windows,
     _native_auxiliary_contract,
     _validate_native_objective_semantics,
 )
+
+
+def test_multi_positive_statistics_responsibility_is_row_normalized():
+    rows, weights = _csr_positive_responsibilities(
+        torch.tensor([0, 2, 5]),
+        torch.tensor([0.0, 1.0, 0.5, 1.0, 2.0]),
+        sigma_px=1.0,
+    )
+    totals = torch.zeros(2)
+    totals.index_add_(0, rows, weights)
+    assert torch.allclose(totals, torch.ones(2))
+    assert weights[0] > weights[1]
+    assert weights[2] > weights[3] > weights[4]
 
 
 def test_checkpoint_integrity_reports_missing_intermediate_checkpoint(tmp_path):

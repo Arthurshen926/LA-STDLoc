@@ -73,6 +73,50 @@ class GaussianPriorGeometry:
         gather_index = minimum_axis[:, None, None].expand(-1, 3, 1)
         return frame.gather(2, gather_index).squeeze(2)
 
+    def anchor_local_coordinates(self, anchor_xyz: torch.Tensor) -> torch.Tensor:
+        """Express world-space anchors in each Gaussian's local frame."""
+        if anchor_xyz.shape != self.xyz.shape:
+            raise ValueError("anchor_xyz must match xyz")
+        displacement = anchor_xyz - self.xyz
+        return torch.einsum("nji,nj->ni", self.frame, displacement)
+
+    def surface_residual_components(
+        self,
+        anchor_xyz: torch.Tensor,
+        *,
+        minimum_scale_m: float = 1e-4,
+    ) -> dict[str, torch.Tensor]:
+        """Measure anchor support relative to the Gaussian surface/volume."""
+        local = self.anchor_local_coordinates(anchor_xyz)
+        if str(self.gaussian_type).lower() == "2dgs":
+            tangent = local[:, :2]
+            tangent_distance = torch.linalg.norm(tangent, dim=1)
+            normal_distance = local[:, 2].abs()
+            tangent_normalized = torch.linalg.norm(
+                tangent / self.scaling.clamp_min(minimum_scale_m),
+                dim=1,
+            )
+        else:
+            minimum_axis = self.scaling.argmin(dim=1)
+            normal_distance = local.gather(
+                1, minimum_axis[:, None]
+            ).squeeze(1).abs()
+            tangent_mask = torch.ones_like(local, dtype=torch.bool)
+            tangent_mask.scatter_(1, minimum_axis[:, None], False)
+            tangent = local[tangent_mask].reshape(-1, 2)
+            tangent_scale = self.scaling[tangent_mask].reshape(-1, 2)
+            tangent_distance = torch.linalg.norm(tangent, dim=1)
+            tangent_normalized = torch.linalg.norm(
+                tangent / tangent_scale.clamp_min(minimum_scale_m),
+                dim=1,
+            )
+        return {
+            "local_coordinates_m": local,
+            "tangent_distance_m": tangent_distance,
+            "normal_distance_m": normal_distance,
+            "tangent_normalized": tangent_normalized,
+        }
+
     def anchor_axis_bounds(
         self,
         *,
@@ -144,10 +188,7 @@ class GaussianPriorGeometry:
         *,
         minimum_scale_m: float = 1e-4,
     ) -> torch.Tensor:
-        displacement = anchor_xyz - self.xyz
-        local = torch.einsum(
-            "nji,nj->ni", self.frame, displacement
-        )
+        local = self.anchor_local_coordinates(anchor_xyz)
         if str(self.gaussian_type).lower() == "2dgs":
             scale = torch.cat(
                 (

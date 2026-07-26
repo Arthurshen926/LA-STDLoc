@@ -7,7 +7,7 @@ set -euo pipefail
 # SuperPoint pass, cosine top-1 retrieval, and one RANSAC/PnP solve.
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty|feature_stripped> <gpu> <bootstrap|stage_a|sanitize|eval|all>" >&2
+  echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty|feature_stripped> <gpu> <bootstrap|stage_a|statistics|sanitize|eval|all>" >&2
   exit 2
 fi
 
@@ -42,7 +42,7 @@ case "$VARIANT" in
   *) echo "Unknown prior variant: $VARIANT" >&2; exit 2 ;;
 esac
 case "$GPU" in 0|1|2) ;; *) echo "GPU must be 0, 1, or 2" >&2; exit 2 ;; esac
-case "$MODE" in bootstrap|stage_a|sanitize|eval|all) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
+case "$MODE" in bootstrap|stage_a|statistics|sanitize|eval|all) ;; *) echo "Unknown mode: $MODE" >&2; exit 2 ;; esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
@@ -51,12 +51,15 @@ EXPERIMENT_ROOT="${LAFGS_SANITIZATION_ROOT:-/mnt/pool/sqy/stdloc_lafgs_rgb_prior
 SCENE="OldHospital"
 MODEL_ROOT="$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME"
 RUN_TAG="${LAFGS_SANITIZATION_RUN_TAG:-$VARIANT}"
-SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-32000}"
-SANITIZED_BUDGET="${LAFGS_SANITIZATION_FINAL_BUDGET:-24000}"
+SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-48000}"
+SANITIZED_BUDGET="${LAFGS_SANITIZATION_FINAL_BUDGET:-32000}"
+MAX_TRAIN_VIEWS="${LAFGS_MAX_TRAIN_VIEWS:-0}"
 STAGE_A_PROFILE="${LAFGS_STAGE_A_PROFILE:-combined}"
 STAGE_A_STEPS="${LAFGS_STAGE_A_STEPS:-2500}"
 SANITIZATION_SOURCE_STEP="${LAFGS_SANITIZATION_SOURCE_STEP:-$STAGE_A_STEPS}"
 STATISTICS_CHECKPOINT_STEP="${LAFGS_STATISTICS_CHECKPOINT_STEP:-$SANITIZATION_SOURCE_STEP}"
+GEOMETRY_TEACHER_IDENTITY_MODE="${LAFGS_GEOMETRY_TEACHER_IDENTITY_MODE:-map_top1}"
+GEOMETRY_TEACHER_TAG="${LAFGS_GEOMETRY_TEACHER_TAG:-g0_robust_v2}"
 SANITIZATION_MODES="${LAFGS_SANITIZATION_MODES:-loc hard_geo_loc loc_geo loc_query_coverage hard_geo_loc_query_coverage}"
 KCS_EXTENT_QUANTILE="${LAFGS_SANITIZATION_KCS_EXTENT_QUANTILE:-0.01}"
 SUPPORT_MASK_POLICY="${LAFGS_SANITIZATION_SUPPORT_MASK_POLICY:-support_rgb_only}"
@@ -66,6 +69,10 @@ if ! [[ "$SCAFFOLD_BUDGET" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$SANITIZED_BUDGET" =~ ^[1-9][0-9]*$ ]]; then
   echo "LAFGS_SANITIZATION_FINAL_BUDGET must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$MAX_TRAIN_VIEWS" =~ ^[0-9]+$ ]]; then
+  echo "LAFGS_MAX_TRAIN_VIEWS must be a non-negative integer" >&2
   exit 2
 fi
 if (( SANITIZED_BUDGET > SCAFFOLD_BUDGET )); then
@@ -80,6 +87,14 @@ case "$STAGE_A_PROFILE" in
   pure|semidense|protected|combined) ;;
   *) echo "Unknown Stage-A profile: $STAGE_A_PROFILE" >&2; exit 2 ;;
 esac
+case "$GEOMETRY_TEACHER_IDENTITY_MODE" in
+  map_top1|gt_clean_map_top1|track_first|track_first_provenance) ;;
+  *) echo "Unknown geometry teacher identity mode: $GEOMETRY_TEACHER_IDENTITY_MODE" >&2; exit 2 ;;
+esac
+geometry_teacher_track_lgcv_args=()
+if [[ "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV:-0}" == "1" ]]; then
+  geometry_teacher_track_lgcv_args+=(--geometry_teacher_track_lgcv)
+fi
 for value in "$STAGE_A_STEPS" "$SANITIZATION_SOURCE_STEP" "$STATISTICS_CHECKPOINT_STEP"; do
   if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "Stage-A and sanitization checkpoint steps must be positive integers" >&2
@@ -97,13 +112,17 @@ if [[ "$STAGE_A_PROFILE" == "combined" && "$STAGE_A_STEPS" == "2500" ]]; then
 else
   STAGE_A_DIR="$RUN_ROOT/stage_a_${STAGE_A_PROFILE}_${STAGE_A_STEPS}"
 fi
-STATISTICS_DIR="$RUN_ROOT/statistics_${STAGE_A_PROFILE}_${STATISTICS_CHECKPOINT_STEP}_frozen_independent"
+STATISTICS_DIR="$RUN_ROOT/statistics_${STAGE_A_PROFILE}_${STATISTICS_CHECKPOINT_STEP}_frozen_${GEOMETRY_TEACHER_TAG}"
 CONFIG_ROOT="$RUN_ROOT/configs"
 LOG_ROOT="$RUN_ROOT/logs"
 RESULT_ROOT="$RUN_ROOT/results"
 STDLOC_RESULTS_ROOT="$RUN_ROOT/stdloc_results"
 QUERY_CACHE="${LAFGS_QUERY_CACHE_PATH:-$RUN_ROOT/query_cache_native_fullres_k2048.pt}"
-VISIBILITY_CACHE="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native.pt"
+if (( MAX_TRAIN_VIEWS > 0 )); then
+  VISIBILITY_CACHE="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native_${MAX_TRAIN_VIEWS}views.pt"
+else
+  VISIBILITY_CACHE="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native.pt"
+fi
 PRIOR_MANIFEST="$MODEL_ROOT/rgb_prior_manifest.json"
 LANDMARK_IDS="$BOOTSTRAP_DIR/sampled_idx.pkl"
 LANDMARK_META="$BOOTSTRAP_DIR/landmark_meta.pt"
@@ -153,6 +172,7 @@ common_train_args=(
   --native_anchor_aux_weight 0 --generic_proposal_count 0 --distill_budget 0
   --validation_ratio 0 --split_mode stratified_temporal_block
   --split_seed 2026 --train_seed 2026
+  --max_train_views "$MAX_TRAIN_VIEWS"
   --mv_weight 0 --local_weight 0 --dustbin_weight 0
   --geometry_weight 0 --pose_weight 0 --pose_gradient_mode off
 )
@@ -297,12 +317,38 @@ offline_statistics() {
     --positive_radius_px 2 --negative_radius_px 8 \
     --save_landmark_statistics --save_independent_geometry_teacher \
     --statistics_observations 2048 \
+    --geometry_teacher_identity_mode "$GEOMETRY_TEACHER_IDENTITY_MODE" \
     --geometry_teacher_min_similarity "${LAFGS_GEOMETRY_TEACHER_MIN_SIMILARITY:-0.7}" \
     --geometry_teacher_min_margin "${LAFGS_GEOMETRY_TEACHER_MIN_MARGIN:-0.03}" \
     --geometry_teacher_min_views "${LAFGS_GEOMETRY_TEACHER_MIN_VIEWS:-3}" \
     --geometry_teacher_min_view_bins "${LAFGS_GEOMETRY_TEACHER_MIN_VIEW_BINS:-2}" \
     --geometry_teacher_min_parallax_deg "${LAFGS_GEOMETRY_TEACHER_MIN_PARALLAX_DEG:-1}" \
+    --geometry_teacher_parallax_quantile "${LAFGS_GEOMETRY_TEACHER_PARALLAX_QUANTILE:-0.75}" \
     --geometry_teacher_max_reprojection_px "${LAFGS_GEOMETRY_TEACHER_MAX_REPROJECTION_PX:-2}" \
+    --geometry_teacher_max_covariance_trace_m2 "${LAFGS_GEOMETRY_TEACHER_MAX_COVARIANCE_TRACE_M2:-0.01}" \
+    --geometry_teacher_max_rendered_depth_residual_m "${LAFGS_GEOMETRY_TEACHER_MAX_DEPTH_RESIDUAL_M:-0.15}" \
+    --geometry_teacher_min_rendered_depth_observations "${LAFGS_GEOMETRY_TEACHER_MIN_DEPTH_OBSERVATIONS:-2}" \
+    --geometry_teacher_track_pair_neighbors "${LAFGS_GEOMETRY_TEACHER_TRACK_PAIR_NEIGHBORS:-6}" \
+    --geometry_teacher_track_min_similarity "${LAFGS_GEOMETRY_TEACHER_TRACK_MIN_SIMILARITY:-0.65}" \
+    --geometry_teacher_track_min_margin "${LAFGS_GEOMETRY_TEACHER_TRACK_MIN_MARGIN:-0.01}" \
+    --geometry_teacher_track_max_epipolar_error_px "${LAFGS_GEOMETRY_TEACHER_TRACK_MAX_EPIPOLAR_ERROR_PX:-2}" \
+    "${geometry_teacher_track_lgcv_args[@]}" \
+    --geometry_teacher_track_lgcv_neighbors "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_NEIGHBORS:-8}" \
+    --geometry_teacher_track_lgcv_support_threshold "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_SUPPORT_THRESHOLD:-4}" \
+    --geometry_teacher_track_lgcv_angle_cosine "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_ANGLE_COSINE:-0.9659}" \
+    --geometry_teacher_track_lgcv_scale_threshold "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_SCALE_THRESHOLD:-0.1}" \
+    --geometry_teacher_track_lgcv_scale_limit "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_SCALE_LIMIT:-3}" \
+    --geometry_teacher_track_lgcv_maximum_edge_px "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_MAXIMUM_EDGE_PX:-50}" \
+    --geometry_teacher_track_lgcv_minimum_matches "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_MINIMUM_MATCHES:-8}" \
+    --geometry_teacher_track_lgcv_mode "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_MODE:-hard}" \
+    --geometry_teacher_track_lgcv_confidence_floor "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_CONFIDENCE_FLOOR:-0.25}" \
+    --geometry_teacher_track_assignment_max_distance_m "${LAFGS_GEOMETRY_TEACHER_TRACK_ASSIGNMENT_MAX_DISTANCE_M:-0.2}" \
+    --geometry_teacher_provenance_topk "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_TOPK:-4}" \
+    --geometry_teacher_provenance_min_consensus_rate "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_MIN_CONSENSUS_RATE:-0.35}" \
+    --geometry_teacher_provenance_min_views "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_MIN_VIEWS:-2}" \
+    --geometry_teacher_provenance_group_max_landmarks "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MAX_LANDMARKS:-1}" \
+    --geometry_teacher_provenance_group_min_relative_mass "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MIN_RELATIVE_MASS:-0.25}" \
+    --geometry_teacher_provenance_group_min_consensus_rate "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MIN_CONSENSUS_RATE:-0.10}" \
     --steps 0 --save_steps 0
   [[ -f "$STATISTICS_PATH" ]] || {
     echo "Offline statistics sweep did not produce: $STATISTICS_PATH" >&2
@@ -392,6 +438,7 @@ eval_sanitized_states() {
 case "$MODE" in
   bootstrap) bootstrap ;;
   stage_a) stage_a ;;
+  statistics) offline_statistics ;;
   sanitize) sanitize ;;
   eval)
     eval_state bootstrap "$BOOTSTRAP_STATE"

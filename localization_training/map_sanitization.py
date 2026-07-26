@@ -9,6 +9,11 @@ METRIC_ANCHOR_MIN_CONSISTENCY = 0.05
 TRIANGULATION_KEEP_OFFSET_M = 0.03
 TRIANGULATION_REPAIR_OFFSET_M = 0.05
 TRIANGULATION_REPAIR_MAX_OFFSET_M = 0.15
+TRIANGULATION_SURFACE_NORMAL_SCALE_M = 0.02
+TRIANGULATION_SURFACE_TANGENT_SCALE = 1.0
+TRIANGULATION_SURFACE_KEEP_SCORE = 1.0
+TRIANGULATION_SURFACE_REPAIR_SCORE = 1.5
+TRIANGULATION_SURFACE_REPAIR_MAX_SCORE = 5.0
 
 
 def _as_float(value):
@@ -253,26 +258,77 @@ def build_sanitization_scores(statistics, geometry_evidence):
         triangulation_high_confidence = torch.as_tensor(
             triangulation_high_confidence, dtype=torch.bool
         ).reshape(-1)
-        center_offset = _as_float(
-            geometry_evidence["triangulation_current_center_offset_m"]
+        surface_fields = (
+            str(geometry_evidence.get("gaussian_type", "")).lower() == "2dgs"
+            and "triangulation_current_normal_distance_m"
+            in geometry_evidence
+            and "triangulation_rgb_normal_distance_m" in geometry_evidence
+            and "triangulation_current_tangent_normalized"
+            in geometry_evidence
+            and "triangulation_rgb_tangent_normalized" in geometry_evidence
         )
+        if surface_fields:
+            current_normal = _as_float(
+                geometry_evidence[
+                    "triangulation_current_normal_distance_m"
+                ]
+            )
+            rgb_normal = _as_float(
+                geometry_evidence["triangulation_rgb_normal_distance_m"]
+            )
+            current_tangent = _as_float(
+                geometry_evidence[
+                    "triangulation_current_tangent_normalized"
+                ]
+            )
+            rgb_tangent = _as_float(
+                geometry_evidence["triangulation_rgb_tangent_normalized"]
+            )
+            normal_increase = (current_normal - rgb_normal).clamp_min(0.0)
+            tangent_increase = (
+                current_tangent - rgb_tangent
+            ).clamp_min(0.0)
+            geometry_mismatch_score = torch.maximum(
+                normal_increase
+                / float(TRIANGULATION_SURFACE_NORMAL_SCALE_M),
+                tangent_increase
+                / float(TRIANGULATION_SURFACE_TANGENT_SCALE),
+            )
+            center_offset = _as_float(
+                geometry_evidence["triangulation_current_center_offset_m"]
+            )
+            consistent_limit = float(TRIANGULATION_SURFACE_KEEP_SCORE)
+            repair_limit = float(TRIANGULATION_SURFACE_REPAIR_SCORE)
+            repair_max_limit = float(
+                TRIANGULATION_SURFACE_REPAIR_MAX_SCORE
+            )
+        else:
+            center_offset = _as_float(
+                geometry_evidence["triangulation_current_center_offset_m"]
+            )
+            geometry_mismatch_score = center_offset
+            normal_increase = torch.zeros_like(center_offset)
+            tangent_increase = torch.zeros_like(center_offset)
+            consistent_limit = float(TRIANGULATION_KEEP_OFFSET_M)
+            repair_limit = float(TRIANGULATION_REPAIR_OFFSET_M)
+            repair_max_limit = float(TRIANGULATION_REPAIR_MAX_OFFSET_M)
         center_consistent = (
             triangulation_high_confidence
-            & (center_offset <= float(TRIANGULATION_KEEP_OFFSET_M))
+            & (geometry_mismatch_score <= consistent_limit)
         )
         repairable = (
             triangulation_high_confidence
             & (localization_reliability >= loc_q70)
-            & (center_offset >= float(TRIANGULATION_REPAIR_OFFSET_M))
-            & (center_offset <= float(TRIANGULATION_REPAIR_MAX_OFFSET_M))
+            & (geometry_mismatch_score >= repair_limit)
+            & (geometry_mismatch_score <= repair_max_limit)
         )
         geometry_mismatch = (
             triangulation_high_confidence
-            & (center_offset >= float(TRIANGULATION_REPAIR_OFFSET_M))
+            & (geometry_mismatch_score >= repair_limit)
         )
         hard_reject = geometry_mismatch & (
             ~repairable
-            | (center_offset > float(TRIANGULATION_REPAIR_MAX_OFFSET_M))
+            | (geometry_mismatch_score > repair_max_limit)
         )
         # 0 loc-exclude, 1 keep, 2 repair, 3 geo-reject, 4 unknown.
         state = torch.full_like(observations, 4, dtype=torch.int64)
@@ -288,6 +344,16 @@ def build_sanitization_scores(statistics, geometry_evidence):
                     triangulation_high_confidence.float()
                 ),
                 "triangulation_center_offset_m": center_offset,
+                "triangulation_surface_aware": torch.full_like(
+                    center_offset, float(surface_fields)
+                ),
+                "triangulation_surface_normal_increase_m": normal_increase,
+                "triangulation_surface_tangent_normalized_increase": (
+                    tangent_increase
+                ),
+                "triangulation_geometry_mismatch_score": (
+                    geometry_mismatch_score
+                ),
                 "triangulation_center_consistent": center_consistent.float(),
                 "triangulation_repairable": repairable.float(),
                 "triangulation_hard_reject": hard_reject.float(),

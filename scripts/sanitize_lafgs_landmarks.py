@@ -233,6 +233,9 @@ def main():
         triangulation_center_offset = scores.components.get(
             "triangulation_center_offset_m"
         )
+        triangulation_mismatch = scores.components.get(
+            "triangulation_geometry_mismatch_score"
+        )
         if (
             triangulation_high_confidence is not None
             and triangulation_center_offset is not None
@@ -243,10 +246,18 @@ def main():
             center_offset = torch.as_tensor(
                 triangulation_center_offset, dtype=torch.float32
             )
+            mismatch_score = torch.as_tensor(
+                (
+                    triangulation_mismatch
+                    if triangulation_mismatch is not None
+                    else center_offset
+                ),
+                dtype=torch.float32,
+            )
             all_landmark_score = torch.where(
                 high_confidence,
-                center_offset.nan_to_num(posinf=0.0),
-                torch.zeros_like(center_offset),
+                mismatch_score.nan_to_num(posinf=0.0),
+                torch.zeros_like(mismatch_score),
             )
             independent_metrics = binary_ranking_metrics(
                 all_landmark_score, outlier_label
@@ -258,7 +269,7 @@ def main():
                 and bool((~conditional_label).any())
             ):
                 conditional_metrics = binary_ranking_metrics(
-                    center_offset[high_confidence], conditional_label
+                    mismatch_score[high_confidence], conditional_label
                 )
             report["controlled_outlier_evaluation"].update(
                 {

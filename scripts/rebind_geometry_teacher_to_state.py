@@ -6,6 +6,16 @@ from pathlib import Path
 
 import torch
 
+from localization_training.gaussian_prior import GaussianPriorGeometry
+
+
+def _masked_surface_value(value, triangulated):
+    invalid = torch.full_like(value, float("inf"))
+    mask = triangulated
+    while mask.ndim < value.ndim:
+        mask = mask.unsqueeze(-1)
+    return torch.where(mask, value, invalid)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -53,8 +63,36 @@ def main():
         triangulated_xyz[triangulated] - current_xyz[triangulated], dim=1
     )
     geometry["triangulation_current_center_offset_m"] = offset
+    gaussian_type = str(geometry.get("gaussian_type", "")).lower()
+    if (
+        gaussian_type in {"2dgs", "3dgs"}
+        and "rotation" in geometry
+        and "scaling" in geometry
+    ):
+        prior = GaussianPriorGeometry(
+            gaussian_type=gaussian_type,
+            xyz=current_xyz,
+            rotation=torch.as_tensor(
+                geometry["rotation"], dtype=torch.float32
+            ),
+            scaling=torch.as_tensor(
+                geometry["scaling"], dtype=torch.float32
+            ),
+        )
+        safe_triangulated_xyz = torch.where(
+            triangulated[:, None], triangulated_xyz, current_xyz
+        )
+        residual = prior.surface_residual_components(safe_triangulated_xyz)
+        geometry.update(
+            {
+                f"triangulation_current_{name}": _masked_surface_value(
+                    value, triangulated
+                )
+                for name, value in residual.items()
+            }
+        )
     payload = dict(payload)
-    payload["version"] = max(int(payload.get("version", 0)), 3)
+    payload["version"] = max(int(payload.get("version", 0)), 5)
     payload["geometry_evidence"] = geometry
     diagnostics = dict(payload.get("diagnostics", {}))
     diagnostics.update(
