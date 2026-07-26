@@ -48,7 +48,19 @@ def _arguments(parsed):
         geometry_teacher_track_max_epipolar_error_px=(
             parsed.track_max_epipolar_error_px
         ),
+        geometry_teacher_track_epipolar_candidate_topk=(
+            parsed.track_epipolar_candidate_topk
+        ),
+        geometry_teacher_track_epipolar_recovered_min_similarity=(
+            parsed.track_epipolar_recovered_min_similarity
+        ),
+        geometry_teacher_track_epipolar_recovered_min_margin=(
+            parsed.track_epipolar_recovered_min_margin
+        ),
         geometry_teacher_track_require_cycle=parsed.track_require_cycle,
+        geometry_teacher_track_allow_chain_tracks=(
+            parsed.track_allow_chain_tracks
+        ),
         geometry_teacher_track_lgcv=parsed.track_lgcv,
         geometry_teacher_track_lgcv_neighbors=parsed.track_lgcv_neighbors,
         geometry_teacher_track_lgcv_support_threshold=(
@@ -75,6 +87,9 @@ def _arguments(parsed):
         ),
         geometry_teacher_track_assignment_max_distance_m=(
             parsed.track_assignment_max_distance_m
+        ),
+        geometry_teacher_track_assignment_min_margin_m=(
+            parsed.track_assignment_min_margin_m
         ),
     )
 
@@ -126,9 +141,25 @@ def main():
         "--track_max_epipolar_error_px", type=float, default=2.0
     )
     parser.add_argument(
+        "--track_epipolar_candidate_topk", type=int, default=1
+    )
+    parser.add_argument(
+        "--track_epipolar_recovered_min_similarity",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--track_epipolar_recovered_min_margin", type=float, default=-1.0
+    )
+    parser.add_argument(
         "--track_require_cycle",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    parser.add_argument(
+        "--track_allow_chain_tracks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
     )
     parser.add_argument(
         "--track_lgcv",
@@ -162,6 +193,9 @@ def main():
     )
     parser.add_argument(
         "--track_assignment_max_distance_m", type=float, default=0.20
+    )
+    parser.add_argument(
+        "--track_assignment_min_margin_m", type=float, default=0.0
     )
     args = parser.parse_args()
 

@@ -4505,6 +4505,10 @@ def _assign_tracks_by_splat_provenance(
     group_support_views = []
     assigned = 0
     group_assigned_tracks = 0
+    track_observation_counts = torch.bincount(
+        torch.as_tensor(tracks["track_index"], dtype=torch.long),
+        minlength=track_count,
+    )
     for track in range(track_count):
         if not bool(high_confidence[track]):
             group_offsets.append(group_offsets[-1])
@@ -4517,9 +4521,7 @@ def _assign_tracks_by_splat_provenance(
             candidates.items(), key=lambda item: (-item[1], item[0])
         )
         landmark, mass = ordered_candidates[0]
-        track_observations = int(
-            (tracks["track_index"] == track).sum().item()
-        )
+        track_observations = int(track_observation_counts[track])
         rate = float(mass) / max(track_observations, 1)
         views = len(track_candidate_views[track][landmark])
         if (
@@ -4667,7 +4669,7 @@ def _collect_track_first_geometry_teacher(
     detector_scores = []
     camera_intrinsics = []
     camera_poses = []
-    depth_maps = []
+    depth_sources = []
     for name in query_names:
         cached = cache[name]
         descriptors.append(cached["native_descriptors"].float())
@@ -4677,7 +4679,16 @@ def _collect_track_first_geometry_teacher(
         detector_scores.append(cached["native_scores"].float())
         camera_intrinsics.append(cached["native_K"].float())
         camera_poses.append(cached["pose_w2c"].float())
-        depth_maps.append(cached["native_depth"])
+        depth_sources.append(
+            cached.get(
+                "native_depth_at_keypoints",
+                cached.get("native_depth"),
+            )
+        )
+        if depth_sources[-1] is None:
+            raise ValueError(
+                f"Geometry teacher cache lacks native depth for {name}"
+            )
     camera_intrinsics = torch.stack(camera_intrinsics)
     camera_poses = torch.stack(camera_poses)
     tracks, track_diagnostics = build_cycle_consistent_tracks(
@@ -4694,6 +4705,15 @@ def _collect_track_first_geometry_teacher(
         minimum_margin=args.geometry_teacher_track_min_margin,
         maximum_epipolar_error_px=(
             args.geometry_teacher_track_max_epipolar_error_px
+        ),
+        epipolar_candidate_topk=(
+            args.geometry_teacher_track_epipolar_candidate_topk
+        ),
+        epipolar_recovered_minimum_similarity=(
+            args.geometry_teacher_track_epipolar_recovered_min_similarity
+        ),
+        epipolar_recovered_minimum_margin=(
+            args.geometry_teacher_track_epipolar_recovered_min_margin
         ),
         local_geometry_filter=args.geometry_teacher_track_lgcv,
         local_geometry_neighbors=args.geometry_teacher_track_lgcv_neighbors,
@@ -4721,6 +4741,9 @@ def _collect_track_first_geometry_teacher(
         ),
         minimum_track_views=args.geometry_teacher_min_views,
         require_cycle=args.geometry_teacher_track_require_cycle,
+        allow_chain_tracks=(
+            args.geometry_teacher_track_allow_chain_tracks
+        ),
         device="cuda",
     )
     if int(track_diagnostics["track_count"]) == 0:
@@ -4739,19 +4762,23 @@ def _collect_track_first_geometry_teacher(
     for query, keypoint in zip(
         observation_query.tolist(), observation_keypoint.tolist()
     ):
-        depth_map = depth_maps[int(query)]
-        keypoint_xy = (
-            keypoints[int(query)][int(keypoint)] - float(PIXEL_CENTER_OFFSET)
-        )
-        x = min(
-            max(int(round(float(keypoint_xy[0]))), 0),
-            int(depth_map.shape[1]) - 1,
-        )
-        y = min(
-            max(int(round(float(keypoint_xy[1]))), 0),
-            int(depth_map.shape[0]) - 1,
-        )
-        rendered_depth_samples.append(depth_map[y, x])
+        depth_source = depth_sources[int(query)]
+        if depth_source.ndim == 1:
+            rendered_depth_samples.append(depth_source[int(keypoint)])
+        else:
+            keypoint_xy = (
+                keypoints[int(query)][int(keypoint)]
+                - float(PIXEL_CENTER_OFFSET)
+            )
+            x = min(
+                max(int(round(float(keypoint_xy[0]))), 0),
+                int(depth_source.shape[1]) - 1,
+            )
+            y = min(
+                max(int(round(float(keypoint_xy[1]))), 0),
+                int(depth_source.shape[0]) - 1,
+            )
+            rendered_depth_samples.append(depth_source[y, x])
     rendered_depth = torch.stack(rendered_depth_samples).float()
     query_bins = camera_pose_bins(
         camera_poses,
@@ -4789,6 +4816,9 @@ def _collect_track_first_geometry_teacher(
             args.geometry_teacher_min_rendered_depth_observations
         ),
     )
+    track_geometry["track_confidence_level"] = tracks[
+        "track_level"
+    ].clone()
     provenance_diagnostics = {}
     if str(args.geometry_teacher_identity_mode) == "track_first_provenance":
         if provenance_context is None:
@@ -4813,6 +4843,9 @@ def _collect_track_first_geometry_teacher(
             bank_xyz,
             maximum_distance_m=(
                 args.geometry_teacher_track_assignment_max_distance_m
+            ),
+            minimum_margin_m=(
+                args.geometry_teacher_track_assignment_min_margin_m
             ),
             require_high_confidence=True,
             device="cuda",
@@ -4881,6 +4914,45 @@ def _collect_track_first_geometry_teacher(
         ),
         **provenance_diagnostics,
     }
+    if "landmark_track_count" in geometry:
+        track_count_per_landmark = geometry["landmark_track_count"]
+        assigned_landmarks = track_count_per_landmark > 0
+        multi_track = track_count_per_landmark > 1
+        effective_support = geometry["landmark_effective_track_support"]
+        xyz_max_residual = geometry[
+            "landmark_track_xyz_max_residual_m"
+        ]
+        diagnostics.update(
+            {
+                "geometry_teacher_multi_track_landmark_count": int(
+                    multi_track.sum().item()
+                ),
+                "geometry_teacher_multi_track_fraction": float(
+                    multi_track.float().sum().item()
+                    / max(int(assigned_landmarks.sum().item()), 1)
+                ),
+                "geometry_teacher_effective_track_support_mean": float(
+                    effective_support[assigned_landmarks].mean().item()
+                    if bool(assigned_landmarks.any())
+                    else 0.0
+                ),
+                "geometry_teacher_track_conflict_gt_1cm_count": int(
+                    (
+                        multi_track & (xyz_max_residual > 0.01)
+                    ).sum().item()
+                ),
+                "geometry_teacher_track_conflict_gt_3cm_count": int(
+                    (
+                        multi_track & (xyz_max_residual > 0.03)
+                    ).sum().item()
+                ),
+                "geometry_teacher_track_conflict_gt_5cm_count": int(
+                    (
+                        multi_track & (xyz_max_residual > 0.05)
+                    ).sum().item()
+                ),
+            }
+        )
     return statistics, geometry, diagnostics
 
 
@@ -9968,9 +10040,34 @@ def build_parser():
         default=2.0,
     )
     parser.add_argument(
+        "--geometry_teacher_track_epipolar_candidate_topk",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_epipolar_recovered_min_similarity",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_epipolar_recovered_min_margin",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
         "--geometry_teacher_track_require_cycle",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_allow_chain_tracks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Add reciprocal epipolar chain edges after cycle edges using a "
+            "query-conflict-aware union. Cycle-seeded tracks are level A and "
+            "pure-chain tracks are level B."
+        ),
     )
     parser.add_argument(
         "--geometry_teacher_track_lgcv",
@@ -10024,6 +10121,11 @@ def build_parser():
         "--geometry_teacher_track_assignment_max_distance_m",
         type=float,
         default=0.20,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_assignment_min_margin_m",
+        type=float,
+        default=0.0,
     )
     parser.add_argument(
         "--geometry_teacher_provenance_topk", type=int, default=4

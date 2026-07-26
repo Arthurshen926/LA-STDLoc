@@ -162,6 +162,141 @@ def test_epipolar_matching_and_cycle_tracks_are_map_independent():
     )
     assert diagnostics["track_count"] == 1
     assert tracks["query_index"].tolist() == [0, 1, 2]
+    assert tracks["track_level"].tolist() == [2]
+
+
+def test_graded_tracks_admit_query_unique_chain_without_three_cycle():
+    point = torch.tensor([0.0, 0.0, 4.0], dtype=torch.float64)
+    centers = [
+        [-1.5, 0.0, 0.0],
+        [-0.5, 0.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [1.5, 0.0, 0.0],
+    ]
+    poses = torch.stack([_look_at_pose(center, point) for center in centers])
+    K = torch.tensor(
+        [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    ).repeat(4, 1, 1)
+    keypoints = []
+    descriptors = []
+    for index in range(4):
+        projected = _project(point, K[index], poses[index])[0]
+        keypoints.append(
+            torch.stack(
+                (
+                    projected,
+                    projected
+                    + torch.tensor(
+                        [13.0 + 7.0 * index, 19.0 - 3.0 * index],
+                        dtype=projected.dtype,
+                    ),
+                )
+            )
+        )
+        main_descriptor = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0])
+        distractor_descriptor = torch.zeros(5)
+        distractor_descriptor[index + 1] = 1.0
+        descriptors.append(
+            torch.stack((main_descriptor, distractor_descriptor))
+        )
+    strict_tracks, strict_diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=poses,
+        pair_neighbors=2,
+        minimum_baseline_m=0.01,
+        maximum_baseline_m=1.1,
+        minimum_similarity=0.5,
+        minimum_margin=-1.0,
+        maximum_epipolar_error_px=1.0,
+        minimum_track_views=3,
+        device="cpu",
+    )
+    graded_tracks, graded_diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=poses,
+        pair_neighbors=2,
+        minimum_baseline_m=0.01,
+        maximum_baseline_m=1.1,
+        minimum_similarity=0.5,
+        minimum_margin=-1.0,
+        maximum_epipolar_error_px=1.0,
+        minimum_track_views=3,
+        require_cycle=True,
+        allow_chain_tracks=True,
+        device="cpu",
+    )
+
+    assert strict_diagnostics["track_count"] == 0
+    assert strict_tracks["track_index"].numel() == 0
+    assert graded_diagnostics["track_count"] == 1
+    assert graded_diagnostics["track_level_a_count"] == 0
+    assert graded_diagnostics["track_level_b_count"] == 1
+    assert graded_diagnostics["track_graded_chain_edge_count"] == 3
+    assert graded_tracks["query_index"].tolist() == [0, 1, 2, 3]
+    assert graded_tracks["track_level"].tolist() == [1]
+
+
+def test_epipolar_first_topk_recovers_valid_non_global_descriptor_match():
+    target = torch.tensor([0.0, 0.0, 4.0], dtype=torch.float64)
+    points = torch.tensor(
+        [[0.0, -0.5, 4.0], [0.0, 0.5, 4.0]], dtype=torch.float64
+    )
+    poses = torch.stack(
+        [
+            _look_at_pose([-0.5, 0.0, 0.0], target),
+            _look_at_pose([0.5, 0.0, 0.0], target),
+        ]
+    )
+    K = torch.tensor(
+        [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    )
+    uv_a = torch.stack([_project(point, K, poses[0])[0] for point in points])
+    uv_b = torch.stack([_project(point, K, poses[1])[0] for point in points])
+    descriptors_a = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    descriptors_b = torch.tensor(
+        [[0.8, 0.6, 0.0], [1.0, 0.0, 0.0]]
+    )
+
+    global_source, _, _ = reciprocal_epipolar_matches(
+        descriptors_a,
+        descriptors_b,
+        uv_a,
+        uv_b,
+        K,
+        poses[0],
+        K,
+        poses[1],
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+        maximum_epipolar_error_px=0.5,
+        epipolar_candidate_topk=1,
+    )
+    gated_source, gated_target, _ = reciprocal_epipolar_matches(
+        descriptors_a,
+        descriptors_b,
+        uv_a,
+        uv_b,
+        K,
+        poses[0],
+        K,
+        poses[1],
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+        maximum_epipolar_error_px=0.5,
+        epipolar_candidate_topk=2,
+    )
+
+    assert 0 not in global_source.tolist()
+    assert gated_source.tolist() == [0]
+    assert gated_target.tolist() == [0]
 
 
 def test_local_geometric_match_support_is_translation_invariant_and_rejects_outlier():
@@ -335,3 +470,17 @@ def test_track_group_transfer_preserves_original_track_identity():
         0,
         -1,
     ]
+    assert assignment["landmark_track_offsets"].tolist() == [0, 0, 0, 2, 3, 3]
+    assert assignment["landmark_track_indices"].tolist() == [0, 1, 0]
+    assert geometry["landmark_track_count"].tolist() == [0, 0, 2, 1, 0]
+    assert torch.allclose(
+        geometry["landmark_effective_track_support"][2],
+        torch.tensor(1.9931),
+        atol=1e-4,
+    )
+    assert torch.allclose(
+        geometry["landmark_track_xyz_mean"][2],
+        torch.tensor([1.5294, 0.0, 0.0]),
+        atol=1e-4,
+    )
+    assert geometry["landmark_track_xyz_max_residual_m"][2] > 0.5

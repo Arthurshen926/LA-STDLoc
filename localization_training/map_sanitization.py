@@ -14,6 +14,26 @@ TRIANGULATION_SURFACE_TANGENT_SCALE = 1.0
 TRIANGULATION_SURFACE_KEEP_SCORE = 1.0
 TRIANGULATION_SURFACE_REPAIR_SCORE = 1.5
 TRIANGULATION_SURFACE_REPAIR_MAX_SCORE = 5.0
+SUPPORTED_SANITIZATION_MODES = frozenset(
+    {
+        "loc",
+        "loc_query_coverage",
+        "hard_geo_loc",
+        "hard_geo_loc_query_coverage",
+        "hard_geo_reject_only",
+        "loc_geo",
+        "loc_geo_coverage",
+    }
+)
+CANONICAL_SANITIZATION_MODES = frozenset(
+    {
+        "loc",
+        "loc_query_coverage",
+        "hard_geo_loc",
+        "hard_geo_loc_query_coverage",
+        "hard_geo_reject_only",
+    }
+)
 
 
 def _as_float(value):
@@ -442,17 +462,19 @@ def _query_coverage_reserve(score, statistics, eligible, count):
 
 
 def select_sanitized_landmarks(scores, statistics, *, mode, budget):
-    supported_modes = {
-        "loc",
-        "loc_query_coverage",
-        "hard_geo_loc",
-        "hard_geo_loc_query_coverage",
-        "loc_geo",
-        "loc_geo_coverage",
-    }
-    if mode not in supported_modes:
+    if mode not in SUPPORTED_SANITIZATION_MODES:
         raise ValueError(f"Unsupported sanitization mode: {mode}")
     count = int(scores.localization_reliability.numel())
+    if mode == "hard_geo_reject_only":
+        hard_reject = scores.components.get("triangulation_hard_reject")
+        if hard_reject is None:
+            raise ValueError(
+                "hard_geo_reject_only requires independent triangulation "
+                "evidence"
+            )
+        return torch.nonzero(
+            torch.as_tensor(hard_reject) < 0.5, as_tuple=False
+        ).reshape(-1)
     budget = min(max(int(budget), 1), count)
     loc = scores.localization_reliability
     geo = scores.geometry_reliability

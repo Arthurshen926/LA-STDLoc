@@ -68,6 +68,88 @@ def test_2dgs_tangent_displacement_uses_radial_bound():
     )
 
 
+def test_2dgs_project_and_encode_anchor_obey_surface_bounds():
+    prior = GaussianPriorGeometry(
+        "2dgs",
+        xyz=torch.tensor([[1.0, 2.0, 3.0]]),
+        rotation=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+        scaling=torch.ones(1, 2),
+    )
+    projected = prior.project_anchor_target(
+        torch.tensor([[1.03, 2.04, 3.02]]),
+        tangent_bound_m=0.01,
+        normal_bound_m=0.002,
+        covariance_scale=1.0,
+        absolute_bound_m=1.0,
+    )
+    local = prior.anchor_local_coordinates(projected)
+    torch.testing.assert_close(
+        torch.linalg.norm(local[:, :2], dim=1),
+        torch.tensor([0.01]),
+        atol=1e-6,
+        rtol=0,
+    )
+    torch.testing.assert_close(
+        local[:, 2], torch.tensor([0.002]), atol=1e-6, rtol=0
+    )
+    raw = prior.encode_anchor(
+        projected,
+        tangent_bound_m=0.01,
+        normal_bound_m=0.002,
+        covariance_scale=1.0,
+        absolute_bound_m=1.0,
+    )
+    reconstructed = prior.materialize_anchor(
+        raw,
+        tangent_bound_m=0.01,
+        normal_bound_m=0.002,
+        covariance_scale=1.0,
+        absolute_bound_m=1.0,
+    )
+    torch.testing.assert_close(
+        reconstructed, projected, atol=2e-6, rtol=0
+    )
+
+
+def test_3dgs_project_and_encode_anchor_obey_covariance_bounds():
+    prior = GaussianPriorGeometry(
+        "3dgs",
+        xyz=torch.zeros(1, 3),
+        rotation=torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
+        scaling=torch.tensor([[0.20, 0.10, 0.02]]),
+    )
+    projected = prior.project_anchor_target(
+        torch.full((1, 3), 1.0),
+        tangent_bound_m=0.0,
+        normal_bound_m=0.0,
+        covariance_scale=0.5,
+        absolute_bound_m=0.03,
+    )
+    torch.testing.assert_close(
+        projected,
+        torch.tensor([[0.03, 0.03, 0.01]]),
+        atol=1e-6,
+        rtol=0,
+    )
+    raw = prior.encode_anchor(
+        projected,
+        tangent_bound_m=0.0,
+        normal_bound_m=0.0,
+        covariance_scale=0.5,
+        absolute_bound_m=0.03,
+    )
+    reconstructed = prior.materialize_anchor(
+        raw,
+        tangent_bound_m=0.0,
+        normal_bound_m=0.0,
+        covariance_scale=0.5,
+        absolute_bound_m=0.03,
+    )
+    torch.testing.assert_close(
+        reconstructed, projected, atol=2e-6, rtol=0
+    )
+
+
 def test_planarity_uses_smallest_to_middle_covariance_scale():
     prior = GaussianPriorGeometry(
         "3dgs",

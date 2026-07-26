@@ -58,9 +58,24 @@ STAGE_A_PROFILE="${LAFGS_STAGE_A_PROFILE:-combined}"
 STAGE_A_STEPS="${LAFGS_STAGE_A_STEPS:-2500}"
 SANITIZATION_SOURCE_STEP="${LAFGS_SANITIZATION_SOURCE_STEP:-$STAGE_A_STEPS}"
 STATISTICS_CHECKPOINT_STEP="${LAFGS_STATISTICS_CHECKPOINT_STEP:-$SANITIZATION_SOURCE_STEP}"
-GEOMETRY_TEACHER_IDENTITY_MODE="${LAFGS_GEOMETRY_TEACHER_IDENTITY_MODE:-map_top1}"
-GEOMETRY_TEACHER_TAG="${LAFGS_GEOMETRY_TEACHER_TAG:-g0_robust_v2}"
-SANITIZATION_MODES="${LAFGS_SANITIZATION_MODES:-loc hard_geo_loc loc_geo loc_query_coverage hard_geo_loc_query_coverage}"
+if [[ -n "${LAFGS_GEOMETRY_TEACHER_IDENTITY_MODE:-}" ]]; then
+  GEOMETRY_TEACHER_IDENTITY_MODE="$LAFGS_GEOMETRY_TEACHER_IDENTITY_MODE"
+elif [[ "$GAUSSIAN_TYPE" == "2dgs" ]]; then
+  GEOMETRY_TEACHER_IDENTITY_MODE="track_first_provenance"
+else
+  GEOMETRY_TEACHER_IDENTITY_MODE="track_first"
+fi
+if [[ -n "${LAFGS_GEOMETRY_TEACHER_TAG:-}" ]]; then
+  GEOMETRY_TEACHER_TAG="$LAFGS_GEOMETRY_TEACHER_TAG"
+else
+  case "$GEOMETRY_TEACHER_IDENTITY_MODE" in
+    track_first_provenance) GEOMETRY_TEACHER_TAG="g3_track_provenance_v1" ;;
+    track_first) GEOMETRY_TEACHER_TAG="g2_track_first_v1" ;;
+    gt_clean_map_top1) GEOMETRY_TEACHER_TAG="g1_gt_clean_v1" ;;
+    map_top1) GEOMETRY_TEACHER_TAG="g0_map_top1_v1" ;;
+  esac
+fi
+SANITIZATION_MODES="${LAFGS_SANITIZATION_MODES:-loc hard_geo_reject_only hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage}"
 KCS_EXTENT_QUANTILE="${LAFGS_SANITIZATION_KCS_EXTENT_QUANTILE:-0.01}"
 SUPPORT_MASK_POLICY="${LAFGS_SANITIZATION_SUPPORT_MASK_POLICY:-support_rgb_only}"
 if ! [[ "$SCAFFOLD_BUDGET" =~ ^[1-9][0-9]*$ ]]; then
@@ -91,9 +106,29 @@ case "$GEOMETRY_TEACHER_IDENTITY_MODE" in
   map_top1|gt_clean_map_top1|track_first|track_first_provenance) ;;
   *) echo "Unknown geometry teacher identity mode: $GEOMETRY_TEACHER_IDENTITY_MODE" >&2; exit 2 ;;
 esac
+if [[ "${LAFGS_ALLOW_LEGACY_GEOMETRY_TEACHER:-0}" != "1" && "$GEOMETRY_TEACHER_IDENTITY_MODE" == "map_top1" ]]; then
+  echo "Canonical sanitization refuses map_top1; set LAFGS_ALLOW_LEGACY_GEOMETRY_TEACHER=1 only for a labeled G0 control" >&2
+  exit 2
+fi
+for sanitization_mode in $SANITIZATION_MODES; do
+  case "$sanitization_mode" in
+    loc|loc_query_coverage|hard_geo_reject_only|hard_geo_loc|hard_geo_loc_query_coverage) ;;
+    loc_geo|loc_geo_coverage)
+      if [[ "${LAFGS_ALLOW_LEGACY_LOC_GEO:-0}" != "1" ]]; then
+        echo "Canonical sanitization refuses legacy mode: $sanitization_mode" >&2
+        exit 2
+      fi
+      ;;
+    *) echo "Unknown sanitization mode: $sanitization_mode" >&2; exit 2 ;;
+  esac
+done
 geometry_teacher_track_lgcv_args=()
 if [[ "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV:-0}" == "1" ]]; then
   geometry_teacher_track_lgcv_args+=(--geometry_teacher_track_lgcv)
+fi
+geometry_teacher_track_chain_args=()
+if [[ "${LAFGS_GEOMETRY_TEACHER_TRACK_ALLOW_CHAIN_TRACKS:-0}" == "1" ]]; then
+  geometry_teacher_track_chain_args+=(--geometry_teacher_track_allow_chain_tracks)
 fi
 for value in "$STAGE_A_STEPS" "$SANITIZATION_SOURCE_STEP" "$STATISTICS_CHECKPOINT_STEP"; do
   if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
@@ -303,6 +338,9 @@ offline_statistics() {
   }
   if [[ -f "$STATISTICS_PATH" ]]; then
     echo "Reusing frozen independent statistics: $STATISTICS_PATH"
+    "$PYTHON" scripts/verify_geometry_teacher_statistics.py \
+      --statistics "$STATISTICS_PATH" \
+      --expected_identity "$GEOMETRY_TEACHER_IDENTITY_MODE"
     return
   fi
   run_logged "statistics_${STAGE_A_PROFILE}_${STATISTICS_CHECKPOINT_STEP}" \
@@ -332,6 +370,10 @@ offline_statistics() {
     --geometry_teacher_track_min_similarity "${LAFGS_GEOMETRY_TEACHER_TRACK_MIN_SIMILARITY:-0.65}" \
     --geometry_teacher_track_min_margin "${LAFGS_GEOMETRY_TEACHER_TRACK_MIN_MARGIN:-0.01}" \
     --geometry_teacher_track_max_epipolar_error_px "${LAFGS_GEOMETRY_TEACHER_TRACK_MAX_EPIPOLAR_ERROR_PX:-2}" \
+    --geometry_teacher_track_epipolar_candidate_topk "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_CANDIDATE_TOPK:-1}" \
+    --geometry_teacher_track_epipolar_recovered_min_similarity "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_RECOVERED_MIN_SIMILARITY:--1}" \
+    --geometry_teacher_track_epipolar_recovered_min_margin "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_RECOVERED_MIN_MARGIN:--1}" \
+    "${geometry_teacher_track_chain_args[@]}" \
     "${geometry_teacher_track_lgcv_args[@]}" \
     --geometry_teacher_track_lgcv_neighbors "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_NEIGHBORS:-8}" \
     --geometry_teacher_track_lgcv_support_threshold "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_SUPPORT_THRESHOLD:-4}" \
@@ -343,6 +385,7 @@ offline_statistics() {
     --geometry_teacher_track_lgcv_mode "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_MODE:-hard}" \
     --geometry_teacher_track_lgcv_confidence_floor "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_CONFIDENCE_FLOOR:-0.25}" \
     --geometry_teacher_track_assignment_max_distance_m "${LAFGS_GEOMETRY_TEACHER_TRACK_ASSIGNMENT_MAX_DISTANCE_M:-0.2}" \
+    --geometry_teacher_track_assignment_min_margin_m "${LAFGS_GEOMETRY_TEACHER_TRACK_ASSIGNMENT_MIN_MARGIN_M:-0}" \
     --geometry_teacher_provenance_topk "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_TOPK:-4}" \
     --geometry_teacher_provenance_min_consensus_rate "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_MIN_CONSENSUS_RATE:-0.35}" \
     --geometry_teacher_provenance_min_views "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_MIN_VIEWS:-2}" \
@@ -354,6 +397,9 @@ offline_statistics() {
     echo "Offline statistics sweep did not produce: $STATISTICS_PATH" >&2
     exit 1
   }
+  "$PYTHON" scripts/verify_geometry_teacher_statistics.py \
+    --statistics "$STATISTICS_PATH" \
+    --expected_identity "$GEOMETRY_TEACHER_IDENTITY_MODE"
 }
 
 sanitize() {

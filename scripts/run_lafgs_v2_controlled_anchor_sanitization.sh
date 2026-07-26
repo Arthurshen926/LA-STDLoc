@@ -150,7 +150,7 @@ if [[ ! -f "$STATISTICS" ]]; then
   fi
 fi
 
-for mode in loc hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage loc_geo; do
+for mode in loc hard_geo_reject_only hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage; do
   output_dir="$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}"
   if [[ ! -f "$output_dir/sanitized_lafgs_map_state.pt" ]]; then
     run_logged "sanitize_${mode}" \
@@ -202,7 +202,7 @@ eval_state() {
 }
 
 eval_state corrupted "$CORRUPT_STATE" "$CORRUPT_DIR"
-for mode in loc hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage loc_geo; do
+for mode in loc hard_geo_reject_only hard_geo_loc loc_query_coverage hard_geo_loc_query_coverage; do
   eval_state "sanitize_${mode}" \
     "$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}/sanitized_lafgs_map_state.pt" \
     "$CONTROL_ROOT/sanitize_${mode}_${SANITIZED_BUDGET}"

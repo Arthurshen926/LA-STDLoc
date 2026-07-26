@@ -29,6 +29,10 @@ track_lgcv_args=()
 if [[ "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV:-0}" == "1" ]]; then
   track_lgcv_args+=(--track_lgcv)
 fi
+track_chain_args=()
+if [[ "${LAFGS_GEOMETRY_TEACHER_TRACK_ALLOW_CHAIN_TRACKS:-0}" == "1" ]]; then
+  track_chain_args+=(--track_allow_chain_tracks)
+fi
 
 for required in "$STATE" "$BASE_STATISTICS" "$QUERY_CACHE" "$C1_STATE" "$C1_LABELS"; do
   [[ -f "$required" ]] || { echo "Missing required input: $required" >&2; exit 1; }
@@ -59,6 +63,10 @@ for mode in map_top1 gt_clean_map_top1 track_first; do
       --track_min_similarity 0.65 \
       --track_min_margin 0.01 \
       --track_max_epipolar_error_px 2 \
+      --track_epipolar_candidate_topk "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_CANDIDATE_TOPK:-1}" \
+      --track_epipolar_recovered_min_similarity "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_RECOVERED_MIN_SIMILARITY:--1}" \
+      --track_epipolar_recovered_min_margin "${LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_RECOVERED_MIN_MARGIN:--1}" \
+      "${track_chain_args[@]}" \
       "${track_lgcv_args[@]}" \
       --track_lgcv_neighbors "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_NEIGHBORS:-8}" \
       --track_lgcv_support_threshold "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_SUPPORT_THRESHOLD:-4}" \
@@ -70,6 +78,7 @@ for mode in map_top1 gt_clean_map_top1 track_first; do
       --track_lgcv_mode "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_MODE:-hard}" \
       --track_lgcv_confidence_floor "${LAFGS_GEOMETRY_TEACHER_TRACK_LGCV_CONFIDENCE_FLOOR:-0.25}" \
       --track_assignment_max_distance_m 0.2 \
+      --track_assignment_min_margin_m "${LAFGS_GEOMETRY_TEACHER_TRACK_ASSIGNMENT_MIN_MARGIN_M:-0}" \
       2>&1 | tee "$output_dir/build.log"
   fi
 

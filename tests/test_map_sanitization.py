@@ -134,6 +134,11 @@ def test_independent_geometry_uses_five_states_and_hard_reject_gate():
         scores, statistics, mode="hard_geo_loc", budget=19
     )
     assert 0 not in selected
+    reject_only = select_sanitized_landmarks(
+        scores, statistics, mode="hard_geo_reject_only", budget=1
+    )
+    assert reject_only.numel() == 19
+    assert 0 not in reject_only
 
 
 def test_2dgs_surface_residual_ignores_native_patch_extent_but_rejects_drift():

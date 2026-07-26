@@ -9,6 +9,7 @@ import torch
 
 from localization_training.map_sanitization import (
     METRIC_ANCHOR_MIN_CONSISTENCY,
+    SUPPORTED_SANITIZATION_MODES,
     binary_ranking_metrics,
     build_sanitization_scores,
     select_sanitized_landmarks,
@@ -35,14 +36,7 @@ def main():
     parser.add_argument("--output_dir", required=True)
     parser.add_argument(
         "--mode",
-        choices=[
-            "loc",
-            "loc_query_coverage",
-            "hard_geo_loc",
-            "hard_geo_loc_query_coverage",
-            "loc_geo",
-            "loc_geo_coverage",
-        ],
+        choices=sorted(SUPPORTED_SANITIZATION_MODES),
         required=True,
     )
     parser.add_argument("--budget", type=int, default=24000)
@@ -80,7 +74,12 @@ def main():
         mode=args.mode,
         budget=args.budget,
     )
-    if selected.numel() != min(int(args.budget), source_indices.numel()):
+    expected_count = (
+        int(selected.numel())
+        if args.mode == "hard_geo_reject_only"
+        else min(int(args.budget), source_indices.numel())
+    )
+    if selected.numel() != expected_count:
         raise RuntimeError("Sanitizer did not produce the requested exact budget")
 
     output = _subset_state(source, selected)

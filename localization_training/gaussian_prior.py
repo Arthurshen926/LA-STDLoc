@@ -182,6 +182,99 @@ class GaussianPriorGeometry:
         world_offset = torch.einsum("nij,nj->ni", self.frame, local_offset)
         return self.xyz + world_offset
 
+    def project_anchor_target(
+        self,
+        target_xyz: torch.Tensor,
+        *,
+        tangent_bound_m: float,
+        normal_bound_m: float,
+        covariance_scale: float,
+        absolute_bound_m: float,
+    ) -> torch.Tensor:
+        """Project world-space targets into the localization-anchor support."""
+        if target_xyz.shape != self.xyz.shape:
+            raise ValueError("target_xyz must match xyz")
+        local = self.anchor_local_coordinates(target_xyz)
+        bounds = self.anchor_axis_bounds(
+            tangent_bound_m=tangent_bound_m,
+            normal_bound_m=normal_bound_m,
+            covariance_scale=covariance_scale,
+            absolute_bound_m=absolute_bound_m,
+        )
+        if str(self.gaussian_type).lower() == "2dgs":
+            tangent = local[:, :2]
+            tangent_norm = torch.linalg.norm(tangent, dim=1, keepdim=True)
+            tangent_scale = torch.clamp(
+                float(tangent_bound_m) / tangent_norm.clamp_min(1e-12),
+                max=1.0,
+            )
+            projected_local = torch.cat(
+                (
+                    tangent * tangent_scale,
+                    local[:, 2:3].clamp(
+                        min=-float(normal_bound_m),
+                        max=float(normal_bound_m),
+                    ),
+                ),
+                dim=1,
+            )
+        else:
+            projected_local = torch.maximum(
+                torch.minimum(local, bounds), -bounds
+            )
+        return self.xyz + torch.einsum(
+            "nij,nj->ni", self.frame, projected_local
+        )
+
+    def encode_anchor(
+        self,
+        anchor_xyz: torch.Tensor,
+        *,
+        tangent_bound_m: float,
+        normal_bound_m: float,
+        covariance_scale: float,
+        absolute_bound_m: float,
+        boundary_epsilon: float = 1e-6,
+    ) -> torch.Tensor:
+        """Invert ``materialize_anchor`` for an anchor inside its support."""
+        if not 0.0 < float(boundary_epsilon) < 1.0:
+            raise ValueError("boundary_epsilon must be in (0, 1)")
+        if anchor_xyz.shape != self.xyz.shape:
+            raise ValueError("anchor_xyz must match xyz")
+        local = self.anchor_local_coordinates(anchor_xyz)
+        bounds = self.anchor_axis_bounds(
+            tangent_bound_m=tangent_bound_m,
+            normal_bound_m=normal_bound_m,
+            covariance_scale=covariance_scale,
+            absolute_bound_m=absolute_bound_m,
+        )
+        ratio_limit = 1.0 - float(boundary_epsilon)
+        if str(self.gaussian_type).lower() == "2dgs":
+            tangent = local[:, :2]
+            tangent_norm = torch.linalg.norm(tangent, dim=1, keepdim=True)
+            tangent_ratio = (
+                tangent_norm / float(tangent_bound_m)
+            ).clamp(0.0, ratio_limit)
+            tangent_raw_norm = torch.atanh(tangent_ratio)
+            tangent_raw = torch.where(
+                tangent_norm > 1e-12,
+                tangent
+                * (tangent_raw_norm / tangent_norm.clamp_min(1e-12)),
+                torch.zeros_like(tangent),
+            )
+            normal_ratio = (
+                local[:, 2:3] / float(normal_bound_m)
+            ).clamp(-ratio_limit, ratio_limit)
+            raw_offset = torch.cat(
+                (tangent_raw, torch.atanh(normal_ratio)), dim=1
+            )
+        else:
+            ratio = (local / bounds).clamp(-ratio_limit, ratio_limit)
+            raw_offset = torch.atanh(ratio)
+        if not bool(torch.isfinite(raw_offset).all().item()):
+            raise ValueError("Encoded localization anchor is non-finite")
+        return raw_offset
+
     def mahalanobis_anchor_prior(
         self,
         anchor_xyz: torch.Tensor,

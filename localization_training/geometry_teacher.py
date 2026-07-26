@@ -145,9 +145,15 @@ def symmetric_epipolar_distance(
 ) -> torch.Tensor:
     """Compute symmetric point-to-epipolar-line distance in pixels."""
     uv_a = torch.as_tensor(uv_a, dtype=torch.float64)
-    uv_b = torch.as_tensor(uv_b, dtype=torch.float64)
-    fundamental = torch.as_tensor(fundamental, dtype=torch.float64)
-    ones = torch.ones((uv_a.shape[0], 1), dtype=uv_a.dtype)
+    uv_b = torch.as_tensor(
+        uv_b, device=uv_a.device, dtype=torch.float64
+    )
+    fundamental = torch.as_tensor(
+        fundamental, device=uv_a.device, dtype=torch.float64
+    )
+    ones = torch.ones(
+        (uv_a.shape[0], 1), device=uv_a.device, dtype=uv_a.dtype
+    )
     point_a = torch.cat((uv_a, ones), dim=1)
     point_b = torch.cat((uv_b, ones), dim=1)
     line_b = point_a @ fundamental.T
@@ -176,14 +182,137 @@ def reciprocal_epipolar_matches(
     minimum_similarity: float = 0.65,
     minimum_margin: float = 0.01,
     maximum_epipolar_error_px: float = 2.0,
+    epipolar_candidate_topk: int = 1,
+    recovered_minimum_similarity: float = -1.0,
+    recovered_minimum_margin: float = -1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Match native descriptors using reciprocal, margin and epipolar gates."""
+    """Match descriptors with optional epipolar-first top-K reciprocity."""
     if descriptors_a.numel() == 0 or descriptors_b.numel() == 0:
         empty = torch.empty(0, dtype=torch.long)
         return empty, empty, torch.empty(0)
     descriptors_a = F.normalize(descriptors_a.float(), dim=1)
     descriptors_b = F.normalize(descriptors_b.float(), dim=1)
     similarity = descriptors_a @ descriptors_b.T
+    candidate_topk = int(epipolar_candidate_topk)
+    if candidate_topk > 1:
+        candidate_topk = min(
+            candidate_topk,
+            int(similarity.shape[0]),
+            int(similarity.shape[1]),
+        )
+        if candidate_topk < 2:
+            candidate_topk = 1
+    if candidate_topk > 1:
+        fundamental = fundamental_from_known_poses(
+            K_a, pose_a_w2c, K_b, pose_b_w2c
+        ).to(device=similarity.device)
+        uv_a_device = torch.as_tensor(
+            uv_a, device=similarity.device, dtype=torch.float64
+        )
+        uv_b_device = torch.as_tensor(
+            uv_b, device=similarity.device, dtype=torch.float64
+        )
+
+        values_ab, indices_ab = torch.topk(
+            similarity, k=candidate_topk, dim=1
+        )
+        epipolar_ab = symmetric_epipolar_distance(
+            uv_a_device[:, None, :]
+            .expand(-1, candidate_topk, -1)
+            .reshape(-1, 2),
+            uv_b_device[indices_ab].reshape(-1, 2),
+            fundamental,
+        ).reshape_as(values_ab)
+        valid_ab = epipolar_ab <= float(maximum_epipolar_error_px)
+        gated_ab = values_ab.masked_fill(~valid_ab, -torch.inf)
+        best_ab, best_ab_position = torch.topk(gated_ab, k=2, dim=1)
+        target = indices_ab.gather(
+            1, best_ab_position[:, :1]
+        ).squeeze(1)
+        chosen_epipolar = epipolar_ab.gather(
+            1, best_ab_position[:, :1]
+        ).squeeze(1)
+
+        values_ba, indices_ba = torch.topk(
+            similarity, k=candidate_topk, dim=0
+        )
+        values_ba = values_ba.T
+        indices_ba = indices_ba.T
+        epipolar_ba = symmetric_epipolar_distance(
+            uv_a_device[indices_ba].reshape(-1, 2),
+            uv_b_device[:, None, :]
+            .expand(-1, candidate_topk, -1)
+            .reshape(-1, 2),
+            fundamental,
+        ).reshape_as(values_ba)
+        valid_ba = epipolar_ba <= float(maximum_epipolar_error_px)
+        gated_ba = values_ba.masked_fill(~valid_ba, -torch.inf)
+        best_ba, best_ba_position = torch.topk(gated_ba, k=2, dim=1)
+        source_for_target = indices_ba.gather(
+            1, best_ba_position[:, :1]
+        ).squeeze(1)
+
+        source = torch.arange(
+            descriptors_a.shape[0],
+            device=similarity.device,
+            dtype=torch.long,
+        )
+        reciprocal = source_for_target[target] == source
+        recovered = (
+            (target != indices_ab[:, 0])
+            | (source != indices_ba[target, 0])
+        )
+        recovered_similarity = (
+            float(recovered_minimum_similarity)
+            if float(recovered_minimum_similarity) >= 0.0
+            else float(minimum_similarity)
+        )
+        recovered_margin = (
+            float(recovered_minimum_margin)
+            if float(recovered_minimum_margin) >= 0.0
+            else float(minimum_margin)
+        )
+        recovered_valid = (
+            (best_ab[:, 0] >= recovered_similarity)
+            & ((best_ab[:, 0] - best_ab[:, 1]) >= recovered_margin)
+            & (
+                (best_ba[target, 0] - best_ba[target, 1])
+                >= recovered_margin
+            )
+        )
+        descriptor_valid = (
+            reciprocal
+            & torch.isfinite(best_ab[:, 0])
+            & torch.isfinite(best_ba[target, 0])
+            & (best_ab[:, 0] >= float(minimum_similarity))
+            & ((best_ab[:, 0] - best_ab[:, 1]) >= float(minimum_margin))
+            & (
+                (best_ba[target, 0] - best_ba[target, 1])
+                >= float(minimum_margin)
+            )
+            & (~recovered | recovered_valid)
+        )
+        selected = torch.nonzero(
+            descriptor_valid, as_tuple=False
+        ).reshape(-1)
+        if selected.numel() == 0:
+            empty = torch.empty(0, dtype=torch.long)
+            return empty, empty, torch.empty(0)
+        selected_target = target[selected]
+        selected_epipolar = chosen_epipolar[selected].float()
+        confidence = best_ab[selected, 0].detach().float() * torch.exp(
+            -0.5
+            * (
+                selected_epipolar
+                / max(float(maximum_epipolar_error_px), 1e-6)
+            ).square()
+        )
+        return (
+            selected.detach().cpu().long(),
+            selected_target.detach().cpu().long(),
+            confidence.detach().cpu(),
+        )
+
     values_ab, indices_ab = torch.topk(similarity, k=2, dim=1)
     values_ba, indices_ba = torch.topk(similarity, k=2, dim=0)
     source = torch.arange(
@@ -413,6 +542,159 @@ class _SparseDisjointSet:
             self.rank[left_root] = left_rank + 1
 
 
+class _ConflictAwareTrackSet:
+    """Disjoint set that preserves at most one keypoint per query."""
+
+    def __init__(self):
+        self.parent = {}
+        self.rank = {}
+        self.queries = {}
+        self.cycle_seeded = {}
+
+    def add(self, node, query):
+        if node in self.parent:
+            return
+        self.parent[node] = node
+        self.rank[node] = 0
+        self.queries[node] = {int(query)}
+        self.cycle_seeded[node] = False
+
+    def find(self, node):
+        parent = self.parent[node]
+        if parent != node:
+            self.parent[node] = self.find(parent)
+        return self.parent[node]
+
+    def union(self, left, right, *, cycle_supported):
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            if cycle_supported:
+                self.cycle_seeded[left_root] = True
+            return True
+        if self.queries[left_root] & self.queries[right_root]:
+            return False
+        if self.rank[left_root] < self.rank[right_root]:
+            left_root, right_root = right_root, left_root
+        self.parent[right_root] = left_root
+        if self.rank[left_root] == self.rank[right_root]:
+            self.rank[left_root] += 1
+        self.queries[left_root].update(self.queries.pop(right_root))
+        self.cycle_seeded[left_root] = (
+            self.cycle_seeded[left_root]
+            or self.cycle_seeded.pop(right_root)
+            or bool(cycle_supported)
+        )
+        return True
+
+
+def _graded_track_components(
+    pair_matches,
+    cycle_support,
+    keypoint_offsets,
+):
+    """Build cycle-seeded and pure-chain tracks without query collisions."""
+    edge_left = []
+    edge_right = []
+    edge_confidence = []
+    edge_cycle = []
+    edge_source = []
+    edge_target = []
+    for pair, (source, target, confidence) in pair_matches.items():
+        left, right = pair
+        count = int(source.numel())
+        if count == 0:
+            continue
+        edge_left.extend([left] * count)
+        edge_right.extend([right] * count)
+        edge_source.append(source.long())
+        edge_target.append(target.long())
+        edge_confidence.append(confidence.float())
+        edge_cycle.append(cycle_support[pair].bool())
+    if not edge_source:
+        return (
+            {},
+            {},
+            {},
+            {
+                "track_graded_cycle_edge_count": 0,
+                "track_graded_chain_edge_count": 0,
+                "track_graded_conflict_rejected_edge_count": 0,
+            },
+        )
+    edge_source = torch.cat(edge_source)
+    edge_target = torch.cat(edge_target)
+    edge_confidence = torch.cat(edge_confidence)
+    edge_cycle = torch.cat(edge_cycle)
+    edge_left = torch.as_tensor(edge_left, dtype=torch.long)
+    edge_right = torch.as_tensor(edge_right, dtype=torch.long)
+    cycle_indices = torch.nonzero(edge_cycle, as_tuple=False).reshape(-1)
+    chain_indices = torch.nonzero(~edge_cycle, as_tuple=False).reshape(-1)
+    if cycle_indices.numel():
+        cycle_indices = cycle_indices[
+            torch.argsort(
+                edge_confidence[cycle_indices],
+                descending=True,
+                stable=True,
+            )
+        ]
+    if chain_indices.numel():
+        chain_indices = chain_indices[
+            torch.argsort(
+                edge_confidence[chain_indices],
+                descending=True,
+                stable=True,
+            )
+        ]
+    order = torch.cat((cycle_indices, chain_indices))
+    disjoint = _ConflictAwareTrackSet()
+    node_confidence = defaultdict(float)
+    accepted_cycle = 0
+    accepted_chain = 0
+    rejected_conflict = 0
+    for edge in order.tolist():
+        left_query = int(edge_left[edge])
+        right_query = int(edge_right[edge])
+        source_node = (
+            int(keypoint_offsets[left_query]) + int(edge_source[edge])
+        )
+        target_node = (
+            int(keypoint_offsets[right_query]) + int(edge_target[edge])
+        )
+        disjoint.add(source_node, left_query)
+        disjoint.add(target_node, right_query)
+        is_cycle = bool(edge_cycle[edge])
+        if not disjoint.union(
+            source_node, target_node, cycle_supported=is_cycle
+        ):
+            rejected_conflict += 1
+            continue
+        confidence = float(edge_confidence[edge])
+        node_confidence[source_node] = max(
+            node_confidence[source_node], confidence
+        )
+        node_confidence[target_node] = max(
+            node_confidence[target_node], confidence
+        )
+        if is_cycle:
+            accepted_cycle += 1
+        else:
+            accepted_chain += 1
+    components = defaultdict(list)
+    for node in disjoint.parent:
+        components[disjoint.find(node)].append(node)
+    component_cycle_seeded = {
+        root: bool(disjoint.cycle_seeded[disjoint.find(root)])
+        for root in components
+    }
+    diagnostics = {
+        "track_graded_cycle_edge_count": accepted_cycle,
+        "track_graded_chain_edge_count": accepted_chain,
+        "track_graded_conflict_rejected_edge_count": rejected_conflict,
+    }
+    return components, node_confidence, component_cycle_seeded, diagnostics
+
+
 @torch.no_grad()
 def build_cycle_consistent_tracks(
     *,
@@ -428,6 +710,9 @@ def build_cycle_consistent_tracks(
     minimum_similarity: float = 0.65,
     minimum_margin: float = 0.01,
     maximum_epipolar_error_px: float = 2.0,
+    epipolar_candidate_topk: int = 1,
+    epipolar_recovered_minimum_similarity: float = -1.0,
+    epipolar_recovered_minimum_margin: float = -1.0,
     local_geometry_filter: bool = False,
     local_geometry_neighbors: int = 8,
     local_geometry_support_threshold: float = 4.0,
@@ -440,6 +725,7 @@ def build_cycle_consistent_tracks(
     local_geometry_confidence_floor: float = 0.25,
     minimum_track_views: int = 3,
     require_cycle: bool = True,
+    allow_chain_tracks: bool = False,
     device: str | torch.device = "cuda",
 ) -> tuple[dict[str, torch.Tensor], dict[str, float | int]]:
     """Build map-independent native 2D tracks from a local camera graph."""
@@ -482,6 +768,11 @@ def build_cycle_consistent_tracks(
             minimum_similarity=minimum_similarity,
             minimum_margin=minimum_margin,
             maximum_epipolar_error_px=maximum_epipolar_error_px,
+            epipolar_candidate_topk=epipolar_candidate_topk,
+            recovered_minimum_similarity=(
+                epipolar_recovered_minimum_similarity
+            ),
+            recovered_minimum_margin=epipolar_recovered_minimum_margin,
         )
         if source.numel() == 0:
             continue
@@ -542,44 +833,78 @@ def build_cycle_consistent_tracks(
     keypoint_offsets = [0]
     for count in keypoint_counts:
         keypoint_offsets.append(keypoint_offsets[-1] + count)
-    disjoint = _SparseDisjointSet()
-    node_confidence = defaultdict(float)
-    supported_edge_count = 0
-    for pair, (source, target, confidence) in pair_matches.items():
-        keep = cycle_support[pair]
-        left, right = pair
-        for source_index, target_index, edge_confidence in zip(
-            source[keep].tolist(),
-            target[keep].tolist(),
-            confidence[keep].tolist(),
-        ):
-            source_node = keypoint_offsets[left] + source_index
-            target_node = keypoint_offsets[right] + target_index
-            disjoint.union(source_node, target_node)
-            node_confidence[source_node] = max(
-                node_confidence[source_node], float(edge_confidence)
+    graded_diagnostics = {
+        "track_graded_cycle_edge_count": 0,
+        "track_graded_chain_edge_count": 0,
+        "track_graded_conflict_rejected_edge_count": 0,
+    }
+    component_cycle_seeded = {}
+    if allow_chain_tracks:
+        if not require_cycle:
+            raise ValueError(
+                "allow_chain_tracks requires cycle support for graded tracks"
             )
-            node_confidence[target_node] = max(
-                node_confidence[target_node], float(edge_confidence)
-            )
-            supported_edge_count += 1
-    components = defaultdict(list)
-    for node in disjoint.parent:
-        components[disjoint.find(node)].append(node)
+        (
+            components,
+            node_confidence,
+            component_cycle_seeded,
+            graded_diagnostics,
+        ) = _graded_track_components(
+            pair_matches, cycle_support, keypoint_offsets
+        )
+        supported_edge_count = (
+            graded_diagnostics["track_graded_cycle_edge_count"]
+            + graded_diagnostics["track_graded_chain_edge_count"]
+        )
+        active_nodes = {
+            node for nodes in components.values() for node in nodes
+        }
+    else:
+        disjoint = _SparseDisjointSet()
+        node_confidence = defaultdict(float)
+        supported_edge_count = 0
+        for pair, (source, target, confidence) in pair_matches.items():
+            keep = cycle_support[pair]
+            left, right = pair
+            for source_index, target_index, edge_confidence in zip(
+                source[keep].tolist(),
+                target[keep].tolist(),
+                confidence[keep].tolist(),
+            ):
+                source_node = keypoint_offsets[left] + source_index
+                target_node = keypoint_offsets[right] + target_index
+                disjoint.union(source_node, target_node)
+                node_confidence[source_node] = max(
+                    node_confidence[source_node], float(edge_confidence)
+                )
+                node_confidence[target_node] = max(
+                    node_confidence[target_node], float(edge_confidence)
+                )
+                supported_edge_count += 1
+        components = defaultdict(list)
+        for node in disjoint.parent:
+            components[disjoint.find(node)].append(node)
+        active_nodes = set(disjoint.parent)
+        component_cycle_seeded = {
+            root: bool(require_cycle) for root in components
+        }
     node_query = {}
     for query, (start, end) in enumerate(
         zip(keypoint_offsets[:-1], keypoint_offsets[1:])
     ):
         for node in range(start, end):
-            if node in disjoint.parent:
+            if node in active_nodes:
                 node_query[node] = (query, node - start)
     track_indices = []
     query_indices = []
     keypoint_indices = []
     confidences = []
+    track_levels = []
     track_count = 0
+    level_a_track_count = 0
+    level_b_track_count = 0
     rejected_duplicate_query = 0
-    for nodes in components.values():
+    for root, nodes in components.items():
         observations = [node_query[node] for node in nodes]
         queries = [item[0] for item in observations]
         if len(set(queries)) != len(queries):
@@ -592,17 +917,31 @@ def build_cycle_consistent_tracks(
             query_indices.append(query)
             keypoint_indices.append(keypoint)
             confidences.append(node_confidence[node])
+        level = 2 if component_cycle_seeded.get(root, False) else 1
+        track_levels.append(level)
+        if level == 2:
+            level_a_track_count += 1
+        else:
+            level_b_track_count += 1
         track_count += 1
     tracks = {
         "track_index": torch.as_tensor(track_indices, dtype=torch.long),
         "query_index": torch.as_tensor(query_indices, dtype=torch.long),
         "keypoint_index": torch.as_tensor(keypoint_indices, dtype=torch.long),
         "confidence": torch.as_tensor(confidences, dtype=torch.float32),
+        "track_level": torch.as_tensor(track_levels, dtype=torch.int8),
     }
     diagnostics = {
         "track_camera_pair_candidate_count": len(pairs),
         "track_camera_pair_matched_count": len(pair_matches),
         "track_raw_reciprocal_epipolar_edge_count": raw_match_count,
+        "track_epipolar_candidate_topk": int(epipolar_candidate_topk),
+        "track_epipolar_recovered_minimum_similarity": float(
+            epipolar_recovered_minimum_similarity
+        ),
+        "track_epipolar_recovered_minimum_margin": float(
+            epipolar_recovered_minimum_margin
+        ),
         "track_lgcv_enabled": int(bool(local_geometry_filter)),
         "track_lgcv_mode": (
             str(local_geometry_mode) if local_geometry_filter else "disabled"
@@ -622,10 +961,14 @@ def build_cycle_consistent_tracks(
         ),
         "track_cycle_supported_edge_count": supported_edge_count,
         "track_count": track_count,
+        "track_level_a_count": level_a_track_count,
+        "track_level_b_count": level_b_track_count,
+        "track_allow_chain_tracks": int(bool(allow_chain_tracks)),
         "track_observation_count": len(track_indices),
         "track_rejected_duplicate_query_component_count": (
             rejected_duplicate_query
         ),
+        **graded_diagnostics,
     }
     return tracks, diagnostics
 
@@ -1164,12 +1507,99 @@ def transfer_triangulated_track_groups_to_landmarks(
     landmark_best_track[selected] = edge_track_index[
         landmark_best_edge[selected]
     ]
+    edge_order = torch.argsort(edge_landmark_index, stable=True)
+    landmark_track_indices = edge_track_index[edge_order]
+    landmark_edge_indices = edge_order
+    ordered_landmarks = edge_landmark_index[edge_order]
+    landmark_track_count = torch.bincount(
+        ordered_landmarks, minlength=int(landmark_count)
+    )
+    landmark_track_offsets = torch.zeros(
+        int(landmark_count) + 1, dtype=torch.long
+    )
+    landmark_track_offsets[1:] = torch.cumsum(
+        landmark_track_count, dim=0
+    )
+    raw_responsibility = (
+        1.0 - edge_assignment_cost[edge_order]
+    ).clamp_min(1e-6)
+    responsibility_sum = torch.zeros(
+        int(landmark_count), dtype=torch.float32
+    )
+    responsibility_sum.index_add_(
+        0, ordered_landmarks, raw_responsibility
+    )
+    landmark_track_responsibilities = raw_responsibility / (
+        responsibility_sum[ordered_landmarks].clamp_min(1e-12)
+    )
+    responsibility_square_sum = torch.zeros_like(responsibility_sum)
+    responsibility_square_sum.index_add_(
+        0,
+        ordered_landmarks,
+        landmark_track_responsibilities.square(),
+    )
+    effective_track_support = torch.zeros_like(responsibility_sum)
+    has_support = landmark_track_count > 0
+    effective_track_support[has_support] = (
+        1.0 / responsibility_square_sum[has_support].clamp_min(1e-12)
+    )
+    track_xyz = torch.as_tensor(
+        track_geometry["triangulated_xyz"], dtype=torch.float32
+    ).cpu()
+    landmark_track_xyz_mean = torch.zeros(
+        (int(landmark_count), 3), dtype=torch.float32
+    )
+    landmark_track_xyz_mean.index_add_(
+        0,
+        ordered_landmarks,
+        track_xyz[landmark_track_indices]
+        * landmark_track_responsibilities[:, None],
+    )
+    edge_residual = torch.linalg.norm(
+        track_xyz[landmark_track_indices]
+        - landmark_track_xyz_mean[ordered_landmarks],
+        dim=1,
+    )
+    weighted_square_residual = torch.zeros_like(responsibility_sum)
+    weighted_square_residual.index_add_(
+        0,
+        ordered_landmarks,
+        landmark_track_responsibilities * edge_residual.square(),
+    )
+    landmark_track_xyz_rms_m = torch.sqrt(weighted_square_residual)
+    landmark_track_xyz_max_residual_m = torch.zeros_like(
+        responsibility_sum
+    )
+    landmark_track_xyz_max_residual_m.scatter_reduce_(
+        0,
+        ordered_landmarks,
+        edge_residual,
+        reduce="amax",
+        include_self=True,
+    )
+    geometry.update(
+        {
+            "landmark_track_count": landmark_track_count,
+            "landmark_effective_track_support": effective_track_support,
+            "landmark_track_xyz_mean": landmark_track_xyz_mean,
+            "landmark_track_xyz_rms_m": landmark_track_xyz_rms_m,
+            "landmark_track_xyz_max_residual_m": (
+                landmark_track_xyz_max_residual_m
+            ),
+        }
+    )
     assignment = {
         "edge_track_index": edge_track_index,
         "edge_landmark_index": edge_landmark_index,
         "edge_assignment_cost": edge_assignment_cost,
         "landmark_best_edge_index": landmark_best_edge,
         "landmark_best_track_index": landmark_best_track,
+        "landmark_track_offsets": landmark_track_offsets,
+        "landmark_track_indices": landmark_track_indices,
+        "landmark_track_edge_indices": landmark_edge_indices,
+        "landmark_track_responsibilities": (
+            landmark_track_responsibilities
+        ),
     }
     return geometry, assignment
 
@@ -1180,6 +1610,7 @@ def assign_triangulated_tracks_to_landmarks(
     bank_xyz: torch.Tensor,
     *,
     maximum_distance_m: float = 0.20,
+    minimum_margin_m: float = 0.0,
     require_high_confidence: bool = True,
     device: str | torch.device = "cuda",
     chunk_size: int = 512,
@@ -1204,17 +1635,32 @@ def assign_triangulated_tracks_to_landmarks(
     track_landmark_distance = torch.full(
         (track_xyz.shape[0],), float("inf"), dtype=torch.float32
     )
+    track_landmark_margin = torch.zeros(
+        track_xyz.shape[0], dtype=torch.float32
+    )
     if eligible_indices.numel() > 0:
         bank_device = bank_xyz_cpu.to(device)
         for start in range(0, eligible_indices.numel(), max(int(chunk_size), 1)):
             selected = eligible_indices[start : start + max(int(chunk_size), 1)]
             distance = torch.cdist(track_xyz[selected].to(device), bank_device)
-            nearest_distance, nearest = distance.min(dim=1)
-            valid = nearest_distance <= float(maximum_distance_m)
+            nearest_two, nearest_indices = torch.topk(
+                distance, k=min(2, distance.shape[1]), dim=1, largest=False
+            )
+            nearest_distance = nearest_two[:, 0]
+            nearest = nearest_indices[:, 0]
+            if nearest_two.shape[1] > 1:
+                margin = nearest_two[:, 1] - nearest_two[:, 0]
+            else:
+                margin = torch.full_like(nearest_distance, float("inf"))
+            valid = (
+                (nearest_distance <= float(maximum_distance_m))
+                & (margin >= float(minimum_margin_m))
+            )
             track_landmark[selected[valid.cpu()]] = nearest[valid].cpu()
             track_landmark_distance[selected[valid.cpu()]] = (
                 nearest_distance[valid].cpu()
             )
+            track_landmark_margin[selected] = margin.cpu()
     geometry, assignment = transfer_triangulated_tracks_to_landmarks(
         track_geometry,
         track_landmark,
@@ -1224,7 +1670,16 @@ def assign_triangulated_tracks_to_landmarks(
     geometry["track_assignment_distance_m"] = geometry.pop(
         "track_assignment_cost"
     )
+    best_track = assignment["landmark_best_track_index"]
+    selected_landmark = best_track >= 0
+    geometry["track_assignment_margin_m"] = torch.zeros(
+        bank_xyz_cpu.shape[0], dtype=torch.float32
+    )
+    geometry["track_assignment_margin_m"][selected_landmark] = (
+        track_landmark_margin[best_track[selected_landmark]]
+    )
     assignment["track_landmark_distance_m"] = assignment.pop(
         "track_assignment_cost"
     )
+    assignment["track_landmark_margin_m"] = track_landmark_margin
     return geometry, assignment
