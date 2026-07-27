@@ -7,6 +7,7 @@ from localization_training.micro_anchors import (
     protected_micro_anchor_descriptor_loss,
     robust_fuse_track_descriptors,
     select_micro_anchor_set,
+    select_function_preserving_base_rows,
     truncate_materialized_anchor_extension,
     truncate_materialized_anchor_map,
 )
@@ -349,3 +350,78 @@ def test_query_saturated_selection_prefers_complementary_query():
     assert selected.tolist() == [0, 2]
     assert diagnostics["covered_query_count"] == 2
     assert diagnostics["covered_gap_observation_count"] == 3
+
+
+def test_marginal_selection_stops_before_nonpositive_candidate():
+    selected, diagnostics = select_micro_anchor_set(
+        candidate_gap_observations=[[0], [1]],
+        observation_query_indices=torch.tensor([0, 1]),
+        query_sequence_indices=torch.tensor([0, 0]),
+        budget=2,
+        profile="unique_gap",
+        false_attractor_costs=torch.tensor([0.0, 2.0]),
+        false_attractor_penalty=1.0,
+        minimum_marginal_gain=0.0,
+    )
+    assert selected.tolist() == [0]
+    assert diagnostics["automatic_stop_triggered"]
+    assert diagnostics["first_nonpositive_gain_rank"] == 1
+
+
+def test_functional_gap_can_rescue_candidate_without_geometric_gap():
+    selected, diagnostics = select_micro_anchor_set(
+        candidate_gap_observations=[[], [0]],
+        candidate_functional_gap_observations=[[1, 2], []],
+        observation_query_indices=torch.tensor([0, 1, 1]),
+        query_sequence_indices=torch.tensor([0, 0]),
+        budget=1,
+        profile="unique_gap",
+        false_attractor_costs=torch.zeros(2),
+        functional_gap_weight=1.0,
+        minimum_marginal_gain=0.0,
+    )
+    assert selected.tolist() == [0]
+    assert diagnostics["covered_functional_gap_observation_count"] == 2
+
+
+def test_quality_core_is_applied_before_reserve_selection():
+    selected, diagnostics = select_micro_anchor_set(
+        candidate_gap_observations=[[0], [1, 2], [3]],
+        observation_query_indices=torch.tensor([0, 0, 0, 1]),
+        query_sequence_indices=torch.tensor([0, 0]),
+        budget=2,
+        profile="query_saturated",
+        initial_selected_indices=torch.tensor([0]),
+        minimum_marginal_gain=0.0,
+    )
+    assert selected.tolist() == [0, 2]
+    assert diagnostics["initial_selected_count"] == 1
+    assert diagnostics["greedy_selected_count"] == 1
+
+
+def test_quality_core_never_exceeds_requested_budget():
+    selected, diagnostics = select_micro_anchor_set(
+        candidate_gap_observations=[[0], [1], [2]],
+        observation_query_indices=torch.tensor([0, 0, 0]),
+        query_sequence_indices=torch.tensor([0]),
+        budget=1,
+        profile="unique_gap",
+        initial_selected_indices=torch.tensor([2, 1]),
+    )
+    assert selected.tolist() == [2]
+    assert diagnostics["selected_count"] == 1
+    assert diagnostics["initial_selected_count"] == 1
+
+
+def test_function_preserving_compression_removes_untracked_parent_first():
+    kept, removed, diagnostics = select_function_preserving_base_rows(
+        base_source_primitive_ids=torch.tensor([10, 20, 30, 40]),
+        extension_source_primitive_ids=torch.tensor([20]),
+        landmark_best_track_indices=torch.tensor([-1, -1, -1, 7]),
+        visibility_counts=torch.tensor([0, 9, 1, 0]),
+        remove_count=2,
+    )
+    assert removed.tolist() == [1, 0]
+    assert kept.tolist() == [2, 3]
+    assert diagnostics["removed_supported_count"] == 0
+    assert diagnostics["removed_parent_redundant_count"] == 1

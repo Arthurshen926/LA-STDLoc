@@ -1465,17 +1465,91 @@ def truncate_materialized_anchor_extension(
     return output
 
 
+def select_function_preserving_base_rows(
+    *,
+    base_source_primitive_ids: torch.Tensor,
+    extension_source_primitive_ids: torch.Tensor,
+    landmark_best_track_indices: torch.Tensor,
+    visibility_counts: torch.Tensor,
+    remove_count: int,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """Retire unsupported base rows while preserving every tracked identity."""
+    base_sources = torch.as_tensor(
+        base_source_primitive_ids, dtype=torch.long
+    ).reshape(-1)
+    extension_sources = torch.as_tensor(
+        extension_source_primitive_ids, dtype=torch.long
+    ).reshape(-1)
+    best_tracks = torch.as_tensor(
+        landmark_best_track_indices, dtype=torch.long
+    ).reshape(-1)
+    visibility = torch.as_tensor(
+        visibility_counts, dtype=torch.long
+    ).reshape(-1)
+    if not (
+        base_sources.numel() == best_tracks.numel() == visibility.numel()
+    ):
+        raise ValueError("base support tensors must be row-aligned")
+    requested = max(int(remove_count), 0)
+    unsupported = best_tracks < 0
+    if requested > int(unsupported.sum()):
+        raise ValueError(
+            "requested compression would remove Track-First-supported rows"
+        )
+    child_sources = set(extension_sources.tolist())
+    parent_redundant = torch.as_tensor(
+        [int(source) in child_sources for source in base_sources.tolist()],
+        dtype=torch.bool,
+    )
+    candidates = torch.nonzero(unsupported, as_tuple=False).reshape(-1)
+    ordered = sorted(
+        candidates.tolist(),
+        key=lambda row: (
+            0 if bool(parent_redundant[row]) else 1,
+            int(visibility[row]),
+            int(row),
+        ),
+    )
+    removed = torch.as_tensor(ordered[:requested], dtype=torch.long)
+    keep_mask = torch.ones(base_sources.numel(), dtype=torch.bool)
+    keep_mask[removed] = False
+    kept = torch.nonzero(keep_mask, as_tuple=False).reshape(-1)
+    diagnostics = {
+        "requested_remove_count": requested,
+        "removed_count": int(removed.numel()),
+        "unsupported_candidate_count": int(unsupported.sum()),
+        "removed_supported_count": int((best_tracks[removed] >= 0).sum()),
+        "removed_parent_redundant_count": int(
+            parent_redundant[removed].sum()
+        ),
+        "removed_visibility_count_mean": float(
+            visibility[removed].float().mean()
+            if removed.numel()
+            else 0.0
+        ),
+        "removed_visibility_count_max": int(
+            visibility[removed].max() if removed.numel() else 0
+        ),
+    }
+    return kept, removed, diagnostics
+
+
 def select_micro_anchor_set(
     *,
     candidate_gap_observations: list[list[int]],
+    candidate_functional_gap_observations: list[list[int]] | None = None,
     observation_query_indices: torch.Tensor,
     query_sequence_indices: torch.Tensor,
     budget: int,
     profile: str,
     false_attractor_rates: torch.Tensor | None = None,
+    false_attractor_costs: torch.Tensor | None = None,
     false_attractor_penalty: float = 0.25,
+    functional_gap_weight: float = 0.0,
+    minimum_marginal_gain: float = float("-inf"),
+    initial_selected_indices: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict]:
-    """Lazy-greedy marginal coverage selection over sparse gap observations."""
+    """Lazy-greedy selection over geometric and functional gap observations."""
     if profile not in {"unique_gap", "query_saturated", "sequence_tail"}:
         raise ValueError(f"unsupported marginal coverage profile: {profile}")
     candidate_count = len(candidate_gap_observations)
@@ -1498,9 +1572,22 @@ def select_micro_anchor_set(
     ).reshape(-1)
     if false_attractor_rates.numel() != candidate_count:
         raise ValueError("false-attractor rates must align with candidates")
+    if false_attractor_costs is not None:
+        false_attractor_costs = torch.as_tensor(
+            false_attractor_costs, dtype=torch.float32
+        ).reshape(-1)
+        if false_attractor_costs.numel() != candidate_count:
+            raise ValueError("false-attractor costs must align with candidates")
+    if candidate_functional_gap_observations is None:
+        candidate_functional_gap_observations = [
+            [] for _ in range(candidate_count)
+        ]
+    if len(candidate_functional_gap_observations) != candidate_count:
+        raise ValueError("functional gap lists must align with candidates")
 
     observation_count = int(observation_query_indices.numel())
     covered = torch.zeros(observation_count, dtype=torch.bool)
+    functional_covered = torch.zeros(observation_count, dtype=torch.bool)
     selected_query_count = torch.zeros(query_count, dtype=torch.long)
     sequence_count = (
         int(query_sequence_indices.max()) + 1
@@ -1548,13 +1635,21 @@ def select_micro_anchor_set(
         ):
             raise ValueError("candidate references an invalid observation")
         candidate_observations.append(tensor)
+    candidate_functional_observations = []
+    for observations in candidate_functional_gap_observations:
+        tensor = torch.unique(
+            torch.as_tensor(observations, dtype=torch.long), sorted=True
+        )
+        if tensor.numel() and (
+            int(tensor.min()) < 0 or int(tensor.max()) >= observation_count
+        ):
+            raise ValueError(
+                "candidate references an invalid functional observation"
+            )
+        candidate_functional_observations.append(tensor)
 
     def marginal_gain(candidate: int) -> float:
         observations = candidate_observations[candidate]
-        if observations.numel() == 0:
-            return -float(false_attractor_penalty) * float(
-                false_attractor_rates[candidate]
-            )
         observations = observations[~covered[observations]]
         if observations.numel() == 0:
             gain = 0.0
@@ -1574,34 +1669,41 @@ def select_micro_anchor_set(
                 gain += query_first_bonus * float(
                     (selected_query_count[unique_queries] == 0).sum()
                 )
-        false_cost = (
-            float(false_attractor_penalty)
-            * float(false_attractor_rates[candidate])
-            * max(int(candidate_observations[candidate].numel()), 1)
-        )
+        functional_observations = candidate_functional_observations[
+            candidate
+        ]
+        functional_observations = functional_observations[
+            ~functional_covered[functional_observations]
+        ]
+        if functional_observations.numel():
+            functional_queries = observation_query_indices[
+                functional_observations
+            ]
+            functional_saturation = (
+                selected_query_count[functional_queries].float() + 1.0
+            ).pow(-query_alpha)
+            functional_gain = float(functional_saturation.sum())
+            if profile == "sequence_tail":
+                functional_gain = float(
+                    (
+                        functional_saturation
+                        * sequence_weight[
+                            observation_sequences[functional_observations]
+                        ]
+                    ).sum()
+                )
+            gain += float(functional_gap_weight) * functional_gain
+        if false_attractor_costs is None:
+            harmful_incoming = (
+                float(false_attractor_rates[candidate])
+                * max(int(candidate_observations[candidate].numel()), 1)
+            )
+        else:
+            harmful_incoming = float(false_attractor_costs[candidate])
+        false_cost = float(false_attractor_penalty) * harmful_incoming
         return gain - false_cost
 
-    heap = [
-        (-marginal_gain(candidate), candidate, 0)
-        for candidate in range(candidate_count)
-    ]
-    heapq.heapify(heap)
-    selected = []
-    selection_gain = []
-    revision = 0
-    target = min(max(int(budget), 0), candidate_count)
-    selected_mask = torch.zeros(candidate_count, dtype=torch.bool)
-    while len(selected) < target and heap:
-        _, candidate, evaluated_revision = heapq.heappop(heap)
-        if bool(selected_mask[candidate]):
-            continue
-        gain = marginal_gain(candidate)
-        if evaluated_revision != revision:
-            heapq.heappush(heap, (-gain, candidate, revision))
-            continue
-        selected.append(candidate)
-        selection_gain.append(gain)
-        selected_mask[candidate] = True
+    def apply_selection(candidate: int) -> None:
         observations = candidate_observations[candidate]
         new_observations = observations[~covered[observations]]
         if new_observations.numel():
@@ -1611,22 +1713,120 @@ def select_micro_anchor_set(
                 observation_query_indices[new_observations],
                 torch.ones(new_observations.numel(), dtype=torch.long),
             )
+        functional_observations = candidate_functional_observations[
+            candidate
+        ]
+        new_functional = functional_observations[
+            ~functional_covered[functional_observations]
+        ]
+        if new_functional.numel():
+            functional_covered[new_functional] = True
+
+    heap = [
+        (-marginal_gain(candidate), candidate, 0)
+        for candidate in range(candidate_count)
+    ]
+    heapq.heapify(heap)
+    if initial_selected_indices is None:
+        initial_selected_indices = torch.zeros(0, dtype=torch.long)
+    initial_selected_indices = torch.as_tensor(
+        initial_selected_indices, dtype=torch.long
+    ).reshape(-1)
+    stable_initial = []
+    seen_initial = set()
+    for candidate in initial_selected_indices.tolist():
+        if candidate not in seen_initial:
+            stable_initial.append(candidate)
+            seen_initial.add(candidate)
+    initial_selected_indices = torch.as_tensor(
+        stable_initial, dtype=torch.long
+    )
+    if initial_selected_indices.numel() and (
+        int(initial_selected_indices.min()) < 0
+        or int(initial_selected_indices.max()) >= candidate_count
+    ):
+        raise ValueError("initial selected index exceeds candidate count")
+    selection_gain = []
+    revision = 0
+    target = min(max(int(budget), 0), candidate_count)
+    initial_selected_indices = initial_selected_indices[:target]
+    selected = initial_selected_indices.tolist()
+    selected_mask = torch.zeros(candidate_count, dtype=torch.bool)
+    if selected:
+        selected_mask[initial_selected_indices] = True
+        for candidate in selected:
+            apply_selection(candidate)
+            revision += 1
+    first_nonpositive_rank = None
+    while len(selected) < target and heap:
+        _, candidate, evaluated_revision = heapq.heappop(heap)
+        if bool(selected_mask[candidate]):
+            continue
+        gain = marginal_gain(candidate)
+        if evaluated_revision != revision:
+            heapq.heappush(heap, (-gain, candidate, revision))
+            continue
+        if gain <= float(minimum_marginal_gain):
+            first_nonpositive_rank = len(selected)
+            break
+        selected.append(candidate)
+        selection_gain.append(gain)
+        selected_mask[candidate] = True
+        apply_selection(candidate)
         revision += 1
 
     selected_tensor = torch.as_tensor(selected, dtype=torch.long)
+    terminal_gain = max(
+        (
+            marginal_gain(candidate)
+            for candidate in range(candidate_count)
+            if not bool(selected_mask[candidate])
+        ),
+        default=float("-inf"),
+    )
     diagnostics = {
         "profile": profile,
         "requested_budget": int(budget),
         "selected_count": len(selected),
+        "initial_selected_count": int(initial_selected_indices.numel()),
+        "greedy_selected_count": len(selection_gain),
         "covered_gap_observation_count": int(covered.sum()),
+        "covered_functional_gap_observation_count": int(
+            functional_covered.sum()
+        ),
         "covered_query_count": int((selected_query_count > 0).sum()),
         "selection_gain_sum": float(sum(selection_gain)),
         "selection_gain_min": float(min(selection_gain, default=0.0)),
+        "selection_gain_curve": [float(value) for value in selection_gain],
+        "minimum_marginal_gain": float(minimum_marginal_gain),
+        "automatic_stop_triggered": first_nonpositive_rank is not None,
+        "first_nonpositive_gain_rank": first_nonpositive_rank,
+        "best_remaining_marginal_gain": float(terminal_gain),
+        "positive_gain_candidate_count": int(
+            sum(
+                marginal_gain(candidate) > float(minimum_marginal_gain)
+                for candidate in range(candidate_count)
+                if not bool(selected_mask[candidate])
+            )
+        ),
+        "zero_or_negative_gain_candidate_count": int(
+            sum(
+                marginal_gain(candidate) <= float(minimum_marginal_gain)
+                for candidate in range(candidate_count)
+                if not bool(selected_mask[candidate])
+            )
+        ),
         "selected_false_attractor_rate_mean": float(
             false_attractor_rates[selected_tensor].mean()
             if selected_tensor.numel()
             else 0.0
         ),
         "false_attractor_penalty": float(false_attractor_penalty),
+        "false_attractor_cost_mode": (
+            "expected_harmful_incoming"
+            if false_attractor_costs is not None
+            else "rate_times_geometric_gap_count"
+        ),
+        "functional_gap_weight": float(functional_gap_weight),
     }
     return selected_tensor, diagnostics

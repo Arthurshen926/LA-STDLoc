@@ -35,6 +35,33 @@ def _project(xyz, K, pose):
     )
 
 
+def _align_visibility_to_map(visibility, state):
+    base_count = int(state["base_anchor_count"])
+    sources = torch.as_tensor(
+        state["source_primitive_ids"], dtype=torch.long
+    )
+    base_sources = sources[:base_count]
+    source_to_row = {
+        int(source): row for row, source in enumerate(base_sources.tolist())
+    }
+    lookup = torch.as_tensor(
+        [source_to_row[int(source)] for source in sources.tolist()],
+        dtype=torch.long,
+    )
+    aligned = {}
+    for name, value in visibility.items():
+        mask = torch.as_tensor(value, dtype=torch.bool).reshape(-1)
+        if mask.numel() == sources.numel():
+            aligned[name] = mask
+        elif mask.numel() == base_count:
+            aligned[name] = mask[lookup]
+        else:
+            raise ValueError(
+                f"visibility rows for {name} do not align with canonical map"
+            )
+    return aligned
+
+
 def _append(base, extension, extension_rows, *, profile, provenance, audit):
     rows = torch.as_tensor(extension_rows, dtype=torch.long)
     base_rows = int(base["anchor_ids"].numel())
@@ -58,6 +85,7 @@ def _append(base, extension, extension_rows, *, profile, provenance, audit):
             (base["anchor_type"], extension["anchor_type"][rows])
         ),
         "base_anchor_count": int(base["base_anchor_count"]),
+        "canonical_anchor_count": int(base_rows),
         "requested_micro_anchor_budget": int(
             base["micro_anchor_count"] + rows.numel()
         ),
@@ -81,8 +109,11 @@ def main():
     parser.add_argument("--extension-map", required=True)
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--track-payload", required=True)
+    parser.add_argument("--visibility-cache", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--query-rows", type=int, default=256)
+    parser.add_argument("--depth-abs-tolerance-m", type=float, default=0.05)
+    parser.add_argument("--depth-rel-tolerance", type=float, default=0.02)
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("Counterfactual extension audit requires CUDA")
@@ -91,6 +122,7 @@ def main():
     extension_path = Path(args.extension_map).resolve()
     query_path = Path(args.query_cache).resolve()
     payload_path = Path(args.track_payload).resolve()
+    visibility_path = Path(args.visibility_cache).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     canonical = _load(canonical_path)
@@ -110,6 +142,12 @@ def main():
         canonical["anchor_features"].float(), dim=1
     ).to(device)
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
+    visibility_payload = torch.load(
+        visibility_path, map_location="cpu", weights_only=False
+    )
+    visibility = _align_visibility_to_map(
+        visibility_payload.get("visibility", visibility_payload), canonical
+    )
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
     query_name_to_bin = {
         name: int(query_bins[index])
@@ -161,6 +199,23 @@ def main():
             torch.as_tensor(cached["native_keypoints"]).float()[selected]
             + float(cached.get("pixel_center_offset", 0.5))
         ).to(device)
+        native_keypoints = torch.as_tensor(
+            cached["native_keypoints"]
+        ).float()[selected]
+        native_depth = torch.as_tensor(cached["native_depth"]).float()
+        x = native_keypoints[:, 0].round().long().clamp(
+            0, native_depth.shape[1] - 1
+        )
+        y = native_keypoints[:, 1].round().long().clamp(
+            0, native_depth.shape[0] - 1
+        )
+        reference_depth = native_depth[y, x].to(device)
+        depth_tolerance = float(args.depth_abs_tolerance_m) + (
+            float(args.depth_rel_tolerance) * reference_depth.abs()
+        )
+        valid_reference_depth = (
+            torch.isfinite(reference_depth) & (reference_depth > 0)
+        )
         K = torch.as_tensor(cached["native_K"]).float().to(device)
         pose = torch.as_tensor(cached["pose_w2c"]).float().to(device)
         candidate_uv, candidate_depth = _project(
@@ -169,10 +224,27 @@ def main():
         base_uv, base_depth = _project(base_xyz[base_index], K, pose)
         candidate_error = torch.linalg.norm(candidate_uv - keypoints, dim=1)
         base_error = torch.linalg.norm(base_uv - keypoints, dim=1)
-        candidate_clean2 = (candidate_depth > 0) & (candidate_error <= 2.0)
-        candidate_clean4 = (candidate_depth > 0) & (candidate_error <= 4.0)
-        base_clean2 = (base_depth > 0) & (base_error <= 2.0)
-        base_clean4 = (base_depth > 0) & (base_error <= 4.0)
+        candidate_depth_clean = (
+            valid_reference_depth
+            & (candidate_depth > 0)
+            & (
+                (candidate_depth - reference_depth).abs()
+                <= depth_tolerance
+            )
+        )
+        base_visible = torch.as_tensor(
+            visibility[name], dtype=torch.bool
+        )[base_index.cpu()].to(device)
+        base_depth_clean = (
+            valid_reference_depth
+            & base_visible
+            & (base_depth > 0)
+            & ((base_depth - reference_depth).abs() <= depth_tolerance)
+        )
+        candidate_clean2 = candidate_depth_clean & (candidate_error <= 2.0)
+        candidate_clean4 = candidate_depth_clean & (candidate_error <= 4.0)
+        base_clean2 = base_depth_clean & (base_error <= 2.0)
+        base_clean4 = base_depth_clean & (base_error <= 4.0)
         for local, candidate in enumerate(candidate_index.tolist()):
             statistics["switch"][candidate] += 1
             rescue2 = bool(candidate_clean2[local] and not base_clean2[local])
@@ -245,7 +317,11 @@ def main():
         "query_cache_signature": query_payload.get("signature"),
         "track_payload_path": str(payload_path),
         "track_payload_sha256": _sha256(payload_path),
+        "visibility_cache_path": str(visibility_path),
+        "visibility_cache_sha256": _sha256(visibility_path),
         "query_rows": int(args.query_rows),
+        "depth_abs_tolerance_m": float(args.depth_abs_tolerance_m),
+        "depth_rel_tolerance": float(args.depth_rel_tolerance),
         "statistics_split": "all_895_mapping_train",
     }
     summary = {"profiles": {}, "candidate_rows": rows_report}

@@ -146,6 +146,7 @@ def main():
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--visibility-cache", required=True)
+    parser.add_argument("--statistics-cache")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--profiles",
@@ -153,6 +154,12 @@ def main():
     )
     parser.add_argument("--budgets", default="1500,2000")
     parser.add_argument("--false-attractor-penalty", type=float, default=0.25)
+    parser.add_argument("--functional-gap-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--minimum-marginal-gain", type=float, default=float("-inf")
+    )
+    parser.add_argument("--quality-core-count", type=int, default=0)
+    parser.add_argument("--core-min-descriptor-cosine", type=float, default=0.98)
     args = parser.parse_args()
 
     candidate_path = Path(args.candidate_map).resolve()
@@ -203,23 +210,56 @@ def main():
     base_xyz = state["anchor_xyz"][:frozen_count].float()
     base_features = state["anchor_features"][:frozen_count].float()
 
-    coverage = compute_track_coverage_gain(
-        payload=payload,
-        query_cache=query_cache,
-        base_xyz=base_xyz,
-        visibility_cache=visibility,
-        candidate_track_mask=candidate_mask,
+    statistics_signature = {
+        "candidate_map_sha256": _sha256(candidate_path),
+        "track_payload_sha256": _sha256(payload_path),
+        "query_cache_signature": query_payload.get("signature"),
+        "visibility_cache_sha256": _sha256(visibility_path),
+        "frozen_prefix_count": int(frozen_count),
+    }
+    statistics_path = (
+        Path(args.statistics_cache).resolve()
+        if args.statistics_cache
+        else None
     )
-    functional = compute_track_functional_statistics(
-        payload=payload,
-        query_cache=query_cache,
-        base_xyz=base_xyz,
-        base_features=base_features,
-        track_indices=candidate_tracks,
-        track_features=state["anchor_features"][candidate_rows],
-        visibility_cache=visibility,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-    )
+    statistics = None
+    if statistics_path is not None and statistics_path.exists():
+        cached_statistics = torch.load(
+            statistics_path, map_location="cpu", weights_only=False
+        )
+        if cached_statistics.get("signature") != statistics_signature:
+            raise ValueError("marginal statistics cache signature mismatch")
+        statistics = cached_statistics
+        print(f"Reusing marginal statistics: {statistics_path}", flush=True)
+    if statistics is None:
+        coverage = compute_track_coverage_gain(
+            payload=payload,
+            query_cache=query_cache,
+            base_xyz=base_xyz,
+            visibility_cache=visibility,
+            candidate_track_mask=candidate_mask,
+        )
+        functional = compute_track_functional_statistics(
+            payload=payload,
+            query_cache=query_cache,
+            base_xyz=base_xyz,
+            base_features=base_features,
+            track_indices=candidate_tracks,
+            track_features=state["anchor_features"][candidate_rows],
+            visibility_cache=visibility,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+        )
+        statistics = {
+            "signature": statistics_signature,
+            "coverage": coverage,
+            "functional": functional,
+        }
+        if statistics_path is not None:
+            statistics_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(statistics, statistics_path)
+            print(f"Saved marginal statistics: {statistics_path}", flush=True)
+    coverage = statistics["coverage"]
+    functional = statistics["functional"]
     tracks = payload["tracks"]
     observations_by_track = defaultdict(list)
     gap_mask = coverage["coverage_gap_observation_mask"]
@@ -228,6 +268,15 @@ def main():
             observations_by_track[int(track)].append(observation)
     candidate_gaps = [
         observations_by_track[int(track)]
+        for track in candidate_tracks.tolist()
+    ]
+    functional_observations_by_track = defaultdict(list)
+    functional_gap_mask = functional["functional_gap_observation_mask"]
+    for observation, track in enumerate(tracks["track_index"].tolist()):
+        if bool(functional_gap_mask[observation]):
+            functional_observations_by_track[int(track)].append(observation)
+    candidate_functional_gaps = [
+        functional_observations_by_track[int(track)]
         for track in candidate_tracks.tolist()
     ]
     query_names = payload["query_names"]
@@ -241,6 +290,35 @@ def main():
     false_rates = functional["false_attractor_opportunity_rate"][
         candidate_tracks
     ]
+    false_costs = functional["false_attractor_incoming_count"][
+        candidate_tracks
+    ].float()
+
+    quality_core = []
+    if args.quality_core_count > 0:
+        candidate_features = torch.nn.functional.normalize(
+            state["anchor_features"][candidate_rows].float(), dim=1
+        )
+        source_ids = state["source_primitive_ids"][candidate_rows].long()
+        by_source = defaultdict(list)
+        for candidate in range(candidate_rows.numel()):
+            duplicate = any(
+                float(
+                    torch.dot(
+                        candidate_features[candidate],
+                        candidate_features[other],
+                    )
+                )
+                >= float(args.core_min_descriptor_cosine)
+                for other in by_source[int(source_ids[candidate])]
+            )
+            if duplicate:
+                continue
+            quality_core.append(candidate)
+            by_source[int(source_ids[candidate])].append(candidate)
+            if len(quality_core) >= int(args.quality_core_count):
+                break
+    quality_core = torch.as_tensor(quality_core, dtype=torch.long)
 
     provenance = {
         "candidate_map_path": str(candidate_path),
@@ -283,12 +361,19 @@ def main():
             budget_selection, selection_diagnostics = (
                 select_micro_anchor_set(
                     candidate_gap_observations=candidate_gaps,
+                    candidate_functional_gap_observations=(
+                        candidate_functional_gaps
+                    ),
                     observation_query_indices=tracks["query_index"],
                     query_sequence_indices=torch.as_tensor(query_sequences),
                     budget=budget,
                     profile=profile,
                     false_attractor_rates=false_rates,
+                    false_attractor_costs=false_costs,
                     false_attractor_penalty=args.false_attractor_penalty,
+                    functional_gap_weight=args.functional_gap_weight,
+                    minimum_marginal_gain=args.minimum_marginal_gain,
+                    initial_selected_indices=quality_core,
                 )
             )
             selected_rows = candidate_rows[budget_selection]
@@ -298,6 +383,16 @@ def main():
                 "requested_budget": int(budget),
                 "false_attractor_penalty": float(
                     args.false_attractor_penalty
+                ),
+                "functional_gap_weight": float(
+                    args.functional_gap_weight
+                ),
+                "minimum_marginal_gain": float(
+                    args.minimum_marginal_gain
+                ),
+                "quality_core_count": int(quality_core.numel()),
+                "core_min_descriptor_cosine": float(
+                    args.core_min_descriptor_cosine
                 ),
                 "base_rows_frozen": True,
                 "candidate_descriptor_geometry_frozen": True,
