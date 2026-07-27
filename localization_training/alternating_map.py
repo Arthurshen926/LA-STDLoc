@@ -20,6 +20,12 @@ class PoseRiskConfig:
     reference_hypotheses: float = 25_000.0
     runtime_weight: float = 0.0
     reference_runtime_seconds: float = 0.4
+    soft_regression_weight: float = 0.0
+    regression_scale_m: float = 0.05
+    protected_regression_multiplier: float = 4.0
+    churn_weight: float = 0.0
+    reference_churn_count: int = 5_000
+    hard_gate_mode: bool = True
     max_median_regression_m: float = 0.0005
     max_r5_regression: float = 0.002
     protected_threshold_m: float = 0.05
@@ -141,6 +147,7 @@ def evaluate_structure_proposal(
     proposal_hypotheses=None,
     current_runtime_seconds=None,
     proposal_runtime_seconds=None,
+    proposal_churn_count: int = 0,
 ) -> dict:
     """Apply the protected query-level acceptance gate for one operation batch."""
     current = np.asarray(current_errors_m, dtype=np.float64).reshape(-1)
@@ -164,6 +171,31 @@ def evaluate_structure_proposal(
         runtime_seconds=proposal_runtime_seconds,
     )
     protected = current <= float(config.protected_threshold_m)
+    positive_regression = np.maximum(proposal - current, 0.0)
+    regression_weights = np.where(
+        protected,
+        float(config.protected_regression_multiplier),
+        1.0,
+    )
+    regression_scale = max(float(config.regression_scale_m), 1e-8)
+    soft_regression = float(
+        np.mean(
+            regression_weights
+            * np.square(positive_regression / regression_scale)
+        )
+    )
+    regression_cost = (
+        float(config.soft_regression_weight) * soft_regression
+    )
+    churn_cost = (
+        float(config.churn_weight)
+        * max(int(proposal_churn_count), 0)
+        / max(int(config.reference_churn_count), 1)
+    )
+    proposal_summary["soft_regression_risk"] = soft_regression
+    proposal_summary["soft_regression_cost"] = regression_cost
+    proposal_summary["churn_cost"] = churn_cost
+    proposal_summary["objective"] += regression_cost + churn_cost
     protected_regression = protected & (
         proposal > float(config.protected_failure_threshold_m)
     )
@@ -181,8 +213,11 @@ def evaluate_structure_proposal(
         "protected": int(protected_regression.sum())
         <= int(config.max_protected_regressions),
     }
+    accepted = gates["objective"]
+    if bool(config.hard_gate_mode):
+        accepted = bool(all(gates.values()))
     return {
-        "accepted": bool(all(gates.values())),
+        "accepted": accepted,
         "gates": gates,
         "objective_gain": float(objective_gain),
         "protected_query_count": int(protected.sum()),

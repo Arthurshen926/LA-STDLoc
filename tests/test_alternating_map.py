@@ -109,6 +109,30 @@ def test_worst_group_risk_prevents_hiding_rare_trajectory():
     assert rare_failure["objective"] > balanced["objective"]
 
 
+def test_soft_regression_mode_allows_continuous_pareto_tradeoff():
+    config = PoseRiskConfig(
+        complexity_weight=0.2,
+        reference_anchor_count=100,
+        cvar_weight=0.0,
+        soft_regression_weight=0.001,
+        hard_gate_mode=False,
+        max_r5_regression=0.0,
+    )
+    current = np.array([0.049, 0.20, 0.20])
+    proposal = np.array([0.051, 0.15, 0.15])
+    decision = evaluate_structure_proposal(
+        current,
+        proposal,
+        current_anchor_count=100,
+        proposal_anchor_count=80,
+        proposal_churn_count=20,
+        config=config,
+    )
+    assert not decision["gates"]["r5"]
+    assert decision["accepted"]
+    assert decision["proposal"]["soft_regression_cost"] > 0
+
+
 def test_affected_query_mask_uses_hard_top1_changes():
     mask = affected_query_mask(
         [torch.tensor([0.7, 0.8]), torch.tensor([0.5])],
