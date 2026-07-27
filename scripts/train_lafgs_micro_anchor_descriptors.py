@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import pickle
 from pathlib import Path
 
 import torch
@@ -12,6 +13,7 @@ import torch.nn.functional as F
 from localization_training.micro_anchors import (
     protected_micro_anchor_descriptor_loss,
 )
+from localization_training.ulf_initializer import sample_mask_at_grid_uv
 
 
 def _sha256(path: Path) -> str:
@@ -64,8 +66,10 @@ def _compact_training_data(
     guard_rows_per_query,
     clean_radius_px,
     score_chunk_size,
+    train_start_row,
+    deployment_masks,
 ):
-    base_count = int(state["base_anchor_count"])
+    base_count = int(train_start_row)
     features = F.normalize(
         torch.as_tensor(state["anchor_features"]).float(), dim=1
     )
@@ -97,9 +101,55 @@ def _compact_training_data(
         descriptors = F.normalize(
             torch.as_tensor(cached["native_descriptors"]).float(), dim=1
         )
+        native_keypoints = torch.as_tensor(
+            cached["native_keypoints"]
+        ).float()
+        valid_rows = torch.ones(descriptors.shape[0], dtype=torch.bool)
+        if cached.get("native_valid_mask") is not None:
+            valid_rows &= sample_mask_at_grid_uv(
+                torch.as_tensor(cached["native_valid_mask"]),
+                native_keypoints,
+            ).cpu()
+        if deployment_masks is not None and name in deployment_masks:
+            channels = deployment_masks[name]
+            if len(channels) < 3:
+                raise ValueError(
+                    f"deployment mask for {name!r} needs three channels"
+                )
+            target_hw = tuple(
+                int(value)
+                for value in cached.get("native_input_hw", ())
+            )
+            if len(target_hw) != 2:
+                raise ValueError(
+                    "native_input_hw is required for deployment masks"
+                )
+            resized = []
+            for channel in channels[:3]:
+                mask = torch.as_tensor(channel).detach().cpu().float()
+                while mask.ndim > 2:
+                    mask = mask.squeeze(0)
+                resized.append(
+                    F.interpolate(
+                        mask[None, None],
+                        size=target_hw,
+                        mode="nearest",
+                    )[0, 0].bool()
+                )
+            deployment_valid = resized[0] & resized[1] & resized[2]
+            valid_rows &= sample_mask_at_grid_uv(
+                deployment_valid, native_keypoints
+            ).cpu()
         if query_index in observations_by_query:
             observations = observations_by_query[query_index]
             keypoint_index = tracks["keypoint_index"][observations].long()
+            observation_valid = valid_rows[keypoint_index]
+            observations = torch.as_tensor(
+                observations, dtype=torch.long
+            )[observation_valid].tolist()
+            keypoint_index = keypoint_index[observation_valid]
+            if not observations:
+                continue
             targets = torch.as_tensor(
                 [
                     track_to_new[int(tracks["track_index"][observation])]
@@ -113,11 +163,17 @@ def _compact_training_data(
                 0, targets, torch.ones_like(targets, dtype=torch.long)
             )
 
-        keep = min(int(guard_rows_per_query), descriptors.shape[0])
+        valid_indices = torch.nonzero(
+            valid_rows, as_tuple=False
+        ).reshape(-1)
+        keep = min(int(guard_rows_per_query), valid_indices.numel())
         if keep <= 0:
             continue
         scores = torch.as_tensor(cached["native_scores"]).float()
-        guard_index = torch.topk(scores, k=keep, sorted=False).indices
+        local_guard = torch.topk(
+            scores[valid_indices], k=keep, sorted=False
+        ).indices
+        guard_index = valid_indices[local_guard]
         guard = descriptors[guard_index].to(device)
         old_score, old_index = _old_bank_best(
             guard, old_features, chunk_size=score_chunk_size
@@ -201,6 +257,11 @@ def main():
     parser.add_argument("--anchor-map", required=True)
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
+    parser.add_argument(
+        "--deployment-mask-cache",
+        default="",
+        help="masks.pkl used by deployment keypoint filtering.",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--checkpoint-steps", default="500,1000")
@@ -216,6 +277,16 @@ def main():
     parser.add_argument("--learning-rate", type=float, default=0.005)
     parser.add_argument("--max-residual-norm", type=float, default=0.2)
     parser.add_argument("--score-chunk-size", type=int, default=1024)
+    parser.add_argument(
+        "--train-start-row",
+        type=int,
+        default=-1,
+        help=(
+            "First trainable anchor row. Defaults to base_anchor_count for "
+            "backward compatibility; alternating refresh should pass the "
+            "pre-update active-map size."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
 
@@ -226,6 +297,11 @@ def main():
     anchor_path = Path(args.anchor_map).resolve()
     payload_path = Path(args.track_payload).resolve()
     cache_path = Path(args.query_cache).resolve()
+    mask_path = (
+        Path(args.deployment_mask_cache).resolve()
+        if args.deployment_mask_cache
+        else None
+    )
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     input_hashes = {
@@ -234,12 +310,23 @@ def main():
         "query_cache_sha256": _sha256(cache_path),
     }
     state = _load_anchor_map(anchor_path)
+    train_start_row = (
+        int(state["base_anchor_count"])
+        if int(args.train_start_row) < 0
+        else int(args.train_start_row)
+    )
+    if not 0 < train_start_row < int(state["anchor_ids"].numel()):
+        raise ValueError("train-start-row must leave old and new anchors")
     payload = _load_payload(payload_path)
     print(f"Loading native query cache: {cache_path}", flush=True)
     query_payload = torch.load(
         cache_path, map_location="cpu", weights_only=False
     )
     query_cache = query_payload.get("queries", query_payload)
+    deployment_masks = None
+    if mask_path is not None:
+        with mask_path.open("rb") as handle:
+            deployment_masks = pickle.load(handle)
     print(
         f"Building protected data from {len(payload['query_names'])} train queries",
         flush=True,
@@ -252,10 +339,12 @@ def main():
         guard_rows_per_query=args.guard_rows_per_query,
         clean_radius_px=args.clean_radius_px,
         score_chunk_size=args.score_chunk_size,
+        train_start_row=train_start_row,
+        deployment_masks=deployment_masks,
     )
     del query_payload, query_cache, payload
 
-    base_count = int(state["base_anchor_count"])
+    base_count = train_start_row
     all_features = F.normalize(
         torch.as_tensor(state["anchor_features"]).float(), dim=1
     )
@@ -350,8 +439,15 @@ def main():
                 (all_features[:base_count], final_features.detach().cpu())
             )
             output_state["descriptor_training"] = {
-                "mode": "protected_add_only_v1",
+                "mode": "protected_gap_only_alternating_v2",
                 "step": step,
+                "train_start_row": int(train_start_row),
+                "deployment_mask_cache_path": (
+                    str(mask_path) if mask_path is not None else None
+                ),
+                "deployment_mask_cache_sha256": (
+                    _sha256(mask_path) if mask_path is not None else None
+                ),
                 "old_anchor_descriptors_frozen": True,
                 "old_anchor_geometry_frozen": True,
                 "new_anchor_geometry_frozen": True,
