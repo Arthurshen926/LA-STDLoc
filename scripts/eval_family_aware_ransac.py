@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate source-family RANSAC proposal pools with full-set pose scoring."""
+"""Evaluate dependency-aware RANSAC proposal pools with full-set pose scoring."""
 
 import argparse
 import json
@@ -123,7 +123,16 @@ def _cell_balanced_rows(p2d, source_ids, scores, width, height, budget):
     return np.asarray(selected, dtype=np.int64)
 
 
-def _proposal_rows(mode, p2d, source_ids, scores, width, height, budget):
+def _proposal_rows(
+    mode,
+    p2d,
+    source_ids,
+    dependency_ids,
+    scores,
+    width,
+    height,
+    budget,
+):
     if mode == "uniform":
         return np.arange(len(scores), dtype=np.int64)
     if mode == "family":
@@ -131,6 +140,12 @@ def _proposal_rows(mode, p2d, source_ids, scores, width, height, budget):
     if mode == "family_cell":
         return _cell_balanced_rows(
             p2d, source_ids, scores, width, height, budget
+        )
+    if mode == "dependency":
+        return _distinct_family_rows(dependency_ids, scores)
+    if mode == "dependency_cell":
+        return _cell_balanced_rows(
+            p2d, dependency_ids, scores, width, height, budget
         )
     raise ValueError(mode)
 
@@ -142,6 +157,11 @@ def evaluate(dump_dir, output, modes, seed, proposal_budget):
         xyz = np.asarray(bank_file["landmark_xyz"], dtype=np.float64)
         source = np.asarray(
             bank_file["source_gaussian_idx"], dtype=np.int64
+        )
+        dependency = (
+            np.asarray(bank_file["dependency_group_id"], dtype=np.int64)
+            if "dependency_group_id" in bank_file.files
+            else source
         )
     records = []
     errors = {
@@ -181,6 +201,7 @@ def evaluate(dump_dir, output, modes, seed, proposal_budget):
         p3d = xyz[selected.landmark_idx]
         scores = selected.scores
         families = source[selected.landmark_idx]
+        dependencies = dependency[selected.landmark_idx]
         K = np.asarray(query["K"], dtype=np.float64)
         query_record = {"image_name": str(query["image_name"].item())}
         for mode in modes:
@@ -188,6 +209,7 @@ def evaluate(dump_dir, output, modes, seed, proposal_budget):
                 mode,
                 p2d,
                 families,
+                dependencies,
                 scores,
                 int(query["width"]),
                 int(query["height"]),
@@ -250,8 +272,8 @@ def evaluate(dump_dir, output, modes, seed, proposal_budget):
             ),
         }
     report = {
-        "schema": "lafgs_family_aware_ransac",
-        "version": 1,
+        "schema": "lafgs_dependency_aware_ransac",
+        "version": 2,
         "seed": int(seed),
         "proposal_budget": int(proposal_budget),
         "full_correspondences_used_for_scoring_and_refinement": True,
@@ -271,8 +293,20 @@ def main():
     parser.add_argument(
         "--modes",
         nargs="+",
-        choices=["uniform", "family", "family_cell"],
-        default=["uniform", "family", "family_cell"],
+        choices=[
+            "uniform",
+            "family",
+            "family_cell",
+            "dependency",
+            "dependency_cell",
+        ],
+        default=[
+            "uniform",
+            "family",
+            "family_cell",
+            "dependency",
+            "dependency_cell",
+        ],
     )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--proposal_budget", type=int, default=1024)

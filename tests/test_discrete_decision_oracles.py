@@ -15,6 +15,7 @@ from scripts.eval_discrete_decision_oracles import (
 from scripts.eval_family_aware_ransac import (
     _cell_balanced_rows,
     _distinct_family_rows,
+    _proposal_rows,
 )
 
 
@@ -162,6 +163,19 @@ class DiscreteDecisionOracleTest(unittest.TestCase):
         )
         self.assertEqual(len(np.unique(families[rows])), len(rows))
         self.assertEqual(set(rows.tolist()), {0, 2, 3, 4})
+
+    def test_dependency_proposal_uses_track_identity_not_gaussian_source(self):
+        rows = _proposal_rows(
+            "dependency",
+            np.zeros((4, 2)),
+            np.asarray([5, 5, 5, 5]),
+            np.asarray([10, 10, 11, 12]),
+            np.asarray([0.1, 0.9, 0.8, 0.7]),
+            100,
+            100,
+            4,
+        )
+        np.testing.assert_array_equal(rows, [1, 2, 3])
 
     def test_first_mask_position_reports_first_and_missing(self):
         from scripts.train_lafgs_v6_conflict_features import (

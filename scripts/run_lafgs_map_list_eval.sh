@@ -8,6 +8,7 @@ RUNS="${LAFGS_MAP_LIST_RUNS:?Set label=absolute_map entries}"
 RANSAC_SEED="${LAFGS_MAP_LIST_RANSAC_SEED:-0}"
 ORACLE_DUMP="${LAFGS_MAP_LIST_ORACLE_DUMP:-0}"
 ORACLE_TOPK="${LAFGS_MAP_LIST_ORACLE_TOPK:-32}"
+METRIC_STATE="${LAFGS_MAP_LIST_METRIC_STATE:-}"
 OUTPUT_ROOT="${LAFGS_MAP_LIST_OUTPUT_ROOT:?Set output root}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 MODEL_ROOT="/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725/OldHospital/rgb_only_2dgs_stdloc"
@@ -43,6 +44,17 @@ for run in $RUNS; do
     continue
   fi
   cfg="$OUTPUT_ROOT/configs/${label}.yaml"
+  FRONTEND_ARGS=(--sparse_frontend ulfloc_native)
+  if [[ -n "$METRIC_STATE" ]]; then
+    [[ -f "$METRIC_STATE" ]] || {
+      echo "Missing metric state: $METRIC_STATE" >&2
+      exit 1
+    }
+    FRONTEND_ARGS=(
+      --sparse_frontend ulfloc_native_metric
+      --metric_state_path "$METRIC_STATE"
+    )
+  fi
   "$PYTHON" scripts/make_stdloc_eval_cfg.py \
     --base_cfg configs/stdloc_cambridge.yaml --output "$cfg" \
     --artifact_model_path "$MODEL_ROOT" \
@@ -52,7 +64,7 @@ for run in $RUNS; do
     --materialized_anchor_map_path "$state" \
     --detect_num 2048 --nms 2 \
     --sparse_query_feature_contract native_resized_input \
-    --sparse_frontend ulfloc_native \
+    "${FRONTEND_ARGS[@]}" \
     --reprojection_error 12 --match_threshold 0 --match_topk 1 \
     --max_matches_per_landmark 0 \
     --candidate_frontend_match_policy error \

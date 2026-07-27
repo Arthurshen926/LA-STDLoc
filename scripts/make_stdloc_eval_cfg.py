@@ -91,6 +91,7 @@ def make_stdloc_eval_cfg(
     full_primitive_max_per_surface=None,
     sparse_query_feature_contract=None,
     sparse_frontend=None,
+    metric_state_path=None,
     rerank_topk=None,
     rerank_patch_radius=None,
     rerank_patch_step_px=None,
@@ -168,6 +169,9 @@ def make_stdloc_eval_cfg(
         sparse["query_feature_contract"] = str(sparse_query_feature_contract)
     if sparse_frontend is not None:
         sparse["sparse_frontend"] = str(sparse_frontend)
+    if metric_state_path is not None:
+        sparse["metric_state_path"] = str(metric_state_path)
+        sparse["metric_state_model_path"] = artifact_model_path
     if rerank_state_path is not None:
         sparse["rerank_state_path"] = str(rerank_state_path)
         sparse["rerank_state_model_path"] = artifact_model_path
@@ -716,9 +720,16 @@ def main():
     )
     parser.add_argument(
         "--sparse_frontend",
-        choices=["detector", "ulfloc_native", "ulfloc_native_rerank"],
+        choices=[
+            "detector",
+            "ulfloc_native",
+            "ulfloc_native_rerank",
+            "ulfloc_native_adapter",
+            "ulfloc_native_metric",
+        ],
         default=None,
     )
+    parser.add_argument("--metric_state_path", default=None)
     parser.add_argument("--rerank_topk", type=int, default=None)
     parser.add_argument("--rerank_patch_radius", type=int, default=None)
     parser.add_argument("--rerank_patch_step_px", type=float, default=None)
@@ -881,6 +892,7 @@ def main():
         full_primitive_max_per_surface=args.full_primitive_max_per_surface,
         sparse_query_feature_contract=args.sparse_query_feature_contract,
         sparse_frontend=args.sparse_frontend,
+        metric_state_path=args.metric_state_path,
         rerank_topk=args.rerank_topk,
         rerank_patch_radius=args.rerank_patch_radius,
         rerank_patch_step_px=args.rerank_patch_step_px,

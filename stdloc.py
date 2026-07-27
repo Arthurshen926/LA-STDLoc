@@ -41,6 +41,7 @@ from localization_training.local_context_adapter import (
     LocalContextMetricAdapter,
     pool_local_query_context,
 )
+from localization_training.shared_metric import SharedLowRankMetric
 from localization_training.query_context import (
     spatial_pyramid_global_descriptor,
     visibility_context_bias,
@@ -299,6 +300,7 @@ def validate_sparse_frontend_config(sparse_config):
         "ulfloc_native",
         "ulfloc_native_rerank",
         "ulfloc_native_adapter",
+        "ulfloc_native_metric",
     }:
         raise ValueError(
             "sparse_frontend must be detector, ulfloc_native, or "
@@ -309,6 +311,7 @@ def validate_sparse_frontend_config(sparse_config):
         "ulfloc_native",
         "ulfloc_native_rerank",
         "ulfloc_native_adapter",
+        "ulfloc_native_metric",
     }:
         return frontend
     contract = str(
@@ -356,6 +359,15 @@ def validate_sparse_frontend_config(sparse_config):
         if not str(sparse_config.get("adapter_state_path", "")):
             raise ValueError(
                 "ulfloc_native_adapter requires adapter_state_path"
+            )
+    if frontend == "ulfloc_native_metric":
+        if int(sparse_config.get("topk", 1)) != 1:
+            raise ValueError(
+                "ulfloc_native_metric uses global cosine top-1; topk must be 1"
+            )
+        if not str(sparse_config.get("metric_state_path", "")):
+            raise ValueError(
+                "ulfloc_native_metric requires metric_state_path"
             )
     if bool(sparse_config.get("use_native_matchability", False)):
         state_path = str(sparse_config.get("native_matchability_state_path", ""))
@@ -2168,6 +2180,7 @@ class STDLoc:
             "ulfloc_native",
             "ulfloc_native_rerank",
             "ulfloc_native_adapter",
+            "ulfloc_native_metric",
         } and str(
             config.get("feature_type", "")
         ).lower() not in {"sp", "superpoint"}:
@@ -2443,6 +2456,7 @@ class STDLoc:
                     dtype=self.landmarks.get_loc_feature.dtype,
                 )
         self.local_context_adapter = None
+        self.shared_metric_adapter = None
         adapter_state_path = str(sparse_config.get("adapter_state_path", ""))
         if self.sparse_frontend == "ulfloc_native_adapter":
             full_adapter_state_path = resolve_artifact_path(
@@ -2473,6 +2487,35 @@ class STDLoc:
                 adapter_state["adapter_state_dict"]
             )
             self.local_context_adapter.eval()
+        if self.sparse_frontend == "ulfloc_native_metric":
+            full_metric_state_path = resolve_artifact_path(
+                config["model_path"],
+                sparse_config["metric_state_path"],
+                sparse_config.get(
+                    "metric_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            metric_state = torch.load(
+                full_metric_state_path, map_location="cpu"
+            )
+            metric_indices = torch.as_tensor(
+                metric_state["landmark_indices"]
+            ).reshape(-1)
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu()
+            if not torch.equal(metric_indices.cpu(), active_indices):
+                raise ValueError(
+                    "shared metric state does not align with the active bank"
+                )
+            self.shared_metric_adapter = SharedLowRankMetric(
+                **metric_state["metric_config"]
+            ).to(self.landmarks.get_xyz.device)
+            self.shared_metric_adapter.load_state_dict(
+                metric_state["metric_state_dict"]
+            )
+            self.shared_metric_adapter.eval()
 
         self.dual_prototype_features = None
         self.dual_prototype_mask = None
@@ -3046,6 +3089,7 @@ class STDLoc:
             "ulfloc_native",
             "ulfloc_native_rerank",
             "ulfloc_native_adapter",
+            "ulfloc_native_metric",
         }:
             sparse_result = self.loc_sparse_ulfloc_native(
                 query_image,
@@ -3962,6 +4006,7 @@ class STDLoc:
         frontend_start = clock()
         rerank_enabled = self.sparse_frontend == "ulfloc_native_rerank"
         adapter_enabled = self.sparse_frontend == "ulfloc_native_adapter"
+        metric_enabled = self.sparse_frontend == "ulfloc_native_metric"
         sparse = self.feature_extractor.detectAndCompute(
             sparse_image, top_k=detect_num
         )[0]
@@ -4002,6 +4047,14 @@ class STDLoc:
             adapter_residual_norm = float(
                 torch.linalg.norm(adapter_residual, dim=1).mean().item()
             )
+        if metric_enabled and query_features.numel() > 0:
+            with torch.no_grad():
+                query_features, metric_residual = self.shared_metric_adapter(
+                    query_features
+                )
+            adapter_residual_norm = float(
+                torch.linalg.norm(metric_residual, dim=1).mean().item()
+            )
         mask_diagnostics = {
             "sparse_diag_valid_mask_enabled": float(input_mask is not None),
             "sparse_diag_valid_mask_input_keypoints": native_before_mask,
@@ -4032,7 +4085,7 @@ class STDLoc:
                     rerank_enabled
                 ),
                 "sparse_diag_frontend_ulfloc_native_adapter": float(
-                    adapter_enabled
+                    adapter_enabled or metric_enabled
                 ),
             }
             result.update(mask_diagnostics)
@@ -5251,11 +5304,18 @@ if __name__ == "__main__":
                 ),
             )
         ).detach().cpu().long()
+        bank_dependency_ids = torch.as_tensor(
+            materialized_state.get(
+                "dependency_group_ids",
+                bank_source_ids,
+            )
+        ).detach().cpu().long()
         np.savez_compressed(
             os.path.join(discrete_oracle_dump_dir, "landmark_bank.npz"),
             anchor_id=bank_anchor_ids.numpy(),
             anchor_type=bank_anchor_type.numpy(),
             track_cluster_id=bank_track_ids.numpy(),
+            dependency_group_id=bank_dependency_ids.numpy(),
             landmark_xyz=bank_loc_xyz.numpy(),
             render_xyz=bank_render_xyz.numpy(),
             source_gaussian_idx=bank_source_ids.numpy(),
