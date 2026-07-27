@@ -63,6 +63,9 @@ from localization_training.sparse_frontend import (
     select_offset_only_candidates,
     select_match_candidates_with_geometry_refill,
 )
+from localization_training.splat_provenance import (
+    bank_splat_provenance_2dgs,
+)
 from localization_training.ulf_initializer import sample_mask_at_grid_uv
 from scene import Scene
 from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
@@ -5218,16 +5221,44 @@ if __name__ == "__main__":
             output_path, "discrete_oracle_dump"
         )
         os.makedirs(discrete_oracle_dump_dir, exist_ok=True)
-        bank_indices = torch.as_tensor(stdloc.landmark_indices).detach().cpu().long()
+        bank_anchor_ids = (
+            torch.as_tensor(stdloc.landmark_indices).detach().cpu().long()
+        )
+        bank_source_ids = (
+            torch.as_tensor(stdloc.source_primitive_indices)
+            .detach()
+            .cpu()
+            .long()
+            if stdloc.source_primitive_indices is not None
+            else bank_anchor_ids
+        )
         bank_loc_xyz = stdloc.landmarks.get_xyz.detach().cpu().float()
         bank_render_xyz = gaussians.get_xyz[
-            bank_indices.to(device=gaussians.get_xyz.device)
+            bank_source_ids.to(device=gaussians.get_xyz.device)
         ].detach().cpu().float()
+        materialized_state = stdloc.materialized_anchor_map_state or {}
+        bank_anchor_type = torch.as_tensor(
+            materialized_state.get(
+                "anchor_type",
+                torch.zeros(bank_anchor_ids.numel(), dtype=torch.long),
+            )
+        ).detach().cpu().long()
+        bank_track_ids = torch.as_tensor(
+            materialized_state.get(
+                "track_cluster_ids",
+                torch.full(
+                    (bank_anchor_ids.numel(),), -1, dtype=torch.long
+                ),
+            )
+        ).detach().cpu().long()
         np.savez_compressed(
             os.path.join(discrete_oracle_dump_dir, "landmark_bank.npz"),
+            anchor_id=bank_anchor_ids.numpy(),
+            anchor_type=bank_anchor_type.numpy(),
+            track_cluster_id=bank_track_ids.numpy(),
             landmark_xyz=bank_loc_xyz.numpy(),
             render_xyz=bank_render_xyz.numpy(),
-            source_gaussian_idx=bank_indices.numpy(),
+            source_gaussian_idx=bank_source_ids.numpy(),
         )
 
     if args.evaluation_camera_list:
@@ -5472,21 +5503,81 @@ if __name__ == "__main__":
                     raise RuntimeError(
                         "discrete oracle dump requested but sparse debug payload is missing"
                     )
-                if gaussians._xyz.grad is not None:
-                    gaussians._xyz.grad.zero_()
-                with torch.enable_grad():
-                    render_visible_mask = get_render_visible_mask(
-                        gaussians,
-                        camera_info,
-                        int(sparse_debug["width"]),
-                        int(sparse_debug["height"]),
-                    )
-                bank_indices_device = torch.as_tensor(
-                    stdloc.landmark_indices,
-                    device=render_visible_mask.device,
+                bank_source_ids_device = torch.as_tensor(
+                    (
+                        stdloc.source_primitive_indices
+                        if stdloc.source_primitive_indices is not None
+                        else stdloc.landmark_indices
+                    ),
+                    device=gaussians.get_xyz.device,
                     dtype=torch.long,
                 )
-                bank_visible = render_visible_mask[bank_indices_device]
+                provenance_payload = {}
+                if gaussians.get_scaling.shape[1] == 2:
+                    render_pkg = render_from_pose_gsplat(
+                        gaussians,
+                        torch.as_tensor(
+                            gt_w2c,
+                            device=gaussians.get_xyz.device,
+                            dtype=gaussians.get_xyz.dtype,
+                        ),
+                        camera_info.FoVx,
+                        camera_info.FoVy,
+                        int(sparse_debug["width"]),
+                        int(sparse_debug["height"]),
+                        render_mode="RGB+ED",
+                        rgb_only=True,
+                        return_rgb_meta=True,
+                    )
+                    render_visible_mask = render_pkg["visibility_filter"]
+                    unique_source_ids = torch.unique(
+                        bank_source_ids_device, sorted=True
+                    )
+                    provenance_local_ids, provenance_weights, provenance_valid = (
+                        bank_splat_provenance_2dgs(
+                            torch.as_tensor(
+                                oracle_debug["keypoint_xy"],
+                                device=gaussians.get_xyz.device,
+                                dtype=gaussians.get_xyz.dtype,
+                            ),
+                            unique_source_ids,
+                            render_pkg["rgb_meta"],
+                            rendered_depth=render_pkg.get("depth"),
+                            topk=8,
+                            candidate_topk=64,
+                            depth_abs_tolerance=0.05,
+                            depth_rel_tolerance=0.02,
+                        )
+                    )
+                    provenance_payload = {
+                        "splat_provenance_source_gaussian_idx": (
+                            unique_source_ids[provenance_local_ids]
+                            .detach()
+                            .cpu()
+                            .numpy()
+                        ),
+                        "splat_provenance_weight": (
+                            provenance_weights.detach().cpu().numpy()
+                        ),
+                        "splat_provenance_valid": (
+                            provenance_valid.detach()
+                            .cpu()
+                            .numpy()
+                            .astype(np.uint8)
+                        ),
+                    }
+                    del render_pkg
+                else:
+                    if gaussians._xyz.grad is not None:
+                        gaussians._xyz.grad.zero_()
+                    with torch.enable_grad():
+                        render_visible_mask = get_render_visible_mask(
+                            gaussians,
+                            camera_info,
+                            int(sparse_debug["width"]),
+                            int(sparse_debug["height"]),
+                        )
+                bank_visible = render_visible_mask[bank_source_ids_device]
                 oracle_file = (
                     f"query_{idx:04d}_"
                     f"{hashlib.sha1(camera_info.image_name.encode()).hexdigest()[:10]}.npz"
@@ -5548,6 +5639,7 @@ if __name__ == "__main__":
                         "ransac_seed": np.asarray(
                             config["sparse"].get("ransac_seed", 0)
                         ),
+                        **provenance_payload,
                     }
                 )
                 np.savez_compressed(
@@ -5595,6 +5687,14 @@ if __name__ == "__main__":
                     "query_files": discrete_oracle_query_files,
                     "query_count": len(discrete_oracle_query_files),
                     "oracle_topk": int(sparse_diag_cfg.get("oracle_topk", 32)),
+                    "splat_provenance": {
+                        "enabled": bool(gaussians.get_scaling.shape[1] == 2),
+                        "topk": 8,
+                        "candidate_topk": 64,
+                        "depth_abs_tolerance_m": 0.05,
+                        "depth_rel_tolerance": 0.02,
+                        "source_identity": "source_gaussian_idx",
+                    },
                     "task_translation_scale_m": float(
                         sparse_diag_cfg.get("task_translation_scale_m", 0.02)
                     ),

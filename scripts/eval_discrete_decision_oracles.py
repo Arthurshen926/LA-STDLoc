@@ -156,6 +156,56 @@ def nearest_gt_targets(keypoint_xy, projected, valid, radius):
     return target, np.asarray(distance, dtype=np.float64)
 
 
+def provenance_gt_targets(
+    keypoint_xy,
+    projected,
+    projection_valid,
+    provenance_sources,
+    provenance_weights,
+    provenance_valid,
+    source_to_landmarks,
+    radius,
+    *,
+    allowed_landmarks=None,
+):
+    """Find the nearest reprojection-valid anchor in a pixel's splat families."""
+    keypoint_xy = np.asarray(keypoint_xy, dtype=np.float64).reshape(-1, 2)
+    provenance_sources = np.asarray(provenance_sources, dtype=np.int64)
+    provenance_weights = np.asarray(provenance_weights, dtype=np.float64)
+    provenance_valid = np.asarray(provenance_valid, dtype=bool).reshape(-1)
+    allowed = (
+        np.ones(len(projected), dtype=bool)
+        if allowed_landmarks is None
+        else np.asarray(allowed_landmarks, dtype=bool).reshape(-1)
+    )
+    target = np.full(len(keypoint_xy), -1, dtype=np.int64)
+    distance = np.full(len(keypoint_xy), np.inf, dtype=np.float64)
+    for row in np.flatnonzero(provenance_valid):
+        candidates = []
+        for source, weight in zip(
+            provenance_sources[row], provenance_weights[row]
+        ):
+            if weight <= 0.0:
+                continue
+            candidates.extend(source_to_landmarks.get(int(source), ()))
+        if not candidates:
+            continue
+        candidates = np.unique(np.asarray(candidates, dtype=np.int64))
+        candidates = candidates[
+            projection_valid[candidates] & allowed[candidates]
+        ]
+        if candidates.size == 0:
+            continue
+        residual = np.linalg.norm(
+            projected[candidates] - keypoint_xy[row], axis=1
+        )
+        best = int(np.argmin(residual))
+        if np.isfinite(residual[best]) and residual[best] <= float(radius):
+            target[row] = int(candidates[best])
+            distance[row] = float(residual[best])
+    return target, distance
+
+
 def oracle_assignment_candidates(raw_rows, targets, scores):
     """Construct the attachment's O1 oracle without changing native 2D points.
 
@@ -545,6 +595,7 @@ def evaluate(
     translation_scale_m=None,
     rotation_scale_degrees=None,
     skip_counterfactual=False,
+    track_payload=None,
 ):
     dump_dir = Path(dump_dir)
     manifest = json.loads((dump_dir / "manifest.json").read_text())
@@ -562,12 +613,60 @@ def evaluate(
         raise ValueError("task-space pose scales must be positive")
     with np.load(dump_dir / manifest["landmark_bank"]) as bank_file:
         landmark_xyz = np.asarray(bank_file["landmark_xyz"], dtype=np.float64)
+        source_gaussian_idx = np.asarray(
+            bank_file["source_gaussian_idx"], dtype=np.int64
+        )
+        anchor_type = np.asarray(
+            (
+                bank_file["anchor_type"]
+                if "anchor_type" in bank_file.files
+                else np.zeros(len(landmark_xyz), dtype=np.int64)
+            ),
+            dtype=np.int64,
+        )
+        track_cluster_id = np.asarray(
+            (
+                bank_file["track_cluster_id"]
+                if "track_cluster_id" in bank_file.files
+                else np.full(len(landmark_xyz), -1, dtype=np.int64)
+            ),
+            dtype=np.int64,
+        )
+    geometry_oracle_xyz = landmark_xyz.copy()
+    geometry_oracle_replaced = np.zeros(len(landmark_xyz), dtype=bool)
+    if track_payload:
+        payload = torch.load(
+            track_payload, map_location="cpu", weights_only=False
+        )
+        geometry = payload["track_geometry"]
+        track_xyz = torch.as_tensor(
+            geometry["triangulated_xyz"]
+        ).cpu().numpy()
+        track_high_confidence = torch.as_tensor(
+            geometry["triangulation_high_confidence"]
+        ).cpu().numpy().astype(bool)
+        valid_track = (
+            (track_cluster_id >= 0)
+            & (track_cluster_id < len(track_xyz))
+        )
+        valid_track[valid_track] &= track_high_confidence[
+            track_cluster_id[valid_track]
+        ]
+        geometry_oracle_xyz[valid_track] = track_xyz[
+            track_cluster_id[valid_track]
+        ]
+        geometry_oracle_replaced = valid_track
+    source_to_landmarks = {}
+    for landmark, source in enumerate(source_gaussian_idx):
+        source_to_landmarks.setdefault(int(source), []).append(int(landmark))
 
     oracle_assignment_ks = (1, 2, 4, 8, 16)
     methods = (
         "actual",
         "replay",
         "O1_oracle_3d_assignment",
+        "OP_oracle_provenance_assignment",
+        "OG_oracle_track_geometry",
         "O2_oracle_candidate_filter",
         "O3_oracle_2d_measurement",
         "O2_top1_swap",
@@ -584,6 +683,13 @@ def evaluate(
     retrieval = {
         2.0: {k: [] for k in retrieval_ks},
         4.0: {k: [] for k in retrieval_ks},
+    }
+    provenance_coverage = {
+        radius: {
+            split: {"all": [], "base": [], "micro": []}
+            for split in ("all", "seq4", "seq8")
+        }
+        for radius in (2.0, 4.0, 8.0)
     }
     query_records = []
     hard_precision = []
@@ -617,6 +723,77 @@ def evaluate(
             & (projected[:, 1] >= 0.0)
             & (projected[:, 1] < height)
         )
+        has_provenance = all(
+            key in query
+            for key in (
+                "splat_provenance_source_gaussian_idx",
+                "splat_provenance_weight",
+                "splat_provenance_valid",
+            )
+        )
+        provenance_targets = {}
+        if has_provenance:
+            provenance_sources = np.asarray(
+                query["splat_provenance_source_gaussian_idx"],
+                dtype=np.int64,
+            )
+            provenance_weights = np.asarray(
+                query["splat_provenance_weight"], dtype=np.float64
+            )
+            provenance_valid = np.asarray(
+                query["splat_provenance_valid"], dtype=bool
+            )
+            split = (
+                "seq4"
+                if image_name.replace("\\", "/").startswith("seq4/")
+                else "seq8"
+                if image_name.replace("\\", "/").startswith("seq8/")
+                else "all"
+            )
+            for eval_radius in (2.0, 4.0, 8.0):
+                target, _ = provenance_gt_targets(
+                    keypoint_xy,
+                    projected,
+                    projection_valid,
+                    provenance_sources,
+                    provenance_weights,
+                    provenance_valid,
+                    source_to_landmarks,
+                    eval_radius,
+                )
+                provenance_targets[eval_radius] = target
+                target_base, _ = provenance_gt_targets(
+                    keypoint_xy,
+                    projected,
+                    projection_valid,
+                    provenance_sources,
+                    provenance_weights,
+                    provenance_valid,
+                    source_to_landmarks,
+                    eval_radius,
+                    allowed_landmarks=anchor_type == 0,
+                )
+                target_micro, _ = provenance_gt_targets(
+                    keypoint_xy,
+                    projected,
+                    projection_valid,
+                    provenance_sources,
+                    provenance_weights,
+                    provenance_valid,
+                    source_to_landmarks,
+                    eval_radius,
+                    allowed_landmarks=anchor_type != 0,
+                )
+                for group in {"all", split}:
+                    provenance_coverage[eval_radius][group]["all"].append(
+                        float(np.mean(target >= 0))
+                    )
+                    provenance_coverage[eval_radius][group]["base"].append(
+                        float(np.mean(target_base >= 0))
+                    )
+                    provenance_coverage[eval_radius][group]["micro"].append(
+                        float(np.mean(target_micro >= 0))
+                    )
 
         targets = {}
         matchable = {}
@@ -747,6 +924,15 @@ def evaluate(
             strict_target[raw_rows],
             raw_scores,
         )
+        provenance_assignment_oracle = oracle_assignment_candidates(
+            raw_rows,
+            (
+                provenance_targets[float(radius)][raw_rows]
+                if has_provenance
+                else strict_target[raw_rows]
+            ),
+            raw_scores,
+        )
         strict_candidate_distance = np.linalg.norm(
             keypoint_xy[:, None, :] - projected[topk_lm], axis=2
         )
@@ -787,6 +973,14 @@ def evaluate(
         )
         clean_pose, _ = run_pose(
             clean_hard, keypoint_xy, landmark_xyz, K, query, seed + query_index
+        )
+        geometry_oracle_pose, _ = run_pose(
+            clean_hard,
+            keypoint_xy,
+            geometry_oracle_xyz,
+            K,
+            query,
+            seed + query_index,
         )
 
         dumped_inliers = np.asarray(query["hard_post_inliers"], dtype=np.int64)
@@ -934,6 +1128,15 @@ def evaluate(
                 query,
                 seed + query_index,
             )[0],
+            "OP_oracle_provenance_assignment": run_pose(
+                provenance_assignment_oracle,
+                keypoint_xy,
+                landmark_xyz,
+                K,
+                query,
+                seed + query_index,
+            )[0],
+            "OG_oracle_track_geometry": geometry_oracle_pose,
             "O2_oracle_candidate_filter": clean_pose,
             "O3_oracle_2d_measurement": measurement_pose,
             "O2_top1_swap": swap_pose,
@@ -961,6 +1164,9 @@ def evaluate(
                 "image_name": image_name,
                 "matchable_rows_2px": int(strict_matchable.sum()),
                 "oracle_assignment_matches": int(len(assignment_oracle.scores)),
+                "provenance_assignment_matches": int(
+                    len(provenance_assignment_oracle.scores)
+                ),
                 "one_of_k_oracle_matches": {
                     str(topk): topk_oracle_counts[topk]
                     for topk in oracle_assignment_ks
@@ -971,6 +1177,11 @@ def evaluate(
                 "ransac_inlier_gt_precision_2px": float(inlier_correct.mean()),
                 "quota_oracle_displacements": int(quota_displacements[-1]),
                 "harmful_consensus_count": int((~inlier_correct).sum()),
+                "geometry_oracle_replaced_clean_matches": int(
+                    geometry_oracle_replaced[
+                        clean_hard.landmark_idx
+                    ].sum()
+                ),
                 "counterfactual_eligible_rows": int(len(cf_records)),
                 "counterfactual_strict_positive_rows": int(len(strict_cf)),
                 "hard_bias_cm": hard_bias[-1],
@@ -1000,6 +1211,18 @@ def evaluate(
             for k, values in by_k.items()
         }
         for eval_radius, by_k in retrieval.items()
+    }
+    provenance_coverage_summary = {
+        f"radius_{int(eval_radius)}px": {
+            split: {
+                anchor_class: (
+                    float(np.mean(values)) if values else None
+                )
+                for anchor_class, values in classes.items()
+            }
+            for split, classes in splits.items()
+        }
+        for eval_radius, splits in provenance_coverage.items()
     }
     base_te = np.asarray(errors["actual"]["te"])
     oracle_te = np.asarray(errors["O2O3_swap_hardcap"]["te"])
@@ -1047,10 +1270,27 @@ def evaluate(
         "query_count": len(query_records),
         "selector_replay_failures": selector_replay_failures,
         "O1_retrieval": retrieval_summary,
+        "strict_splat_provenance_coverage": provenance_coverage_summary,
+        "geometry_oracle": {
+            "track_payload": str(track_payload or ""),
+            "replaced_anchor_count": int(
+                geometry_oracle_replaced.sum()
+            ),
+            "pose": summaries["OG_oracle_track_geometry"],
+            "paired_vs_gt_clean_current_geometry": paired_summary(
+                errors["O2_oracle_candidate_filter"]["te"],
+                errors["OG_oracle_track_geometry"]["te"],
+                seed=seed,
+                bootstrap_samples=bootstrap_samples,
+            ),
+        },
         "P0_oracles": {
             "O1_oracle_3d_assignment": summaries["O1_oracle_3d_assignment"],
             "O2_oracle_candidate_filter": summaries[
                 "O2_oracle_candidate_filter"
+            ],
+            "OP_oracle_provenance_assignment": summaries[
+                "OP_oracle_provenance_assignment"
             ],
             "O3_oracle_2d_measurement": summaries["O3_oracle_2d_measurement"],
             "counterfactual_enabled": bool(not skip_counterfactual),
@@ -1125,6 +1365,7 @@ def main():
         action="store_true",
         help="Skip expensive O6 single-swap analysis when only P0 oracle bounds are needed.",
     )
+    parser.add_argument("--track_payload")
     args = parser.parse_args()
     report = evaluate(
         args.dump_dir,
@@ -1135,6 +1376,7 @@ def main():
         translation_scale_m=args.translation_scale_m,
         rotation_scale_degrees=args.rotation_scale_degrees,
         skip_counterfactual=args.skip_counterfactual,
+        track_payload=args.track_payload,
     )
     print(json.dumps({
         "O1_retrieval": report["O1_retrieval"],

@@ -6,6 +6,8 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
 GPU="${LAFGS_MAP_LIST_GPU:?Set LAFGS_MAP_LIST_GPU}"
 RUNS="${LAFGS_MAP_LIST_RUNS:?Set label=absolute_map entries}"
 RANSAC_SEED="${LAFGS_MAP_LIST_RANSAC_SEED:-0}"
+ORACLE_DUMP="${LAFGS_MAP_LIST_ORACLE_DUMP:-0}"
+ORACLE_TOPK="${LAFGS_MAP_LIST_ORACLE_TOPK:-32}"
 OUTPUT_ROOT="${LAFGS_MAP_LIST_OUTPUT_ROOT:?Set output root}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 MODEL_ROOT="/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725/OldHospital/rgb_only_2dgs_stdloc"
@@ -22,6 +24,14 @@ export PYTHONHASHSEED=2026
 mkdir -p "$OUTPUT_ROOT/configs" "$OUTPUT_ROOT/logs" \
   "$OUTPUT_ROOT/results" "$STDLOC_RESULTS_ROOT"
 cd "$REPO_ROOT"
+
+ORACLE_ARGS=()
+if [[ "$ORACLE_DUMP" == "1" ]]; then
+  ORACLE_ARGS=(
+    --diagnostics_dump_discrete_oracle
+    --diagnostics_oracle_topk "$ORACLE_TOPK"
+  )
+fi
 
 for run in $RUNS; do
   label="${run%%=*}"
@@ -50,6 +60,7 @@ for run in $RUNS; do
     --diagnostics_voxel_size 1 \
     --diagnostics_task_translation_scale_m 0.07160573943725686 \
     --diagnostics_task_rotation_scale_degrees 2 \
+    "${ORACLE_ARGS[@]}" \
     > "$OUTPUT_ROOT/logs/${label}_config.json"
   "$PYTHON" - "$cfg" "$RANSAC_SEED" <<'PY'
 import sys
