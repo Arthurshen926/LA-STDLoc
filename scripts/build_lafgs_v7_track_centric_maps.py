@@ -58,6 +58,8 @@ def _eligible_tracks(geometry: dict, quality_tier: str) -> torch.Tensor:
         "strict": (2.0, 8.0, 0.05, 1.0),
         "medium": (3.0, 15.0, 0.2, 1.0),
         "broad": (4.0, 25.0, 1.0, 0.5),
+        "relaxed": (6.0, 40.0, 3.0, 0.25),
+        "all": (float("inf"), float("inf"), float("inf"), 0.0),
     }[quality_tier]
     median_px, p90_px, covariance, parallax = tier
     xyz = torch.as_tensor(geometry["triangulated_xyz"]).float()
@@ -110,6 +112,41 @@ def _base_utility(graph: dict, base_count: int) -> torch.Tensor:
         graph["provenance_opportunity_count"][:base_count]
     )
     return 3.0 * clean + 1.5 * legal2 + 0.5 * legal4 + 0.3 * opportunity - 1.8 * harmful
+
+
+def _group_balanced_base_utility(
+    graph: dict,
+    query_groups: torch.Tensor,
+    base_count: int,
+    utility: torch.Tensor,
+) -> tuple[torch.Tensor, dict]:
+    """Reward anchors with strong support in any stable mapping-view group."""
+    query_groups = torch.as_tensor(query_groups).long().reshape(-1)
+    group_count = int(query_groups.max()) + 1
+    legal_hits = torch.zeros(group_count, base_count, dtype=torch.float32)
+    for record in graph["records"]:
+        query_index = int(record["query_index"])
+        group = int(query_groups[query_index])
+        indices = torch.as_tensor(record["top_indices"]).long()
+        flags = torch.as_tensor(record["legal_flags"]).to(torch.uint8)
+        valid = ((flags & 2) != 0) & (indices >= 0) & (indices < base_count)
+        selected = indices[valid]
+        if selected.numel():
+            legal_hits[group].index_add_(
+                0, selected, torch.ones(selected.numel())
+            )
+    normalized = torch.stack(
+        [_normalized_log_score(row) for row in legal_hits], dim=0
+    )
+    group_peak = normalized.max(dim=0).values
+    group_breadth = (legal_hits > 0).float().mean(dim=0)
+    balanced = utility + 1.5 * group_peak + 0.5 * group_breadth
+    report = {
+        "group_count": group_count,
+        "anchors_with_group_support": int((legal_hits.sum(0) > 0).sum()),
+        "mean_supported_group_fraction": float(group_breadth.mean()),
+    }
+    return balanced, report
 
 
 def _voxel_diverse_order(
@@ -177,6 +214,7 @@ def _materialize(
     quality_tier: str,
     source_map: Path,
     payload_path: Path,
+    dependency_voxel_size: float,
 ) -> dict:
     base_rows = torch.as_tensor(base_rows).long()
     track_indices = torch.as_tensor(track_indices).long()
@@ -214,19 +252,31 @@ def _materialize(
             ]
         ),
     }
-    dependency = torch.cat(
-        [
-            torch.arange(track_indices.numel(), dtype=torch.long),
-            track_indices.numel()
-            + torch.as_tensor(canonical["source_primitive_ids"])[base_rows].long(),
-        ]
+    all_xyz = fields["anchor_xyz"]
+    all_sources = fields["source_primitive_ids"].long()
+    dependency_voxel = torch.floor(
+        all_xyz / float(dependency_voxel_size)
+    ).long()
+    coarse_dependency = torch.unique(
+        torch.cat([all_sources[:, None], dependency_voxel], dim=1),
+        dim=0,
+        return_inverse=True,
+    )[1]
+    fine_identity = torch.cat(
+        (
+            track_indices,
+            torch.arange(base_rows.numel(), dtype=torch.long)
+            + int(torch.as_tensor(geometry["triangulated"]).numel()),
+        )
     )
     return {
         "version": 1,
         "schema": "lafgs_materialized_anchor_map",
         "anchor_ids": torch.arange(budget, dtype=torch.long),
         **fields,
-        "dependency_group_ids": dependency,
+        "dependency_group_ids": coarse_dependency,
+        "coarse_dependency_group_ids": coarse_dependency,
+        "fine_identity_ids": fine_identity,
         "base_anchor_count": int(base_rows.numel()),
         "canonical_anchor_count": int(budget),
         "micro_anchor_count": int(track_indices.numel()),
@@ -238,6 +288,7 @@ def _materialize(
             "track_anchor_count": int(track_indices.numel()),
             "base_reserve_count": int(base_rows.numel()),
             "quality_tier": quality_tier,
+            "dependency_voxel_size": float(dependency_voxel_size),
             "track_indices": track_indices,
             "base_canonical_rows": base_rows,
             "base_prefix_preserved": False,
@@ -266,6 +317,12 @@ def main() -> None:
     )
     parser.add_argument("--descriptor-trim-fraction", type=float, default=0.2)
     parser.add_argument("--base-voxel-size", type=float, default=1.0)
+    parser.add_argument(
+        "--base-selection",
+        choices=["global", "group_balanced"],
+        default="global",
+    )
+    parser.add_argument("--dependency-voxel-size", type=float, default=0.5)
     args = parser.parse_args()
     source_map = Path(args.canonical_map).resolve()
     graph_path = Path(args.function_graph).resolve()
@@ -274,9 +331,14 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     specs = []
+    seen_specs = set()
     for raw in args.specs.split(","):
         budget, tracks, tier = raw.split(":")
-        specs.append((int(budget), int(tracks), tier))
+        spec = (int(budget), int(tracks), tier)
+        if spec in seen_specs:
+            raise ValueError(f"duplicate map specification: {raw}")
+        seen_specs.add(spec)
+        specs.append(spec)
 
     canonical = torch.load(source_map, map_location="cpu", weights_only=False)
     graph = torch.load(graph_path, map_location="cpu", weights_only=False)
@@ -294,6 +356,14 @@ def main() -> None:
     if base_rows.numel() != base_count:
         raise ValueError("canonical base anchors must form the original base")
     utility = _base_utility(graph, base_count)
+    group_balance_report = None
+    if args.base_selection == "group_balanced":
+        utility, group_balance_report = _group_balanced_base_utility(
+            graph,
+            torch.as_tensor(payload["query_bins"]),
+            base_count,
+            utility,
+        )
     base_order_local = _voxel_diverse_order(
         torch.as_tensor(canonical["anchor_xyz"])[base_rows],
         utility,
@@ -341,6 +411,8 @@ def main() -> None:
         "track_payload": str(payload_path),
         "query_cache": str(query_path),
         "base_prefix_preserved": False,
+        "base_selection": args.base_selection,
+        "group_balance": group_balance_report,
         "maps": {},
     }
     for budget, track_budget, tier in specs:
@@ -360,13 +432,19 @@ def main() -> None:
             quality_tier=tier,
             source_map=source_map,
             payload_path=payload_path,
+            dependency_voxel_size=args.dependency_voxel_size,
         )
-        path = output_dir / f"track_centric_{budget:05d}.pt"
+        tag = (
+            f"b{budget:05d}_t{track_budget:05d}_{tier}_"
+            f"{args.base_selection}"
+        )
+        path = output_dir / f"track_centric_{tag}.pt"
         torch.save(state, path)
-        summary["maps"][str(budget)] = {
+        summary["maps"][tag] = {
             "path": str(path),
             "track_count": int(tracks.numel()),
             "base_reserve_count": reserve,
+            "base_selection": args.base_selection,
             "quality": {
                 "median_reprojection_px": float(
                     torch.median(

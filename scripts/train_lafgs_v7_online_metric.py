@@ -13,7 +13,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from localization_training.shared_metric import SharedLowRankMetric
+from localization_training.shared_metric import (
+    NativeNullHead,
+    SharedLowRankMetric,
+    build_native_null_features,
+    select_native_matchable_rows,
+)
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -21,20 +26,14 @@ def _first_k(values: torch.Tensor, mask: torch.Tensor, width: int) -> torch.Tens
     if values.shape != mask.shape:
         raise ValueError("candidate values and mask must align")
     width = min(int(width), values.shape[1])
-    position = torch.arange(values.shape[1])[None].expand_as(values)
-    sentinel = torch.full_like(position, values.shape[1])
-    selected_position = torch.topk(
-        torch.where(mask, position, sentinel),
-        k=width,
-        dim=1,
-        largest=False,
-        sorted=True,
-    ).values
-    valid = selected_position < values.shape[1]
-    output = values.gather(
-        1, selected_position.clamp_max(values.shape[1] - 1)
+    output = torch.full(
+        (values.shape[0], width), -1, dtype=values.dtype, device=values.device
     )
-    return torch.where(valid, output, torch.full_like(output, -1))
+    rank = mask.to(torch.int64).cumsum(dim=1) - 1
+    selected = mask & (rank < width)
+    rows, columns = torch.nonzero(selected, as_tuple=True)
+    output[rows, rank[rows, columns]] = values[rows, columns]
+    return output
 
 
 def _track_observations(payload: dict, track_to_local: torch.Tensor):
@@ -51,8 +50,47 @@ def _track_observations(payload: dict, track_to_local: torch.Tensor):
     return by_query
 
 
+def _build_rotating_shards(
+    groups: torch.Tensor, shard_count: int
+) -> list[list[int]]:
+    """Round-robin every stable query group across deterministic shards."""
+    groups = torch.as_tensor(groups).long().reshape(-1)
+    shard_count = max(min(int(shard_count), groups.numel()), 1)
+    shards: list[list[int]] = [[] for _ in range(shard_count)]
+    for group in torch.unique(groups, sorted=True).tolist():
+        indices = torch.nonzero(
+            groups == int(group), as_tuple=False
+        ).reshape(-1)
+        for offset, query_index in enumerate(indices.tolist()):
+            shards[offset % shard_count].append(int(query_index))
+    for shard in shards:
+        shard.sort()
+    if sorted(index for shard in shards for index in shard) != list(
+        range(groups.numel())
+    ):
+        raise RuntimeError("rotating query shards must cover every query once")
+    return shards
+
+
+def _group_pose_risk(errors_cm: list[float]) -> float:
+    errors = torch.as_tensor(errors_cm, dtype=torch.float32)
+    if errors.numel() == 0:
+        return 0.0
+    smooth_mean = torch.log1p(errors / 10.0).mean()
+    tail_count = max(int(math.ceil(0.2 * errors.numel())), 1)
+    tail = torch.topk(errors, k=tail_count).values.mean() / 20.0
+    near_five = F.softplus((errors - 5.0) / 2.0).mean() / 5.0
+    return float(smooth_mean + 0.5 * tail + 0.5 * near_five)
+
+
 def _build_training_records(
-    graph: dict, payload: dict, state: dict, max_positives: int
+    graph: dict,
+    payload: dict,
+    state: dict,
+    max_positives: int,
+    *,
+    device: torch.device | str = "cpu",
+    query_chunk_size: int = 32,
 ):
     metadata = state["track_centric_reconstruction"]
     track_indices = torch.as_tensor(metadata["track_indices"]).long()
@@ -73,35 +111,113 @@ def _build_training_records(
     )
     track_to_local[track_indices] = torch.arange(track_count)
     exact = _track_observations(payload, track_to_local)
+    graph_records = graph["records"]
+    row_counts = [
+        int(torch.as_tensor(record["query_rows"]).numel())
+        for record in graph_records
+    ]
+    build_device = torch.device(device)
+    canonical_to_local_build = canonical_to_local.to(build_device)
+    positive_blocks = []
+    legal4_blocks = []
+    query_chunk_size = max(int(query_chunk_size), 1)
+    for start in range(0, len(graph_records), query_chunk_size):
+        chunk = graph_records[start : start + query_chunk_size]
+        chunk_counts = row_counts[start : start + query_chunk_size]
+        candidates = torch.cat(
+            [
+                torch.as_tensor(record["top_indices"]).long()
+                for record in chunk
+            ],
+            dim=0,
+        ).to(build_device)
+        flags = torch.cat(
+            [
+                torch.as_tensor(record["legal_flags"]).to(torch.uint8)
+                for record in chunk
+            ],
+            dim=0,
+        ).to(build_device)
+        candidate_valid = (candidates >= 0) & (
+            candidates < canonical_count
+        )
+        local = canonical_to_local_build[
+            candidates.clamp(min=0, max=canonical_count - 1)
+        ]
+        local = torch.where(
+            candidate_valid, local, torch.full_like(local, -1)
+        )
+        chunk_positives = _first_k(
+            local,
+            (local >= 0) & candidate_valid & ((flags & 2) != 0),
+            max_positives,
+        ).cpu()
+        chunk_legal4 = (
+            candidate_valid & ((flags & 4) != 0)
+        ).any(dim=1).cpu()
+        positive_blocks.extend(chunk_positives.split(chunk_counts))
+        legal4_blocks.extend(chunk_legal4.split(chunk_counts))
+    query_bins = torch.as_tensor(payload["query_bins"]).long()
+    del canonical_to_local_build
     records = []
     positive_rows = 0
-    for query_index, record in enumerate(graph["records"]):
+    for query_index, record in enumerate(graph_records):
         cache_rows = torch.as_tensor(record["query_rows"]).long()
-        candidates = torch.as_tensor(record["top_indices"]).long()
-        flags = torch.as_tensor(record["legal_flags"]).to(torch.uint8)
-        local = canonical_to_local[candidates]
-        legal = (local >= 0) & ((flags & 2) != 0)
-        positives = _first_k(local, legal, max_positives)
-        for row, keypoint in enumerate(cache_rows.tolist()):
-            track_local = exact.get(query_index, {}).get(int(keypoint), -1)
-            if track_local < 0:
-                continue
-            current = positives[row]
-            if bool((current == track_local).any()):
-                continue
-            empty = torch.nonzero(current < 0, as_tuple=False).reshape(-1)
-            if empty.numel():
-                current[empty[0]] = track_local
-            else:
-                current[-1] = track_local
+        positives = positive_blocks[query_index].clone()
+        query_exact = exact.get(query_index, {})
+        if query_exact and cache_rows.numel():
+            exact_keypoints = torch.as_tensor(
+                list(query_exact.keys()), dtype=torch.long
+            )
+            exact_tracks = torch.as_tensor(
+                list(query_exact.values()), dtype=torch.long
+            )
+            lookup_size = int(
+                max(cache_rows.max(), exact_keypoints.max()).item()
+            ) + 1
+            row_lookup = torch.full((lookup_size,), -1, dtype=torch.long)
+            row_lookup[cache_rows] = torch.arange(cache_rows.numel())
+            exact_rows = row_lookup[exact_keypoints]
+            present = exact_rows >= 0
+            exact_rows = exact_rows[present]
+            exact_tracks = exact_tracks[present]
+            current = positives[exact_rows]
+            missing = ~(current == exact_tracks[:, None]).any(dim=1)
+            if bool(missing.any()):
+                exact_rows = exact_rows[missing]
+                exact_tracks = exact_tracks[missing]
+                empty = positives[exact_rows] < 0
+                has_empty = empty.any(dim=1)
+                columns = torch.where(
+                    has_empty,
+                    empty.to(torch.int64).argmax(dim=1),
+                    torch.full(
+                        (exact_rows.numel(),),
+                        positives.shape[1] - 1,
+                        dtype=torch.long,
+                    ),
+                )
+                positives[exact_rows, columns] = exact_tracks
         valid = (positives >= 0).any(dim=1)
+        canonical_legal4 = legal4_blocks[query_index]
+        null_weight = torch.where(
+            valid,
+            torch.ones_like(valid, dtype=torch.float32),
+            torch.where(
+                canonical_legal4,
+                torch.full_like(valid, 0.25, dtype=torch.float32),
+                torch.ones_like(valid, dtype=torch.float32),
+            ),
+        )
         positive_rows += int(valid.sum())
         records.append(
             {
                 "deployment_rows": cache_rows,
-                "cache_rows": cache_rows[valid],
-                "positives": positives[valid],
-                "group": int(torch.as_tensor(payload["query_bins"])[query_index]),
+                "cache_rows": cache_rows,
+                "positives": positives,
+                "matchable": valid,
+                "null_weight": null_weight,
+                "group": int(query_bins[query_index]),
             }
         )
     return records, {
@@ -212,6 +328,13 @@ def _project_errors(xyz, keypoints, K, pose):
 def _refresh_ransac_outcomes(
     *,
     metric,
+    null_head,
+    null_temperature,
+    null_threshold,
+    null_minimum_total,
+    null_grid_rows,
+    null_grid_cols,
+    null_minimum_per_cell,
     raw_features,
     anchor_residual,
     maximum_anchor_residual,
@@ -222,6 +345,7 @@ def _refresh_ransac_outcomes(
     training_records,
     device,
     query_limit,
+    query_indices,
     seed,
 ):
     anchor, _ = _bounded_anchor_features(
@@ -234,8 +358,15 @@ def _refresh_ransac_outcomes(
     harmful_pairs: dict[int, dict[int, int]] = defaultdict(dict)
     clean_pairs: dict[int, dict[int, int]] = defaultdict(dict)
     group_error: dict[int, list[float]] = defaultdict(list)
-    order = np.linspace(
-        0, len(names) - 1, min(int(query_limit), len(names)), dtype=int
+    order = (
+        np.asarray(query_indices, dtype=int)
+        if query_indices is not None
+        else np.linspace(
+            0,
+            len(names) - 1,
+            min(int(query_limit), len(names)),
+            dtype=int,
+        )
     )
     records = []
     for query_index in order.tolist():
@@ -250,12 +381,38 @@ def _refresh_ransac_outcomes(
             dim=1,
         ).to(device)
         adapted, _ = metric(descriptors)
-        score, index = (adapted @ bank.T).max(dim=1)
-        keypoint = (
-            torch.as_tensor(cached["native_keypoints"]).float()[
+        score_matrix = adapted @ bank.T
+        null_top_scores, null_top_indices = torch.topk(
+            score_matrix, k=min(8, score_matrix.shape[1]), dim=1
+        )
+        keypoint_grid = torch.as_tensor(
+            cached["native_keypoints"]
+        ).float()[deployment_rows]
+        null_features = build_native_null_features(
+            null_top_scores,
+            torch.as_tensor(cached["native_scores"]).float()[
                 deployment_rows
-            ]
-            + float(cached.get("pixel_center_offset", 0.5))
+            ].to(device),
+            temperature=float(null_temperature),
+        )
+        matchable_probability = torch.sigmoid(null_head(null_features))
+        native_height, native_width = cached["native_input_hw"]
+        keep = select_native_matchable_rows(
+            matchable_probability,
+            keypoint_grid.to(device),
+            width=int(native_width),
+            height=int(native_height),
+            threshold=float(null_threshold),
+            minimum_total=int(null_minimum_total),
+            grid_rows=int(null_grid_rows),
+            grid_cols=int(null_grid_cols),
+            minimum_per_cell=int(null_minimum_per_cell),
+        )
+        score = null_top_scores[keep, 0]
+        index = null_top_indices[keep, 0]
+        deployment_rows = deployment_rows[keep.cpu()]
+        keypoint = keypoint_grid[keep.cpu()] + float(
+            cached.get("pixel_center_offset", 0.5)
         )
         K = torch.as_tensor(cached["native_K"]).float()
         pose, inliers, diagnostics = solve_pose(
@@ -311,12 +468,13 @@ def _refresh_ransac_outcomes(
                 "group": group,
                 "te_cm": float(te_cm),
                 "inliers": int(inliers.numel()),
+                "candidate_count": int(keep.numel()),
                 "hypotheses": diagnostics.get("ransac_actual_hypotheses"),
             }
         )
     prior = harmful / (harmful + clean + 1.0)
     risks = {
-        group: float(np.mean(values))
+        group: _group_pose_risk(values)
         for group, values in group_error.items()
     }
     return (
@@ -334,6 +492,7 @@ def _save_checkpoint(
     step,
     state,
     metric,
+    null_head,
     raw_features,
     anchor_residual,
     maximum_anchor_residual,
@@ -372,6 +531,19 @@ def _save_checkpoint(
                 key: value.detach().cpu()
                 for key, value in metric.state_dict().items()
             },
+            "null_head_config": {
+                "feature_dim": int(null_head.feature_dim),
+                "temperature": float(config["null_temperature"]),
+                "threshold": float(config["null_threshold"]),
+                "minimum_total": int(config["null_minimum_total"]),
+                "grid_rows": int(config["null_grid_rows"]),
+                "grid_cols": int(config["null_grid_cols"]),
+                "minimum_per_cell": int(config["null_minimum_per_cell"]),
+            },
+            "null_head_state_dict": {
+                key: value.detach().cpu()
+                for key, value in null_head.state_dict().items()
+            },
             "map_path": str(map_path),
             "step": int(step),
         },
@@ -401,6 +573,14 @@ def main() -> None:
     parser.add_argument("--group-dro-eta", type=float, default=0.03)
     parser.add_argument("--refresh-interval", type=int, default=100)
     parser.add_argument("--refresh-query-limit", type=int, default=128)
+    parser.add_argument("--refresh-shards", type=int, default=7)
+    parser.add_argument("--null-weight", type=float, default=0.2)
+    parser.add_argument("--null-temperature", type=float, default=0.05)
+    parser.add_argument("--null-threshold", type=float, default=0.5)
+    parser.add_argument("--null-minimum-total", type=int, default=384)
+    parser.add_argument("--null-grid-rows", type=int, default=4)
+    parser.add_argument("--null-grid-cols", type=int, default=4)
+    parser.add_argument("--null-minimum-per-cell", type=int, default=8)
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
     torch.manual_seed(args.seed)
@@ -418,7 +598,11 @@ def main() -> None:
     cache = cache_payload.get("queries", cache_payload)
     names = graph["query_names"]
     records, data_report = _build_training_records(
-        graph, payload, state, args.max_positives
+        graph,
+        payload,
+        state,
+        args.max_positives,
+        device=device,
     )
     del graph
     raw_features = F.normalize(
@@ -433,8 +617,9 @@ def main() -> None:
         rank=args.rank,
         max_residual_norm=args.metric_residual,
     ).to(device)
+    null_head = NativeNullHead().to(device)
     optimizer = torch.optim.AdamW(
-        [*metric.parameters(), anchor_residual],
+        [*metric.parameters(), *null_head.parameters(), anchor_residual],
         lr=args.learning_rate,
         weight_decay=1e-4,
     )
@@ -453,19 +638,29 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     history = []
     groups = torch.as_tensor(payload["query_bins"]).long()
+    refresh_shards = _build_rotating_shards(groups, args.refresh_shards)
+    refresh_index = 0
     for step in range(1, args.steps + 1):
         if step == 1 or (
             args.refresh_interval > 0
             and (step - 1) % args.refresh_interval == 0
         ):
+            active_shard = refresh_index % len(refresh_shards)
             (
                 harmful_prior,
                 group_risks,
                 outcome,
-                clean_pairs,
-                harmful_pairs,
+                refreshed_clean_pairs,
+                refreshed_harmful_pairs,
             ) = _refresh_ransac_outcomes(
                 metric=metric,
+                null_head=null_head,
+                null_temperature=args.null_temperature,
+                null_threshold=args.null_threshold,
+                null_minimum_total=args.null_minimum_total,
+                null_grid_rows=args.null_grid_rows,
+                null_grid_cols=args.null_grid_cols,
+                null_minimum_per_cell=args.null_minimum_per_cell,
                 raw_features=raw_features,
                 anchor_residual=anchor_residual,
                 maximum_anchor_residual=args.anchor_residual,
@@ -476,19 +671,37 @@ def main() -> None:
                 training_records=records,
                 device=device,
                 query_limit=args.refresh_query_limit,
+                query_indices=refresh_shards[active_shard],
                 seed=args.seed,
             )
+            clean_pairs.update(refreshed_clean_pairs)
+            harmful_pairs.update(refreshed_harmful_pairs)
             risk = torch.zeros_like(group_weights)
             for group, value in group_risks.items():
-                risk[group] = float(value) / 100.0
+                risk[group] = float(value)
             group_weights *= torch.exp(float(args.group_dro_eta) * risk)
             group_weights /= group_weights.sum().clamp_min(1e-8)
             history.append(
                 {
                     "step": step - 1,
                     "event": "deployment_refresh",
+                    "shard": int(active_shard),
+                    "shard_query_count": len(refresh_shards[active_shard]),
+                    "covered_query_count": int(
+                        sum(
+                            len(refresh_shards[index])
+                            for index in range(
+                                min(refresh_index + 1, len(refresh_shards))
+                            )
+                        )
+                    ),
                     "mean_te_cm": float(
                         np.mean([row["te_cm"] for row in outcome])
+                    ),
+                    "mean_candidate_count": float(
+                        np.mean(
+                            [row["candidate_count"] for row in outcome]
+                        )
                     ),
                     "mean_hypotheses": float(
                         np.mean(
@@ -506,6 +719,7 @@ def main() -> None:
                 }
             )
             print(json.dumps(history[-1]), flush=True)
+            refresh_index += 1
 
         query_index = int(
             torch.randint(len(records), (1,), generator=generator)
@@ -527,6 +741,8 @@ def main() -> None:
             dim=1,
         ).to(device)
         positives = record["positives"][rows].to(device)
+        matchable = record["matchable"][rows].to(device)
+        null_weight = record["null_weight"][rows].to(device)
         current_clean = clean_pairs.get(query_index, {})
         clean_survivors = torch.as_tensor(
             [current_clean.get(int(row), -1) for row in cache_rows],
@@ -551,6 +767,7 @@ def main() -> None:
                 torch.arange(positives.shape[0], device=device)[add_clean],
                 replace[add_clean],
             ] = clean_survivors[add_clean]
+            matchable = matchable | add_clean
         current_harmful = harmful_pairs.get(query_index, {})
         harmful_survivors = torch.as_tensor(
             [current_harmful.get(int(row), -1) for row in cache_rows],
@@ -562,26 +779,57 @@ def main() -> None:
         )
         adapted_query, query_metric_residual = metric(query)
         adapted_anchor, anchor_metric_residual = metric(anchor)
-        per_row, _, _ = _multi_positive_list_loss(
-            adapted_query,
-            adapted_anchor,
-            positives,
-            args.topk,
-            args.temperature,
-            None,
-            args.harmful_weight,
-            harmful_indices=harmful_survivors,
+        score_matrix = adapted_query @ adapted_anchor.T
+        top_scores = torch.topk(
+            score_matrix, k=min(args.topk, score_matrix.shape[1]), dim=1
+        ).values
+        list_loss = torch.zeros(
+            adapted_query.shape[0], device=device, dtype=adapted_query.dtype
+        )
+        if bool(matchable.any()):
+            list_loss[matchable] = _multi_positive_list_loss(
+                adapted_query[matchable],
+                adapted_anchor,
+                positives[matchable],
+                args.topk,
+                args.temperature,
+                None,
+                args.harmful_weight,
+                harmful_indices=harmful_survivors[matchable],
+            )[0]
+        keypoint_score = torch.as_tensor(
+            cache[names[query_index]]["native_scores"]
+        ).float()[cache_rows].to(device)
+        null_features = build_native_null_features(
+            top_scores,
+            keypoint_score,
+            temperature=args.null_temperature,
+        )
+        null_logits = null_head(null_features)
+        null_loss = F.binary_cross_entropy_with_logits(
+            null_logits,
+            matchable.float(),
+            weight=null_weight,
+            reduction="mean",
         )
         group_weight = (
             group_weights[int(record["group"])] * float(group_count)
         )
-        task_loss = per_row.mean() * group_weight
+        task_loss = (
+            list_loss[matchable].mean()
+            if bool(matchable.any())
+            else torch.zeros((), device=device)
+        ) * group_weight
         trust = (
             query_metric_residual.square().sum(dim=1).mean()
             + anchor_metric_residual.square().sum(dim=1).mean()
             + bounded_anchor.square().sum(dim=1).mean()
         )
-        loss = task_loss + float(args.trust_weight) * trust
+        loss = (
+            task_loss
+            + float(args.null_weight) * null_loss
+            + float(args.trust_weight) * trust
+        )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(
@@ -594,6 +842,8 @@ def main() -> None:
                 "loss": float(loss.detach()),
                 "task_loss": float(task_loss.detach()),
                 "trust_loss": float(trust.detach()),
+                "null_loss": float(null_loss.detach()),
+                "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
             }
             history.append(row)
@@ -604,6 +854,7 @@ def main() -> None:
                 step=step,
                 state=state,
                 metric=metric,
+                null_head=null_head,
                 raw_features=raw_features,
                 anchor_residual=anchor_residual,
                 maximum_anchor_residual=args.anchor_residual,

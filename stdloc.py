@@ -41,7 +41,12 @@ from localization_training.local_context_adapter import (
     LocalContextMetricAdapter,
     pool_local_query_context,
 )
-from localization_training.shared_metric import SharedLowRankMetric
+from localization_training.shared_metric import (
+    NativeNullHead,
+    SharedLowRankMetric,
+    build_native_null_features,
+    select_native_matchable_rows,
+)
 from localization_training.query_context import (
     spatial_pyramid_global_descriptor,
     visibility_context_bias,
@@ -2457,6 +2462,8 @@ class STDLoc:
                 )
         self.local_context_adapter = None
         self.shared_metric_adapter = None
+        self.shared_null_head = None
+        self.shared_null_config = {}
         adapter_state_path = str(sparse_config.get("adapter_state_path", ""))
         if self.sparse_frontend == "ulfloc_native_adapter":
             full_adapter_state_path = resolve_artifact_path(
@@ -2516,6 +2523,19 @@ class STDLoc:
                 metric_state["metric_state_dict"]
             )
             self.shared_metric_adapter.eval()
+            null_config = metric_state.get("null_head_config")
+            null_state = metric_state.get("null_head_state_dict")
+            if (null_config is None) != (null_state is None):
+                raise ValueError(
+                    "shared metric null-head config and state must be provided together"
+                )
+            if null_config is not None:
+                self.shared_null_head = NativeNullHead(
+                    feature_dim=int(null_config["feature_dim"])
+                ).to(self.landmarks.get_xyz.device)
+                self.shared_null_head.load_state_dict(null_state)
+                self.shared_null_head.eval()
+                self.shared_null_config = dict(null_config)
 
         self.dual_prototype_features = None
         self.dual_prototype_mask = None
@@ -4112,6 +4132,9 @@ class STDLoc:
             if native_matchability_enabled
             else 0
         )
+        shared_null_topk = (
+            8 if self.shared_null_head is not None else 0
+        )
         diag_cfg = self.config["sparse"].get("diagnostics", {})
         dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
         diagnostic_topk = (
@@ -4130,6 +4153,7 @@ class STDLoc:
             ),
             oracle_topk if dump_discrete_oracle else 0,
             native_matchability_topk,
+            shared_null_topk,
             diagnostic_topk,
         )
         retrieval_args = {
@@ -4299,6 +4323,40 @@ class STDLoc:
             },
         }
         assignment_debug = None
+        null_keep = None
+        matchable_probability = None
+        if self.shared_null_head is not None:
+            null_features = build_native_null_features(
+                retrieval.scores[:, :shared_null_topk],
+                keypoint_scores,
+                temperature=float(
+                    self.shared_null_config.get("temperature", 0.05)
+                ),
+            )
+            matchable_probability = torch.sigmoid(
+                self.shared_null_head(null_features)
+            )
+            null_keep = select_native_matchable_rows(
+                matchable_probability,
+                keypoints,
+                width=width,
+                height=height,
+                threshold=float(
+                    self.shared_null_config.get("threshold", 0.5)
+                ),
+                minimum_total=int(
+                    self.shared_null_config.get("minimum_total", 384)
+                ),
+                grid_rows=int(
+                    self.shared_null_config.get("grid_rows", 4)
+                ),
+                grid_cols=int(
+                    self.shared_null_config.get("grid_cols", 4)
+                ),
+                minimum_per_cell=int(
+                    self.shared_null_config.get("minimum_per_cell", 8)
+                ),
+            )
         if rerank_enabled:
             rerank_topk = min(
                 int(self.config["sparse"].get("rerank_topk", 4)),
@@ -4481,13 +4539,19 @@ class STDLoc:
         else:
             raw_scores = retrieval.scores[:, :configured_topk]
             raw_landmark_idx = retrieval.indices[:, :configured_topk]
-            raw_keypoint_idx = torch.arange(
-                keypoints.shape[0], device=keypoints.device
-            )[:, None].expand_as(raw_landmark_idx)
+            raw_keypoint_idx = (
+                null_keep
+                if null_keep is not None
+                else torch.arange(
+                    keypoints.shape[0], device=keypoints.device
+                )
+            )
             raw_matches = SparseMatchResult(
-                raw_keypoint_idx.reshape(-1),
-                raw_landmark_idx.reshape(-1),
-                raw_scores.reshape(-1),
+                raw_keypoint_idx[:, None]
+                .expand(-1, configured_topk)
+                .reshape(-1),
+                raw_landmark_idx[raw_keypoint_idx].reshape(-1),
+                raw_scores[raw_keypoint_idx].reshape(-1),
             )
         raw_match_count = int(raw_matches.scores.numel())
         max_matches_per_landmark = int(
@@ -4523,6 +4587,19 @@ class STDLoc:
             "sparse_diag_native_matchability_score_mean": 0.0,
             "sparse_diag_native_matchability_score_p10": 0.0,
             "sparse_diag_native_matchability_score_p90": 0.0,
+            "sparse_diag_native_null_enabled": float(
+                self.shared_null_head is not None
+            ),
+            "sparse_diag_native_null_kept_ratio": float(
+                null_keep.numel() / max(keypoints.shape[0], 1)
+                if null_keep is not None
+                else 1.0
+            ),
+            "sparse_diag_native_matchable_probability_mean": float(
+                matchable_probability.mean().item()
+                if matchable_probability is not None
+                else 1.0
+            ),
         }
         if native_matchability_enabled:
             expected_landmarks = raw_landmark_idx[matches.keypoint_idx, 0]
