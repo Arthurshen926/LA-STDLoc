@@ -36,8 +36,29 @@ def _first_k(values: torch.Tensor, mask: torch.Tensor, width: int) -> torch.Tens
     return output
 
 
-def _track_observations(payload: dict, track_to_local: torch.Tensor):
-    by_query: dict[int, dict[int, int]] = defaultdict(dict)
+def _query_index_remap(
+    source_names: list[str], target_names: list[str]
+) -> torch.Tensor:
+    if len(set(source_names)) != len(source_names):
+        raise ValueError("source query names must be unique")
+    if len(set(target_names)) != len(target_names):
+        raise ValueError("target query names must be unique")
+    target_by_name = {name: index for index, name in enumerate(target_names)}
+    if set(source_names) != set(target_names):
+        raise ValueError("source and target query-name sets differ")
+    return torch.as_tensor(
+        [target_by_name[name] for name in source_names], dtype=torch.long
+    )
+
+
+def _track_observations(
+    payload: dict,
+    track_to_local: torch.Tensor,
+    query_index_remap: torch.Tensor | None = None,
+):
+    by_query: dict[int, dict[int, list[int]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     tracks = payload["tracks"]
     for track, query, keypoint in zip(
         tracks["track_index"].tolist(),
@@ -46,8 +67,60 @@ def _track_observations(payload: dict, track_to_local: torch.Tensor):
     ):
         local = int(track_to_local[int(track)])
         if local >= 0:
-            by_query[int(query)][int(keypoint)] = local
+            target_query = (
+                int(query_index_remap[int(query)])
+                if query_index_remap is not None
+                else int(query)
+            )
+            by_query[target_query][int(keypoint)].append(local)
     return by_query
+
+
+def _csr_first_k(
+    offsets: torch.Tensor,
+    indices: torch.Tensor,
+    width: int,
+) -> torch.Tensor:
+    offsets = torch.as_tensor(offsets).long().reshape(-1)
+    indices = torch.as_tensor(indices).long().reshape(-1)
+    row_count = offsets.numel() - 1
+    output = torch.full((row_count, int(width)), -1, dtype=torch.long)
+    counts = offsets[1:] - offsets[:-1]
+    rows = torch.repeat_interleave(torch.arange(row_count), counts)
+    rank = torch.arange(indices.numel()) - offsets[rows]
+    keep = rank < int(width)
+    output[rows[keep], rank[keep]] = indices[keep]
+    return output
+
+
+def _replace_refreshed_pairs(
+    clean_pairs: dict,
+    harmful_pairs: dict,
+    query_indices: list[int],
+    refreshed_clean: dict,
+    refreshed_harmful: dict,
+) -> dict:
+    old_clean = sum(len(clean_pairs.get(int(query), {})) for query in query_indices)
+    old_harmful = sum(
+        len(harmful_pairs.get(int(query), {})) for query in query_indices
+    )
+    for query in query_indices:
+        clean_pairs.pop(int(query), None)
+        harmful_pairs.pop(int(query), None)
+    for query, values in refreshed_clean.items():
+        clean_pairs[int(query)] = dict(values)
+    for query, values in refreshed_harmful.items():
+        harmful_pairs[int(query)] = dict(values)
+    new_clean = sum(len(clean_pairs.get(int(query), {})) for query in query_indices)
+    new_harmful = sum(
+        len(harmful_pairs.get(int(query), {})) for query in query_indices
+    )
+    return {
+        "old_clean_pair_count": old_clean,
+        "old_harmful_pair_count": old_harmful,
+        "new_clean_pair_count": new_clean,
+        "new_harmful_pair_count": new_harmful,
+    }
 
 
 def _build_rotating_shards(
@@ -91,6 +164,7 @@ def _build_training_records(
     *,
     device: torch.device | str = "cpu",
     query_chunk_size: int = 32,
+    positive_teacher: dict | None = None,
 ):
     metadata = state["track_centric_reconstruction"]
     track_indices = torch.as_tensor(metadata["track_indices"]).long()
@@ -110,8 +184,17 @@ def _build_training_records(
         (payload_track_count,), -1, dtype=torch.long
     )
     track_to_local[track_indices] = torch.arange(track_count)
-    exact = _track_observations(payload, track_to_local)
     graph_records = graph["records"]
+    payload_to_graph = _query_index_remap(
+        payload["query_names"], graph["query_names"]
+    )
+    exact = (
+        {}
+        if positive_teacher is not None
+        else _track_observations(
+            payload, track_to_local, query_index_remap=payload_to_graph
+        )
+    )
     row_counts = [
         int(torch.as_tensor(record["query_rows"]).numel())
         for record in graph_records
@@ -120,44 +203,79 @@ def _build_training_records(
     canonical_to_local_build = canonical_to_local.to(build_device)
     positive_blocks = []
     legal4_blocks = []
-    query_chunk_size = max(int(query_chunk_size), 1)
-    for start in range(0, len(graph_records), query_chunk_size):
-        chunk = graph_records[start : start + query_chunk_size]
-        chunk_counts = row_counts[start : start + query_chunk_size]
-        candidates = torch.cat(
-            [
-                torch.as_tensor(record["top_indices"]).long()
-                for record in chunk
-            ],
-            dim=0,
-        ).to(build_device)
-        flags = torch.cat(
-            [
-                torch.as_tensor(record["legal_flags"]).to(torch.uint8)
-                for record in chunk
-            ],
-            dim=0,
-        ).to(build_device)
-        candidate_valid = (candidates >= 0) & (
-            candidates < canonical_count
-        )
-        local = canonical_to_local_build[
-            candidates.clamp(min=0, max=canonical_count - 1)
-        ]
-        local = torch.where(
-            candidate_valid, local, torch.full_like(local, -1)
-        )
-        chunk_positives = _first_k(
-            local,
-            (local >= 0) & candidate_valid & ((flags & 2) != 0),
-            max_positives,
-        ).cpu()
-        chunk_legal4 = (
-            candidate_valid & ((flags & 4) != 0)
-        ).any(dim=1).cpu()
-        positive_blocks.extend(chunk_positives.split(chunk_counts))
-        legal4_blocks.extend(chunk_legal4.split(chunk_counts))
-    query_bins = torch.as_tensor(payload["query_bins"]).long()
+    if positive_teacher is not None:
+        if int(positive_teacher["anchor_count"]) != int(
+            state["anchor_xyz"].shape[0]
+        ):
+            raise ValueError("complete positive teacher does not align with map")
+        if list(positive_teacher["query_names"]) != list(graph["query_names"]):
+            raise ValueError("complete positive teacher query order mismatch")
+        if len(positive_teacher["records"]) != len(graph_records):
+            raise ValueError("complete positive teacher query count mismatch")
+        for graph_record, teacher_record in zip(
+            graph_records, positive_teacher["records"]
+        ):
+            graph_rows = torch.as_tensor(
+                graph_record["query_rows"]
+            ).long()
+            teacher_rows = torch.as_tensor(
+                teacher_record["query_rows"]
+            ).long()
+            if not torch.equal(graph_rows, teacher_rows):
+                raise ValueError("complete positive teacher row mismatch")
+            positive_blocks.append(
+                _csr_first_k(
+                    teacher_record["positive_offsets"],
+                    teacher_record["positive_indices"],
+                    max_positives,
+                )
+            )
+            ambiguous_offsets = torch.as_tensor(
+                teacher_record["ambiguous_offsets"]
+            ).long()
+            legal4_blocks.append(
+                (ambiguous_offsets[1:] - ambiguous_offsets[:-1]) > 0
+            )
+    else:
+        query_chunk_size = max(int(query_chunk_size), 1)
+        for start in range(0, len(graph_records), query_chunk_size):
+            chunk = graph_records[start : start + query_chunk_size]
+            chunk_counts = row_counts[start : start + query_chunk_size]
+            candidates = torch.cat(
+                [
+                    torch.as_tensor(record["top_indices"]).long()
+                    for record in chunk
+                ],
+                dim=0,
+            ).to(build_device)
+            flags = torch.cat(
+                [
+                    torch.as_tensor(record["legal_flags"]).to(torch.uint8)
+                    for record in chunk
+                ],
+                dim=0,
+            ).to(build_device)
+            candidate_valid = (candidates >= 0) & (
+                candidates < canonical_count
+            )
+            local = canonical_to_local_build[
+                candidates.clamp(min=0, max=canonical_count - 1)
+            ]
+            local = torch.where(
+                candidate_valid, local, torch.full_like(local, -1)
+            )
+            chunk_positives = _first_k(
+                local,
+                (local >= 0) & candidate_valid & ((flags & 2) != 0),
+                max_positives,
+            ).cpu()
+            chunk_legal4 = (
+                candidate_valid & ((flags & 4) != 0)
+            ).any(dim=1).cpu()
+            positive_blocks.extend(chunk_positives.split(chunk_counts))
+            legal4_blocks.extend(chunk_legal4.split(chunk_counts))
+    query_bins = torch.empty_like(torch.as_tensor(payload["query_bins"]).long())
+    query_bins[payload_to_graph] = torch.as_tensor(payload["query_bins"]).long()
     del canonical_to_local_build
     records = []
     positive_rows = 0
@@ -165,39 +283,28 @@ def _build_training_records(
         cache_rows = torch.as_tensor(record["query_rows"]).long()
         positives = positive_blocks[query_index].clone()
         query_exact = exact.get(query_index, {})
-        if query_exact and cache_rows.numel():
-            exact_keypoints = torch.as_tensor(
-                list(query_exact.keys()), dtype=torch.long
-            )
-            exact_tracks = torch.as_tensor(
-                list(query_exact.values()), dtype=torch.long
-            )
-            lookup_size = int(
-                max(cache_rows.max(), exact_keypoints.max()).item()
-            ) + 1
-            row_lookup = torch.full((lookup_size,), -1, dtype=torch.long)
-            row_lookup[cache_rows] = torch.arange(cache_rows.numel())
-            exact_rows = row_lookup[exact_keypoints]
-            present = exact_rows >= 0
-            exact_rows = exact_rows[present]
-            exact_tracks = exact_tracks[present]
-            current = positives[exact_rows]
-            missing = ~(current == exact_tracks[:, None]).any(dim=1)
-            if bool(missing.any()):
-                exact_rows = exact_rows[missing]
-                exact_tracks = exact_tracks[missing]
-                empty = positives[exact_rows] < 0
-                has_empty = empty.any(dim=1)
-                columns = torch.where(
-                    has_empty,
-                    empty.to(torch.int64).argmax(dim=1),
-                    torch.full(
-                        (exact_rows.numel(),),
-                        positives.shape[1] - 1,
-                        dtype=torch.long,
-                    ),
-                )
-                positives[exact_rows, columns] = exact_tracks
+        if (
+            positive_teacher is None
+            and query_exact
+            and cache_rows.numel()
+        ):
+            row_lookup = {
+                int(keypoint): row
+                for row, keypoint in enumerate(cache_rows.tolist())
+            }
+            for keypoint, tracks in query_exact.items():
+                output_row = row_lookup.get(int(keypoint))
+                if output_row is None:
+                    continue
+                for track in tracks:
+                    current = positives[output_row]
+                    if bool((current == int(track)).any()):
+                        continue
+                    empty = torch.nonzero(
+                        current < 0, as_tuple=False
+                    ).reshape(-1)
+                    column = int(empty[0]) if empty.numel() else -1
+                    current[column] = int(track)
         valid = (positives >= 0).any(dim=1)
         canonical_legal4 = legal4_blocks[query_index]
         null_weight = torch.where(
@@ -224,6 +331,13 @@ def _build_training_records(
         "positive_rows": positive_rows,
         "track_anchor_count": track_count,
         "base_anchor_count": int(base_rows.numel()),
+        "complete_positive_teacher": positive_teacher is not None,
+        "complete_positive_pair_count": int(
+            positive_teacher["diagnostics"]["strong_pair_count"]
+            if positive_teacher is not None
+            else 0
+        ),
+        "query_groups": query_bins.tolist(),
     }
 
 
@@ -557,6 +671,7 @@ def main() -> None:
     parser.add_argument("--function-graph", required=True)
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
+    parser.add_argument("--complete-positive-teacher", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--checkpoint-steps", default="100,250,500")
@@ -581,6 +696,15 @@ def main() -> None:
     parser.add_argument("--null-grid-rows", type=int, default=4)
     parser.add_argument("--null-grid-cols", type=int, default=4)
     parser.add_argument("--null-minimum-per-cell", type=int, default=8)
+    parser.add_argument(
+        "--training-mode",
+        choices=("joint", "metric_only", "anchor_only", "sequential"),
+        default="joint",
+    )
+    parser.add_argument("--metric-only-steps", type=int, default=250)
+    parser.add_argument(
+        "--conflict-anchor-only", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
     torch.manual_seed(args.seed)
@@ -595,6 +719,15 @@ def main() -> None:
     cache_payload = torch.load(
         args.query_cache, map_location="cpu", weights_only=False
     )
+    positive_teacher = (
+        torch.load(
+            args.complete_positive_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.complete_positive_teacher
+        else None
+    )
     cache = cache_payload.get("queries", cache_payload)
     names = graph["query_names"]
     records, data_report = _build_training_records(
@@ -603,6 +736,7 @@ def main() -> None:
         state,
         args.max_positives,
         device=device,
+        positive_teacher=positive_teacher,
     )
     del graph
     raw_features = F.normalize(
@@ -623,7 +757,8 @@ def main() -> None:
         lr=args.learning_rate,
         weight_decay=1e-4,
     )
-    group_count = int(torch.as_tensor(payload["query_bins"]).max()) + 1
+    groups = torch.as_tensor(data_report["query_groups"]).long()
+    group_count = int(groups.max()) + 1
     group_weights = torch.ones(group_count, device=device) / group_count
     harmful_prior = torch.zeros(raw_features.shape[0], device=device)
     clean_pairs = {}
@@ -637,7 +772,6 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     history = []
-    groups = torch.as_tensor(payload["query_bins"]).long()
     refresh_shards = _build_rotating_shards(groups, args.refresh_shards)
     refresh_index = 0
     for step in range(1, args.steps + 1):
@@ -674,8 +808,13 @@ def main() -> None:
                 query_indices=refresh_shards[active_shard],
                 seed=args.seed,
             )
-            clean_pairs.update(refreshed_clean_pairs)
-            harmful_pairs.update(refreshed_harmful_pairs)
+            pair_churn = _replace_refreshed_pairs(
+                clean_pairs,
+                harmful_pairs,
+                refresh_shards[active_shard],
+                refreshed_clean_pairs,
+                refreshed_harmful_pairs,
+            )
             risk = torch.zeros_like(group_weights)
             for group, value in group_risks.items():
                 risk[group] = float(value)
@@ -716,6 +855,7 @@ def main() -> None:
                         (harmful_prior > 0).float().mean()
                     ),
                     "group_weight_max": float(group_weights.max()),
+                    **pair_churn,
                 }
             )
             print(json.dumps(history[-1]), flush=True)
@@ -830,8 +970,27 @@ def main() -> None:
             + float(args.null_weight) * null_loss
             + float(args.trust_weight) * trust
         )
+        if args.training_mode == "sequential":
+            phase = (
+                "metric_only"
+                if step <= int(args.metric_only_steps)
+                else "anchor_only"
+            )
+        else:
+            phase = args.training_mode
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        if phase == "metric_only":
+            anchor_residual.grad = None
+        elif phase == "anchor_only":
+            for parameter in metric.parameters():
+                parameter.grad = None
+            if (
+                bool(args.conflict_anchor_only)
+                and anchor_residual.grad is not None
+            ):
+                conflict = harmful_prior > 0
+                anchor_residual.grad[~conflict] = 0
         torch.nn.utils.clip_grad_norm_(
             [*metric.parameters(), anchor_residual], 1.0
         )
@@ -845,6 +1004,7 @@ def main() -> None:
                 "null_loss": float(null_loss.detach()),
                 "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
+                "phase": phase,
             }
             history.append(row)
             print(json.dumps(row), flush=True)

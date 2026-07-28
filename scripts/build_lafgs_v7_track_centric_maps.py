@@ -149,6 +149,24 @@ def _group_balanced_base_utility(
     return balanced, report
 
 
+def _align_query_values(
+    values: torch.Tensor,
+    source_names: list[str],
+    target_names: list[str],
+) -> torch.Tensor:
+    values = torch.as_tensor(values)
+    if values.shape[0] != len(source_names):
+        raise ValueError("query values and source names must align")
+    source_by_name = {name: index for index, name in enumerate(source_names)}
+    if len(source_by_name) != len(source_names):
+        raise ValueError("source query names must be unique")
+    if set(source_names) != set(target_names):
+        raise ValueError("source and target query-name sets differ")
+    return values[
+        torch.as_tensor([source_by_name[name] for name in target_names]).long()
+    ]
+
+
 def _voxel_diverse_order(
     xyz: torch.Tensor, utility: torch.Tensor, voxel_size: float
 ) -> torch.Tensor:
@@ -358,9 +376,14 @@ def main() -> None:
     utility = _base_utility(graph, base_count)
     group_balance_report = None
     if args.base_selection == "group_balanced":
+        aligned_query_bins = _align_query_values(
+            torch.as_tensor(payload["query_bins"]),
+            payload["query_names"],
+            graph["query_names"],
+        )
         utility, group_balance_report = _group_balanced_base_utility(
             graph,
-            torch.as_tensor(payload["query_bins"]),
+            aligned_query_bins,
             base_count,
             utility,
         )

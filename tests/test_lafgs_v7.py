@@ -9,17 +9,33 @@ from localization_training.shared_metric import (
     select_native_matchable_rows,
 )
 from scripts.build_lafgs_v7_track_centric_maps import (
+    _align_query_values,
     _eligible_tracks,
     _group_balanced_base_utility,
     _normalized_log_score,
     _voxel_diverse_order,
 )
+from scripts.build_lafgs_v9_complete_positive_teacher import (
+    _deduplicated_csr,
+    _exact_track_observations,
+    _expand_provenance_candidates,
+    _source_anchor_lookup,
+    _query_index_remap,
+)
+from scripts.build_lafgs_v9_minimum_sufficient_maps import (
+    _event_id,
+    _positive_events_by_anchor,
+    greedy_query_multicover,
+)
 from scripts.train_lafgs_v7_online_metric import (
     _build_rotating_shards,
     _bounded_anchor_features,
+    _csr_first_k,
     _group_pose_risk,
     _multi_positive_list_loss,
+    _replace_refreshed_pairs,
     _save_checkpoint,
+    _query_index_remap as _training_query_index_remap,
 )
 
 
@@ -84,6 +100,44 @@ def test_group_balanced_base_utility_rewards_rare_group_support():
     )
     assert bool((score > 0).all())
     assert report["group_count"] == 2
+    aligned = _align_query_values(
+        torch.tensor([10, 20]), ["b", "a"], ["a", "b"]
+    )
+    assert aligned.tolist() == [20, 10]
+
+
+def test_complete_teacher_inverts_to_anchor_events():
+    teacher = {
+        "records": [
+            {
+                "query_index": 0,
+                "query_rows": torch.tensor([3, 7]),
+                "positive_offsets": torch.tensor([0, 2, 3]),
+                "positive_indices": torch.tensor([0, 1, 1]),
+            }
+        ]
+    }
+    events = _positive_events_by_anchor(teacher, 2)
+    assert events[0] == {_event_id(0, 3)}
+    assert events[1] == {_event_id(0, 3), _event_id(0, 7)}
+
+
+def test_query_multicover_uses_shared_rescue_and_stops_at_constraint():
+    events = [
+        {_event_id(0, 0), _event_id(1, 0)},
+        {_event_id(0, 1)},
+        {_event_id(1, 1)},
+    ]
+    selected, report = greedy_query_multicover(
+        events,
+        set(),
+        torch.tensor([0, 1]),
+        minimum_rows_per_query=1,
+        utility=torch.tensor([0.0, 10.0, 10.0]),
+    )
+    assert selected.tolist() == [0]
+    assert report["reserve_count"] == 1
+    assert report["unmet_query_count"] == 0
 
 
 def test_listwise_loss_rewards_any_positive_and_penalizes_harmful_mass():
@@ -199,3 +253,90 @@ def test_metric_checkpoint_round_trips_null_head(tmp_path):
         "linear.weight",
         "linear.bias",
     }
+
+
+def test_complete_teacher_expands_one_source_to_many_anchors():
+    sources, lookup = _source_anchor_lookup(torch.tensor([5, 5, 8]))
+    assert sources.tolist() == [5, 8]
+    assert lookup.tolist() == [[0, 1], [2, -1]]
+    candidates, valid = _expand_provenance_candidates(
+        torch.tensor([[5, 8, 9]]),
+        torch.tensor([[0.8, 0.2, 1.0]]),
+        sources,
+        lookup,
+        minimum_mass=0.1,
+    )
+    assert set(candidates[valid].tolist()) == {0, 1, 2}
+    offsets, indices = _deduplicated_csr(
+        torch.tensor([[2, 1, 1, -1]]),
+        torch.tensor([[True, True, True, False]]),
+        value_count=3,
+    )
+    assert offsets.tolist() == [0, 2]
+    assert indices.tolist() == [1, 2]
+    dense = _csr_first_k(offsets, indices, width=3)
+    assert dense.tolist() == [[1, 2, -1]]
+
+
+def test_exact_track_observations_preserve_multiple_positives():
+    payload = {
+        "tracks": {
+            "track_index": torch.tensor([2, 3]),
+            "query_index": torch.tensor([0, 0]),
+            "keypoint_index": torch.tensor([7, 7]),
+        }
+    }
+    exact = _exact_track_observations(payload, torch.tensor([2, 3]))
+    assert exact[0][7] == [0, 1]
+
+
+def test_exact_track_observations_use_nonprefix_anchor_rows():
+    payload = {
+        "tracks": {
+            "track_index": torch.tensor([2]),
+            "query_index": torch.tensor([0]),
+            "keypoint_index": torch.tensor([7]),
+        }
+    }
+    exact = _exact_track_observations(
+        payload, torch.tensor([2]), torch.tensor([11])
+    )
+    assert exact[0][7] == [11]
+
+
+def test_exact_track_observations_remap_query_order_by_name():
+    payload = {
+        "tracks": {
+            "track_index": torch.tensor([2]),
+            "query_index": torch.tensor([0]),
+            "keypoint_index": torch.tensor([7]),
+        }
+    }
+    remap = _query_index_remap(["b", "a"], ["a", "b"])
+    exact = _exact_track_observations(
+        payload,
+        torch.tensor([2]),
+        query_index_remap=remap,
+    )
+    assert exact[1][7] == [0]
+    torch.testing.assert_close(
+        _training_query_index_remap(["b", "a"], ["a", "b"]),
+        torch.tensor([1, 0]),
+    )
+
+
+def test_refresh_replaces_stale_pair_labels():
+    clean = {0: {1: 2}, 1: {3: 4}}
+    harmful = {0: {5: 6}, 1: {7: 8}}
+    report = _replace_refreshed_pairs(
+        clean,
+        harmful,
+        [0],
+        refreshed_clean={},
+        refreshed_harmful={0: {9: 10}},
+    )
+    assert 0 not in clean
+    assert harmful[0] == {9: 10}
+    assert clean[1] == {3: 4}
+    assert report["old_clean_pair_count"] == 1
+    assert report["new_clean_pair_count"] == 0
