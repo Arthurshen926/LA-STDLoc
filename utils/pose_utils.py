@@ -18,6 +18,10 @@ def solve_pose(
     max_prosac_iterations=100000,
     ransac_seed=0,
     return_diagnostics=False,
+    dependency_groups=None,
+    image_cells=None,
+    depth_bins=None,
+    surface_groups=None,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
@@ -103,6 +107,41 @@ def solve_pose(
             w2c = w2c.astype(np.float32)
             inliers = solver_to_input[np.asarray(inliers).reshape(-1)]
             return finish(w2c, inliers)
+
+    elif solver == "poselib_dependency":
+        from localization_training.dependency_pose_sampler import (
+            solve_dependency_absolute_pose,
+        )
+
+        required_metadata = (
+            dependency_groups,
+            image_cells,
+            depth_bins,
+            surface_groups,
+        )
+        if any(value is None for value in required_metadata):
+            raise ValueError(
+                "dependency-aware pose requires dependency, cell, depth, and surface groups"
+            )
+        w2c, inliers, info = solve_dependency_absolute_pose(
+            p2d,
+            p3d,
+            K,
+            dependency_groups=dependency_groups,
+            image_cells=image_cells,
+            depth_bins=depth_bins,
+            surface_groups=surface_groups,
+            reprojection_error=reprojection_error,
+            confidence=confidence,
+            max_iterations=max_iterations,
+            min_iterations=min_iterations,
+            seed=ransac_seed,
+        )
+        diagnostics["ransac_diverse_samples"] = int(info["diverse_samples"])
+        diagnostics["ransac_fallback_samples"] = int(info["fallback_samples"])
+        diagnostics["ransac_actual_hypotheses"] = int(info["iterations"])
+        diagnostics["ransac_actual_hypotheses_available"] = True
+        return finish(w2c, inliers)
 
     elif solver == "poselib":
         camera = {

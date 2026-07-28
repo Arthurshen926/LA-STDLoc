@@ -93,6 +93,25 @@ def _csr_first_k(
     return output
 
 
+def _csr_first_k_values(
+    offsets: torch.Tensor,
+    values: torch.Tensor,
+    width: int,
+    *,
+    fill: float,
+) -> torch.Tensor:
+    offsets = torch.as_tensor(offsets).long().reshape(-1)
+    values = torch.as_tensor(values).float().reshape(-1)
+    row_count = offsets.numel() - 1
+    output = torch.full((row_count, int(width)), float(fill))
+    counts = offsets[1:] - offsets[:-1]
+    rows = torch.repeat_interleave(torch.arange(row_count), counts)
+    rank = torch.arange(values.numel()) - offsets[rows]
+    keep = rank < int(width)
+    output[rows[keep], rank[keep]] = values[keep]
+    return output
+
+
 def _replace_refreshed_pairs(
     clean_pairs: dict,
     harmful_pairs: dict,
@@ -165,6 +184,9 @@ def _build_training_records(
     device: torch.device | str = "cpu",
     query_chunk_size: int = 32,
     positive_teacher: dict | None = None,
+    critical_teacher: dict | None = None,
+    critical_pair_power: float = 1.0,
+    critical_row_power: float = 1.0,
 ):
     metadata = state["track_centric_reconstruction"]
     track_indices = torch.as_tensor(metadata["track_indices"]).long()
@@ -202,6 +224,8 @@ def _build_training_records(
     build_device = torch.device(device)
     canonical_to_local_build = canonical_to_local.to(build_device)
     positive_blocks = []
+    positive_weight_blocks = []
+    row_weight_blocks = []
     legal4_blocks = []
     if positive_teacher is not None:
         if int(positive_teacher["anchor_count"]) != int(
@@ -230,6 +254,29 @@ def _build_training_records(
                     max_positives,
                 )
             )
+            if critical_teacher is not None:
+                critical_record = critical_teacher["records"][
+                    len(positive_blocks) - 1
+                ]
+                if not torch.equal(
+                    teacher_rows,
+                    torch.as_tensor(critical_record["query_rows"]).long(),
+                ):
+                    raise ValueError("pose-critical teacher row mismatch")
+                positive_weight_blocks.append(
+                    _csr_first_k_values(
+                        teacher_record["positive_offsets"],
+                        critical_record["positive_weights"],
+                        max_positives,
+                        fill=1.0,
+                    ).clamp_min(1e-8).pow(float(critical_pair_power))
+                )
+                row_weight_blocks.append(
+                    torch.as_tensor(critical_record["row_weights"])
+                    .float()
+                    .clamp_min(1e-8)
+                    .pow(float(critical_row_power))
+                )
             ambiguous_offsets = torch.as_tensor(
                 teacher_record["ambiguous_offsets"]
             ).long()
@@ -282,6 +329,16 @@ def _build_training_records(
     for query_index, record in enumerate(graph_records):
         cache_rows = torch.as_tensor(record["query_rows"]).long()
         positives = positive_blocks[query_index].clone()
+        positive_weights = (
+            positive_weight_blocks[query_index].clone()
+            if positive_weight_blocks
+            else torch.ones_like(positives, dtype=torch.float32)
+        )
+        row_weights = (
+            row_weight_blocks[query_index].clone()
+            if row_weight_blocks
+            else torch.ones(positives.shape[0], dtype=torch.float32)
+        )
         query_exact = exact.get(query_index, {})
         if (
             positive_teacher is None
@@ -322,6 +379,8 @@ def _build_training_records(
                 "deployment_rows": cache_rows,
                 "cache_rows": cache_rows,
                 "positives": positives,
+                "positive_weights": positive_weights,
+                "critical_row_weights": row_weights,
                 "matchable": valid,
                 "null_weight": null_weight,
                 "group": int(query_bins[query_index]),
@@ -331,7 +390,8 @@ def _build_training_records(
         "positive_rows": positive_rows,
         "track_anchor_count": track_count,
         "base_anchor_count": int(base_rows.numel()),
-        "complete_positive_teacher": positive_teacher is not None,
+        "complete_positive_teacher_enabled": positive_teacher is not None,
+        "pose_critical_teacher_enabled": critical_teacher is not None,
         "complete_positive_pair_count": int(
             positive_teacher["diagnostics"]["strong_pair_count"]
             if positive_teacher is not None
@@ -360,6 +420,7 @@ def _multi_positive_list_loss(
     harmful_prior: torch.Tensor | None,
     harmful_weight: float,
     harmful_indices: torch.Tensor | None = None,
+    positive_weights: torch.Tensor | None = None,
 ):
     scores = query @ bank.T
     top_scores, top_indices = torch.topk(
@@ -370,8 +431,13 @@ def _multi_positive_list_loss(
         "bd,bpd->bp", query, bank[safe]
     )
     positive_mask = positives >= 0
+    positive_logits = positive_scores / temperature
+    if positive_weights is not None:
+        positive_logits = positive_logits + torch.log(
+            positive_weights.clamp_min(1e-8)
+        )
     numerator = torch.logsumexp(
-        (positive_scores / temperature).masked_fill(
+        positive_logits.masked_fill(
             ~positive_mask, -torch.inf
         ),
         dim=1,
@@ -672,6 +738,9 @@ def main() -> None:
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--complete-positive-teacher", default="")
+    parser.add_argument("--pose-critical-teacher", default="")
+    parser.add_argument("--critical-pair-power", type=float, default=1.0)
+    parser.add_argument("--critical-row-power", type=float, default=1.0)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--checkpoint-steps", default="100,250,500")
@@ -707,6 +776,10 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
+    if not 0.0 <= args.critical_pair_power <= 1.0:
+        raise ValueError("critical_pair_power must be in [0, 1]")
+    if not 0.0 <= args.critical_row_power <= 1.0:
+        raise ValueError("critical_row_power must be in [0, 1]")
     torch.manual_seed(args.seed)
     device = torch.device("cuda")
     state = torch.load(args.map, map_location="cpu", weights_only=False)
@@ -728,6 +801,26 @@ def main() -> None:
         if args.complete_positive_teacher
         else None
     )
+    critical_teacher = (
+        torch.load(
+            args.pose_critical_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.pose_critical_teacher
+        else None
+    )
+    if critical_teacher is not None:
+        if positive_teacher is None:
+            raise ValueError("pose-critical teacher requires complete positives")
+        if int(critical_teacher["anchor_count"]) != int(
+            torch.as_tensor(state["anchor_xyz"]).shape[0]
+        ):
+            raise ValueError("pose-critical teacher anchor count mismatch")
+        if list(critical_teacher["query_names"]) != list(
+            positive_teacher["query_names"]
+        ):
+            raise ValueError("pose-critical teacher query order mismatch")
     cache = cache_payload.get("queries", cache_payload)
     names = graph["query_names"]
     records, data_report = _build_training_records(
@@ -737,6 +830,9 @@ def main() -> None:
         args.max_positives,
         device=device,
         positive_teacher=positive_teacher,
+        critical_teacher=critical_teacher,
+        critical_pair_power=args.critical_pair_power,
+        critical_row_power=args.critical_row_power,
     )
     del graph
     raw_features = F.normalize(
@@ -881,6 +977,8 @@ def main() -> None:
             dim=1,
         ).to(device)
         positives = record["positives"][rows].to(device)
+        positive_weights = record["positive_weights"][rows].to(device)
+        critical_row_weights = record["critical_row_weights"][rows].to(device)
         matchable = record["matchable"][rows].to(device)
         null_weight = record["null_weight"][rows].to(device)
         current_clean = clean_pairs.get(query_index, {})
@@ -936,6 +1034,7 @@ def main() -> None:
                 None,
                 args.harmful_weight,
                 harmful_indices=harmful_survivors[matchable],
+                positive_weights=positive_weights[matchable],
             )[0]
         keypoint_score = torch.as_tensor(
             cache[names[query_index]]["native_scores"]
@@ -956,7 +1055,10 @@ def main() -> None:
             group_weights[int(record["group"])] * float(group_count)
         )
         task_loss = (
-            list_loss[matchable].mean()
+            (
+                list_loss[matchable] * critical_row_weights[matchable]
+            ).sum()
+            / critical_row_weights[matchable].sum().clamp_min(1e-8)
             if bool(matchable.any())
             else torch.zeros((), device=device)
         ) * group_weight

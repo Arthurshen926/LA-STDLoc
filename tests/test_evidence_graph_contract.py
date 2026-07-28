@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from localization_training.evidence_graph_contract import (
+    build_dynamic_round_contract,
     build_evidence_graph_contract,
     verify_evidence_graph_contract,
 )
@@ -91,3 +92,100 @@ def test_evidence_graph_contract_detects_artifact_mutation(tmp_path):
     Path(contract["artifacts"]["primitive_prior"]["path"]).write_bytes(b"changed")
     with pytest.raises(ValueError, match="hash mismatch"):
         verify_evidence_graph_contract(contract)
+
+
+def test_dynamic_round_contract_validates_active_anchor_identity(tmp_path):
+    artifacts = _artifacts(tmp_path)
+    contract = build_evidence_graph_contract(**artifacts)
+    outcomes = {
+        "anchor_count": 2,
+        "query_names": ["q0"],
+        "records": [
+            {
+                "top1_anchor_indices": torch.tensor([0, 1]),
+                "clean_inlier_mask": torch.tensor([True, False]),
+                "harmful_inlier_mask": torch.tensor([False, True]),
+            }
+        ],
+        "summary": {"median_te_cm": 1.0},
+    }
+    outcome_path = _save(tmp_path / "outcomes.pt", outcomes)
+    dynamic = build_dynamic_round_contract(
+        static_contract=contract,
+        round_id=0,
+        active_map_path=artifacts["anchor_map_path"],
+        dynamic_outcomes_path=outcome_path,
+    )
+    assert dynamic["dynamic_outcome_edges"]["clean_survivor_count"] == 1
+    assert dynamic["dynamic_outcome_edges"]["harmful_survivor_count"] == 1
+
+
+def test_dynamic_round_contract_rejects_negative_round(tmp_path):
+    artifacts = _artifacts(tmp_path)
+    contract = build_evidence_graph_contract(**artifacts)
+    outcomes = {
+        "anchor_count": 2,
+        "query_names": ["q0"],
+        "records": [],
+        "summary": {},
+    }
+    outcome_path = _save(tmp_path / "outcomes.pt", outcomes)
+    with pytest.raises(ValueError, match="non-negative"):
+        build_dynamic_round_contract(
+            static_contract=contract,
+            round_id=-1,
+            active_map_path=artifacts["anchor_map_path"],
+            dynamic_outcomes_path=outcome_path,
+        )
+
+
+def test_dynamic_round_contract_rejects_query_order_mismatch(tmp_path):
+    artifacts = _artifacts(tmp_path)
+    contract = build_evidence_graph_contract(**artifacts)
+    outcomes = {
+        "anchor_count": 2,
+        "query_names": ["wrong"],
+        "records": [],
+        "summary": {},
+    }
+    outcome_path = _save(tmp_path / "outcomes.pt", outcomes)
+    with pytest.raises(ValueError, match="query order"):
+        build_dynamic_round_contract(
+            static_contract=contract,
+            round_id=0,
+            active_map_path=artifacts["anchor_map_path"],
+            dynamic_outcomes_path=outcome_path,
+        )
+
+
+def test_dynamic_round_contract_registers_pose_critical_edges(tmp_path):
+    artifacts = _artifacts(tmp_path)
+    contract = build_evidence_graph_contract(**artifacts)
+    outcomes = {
+        "anchor_count": 2,
+        "query_names": ["q0"],
+        "records": [
+            {
+                "top1_anchor_indices": torch.tensor([0]),
+                "clean_inlier_mask": torch.tensor([True]),
+                "harmful_inlier_mask": torch.tensor([False]),
+            }
+        ],
+        "summary": {},
+    }
+    critical = {
+        "anchor_count": 2,
+        "query_names": ["q0"],
+        "records": [{"positive_weights": torch.ones(3)}],
+    }
+    outcome_path = _save(tmp_path / "outcomes.pt", outcomes)
+    critical_path = _save(tmp_path / "critical.pt", critical)
+    dynamic = build_dynamic_round_contract(
+        static_contract=contract,
+        round_id=0,
+        active_map_path=artifacts["anchor_map_path"],
+        dynamic_outcomes_path=outcome_path,
+        pose_critical_teacher_path=critical_path,
+    )
+    assert dynamic["dynamic_outcome_edges"]["pose_critical_edge_count"] == 3
+    assert "pose_critical_teacher" in dynamic["artifacts"]

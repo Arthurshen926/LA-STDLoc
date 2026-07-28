@@ -167,6 +167,34 @@ def test_listwise_loss_rewards_any_positive_and_penalizes_harmful_mass():
     assert float(harmful) > float(clean)
 
 
+def test_listwise_pose_critical_weight_prefers_critical_positive():
+    query = torch.tensor([[1.0, 0.0]])
+    bank = torch.tensor([[0.8, 0.6], [0.8, -0.6], [-1.0, 0.0]])
+    positives = torch.tensor([[0, 1]])
+    first, _, _ = _multi_positive_list_loss(
+        query,
+        bank,
+        positives,
+        topk=3,
+        temperature=0.1,
+        harmful_prior=None,
+        harmful_weight=0.0,
+        positive_weights=torch.tensor([[4.0, 0.25]]),
+    )
+    uniform, _, _ = _multi_positive_list_loss(
+        query,
+        bank,
+        positives,
+        topk=3,
+        temperature=0.1,
+        harmful_prior=None,
+        harmful_weight=0.0,
+        positive_weights=torch.ones(1, 2),
+    )
+    assert torch.isfinite(first).all()
+    assert float(first) < float(uniform)
+
+
 def test_anchor_residual_is_bounded():
     raw = torch.nn.functional.normalize(torch.randn(4, 8), dim=1)
     adapted, residual = _bounded_anchor_features(

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import heapq
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -70,9 +71,19 @@ def greedy_pose_reserve(
     minimum_queries_per_anchor_set: int = 3,
     maximum_per_source: int = 1,
     maximum_per_voxel: int = 3,
+    query_weights: torch.Tensor | None = None,
+    force_fill: bool = True,
 ) -> torch.Tensor:
     """Greedy query-balanced selection over conditional set gains."""
-    deficits = [int(minimum_queries_per_anchor_set)] * len(query_candidates)
+    if query_weights is None:
+        query_weights = torch.ones(len(query_candidates))
+    query_weights = torch.as_tensor(query_weights).float().reshape(-1)
+    if query_weights.numel() != len(query_candidates):
+        raise ValueError("query weights must align with query candidates")
+    deficits = [
+        int(minimum_queries_per_anchor_set) if float(weight) > 0 else 0
+        for weight in query_weights
+    ]
     by_anchor: dict[int, list[tuple[int, float]]] = defaultdict(list)
     for query, candidates in enumerate(query_candidates):
         for anchor, score in candidates:
@@ -81,7 +92,11 @@ def greedy_pose_reserve(
 
     heap = []
     for anchor, entries in by_anchor.items():
-        gain = sum(score for query, score in entries if deficits[query] > 0)
+        gain = sum(
+            score * float(query_weights[query])
+            for query, score in entries
+            if deficits[query] > 0
+        )
         if gain > 0:
             heapq.heappush(heap, (-gain, -len(entries), anchor))
 
@@ -101,7 +116,7 @@ def greedy_pose_reserve(
         ):
             continue
         gain = sum(
-            score
+            score * float(query_weights[query])
             for query, score in by_anchor[anchor]
             if deficits[query] > 0
         )
@@ -124,7 +139,7 @@ def greedy_pose_reserve(
         for query, _ in by_anchor[anchor]:
             deficits[query] = max(0, deficits[query] - 1)
 
-    if len(selected) < int(budget):
+    if force_fill and len(selected) < int(budget):
         global_order = sorted(
             (
                 (sum(score for _, score in entries), anchor)
@@ -164,6 +179,22 @@ def main() -> None:
     parser.add_argument("--top-candidates-per-query", type=int, default=64)
     parser.add_argument("--maximum-harmful-rate", type=float, default=0.10)
     parser.add_argument("--dependency-voxel-size", type=float, default=0.5)
+    parser.add_argument("--query-outcomes", default="")
+    parser.add_argument(
+        "--pose-scoring-cache",
+        default="",
+        help="Reuse a completed, identity-checked scoring cache from another reserve objective.",
+    )
+    parser.add_argument(
+        "--reserve-mode",
+        choices=("all", "precision", "robustness"),
+        default="all",
+    )
+    parser.add_argument(
+        "--force-fill",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     args = parser.parse_args()
 
     core_path = Path(args.core_map).resolve()
@@ -190,6 +221,15 @@ def main() -> None:
         query_path, map_location="cpu", weights_only=False
     )
     query_cache = query_payload.get("queries", query_payload)
+    outcome_by_name = {}
+    if args.query_outcomes:
+        outcomes = json.loads(Path(args.query_outcomes).read_text())
+        outcome_by_name = {
+            record["query"]: float(record["te_cm"])
+            for record in outcomes["results"]
+        }
+        if set(outcome_by_name) != set(teacher["query_names"]):
+            raise ValueError("query outcomes do not align with teacher queries")
 
     reconstruction = core["track_centric_reconstruction"]
     track_indices = torch.as_tensor(
@@ -257,8 +297,44 @@ def main() -> None:
 
     query_candidates: list[list[tuple[int, float]]] = []
     query_diagnostics = []
+    scoring_identity = {
+        "core_map": str(core_path),
+        "canonical_map": str(canonical_path),
+        "function_graph": str(graph_path),
+        "positive_teacher": str(teacher_path),
+        "query_cache": str(query_path),
+        "dependency_voxel_size": float(args.dependency_voxel_size),
+        "maximum_harmful_rate": float(args.maximum_harmful_rate),
+    }
+    scoring_partial = output_dir / "pose_reserve_scoring.partial.pt"
+    local_scoring_cache = output_dir / "pose_reserve_scoring.pt"
+    scoring_cache = (
+        Path(args.pose_scoring_cache).resolve()
+        if args.pose_scoring_cache
+        else local_scoring_cache
+    )
+    if args.pose_scoring_cache and not scoring_cache.is_file():
+        raise FileNotFoundError(scoring_cache)
+    if scoring_cache.is_file():
+        saved_scoring = torch.load(
+            scoring_cache, map_location="cpu", weights_only=False
+        )
+        if saved_scoring["identity"] != scoring_identity:
+            raise ValueError("pose reserve scoring cache identity mismatch")
+        query_candidates = saved_scoring["query_candidates"]
+        query_diagnostics = saved_scoring["query_diagnostics"]
+    elif scoring_partial.is_file():
+        saved_scoring = torch.load(
+            scoring_partial, map_location="cpu", weights_only=False
+        )
+        if saved_scoring["identity"] != scoring_identity:
+            raise ValueError("pose reserve partial identity mismatch")
+        query_candidates = saved_scoring["query_candidates"]
+        query_diagnostics = saved_scoring["query_diagnostics"]
     eye = torch.eye(6, dtype=torch.float64) * 1e-6
     for completed, record in enumerate(teacher["records"], start=1):
+        if completed <= len(query_candidates):
+            continue
         query_index = int(record["query_index"])
         name = teacher["query_names"][query_index]
         cached = query_cache[name]
@@ -383,30 +459,69 @@ def main() -> None:
             }
         )
         if completed % 50 == 0:
+            temporary = scoring_partial.with_suffix(".pt.tmp")
+            torch.save(
+                {
+                    "identity": scoring_identity,
+                    "query_candidates": query_candidates,
+                    "query_diagnostics": query_diagnostics,
+                },
+                temporary,
+            )
+            os.replace(temporary, scoring_partial)
             print(f"pose reserve scoring: {completed}/{len(teacher['records'])}")
+    if len(query_candidates) != len(teacher["records"]):
+        raise RuntimeError("pose reserve scoring did not cover every query")
+    temporary = local_scoring_cache.with_suffix(".pt.tmp")
+    torch.save(
+        {
+            "identity": scoring_identity,
+            "query_candidates": query_candidates,
+            "query_diagnostics": query_diagnostics,
+        },
+        temporary,
+    )
+    os.replace(temporary, local_scoring_cache)
+    scoring_partial.unlink(missing_ok=True)
 
     additions = sorted(
         {int(value) for value in args.reserve_additions.split(",")}
     )
+    query_weights = torch.ones(len(query_candidates))
+    if args.reserve_mode != "all":
+        errors = torch.as_tensor(
+            [outcome_by_name[name] for name in teacher["query_names"]]
+        )
+        if args.reserve_mode == "precision":
+            query_weights = ((errors > 5.0) & (errors <= 15.0)).float()
+        else:
+            query_weights = (errors > 50.0).float()
     selected = greedy_pose_reserve(
         query_candidates,
         source_ids,
         voxel_ids,
         budget=max(additions),
+        query_weights=query_weights,
+        force_fill=bool(args.force_fill),
     )
-    if selected.numel() < max(additions):
-        raise RuntimeError(
-            f"only selected {selected.numel()} pose reserve anchors"
-        )
     summary = {
         "schema": "lafgs_v10_pose_sufficient_map_build",
         "core_map": str(core_path),
         "selection_split": "all_895_mapping_train",
         "candidate_harmful_rate_max": float(args.maximum_harmful_rate),
+        "reserve_mode": args.reserve_mode,
+        "target_query_count": int((query_weights > 0).sum()),
+        "force_fill": bool(args.force_fill),
+        "natural_reserve_count": int(selected.numel()),
         "query_diagnostics": query_diagnostics,
         "maps": {},
     }
-    for addition in additions:
+    realized_additions = {
+        value for value in additions if value <= selected.numel()
+    }
+    if selected.numel():
+        realized_additions.add(int(selected.numel()))
+    for addition in sorted(realized_additions):
         added = selected[:addition]
         reserve = torch.cat((base_rows, added))
         state = _materialize(

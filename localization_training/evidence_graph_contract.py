@@ -198,3 +198,132 @@ def verify_evidence_graph_contract(contract: dict) -> None:
     }
     if sha256_json(identity) != contract["identity_sha256"]:
         raise ValueError("evidence graph identity hash mismatch")
+
+
+def build_dynamic_round_contract(
+    *,
+    static_contract: dict,
+    round_id: int,
+    active_map_path: str | Path,
+    dynamic_outcomes_path: str | Path,
+    metric_state_path: str | Path | None = None,
+    pose_critical_teacher_path: str | Path | None = None,
+    sampler_state_path: str | Path | None = None,
+) -> dict:
+    verify_evidence_graph_contract(static_contract)
+    if int(round_id) < 0:
+        raise ValueError("round_id must be non-negative")
+    active_map_path = Path(active_map_path).resolve()
+    dynamic_outcomes_path = Path(dynamic_outcomes_path).resolve()
+    metric_state_path = (
+        Path(metric_state_path).resolve() if metric_state_path else None
+    )
+    pose_critical_teacher_path = (
+        Path(pose_critical_teacher_path).resolve()
+        if pose_critical_teacher_path
+        else None
+    )
+    sampler_state_path = (
+        Path(sampler_state_path).resolve() if sampler_state_path else None
+    )
+    active = torch.load(active_map_path, map_location="cpu", weights_only=False)
+    outcomes = torch.load(
+        dynamic_outcomes_path, map_location="cpu", weights_only=False
+    )
+    active_count = int(torch.as_tensor(active["anchor_xyz"]).shape[0])
+    if int(outcomes["anchor_count"]) != active_count:
+        raise ValueError("dynamic outcomes do not align with active map")
+    static_query_count = int(
+        static_contract["registries"]["query"]["query_count"]
+    )
+    if len(outcomes["query_names"]) != static_query_count:
+        raise ValueError("dynamic outcomes do not cover the static query registry")
+    if sha256_json(list(outcomes["query_names"])) != static_contract["registries"][
+        "query"
+    ]["ordered_query_sha256"]:
+        raise ValueError("dynamic outcomes do not match the static query order")
+    for record in outcomes["records"]:
+        indices = torch.as_tensor(record["top1_anchor_indices"]).long()
+        if indices.numel() and (
+            int(indices.min()) < 0 or int(indices.max()) >= active_count
+        ):
+            raise ValueError("dynamic outcome references an invalid active anchor")
+    artifacts = {
+        "active_map": {
+            "path": str(active_map_path),
+            "sha256": sha256_file(active_map_path),
+        },
+        "dynamic_outcomes": {
+            "path": str(dynamic_outcomes_path),
+            "sha256": sha256_file(dynamic_outcomes_path),
+        },
+    }
+    if metric_state_path:
+        artifacts["metric_state"] = {
+            "path": str(metric_state_path),
+            "sha256": sha256_file(metric_state_path),
+        }
+    pose_critical_edge_count = None
+    if pose_critical_teacher_path:
+        critical = torch.load(
+            pose_critical_teacher_path, map_location="cpu", weights_only=False
+        )
+        if int(critical["anchor_count"]) != active_count:
+            raise ValueError("pose-critical teacher does not align with active map")
+        if list(critical["query_names"]) != list(outcomes["query_names"]):
+            raise ValueError("pose-critical teacher query order mismatch")
+        pose_critical_edge_count = int(
+            sum(
+                torch.as_tensor(record["positive_weights"]).numel()
+                for record in critical["records"]
+            )
+        )
+        artifacts["pose_critical_teacher"] = {
+            "path": str(pose_critical_teacher_path),
+            "sha256": sha256_file(pose_critical_teacher_path),
+        }
+    if sampler_state_path:
+        artifacts["sampler_state"] = {
+            "path": str(sampler_state_path),
+            "sha256": sha256_file(sampler_state_path),
+        }
+    summary = dict(outcomes["summary"])
+    identity = {
+        "static_identity_sha256": static_contract["identity_sha256"],
+        "round_id": int(round_id),
+        "artifacts": {key: value["sha256"] for key, value in artifacts.items()},
+        "summary": summary,
+    }
+    return {
+        "schema": "lafgs_localization_evidence_graph_round",
+        "schema_version": 2,
+        "round_id": int(round_id),
+        "static_identity_sha256": static_contract["identity_sha256"],
+        "identity_sha256": sha256_json(identity),
+        "artifacts": artifacts,
+        "active_anchor_registry": anchor_registry(active),
+        "dynamic_outcome_edges": {
+            "query_count": len(outcomes["records"]),
+            "candidate_edge_count": int(
+                sum(
+                    torch.as_tensor(record["top1_anchor_indices"]).numel()
+                    for record in outcomes["records"]
+                )
+            ),
+            "clean_survivor_count": int(
+                sum(
+                    torch.as_tensor(record["clean_inlier_mask"]).sum()
+                    for record in outcomes["records"]
+                )
+            ),
+            "harmful_survivor_count": int(
+                sum(
+                    torch.as_tensor(record["harmful_inlier_mask"]).sum()
+                    for record in outcomes["records"]
+                )
+            ),
+            "pose_critical_edge_count": pose_critical_edge_count,
+            "minimal_set_outcome_count": None,
+        },
+        "pose_risk_summary": summary,
+    }
