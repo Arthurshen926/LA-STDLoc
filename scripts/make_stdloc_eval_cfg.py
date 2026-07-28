@@ -106,6 +106,7 @@ def make_stdloc_eval_cfg(
     rerank_state_path=None,
     rerank_use_learned_null=None,
     rerank_assignment_global_preserve_scale=None,
+    sparse_ransac_seed=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -169,6 +170,8 @@ def make_stdloc_eval_cfg(
         sparse["query_feature_contract"] = str(sparse_query_feature_contract)
     if sparse_frontend is not None:
         sparse["sparse_frontend"] = str(sparse_frontend)
+    if sparse_ransac_seed is not None:
+        sparse["ransac_seed"] = int(sparse_ransac_seed)
     if metric_state_path is not None:
         sparse["metric_state_path"] = str(metric_state_path)
         sparse["metric_state_model_path"] = artifact_model_path
@@ -730,6 +733,7 @@ def main():
         default=None,
     )
     parser.add_argument("--metric_state_path", default=None)
+    parser.add_argument("--sparse_ransac_seed", type=int, default=None)
     parser.add_argument("--rerank_topk", type=int, default=None)
     parser.add_argument("--rerank_patch_radius", type=int, default=None)
     parser.add_argument("--rerank_patch_step_px", type=float, default=None)
@@ -892,6 +896,7 @@ def main():
         full_primitive_max_per_surface=args.full_primitive_max_per_surface,
         sparse_query_feature_contract=args.sparse_query_feature_contract,
         sparse_frontend=args.sparse_frontend,
+        sparse_ransac_seed=args.sparse_ransac_seed,
         metric_state_path=args.metric_state_path,
         rerank_topk=args.rerank_topk,
         rerank_patch_radius=args.rerank_patch_radius,

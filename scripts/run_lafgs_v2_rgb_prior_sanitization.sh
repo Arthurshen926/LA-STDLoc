@@ -49,7 +49,7 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 EXPERIMENT_ROOT="${LAFGS_SANITIZATION_ROOT:-/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725}"
 SCENE="OldHospital"
-MODEL_ROOT="$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME"
+MODEL_ROOT="${LAFGS_SANITIZATION_MODEL_ROOT:-$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME}"
 RUN_TAG="${LAFGS_SANITIZATION_RUN_TAG:-$VARIANT}"
 SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-48000}"
 SANITIZED_BUDGET="${LAFGS_SANITIZATION_FINAL_BUDGET:-32000}"
@@ -392,9 +392,14 @@ offline_statistics() {
     --geometry_teacher_provenance_group_max_landmarks "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MAX_LANDMARKS:-1}" \
     --geometry_teacher_provenance_group_min_relative_mass "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MIN_RELATIVE_MASS:-0.25}" \
     --geometry_teacher_provenance_group_min_consensus_rate "${LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MIN_CONSENSUS_RATE:-0.10}" \
+    --save_track_micro_anchor_payload \
     --steps 0 --save_steps 0
   [[ -f "$STATISTICS_PATH" ]] || {
     echo "Offline statistics sweep did not produce: $STATISTICS_PATH" >&2
+    exit 1
+  }
+  [[ -f "$STATISTICS_DIR/track_micro_anchor_payload.pt" ]] || {
+    echo "Offline statistics sweep did not produce Track payload" >&2
     exit 1
   }
   "$PYTHON" scripts/verify_geometry_teacher_statistics.py \
