@@ -6,18 +6,21 @@ set -euo pipefail
 # written below CLEAN_ROOT.
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: bash $0 <base|graph|maps|metric|eval|v10|v10eval|all>" >&2
+  echo "Usage: bash $0 <base|graph|maps|metric|eval|v10|v10eval|all_core|all_pose_reserve|all>" >&2
   exit 2
 fi
 MODE="$1"
-case "$MODE" in base|graph|maps|metric|eval|v10|v10eval|all) ;; *) exit 2 ;; esac
+case "$MODE" in
+  base|graph|maps|metric|eval|v10|v10eval|all_core|all_pose_reserve|all) ;;
+  *) exit 2 ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
-CLEAN_ROOT="${LAFGS_CLEAN_ROOT:-/mnt/pool/sqy/stdloc_lafgs_clean_rebuild_20260728_v1}"
+CLEAN_ROOT="${LAFGS_CLEAN_ROOT:-/mnt/pool/sqy/stdloc_lafgs_clean_rebuild_20260728_v2}"
 SCENE="OldHospital"
 ROOT="$CLEAN_ROOT/$SCENE"
-RUN_TAG="clean_rgb2dgs_trackfirst_v1"
+RUN_TAG="clean_rgb2dgs_trackfirst_stagea1000_v2"
 RUN_ROOT="$ROOT/runs/$RUN_TAG"
 MODEL_ROOT="${LAFGS_FROZEN_RGB_PRIOR:-/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725/OldHospital/rgb_only_2dgs_stdloc}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
@@ -28,7 +31,7 @@ SP_WEIGHTS="$REPO_ROOT/encoders/sp_encoder/weights/superpoint_v1.pth"
 MASKS="$SOURCE_ROOT/processed/masks.pkl"
 
 BOOTSTRAP="$RUN_ROOT/bootstrap"
-STAGE_A="$RUN_ROOT/stage_a_2500"
+STAGE_A="$RUN_ROOT/stage_a_combined_1000"
 STATISTICS="$RUN_ROOT/statistics_combined_1000_frozen_g3_track_provenance_v1"
 QUERY_CACHE="$RUN_ROOT/query_cache_native_fullres_k2048.pt"
 SPARSE_QUERY_CACHE="$RUN_ROOT/query_cache_native_sparse_teacher.pt"
@@ -55,6 +58,7 @@ EVAL_ROOT="$ROOT/evaluation"
 CONTRACTS="$ROOT/contracts"
 LOGS="$ROOT/logs"
 MARKER="$ROOT/clean_input_boundary.json"
+EVIDENCE_CONTRACT="$CONTRACTS/localization_evidence_graph.json"
 
 export CUDA_HOME=/usr/local/cuda-11.8
 export PATH="/root/miniconda3/envs/cybersim_agent/bin:$CUDA_HOME/bin:$PATH"
@@ -96,7 +100,7 @@ base() {
   export LAFGS_SANITIZATION_ROOT="$CLEAN_ROOT"
   export LAFGS_SANITIZATION_MODEL_ROOT="$MODEL_ROOT"
   export LAFGS_SANITIZATION_RUN_TAG="$RUN_TAG"
-  export LAFGS_STAGE_A_STEPS=2500
+  export LAFGS_STAGE_A_STEPS=1000
   export LAFGS_SANITIZATION_SOURCE_STEP=1000
   export LAFGS_STATISTICS_CHECKPOINT_STEP=1000
   export LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_CANDIDATE_TOPK=4
@@ -187,6 +191,17 @@ graph() {
       --anchor-map "$CANONICAL" --query-cache "$QUERY_CACHE" \
       --raster-provenance "$PROVENANCE" --track-payload "$TRACK_PAYLOAD" \
       --output "$CANONICAL_TEACHER"
+  fi
+  if [[ ! -f "$EVIDENCE_CONTRACT" ]]; then
+    "$PYTHON" scripts/build_lafgs_evidence_graph_contract.py \
+      --query-cache "$QUERY_CACHE" --track-payload "$TRACK_PAYLOAD" \
+      --primitive-prior "$PLY" --anchor-map "$CANONICAL" \
+      --function-graph "$GRAPH_V3" --raster-provenance "$PROVENANCE" \
+      --positive-teacher "$CANONICAL_TEACHER" \
+      --output "$EVIDENCE_CONTRACT"
+  else
+    "$PYTHON" scripts/build_lafgs_evidence_graph_contract.py \
+      --output "$EVIDENCE_CONTRACT" --verify
   fi
   if [[ ! -f "$CONTRACTS/function_graph.json" ]]; then
     contract --artifact "$GRAPH_V3" \
@@ -458,5 +473,10 @@ case "$MODE" in
   eval) eval_all ;;
   v10) eval_v10 ;;
   v10eval) eval_v10 ;;
-  all) eval_all ;;
+  all_core) eval_all ;;
+  all_pose_reserve) eval_v10 ;;
+  all)
+    eval_all
+    eval_v10
+    ;;
 esac
