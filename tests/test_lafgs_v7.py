@@ -196,6 +196,98 @@ def test_listwise_pose_critical_weight_prefers_critical_positive():
     assert float(first) < float(uniform)
 
 
+def test_basin_good_set_loss_rewards_joint_triplet_assignments():
+    from scripts.train_lafgs_v7_online_metric import _basin_good_set_loss
+
+    bank = torch.nn.functional.normalize(
+        torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]]
+        ),
+        dim=1,
+    )
+    anchors = torch.tensor([[0, 1, 2]])
+    kwargs = {
+        "topk": 4,
+        "temperature": 0.1,
+        "maximum_inverse_propensity": 10.0,
+    }
+    good = _basin_good_set_loss(
+        bank[anchors], bank, anchors, torch.tensor([0.1]), **kwargs
+    )
+    bad = _basin_good_set_loss(
+        bank[torch.tensor([[3, 3, 3]])],
+        bank,
+        anchors,
+        torch.tensor([0.1]),
+        **kwargs,
+    )
+    assert float(good) < float(bad)
+
+
+def test_basin_blame_only_penalizes_counterfactual_harmful_edge():
+    from scripts.train_lafgs_v7_online_metric import (
+        _basin_counterfactual_blame_loss,
+    )
+
+    bank = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0]]), dim=1
+    )
+    query = bank[[1]]
+    clean = _basin_counterfactual_blame_loss(
+        query,
+        bank,
+        torch.tensor([0]),
+        torch.tensor([1]),
+        torch.tensor([2.0]),
+        temperature=0.1,
+        margin=0.02,
+    )
+    harmful = _basin_counterfactual_blame_loss(
+        query,
+        bank,
+        torch.tensor([1]),
+        torch.tensor([0]),
+        torch.tensor([2.0]),
+        temperature=0.1,
+        margin=0.02,
+    )
+    assert float(clean) < float(harmful)
+
+
+def test_basin_margin_guard_is_zero_until_a_good_edge_loses_margin():
+    from scripts.train_lafgs_v7_online_metric import (
+        _basin_good_margin_guard_loss,
+    )
+
+    bank = torch.nn.functional.normalize(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]), dim=1
+    )
+    anchors = torch.tensor([[0, 1, 2]])
+    query = bank[anchors]
+    unchanged = _basin_good_margin_guard_loss(
+        query,
+        bank,
+        query,
+        bank,
+        anchors,
+        torch.tensor([1e-8]),
+        maximum_inverse_propensity=100,
+    )
+    damaged_query = query.clone()
+    damaged_query[0, 0] = bank[1]
+    damaged = _basin_good_margin_guard_loss(
+        query,
+        bank,
+        damaged_query,
+        bank,
+        anchors,
+        torch.tensor([1e-8]),
+        maximum_inverse_propensity=100,
+    )
+    assert float(unchanged) == 0.0
+    assert float(damaged) > 0.0
+
+
 def test_pose_critical_csr_truncation_keeps_highest_weights():
     indices, values = _csr_topk_by_values(
         torch.tensor([0, 3, 5]),
@@ -216,6 +308,21 @@ def test_anchor_residual_is_bounded():
     )
     assert float(residual.norm(dim=1).max()) <= 0.020001
     torch.testing.assert_close(adapted.norm(dim=1), torch.ones(4))
+
+
+def test_metric_warm_start_uses_deployed_features_unless_explicitly_overridden():
+    from scripts.train_lafgs_v7_online_metric import _initial_anchor_features
+
+    state = {
+        "anchor_features": torch.tensor([[1.0, 0.0]]),
+        "v7_metric_raw_features": torch.tensor([[0.0, 1.0]]),
+    }
+    current, current_key = _initial_anchor_features(state, "current")
+    raw, raw_key = _initial_anchor_features(state, "pre_metric_raw")
+    assert current_key == "anchor_features"
+    assert raw_key == "v7_metric_raw_features"
+    torch.testing.assert_close(current, torch.tensor([[1.0, 0.0]]))
+    torch.testing.assert_close(raw, torch.tensor([[0.0, 1.0]]))
 
 
 def test_metric_frontend_uses_native_sparse_dispatch():

@@ -209,6 +209,7 @@ def build_dynamic_round_contract(
     metric_state_path: str | Path | None = None,
     pose_critical_teacher_path: str | Path | None = None,
     sampler_state_path: str | Path | None = None,
+    basin_teacher_path: str | Path | None = None,
 ) -> dict:
     verify_evidence_graph_contract(static_contract)
     if int(round_id) < 0:
@@ -225,6 +226,9 @@ def build_dynamic_round_contract(
     )
     sampler_state_path = (
         Path(sampler_state_path).resolve() if sampler_state_path else None
+    )
+    basin_teacher_path = (
+        Path(basin_teacher_path).resolve() if basin_teacher_path else None
     )
     active = torch.load(active_map_path, map_location="cpu", weights_only=False)
     outcomes = torch.load(
@@ -287,6 +291,30 @@ def build_dynamic_round_contract(
             "path": str(sampler_state_path),
             "sha256": sha256_file(sampler_state_path),
         }
+    basin_counts = None
+    if basin_teacher_path:
+        basin = torch.load(
+            basin_teacher_path, map_location="cpu", weights_only=False
+        )
+        if basin.get("schema") != "lafgs_basin_teacher":
+            raise ValueError("unsupported basin teacher schema")
+        if int(basin["anchor_count"]) != active_count:
+            raise ValueError("basin teacher does not align with active map")
+        query_start = int(basin.get("query_start", 0))
+        query_stop = int(basin.get("query_stop", query_start + len(basin["records"])))
+        if list(basin["query_names"]) != list(outcomes["query_names"])[
+            query_start:query_stop
+        ]:
+            raise ValueError("basin teacher query registry mismatch")
+        basin_counts = {
+            "good": int(basin["summary"].get("good", 0)),
+            "harmful": int(basin["summary"].get("harmful", 0)),
+            "near_miss": int(basin["summary"].get("near_miss", 0)),
+        }
+        artifacts["basin_teacher"] = {
+            "path": str(basin_teacher_path),
+            "sha256": sha256_file(basin_teacher_path),
+        }
     summary = dict(outcomes["summary"])
     minimal_set_outcome_count = int(
         sum(
@@ -330,6 +358,7 @@ def build_dynamic_round_contract(
             ),
             "pose_critical_edge_count": pose_critical_edge_count,
             "minimal_set_outcome_count": minimal_set_outcome_count,
+            "basin_hyperedge_counts": basin_counts,
         },
         "pose_risk_summary": summary,
     }

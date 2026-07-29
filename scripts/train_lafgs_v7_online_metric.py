@@ -444,6 +444,17 @@ def _bounded_anchor_features(
     return F.normalize(raw + bounded, dim=1), bounded
 
 
+def _initial_anchor_features(state: dict, mode: str) -> tuple[torch.Tensor, str]:
+    if mode not in {"current", "pre_metric_raw"}:
+        raise ValueError("unsupported feature initialization mode")
+    key = (
+        "v7_metric_raw_features"
+        if mode == "pre_metric_raw" and "v7_metric_raw_features" in state
+        else "anchor_features"
+    )
+    return F.normalize(torch.as_tensor(state[key]).float(), dim=1), key
+
+
 def _multi_positive_list_loss(
     query: torch.Tensor,
     bank: torch.Tensor,
@@ -527,6 +538,95 @@ def _multi_positive_list_loss(
         top_indices,
         top_scores,
     )
+
+
+def _basin_good_set_loss(
+    query: torch.Tensor,
+    bank: torch.Tensor,
+    anchors: torch.Tensor,
+    propensities: torch.Tensor,
+    *,
+    topk: int,
+    temperature: float,
+    maximum_inverse_propensity: float,
+) -> torch.Tensor:
+    """Joint log-probability of the three assignments in each good basis."""
+    if anchors.numel() == 0:
+        return torch.zeros((), device=bank.device)
+    set_count = int(anchors.shape[0])
+    edge_loss = _multi_positive_list_loss(
+        query.reshape(-1, query.shape[-1]),
+        bank,
+        anchors.reshape(-1, 1),
+        topk,
+        temperature,
+        None,
+        0.0,
+    )[0].reshape(set_count, 3)
+    propensity = propensities.float().clamp_min(1e-12)
+    inverse = (
+        propensity.median().clamp_min(1e-12) / propensity
+    ).clamp_max(float(maximum_inverse_propensity))
+    inverse = inverse / inverse.mean().clamp_min(1e-8)
+    return (edge_loss.sum(dim=1) * inverse).sum() / inverse.sum().clamp_min(1e-8)
+
+
+def _basin_counterfactual_blame_loss(
+    query: torch.Tensor,
+    bank: torch.Tensor,
+    harmful_anchors: torch.Tensor,
+    positive_anchors: torch.Tensor,
+    weights: torch.Tensor,
+    *,
+    temperature: float,
+    margin: float,
+) -> torch.Tensor:
+    """Suppress only the edge whose legal replacement fixes the pose basin."""
+    if harmful_anchors.numel() == 0:
+        return torch.zeros((), device=bank.device)
+    harmful_score = torch.einsum("bd,bd->b", query, bank[harmful_anchors])
+    positive_score = torch.einsum("bd,bd->b", query, bank[positive_anchors])
+    normalized = weights.float().clamp_min(0)
+    normalized = normalized / normalized.mean().clamp_min(1e-8)
+    loss = F.softplus(
+        (harmful_score - positive_score + float(margin))
+        / float(temperature)
+    ) * float(temperature)
+    return (loss * normalized).sum() / normalized.sum().clamp_min(1e-8)
+
+
+def _basin_good_margin_guard_loss(
+    raw_query: torch.Tensor,
+    raw_bank: torch.Tensor,
+    adapted_query: torch.Tensor,
+    adapted_bank: torch.Tensor,
+    anchors: torch.Tensor,
+    propensities: torch.Tensor,
+    *,
+    maximum_inverse_propensity: float,
+    slack: float = 0.0,
+) -> torch.Tensor:
+    """Prevent a correct basis edge from losing its initial ranking margin."""
+    if anchors.numel() == 0:
+        return torch.zeros((), device=adapted_bank.device)
+    flat_anchor = anchors.reshape(-1)
+
+    def margins(query, bank):
+        score = query.reshape(-1, query.shape[-1]) @ bank.T
+        positive = score.gather(1, flat_anchor[:, None]).reshape(-1)
+        score = score.scatter(1, flat_anchor[:, None], -torch.inf)
+        negative = score.max(dim=1).values
+        return (positive - negative).reshape(anchors.shape)
+
+    baseline = margins(raw_query, raw_bank).detach()
+    current = margins(adapted_query, adapted_bank)
+    set_loss = F.relu(baseline - current + float(slack)).sum(dim=1)
+    propensity = propensities.float().clamp_min(1e-12)
+    inverse = (
+        propensity.median().clamp_min(1e-12) / propensity
+    ).clamp_max(float(maximum_inverse_propensity))
+    inverse = inverse / inverse.mean().clamp_min(1e-8)
+    return (set_loss * inverse).sum() / inverse.sum().clamp_min(1e-8)
 
 
 def _project_errors(xyz, keypoints, K, pose):
@@ -773,6 +873,20 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--complete-positive-teacher", default="")
     parser.add_argument("--pose-critical-teacher", default="")
+    parser.add_argument("--basin-teacher", default="")
+    parser.add_argument("--basin-weight", type=float, default=0.0)
+    parser.add_argument("--basin-good-weight", type=float, default=1.0)
+    parser.add_argument("--basin-blame-weight", type=float, default=1.0)
+    parser.add_argument("--basin-sets-per-step", type=int, default=8)
+    parser.add_argument("--basin-blame-per-step", type=int, default=16)
+    parser.add_argument("--basin-maximum-inverse-propensity", type=float, default=100.0)
+    parser.add_argument("--basin-blame-margin", type=float, default=0.02)
+    parser.add_argument(
+        "--basin-good-mode",
+        choices=("joint_ce", "margin_guard"),
+        default="joint_ce",
+    )
+    parser.add_argument("--basin-good-margin-slack", type=float, default=0.0)
     parser.add_argument("--critical-pair-power", type=float, default=1.0)
     parser.add_argument("--critical-row-power", type=float, default=1.0)
     parser.add_argument("--output-dir", required=True)
@@ -809,6 +923,13 @@ def main() -> None:
         "--conflict-anchor-only", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--feature-initialization",
+        choices=("current", "pre_metric_raw"),
+        default="current",
+        help="A fresh metric must normally start from the deployed current descriptors.",
+    )
+    parser.add_argument("--initial-metric-state", default="")
     args = parser.parse_args()
     if not 0.0 <= args.critical_pair_power <= 1.0:
         raise ValueError("critical_pair_power must be in [0, 1]")
@@ -844,6 +965,15 @@ def main() -> None:
         if args.pose_critical_teacher
         else None
     )
+    basin_teacher = (
+        torch.load(
+            args.basin_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.basin_teacher
+        else None
+    )
     if critical_teacher is not None:
         if positive_teacher is None:
             raise ValueError("pose-critical teacher requires complete positives")
@@ -857,6 +987,33 @@ def main() -> None:
             raise ValueError("pose-critical teacher query order mismatch")
     cache = cache_payload.get("queries", cache_payload)
     names = graph["query_names"]
+    basin_records = [None] * len(names)
+    basin_conflict_mask = torch.zeros(
+        int(torch.as_tensor(state["anchor_xyz"]).shape[0]), dtype=torch.bool
+    )
+    if basin_teacher is not None:
+        if basin_teacher.get("schema") != "lafgs_basin_teacher":
+            raise ValueError("unsupported basin teacher schema")
+        if int(basin_teacher["anchor_count"]) != len(basin_conflict_mask):
+            raise ValueError("basin teacher anchor count mismatch")
+        name_to_query = {name: index for index, name in enumerate(names)}
+        for basin_record in basin_teacher["records"]:
+            name = basin_record["query_name"]
+            if name not in name_to_query:
+                raise ValueError(f"basin teacher contains an unknown query: {name}")
+            query_index = name_to_query[name]
+            if basin_records[query_index] is not None:
+                raise ValueError(f"duplicate basin teacher query: {name}")
+            basin_records[query_index] = basin_record
+            harmful = torch.as_tensor(
+                basin_record["blame_harmful_anchors"]
+            ).long()
+            if harmful.numel():
+                if int(harmful.min()) < 0 or int(harmful.max()) >= len(
+                    basin_conflict_mask
+                ):
+                    raise ValueError("basin blame references an invalid anchor")
+                basin_conflict_mask[harmful] = True
     records, data_report = _build_training_records(
         graph,
         payload,
@@ -868,19 +1025,45 @@ def main() -> None:
         critical_pair_power=args.critical_pair_power,
         critical_row_power=args.critical_row_power,
     )
+    data_report.update(
+        {
+            "basin_teacher_enabled": basin_teacher is not None,
+            "basin_teacher_query_count": int(
+                sum(record is not None for record in basin_records)
+            ),
+            "basin_conflict_anchor_count": int(basin_conflict_mask.sum()),
+        }
+    )
     del graph
-    raw_features = F.normalize(
-        torch.as_tensor(
-            state.get("v7_metric_raw_features", state["anchor_features"])
-        ).float(),
-        dim=1,
-    ).to(device)
+    feature_initialization = args.feature_initialization
+    initial_metric_payload = None
+    if args.initial_metric_state:
+        initial_metric_payload = torch.load(
+            args.initial_metric_state, map_location="cpu", weights_only=False
+        )
+        feature_initialization = "pre_metric_raw"
+    raw_features, feature_key = _initial_anchor_features(
+        state, feature_initialization
+    )
+    raw_features = raw_features.to(device)
+    data_report["feature_initialization_key"] = feature_key
     anchor_residual = torch.nn.Parameter(torch.zeros_like(raw_features))
     metric = SharedLowRankMetric(
-        descriptor_dim=raw_features.shape[1],
-        rank=args.rank,
-        max_residual_norm=args.metric_residual,
+        **(
+            initial_metric_payload["metric_config"]
+            if initial_metric_payload is not None
+            else {
+                "descriptor_dim": raw_features.shape[1],
+                "rank": args.rank,
+                "max_residual_norm": args.metric_residual,
+            }
+        )
     ).to(device)
+    if initial_metric_payload is not None:
+        metric.load_state_dict(initial_metric_payload["metric_state_dict"])
+        data_report["initial_metric_state"] = str(
+            Path(args.initial_metric_state).resolve()
+        )
     null_head = NativeNullHead().to(device)
     optimizer = torch.optim.AdamW(
         [*metric.parameters(), *null_head.parameters(), anchor_residual],
@@ -1096,6 +1279,94 @@ def main() -> None:
             if bool(matchable.any())
             else torch.zeros((), device=device)
         ) * group_weight
+        basin_good_loss = torch.zeros((), device=device)
+        basin_blame_loss = torch.zeros((), device=device)
+        basin_record = basin_records[query_index]
+        if basin_record is not None and float(args.basin_weight) > 0:
+            set_types = torch.as_tensor(basin_record["set_types"]).long()
+            correct_basin = torch.as_tensor(
+                basin_record["correct_basin"]
+            ).bool()
+            good_sets = torch.nonzero(
+                correct_basin & ((set_types == 0) | (set_types == 2)),
+                as_tuple=False,
+            ).reshape(-1)
+            if good_sets.numel():
+                take = min(int(args.basin_sets_per_step), int(good_sets.numel()))
+                selected = good_sets[
+                    torch.randperm(
+                        good_sets.numel(), generator=generator
+                    )[:take]
+                ]
+                basin_rows = torch.as_tensor(
+                    basin_record["set_query_rows"]
+                ).long()[selected]
+                basin_raw_query = F.normalize(
+                    torch.as_tensor(
+                        cache[names[query_index]]["native_descriptors"]
+                    ).float()[basin_rows.reshape(-1)],
+                    dim=1,
+                ).to(device)
+                basin_query, _ = metric(basin_raw_query)
+                basin_anchors = torch.as_tensor(
+                    basin_record["set_anchor_indices"]
+                ).long()[selected].to(device)
+                basin_propensity = torch.as_tensor(
+                    basin_record["sampling_propensity"]
+                ).float()[selected].to(device)
+                if args.basin_good_mode == "margin_guard":
+                    basin_good_loss = _basin_good_margin_guard_loss(
+                        basin_raw_query.reshape(take, 3, -1),
+                        raw_features,
+                        basin_query.reshape(take, 3, -1),
+                        adapted_anchor,
+                        basin_anchors,
+                        basin_propensity,
+                        maximum_inverse_propensity=args.basin_maximum_inverse_propensity,
+                        slack=args.basin_good_margin_slack,
+                    )
+                else:
+                    basin_good_loss = _basin_good_set_loss(
+                        basin_query.reshape(take, 3, -1),
+                        adapted_anchor,
+                        basin_anchors,
+                        basin_propensity,
+                        topk=args.topk,
+                        temperature=args.temperature,
+                        maximum_inverse_propensity=args.basin_maximum_inverse_propensity,
+                    )
+            blame_rows = torch.as_tensor(
+                basin_record["blame_rows"]
+            ).long()
+            if blame_rows.numel() and float(args.basin_blame_weight) > 0:
+                take = min(
+                    int(args.basin_blame_per_step), int(blame_rows.numel())
+                )
+                selected = torch.randperm(
+                    blame_rows.numel(), generator=generator
+                )[:take]
+                blame_query = F.normalize(
+                    torch.as_tensor(
+                        cache[names[query_index]]["native_descriptors"]
+                    ).float()[blame_rows[selected]],
+                    dim=1,
+                ).to(device)
+                blame_query, _ = metric(blame_query)
+                basin_blame_loss = _basin_counterfactual_blame_loss(
+                    blame_query,
+                    adapted_anchor,
+                    torch.as_tensor(
+                        basin_record["blame_harmful_anchors"]
+                    ).long()[selected].to(device),
+                    torch.as_tensor(
+                        basin_record["blame_positive_anchors"]
+                    ).long()[selected].to(device),
+                    torch.as_tensor(
+                        basin_record["blame_weights"]
+                    ).float()[selected].to(device),
+                    temperature=args.temperature,
+                    margin=args.basin_blame_margin,
+                )
         trust = (
             query_metric_residual.square().sum(dim=1).mean()
             + anchor_metric_residual.square().sum(dim=1).mean()
@@ -1105,6 +1376,11 @@ def main() -> None:
             task_loss
             + float(args.null_weight) * null_loss
             + float(args.trust_weight) * trust
+            + float(args.basin_weight)
+            * (
+                float(args.basin_good_weight) * basin_good_loss
+                + float(args.basin_blame_weight) * basin_blame_loss
+            )
         )
         if args.training_mode == "sequential":
             phase = (
@@ -1126,6 +1402,7 @@ def main() -> None:
                 and anchor_residual.grad is not None
             ):
                 conflict = harmful_prior > 0
+                conflict = conflict | basin_conflict_mask.to(device)
                 anchor_residual.grad[~conflict] = 0
         torch.nn.utils.clip_grad_norm_(
             [*metric.parameters(), anchor_residual], 1.0
@@ -1138,6 +1415,8 @@ def main() -> None:
                 "task_loss": float(task_loss.detach()),
                 "trust_loss": float(trust.detach()),
                 "null_loss": float(null_loss.detach()),
+                "basin_good_loss": float(basin_good_loss.detach()),
+                "basin_blame_loss": float(basin_blame_loss.detach()),
                 "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
                 "phase": phase,

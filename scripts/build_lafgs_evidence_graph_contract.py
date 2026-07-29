@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--metric-state", default="")
     parser.add_argument("--pose-critical-teacher", default="")
     parser.add_argument("--sampler-state", default="")
+    parser.add_argument("--basin-teacher", default="")
     parser.add_argument("--query-cache")
     parser.add_argument("--track-payload")
     parser.add_argument("--primitive-prior")
@@ -44,6 +45,7 @@ def main() -> None:
             metric_state_path=args.metric_state or None,
             pose_critical_teacher_path=args.pose_critical_teacher or None,
             sampler_state_path=args.sampler_state or None,
+            basin_teacher_path=args.basin_teacher or None,
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
