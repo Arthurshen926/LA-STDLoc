@@ -2568,6 +2568,8 @@ class STDLoc:
         self.dual_prototype_mask = None
         self.family_prototype_features = None
         self.family_prototype_anchor_indices = None
+        self.family_prototype_bias = None
+        self.family_prototype_temperature = None
         dual_prototype_state_path = str(
             sparse_config.get("dual_prototype_state_path", "")
         )
@@ -2673,6 +2675,24 @@ class STDLoc:
             self.family_prototype_anchor_indices = prototype_parents.to(
                 device=self.landmarks.get_xyz.device
             )
+            self.family_prototype_bias = torch.as_tensor(
+                family_state.get(
+                    "prototype_bias", torch.zeros(len(prototype_features))
+                )
+            ).float().to(self.landmarks.get_xyz.device)
+            self.family_prototype_temperature = torch.as_tensor(
+                family_state.get(
+                    "prototype_temperature", torch.ones(len(prototype_features))
+                )
+            ).float().to(self.landmarks.get_xyz.device)
+            if bool((self.family_prototype_bias > 1e-8).any().item()):
+                raise ValueError(
+                    "secondary family prototype bias must be non-positive"
+                )
+            if bool((self.family_prototype_temperature <= 0).any().item()):
+                raise ValueError(
+                    "family prototype temperature must be positive"
+                )
 
         self.conditional_core_mask = None
         conditional_core_state_path = str(
@@ -4357,6 +4377,8 @@ class STDLoc:
                 landmark_features,
                 self.family_prototype_features,
                 self.family_prototype_anchor_indices,
+                prototype_bias=self.family_prototype_bias,
+                prototype_temperature=self.family_prototype_temperature,
                 **retrieval_args,
             )
         elif self.dual_prototype_features is None:

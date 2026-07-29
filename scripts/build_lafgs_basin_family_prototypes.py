@@ -18,6 +18,13 @@ def trajectory_id(query_name: str) -> str:
     return str(query_name).split("/", 1)[0]
 
 
+def bitwise_union(values: torch.Tensor) -> int:
+    output = 0
+    for value in torch.as_tensor(values).reshape(-1).tolist():
+        output |= int(value)
+    return output
+
+
 def robust_family_prototype(
     descriptors: torch.Tensor,
     weights: torch.Tensor,
@@ -35,6 +42,353 @@ def robust_family_prototype(
     return F.normalize(
         (descriptors[keep] * weights[keep, None]).sum(dim=0), dim=0
     )
+
+
+def discover_spherical_modes(
+    descriptors: torch.Tensor,
+    primary: torch.Tensor,
+    *,
+    maximum_modes: int,
+    minimum_cluster_size: int,
+    minimum_separation: float,
+    trim_fraction: float,
+    iterations: int = 8,
+) -> list[dict]:
+    """Discover coherent secondary modes while keeping the primary fixed."""
+    descriptors = F.normalize(torch.as_tensor(descriptors).float(), dim=1)
+    primary = F.normalize(torch.as_tensor(primary).float(), dim=0)
+    if descriptors.shape[0] < int(minimum_cluster_size):
+        return []
+    modes = [primary]
+    assignments = torch.zeros(descriptors.shape[0], dtype=torch.long)
+    maximum_modes = max(int(maximum_modes), 1)
+    while len(modes) < maximum_modes:
+        stacked = torch.stack(modes)
+        similarities = descriptors @ stacked.T
+        best_similarity = similarities.max(dim=1).values
+        seed_order = torch.argsort(best_similarity)
+        accepted = None
+        for seed_index in seed_order.tolist():
+            if 1.0 - float(best_similarity[seed_index]) < float(
+                minimum_separation
+            ):
+                break
+            trial_modes = modes + [descriptors[seed_index]]
+            for _ in range(max(int(iterations), 1)):
+                trial_stack = torch.stack(trial_modes)
+                trial_assignments = (descriptors @ trial_stack.T).argmax(dim=1)
+                selected = torch.nonzero(
+                    trial_assignments == len(trial_modes) - 1,
+                    as_tuple=False,
+                ).reshape(-1)
+                if selected.numel() < int(minimum_cluster_size):
+                    break
+                updated = robust_family_prototype(
+                    descriptors[selected],
+                    torch.ones(selected.numel()),
+                    trim_fraction=trim_fraction,
+                )
+                if float(updated @ trial_modes[-1]) > 1.0 - 1e-6:
+                    trial_modes[-1] = updated
+                    break
+                trial_modes[-1] = updated
+            else:
+                selected = torch.nonzero(
+                    trial_assignments == len(trial_modes) - 1,
+                    as_tuple=False,
+                ).reshape(-1)
+            if selected.numel() < int(minimum_cluster_size):
+                continue
+            accepted = (trial_modes[-1], trial_assignments)
+            break
+        if accepted is None:
+            break
+        modes.append(accepted[0])
+        assignments = accepted[1]
+    if len(modes) == 1:
+        return []
+    similarities = descriptors @ torch.stack(modes).T
+    assignments = similarities.argmax(dim=1)
+    output = []
+    for mode_index in range(1, len(modes)):
+        selected = torch.nonzero(
+            assignments == mode_index, as_tuple=False
+        ).reshape(-1)
+        if selected.numel() < int(minimum_cluster_size):
+            continue
+        prototype = robust_family_prototype(
+            descriptors[selected],
+            torch.ones(selected.numel()),
+            trim_fraction=trim_fraction,
+        )
+        cluster_similarity = descriptors[selected] @ prototype
+        keep_count = max(
+            int(minimum_cluster_size),
+            int(round(selected.numel() * (1.0 - float(trim_fraction)))),
+        )
+        if keep_count < selected.numel():
+            selected = selected[
+                torch.topk(cluster_similarity, keep_count).indices
+            ]
+            prototype = F.normalize(descriptors[selected].mean(dim=0), dim=0)
+            cluster_similarity = descriptors[selected] @ prototype
+        output.append(
+            {
+                "prototype": prototype,
+                "observation_indices": selected,
+                "observation_count": int(selected.numel()),
+                "dispersion": float(1.0 - cluster_similarity.mean()),
+                "primary_similarity": float(prototype @ primary),
+                "activation_gain_mean": float(
+                    (
+                        descriptors[selected] @ prototype
+                        - descriptors[selected] @ primary
+                    ).mean()
+                ),
+            }
+        )
+    return output
+
+
+def _metric_descriptors(
+    metric: SharedLowRankMetric,
+    raw: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    with torch.no_grad():
+        transformed, _ = metric(
+            F.normalize(torch.as_tensor(raw).float().to(device), dim=1)
+        )
+    return transformed.half().cpu()
+
+
+def build_appearance_mode_pool(
+    state: dict,
+    positives: dict,
+    cache: dict,
+    query_bins: dict[str, int],
+    metric: SharedLowRankMetric,
+    *,
+    dynamic: dict | None,
+    basin_teacher: dict | None,
+    maximum_modes_per_anchor: int,
+    minimum_observations: int,
+    minimum_trajectories: int,
+    minimum_view_bins: int,
+    minimum_separation: float,
+    maximum_primary_similarity: float,
+    trim_fraction: float,
+    initial_bias: float,
+    device: torch.device,
+) -> tuple[list[dict], dict]:
+    """Generate high-recall modes from all legal observations before Basin gating."""
+    names = list(positives["query_names"])
+    if dynamic is not None and names != list(dynamic["query_names"]):
+        raise ValueError("dynamic outcomes and positive teacher registries differ")
+    bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
+    descriptor_blocks = []
+    anchor_blocks = []
+    query_blocks = []
+    row_blocks = []
+    bin_blocks = []
+    provenance_blocks = []
+    basin_by_name = (
+        {str(record["query_name"]): record for record in basin_teacher["records"]}
+        if basin_teacher is not None
+        else {}
+    )
+    for query_index, (name, record) in enumerate(
+        zip(names, positives["records"])
+    ):
+        rows = torch.as_tensor(record["query_rows"]).long()
+        offsets = torch.as_tensor(record["positive_offsets"]).long()
+        anchors = torch.as_tensor(record["positive_indices"]).long()
+        counts = offsets[1:] - offsets[:-1]
+        pair_rows = torch.repeat_interleave(rows, counts)
+        extra: dict[tuple[int, int], int] = {}
+        if dynamic is not None:
+            outcome = dynamic["records"][query_index]
+            clean = torch.as_tensor(outcome["gt_reprojection_errors_px"]).float() <= 4.0
+            for row, anchor in zip(
+                torch.as_tensor(outcome["query_rows"]).long()[clean].tolist(),
+                torch.as_tensor(outcome["top1_anchor_indices"]).long()[clean].tolist(),
+            ):
+                extra[(int(row), int(anchor))] = 2
+        blame = basin_by_name.get(name)
+        if blame is not None:
+            for row, anchor in zip(
+                torch.as_tensor(blame["blame_rows"]).long().tolist(),
+                torch.as_tensor(blame["blame_positive_anchors"]).long().tolist(),
+            ):
+                extra[(int(row), int(anchor))] = (
+                    extra.get((int(row), int(anchor)), 0) | 4
+                )
+        pair_positions = {
+            (int(row), int(anchor)): index
+            for index, (row, anchor) in enumerate(
+                zip(pair_rows.tolist(), anchors.tolist())
+            )
+        }
+        provenance = torch.ones(len(anchors), dtype=torch.uint8)
+        for key, source in extra.items():
+            position = pair_positions.get(key)
+            if position is not None:
+                provenance[position] = int(provenance[position]) | int(source)
+        extra_items = [
+            (row, anchor, source)
+            for (row, anchor), source in extra.items()
+            if (row, anchor) not in pair_positions
+        ]
+        all_rows = pair_rows
+        all_anchors = anchors
+        if extra_items:
+            all_rows = torch.cat(
+                (all_rows, torch.as_tensor([item[0] for item in extra_items]))
+            )
+            all_anchors = torch.cat(
+                (
+                    all_anchors,
+                    torch.as_tensor([item[1] for item in extra_items]),
+                )
+            )
+            provenance = torch.cat(
+                (
+                    provenance,
+                    torch.as_tensor(
+                        [item[2] for item in extra_items], dtype=torch.uint8
+                    ),
+                )
+            )
+        unique_rows, inverse = torch.unique(all_rows, sorted=True, return_inverse=True)
+        transformed = _metric_descriptors(
+            metric,
+            torch.as_tensor(cache[name]["native_descriptors"])[unique_rows],
+            device,
+        )
+        descriptor_blocks.append(transformed[inverse])
+        anchor_blocks.append(all_anchors)
+        query_blocks.append(
+            torch.full((len(all_anchors),), query_index, dtype=torch.int32)
+        )
+        row_blocks.append(all_rows.to(torch.int32))
+        bin_blocks.append(
+            torch.full(
+                (len(all_anchors),),
+                int(query_bins[name]),
+                dtype=torch.int16,
+            )
+        )
+        provenance_blocks.append(provenance)
+    descriptors = torch.cat(descriptor_blocks)
+    anchors = torch.cat(anchor_blocks).long()
+    query_indices = torch.cat(query_blocks)
+    rows = torch.cat(row_blocks)
+    bins = torch.cat(bin_blocks)
+    provenance = torch.cat(provenance_blocks)
+    order = torch.argsort(anchors)
+    anchors = anchors[order]
+    descriptors = descriptors[order]
+    query_indices = query_indices[order]
+    rows = rows[order]
+    bins = bins[order]
+    provenance = provenance[order]
+    counts = torch.bincount(anchors, minlength=bank.shape[0])
+    offsets = torch.cat((torch.zeros(1, dtype=torch.long), counts.cumsum(0)))
+    candidates = []
+    observation_query_indices = []
+    observation_rows = []
+    observation_provenance = []
+    mode_offsets = [0]
+    for anchor in torch.nonzero(
+        counts >= int(minimum_observations), as_tuple=False
+    ).reshape(-1).tolist():
+        start, stop = int(offsets[anchor]), int(offsets[anchor + 1])
+        anchor_descriptors = descriptors[start:stop].float()
+        modes = discover_spherical_modes(
+            anchor_descriptors,
+            bank[anchor],
+            maximum_modes=maximum_modes_per_anchor,
+            minimum_cluster_size=minimum_observations,
+            minimum_separation=minimum_separation,
+            trim_fraction=trim_fraction,
+        )
+        for mode_id, mode in enumerate(modes, start=1):
+            local = mode.pop("observation_indices")
+            selected_queries = query_indices[start:stop][local]
+            selected_bins = bins[start:stop][local]
+            trajectories = {
+                trajectory_id(names[int(index)])
+                for index in selected_queries.tolist()
+            }
+            view_bins = set(selected_bins.tolist())
+            if (
+                len(trajectories) < int(minimum_trajectories)
+                or len(view_bins) < int(minimum_view_bins)
+                or mode["primary_similarity"]
+                > float(maximum_primary_similarity)
+            ):
+                continue
+            mode.update(
+                {
+                    "source_anchor": int(anchor),
+                    "mode_id": int(mode_id),
+                    "trajectory_count": len(trajectories),
+                    "view_bin_count": len(view_bins),
+                    "provenance_mask": bitwise_union(
+                        provenance[start:stop][local]
+                    ),
+                    "utility": float(
+                        mode["activation_gain_mean"]
+                        * mode["observation_count"]
+                    ),
+                    "_observation_slot": len(observation_query_indices),
+                }
+            )
+            candidates.append(mode)
+            observation_query_indices.append(selected_queries)
+            observation_rows.append(rows[start:stop][local])
+            observation_provenance.append(provenance[start:stop][local])
+            mode_offsets.append(
+                mode_offsets[-1] + int(mode["observation_count"])
+            )
+    candidates.sort(
+        key=lambda value: (
+            -value["utility"],
+            -value["trajectory_count"],
+            -value["view_bin_count"],
+            value["source_anchor"],
+            value["mode_id"],
+        )
+    )
+    # Sorting candidates requires applying the same permutation to CSR observations.
+    ordered_observations = [
+        (
+            observation_query_indices[int(value["_observation_slot"])],
+            observation_rows[int(value["_observation_slot"])],
+            observation_provenance[int(value["_observation_slot"])],
+        )
+        for value in candidates
+    ]
+    for value in candidates:
+        value.pop("_observation_slot")
+    mode_offsets = [0]
+    for value in candidates:
+        mode_offsets.append(mode_offsets[-1] + int(value["observation_count"]))
+    observation_payload = {
+        "offsets": torch.as_tensor(mode_offsets, dtype=torch.long),
+        "query_indices": torch.cat([value[0] for value in ordered_observations])
+        if ordered_observations
+        else torch.empty(0, dtype=torch.int32),
+        "query_rows": torch.cat([value[1] for value in ordered_observations])
+        if ordered_observations
+        else torch.empty(0, dtype=torch.int32),
+        "provenance": torch.cat([value[2] for value in ordered_observations])
+        if ordered_observations
+        else torch.empty(0, dtype=torch.uint8),
+    }
+    for value in candidates:
+        value["initial_bias"] = min(float(initial_bias), 0.0)
+    return candidates, observation_payload
 
 
 def collapse_duplicate_conflicts(base: dict, conflict: dict) -> list[dict]:
@@ -283,13 +637,21 @@ def main() -> None:
     parser.add_argument("--map", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
-        "--mode", choices=("collapse_duplicate", "cross_view_stable"), required=True
+        "--mode",
+        choices=("collapse_duplicate", "cross_view_stable", "appearance_pool"),
+        required=True,
     )
     parser.add_argument("--conflict-map", default="")
     parser.add_argument("--basin-teacher", default="")
     parser.add_argument("--query-cache", default="")
     parser.add_argument("--track-payload", default="")
     parser.add_argument("--metric-state", default="")
+    parser.add_argument("--complete-positive-teacher", default="")
+    parser.add_argument("--dynamic-outcomes", default="")
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--maximum-modes-per-anchor", type=int, default=3)
+    parser.add_argument("--minimum-separation", type=float, default=0.08)
+    parser.add_argument("--initial-bias", type=float, default=-0.01)
     parser.add_argument("--maximum-prototypes", type=int, default=0)
     parser.add_argument("--minimum-observations", type=int, default=4)
     parser.add_argument("--minimum-trajectories", type=int, default=2)
@@ -302,6 +664,7 @@ def main() -> None:
     args = parser.parse_args()
 
     state = torch.load(args.map, map_location="cpu", weights_only=False)
+    observation_payload = None
     if args.mode == "collapse_duplicate":
         if not args.conflict_map:
             raise ValueError("collapse_duplicate requires --conflict-map")
@@ -309,7 +672,7 @@ def main() -> None:
             args.conflict_map, map_location="cpu", weights_only=False
         )
         candidates = collapse_duplicate_conflicts(state, conflict)
-    else:
+    elif args.mode == "cross_view_stable":
         required = (
             args.basin_teacher,
             args.query_cache,
@@ -356,8 +719,89 @@ def main() -> None:
             trim_fraction=args.trim_fraction,
             maximum_primary_similarity=args.maximum_primary_similarity,
         )
+    else:
+        required = (
+            args.complete_positive_teacher,
+            args.query_cache,
+            args.track_payload,
+            args.metric_state,
+        )
+        if not all(required):
+            raise ValueError("appearance_pool inputs are incomplete")
+        positives = torch.load(
+            args.complete_positive_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        cache_payload = torch.load(
+            args.query_cache, map_location="cpu", weights_only=False
+        )
+        cache = cache_payload.get("queries", cache_payload)
+        payload = torch.load(
+            args.track_payload, map_location="cpu", weights_only=False
+        )
+        query_bins = {
+            name: int(group)
+            for name, group in zip(
+                payload["query_names"], payload["query_bins"].tolist()
+            )
+        }
+        metric_payload = torch.load(
+            args.metric_state, map_location="cpu", weights_only=False
+        )
+        device = torch.device(args.device)
+        metric = SharedLowRankMetric(**metric_payload["metric_config"]).to(device)
+        metric.load_state_dict(metric_payload["metric_state_dict"])
+        metric.eval()
+        dynamic = (
+            torch.load(
+                args.dynamic_outcomes, map_location="cpu", weights_only=False
+            )
+            if args.dynamic_outcomes
+            else None
+        )
+        basin_teacher = (
+            torch.load(
+                args.basin_teacher, map_location="cpu", weights_only=False
+            )
+            if args.basin_teacher
+            else None
+        )
+        candidates, observation_payload = build_appearance_mode_pool(
+            state,
+            positives,
+            cache,
+            query_bins,
+            metric,
+            dynamic=dynamic,
+            basin_teacher=basin_teacher,
+            maximum_modes_per_anchor=args.maximum_modes_per_anchor,
+            minimum_observations=args.minimum_observations,
+            minimum_trajectories=args.minimum_trajectories,
+            minimum_view_bins=args.minimum_view_bins,
+            minimum_separation=args.minimum_separation,
+            maximum_primary_similarity=args.maximum_primary_similarity,
+            trim_fraction=args.trim_fraction,
+            initial_bias=args.initial_bias,
+            device=device,
+        )
     if int(args.maximum_prototypes) > 0:
         candidates = candidates[: int(args.maximum_prototypes)]
+        if observation_payload is not None:
+            offsets = observation_payload["offsets"]
+            observation_stop = int(offsets[len(candidates)])
+            observation_payload = {
+                "offsets": offsets[: len(candidates) + 1].clone(),
+                "query_indices": observation_payload["query_indices"][
+                    :observation_stop
+                ].clone(),
+                "query_rows": observation_payload["query_rows"][
+                    :observation_stop
+                ].clone(),
+                "provenance": observation_payload["provenance"][
+                    :observation_stop
+                ].clone(),
+            }
     prototype_features = (
         torch.stack([value["prototype"] for value in candidates])
         if candidates
@@ -367,6 +811,7 @@ def main() -> None:
             ).shape[1]
         )
     )
+    prototype_features = prototype_features.detach()
     output = {
         "schema": "lafgs_basin_family_prototypes",
         "version": 1,
@@ -377,12 +822,19 @@ def main() -> None:
         "prototype_anchor_indices": torch.as_tensor(
             [value["source_anchor"] for value in candidates], dtype=torch.long
         ),
+        "prototype_bias": torch.as_tensor(
+            [value.get("initial_bias", 0.0) for value in candidates],
+            dtype=torch.float32,
+        ),
+        "prototype_temperature": torch.ones(len(candidates)),
         "config": vars(args),
         "families": [
             {key: value for key, value in candidate.items() if key != "prototype"}
             for candidate in candidates
         ],
     }
+    if observation_payload is not None:
+        output["mode_observations"] = observation_payload
     path = Path(args.output).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(output, path)

@@ -152,10 +152,12 @@ def chunked_exact_topk_family_prototype(
     map_features,
     prototype_features,
     prototype_anchor_indices,
+    prototype_bias=None,
+    prototype_temperature=None,
     topk=1,
     chunk_size=8192,
 ):
-    """Exact anchor top-k after max-pooling arbitrary descriptor families."""
+    """Exact anchor top-k after calibrated max-pooling of descriptor families."""
     if query_features.ndim != 2 or map_features.ndim != 2:
         raise ValueError("query_features and map_features must be 2D")
     if prototype_features.ndim != 2:
@@ -176,6 +178,32 @@ def chunked_exact_topk_family_prototype(
         int(parents.min()) < 0 or int(parents.max()) >= map_features.shape[0]
     ):
         raise ValueError("prototype anchor index is outside the map")
+    bias = (
+        torch.zeros(
+            parents.numel(), device=map_features.device, dtype=torch.float32
+        )
+        if prototype_bias is None
+        else torch.as_tensor(
+            prototype_bias, device=map_features.device, dtype=torch.float32
+        ).reshape(-1)
+    )
+    temperature = (
+        torch.ones(
+            parents.numel(), device=map_features.device, dtype=torch.float32
+        )
+        if prototype_temperature is None
+        else torch.as_tensor(
+            prototype_temperature, device=map_features.device, dtype=torch.float32
+        ).reshape(-1)
+    )
+    if bias.numel() != parents.numel():
+        raise ValueError("prototype_bias must have one value per prototype")
+    if bias.numel() and bool((bias > 1e-8).any().item()):
+        raise ValueError("prototype_bias must be non-positive")
+    if temperature.numel() != parents.numel():
+        raise ValueError("prototype_temperature must have one value per prototype")
+    if temperature.numel() and bool((temperature <= 0).any().item()):
+        raise ValueError("prototype_temperature must be positive")
     count = int(map_features.shape[0])
     topk = min(max(int(topk), 1), count)
     start_time = time.perf_counter()
@@ -186,7 +214,9 @@ def chunked_exact_topk_family_prototype(
         return primary
     query = F.normalize(query_features.float(), dim=1)
     prototypes = F.normalize(prototype_features.float(), dim=1)
-    prototype_scores = query @ prototypes.T
+    prototype_scores = (
+        (query @ prototypes.T) / temperature[None] + bias[None]
+    )
     prototype_indices = parents[None].expand(query.shape[0], -1)
     scores, indices = _unique_anchor_topk(
         torch.cat((primary.scores, prototype_scores), dim=1),

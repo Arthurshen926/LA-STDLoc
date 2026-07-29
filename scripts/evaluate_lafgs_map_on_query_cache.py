@@ -156,6 +156,16 @@ def main() -> None:
         family_parents = torch.as_tensor(
             family_state["prototype_anchor_indices"]
         ).long().to(device)
+        family_bias = torch.as_tensor(
+            family_state.get(
+                "prototype_bias", torch.zeros(len(family_features))
+            )
+        ).float().to(device)
+        family_temperature = torch.as_tensor(
+            family_state.get(
+                "prototype_temperature", torch.ones(len(family_features))
+            )
+        ).float().to(device)
 
     output = Path(args.output)
     partial = output.with_suffix(output.suffix + ".partial")
@@ -267,6 +277,8 @@ def main() -> None:
                     bank,
                     family_features,
                     family_parents,
+                    prototype_bias=family_bias,
+                    prototype_temperature=family_temperature,
                     topk=min(2, bank.shape[0]),
                 )
                 top_values, top_indices = retrieval.scores, retrieval.indices

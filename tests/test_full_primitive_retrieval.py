@@ -1,3 +1,4 @@
+import pytest
 import torch
 import torch.nn.functional as F
 
@@ -58,6 +59,49 @@ def test_family_prototype_retrieval_returns_unique_geometry_anchors():
     assert set(result.indices[0].tolist()) == {0, 1, 2}
     assert result.indices[1].unique().numel() == 3
     assert torch.allclose(result.scores[0, 0], torch.tensor(1.0), atol=1e-6)
+
+
+def test_family_prototype_bias_prevents_weak_secondary_activation():
+    query = torch.tensor([[0.0, 1.0]])
+    primary = torch.tensor([[1.0, 0.0], [0.2, 0.98]])
+    prototypes = torch.tensor([[0.0, 1.0]])
+    parents = torch.tensor([0])
+    uncalibrated = chunked_exact_topk_family_prototype(
+        query, primary, prototypes, parents, topk=1
+    )
+    calibrated = chunked_exact_topk_family_prototype(
+        query,
+        primary,
+        prototypes,
+        parents,
+        prototype_bias=torch.tensor([-0.05]),
+        prototype_temperature=torch.ones(1),
+        topk=1,
+    )
+    assert uncalibrated.indices.item() == 0
+    assert calibrated.indices.item() == 1
+
+
+def test_family_prototype_temperature_must_be_positive():
+    with pytest.raises(ValueError, match="temperature"):
+        chunked_exact_topk_family_prototype(
+            torch.tensor([[0.0, 1.0]]),
+            torch.tensor([[1.0, 0.0]]),
+            torch.tensor([[0.0, 1.0]]),
+            torch.tensor([0]),
+            prototype_temperature=torch.tensor([0.0]),
+        )
+
+
+def test_family_prototype_bias_must_be_non_positive():
+    with pytest.raises(ValueError, match="non-positive"):
+        chunked_exact_topk_family_prototype(
+            torch.tensor([[0.0, 1.0]]),
+            torch.tensor([[1.0, 0.0]]),
+            torch.tensor([[0.0, 1.0]]),
+            torch.tensor([0]),
+            prototype_bias=torch.tensor([0.01]),
+        )
 
 
 def test_conditional_reserve_only_changes_ambiguous_core_rows():
