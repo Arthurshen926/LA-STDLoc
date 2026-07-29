@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+# Optional pinned upstream checkout used only to build the LaFGS C++ sampler.
+third_party/PoseLib/
 develop-eggs/
 dist/
 downloads/

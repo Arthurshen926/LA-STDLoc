@@ -288,6 +288,12 @@ def build_dynamic_round_contract(
             "sha256": sha256_file(sampler_state_path),
         }
     summary = dict(outcomes["summary"])
+    minimal_set_outcome_count = int(
+        sum(
+            len(record.get("minimal_set_records", []))
+            for record in outcomes["records"]
+        )
+    )
     identity = {
         "static_identity_sha256": static_contract["identity_sha256"],
         "round_id": int(round_id),
@@ -323,7 +329,7 @@ def build_dynamic_round_contract(
                 )
             ),
             "pose_critical_edge_count": pose_critical_edge_count,
-            "minimal_set_outcome_count": None,
+            "minimal_set_outcome_count": minimal_set_outcome_count,
         },
         "pose_risk_summary": summary,
     }

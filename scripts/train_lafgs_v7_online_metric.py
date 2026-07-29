@@ -112,6 +112,34 @@ def _csr_first_k_values(
     return output
 
 
+def _csr_topk_by_values(
+    offsets: torch.Tensor,
+    indices: torch.Tensor,
+    values: torch.Tensor,
+    width: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    offsets = torch.as_tensor(offsets).long().reshape(-1)
+    indices = torch.as_tensor(indices).long().reshape(-1)
+    values = torch.as_tensor(values).float().reshape(-1)
+    if indices.numel() != values.numel():
+        raise ValueError("CSR indices and ranking values must align")
+    row_count = offsets.numel() - 1
+    output_indices = torch.full((row_count, int(width)), -1, dtype=torch.long)
+    output_values = torch.ones((row_count, int(width)), dtype=torch.float32)
+    counts = offsets[1:] - offsets[:-1]
+    rows = torch.repeat_interleave(torch.arange(row_count), counts)
+    value_order = torch.argsort(values, descending=True, stable=True)
+    row_order = torch.argsort(rows[value_order], stable=True)
+    order = value_order[row_order]
+    sorted_rows = rows[order]
+    starts = torch.cumsum(counts, dim=0) - counts
+    ranks = torch.arange(indices.numel()) - torch.repeat_interleave(starts, counts)
+    keep = ranks < int(width)
+    output_indices[sorted_rows[keep], ranks[keep]] = indices[order[keep]]
+    output_values[sorted_rows[keep], ranks[keep]] = values[order[keep]]
+    return output_indices, output_values
+
+
 def _replace_refreshed_pairs(
     clean_pairs: dict,
     harmful_pairs: dict,
@@ -247,35 +275,40 @@ def _build_training_records(
             ).long()
             if not torch.equal(graph_rows, teacher_rows):
                 raise ValueError("complete positive teacher row mismatch")
-            positive_blocks.append(
-                _csr_first_k(
-                    teacher_record["positive_offsets"],
-                    teacher_record["positive_indices"],
-                    max_positives,
-                )
-            )
             if critical_teacher is not None:
                 critical_record = critical_teacher["records"][
-                    len(positive_blocks) - 1
+                    len(positive_blocks)
                 ]
                 if not torch.equal(
                     teacher_rows,
                     torch.as_tensor(critical_record["query_rows"]).long(),
                 ):
                     raise ValueError("pose-critical teacher row mismatch")
+                ranked_indices, ranked_weights = _csr_topk_by_values(
+                    teacher_record["positive_offsets"],
+                    teacher_record["positive_indices"],
+                    critical_record["positive_weights"],
+                    max_positives,
+                )
+                positive_blocks.append(ranked_indices)
                 positive_weight_blocks.append(
-                    _csr_first_k_values(
-                        teacher_record["positive_offsets"],
-                        critical_record["positive_weights"],
-                        max_positives,
-                        fill=1.0,
-                    ).clamp_min(1e-8).pow(float(critical_pair_power))
+                    ranked_weights.clamp_min(1e-8).pow(
+                        float(critical_pair_power)
+                    )
                 )
                 row_weight_blocks.append(
                     torch.as_tensor(critical_record["row_weights"])
                     .float()
                     .clamp_min(1e-8)
                     .pow(float(critical_row_power))
+                )
+            else:
+                positive_blocks.append(
+                    _csr_first_k(
+                        teacher_record["positive_offsets"],
+                        teacher_record["positive_indices"],
+                        max_positives,
+                    )
                 )
             ambiguous_offsets = torch.as_tensor(
                 teacher_record["ambiguous_offsets"]
@@ -431,13 +464,8 @@ def _multi_positive_list_loss(
         "bd,bpd->bp", query, bank[safe]
     )
     positive_mask = positives >= 0
-    positive_logits = positive_scores / temperature
-    if positive_weights is not None:
-        positive_logits = positive_logits + torch.log(
-            positive_weights.clamp_min(1e-8)
-        )
     numerator = torch.logsumexp(
-        positive_logits.masked_fill(
+        (positive_scores / temperature).masked_fill(
             ~positive_mask, -torch.inf
         ),
         dim=1,
@@ -460,7 +488,14 @@ def _multi_positive_list_loss(
         ),
         dim=1,
     )
-    list_loss = (denominator - numerator) * temperature
+    if positive_weights is None:
+        positive_aggregate = numerator * float(temperature)
+        list_loss = denominator * float(temperature) - positive_aggregate
+    else:
+        target = positive_weights.clamp_min(0) * positive_mask
+        target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        positive_aggregate = (target * positive_scores).sum(dim=1)
+        list_loss = denominator * float(temperature) - positive_aggregate
     harmful_loss = torch.zeros_like(list_loss)
     if harmful_prior is not None:
         retrieved_harm = harmful_prior[top_indices]
@@ -478,7 +513,6 @@ def _multi_positive_list_loss(
         )
         hardest_harmful = harmful_scores.max(dim=1).values
         has_harmful = harmful_valid.any(dim=1)
-        positive_aggregate = numerator * float(temperature)
         harmful_loss = harmful_loss + torch.where(
             has_harmful,
             F.softplus(

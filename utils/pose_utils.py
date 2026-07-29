@@ -20,8 +20,15 @@ def solve_pose(
     return_diagnostics=False,
     dependency_groups=None,
     image_cells=None,
-    depth_bins=None,
     surface_groups=None,
+    dependency_guided_mixture=0.0,
+    dependency_guided_rank_power=0.5,
+    ground_truth_w2c=None,
+    minimal_set_record_limit=0,
+    sampling_margins=None,
+    sampling_keypoint_scores=None,
+    dependency_rescue_max_iterations=0,
+    dependency_rescue_inlier_ratio=0.0,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
@@ -116,7 +123,6 @@ def solve_pose(
         required_metadata = (
             dependency_groups,
             image_cells,
-            depth_bins,
             surface_groups,
         )
         if any(value is None for value in required_metadata):
@@ -129,18 +135,36 @@ def solve_pose(
             K,
             dependency_groups=dependency_groups,
             image_cells=image_cells,
-            depth_bins=depth_bins,
             surface_groups=surface_groups,
+            sampling_scores=scores,
+            sampling_margins=sampling_margins,
+            sampling_keypoint_scores=sampling_keypoint_scores,
+            guided_mixture=dependency_guided_mixture,
+            guided_rank_power=dependency_guided_rank_power,
+            ground_truth_w2c=ground_truth_w2c,
+            minimal_set_record_limit=minimal_set_record_limit,
             reprojection_error=reprojection_error,
             confidence=confidence,
             max_iterations=max_iterations,
             min_iterations=min_iterations,
+            rescue_max_iterations=dependency_rescue_max_iterations,
+            rescue_inlier_ratio=dependency_rescue_inlier_ratio,
             seed=ransac_seed,
         )
         diagnostics["ransac_diverse_samples"] = int(info["diverse_samples"])
         diagnostics["ransac_fallback_samples"] = int(info["fallback_samples"])
+        diagnostics["ransac_local_refinements"] = int(
+            info.get("local_refinements", 0)
+        )
         diagnostics["ransac_actual_hypotheses"] = int(info["iterations"])
         diagnostics["ransac_actual_hypotheses_available"] = True
+        diagnostics["minimal_set_records"] = info.get(
+            "minimal_set_records", []
+        )
+        diagnostics["ransac_rescue_used"] = bool(
+            info.get("rescue_used", False)
+        )
+        diagnostics["ransac_backend"] = str(info.get("backend", "python"))
         return finish(w2c, inliers)
 
     elif solver == "poselib":

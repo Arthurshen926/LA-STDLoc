@@ -6,7 +6,9 @@ def test_cached_replay_uses_masked_function_graph_rows():
     assert 'graph["records"][query_index]["query_rows"]' in source
     assert 'cached["native_descriptors"]' in source
     assert "ransac_seed=int(args.seed)" in source
-    assert ".max(dim=1)" in source
+    assert "torch.topk(" in source
+    assert "indices = top_indices[:, 0]" in source
+    assert "top_values[:, 0] - top_values[:, 1]" in source
     assert "partial replay identity does not match current run" in source
     assert "os.replace(temporary, path)" in source
 

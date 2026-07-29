@@ -4,7 +4,7 @@ numpy
 opencv_python
 Pillow
 plyfile
-poselib
+poselib==2.0.5
 PyYAML
 scikit_learn
 scipy

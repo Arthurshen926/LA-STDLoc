@@ -31,6 +31,7 @@ from scripts.train_lafgs_v7_online_metric import (
     _build_rotating_shards,
     _bounded_anchor_features,
     _csr_first_k,
+    _csr_topk_by_values,
     _group_pose_risk,
     _multi_positive_list_loss,
     _replace_refreshed_pairs,
@@ -169,7 +170,7 @@ def test_listwise_loss_rewards_any_positive_and_penalizes_harmful_mass():
 
 def test_listwise_pose_critical_weight_prefers_critical_positive():
     query = torch.tensor([[1.0, 0.0]])
-    bank = torch.tensor([[0.8, 0.6], [0.8, -0.6], [-1.0, 0.0]])
+    bank = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])
     positives = torch.tensor([[0, 1]])
     first, _, _ = _multi_positive_list_loss(
         query,
@@ -193,6 +194,19 @@ def test_listwise_pose_critical_weight_prefers_critical_positive():
     )
     assert torch.isfinite(first).all()
     assert float(first) < float(uniform)
+
+
+def test_pose_critical_csr_truncation_keeps_highest_weights():
+    indices, values = _csr_topk_by_values(
+        torch.tensor([0, 3, 5]),
+        torch.tensor([10, 11, 12, 20, 21]),
+        torch.tensor([0.2, 2.0, 1.0, 0.1, 0.8]),
+        width=2,
+    )
+    assert indices.tolist() == [[11, 12], [21, 20]]
+    torch.testing.assert_close(
+        values, torch.tensor([[2.0, 1.0], [0.8, 0.1]])
+    )
 
 
 def test_anchor_residual_is_bounded():

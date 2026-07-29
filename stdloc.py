@@ -2256,6 +2256,32 @@ class STDLoc:
         else:
             self.landmark_indices = sampled_idx
             self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
+        dependency_sampling_model_path = sparse_config.get(
+            "dependency_sampling_model_path", ""
+        )
+        self.dependency_sampling_model = None
+        if dependency_sampling_model_path:
+            full_sampling_model_path = resolve_artifact_path(
+                config["model_path"],
+                dependency_sampling_model_path,
+                sparse_config.get(
+                    "dependency_sampling_model_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            self.dependency_sampling_model = torch.load(
+                full_sampling_model_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            if (
+                self.materialized_anchor_map_state is None
+                or not self.dependency_sampling_model.get("models")
+            ):
+                raise ValueError(
+                    "dependency sampling requires a materialized anchor map "
+                    "and a fitted sampling model"
+                )
         map_features = self.landmarks.get_loc_feature.detach().clone()
         map_features_flat = map_features.reshape(map_features.shape[0], -1)
         legacy_state_path = sparse_config.get("candidate_teacher_state_path", "")
@@ -4146,6 +4172,7 @@ class STDLoc:
         )
         retrieval_topk = max(
             configured_topk,
+            2 if self.dependency_sampling_model is not None else 0,
             (
                 int(self.config["sparse"].get("rerank_topk", 4))
                 if rerank_enabled
@@ -4672,6 +4699,14 @@ class STDLoc:
         p2d = keypoints[matches.keypoint_idx].detach().cpu().float()
         p3d = self.landmarks.get_xyz[matches.landmark_idx].detach().cpu().float()
         scores = matches.scores.detach().cpu().float()
+        matched_keypoint_scores = keypoint_scores[
+            matches.keypoint_idx
+        ].detach().cpu().float()
+        matched_margins = (
+            retrieval.scores[matches.keypoint_idx, 0]
+            - retrieval.scores[matches.keypoint_idx, 1]
+        ).detach().cpu().float()
+        matched_landmark_indices = matches.landmark_idx.detach().cpu().long()
         solver_scores = (
             native_matchability_scores.detach().cpu().float()
             if native_matchability_scores is not None
@@ -4688,6 +4723,9 @@ class STDLoc:
             p3d = p3d[selector_indices]
             scores = scores[selector_indices]
             solver_scores = solver_scores[selector_indices]
+            matched_keypoint_scores = matched_keypoint_scores[selector_indices]
+            matched_margins = matched_margins[selector_indices]
+            matched_landmark_indices = matched_landmark_indices[selector_indices]
         match_count_before_selector = int(p2d_pre_selector.shape[0])
         match_count = int(p2d.shape[0])
 
@@ -4696,17 +4734,117 @@ class STDLoc:
         scores_np = scores.numpy()
         solver_scores_np = solver_scores.numpy()
         K = get_intrinsic(fovx, fovy, width, height)
+        pose_solver = self.config["sparse"]["solver"]
+        pose_max_iterations = int(self.config["sparse"]["max_iterations"])
+        pose_min_iterations = int(self.config["sparse"]["min_iterations"])
+        dependency_kwargs = {}
+        query_risk_probability = None
+        if self.dependency_sampling_model is not None:
+            model = self.dependency_sampling_model["models"]["all"]
+            sampling_features = torch.stack(
+                (scores, matched_margins, matched_keypoint_scores), dim=1
+            )
+            feature_mean = torch.as_tensor(model["feature_mean"]).float()
+            feature_scale = (
+                torch.as_tensor(model["feature_scale"]).float().clamp_min(1e-6)
+            )
+            coefficients = torch.as_tensor(model["coefficients"]).float()
+            solver_scores_np = (
+                ((sampling_features - feature_mean) / feature_scale)
+                @ coefficients
+                + float(model.get("intercept", 0.0))
+            ).numpy()
+            risk_model = self.dependency_sampling_model["risk_models"]["all"]
+            risk_features = torch.stack(
+                (
+                    scores.median(),
+                    matched_margins.median(),
+                    matched_keypoint_scores.median(),
+                )
+            )
+            risk_mean = torch.as_tensor(risk_model["feature_mean"]).float()
+            risk_scale = (
+                torch.as_tensor(risk_model["feature_scale"]).float().clamp_min(1e-6)
+            )
+            risk_coefficients = torch.as_tensor(
+                risk_model["coefficients"]
+            ).float()
+            query_risk_probability = float(
+                torch.sigmoid(
+                    ((risk_features - risk_mean) / risk_scale)
+                    @ risk_coefficients
+                    + float(risk_model.get("intercept", 0.0))
+                )
+            )
+            if query_risk_probability >= float(
+                self.dependency_sampling_model.get("risk_threshold", 0.5)
+            ):
+                pose_solver = "poselib_dependency"
+                pose_max_iterations = int(
+                    self.config["sparse"].get(
+                        "dependency_max_iterations", 3000
+                    )
+                )
+                pose_min_iterations = int(
+                    self.config["sparse"].get(
+                        "dependency_min_iterations", 500
+                    )
+                )
+                materialized = self.materialized_anchor_map_state
+                dependency_ids = torch.as_tensor(
+                    materialized.get(
+                        "coarse_dependency_group_ids",
+                        materialized["dependency_group_ids"],
+                    )
+                ).long()[matched_landmark_indices].detach().cpu()
+                surface_ids = torch.as_tensor(
+                    materialized["source_primitive_ids"]
+                ).long()[matched_landmark_indices].detach().cpu()
+                image_cells = (
+                    (
+                        p2d[:, 1] * 4 / max(float(height), 1.0)
+                    ).floor().long().clamp(0, 3)
+                    * 4
+                    + (
+                        p2d[:, 0] * 4 / max(float(width), 1.0)
+                    ).floor().long().clamp(0, 3)
+                )
+                dependency_kwargs = {
+                    "dependency_groups": dependency_ids.numpy(),
+                    "image_cells": image_cells.numpy(),
+                    "surface_groups": surface_ids.numpy(),
+                    "dependency_guided_mixture": float(
+                        self.config["sparse"].get(
+                            "dependency_guided_mixture", 0.8
+                        )
+                    ),
+                    "dependency_guided_rank_power": float(
+                        self.config["sparse"].get(
+                            "dependency_guided_rank_power", 1.0
+                        )
+                    ),
+                    "dependency_rescue_max_iterations": int(
+                        self.config["sparse"].get(
+                            "dependency_rescue_max_iterations", 30000
+                        )
+                    ),
+                    "dependency_rescue_inlier_ratio": float(
+                        self.config["sparse"].get(
+                            "dependency_rescue_inlier_ratio", 0.04
+                        )
+                    ),
+                }
         if p2d_np.shape[0] >= 4:
             ransac_start = time.perf_counter()
             pose_w2c, inliers, ransac_diagnostics = solve_pose(
                 p2d_np + 0.5,
                 p3d_np,
                 K,
-                self.config["sparse"]["solver"],
+                pose_solver,
                 self.config["sparse"]["reprojection_error"],
                 self.config["sparse"]["confidence"],
-                self.config["sparse"]["max_iterations"],
-                self.config["sparse"]["min_iterations"],
+                pose_max_iterations,
+                pose_min_iterations,
                 scores=solver_scores_np,
                 progressive_sampling=bool(native_matchability_enabled),
                 max_prosac_iterations=int(
@@ -4717,9 +4855,20 @@ class STDLoc:
                 ),
                 ransac_seed=self.config["sparse"].get("ransac_seed", 0),
                 return_diagnostics=True,
+                **dependency_kwargs,
             )
             runtime_diagnostics["sparse_diag_runtime_ransac_ms"] = float(
                 (time.perf_counter() - ransac_start) * 1000.0
+            )
+            runtime_diagnostics[
+                "sparse_diag_dependency_query_risk_probability"
+            ] = float(
+                query_risk_probability
+                if query_risk_probability is not None
+                else 0.0
+            )
+            runtime_diagnostics["sparse_diag_dependency_sampler_used"] = float(
+                pose_solver == "poselib_dependency"
             )
         else:
             pose_w2c = np.eye(4, dtype=np.float32)
