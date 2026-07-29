@@ -14,6 +14,9 @@ import torch
 import torch.nn.functional as F
 
 from localization_training.shared_metric import SharedLowRankMetric
+from localization_training.full_primitive_retrieval import (
+    chunked_exact_topk_family_prototype,
+)
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -45,6 +48,7 @@ def main() -> None:
     parser.add_argument("--function-graph", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--metric-state", default="")
+    parser.add_argument("--family-prototype-state", default="")
     parser.add_argument("--reprojection-error", type=float, default=12.0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--query-limit", type=int, default=0)
@@ -134,6 +138,24 @@ def main() -> None:
         metric = SharedLowRankMetric(**metric_payload["metric_config"]).to(device)
         metric.load_state_dict(metric_payload["metric_state_dict"])
         metric.eval()
+    family_state = None
+    if args.family_prototype_state:
+        family_state = torch.load(
+            args.family_prototype_state, map_location="cpu", weights_only=False
+        )
+        if family_state.get("schema") != "lafgs_basin_family_prototypes":
+            raise ValueError("unsupported family prototype state")
+        family_indices = torch.as_tensor(
+            family_state["landmark_indices"]
+        ).long().reshape(-1)
+        if not torch.equal(family_indices, torch.arange(len(bank))):
+            raise ValueError("family prototype state does not align with map rows")
+        family_features = F.normalize(
+            torch.as_tensor(family_state["prototype_features"]).float(), dim=1
+        ).to(device)
+        family_parents = torch.as_tensor(
+            family_state["prototype_anchor_indices"]
+        ).long().to(device)
 
     output = Path(args.output)
     partial = output.with_suffix(output.suffix + ".partial")
@@ -142,6 +164,11 @@ def main() -> None:
         "map": str(Path(args.map).resolve()),
         "metric_state": str(Path(args.metric_state).resolve())
         if args.metric_state
+        else None,
+        "family_prototype_state": str(
+            Path(args.family_prototype_state).resolve()
+        )
+        if args.family_prototype_state
         else None,
         "seed": int(args.seed),
         "reprojection_error": float(args.reprojection_error),
@@ -230,9 +257,19 @@ def main() -> None:
                 descriptors, _ = metric(descriptors)
             torch.cuda.synchronize()
             start = time.perf_counter()
-            top_values, top_indices = torch.topk(
-                descriptors @ bank.T, k=min(2, bank.shape[0]), dim=1
-            )
+            if family_state is None:
+                top_values, top_indices = torch.topk(
+                    descriptors @ bank.T, k=min(2, bank.shape[0]), dim=1
+                )
+            else:
+                retrieval = chunked_exact_topk_family_prototype(
+                    descriptors,
+                    bank,
+                    family_features,
+                    family_parents,
+                    topk=min(2, bank.shape[0]),
+                )
+                top_values, top_indices = retrieval.scores, retrieval.indices
             scores = top_values[:, 0]
             indices = top_indices[:, 0]
             score_margins = (

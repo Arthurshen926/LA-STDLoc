@@ -102,6 +102,105 @@ def chunked_exact_topk_dual_prototype(
     )
 
 
+def _unique_anchor_topk(candidate_scores, candidate_indices, topk):
+    """Select score-sorted unique anchor IDs from a small candidate table."""
+    order = torch.argsort(candidate_scores, dim=1, descending=True)
+    sorted_scores = torch.gather(candidate_scores, 1, order)
+    sorted_indices = torch.gather(candidate_indices, 1, order)
+    output_scores = candidate_scores.new_full(
+        (candidate_scores.shape[0], topk), -torch.inf
+    )
+    output_indices = torch.zeros(
+        (candidate_scores.shape[0], topk),
+        dtype=torch.long,
+        device=candidate_scores.device,
+    )
+    filled = torch.zeros(
+        candidate_scores.shape[0], dtype=torch.long, device=candidate_scores.device
+    )
+    selected = torch.zeros(
+        (candidate_scores.shape[0], topk),
+        dtype=torch.long,
+        device=candidate_scores.device,
+    )
+    for column in range(sorted_scores.shape[1]):
+        anchor = sorted_indices[:, column]
+        duplicate = (
+            (selected == anchor[:, None])
+            & (
+                torch.arange(topk, device=filled.device)[None]
+                < filled[:, None]
+            )
+        ).any(dim=1)
+        accept = (~duplicate) & (filled < topk)
+        rows = torch.nonzero(accept, as_tuple=False).reshape(-1)
+        if rows.numel():
+            positions = filled[rows]
+            output_scores[rows, positions] = sorted_scores[rows, column]
+            output_indices[rows, positions] = anchor[rows]
+            selected[rows, positions] = anchor[rows]
+            filled[rows] += 1
+        if bool((filled == topk).all()):
+            break
+    if not bool((filled == topk).all()):
+        raise RuntimeError("family prototype retrieval did not fill unique top-k")
+    return output_scores, output_indices
+
+
+def chunked_exact_topk_family_prototype(
+    query_features,
+    map_features,
+    prototype_features,
+    prototype_anchor_indices,
+    topk=1,
+    chunk_size=8192,
+):
+    """Exact anchor top-k after max-pooling arbitrary descriptor families."""
+    if query_features.ndim != 2 or map_features.ndim != 2:
+        raise ValueError("query_features and map_features must be 2D")
+    if prototype_features.ndim != 2:
+        raise ValueError("prototype_features must be 2D")
+    if (
+        query_features.shape[1] != map_features.shape[1]
+        or prototype_features.shape[1] != map_features.shape[1]
+    ):
+        raise ValueError("query, map, and prototype dimensions must match")
+    parents = torch.as_tensor(
+        prototype_anchor_indices,
+        device=map_features.device,
+        dtype=torch.long,
+    ).reshape(-1)
+    if parents.numel() != prototype_features.shape[0]:
+        raise ValueError("prototype rows and anchor indices must align")
+    if parents.numel() and (
+        int(parents.min()) < 0 or int(parents.max()) >= map_features.shape[0]
+    ):
+        raise ValueError("prototype anchor index is outside the map")
+    count = int(map_features.shape[0])
+    topk = min(max(int(topk), 1), count)
+    start_time = time.perf_counter()
+    primary = chunked_exact_topk(
+        query_features, map_features, topk=topk, chunk_size=chunk_size
+    )
+    if not parents.numel():
+        return primary
+    query = F.normalize(query_features.float(), dim=1)
+    prototypes = F.normalize(prototype_features.float(), dim=1)
+    prototype_scores = query @ prototypes.T
+    prototype_indices = parents[None].expand(query.shape[0], -1)
+    scores, indices = _unique_anchor_topk(
+        torch.cat((primary.scores, prototype_scores), dim=1),
+        torch.cat((primary.indices, prototype_indices), dim=1),
+        topk,
+    )
+    return RetrievalResult(
+        scores,
+        indices,
+        (time.perf_counter() - start_time) * 1000.0,
+        primary.chunks + 1,
+    )
+
+
 def chunked_exact_topk_with_bias(
     query_features,
     map_features,

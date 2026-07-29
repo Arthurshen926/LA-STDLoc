@@ -28,6 +28,8 @@ from scripts.build_lafgs_v9_minimum_sufficient_maps import (
     greedy_query_multicover,
 )
 from scripts.train_lafgs_v7_online_metric import (
+    _basin_hyperedge_losses,
+    _basin_set_log_scores,
     _build_rotating_shards,
     _bounded_anchor_features,
     _csr_first_k,
@@ -38,6 +40,46 @@ from scripts.train_lafgs_v7_online_metric import (
     _save_checkpoint,
     _query_index_remap as _training_query_index_remap,
 )
+
+
+def test_basin_set_log_score_prefers_jointly_correct_triplet():
+    bank = torch.eye(4)
+    query = torch.stack((bank[0], bank[1], bank[2])).reshape(1, 3, 4)
+    good = _basin_set_log_scores(
+        query, bank, torch.tensor([[0, 1, 2]]), assignment_temperature=0.1
+    )
+    bad = _basin_set_log_scores(
+        query, bank, torch.tensor([[3, 3, 3]]), assignment_temperature=0.1
+    )
+    assert good.item() > bad.item()
+
+
+def test_basin_hyperedge_ranks_repaired_child_above_harmful_parent():
+    bank = torch.eye(4)
+    query = torch.stack(
+        (bank[0], bank[1], bank[2], bank[0], bank[1], bank[2])
+    ).reshape(2, 3, 4)
+    contrastive, counterfactual, tiers = _basin_hyperedge_losses(
+        query,
+        bank,
+        torch.tensor([[3, 3, 3], [0, 1, 2]]),
+        torch.tensor([1, 2]),
+        torch.tensor([False, True]),
+        torch.tensor([100.0, 3.0]),
+        torch.tensor([10.0, 1.0]),
+        torch.tensor([-1, 0]),
+        torch.ones(2),
+        assignment_temperature=0.1,
+        basin_temperature=1.0,
+        counterfactual_temperature=0.25,
+        counterfactual_margin=0.1,
+        translation_reward_scale_cm=15.0,
+        rotation_reward_scale_deg=2.0,
+        maximum_inverse_propensity=100.0,
+    )
+    assert contrastive < 1e-3
+    assert counterfactual < 1e-3
+    assert tiers == {"coarse": 1, "precision": 1, "strict": 1}
 
 
 def test_shared_metric_starts_as_identity_and_is_bounded():

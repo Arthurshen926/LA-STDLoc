@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from localization_training.full_primitive_retrieval import (
     chunked_exact_topk,
     chunked_exact_topk_dual_prototype,
+    chunked_exact_topk_family_prototype,
     conditional_core_reserve_topk,
     suppress_redundant_hypotheses,
 )
@@ -36,6 +37,27 @@ def test_dual_prototype_retrieval_uses_max_score_per_anchor():
     )
     assert result.indices[:, 0].tolist() == [0, 0]
     assert torch.allclose(result.scores[:, 0], torch.ones(2))
+
+
+def test_family_prototype_retrieval_returns_unique_geometry_anchors():
+    query = torch.tensor([[0.0, 1.0], [1.0, 1.0]])
+    primary = torch.tensor([[1.0, 0.0], [-1.0, 0.0], [0.7, 0.7]])
+    prototypes = torch.tensor(
+        [[0.0, 1.0], [0.1, 1.0], [-0.7, 0.7]]
+    )
+    parents = torch.tensor([0, 0, 1])
+    result = chunked_exact_topk_family_prototype(
+        query,
+        primary,
+        prototypes,
+        parents,
+        topk=3,
+        chunk_size=2,
+    )
+    assert result.indices[0, 0].item() == 0
+    assert set(result.indices[0].tolist()) == {0, 1, 2}
+    assert result.indices[1].unique().numel() == 3
+    assert torch.allclose(result.scores[0, 0], torch.tensor(1.0), atol=1e-6)
 
 
 def test_conditional_reserve_only_changes_ambiguous_core_rows():

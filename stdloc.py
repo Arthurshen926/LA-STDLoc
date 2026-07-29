@@ -25,6 +25,7 @@ from localization_training.full_primitive_retrieval import (
     ambiguity_gated_context_topk,
     chunked_exact_topk,
     chunked_exact_topk_dual_prototype,
+    chunked_exact_topk_family_prototype,
     conditional_core_reserve_topk,
     suppress_redundant_hypotheses,
 )
@@ -2565,6 +2566,8 @@ class STDLoc:
 
         self.dual_prototype_features = None
         self.dual_prototype_mask = None
+        self.family_prototype_features = None
+        self.family_prototype_anchor_indices = None
         dual_prototype_state_path = str(
             sparse_config.get("dual_prototype_state_path", "")
         )
@@ -2611,6 +2614,65 @@ class STDLoc:
                 device=active_features.device,
                 dtype=torch.bool,
             ).reshape(-1)
+        family_prototype_state_path = str(
+            sparse_config.get("family_prototype_state_path", "")
+        )
+        full_family_prototype_state_path = None
+        if family_prototype_state_path:
+            if self.dual_prototype_features is not None:
+                raise ValueError(
+                    "dual and family prototype retrieval are mutually exclusive"
+                )
+            full_family_prototype_state_path = resolve_artifact_path(
+                config["model_path"],
+                family_prototype_state_path,
+                sparse_config.get(
+                    "family_prototype_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            family_state = torch.load(
+                full_family_prototype_state_path, map_location="cpu"
+            )
+            if family_state.get("schema") != "lafgs_basin_family_prototypes":
+                raise ValueError("unsupported family prototype state")
+            family_indices = torch.as_tensor(
+                family_state["landmark_indices"]
+            ).reshape(-1)
+            active_indices = torch.as_tensor(
+                self.landmark_indices
+            ).reshape(-1).cpu()
+            if not torch.equal(family_indices.cpu(), active_indices):
+                raise ValueError(
+                    "family prototype state does not align with the active bank"
+                )
+            prototype_features = torch.as_tensor(
+                family_state["prototype_features"]
+            )
+            prototype_parents = torch.as_tensor(
+                family_state["prototype_anchor_indices"]
+            ).long().reshape(-1)
+            if (
+                prototype_features.ndim != 2
+                or prototype_features.shape[0] != prototype_parents.numel()
+                or prototype_features.shape[1]
+                != self.landmarks.get_loc_feature.reshape(
+                    self.landmarks.get_loc_feature.shape[0], -1
+                ).shape[1]
+            ):
+                raise ValueError("family prototype descriptors are malformed")
+            if prototype_parents.numel() and (
+                int(prototype_parents.min()) < 0
+                or int(prototype_parents.max()) >= len(active_indices)
+            ):
+                raise ValueError("family prototype parent is outside active bank")
+            self.family_prototype_features = prototype_features.to(
+                device=self.landmarks.get_xyz.device,
+                dtype=self.landmarks.get_loc_feature.dtype,
+            )
+            self.family_prototype_anchor_indices = prototype_parents.to(
+                device=self.landmarks.get_xyz.device
+            )
 
         self.conditional_core_mask = None
         conditional_core_state_path = str(
@@ -2659,9 +2721,12 @@ class STDLoc:
                     dtype=torch.long,
                 )
             ] = True
-            if self.dual_prototype_features is not None:
+            if (
+                self.dual_prototype_features is not None
+                or self.family_prototype_features is not None
+            ):
                 raise ValueError(
-                    "dual-prototype and conditional-reserve retrieval cannot "
+                    "prototype and conditional-reserve retrieval cannot "
                     "be enabled in the same ablation"
                 )
 
@@ -2676,10 +2741,11 @@ class STDLoc:
         if query_context_state_path:
             if (
                 self.dual_prototype_features is not None
+                or self.family_prototype_features is not None
                 or self.conditional_core_mask is not None
             ):
                 raise ValueError(
-                    "query-context, dual-prototype, and conditional-reserve "
+                    "query-context, prototype, and conditional-reserve "
                     "retrieval must be validated in separate ablations"
                 )
             full_query_context_state_path = resolve_artifact_path(
@@ -3041,6 +3107,10 @@ class STDLoc:
             "query_context_state_path": full_query_context_state_path,
             "query_context_state_file_sha256": file_sha256(
                 full_query_context_state_path
+            ),
+            "family_prototype_state_path": full_family_prototype_state_path,
+            "family_prototype_state_file_sha256": file_sha256(
+                full_family_prototype_state_path
             ),
             "detector_path": detector_path,
             "detector_file_sha256": file_sha256(detector_path),
@@ -4281,6 +4351,14 @@ class STDLoc:
                     **retrieval_args,
                 )
             )
+        elif self.family_prototype_features is not None:
+            retrieval = chunked_exact_topk_family_prototype(
+                query_features,
+                landmark_features,
+                self.family_prototype_features,
+                self.family_prototype_anchor_indices,
+                **retrieval_args,
+            )
         elif self.dual_prototype_features is None:
             retrieval = chunked_exact_topk(
                 query_features,
@@ -4317,6 +4395,14 @@ class STDLoc:
                 self.dual_prototype_mask.float().mean().item()
                 if self.dual_prototype_mask is not None
                 else 0.0
+            ),
+            "sparse_diag_native_family_prototype_enabled": float(
+                self.family_prototype_features is not None
+            ),
+            "sparse_diag_native_family_prototype_count": float(
+                self.family_prototype_features.shape[0]
+                if self.family_prototype_features is not None
+                else 0
             ),
             "sparse_diag_native_conditional_reserve_enabled": float(
                 self.conditional_core_mask is not None

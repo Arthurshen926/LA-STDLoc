@@ -629,6 +629,142 @@ def _basin_good_margin_guard_loss(
     return (set_loss * inverse).sum() / inverse.sum().clamp_min(1e-8)
 
 
+def _basin_set_log_scores(
+    query: torch.Tensor,
+    bank: torch.Tensor,
+    anchors: torch.Tensor,
+    *,
+    assignment_temperature: float,
+) -> torch.Tensor:
+    """Log-probability of each three-edge assignment under the full bank."""
+    if anchors.numel() == 0:
+        return torch.empty(0, device=bank.device)
+    flat_query = query.reshape(-1, query.shape[-1])
+    flat_anchor = anchors.reshape(-1)
+    logits = (flat_query @ bank.T) / float(assignment_temperature)
+    selected = logits.gather(1, flat_anchor[:, None]).reshape(-1)
+    edge_log_probability = selected - torch.logsumexp(logits, dim=1)
+    return edge_log_probability.reshape(anchors.shape).sum(dim=1)
+
+
+def _basin_hyperedge_losses(
+    query: torch.Tensor,
+    bank: torch.Tensor,
+    anchors: torch.Tensor,
+    set_types: torch.Tensor,
+    correct_basin: torch.Tensor,
+    te_cm: torch.Tensor,
+    re_deg: torch.Tensor,
+    parent_set_index: torch.Tensor,
+    propensities: torch.Tensor,
+    *,
+    assignment_temperature: float,
+    basin_temperature: float,
+    counterfactual_temperature: float,
+    counterfactual_margin: float,
+    translation_reward_scale_cm: float,
+    rotation_reward_scale_deg: float,
+    maximum_inverse_propensity: float,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """Contrast successful P3P hyperedges and rank repaired near-miss sets."""
+    if anchors.numel() == 0:
+        zero = torch.zeros((), device=bank.device)
+        return zero, zero, {"coarse": 0, "precision": 0, "strict": 0}
+    set_scores = _basin_set_log_scores(
+        query,
+        bank,
+        anchors,
+        assignment_temperature=assignment_temperature,
+    )
+    types = set_types.long()
+    correct = correct_basin.bool()
+    good = correct & ((types == 0) | (types == 2))
+    harmful = types == 1
+    coarse = good & (te_cm <= 50.0) & (re_deg <= 5.0)
+    precision = good & (te_cm <= 15.0) & (re_deg <= 2.0)
+    strict = good & (te_cm <= 5.0) & (re_deg <= 5.0)
+    propensity = propensities.float().clamp_min(1e-12)
+    inverse = (
+        propensity.median().clamp_min(1e-12) / propensity
+    ).clamp_max(float(maximum_inverse_propensity))
+    inverse = inverse / inverse.mean().clamp_min(1e-8)
+    continuous_reward = torch.exp(
+        -te_cm.clamp_min(0) / float(translation_reward_scale_cm)
+        - re_deg.clamp_min(0) / float(rotation_reward_scale_deg)
+    )
+    quality = (
+        0.25
+        + continuous_reward
+        + precision.float()
+        + strict.float()
+    )
+    debiased = torch.log(inverse.clamp_min(1e-8))
+    good_logits = (
+        set_scores[good]
+        + torch.log(quality[good].clamp_min(1e-8))
+        + debiased[good]
+    ) / float(basin_temperature)
+    harmful_logits = (
+        set_scores[harmful] + debiased[harmful]
+    ) / float(basin_temperature)
+    if good_logits.numel() and harmful_logits.numel():
+        numerator = torch.logsumexp(good_logits, dim=0)
+        denominator = torch.logsumexp(
+            torch.cat((good_logits, harmful_logits)), dim=0
+        )
+        contrastive = denominator - numerator
+    else:
+        contrastive = torch.zeros((), device=bank.device)
+
+    near = torch.nonzero(
+        (types == 2) & correct & (parent_set_index >= 0), as_tuple=False
+    ).reshape(-1)
+    valid_near = near[
+        parent_set_index[near].long().clamp_min(0) < set_scores.numel()
+    ]
+    if valid_near.numel():
+        parents = parent_set_index[valid_near].long()
+        valid_parent = types[parents] == 1
+        valid_near = valid_near[valid_parent]
+        parents = parents[valid_parent]
+    if valid_near.numel():
+        counterfactual = F.softplus(
+            (
+                set_scores[parents]
+                - set_scores[valid_near]
+                + float(counterfactual_margin)
+            )
+            / float(counterfactual_temperature)
+        ) * float(counterfactual_temperature)
+        counterfactual = (
+            counterfactual * inverse[valid_near]
+        ).sum() / inverse[valid_near].sum().clamp_min(1e-8)
+    else:
+        counterfactual = torch.zeros((), device=bank.device)
+    return contrastive, counterfactual, {
+        "coarse": int(coarse.sum()),
+        "precision": int(precision.sum()),
+        "strict": int(strict.sum()),
+    }
+
+
+def _verify_basin_teacher_prefix(state: dict, teacher: dict) -> None:
+    teacher_count = int(teacher["anchor_count"])
+    state_count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
+    if teacher_count > state_count:
+        raise ValueError("basin teacher has more anchors than the target map")
+    source_record = teacher.get("artifacts", {}).get("map", {})
+    source_path = Path(str(source_record.get("path", "")))
+    if not source_path.is_file():
+        raise ValueError("basin teacher source map is unavailable")
+    source = torch.load(source_path, map_location="cpu", weights_only=False)
+    for key in ("anchor_ids", "anchor_xyz", "source_primitive_ids"):
+        expected = torch.as_tensor(source[key])[:teacher_count]
+        actual = torch.as_tensor(state[key])[:teacher_count]
+        if expected.shape != actual.shape or not torch.equal(expected, actual):
+            raise ValueError(f"target map does not preserve basin-teacher {key} prefix")
+
+
 def _project_errors(xyz, keypoints, K, pose):
     camera = xyz @ pose[:3, :3].T + pose[:3, 3]
     depth = camera[:, 2]
@@ -883,10 +1019,16 @@ def main() -> None:
     parser.add_argument("--basin-blame-margin", type=float, default=0.02)
     parser.add_argument(
         "--basin-good-mode",
-        choices=("joint_ce", "margin_guard"),
+        choices=("joint_ce", "margin_guard", "hyperedge"),
         default="joint_ce",
     )
     parser.add_argument("--basin-good-margin-slack", type=float, default=0.0)
+    parser.add_argument("--basin-hyperedge-counterfactual-weight", type=float, default=1.0)
+    parser.add_argument("--basin-hyperedge-temperature", type=float, default=1.0)
+    parser.add_argument("--basin-counterfactual-temperature", type=float, default=0.25)
+    parser.add_argument("--basin-counterfactual-margin", type=float, default=0.1)
+    parser.add_argument("--basin-translation-reward-scale-cm", type=float, default=15.0)
+    parser.add_argument("--basin-rotation-reward-scale-deg", type=float, default=2.0)
     parser.add_argument("--critical-pair-power", type=float, default=1.0)
     parser.add_argument("--critical-row-power", type=float, default=1.0)
     parser.add_argument("--output-dir", required=True)
@@ -994,8 +1136,7 @@ def main() -> None:
     if basin_teacher is not None:
         if basin_teacher.get("schema") != "lafgs_basin_teacher":
             raise ValueError("unsupported basin teacher schema")
-        if int(basin_teacher["anchor_count"]) != len(basin_conflict_mask):
-            raise ValueError("basin teacher anchor count mismatch")
+        _verify_basin_teacher_prefix(state, basin_teacher)
         name_to_query = {name: index for index, name in enumerate(names)}
         for basin_record in basin_teacher["records"]:
             name = basin_record["query_name"]
@@ -1281,17 +1422,64 @@ def main() -> None:
         ) * group_weight
         basin_good_loss = torch.zeros((), device=device)
         basin_blame_loss = torch.zeros((), device=device)
+        basin_counterfactual_loss = torch.zeros((), device=device)
+        basin_tiers = {"coarse": 0, "precision": 0, "strict": 0}
         basin_record = basin_records[query_index]
         if basin_record is not None and float(args.basin_weight) > 0:
             set_types = torch.as_tensor(basin_record["set_types"]).long()
             correct_basin = torch.as_tensor(
                 basin_record["correct_basin"]
             ).bool()
+            if args.basin_good_mode == "hyperedge":
+                basin_rows = torch.as_tensor(
+                    basin_record["set_query_rows"]
+                ).long()
+                basin_raw_query = F.normalize(
+                    torch.as_tensor(
+                        cache[names[query_index]]["native_descriptors"]
+                    ).float()[basin_rows.reshape(-1)],
+                    dim=1,
+                ).to(device)
+                basin_query, _ = metric(basin_raw_query)
+                basin_good_loss, basin_counterfactual_loss, basin_tiers = (
+                    _basin_hyperedge_losses(
+                        basin_query.reshape(len(basin_rows), 3, -1),
+                        adapted_anchor,
+                        torch.as_tensor(
+                            basin_record["set_anchor_indices"]
+                        ).long().to(device),
+                        set_types.to(device),
+                        correct_basin.to(device),
+                        torch.as_tensor(basin_record["te_cm"]).float().to(device),
+                        torch.as_tensor(basin_record["re_deg"]).float().to(device),
+                        torch.as_tensor(
+                            basin_record["parent_set_index"]
+                        ).long().to(device),
+                        torch.as_tensor(
+                            basin_record["sampling_propensity"]
+                        ).float().to(device),
+                        assignment_temperature=args.temperature,
+                        basin_temperature=args.basin_hyperedge_temperature,
+                        counterfactual_temperature=(
+                            args.basin_counterfactual_temperature
+                        ),
+                        counterfactual_margin=args.basin_counterfactual_margin,
+                        translation_reward_scale_cm=(
+                            args.basin_translation_reward_scale_cm
+                        ),
+                        rotation_reward_scale_deg=(
+                            args.basin_rotation_reward_scale_deg
+                        ),
+                        maximum_inverse_propensity=(
+                            args.basin_maximum_inverse_propensity
+                        ),
+                    )
+                )
             good_sets = torch.nonzero(
                 correct_basin & ((set_types == 0) | (set_types == 2)),
                 as_tuple=False,
             ).reshape(-1)
-            if good_sets.numel():
+            if good_sets.numel() and args.basin_good_mode != "hyperedge":
                 take = min(int(args.basin_sets_per_step), int(good_sets.numel()))
                 selected = good_sets[
                     torch.randperm(
@@ -1380,6 +1568,8 @@ def main() -> None:
             * (
                 float(args.basin_good_weight) * basin_good_loss
                 + float(args.basin_blame_weight) * basin_blame_loss
+                + float(args.basin_hyperedge_counterfactual_weight)
+                * basin_counterfactual_loss
             )
         )
         if args.training_mode == "sequential":
@@ -1417,6 +1607,12 @@ def main() -> None:
                 "null_loss": float(null_loss.detach()),
                 "basin_good_loss": float(basin_good_loss.detach()),
                 "basin_blame_loss": float(basin_blame_loss.detach()),
+                "basin_counterfactual_loss": float(
+                    basin_counterfactual_loss.detach()
+                ),
+                "basin_coarse_sets": basin_tiers["coarse"],
+                "basin_precision_sets": basin_tiers["precision"],
+                "basin_strict_sets": basin_tiers["strict"],
                 "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
                 "phase": phase,
