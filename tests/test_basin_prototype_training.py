@@ -1,10 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from scripts.train_lafgs_basin_prototypes import (
-    _hyperedge_loss,
-    _teacher_set_scores,
+from localization_training.prototype_optimization import (
+    hyperedge_loss,
     materialize_prototypes,
+    teacher_set_scores,
 )
 
 
@@ -45,7 +45,7 @@ def test_prototype_residual_has_gradient_at_zero_initialization():
 
 def test_teacher_set_score_uses_secondary_bias():
     query = F.normalize(torch.tensor([[[0.0, 1.0]] * 3]), dim=2)
-    score = _teacher_set_scores(
+    score = teacher_set_scores(
         query,
         F.normalize(torch.tensor([[1.0, 0.0]]), dim=1),
         F.normalize(torch.tensor([[0.0, 1.0]]), dim=1),
@@ -58,7 +58,7 @@ def test_teacher_set_score_uses_secondary_bias():
 
 
 def test_sibling_loss_prefers_repaired_set():
-    _, bad = _hyperedge_loss(
+    _, bad = hyperedge_loss(
         torch.tensor([1.0, 0.0]),
         torch.tensor([1, 2]),
         torch.tensor([0, 3]),
@@ -69,7 +69,7 @@ def test_sibling_loss_prefers_repaired_set():
         translation_scale_cm=15.0,
         rotation_scale_deg=2.0,
     )
-    _, good = _hyperedge_loss(
+    _, good = hyperedge_loss(
         torch.tensor([0.0, 1.0]),
         torch.tensor([1, 2]),
         torch.tensor([0, 3]),

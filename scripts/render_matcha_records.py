@@ -98,13 +98,24 @@ def _make_minicam(record, resolution=None):
     return MiniCam(width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform)
 
 
-def render_records(manifest, model_path, output_dir, matcha_root="/root/MAtCha", iteration=30000, resolution=""):
+def render_records(
+    manifest,
+    model_path,
+    output_dir,
+    matcha_root="/root/MAtCha",
+    iteration=30000,
+    resolution="",
+    evidence_dir="",
+):
     _add_matcha_to_path(matcha_root)
     from gaussian_renderer import GaussianModel, render
 
     records = [_record_payload(row, index) for index, row in enumerate(_load_manifest_records(manifest))]
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    evidence_dir = Path(evidence_dir) if evidence_dir else None
+    if evidence_dir is not None:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
     resolution_hw = _parse_resolution(resolution)
 
     model_path = Path(model_path)
@@ -126,6 +137,11 @@ def render_records(manifest, model_path, output_dir, matcha_root="/root/MAtCha",
         "iteration": int(iteration),
         "resolution": str(resolution or ""),
         "frames": [],
+        "evidence_dir": (
+            os.path.abspath(os.fspath(evidence_dir))
+            if evidence_dir is not None
+            else ""
+        ),
     }
     with torch.no_grad():
         for record in records:
@@ -133,6 +149,24 @@ def render_records(manifest, model_path, output_dir, matcha_root="/root/MAtCha",
             pkg = render(cam, gaussians, pipe, background)
             frame_path = output_dir / f"{int(record['index']):06d}.png"
             torchvision.utils.save_image(pkg["render"].detach().clamp(0.0, 1.0), frame_path)
+            evidence_path = ""
+            if evidence_dir is not None:
+                evidence_path = evidence_dir / f"{int(record['index']):06d}.pt"
+                torch.save(
+                    {
+                        "schema": "lafgs_matcha_render_evidence",
+                        "version": 1,
+                        "query_id": record["query_id"],
+                        "pose_w2c": torch.as_tensor(record["pose_w2c"]).float(),
+                        "width": int(cam.image_width),
+                        "height": int(cam.image_height),
+                        "alpha": pkg["rend_alpha"].detach().half().cpu(),
+                        "depth": pkg["surf_depth"].detach().float().cpu(),
+                        "depth_distortion": pkg["rend_dist"].detach().half().cpu(),
+                        "surface_normal": pkg["surf_normal"].detach().half().cpu(),
+                    },
+                    evidence_path,
+                )
             summary["frames"].append(
                 {
                     "index": int(record["index"]),
@@ -140,6 +174,11 @@ def render_records(manifest, model_path, output_dir, matcha_root="/root/MAtCha",
                     "path": os.path.abspath(os.fspath(frame_path)),
                     "width": int(cam.image_width),
                     "height": int(cam.image_height),
+                    "evidence_path": (
+                        os.path.abspath(os.fspath(evidence_path))
+                        if evidence_path
+                        else ""
+                    ),
                 }
             )
     return summary
@@ -154,6 +193,7 @@ def main():
     parser.add_argument("--iteration", type=int, default=int(os.environ.get("MATCHA_ITERATION", "30000")))
     parser.add_argument("--resolution", default=os.environ.get("MATCHA_RENDER_RESOLUTION", ""))
     parser.add_argument("--summary_json", default="")
+    parser.add_argument("--evidence_dir", default="")
     args = parser.parse_args()
 
     summary = render_records(
@@ -163,6 +203,7 @@ def main():
         matcha_root=args.matcha_root,
         iteration=args.iteration,
         resolution=args.resolution,
+        evidence_dir=args.evidence_dir,
     )
     if args.summary_json:
         with open(args.summary_json, "w") as f:

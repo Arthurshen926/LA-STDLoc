@@ -583,11 +583,14 @@ def main() -> None:
             Path(args.dynamic_outcomes_output),
             {
                 "schema": "lafgs_dynamic_self_localization_outcomes",
-                "version": 1,
+                "version": 2,
                 "query_names": names,
                 "anchor_count": int(xyz.shape[0]),
                 "map": str(Path(args.map).resolve()),
                 "metric_state": run_identity["metric_state"],
+                "family_prototype_state": run_identity[
+                    "family_prototype_state"
+                ],
                 "seed": int(args.seed),
                 "records": dynamic_records,
                 "summary": {

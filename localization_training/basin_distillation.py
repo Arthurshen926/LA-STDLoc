@@ -15,6 +15,169 @@ HARMFUL_SET = 1
 NEAR_MISS_SET = 2
 
 
+def basin_risk(outcome: dict) -> float:
+    """Return the bounded pose-basin risk used by counterfactual repairs."""
+    if not bool(outcome["valid"]):
+        return 20.0
+    return min(float(outcome["te_cm"]) / 50.0, 10.0) + min(
+        float(outcome["re_deg"]) / 5.0, 10.0
+    )
+
+
+def as_basin_record(
+    *,
+    query_rows,
+    anchors,
+    set_type,
+    outcome,
+    propensity=1.0,
+    proposal_attempts=1,
+    parent=-1,
+    replaced_position=-1,
+    blame=0.0,
+) -> dict:
+    """Encode one P3P hyperedge using the shared Basin artifact schema."""
+    return {
+        "query_rows": [int(value) for value in query_rows],
+        "anchor_indices": [int(value) for value in anchors],
+        "set_type": int(set_type),
+        "correct_basin": bool(outcome["correct_basin"]),
+        "valid": bool(outcome["valid"]),
+        "inlier_count": int(outcome["inlier_count"]),
+        "msac_cost": float(outcome["msac_cost"]),
+        "te_cm": float(outcome["te_cm"]),
+        "re_deg": float(outcome["re_deg"]),
+        "sampling_propensity": float(max(propensity, 1e-12)),
+        "proposal_attempts": int(proposal_attempts),
+        "parent_set_index": int(parent),
+        "replaced_position": int(replaced_position),
+        "counterfactual_blame": float(max(blame, 0.0)),
+    }
+
+
+def pack_basin_records(records: list[dict]) -> dict:
+    """Pack Basin records and derive query-local edge credit/blame tensors."""
+    if not records:
+        return {
+            "set_query_rows": torch.empty((0, 3), dtype=torch.long),
+            "set_anchor_indices": torch.empty((0, 3), dtype=torch.long),
+            "set_types": torch.empty(0, dtype=torch.int8),
+            "correct_basin": torch.empty(0, dtype=torch.bool),
+            "inlier_count": torch.empty(0, dtype=torch.int32),
+            "msac_cost": torch.empty(0),
+            "te_cm": torch.empty(0),
+            "re_deg": torch.empty(0),
+            "sampling_propensity": torch.empty(0, dtype=torch.float64),
+            "proposal_attempts": torch.empty(0, dtype=torch.int16),
+            "parent_set_index": torch.empty(0, dtype=torch.long),
+            "replaced_position": torch.empty(0, dtype=torch.int8),
+            "counterfactual_blame": torch.empty(0),
+            "edge_credit": {
+                kind: {
+                    "rows": torch.empty(0, dtype=torch.long),
+                    "anchors": torch.empty(0, dtype=torch.long),
+                    "weights": torch.empty(0),
+                }
+                for kind in ("positive", "negative")
+            },
+            "blame_rows": torch.empty(0, dtype=torch.long),
+            "blame_harmful_anchors": torch.empty(0, dtype=torch.long),
+            "blame_positive_anchors": torch.empty(0, dtype=torch.long),
+            "blame_weights": torch.empty(0),
+        }
+    packed = {
+        "set_query_rows": torch.as_tensor(
+            [record["query_rows"] for record in records], dtype=torch.long
+        ),
+        "set_anchor_indices": torch.as_tensor(
+            [record["anchor_indices"] for record in records], dtype=torch.long
+        ),
+        "set_types": torch.as_tensor(
+            [record["set_type"] for record in records], dtype=torch.int8
+        ),
+        "correct_basin": torch.as_tensor(
+            [record["correct_basin"] for record in records], dtype=torch.bool
+        ),
+        "inlier_count": torch.as_tensor(
+            [record["inlier_count"] for record in records], dtype=torch.int32
+        ),
+        "msac_cost": torch.as_tensor(
+            [record["msac_cost"] for record in records], dtype=torch.float32
+        ),
+        "te_cm": torch.as_tensor(
+            [record["te_cm"] for record in records], dtype=torch.float32
+        ),
+        "re_deg": torch.as_tensor(
+            [record["re_deg"] for record in records], dtype=torch.float32
+        ),
+        "sampling_propensity": torch.as_tensor(
+            [record["sampling_propensity"] for record in records],
+            dtype=torch.float64,
+        ),
+        "proposal_attempts": torch.as_tensor(
+            [record["proposal_attempts"] for record in records],
+            dtype=torch.int16,
+        ),
+        "parent_set_index": torch.as_tensor(
+            [record["parent_set_index"] for record in records], dtype=torch.long
+        ),
+        "replaced_position": torch.as_tensor(
+            [record["replaced_position"] for record in records], dtype=torch.int8
+        ),
+        "counterfactual_blame": torch.as_tensor(
+            [record["counterfactual_blame"] for record in records],
+            dtype=torch.float32,
+        ),
+    }
+    severity = torch.log1p(packed["inlier_count"].float()) * (
+        1.0
+        + (packed["te_cm"] / 100.0)
+        .nan_to_num(posinf=10.0)
+        .clamp(max=10.0)
+    )
+    packed["edge_credit"] = aggregate_edge_credit(
+        packed["set_query_rows"],
+        packed["set_anchor_indices"],
+        packed["set_types"],
+        packed["correct_basin"],
+        packed["sampling_propensity"],
+        severity,
+    )
+    blame_mask = (
+        (packed["set_types"] == NEAR_MISS_SET)
+        & (packed["parent_set_index"] >= 0)
+        & (packed["replaced_position"] >= 0)
+        & (packed["counterfactual_blame"] > 0)
+    )
+    blame_records = []
+    for child_index in torch.nonzero(
+        blame_mask, as_tuple=False
+    ).reshape(-1).tolist():
+        parent_index = int(packed["parent_set_index"][child_index])
+        position = int(packed["replaced_position"][child_index])
+        blame_records.append(
+            (
+                int(packed["set_query_rows"][child_index, position]),
+                int(packed["set_anchor_indices"][parent_index, position]),
+                int(packed["set_anchor_indices"][child_index, position]),
+                float(packed["counterfactual_blame"][child_index]),
+            )
+        )
+    packed["blame_rows"] = torch.as_tensor(
+        [value[0] for value in blame_records], dtype=torch.long
+    )
+    packed["blame_harmful_anchors"] = torch.as_tensor(
+        [value[1] for value in blame_records], dtype=torch.long
+    )
+    packed["blame_positive_anchors"] = torch.as_tensor(
+        [value[2] for value in blame_records], dtype=torch.long
+    )
+    packed["blame_weights"] = torch.as_tensor(
+        [value[3] for value in blame_records], dtype=torch.float32
+    )
+    return packed
+
+
 def expanded_positive_lookup(record: dict) -> dict[int, list[int]]:
     """Expand a CSR positive teacher record into query-row identities."""
     rows = torch.as_tensor(record["query_rows"]).long()

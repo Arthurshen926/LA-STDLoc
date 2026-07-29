@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from scripts.build_lafgs_basin_family_prototypes import (
+from localization_training.appearance_family import (
     bitwise_union,
     collapse_duplicate_conflicts,
     discover_spherical_modes,
