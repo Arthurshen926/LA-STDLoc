@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from localization_training.prototype_optimization import (
+    _deployed_pair_scores,
     hyperedge_loss,
     materialize_prototypes,
     teacher_set_scores,
@@ -41,6 +42,24 @@ def test_prototype_residual_has_gradient_at_zero_initialization():
     features[0, 1].backward()
     assert residual.grad is not None
     assert residual.grad[0, 1] > 0.9
+
+
+def test_contrastive_smoothmax_reaches_nonwinning_secondary_mode():
+    query = torch.tensor([[1.0, 0.0]])
+    prototype = torch.tensor([[0.7, 0.7]], requires_grad=True)
+    score = _deployed_pair_scores(
+        query=query,
+        anchors=torch.tensor([0]),
+        bank=F.normalize(torch.tensor([[0.8, 0.6]]), dim=1),
+        family_features=F.normalize(prototype, dim=1),
+        family_parents=torch.tensor([0]),
+        family_bias=torch.zeros(1),
+        family_temperature=torch.ones(1),
+        smoothmax_temperature=0.05,
+    )
+    score.backward()
+    assert prototype.grad is not None
+    assert float(prototype.grad.norm()) > 0
 
 
 def test_teacher_set_score_uses_secondary_bias():

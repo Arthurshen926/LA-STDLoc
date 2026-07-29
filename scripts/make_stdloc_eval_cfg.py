@@ -92,6 +92,7 @@ def make_stdloc_eval_cfg(
     sparse_query_feature_contract=None,
     sparse_frontend=None,
     metric_state_path=None,
+    family_prototype_state_path=None,
     rerank_topk=None,
     rerank_patch_radius=None,
     rerank_patch_step_px=None,
@@ -175,6 +176,11 @@ def make_stdloc_eval_cfg(
     if metric_state_path is not None:
         sparse["metric_state_path"] = str(metric_state_path)
         sparse["metric_state_model_path"] = artifact_model_path
+    if family_prototype_state_path is not None:
+        sparse["family_prototype_state_path"] = str(
+            family_prototype_state_path
+        )
+        sparse["family_prototype_state_model_path"] = artifact_model_path
     if rerank_state_path is not None:
         sparse["rerank_state_path"] = str(rerank_state_path)
         sparse["rerank_state_model_path"] = artifact_model_path
@@ -542,6 +548,9 @@ def make_stdloc_eval_cfg(
             sparse.get("max_iterations", 100000),
         ),
         "sparse_frontend": sparse.get("sparse_frontend", "detector"),
+        "family_prototype_state_path": sparse.get(
+            "family_prototype_state_path", ""
+        ),
         "candidate_frontend_match_policy": sparse.get(
             "candidate_frontend_match_policy", "warn"
         ),
@@ -733,6 +742,7 @@ def main():
         default=None,
     )
     parser.add_argument("--metric_state_path", default=None)
+    parser.add_argument("--family_prototype_state_path", default=None)
     parser.add_argument("--sparse_ransac_seed", type=int, default=None)
     parser.add_argument("--rerank_topk", type=int, default=None)
     parser.add_argument("--rerank_patch_radius", type=int, default=None)
@@ -898,6 +908,7 @@ def main():
         sparse_frontend=args.sparse_frontend,
         sparse_ransac_seed=args.sparse_ransac_seed,
         metric_state_path=args.metric_state_path,
+        family_prototype_state_path=args.family_prototype_state_path,
         rerank_topk=args.rerank_topk,
         rerank_patch_radius=args.rerank_patch_radius,
         rerank_patch_step_px=args.rerank_patch_step_px,

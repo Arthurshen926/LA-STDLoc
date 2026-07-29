@@ -4,9 +4,11 @@ from localization_training.synthetic_evidence import (
     RenderQualityFilterConfig,
     SyntheticEvidenceConfig,
     build_render_quality_mask,
+    depth_warped_reference_residual,
     keypoint_positive_csr,
     project_existing_anchors,
     render_visible_anchor_mask,
+    synthetic_positive_teacher_payload,
 )
 
 
@@ -39,6 +41,25 @@ def test_render_quality_mask_rejects_reference_inconsistent_region():
     assert result.valid_mask[:, :4].all()
     assert not result.valid_mask[:, 4:].any()
     assert result.summary["reference_valid_frac"] == 0.5
+
+
+def test_depth_warped_reference_qa_is_exact_for_same_camera():
+    image = torch.rand(3, 8, 8)
+    K = torch.tensor(
+        [[10.0, 0.0, 4.0], [0.0, 10.0, 4.0], [0.0, 0.0, 1.0]]
+    )
+    residual, valid = depth_warped_reference_residual(
+        rendered_rgb=image,
+        rendered_depth=torch.full((1, 8, 8), 2.0),
+        render_pose_w2c=torch.eye(4),
+        render_K=K,
+        reference_views=[
+            {"rgb": image, "pose_w2c": torch.eye(4), "K": K}
+        ],
+        downsample=1,
+    )
+    assert valid.all()
+    assert float(residual.max()) < 1e-5
 
 
 def test_render_visibility_requires_alpha_and_depth_consistency():
@@ -94,3 +115,31 @@ def test_project_existing_anchors_uses_fixed_world_geometry():
     assert torch.allclose(projected[0], torch.tensor([50.0, 40.0]))
     assert depth.tolist() == [2.0, -1.0]
     assert valid.tolist() == [True, False]
+
+
+def test_synthetic_evidence_defaults_to_support_mask_and_preserves_labels():
+    assert SyntheticEvidenceConfig().require_support_mask
+    evidence = {
+        "query_names": ["render:0"],
+        "records": [
+            {
+                "query_name": "render:0",
+                "query_rows": torch.tensor([0]),
+                "positive_offsets": torch.tensor([0, 1]),
+                "positive_indices": torch.tensor([3]),
+                "ambiguous_offsets": torch.tensor([0, 1]),
+                "ambiguous_indices": torch.tensor([4]),
+                "hard_negative_offsets": torch.tensor([0, 1]),
+                "hard_negative_indices": torch.tensor([7]),
+                "hard_negative_positive_indices": torch.tensor([3]),
+                "hard_negative_weights": torch.tensor([2.0]),
+            }
+        ],
+        "provenance": {},
+    }
+    teacher = synthetic_positive_teacher_payload(evidence, anchor_count=8)
+    record = teacher["records"][0]
+    assert teacher["version"] == 2
+    assert record["ambiguous_indices"].tolist() == [4]
+    assert record["hard_negative_indices"].tolist() == [7]
+    assert record["hard_negative_positive_indices"].tolist() == [3]

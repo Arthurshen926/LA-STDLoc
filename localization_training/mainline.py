@@ -17,13 +17,24 @@ from localization_training.candidate_basin_teacher import (
     CandidateBasinConfig,
     build_candidate_basin_teacher,
 )
+from localization_training.confusion_evidence import (
+    ConfusionGraphConfig,
+    ConfusionViewPlanningConfig,
+    ContrastiveEvidenceConfig,
+    build_anchor_family_confusion_graph,
+    build_contrastive_synthetic_record,
+    pack_contrastive_synthetic_evidence,
+    plan_confusion_conditioned_views,
+)
 from localization_training.failure_atlas import (
     FailureAtlasConfig,
     build_failure_atlas,
 )
 from localization_training.prototype_optimization import (
+    ContrastivePrototypeOptimizationConfig,
     PrototypeOptimizationConfig,
     optimize_basin_prototypes,
+    optimize_contrastive_prototypes,
 )
 from localization_training.shared_metric import SharedLowRankMetric
 
@@ -179,3 +190,147 @@ class AlternatingLocalizationReconstructor:
             progress=progress,
         )
 
+    def active_evidence_step(self) -> "ActiveEvidenceAcquisitionStep":
+        return ActiveEvidenceAcquisitionStep(self)
+
+
+class ActiveEvidenceAcquisitionStep:
+    """First-class active evidence operation inside one reconstruction round."""
+
+    def __init__(self, reconstructor: AlternatingLocalizationReconstructor):
+        self.reconstructor = reconstructor
+
+    @property
+    def state(self) -> LocalizationRoundState:
+        return self.reconstructor.state
+
+    @property
+    def device(self) -> torch.device:
+        return self.reconstructor.device
+
+    def build_confusion_atlas(
+        self,
+        *,
+        family: dict,
+        config: ConfusionGraphConfig,
+        progress=None,
+    ) -> dict:
+        return build_anchor_family_confusion_graph(
+            state=self.state.anchor_map,
+            metric=self.state.metric,
+            family=family,
+            dynamic=self.state.dynamic_outcomes,
+            positives=self.state.complete_positive_teacher,
+            cache=self.state.query_cache,
+            query_bins=self.state.query_bins,
+            config=config,
+            device=self.device,
+            progress=progress,
+        )
+
+    def build_contrastive_evidence(
+        self,
+        *,
+        family: dict,
+        confusion_graph: dict,
+        synthetic_records: list[dict],
+        render_payloads: dict[str, dict],
+        visibility_config,
+        config: ContrastiveEvidenceConfig,
+        source: dict,
+    ) -> dict:
+        records = []
+        for record in synthetic_records:
+            name = str(record["query_name"])
+            payload = render_payloads[name]
+            records.append(
+                build_contrastive_synthetic_record(
+                    record=record,
+                    state=self.state.anchor_map,
+                    metric=self.state.metric,
+                    family=family,
+                    confusion_graph=confusion_graph,
+                    rendered_depth=payload["depth"],
+                    alpha=payload["alpha"],
+                    visibility_config=visibility_config,
+                    config=config,
+                    device=self.device,
+                )
+            )
+        return pack_contrastive_synthetic_evidence(
+            records, source=source, confusion_graph=confusion_graph
+        )
+
+    def propose_views(
+        self,
+        *,
+        confusion_graph: dict,
+        config: ConfusionViewPlanningConfig,
+    ) -> list[dict]:
+        return plan_confusion_conditioned_views(
+            confusion_graph=confusion_graph,
+            state=self.state.anchor_map,
+            cache=self.state.query_cache,
+            query_bins=self.state.query_bins,
+            config=config,
+        )
+
+    def update_local_families(
+        self,
+        *,
+        family: dict,
+        contrastive_evidence: dict,
+        config: ContrastivePrototypeOptimizationConfig,
+        **kwargs,
+    ) -> tuple[dict, list[dict]]:
+        return optimize_contrastive_prototypes(
+            state=self.state.anchor_map,
+            metric=self.state.metric,
+            family=family,
+            evidence=contrastive_evidence,
+            config=config,
+            device=self.device,
+            **kwargs,
+        )
+
+    def run_active_evidence_round(
+        self,
+        *,
+        family: dict,
+        synthetic_records: list[dict],
+        render_payloads: dict[str, dict],
+        visibility_config,
+        confusion_config: ConfusionGraphConfig,
+        evidence_config: ContrastiveEvidenceConfig,
+        optimization_config: ContrastivePrototypeOptimizationConfig,
+        source: dict,
+        progress=None,
+    ) -> dict:
+        confusion_graph = self.build_confusion_atlas(
+            family=family,
+            config=confusion_config,
+            progress=progress,
+        )
+        evidence = self.build_contrastive_evidence(
+            family=family,
+            confusion_graph=confusion_graph,
+            synthetic_records=synthetic_records,
+            render_payloads=render_payloads,
+            visibility_config=visibility_config,
+            config=evidence_config,
+            source=source,
+        )
+        updated, history = self.update_local_families(
+            family=family,
+            contrastive_evidence=evidence,
+            config=optimization_config,
+            progress=progress,
+        )
+        return {
+            "schema": "lafgs_active_evidence_round",
+            "version": 1,
+            "confusion_graph": confusion_graph,
+            "contrastive_evidence": evidence,
+            "updated_family": updated,
+            "optimization_history": history,
+        }

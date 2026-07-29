@@ -51,6 +51,12 @@ def _scaled_intrinsics(record: dict, width: int, height: int) -> torch.Tensor:
     return K
 
 
+def _save_partial(path: Path, payload: dict) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, temporary)
+    temporary.replace(path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--map", required=True)
@@ -58,6 +64,7 @@ def main() -> None:
     parser.add_argument("--frames-dir", required=True)
     parser.add_argument("--render-evidence-dir", required=True)
     parser.add_argument("--real-image-root", required=True)
+    parser.add_argument("--real-query-cache", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--mask-output-dir", default="")
     parser.add_argument("--device", default="cuda")
@@ -79,7 +86,16 @@ def main() -> None:
     )
     parser.add_argument("--minimum-alpha-coverage", type=float, default=0.25)
     parser.add_argument("--minimum-visible-anchors", type=int, default=64)
-    parser.add_argument("--require-support-mask", action="store_true")
+    parser.add_argument(
+        "--require-support-mask",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--allow-unsafe-no-support-mask",
+        action="store_true",
+        help="Explicitly allow non-canonical evidence without support masking.",
+    )
     parser.add_argument("--support-threshold", type=float, default=0.22)
     parser.add_argument("--support-dilate-radius", type=int, default=5)
     parser.add_argument("--invalid-min-area", type=int, default=96)
@@ -89,11 +105,50 @@ def main() -> None:
     )
     parser.add_argument("--minimum-normal-norm", type=float, default=0.5)
     parser.add_argument("--quality-invalid-dilate-radius", type=int, default=2)
+    parser.add_argument(
+        "--require-warped-reference-qa",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     args = parser.parse_args()
+    if not args.require_support_mask and not args.allow_unsafe_no_support_mask:
+        raise ValueError(
+            "canonical synthetic evidence requires --require-support-mask; "
+            "use the explicit unsafe override only for a diagnostic ablation"
+        )
+    if args.require_warped_reference_qa and not args.real_query_cache:
+        raise ValueError(
+            "canonical rendering QA requires --real-query-cache for "
+            "rendered-depth warping"
+        )
 
     device = torch.device(args.device)
     state = torch.load(args.map, map_location="cpu", weights_only=False)
     manifest = _load_jsonl(args.render_manifest)
+    output_path = Path(args.output).resolve()
+    partial_path = output_path.with_suffix(output_path.suffix + ".partial")
+    manifest_query_ids = [
+        str(record["query_id"]) for record in manifest
+    ]
+    partial_config = {
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"device"}
+    }
+    completed_records = []
+    if partial_path.exists():
+        partial = torch.load(
+            partial_path, map_location="cpu", weights_only=False
+        )
+        if partial.get("manifest_query_ids") != manifest_query_ids:
+            raise ValueError(
+                "synthetic evidence partial does not align with manifest"
+            )
+        if partial.get("config") != partial_config:
+            raise ValueError(
+                "synthetic evidence partial uses a different resolved config"
+            )
+        completed_records = list(partial["records"])
     extractor = SuperPoint().to(device).eval()
     mask_builder = NoReferenceValidSupportMaskBuilder(
         NoReferenceValidSupportMaskConfig(
@@ -122,9 +177,29 @@ def main() -> None:
     frames_dir = Path(args.frames_dir)
     render_evidence_dir = Path(args.render_evidence_dir)
     real_image_root = Path(args.real_image_root)
+    real_cache_payload = (
+        torch.load(
+            args.real_query_cache, map_location="cpu", weights_only=False
+        )
+        if args.real_query_cache
+        else {}
+    )
+    real_cache = real_cache_payload.get("queries", real_cache_payload)
     mask_output = Path(args.mask_output_dir) if args.mask_output_dir else None
-    records = []
+    records = list(completed_records)
     for index, manifest_record in enumerate(manifest):
+        if index < len(completed_records):
+            print(
+                json.dumps(
+                    {
+                        "completed": index + 1,
+                        "view_count": len(manifest),
+                        "resumed": True,
+                    }
+                ),
+                flush=True,
+            )
+            continue
         frame_path = frames_dir / f"{index:06d}.png"
         evidence_path = render_evidence_dir / f"{index:06d}.pt"
         image = _image_tensor(frame_path)
@@ -134,10 +209,40 @@ def main() -> None:
             evidence_path, map_location="cpu", weights_only=False
         )
         meta = manifest_record.get("meta", {})
-        references = [
-            _image_tensor(real_image_root / str(meta[key]))
-            for key in ("source_query", "neighbor_query")
+        reference_names = [
+            str(meta[key]) for key in ("source_query", "neighbor_query")
         ]
+        references = [
+            _image_tensor(real_image_root / name)
+            for name in reference_names
+        ]
+        synthetic_K = _scaled_intrinsics(
+            manifest_record, width, height
+        )
+        reference_views = []
+        if args.real_query_cache:
+            for reference_name, reference_rgb in zip(
+                reference_names, references
+            ):
+                cached = real_cache[reference_name]
+                reference_K = torch.as_tensor(
+                    cached["native_K"]
+                ).float().clone()
+                cached_height, cached_width = cached["native_input_hw"]
+                reference_height, reference_width = reference_rgb.shape[-2:]
+                reference_K[0] *= float(reference_width) / max(
+                    int(cached_width), 1
+                )
+                reference_K[1] *= float(reference_height) / max(
+                    int(cached_height), 1
+                )
+                reference_views.append(
+                    {
+                        "rgb": reference_rgb,
+                        "pose_w2c": cached["pose_w2c"],
+                        "K": reference_K,
+                    }
+                )
         valid_mask = build_render_quality_mask(
             base_mask=valid_mask,
             rendered_rgb=image,
@@ -154,6 +259,9 @@ def main() -> None:
                 minimum_normal_norm=args.minimum_normal_norm,
                 invalid_dilate_radius=args.quality_invalid_dilate_radius,
             ),
+            render_pose_w2c=manifest_record["pose_w2c"],
+            render_K=synthetic_K,
+            reference_views=reference_views,
         )
         if mask_output is not None:
             save_mask_bundle_pngs(
@@ -168,13 +276,17 @@ def main() -> None:
             name=str(manifest_record["query_id"]),
             sparse=sparse,
             pose_w2c=torch.as_tensor(manifest_record["pose_w2c"]),
-            K=_scaled_intrinsics(manifest_record, width, height),
+            K=synthetic_K,
             image_hw=(height, width),
             state=state,
             rendered_depth=render_evidence["depth"],
             alpha=render_evidence["alpha"],
             valid_mask_result=valid_mask,
-            view_bin=int(meta["view_bin"]),
+            view_bin=int(
+                meta["view_bin"]
+                if "view_bin" in meta
+                else meta["source_view_bin"]
+            ),
             source_query=str(meta["source_query"]),
             config=config,
             device=device,
@@ -182,6 +294,16 @@ def main() -> None:
         record["frame_path"] = str(frame_path.resolve())
         record["render_evidence_path"] = str(evidence_path.resolve())
         records.append(record)
+        _save_partial(
+            partial_path,
+            {
+                "schema": "lafgs_synthetic_evidence_partial",
+                "version": 1,
+                "manifest_query_ids": manifest_query_ids,
+                "config": partial_config,
+                "records": records,
+            },
+        )
         print(
             json.dumps(
                 {
@@ -214,13 +336,13 @@ def main() -> None:
                 "create or move geometry"
             ),
             "mask_policy": (
-                "NoReferenceValidSupportMaskBuilder plus adjacent-real RGB "
-                "continuity and raster alpha/depth/normal consistency"
+                "NoReferenceValidSupportMaskBuilder plus rendered-depth "
+                "warped real-view consistency and raster alpha/depth/normal"
             ),
             "config": vars(args),
         },
     )
-    path = Path(args.output).resolve()
+    path = output_path
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(output, path)
     torch.save(
@@ -258,6 +380,7 @@ def main() -> None:
         )
         + "\n"
     )
+    partial_path.unlink(missing_ok=True)
     print(path)
 
 

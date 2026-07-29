@@ -12,6 +12,41 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_stdloc_eval_cfg
 
 
 class MakeStdlocEvalCfgTest(unittest.TestCase):
+    def test_binds_family_prototypes_for_standard_test_evaluation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(yaml.dump({"sparse": {}, "dense": {}}))
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                    "--family_prototype_state_path",
+                    "/tmp/family.pt",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(
+                sparse["family_prototype_state_path"], "/tmp/family.pt"
+            )
+            self.assertEqual(
+                sparse["family_prototype_state_model_path"], "/tmp/model"
+            )
+
     def test_preserves_base_artifact_binding_without_detector_arguments(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

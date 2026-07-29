@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Plan confusion-conditioned Gaussian views from real assignment failures."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import torch
+
+from localization_training.confusion_evidence import (
+    ConfusionViewPlanningConfig,
+    plan_confusion_conditioned_views,
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--confusion-graph", required=True)
+    parser.add_argument("--map", required=True)
+    parser.add_argument("--query-cache", required=True)
+    parser.add_argument("--track-payload", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--scene", default="")
+    parser.add_argument("--maximum-planned-views", type=int, default=64)
+    parser.add_argument("--maximum-edges", type=int, default=256)
+    parser.add_argument("--maximum-events-per-edge", type=int, default=3)
+    parser.add_argument("--maximum-pose-neighbors", type=int, default=4)
+    parser.add_argument("--maximum-views-per-edge", type=int, default=2)
+    parser.add_argument("--maximum-views-per-source", type=int, default=2)
+    parser.add_argument(
+        "--maximum-views-per-trajectory", type=int, default=16
+    )
+    parser.add_argument("--minimum-edge-occurrences", type=int, default=5)
+    parser.add_argument("--minimum-edge-trajectories", type=int, default=1)
+    parser.add_argument("--maximum-neighbor-scale", type=float, default=4.0)
+    parser.add_argument("--maximum-view-angle-deg", type=float, default=40.0)
+    parser.add_argument("--image-margin-px", type=float, default=16.0)
+    parser.add_argument("--interpolation-alphas", default="0.35,0.5,0.65")
+    args = parser.parse_args()
+
+    graph = torch.load(
+        args.confusion_graph, map_location="cpu", weights_only=False
+    )
+    state = torch.load(args.map, map_location="cpu", weights_only=False)
+    cache_payload = torch.load(
+        args.query_cache, map_location="cpu", weights_only=False
+    )
+    cache = cache_payload.get("queries", cache_payload)
+    track = torch.load(
+        args.track_payload, map_location="cpu", weights_only=False
+    )
+    query_bins = {
+        str(name): int(value)
+        for name, value in zip(
+            track["query_names"],
+            torch.as_tensor(track["query_bins"]).tolist(),
+        )
+    }
+    config = ConfusionViewPlanningConfig(
+        maximum_planned_views=args.maximum_planned_views,
+        maximum_edges=args.maximum_edges,
+        maximum_events_per_edge=args.maximum_events_per_edge,
+        maximum_pose_neighbors=args.maximum_pose_neighbors,
+        maximum_views_per_edge=args.maximum_views_per_edge,
+        maximum_views_per_source=args.maximum_views_per_source,
+        maximum_views_per_trajectory=args.maximum_views_per_trajectory,
+        minimum_edge_occurrences=args.minimum_edge_occurrences,
+        minimum_edge_trajectories=args.minimum_edge_trajectories,
+        maximum_neighbor_scale=args.maximum_neighbor_scale,
+        maximum_view_angle_deg=args.maximum_view_angle_deg,
+        image_margin_px=args.image_margin_px,
+        interpolation_alphas=tuple(
+            float(value)
+            for value in args.interpolation_alphas.split(",")
+            if value.strip()
+        ),
+    )
+    planned = plan_confusion_conditioned_views(
+        confusion_graph=graph,
+        state=state,
+        cache=cache,
+        query_bins=query_bins,
+        config=config,
+    )
+    path = Path(args.output).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as stream:
+        for index, record in enumerate(planned):
+            stream.write(
+                json.dumps(
+                    {
+                        "query_id": record["query_id"],
+                        "scene": str(args.scene),
+                        "source": "confusion_render",
+                        "image_name": f"confusion_render/{index:06d}.png",
+                        "image_path": "",
+                        "pose_w2c": record["pose_w2c"],
+                        "fovx": record["fovx"],
+                        "fovy": record["fovy"],
+                        "width": record["width"],
+                        "height": record["height"],
+                        "accepted": False,
+                        "reason": "not_rendered",
+                        "artifact_score": 0.0,
+                        "repair_action": "none",
+                        "nearest_train_image": record["source_query"],
+                        "synthetic_alpha": record["synthetic_alpha"],
+                        "teacher_cache_key": record["query_id"],
+                        "meta": {
+                            key: (
+                                torch.as_tensor(value).tolist()
+                                if key == "K"
+                                else value
+                            )
+                            for key, value in record.items()
+                            if key
+                            not in {
+                                "query_id",
+                                "pose_w2c",
+                                "fovx",
+                                "fovy",
+                                "width",
+                                "height",
+                            }
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    summary = {
+        "schema": "lafgs_confusion_conditioned_view_plan",
+        "version": 1,
+        "confusion_graph": str(Path(args.confusion_graph).resolve()),
+        "map": str(Path(args.map).resolve()),
+        "query_cache": str(Path(args.query_cache).resolve()),
+        "query_count": len(planned),
+        "cross_trajectory_count": sum(
+            bool(record["cross_trajectory"]) for record in planned
+        ),
+        "targeted_edge_count": len(
+            {int(record["edge_index"]) for record in planned}
+        ),
+        "config": vars(args),
+    }
+    path.with_suffix(".json").write_text(
+        json.dumps(summary, indent=2) + "\n"
+    )
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -29,6 +29,24 @@ class PrototypeOptimizationConfig:
     seed: int = 2026
 
 
+@dataclass(frozen=True)
+class ContrastivePrototypeOptimizationConfig:
+    steps: int = 200
+    learning_rate: float = 2e-4
+    maximum_residual: float = 0.025
+    maximum_negative_bias: float = 0.12
+    minimum_temperature: float = 0.9
+    maximum_temperature: float = 1.1
+    train_temperature: bool = False
+    margin: float = 0.05
+    trust_weight: float = 1.0
+    bias_trust_weight: float = 0.5
+    maximum_pairs_per_step: int = 256
+    smoothmax_temperature: float = 0.02
+    synthetic_modes_only: bool = True
+    seed: int = 2026
+
+
 def inverse_sigmoid(value: torch.Tensor) -> torch.Tensor:
     value = torch.as_tensor(value).float().clamp(1e-5, 1.0 - 1e-5)
     return torch.log(value) - torch.log1p(-value)
@@ -384,6 +402,347 @@ def optimize_basin_prototypes(
                     "step": step,
                     "trainable_prototype_indices": train_indices,
                     "teacher_query_count": len(records),
+                    "history": list(history),
+                    "config": asdict(config),
+                },
+            }
+            if checkpoint_callback is not None:
+                checkpoint_callback(step, output)
+    assert output is not None
+    return output, history
+
+
+def _deployed_pair_scores(
+    *,
+    query: torch.Tensor,
+    anchors: torch.Tensor,
+    bank: torch.Tensor,
+    family_features: torch.Tensor,
+    family_parents: torch.Tensor,
+    family_bias: torch.Tensor,
+    family_temperature: torch.Tensor,
+    smoothmax_temperature: float = 0.0,
+) -> torch.Tensor:
+    scores = (query * bank[anchors]).sum(dim=1)
+    for parent in anchors.unique().tolist():
+        rows = torch.nonzero(
+            anchors == int(parent), as_tuple=False
+        ).reshape(-1)
+        modes = torch.nonzero(
+            family_parents == int(parent), as_tuple=False
+        ).reshape(-1)
+        if not modes.numel():
+            continue
+        values = query[rows] @ family_features[modes].T
+        values = (
+            values / family_temperature[modes][None]
+            + family_bias[modes][None]
+        )
+        if float(smoothmax_temperature) > 0:
+            candidates = torch.cat((scores[rows, None], values), dim=1)
+            scores[rows] = float(smoothmax_temperature) * torch.logsumexp(
+                candidates / float(smoothmax_temperature), dim=1
+            )
+        else:
+            scores[rows] = torch.maximum(
+                scores[rows], values.max(dim=1).values
+            )
+    return scores
+
+
+def optimize_contrastive_prototypes(
+    *,
+    state: dict,
+    metric: SharedLowRankMetric,
+    family: dict,
+    evidence: dict,
+    config: ContrastivePrototypeOptimizationConfig,
+    device: torch.device,
+    checkpoint_steps: set[int] | None = None,
+    checkpoint_callback=None,
+    progress=None,
+) -> tuple[dict, list[dict]]:
+    """Locally separate real confusion pairs while freezing map and metric."""
+    if evidence.get("schema") != (
+        "lafgs_confusion_contrastive_synthetic_evidence"
+    ):
+        raise ValueError("contrastive prototype training requires V19 evidence")
+    anchor_count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
+    if int(evidence["anchor_count"]) != anchor_count:
+        raise ValueError("contrastive evidence does not align with map")
+    if not torch.equal(
+        torch.as_tensor(family["landmark_indices"]).long(),
+        torch.arange(anchor_count),
+    ):
+        raise ValueError("family state does not align with map")
+    torch.manual_seed(int(config.seed))
+    all_features = F.normalize(
+        torch.as_tensor(family["prototype_features"]).float(), dim=1
+    ).detach().to(device)
+    all_bias = torch.as_tensor(
+        family.get("prototype_bias", torch.zeros(len(all_features)))
+    ).float().detach().to(device)
+    all_temperature = torch.as_tensor(
+        family.get("prototype_temperature", torch.ones(len(all_features)))
+    ).float().detach().to(device)
+    trainable = []
+    for index, metadata in enumerate(family["families"]):
+        if metadata.get("candidate_source") != "appearance_pool":
+            continue
+        if (
+            config.synthetic_modes_only
+            and int(metadata.get("synthetic_observation_count", 0)) <= 0
+        ):
+            continue
+        trainable.append(index)
+    train_indices = torch.as_tensor(trainable, dtype=torch.long)
+    if not train_indices.numel():
+        raise ValueError("family has no local synthetic appearance modes")
+    involved_anchors = {
+        int(value)
+        for record in evidence["records"]
+        for key in (
+            "hard_negative_positive_indices",
+            "hard_negative_indices",
+        )
+        for value in torch.as_tensor(record[key]).tolist()
+    }
+    parents_cpu = torch.as_tensor(
+        family["prototype_anchor_indices"]
+    ).long()
+    train_indices = train_indices[
+        torch.as_tensor(
+            [
+                int(parents_cpu[index]) in involved_anchors
+                for index in train_indices.tolist()
+            ],
+            dtype=torch.bool,
+        )
+    ]
+    if not train_indices.numel():
+        raise ValueError(
+            "contrastive evidence does not involve a trainable synthetic mode"
+        )
+    initial = all_features[train_indices.to(device)].detach()
+    residual = torch.nn.Parameter(torch.zeros_like(initial))
+    bias_initial_raw, temperature_initial_raw = initial_parameter_state(
+        family,
+        train_indices,
+        maximum_negative_bias=config.maximum_negative_bias,
+        minimum_temperature=config.minimum_temperature,
+        maximum_temperature=config.maximum_temperature,
+    )
+    bias_raw = torch.nn.Parameter(bias_initial_raw.to(device))
+    temperature_raw = torch.nn.Parameter(temperature_initial_raw.to(device))
+    parameters = [residual, bias_raw]
+    if config.train_temperature:
+        parameters.append(temperature_raw)
+    optimizer = torch.optim.AdamW(
+        parameters,
+        lr=float(config.learning_rate),
+        weight_decay=1e-4,
+    )
+    bank = F.normalize(
+        torch.as_tensor(state["anchor_features"]).float(), dim=1
+    ).to(device)
+    parents = parents_cpu.to(device)
+    trainable_parent_mask = torch.zeros(anchor_count, dtype=torch.bool)
+    trainable_parent_mask[
+        parents_cpu[train_indices].unique()
+    ] = True
+    metric = metric.to(device).eval()
+    for parameter in metric.parameters():
+        parameter.requires_grad_(False)
+    records = [
+        record
+        for record in evidence["records"]
+        if int(record.get("hard_negative_pair_count", 0)) > 0
+        and bool(
+            (
+                trainable_parent_mask[
+                    torch.as_tensor(
+                        record["hard_negative_positive_indices"]
+                    ).long()
+                ]
+                | trainable_parent_mask[
+                    torch.as_tensor(
+                        record["hard_negative_indices"]
+                    ).long()
+                ]
+            ).any()
+        )
+    ]
+    if not records:
+        raise ValueError("contrastive evidence has no hard-negative pairs")
+    generator = torch.Generator().manual_seed(int(config.seed) + 1)
+    checkpoint_steps = set(checkpoint_steps or {int(config.steps)})
+    checkpoint_steps.add(int(config.steps))
+    history = []
+    output = None
+    for step in range(1, int(config.steps) + 1):
+        record = records[
+            int(torch.randint(len(records), (1,), generator=generator))
+        ]
+        offsets = torch.as_tensor(record["hard_negative_offsets"]).long()
+        negative = torch.as_tensor(
+            record["hard_negative_indices"]
+        ).long()
+        positive = torch.as_tensor(
+            record["hard_negative_positive_indices"]
+        ).long()
+        weights = torch.as_tensor(
+            record["hard_negative_weights"]
+        ).float()
+        pair_rows = torch.repeat_interleave(
+            torch.arange(len(offsets) - 1),
+            offsets[1:] - offsets[:-1],
+        )
+        eligible = (
+            trainable_parent_mask[positive]
+            | trainable_parent_mask[negative]
+        )
+        pair_rows = pair_rows[eligible]
+        negative = negative[eligible]
+        positive = positive[eligible]
+        weights = weights[eligible]
+        if int(config.maximum_pairs_per_step) > 0 and len(pair_rows) > int(
+            config.maximum_pairs_per_step
+        ):
+            selected = torch.randperm(
+                len(pair_rows), generator=generator
+            )[: int(config.maximum_pairs_per_step)]
+            pair_rows = pair_rows[selected]
+            negative = negative[selected]
+            positive = positive[selected]
+            weights = weights[selected]
+        raw = F.normalize(
+            torch.as_tensor(record["native_descriptors"]).float()[pair_rows],
+            dim=1,
+        ).to(device)
+        with torch.no_grad():
+            query, _ = metric(raw)
+        trained, trained_bias, trained_temperature, bounded = (
+            materialize_prototypes(
+                initial,
+                residual,
+                bias_raw,
+                temperature_raw,
+                maximum_residual=config.maximum_residual,
+                maximum_negative_bias=config.maximum_negative_bias,
+                minimum_temperature=config.minimum_temperature,
+                maximum_temperature=config.maximum_temperature,
+            )
+        )
+        family_features = all_features.clone()
+        family_bias = all_bias.clone()
+        family_temperature = all_temperature.clone()
+        device_indices = train_indices.to(device)
+        family_features[device_indices] = trained
+        family_bias[device_indices] = trained_bias
+        family_temperature[device_indices] = trained_temperature
+        positive_scores = _deployed_pair_scores(
+            query=query,
+            anchors=positive.to(device),
+            bank=bank,
+            family_features=family_features,
+            family_parents=parents,
+            family_bias=family_bias,
+            family_temperature=family_temperature,
+            smoothmax_temperature=config.smoothmax_temperature,
+        )
+        negative_scores = _deployed_pair_scores(
+            query=query,
+            anchors=negative.to(device),
+            bank=bank,
+            family_features=family_features,
+            family_parents=parents,
+            family_bias=family_bias,
+            family_temperature=family_temperature,
+            smoothmax_temperature=config.smoothmax_temperature,
+        )
+        normalized_weight = weights.to(device)
+        normalized_weight = normalized_weight / normalized_weight.mean().clamp_min(
+            1e-6
+        )
+        contrastive = (
+            normalized_weight
+            * F.softplus(
+                negative_scores
+                - positive_scores
+                + float(config.margin)
+            )
+        ).mean()
+        trust = bounded.square().sum(dim=1).mean()
+        bias_trust = (
+            trained_bias - all_bias[device_indices]
+        ).square().mean()
+        loss = (
+            contrastive
+            + float(config.trust_weight) * trust
+            + float(config.bias_trust_weight) * bias_trust
+        )
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(parameters, 1.0)
+        optimizer.step()
+        if step == 1 or step % 25 == 0:
+            event = {
+                "step": step,
+                "loss": float(loss.detach()),
+                "contrastive": float(contrastive.detach()),
+                "pair_margin_mean": float(
+                    (positive_scores - negative_scores).mean().detach()
+                ),
+                "pair_win_rate": float(
+                    (positive_scores > negative_scores).float().mean().detach()
+                ),
+                "residual_mean": float(
+                    bounded.norm(dim=1).mean().detach()
+                ),
+                "residual_max": float(
+                    bounded.norm(dim=1).max().detach()
+                ),
+                "bias_mean": float(trained_bias.mean().detach()),
+            }
+            history.append(event)
+            if progress is not None:
+                progress(dict(event))
+        if step in checkpoint_steps:
+            with torch.no_grad():
+                trained, trained_bias, trained_temperature, bounded = (
+                    materialize_prototypes(
+                        initial,
+                        residual,
+                        bias_raw,
+                        temperature_raw,
+                        maximum_residual=config.maximum_residual,
+                        maximum_negative_bias=config.maximum_negative_bias,
+                        minimum_temperature=config.minimum_temperature,
+                        maximum_temperature=config.maximum_temperature,
+                    )
+                )
+                output_features = all_features.clone()
+                output_bias = all_bias.clone()
+                output_temperature = all_temperature.clone()
+                device_indices = train_indices.to(device)
+                output_features[device_indices] = trained
+                output_bias[device_indices] = trained_bias
+                output_temperature[device_indices] = trained_temperature
+            output = {
+                **family,
+                "version": max(int(family.get("version", 2)), 4),
+                "prototype_features": output_features.cpu(),
+                "prototype_bias": output_bias.cpu(),
+                "prototype_temperature": output_temperature.cpu(),
+                "contrastive_prototype_training": {
+                    "schema": (
+                        "lafgs_confusion_contrastive_prototype_training"
+                    ),
+                    "version": 1,
+                    "step": step,
+                    "trainable_prototype_indices": train_indices,
+                    "involved_anchor_count": len(involved_anchors),
+                    "evidence_query_count": len(records),
                     "history": list(history),
                     "config": asdict(config),
                 },

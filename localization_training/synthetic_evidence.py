@@ -22,7 +22,7 @@ class SyntheticEvidenceConfig:
     minimum_valid_keypoint_fraction: float = 0.5
     minimum_alpha_coverage: float = 0.25
     minimum_visible_anchors: int = 64
-    require_support_mask: bool = False
+    require_support_mask: bool = True
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,124 @@ def _dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
     )
 
 
+def depth_warped_reference_residual(
+    *,
+    rendered_rgb: torch.Tensor,
+    rendered_depth: torch.Tensor,
+    render_pose_w2c: torch.Tensor,
+    render_K: torch.Tensor,
+    reference_views: list[dict],
+    downsample: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compare a rendered surface point with geometry-warped real views."""
+    rendered = _as_rgb(rendered_rgb)
+    height, width = rendered.shape[-2:]
+    factor = max(int(downsample), 1)
+    low_height = max(height // factor, 1)
+    low_width = max(width // factor, 1)
+    low_rgb = F.interpolate(
+        rendered[None],
+        size=(low_height, low_width),
+        mode="bilinear",
+        align_corners=False,
+    )[0]
+    low_depth = F.interpolate(
+        torch.as_tensor(rendered_depth).float().reshape(1, 1, height, width),
+        size=(low_height, low_width),
+        mode="nearest",
+    )[0, 0]
+    y, x = torch.meshgrid(
+        torch.arange(low_height, dtype=torch.float32),
+        torch.arange(low_width, dtype=torch.float32),
+        indexing="ij",
+    )
+    x = (x + 0.5) * float(width) / float(low_width) - 0.5
+    y = (y + 0.5) * float(height) / float(low_height) - 0.5
+    K = torch.as_tensor(render_K).float()
+    camera = torch.stack(
+        (
+            (x - K[0, 2]) / K[0, 0] * low_depth,
+            (y - K[1, 2]) / K[1, 1] * low_depth,
+            low_depth,
+        ),
+        dim=-1,
+    ).reshape(-1, 3)
+    pose = torch.as_tensor(render_pose_w2c).float()
+    world = (camera - pose[:3, 3]) @ pose[:3, :3]
+    residuals = []
+    validities = []
+    for reference in reference_views:
+        image = _as_rgb(reference["rgb"])
+        reference_height, reference_width = image.shape[-2:]
+        reference_pose = torch.as_tensor(reference["pose_w2c"]).float()
+        reference_K = torch.as_tensor(reference["K"]).float()
+        reference_camera = (
+            world @ reference_pose[:3, :3].T
+            + reference_pose[:3, 3]
+        )
+        depth = reference_camera[:, 2]
+        u = (
+            reference_K[0, 0]
+            * reference_camera[:, 0]
+            / depth.clamp_min(1e-8)
+            + reference_K[0, 2]
+        )
+        v = (
+            reference_K[1, 1]
+            * reference_camera[:, 1]
+            / depth.clamp_min(1e-8)
+            + reference_K[1, 2]
+        )
+        valid = (
+            torch.isfinite(depth)
+            & (depth > 0)
+            & (u >= 0)
+            & (u < reference_width)
+            & (v >= 0)
+            & (v < reference_height)
+            & torch.isfinite(low_depth.reshape(-1))
+            & (low_depth.reshape(-1) > 0)
+        )
+        grid = torch.stack(
+            (
+                (u + 0.5) / max(reference_width, 1) * 2.0 - 1.0,
+                (v + 0.5) / max(reference_height, 1) * 2.0 - 1.0,
+            ),
+            dim=1,
+        ).reshape(1, low_height, low_width, 2)
+        sampled = F.grid_sample(
+            image[None],
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=False,
+        )[0]
+        residual = (sampled - low_rgb).abs().mean(dim=0)
+        residual[~valid.reshape(low_height, low_width)] = torch.inf
+        residuals.append(residual)
+        validities.append(valid.reshape(low_height, low_width))
+    if not residuals:
+        raise ValueError("depth-warped QA requires real reference views")
+    stacked = torch.stack(residuals)
+    residual = stacked.amin(dim=0)
+    valid = torch.stack(validities).any(dim=0)
+    residual = F.interpolate(
+        residual.nan_to_num(posinf=1.0)[None, None],
+        size=(height, width),
+        mode="bilinear",
+        align_corners=False,
+    )[0, 0]
+    valid = (
+        F.interpolate(
+            valid.float()[None, None],
+            size=(height, width),
+            mode="nearest",
+        )[0, 0]
+        > 0
+    )
+    return residual, valid
+
+
 def build_render_quality_mask(
     *,
     base_mask,
@@ -96,6 +214,9 @@ def build_render_quality_mask(
     rendered_depth: torch.Tensor,
     surface_normal: torch.Tensor,
     config: RenderQualityFilterConfig,
+    render_pose_w2c: torch.Tensor | None = None,
+    render_K: torch.Tensor | None = None,
+    reference_views: list[dict] | None = None,
 ) -> RenderQualityMask:
     """Filter rendered regions using real-view continuity and raster quality."""
     rendered = _as_rgb(rendered_rgb)
@@ -113,25 +234,48 @@ def build_render_quality_mask(
                 align_corners=False,
             )[0]
         references.append(value)
-    factor = max(int(config.reference_downsample), 1)
-    low_hw = (max(height // factor, 1), max(width // factor, 1))
-    low_rendered = F.interpolate(
-        rendered[None], size=low_hw, mode="bilinear", align_corners=False
-    )[0]
-    low_references = F.interpolate(
-        torch.stack(references),
-        size=low_hw,
-        mode="bilinear",
-        align_corners=False,
+    use_warped = (
+        render_pose_w2c is not None
+        and render_K is not None
+        and bool(reference_views)
     )
-    residual = (low_references - low_rendered).abs().mean(dim=1).amin(dim=0)
-    residual = F.interpolate(
-        residual[None, None],
-        size=(height, width),
-        mode="bilinear",
-        align_corners=False,
-    )[0, 0]
-    reference_valid = residual <= float(config.maximum_reference_residual)
+    if use_warped:
+        residual, warp_valid = depth_warped_reference_residual(
+            rendered_rgb=rendered,
+            rendered_depth=rendered_depth,
+            render_pose_w2c=render_pose_w2c,
+            render_K=render_K,
+            reference_views=list(reference_views or []),
+            downsample=config.reference_downsample,
+        )
+        reference_valid = (
+            warp_valid
+            & (residual <= float(config.maximum_reference_residual))
+        )
+    else:
+        factor = max(int(config.reference_downsample), 1)
+        low_hw = (max(height // factor, 1), max(width // factor, 1))
+        low_rendered = F.interpolate(
+            rendered[None], size=low_hw, mode="bilinear", align_corners=False
+        )[0]
+        low_references = F.interpolate(
+            torch.stack(references),
+            size=low_hw,
+            mode="bilinear",
+            align_corners=False,
+        )
+        residual = (
+            (low_references - low_rendered).abs().mean(dim=1).amin(dim=0)
+        )
+        residual = F.interpolate(
+            residual[None, None],
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+        reference_valid = residual <= float(
+            config.maximum_reference_residual
+        )
     alpha_map = torch.as_tensor(alpha).float().squeeze()
     depth_map = torch.as_tensor(rendered_depth).float().squeeze()
     normal = torch.as_tensor(surface_normal).float()
@@ -196,6 +340,9 @@ def build_render_quality_mask(
         "reference_residual_mean": float(residual.mean()),
         "reference_residual_p95": float(
             torch.quantile(residual.reshape(-1), 0.95)
+        ),
+        "reference_alignment": (
+            "rendered_depth_warp" if use_warped else "same_pixel_legacy"
         ),
     }
     return RenderQualityMask(
@@ -539,15 +686,47 @@ def synthetic_positive_teacher_payload(
                 "positive_indices": torch.as_tensor(
                     record["positive_indices"]
                 ).long(),
-                "ambiguous_offsets": torch.zeros(
-                    len(rows) + 1, dtype=torch.long
-                ),
-                "ambiguous_indices": torch.empty(0, dtype=torch.long),
+                "ambiguous_offsets": torch.as_tensor(
+                    record.get(
+                        "ambiguous_offsets",
+                        torch.zeros(len(rows) + 1, dtype=torch.long),
+                    )
+                ).long(),
+                "ambiguous_indices": torch.as_tensor(
+                    record.get(
+                        "ambiguous_indices",
+                        torch.empty(0, dtype=torch.long),
+                    )
+                ).long(),
+                "hard_negative_offsets": torch.as_tensor(
+                    record.get(
+                        "hard_negative_offsets",
+                        torch.zeros(len(rows) + 1, dtype=torch.long),
+                    )
+                ).long(),
+                "hard_negative_indices": torch.as_tensor(
+                    record.get(
+                        "hard_negative_indices",
+                        torch.empty(0, dtype=torch.long),
+                    )
+                ).long(),
+                "hard_negative_positive_indices": torch.as_tensor(
+                    record.get(
+                        "hard_negative_positive_indices",
+                        torch.empty(0, dtype=torch.long),
+                    )
+                ).long(),
+                "hard_negative_weights": torch.as_tensor(
+                    record.get(
+                        "hard_negative_weights",
+                        torch.empty(0, dtype=torch.float32),
+                    )
+                ).float(),
             }
         )
     return {
         "schema": "lafgs_synthetic_existing_anchor_positive_teacher",
-        "version": 1,
+        "version": 2,
         "anchor_count": int(anchor_count),
         "query_names": [
             str(record["query_name"]) for record in evidence["records"]
