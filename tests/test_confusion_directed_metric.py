@@ -5,8 +5,13 @@ from localization_training.confusion_directed_metric import (
     candidate_margin_loss,
     protected_top1_mask,
     select_stratified_rows,
+    topk_distribution_distillation,
 )
-from scripts.train_lafgs_confusion_directed_metric import _csr_positive_mask
+from scripts.train_lafgs_confusion_directed_metric import (
+    _csr_positive_mask,
+    _hierarchical_sampling_index,
+    _sample_hierarchical,
+)
 
 
 def test_candidate_margin_loss_rewards_legal_candidate():
@@ -71,3 +76,29 @@ def test_vectorized_csr_positive_mask():
             ]
         ),
     )
+
+
+def test_topk_distribution_distillation_is_zero_for_identical_scores():
+    scores = torch.tensor([[0.8, 0.3, -0.1], [0.4, 0.2, 0.1]])
+    loss = topk_distribution_distillation(
+        scores, scores, temperature=0.05
+    )
+    assert float(loss) == pytest.approx(0.0, abs=1e-8)
+    changed = topk_distribution_distillation(
+        scores.flip(1), scores, temperature=0.05
+    )
+    assert changed > loss
+
+
+def test_hierarchical_sampler_covers_eligible_trajectories():
+    examples = {
+        "kind": torch.tensor([2, 2, 2, 2]),
+        "trajectory": torch.tensor([0, 0, 1, 1]),
+        "query_index": torch.tensor([0, 1, 2, 3]),
+    }
+    index = _hierarchical_sampling_index(examples, 2)
+    sampled = _sample_hierarchical(
+        index, 100, torch.Generator().manual_seed(3)
+    )
+    assert sampled.numel() == 100
+    assert set(examples["trajectory"][sampled].tolist()) == {0, 1}

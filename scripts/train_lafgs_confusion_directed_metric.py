@@ -17,6 +17,10 @@ from localization_training.confusion_directed_metric import (
     candidate_margin_loss,
     protected_top1_mask,
     select_stratified_rows,
+    topk_distribution_distillation,
+)
+from localization_training.positive_retrieval import (
+    csr_candidate_positive_mask,
 )
 from localization_training.shared_metric import SharedLowRankMetric
 
@@ -56,34 +60,9 @@ def _csr_positive_mask(
     offsets: torch.Tensor,
     positive_indices: torch.Tensor,
 ) -> torch.Tensor:
-    if offsets.numel() != len(candidates) + 1:
-        raise ValueError("positive CSR offsets do not align with candidates")
-    if not positive_indices.numel():
-        return torch.zeros_like(candidates, dtype=torch.bool)
-    stride = int(
-        max(
-            int(candidates.max()),
-            int(positive_indices.max()),
-        )
-        + 1
+    return csr_candidate_positive_mask(
+        candidates, offsets, positive_indices
     )
-    positive_rows = torch.repeat_interleave(
-        torch.arange(len(candidates), dtype=torch.long),
-        offsets[1:] - offsets[:-1],
-    )
-    positive_keys = torch.sort(
-        positive_rows * stride + positive_indices
-    ).values
-    candidate_keys = (
-        torch.arange(len(candidates), dtype=torch.long)[:, None] * stride
-        + candidates
-    )
-    flat = candidate_keys.reshape(-1)
-    slot = torch.searchsorted(positive_keys, flat)
-    valid = slot < positive_keys.numel()
-    matched = torch.zeros_like(valid)
-    matched[valid] = positive_keys[slot[valid]] == flat[valid]
-    return matched.reshape_as(candidates)
 
 
 def _build_examples(
@@ -117,12 +96,18 @@ def _build_examples(
         "positive_mask": [],
         "kind": [],
         "query_index": [],
+        "trajectory": [],
     }
     diagnostics = {
         "query_count": len(names),
         "rescue_available": 0,
         "protected_available": 0,
-        "miss_or_reject_rows": 0,
+        "neutral_available": 0,
+        "hard_available": 0,
+    }
+    trajectories = sorted({name.split("/", 1)[0] for name in names})
+    trajectory_index = {
+        trajectory: index for index, trajectory in enumerate(trajectories)
     }
     for query_index, name in enumerate(names):
         teacher_record = teacher_by_name[name]
@@ -153,9 +138,19 @@ def _build_examples(
             & ~positive_mask[:, 0]
         )
         protected = (error <= float(clean_threshold_px)) & positive_mask[:, 0]
+        neutral = ~has_legal
+        harmful_inlier = torch.as_tensor(
+            outcome_record.get(
+                "harmful_inlier_mask", torch.zeros_like(rescue)
+            )
+        ).bool()
+        if harmful_inlier.numel() != len(rows):
+            raise ValueError(f"harmful-inlier rows do not align for {name}")
+        hard = rescue & harmful_inlier
         diagnostics["rescue_available"] += int(rescue.sum())
         diagnostics["protected_available"] += int(protected.sum())
-        diagnostics["miss_or_reject_rows"] += int((~has_legal).sum())
+        diagnostics["neutral_available"] += int(neutral.sum())
+        diagnostics["hard_available"] += int(hard.sum())
         rescue_rows = select_stratified_rows(
             rescue,
             maximum=maximum_rows_per_type_per_query,
@@ -166,7 +161,19 @@ def _build_examples(
             maximum=maximum_rows_per_type_per_query,
             generator=generator,
         )
-        selected = torch.cat((rescue_rows, protected_rows))
+        neutral_rows = select_stratified_rows(
+            neutral,
+            maximum=maximum_rows_per_type_per_query,
+            generator=generator,
+        )
+        hard_rows = select_stratified_rows(
+            hard,
+            maximum=maximum_rows_per_type_per_query,
+            generator=generator,
+        )
+        selected = torch.cat(
+            (rescue_rows, protected_rows, neutral_rows, hard_rows)
+        )
         if not selected.numel():
             continue
         native = F.normalize(
@@ -175,7 +182,9 @@ def _build_examples(
         )
         selected_mask = positive_mask[selected]
         if protected_rows.numel():
-            selected_mask[rescue_rows.numel() :] = protected_top1_mask(
+            protected_start = rescue_rows.numel()
+            protected_end = protected_start + protected_rows.numel()
+            selected_mask[protected_start:protected_end] = protected_top1_mask(
                 len(protected_rows), candidates.shape[1]
             )
         values["query"].append(native)
@@ -186,11 +195,22 @@ def _build_examples(
                 (
                     torch.zeros(len(rescue_rows), dtype=torch.long),
                     torch.ones(len(protected_rows), dtype=torch.long),
+                    torch.full(
+                        (len(neutral_rows),), 2, dtype=torch.long
+                    ),
+                    torch.full((len(hard_rows),), 3, dtype=torch.long),
                 )
             )
         )
         values["query_index"].append(
             torch.full((len(selected),), query_index, dtype=torch.long)
+        )
+        values["trajectory"].append(
+            torch.full(
+                (len(selected),),
+                trajectory_index[name.split("/", 1)[0]],
+                dtype=torch.long,
+            )
         )
     output = {
         key: torch.cat(parts, dim=0)
@@ -201,6 +221,9 @@ def _build_examples(
         raise RuntimeError("no strict rescue examples were found")
     diagnostics["rescue_selected"] = int((output["kind"] == 0).sum())
     diagnostics["protected_selected"] = int((output["kind"] == 1).sum())
+    diagnostics["neutral_selected"] = int((output["kind"] == 2).sum())
+    diagnostics["hard_selected"] = int((output["kind"] == 3).sum())
+    diagnostics["trajectory_count"] = len(trajectories)
     diagnostics["training_rows"] = int(len(output["kind"]))
     return output, diagnostics
 
@@ -211,6 +234,133 @@ def _sample(rows: torch.Tensor, count: int, generator: torch.Generator) -> torch
     return rows[
         torch.randint(rows.numel(), (int(count),), generator=generator)
     ]
+
+
+def _hierarchical_sampling_index(
+    examples: dict, kind: int
+) -> dict[int, dict[int, torch.Tensor]]:
+    selected = torch.nonzero(
+        torch.as_tensor(examples["kind"]).long() == int(kind),
+        as_tuple=False,
+    ).reshape(-1)
+    output: dict[int, dict[int, torch.Tensor]] = {}
+    trajectories = torch.as_tensor(examples["trajectory"]).long()
+    queries = torch.as_tensor(examples["query_index"]).long()
+    for trajectory in trajectories[selected].unique(sorted=True).tolist():
+        trajectory_rows = selected[trajectories[selected] == int(trajectory)]
+        output[int(trajectory)] = {}
+        for query in queries[trajectory_rows].unique(sorted=True).tolist():
+            output[int(trajectory)][int(query)] = trajectory_rows[
+                queries[trajectory_rows] == int(query)
+            ]
+    return output
+
+
+def _sample_hierarchical(
+    index: dict[int, dict[int, torch.Tensor]],
+    count: int,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    if count <= 0:
+        return torch.empty(0, dtype=torch.long)
+    if not index:
+        raise ValueError("requested sample kind has no eligible rows")
+    trajectories = sorted(index)
+    output = []
+    for _ in range(int(count)):
+        trajectory = trajectories[
+            int(torch.randint(len(trajectories), (), generator=generator))
+        ]
+        queries = sorted(index[trajectory])
+        query = queries[
+            int(torch.randint(len(queries), (), generator=generator))
+        ]
+        rows = index[trajectory][query]
+        output.append(
+            rows[int(torch.randint(len(rows), (), generator=generator))]
+        )
+    return torch.stack(output)
+
+
+@torch.inference_mode()
+def _assignment_contract_diagnostics(
+    *,
+    metric: SharedLowRankMetric,
+    teacher_metric: SharedLowRankMetric,
+    raw_bank: torch.Tensor,
+    examples: dict,
+    device: torch.device,
+    temperature: float,
+    batch_size: int = 4096,
+) -> dict:
+    totals = {
+        "rescue_success": 0,
+        "rescue_total": 0,
+        "protected_retained": 0,
+        "protected_total": 0,
+        "neutral_top1_changed": 0,
+        "neutral_total": 0,
+        "neutral_kl_sum": 0.0,
+    }
+    for start in range(0, len(examples["kind"]), int(batch_size)):
+        stop = min(start + int(batch_size), len(examples["kind"]))
+        query_raw = examples["query"][start:stop].to(device)
+        candidates = examples["candidates"][start:stop].to(device)
+        positive = examples["positive_mask"][start:stop].to(device)
+        kind = examples["kind"][start:stop].to(device)
+        query, _ = metric(query_raw)
+        candidate, _ = metric(raw_bank[candidates])
+        score = torch.einsum("bd,bkd->bk", query, candidate)
+        old_query, _ = teacher_metric(query_raw)
+        old_candidate, _ = teacher_metric(raw_bank[candidates])
+        old_score = torch.einsum("bd,bkd->bk", old_query, old_candidate)
+        winner = score.argmax(dim=1)
+        old_winner = old_score.argmax(dim=1)
+        rescue = kind == 0
+        protected = kind == 1
+        neutral = kind == 2
+        if bool(rescue.any()):
+            totals["rescue_success"] += int(
+                positive[rescue]
+                .gather(1, winner[rescue, None])
+                .sum()
+            )
+            totals["rescue_total"] += int(rescue.sum())
+        if bool(protected.any()):
+            totals["protected_retained"] += int(
+                (winner[protected] == 0).sum()
+            )
+            totals["protected_total"] += int(protected.sum())
+        if bool(neutral.any()):
+            totals["neutral_top1_changed"] += int(
+                (winner[neutral] != old_winner[neutral]).sum()
+            )
+            totals["neutral_total"] += int(neutral.sum())
+            totals["neutral_kl_sum"] += float(
+                topk_distribution_distillation(
+                    score[neutral],
+                    old_score[neutral],
+                    temperature=temperature,
+                )
+            ) * int(neutral.sum())
+    return {
+        "rescue_candidate_success_percent": (
+            100.0 * totals["rescue_success"] / max(totals["rescue_total"], 1)
+        ),
+        "protected_top1_retained_percent": (
+            100.0
+            * totals["protected_retained"]
+            / max(totals["protected_total"], 1)
+        ),
+        "neutral_top1_change_percent": (
+            100.0
+            * totals["neutral_top1_changed"]
+            / max(totals["neutral_total"], 1)
+        ),
+        "neutral_top16_kl_mean": (
+            totals["neutral_kl_sum"] / max(totals["neutral_total"], 1)
+        ),
+    }
 
 
 def main() -> None:
@@ -236,12 +386,27 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.03)
     parser.add_argument("--protected-weight", type=float, default=2.0)
     parser.add_argument("--distill-weight", type=float, default=2.0)
+    parser.add_argument("--neutral-replay-weight", type=float, default=4.0)
+    parser.add_argument("--neutral-temperature", type=float, default=0.05)
+    parser.add_argument("--hard-weight", type=float, default=1.0)
     parser.add_argument("--parameter-trust-weight", type=float, default=0.1)
+    parser.add_argument("--rescue-fraction", type=float, default=0.25)
+    parser.add_argument("--protected-fraction", type=float, default=0.25)
+    parser.add_argument("--neutral-fraction", type=float, default=0.40)
+    parser.add_argument("--hard-fraction", type=float, default=0.10)
     parser.add_argument("--maximum-rows-per-type-per-query", type=int, default=96)
     parser.add_argument("--example-seed", type=int, default=2026)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
+    fractions = (
+        args.rescue_fraction,
+        args.protected_fraction,
+        args.neutral_fraction,
+        args.hard_fraction,
+    )
+    if any(value < 0 for value in fractions) or abs(sum(fractions) - 1.0) > 1e-6:
+        raise ValueError("training fractions must be non-negative and sum to one")
 
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
@@ -286,6 +451,7 @@ def main() -> None:
             args.maximum_rows_per_type_per_query
         ),
         "example_seed": int(args.example_seed),
+        "schema_version": 2,
     }
     examples_cache = Path(args.examples_cache).resolve() if args.examples_cache else None
     if examples_cache is not None and examples_cache.is_file():
@@ -348,20 +514,24 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         metric.parameters(), lr=args.learning_rate, weight_decay=1e-4
     )
-    rescue_rows = torch.nonzero(
-        examples["kind"] == 0, as_tuple=False
-    ).reshape(-1)
-    protected_rows = torch.nonzero(
-        examples["kind"] == 1, as_tuple=False
-    ).reshape(-1)
+    sampling_indices = {
+        kind: _hierarchical_sampling_index(examples, kind)
+        for kind in range(4)
+    }
     generator = torch.Generator().manual_seed(args.seed + 1)
     history = []
-    half = max(int(args.batch_size) // 2, 1)
+    counts = [
+        int(round(int(args.batch_size) * float(value)))
+        for value in fractions
+    ]
+    counts[2] += int(args.batch_size) - sum(counts)
     for step in range(1, int(args.steps) + 1):
         selected = torch.cat(
-            (
-                _sample(rescue_rows, half, generator),
-                _sample(protected_rows, int(args.batch_size) - half, generator),
+            tuple(
+                _sample_hierarchical(
+                    sampling_indices[kind], counts[kind], generator
+                )
+                for kind in range(4)
             )
         )
         query_raw = examples["query"][selected].to(device)
@@ -379,6 +549,8 @@ def main() -> None:
             )
         rescue = kind == 0
         protected = kind == 1
+        neutral = kind == 2
+        hard = kind == 3
         rescue_loss = candidate_margin_loss(
             scores[rescue],
             positive_mask[rescue],
@@ -395,6 +567,17 @@ def main() -> None:
             if bool(protected.any())
             else scores.new_zeros(())
         )
+        neutral_loss = topk_distribution_distillation(
+            scores[neutral],
+            old_scores[neutral],
+            temperature=args.neutral_temperature,
+        )
+        hard_loss = candidate_margin_loss(
+            scores[hard],
+            positive_mask[hard],
+            margin=args.margin,
+            temperature=args.temperature,
+        )
         distill = F.mse_loss(scores, old_scores)
         parameter_trust = sum(
             (value - initial_parameters[name]).square().mean()
@@ -403,6 +586,8 @@ def main() -> None:
         loss = (
             rescue_loss
             + float(args.protected_weight) * protected_loss
+            + float(args.neutral_replay_weight) * neutral_loss
+            + float(args.hard_weight) * hard_loss
             + float(args.distill_weight) * distill
             + float(args.parameter_trust_weight) * parameter_trust
         )
@@ -416,6 +601,8 @@ def main() -> None:
                 "loss": float(loss.detach()),
                 "rescue_loss": float(rescue_loss.detach()),
                 "protected_loss": float(protected_loss.detach()),
+                "neutral_loss": float(neutral_loss.detach()),
+                "hard_loss": float(hard_loss.detach()),
                 "distill_loss": float(distill.detach()),
                 "parameter_trust": float(parameter_trust.detach()),
             }
@@ -426,6 +613,14 @@ def main() -> None:
         transformed_bank, residual = metric(raw_bank)
         old_bank, _ = teacher_metric(raw_bank)
         bank_cosine = F.cosine_similarity(transformed_bank, old_bank, dim=1)
+    contract_diagnostics = _assignment_contract_diagnostics(
+        metric=metric,
+        teacher_metric=teacher_metric,
+        raw_bank=raw_bank,
+        examples=examples,
+        device=device,
+        temperature=args.neutral_temperature,
+    )
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     map_path = output_dir / "anchor_map_confusion_metric.pt"
@@ -441,6 +636,7 @@ def main() -> None:
         "history": history,
         "mean_bank_cosine_to_initial": float(bank_cosine.mean()),
         "p01_bank_cosine_to_initial": float(torch.quantile(bank_cosine, 0.01)),
+        "assignment_contract": contract_diagnostics,
     }
     output_metric = {
         **metric_payload,
@@ -472,6 +668,7 @@ def main() -> None:
         "history": history,
         "mean_bank_cosine_to_initial": float(bank_cosine.mean()),
         "p01_bank_cosine_to_initial": float(torch.quantile(bank_cosine, 0.01)),
+        "assignment_contract": contract_diagnostics,
         "provenance": provenance,
     }
     _atomic_json(output_dir / "training_report.json", report)

@@ -32,6 +32,36 @@ def candidate_margin_loss(
     ).mean()
 
 
+def topk_distribution_distillation(
+    student_scores: torch.Tensor,
+    teacher_scores: torch.Tensor,
+    *,
+    temperature: float,
+) -> torch.Tensor:
+    """Preserve the complete local top-K distribution for neutral rows."""
+
+    student_scores = torch.as_tensor(student_scores)
+    teacher_scores = torch.as_tensor(
+        teacher_scores,
+        device=student_scores.device,
+        dtype=student_scores.dtype,
+    )
+    if student_scores.ndim != 2 or teacher_scores.shape != student_scores.shape:
+        raise ValueError("student and teacher top-K scores must align")
+    temperature = float(temperature)
+    if temperature <= 0:
+        raise ValueError("distillation temperature must be positive")
+    teacher_probability = torch.softmax(teacher_scores / temperature, dim=1)
+    return (
+        F.kl_div(
+            torch.log_softmax(student_scores / temperature, dim=1),
+            teacher_probability,
+            reduction="batchmean",
+        )
+        * temperature**2
+    )
+
+
 def protected_top1_mask(
     row_count: int, candidate_count: int, *, device=None
 ) -> torch.Tensor:

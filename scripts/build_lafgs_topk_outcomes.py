@@ -18,6 +18,9 @@ from localization_training.contextual_descriptor import (
     fuse_local_and_context,
     multiscale_sparse_query_context,
 )
+from localization_training.full_primitive_retrieval import (
+    chunked_exact_topk_family_prototype,
+)
 from localization_training.shared_metric import SharedLowRankMetric
 from localization_training.relational_context import (
     relational_sparse_query_context,
@@ -27,6 +30,64 @@ from localization_training.relational_context import (
 def _sha256_tensor(value: torch.Tensor) -> str:
     value = torch.as_tensor(value).detach().cpu().contiguous()
     return hashlib.sha256(value.numpy().tobytes()).hexdigest()
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_family_prototypes(
+    path: str,
+    *,
+    state: dict,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if payload.get("schema") != "lafgs_basin_family_prototypes":
+        raise ValueError("unsupported family prototype state")
+    if not torch.equal(
+        torch.as_tensor(payload["landmark_indices"]).long().reshape(-1),
+        torch.as_tensor(state["anchor_ids"]).long().reshape(-1),
+    ):
+        raise ValueError("family prototype state does not align with the map")
+    features = torch.as_tensor(payload["prototype_features"]).float()
+    parents = torch.as_tensor(
+        payload["prototype_anchor_indices"]
+    ).long().reshape(-1)
+    descriptor_dim = int(
+        torch.as_tensor(state["anchor_features"]).shape[1]
+    )
+    if (
+        features.ndim != 2
+        or features.shape[0] != parents.numel()
+        or features.shape[1] != descriptor_dim
+    ):
+        raise ValueError("family prototype descriptors are malformed")
+    if parents.numel() and (
+        int(parents.min()) < 0
+        or int(parents.max()) >= len(state["anchor_ids"])
+    ):
+        raise ValueError("family prototype parent is outside the map")
+    bias = torch.as_tensor(
+        payload.get("prototype_bias", torch.zeros(len(features)))
+    ).float().reshape(-1)
+    temperature = torch.as_tensor(
+        payload.get("prototype_temperature", torch.ones(len(features)))
+    ).float().reshape(-1)
+    if bias.numel() != len(features) or bool((bias > 1e-8).any()):
+        raise ValueError("family prototype bias is malformed")
+    if temperature.numel() != len(features) or bool((temperature <= 0).any()):
+        raise ValueError("family prototype temperature is malformed")
+    return (
+        features.to(device),
+        parents.to(device),
+        bias.to(device),
+        temperature.to(device),
+    )
 
 
 def _load_metric(path: str, device: torch.device) -> SharedLowRankMetric:
@@ -52,6 +113,7 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--context-state", default="")
     parser.add_argument("--context-weight", type=float, default=0.0)
+    parser.add_argument("--family-prototype-state", default="")
     parser.add_argument("--topk", type=int, default=16)
     parser.add_argument("--query-start", type=int, default=0)
     parser.add_argument("--query-limit", type=int, default=0)
@@ -84,6 +146,17 @@ def main() -> None:
     context_map = None
     context_config = None
     query_projector = None
+    family_prototypes = None
+    if args.family_prototype_state:
+        if args.context_state:
+            raise ValueError(
+                "family prototypes and fused global context are mutually exclusive"
+            )
+        family_prototypes = _load_family_prototypes(
+            args.family_prototype_state,
+            state=state,
+            device=device,
+        )
     if args.context_state:
         if float(args.context_weight) <= 0:
             raise ValueError("context state requires a positive weight")
@@ -188,9 +261,21 @@ def main() -> None:
                     query_context,
                     context_weight=float(args.context_weight),
                 )
-            scores, indices = torch.topk(
-                query @ bank.T, k=topk, dim=1
-            )
+            if family_prototypes is None:
+                scores, indices = torch.topk(
+                    query @ bank.T, k=topk, dim=1
+                )
+            else:
+                retrieval = chunked_exact_topk_family_prototype(
+                    query,
+                    bank,
+                    family_prototypes[0],
+                    family_prototypes[1],
+                    prototype_bias=family_prototypes[2],
+                    prototype_temperature=family_prototypes[3],
+                    topk=topk,
+                )
+                scores, indices = retrieval.scores, retrieval.indices
             records.append(
                 {
                     "query_name": name,
@@ -215,13 +300,30 @@ def main() -> None:
             "records": records,
             "provenance": {
                 "map": str(Path(args.map).resolve()),
+                "map_sha256": _sha256_file(args.map),
                 "metric_state": str(Path(args.metric_state).resolve()),
+                "metric_state_sha256": _sha256_file(args.metric_state),
                 "query_cache": str(Path(args.query_cache).resolve()),
                 "function_graph": str(Path(args.function_graph).resolve()),
                 "context_state": str(Path(args.context_state).resolve())
                 if args.context_state
                 else None,
+                "context_state_sha256": (
+                    _sha256_file(args.context_state)
+                    if args.context_state
+                    else None
+                ),
                 "context_weight": float(args.context_weight),
+                "family_prototype_state": (
+                    str(Path(args.family_prototype_state).resolve())
+                    if args.family_prototype_state
+                    else None
+                ),
+                "family_prototype_state_sha256": (
+                    _sha256_file(args.family_prototype_state)
+                    if args.family_prototype_state
+                    else None
+                ),
             },
         },
     )
@@ -231,6 +333,7 @@ def main() -> None:
             "query_count": len(records),
             "topk": topk,
             "context": context_state is not None,
+            "family_prototypes": family_prototypes is not None,
         }
     )
 

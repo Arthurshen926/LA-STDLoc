@@ -398,6 +398,7 @@ def main() -> None:
         query_index = all_names.index(name)
         cached = cache[name]
         rows = torch.as_tensor(graph["records"][query_index]["query_rows"]).long()
+        preselection_row_count = int(rows.numel())
         descriptors = F.normalize(
             torch.as_tensor(cached["native_descriptors"]).float()[rows], dim=1
         ).to(device)
@@ -497,6 +498,23 @@ def main() -> None:
                 top_indices = torch.as_tensor(
                     assignment["topk_anchor_indices"]
                 ).long().to(device)[:, :2]
+                selection_mask = assignment.get("selected_row_mask")
+                if selection_mask is not None:
+                    selection_mask = torch.as_tensor(
+                        selection_mask
+                    ).bool().reshape(-1)
+                    if selection_mask.numel() != rows.numel():
+                        raise ValueError(
+                            f"precomputed selection mask differs for {name}"
+                        )
+                    if int(selection_mask.sum()) < 4:
+                        raise ValueError(
+                            f"precomputed selection keeps fewer than four rows for {name}"
+                        )
+                    rows = rows[selection_mask]
+                    descriptors = descriptors[selection_mask.to(device)]
+                    top_values = top_values[selection_mask.to(device)]
+                    top_indices = top_indices[selection_mask.to(device)]
             elif query_context_gate is not None:
                 gate = query_context_gate(
                     query_context,
@@ -688,6 +706,7 @@ def main() -> None:
                 "te_cm": float(te),
                 "re_deg": float(re),
                 "match_count": int(rows.numel()),
+                "preselection_match_count": preselection_row_count,
                 "inlier_count": int(inliers.numel()),
                 "raw_gt_precision_2px": float((gt_errors <= 2).float().mean()),
                 "median_top1_margin": float(score_margins.median()),

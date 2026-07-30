@@ -45,6 +45,44 @@ class STDLocConfigPathTest(unittest.TestCase):
                 {**config, "max_matches_per_landmark": 1}
             )
 
+    def test_pose_sufficient_selector_requires_unchanged_top1_candidates(self):
+        from stdloc import validate_sparse_frontend_config
+
+        config = {
+            "sparse_frontend": "ulfloc_native_metric",
+            "query_feature_contract": "native_resized_input",
+            "use_landmark_prior": False,
+            "metric_state_path": "/tmp/metric.pt",
+            "use_pose_sufficient_selector": True,
+            "pose_sufficient_selector_state_path": "/tmp/selector.pt",
+            "pose_sufficient_budget": 512,
+            "topk": 1,
+            "threshold": 0.0,
+        }
+        self.assertEqual(
+            validate_sparse_frontend_config(config), "ulfloc_native_metric"
+        )
+        with self.assertRaisesRegex(ValueError, "threshold must be 0"):
+            validate_sparse_frontend_config({**config, "threshold": 0.1})
+        with self.assertRaisesRegex(ValueError, "geometry_balance"):
+            validate_sparse_frontend_config(
+                {
+                    **config,
+                    "geometry_balance": {"enabled": True},
+                }
+            )
+
+    def test_raw_tensor_sha256_matches_artifact_byte_contract(self):
+        import hashlib
+
+        import torch
+
+        from stdloc import raw_tensor_sha256
+
+        value = torch.tensor([3, 7, 11], dtype=torch.int64)
+        expected = hashlib.sha256(value.numpy().tobytes()).hexdigest()
+        self.assertEqual(raw_tensor_sha256(value), expected)
+
     def test_candidate_teacher_geometry_requires_alignment_and_is_finite(self):
         import torch
 

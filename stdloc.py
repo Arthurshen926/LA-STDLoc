@@ -58,6 +58,12 @@ from localization_training.pair_measurement import (
     build_pair_geometry_features,
     sample_local_correlation_patch,
 )
+from localization_training.pose_sufficient_selector import (
+    build_pose_sufficient_features,
+    constrained_pose_sufficient_mask,
+    image_grid_cells,
+    predict_pose_sufficient_probability,
+)
 from localization_training.sparse_frontend import (
     SparseMatchResult,
     build_pair_context_features,
@@ -403,6 +409,44 @@ def validate_sparse_frontend_config(sparse_config):
         if changed_candidate_controls:
             raise ValueError(
                 "native matchability is a solver-only control; "
+                + ", ".join(changed_candidate_controls)
+            )
+    if bool(sparse_config.get("use_pose_sufficient_selector", False)):
+        state_path = str(
+            sparse_config.get("pose_sufficient_selector_state_path", "")
+        )
+        if not state_path:
+            raise ValueError(
+                "use_pose_sufficient_selector=true requires "
+                "pose_sufficient_selector_state_path"
+            )
+        changed_candidate_controls = []
+        if int(sparse_config.get("topk", 1)) != 1:
+            changed_candidate_controls.append("topk must be 1")
+        if abs(float(sparse_config.get("threshold", 0.0))) > 1e-12:
+            changed_candidate_controls.append("threshold must be 0")
+        if int(sparse_config.get("max_matches_per_keypoint", 0) or 0) != 0:
+            changed_candidate_controls.append("max_matches_per_keypoint must be 0")
+        if int(sparse_config.get("max_matches_per_landmark", 0) or 0) != 0:
+            changed_candidate_controls.append("max_matches_per_landmark must be 0")
+        if bool(sparse_config.get("unique_landmark_matches", False)):
+            changed_candidate_controls.append("unique_landmark_matches must be false")
+        if int(sparse_config.get("min_candidate_matches", 0) or 0) != 0:
+            changed_candidate_controls.append("min_candidate_matches must be 0")
+        if int(sparse_config.get("candidate_refill_trigger_count", 0) or 0) != 0:
+            changed_candidate_controls.append("candidate_refill_trigger_count must be 0")
+        if bool(sparse_config.get("use_native_matchability", False)):
+            changed_candidate_controls.append("native matchability must be disabled")
+        geometry = sparse_config.get("geometry_balance", {}) or {}
+        if bool(geometry.get("enabled", False)):
+            changed_candidate_controls.append("geometry_balance must be disabled")
+        if int(sparse_config.get("pose_sufficient_budget", 0)) < 4:
+            changed_candidate_controls.append(
+                "pose_sufficient_budget must be at least 4"
+            )
+        if changed_candidate_controls:
+            raise ValueError(
+                "pose-sufficient selection requires unchanged cosine top-1; "
                 + ", ".join(changed_candidate_controls)
             )
     return frontend
@@ -1813,6 +1857,13 @@ def tensor_sha256(value):
     return digest.hexdigest()
 
 
+def raw_tensor_sha256(value):
+    """Hash tensor bytes for artifacts that declare the raw-byte contract."""
+
+    tensor = torch.as_tensor(value).detach().contiguous().cpu()
+    return hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+
+
 def landmark_feature_delta(reference, candidate):
     reference = F.normalize(torch.as_tensor(reference).detach().float().reshape(reference.shape[0], -1), dim=1)
     candidate = F.normalize(torch.as_tensor(candidate).detach().float().reshape(candidate.shape[0], -1), dim=1)
@@ -2489,6 +2540,7 @@ class STDLoc:
                 )
         self.local_context_adapter = None
         self.shared_metric_adapter = None
+        full_metric_state_path = None
         self.shared_null_head = None
         self.shared_null_config = {}
         adapter_state_path = str(sparse_config.get("adapter_state_path", ""))
@@ -3066,6 +3118,115 @@ class STDLoc:
                 device=active_features_flat.device,
                 dtype=torch.float32,
             )
+        self.pose_sufficient_selector_state = None
+        self.pose_sufficient_selector_budget = 0
+        self.pose_sufficient_source_groups = None
+        self.pose_sufficient_dependency_groups = None
+        self.pose_sufficient_anchor_xyz = None
+        full_selector_state_path = None
+        if bool(sparse_config.get("use_pose_sufficient_selector", False)):
+            if self.materialized_anchor_map_state is None:
+                raise ValueError(
+                    "pose-sufficient selection requires a materialized anchor map"
+                )
+            full_selector_state_path = resolve_artifact_path(
+                config["model_path"],
+                sparse_config["pose_sufficient_selector_state_path"],
+                sparse_config.get(
+                    "pose_sufficient_selector_state_model_path",
+                    sparse_config.get("landmark_model_path"),
+                ),
+            )
+            selector_state = torch.load(
+                full_selector_state_path, map_location="cpu"
+            )
+            if (
+                selector_state.get("schema")
+                != "lafgs_pose_sufficient_selector"
+            ):
+                raise ValueError("unsupported pose-sufficient selector state")
+            if int(selector_state.get("anchor_count", -1)) != int(
+                active_features_flat.shape[0]
+            ):
+                raise ValueError(
+                    "pose-sufficient selector anchor count differs from map"
+                )
+            expected_anchor_sha = selector_state.get("anchor_ids_sha256")
+            if (
+                expected_anchor_sha
+                and expected_anchor_sha
+                != raw_tensor_sha256(self.landmark_indices)
+            ):
+                raise ValueError(
+                    "pose-sufficient selector anchor IDs differ from map"
+                )
+            candidate_contract = selector_state.get(
+                "candidate_graph_contract"
+            )
+            if not isinstance(candidate_contract, dict):
+                raise ValueError(
+                    "pose-sufficient selector misses its candidate graph contract"
+                )
+            artifact_contracts = (
+                (
+                    "map_sha256",
+                    full_materialized_anchor_path,
+                    "materialized anchor map",
+                ),
+                (
+                    "metric_state_sha256",
+                    full_metric_state_path,
+                    "metric state",
+                ),
+                (
+                    "family_prototype_state_sha256",
+                    full_family_prototype_state_path,
+                    "family prototype state",
+                ),
+            )
+            for hash_key, active_path, label in artifact_contracts:
+                expected_hash = candidate_contract.get(hash_key)
+                active_hash = file_sha256(active_path)
+                if expected_hash != active_hash:
+                    raise ValueError(
+                        "pose-sufficient selector candidate graph uses a "
+                        f"different {label}"
+                    )
+            full_model = selector_state.get("full_model")
+            statistics = selector_state.get("anchor_statistics")
+            if not isinstance(full_model, dict) or not isinstance(
+                statistics, dict
+            ):
+                raise ValueError(
+                    "pose-sufficient selector misses its deployment model"
+                )
+            if (
+                self.shared_null_head is not None
+                and float(self.shared_null_config.get("threshold", 0.5))
+                > 0.0
+            ):
+                raise ValueError(
+                    "pose-sufficient selection has not been validated with "
+                    "a candidate-rejecting shared null head"
+                )
+            self.pose_sufficient_selector_state = selector_state
+            self.pose_sufficient_selector_budget = int(
+                sparse_config["pose_sufficient_budget"]
+            )
+            self.pose_sufficient_source_groups = torch.as_tensor(
+                self.materialized_anchor_map_state["source_primitive_ids"]
+            ).long().detach().cpu()
+            self.pose_sufficient_dependency_groups = torch.as_tensor(
+                self.materialized_anchor_map_state.get(
+                    "coarse_dependency_group_ids",
+                    self.materialized_anchor_map_state[
+                        "dependency_group_ids"
+                    ],
+                )
+            ).long().detach().cpu()
+            self.pose_sufficient_anchor_xyz = (
+                self.landmarks.get_xyz.detach().cpu().float()
+            )
         scorer_training_features = None
         if isinstance(self.candidate_teacher_state, dict):
             candidate_features = self.candidate_teacher_state.get("landmark_features")
@@ -3123,6 +3284,13 @@ class STDLoc:
             "native_matchability_state_path": full_native_matchability_state_path,
             "native_matchability_state_file_sha256": file_sha256(
                 full_native_matchability_state_path
+            ),
+            "pose_sufficient_selector_state_path": full_selector_state_path,
+            "pose_sufficient_selector_state_file_sha256": file_sha256(
+                full_selector_state_path
+            ),
+            "pose_sufficient_selector_budget": int(
+                self.pose_sufficient_selector_budget
             ),
             "query_context_state_path": full_query_context_state_path,
             "query_context_state_file_sha256": file_sha256(
@@ -4251,6 +4419,15 @@ class STDLoc:
         shared_null_topk = (
             8 if self.shared_null_head is not None else 0
         )
+        pose_sufficient_topk = (
+            int(
+                self.pose_sufficient_selector_state.get(
+                    "retrieval_topk", 16
+                )
+            )
+            if self.pose_sufficient_selector_state is not None
+            else 0
+        )
         diag_cfg = self.config["sparse"].get("diagnostics", {})
         dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
         diagnostic_topk = (
@@ -4271,6 +4448,7 @@ class STDLoc:
             oracle_topk if dump_discrete_oracle else 0,
             native_matchability_topk,
             shared_null_topk,
+            pose_sufficient_topk,
             diagnostic_topk,
         )
         retrieval_args = {
@@ -4712,6 +4890,133 @@ class STDLoc:
             min_match_count=min_candidate_matches,
             refill_trigger_count=candidate_refill_trigger_count,
         )
+        pose_sufficient_diagnostics = {
+            "sparse_diag_pose_sufficient_selector_enabled": float(
+                self.pose_sufficient_selector_state is not None
+            ),
+            "sparse_diag_pose_sufficient_budget": float(
+                self.pose_sufficient_selector_budget
+            ),
+            "sparse_diag_pose_sufficient_input_count": float(
+                matches.keypoint_idx.numel()
+            ),
+            "sparse_diag_pose_sufficient_selected_count": float(
+                matches.keypoint_idx.numel()
+            ),
+            "sparse_diag_pose_sufficient_probability_mean": 1.0,
+            "sparse_diag_pose_sufficient_probability_p10": 1.0,
+            "sparse_diag_pose_sufficient_probability_p90": 1.0,
+            "sparse_diag_pose_sufficient_runtime_ms": 0.0,
+        }
+        if (
+            self.pose_sufficient_selector_state is not None
+            and matches.keypoint_idx.numel() > 0
+        ):
+            pose_sufficient_start = clock()
+            expected_landmarks = retrieval.indices[matches.keypoint_idx, 0]
+            if not torch.equal(matches.landmark_idx, expected_landmarks):
+                raise RuntimeError(
+                    "pose-sufficient selection must score the unchanged "
+                    "cosine top-1 candidate graph"
+                )
+            dependency_groups = self.pose_sufficient_dependency_groups
+            source_groups = self.pose_sufficient_source_groups
+            selected_keypoints = keypoints[
+                matches.keypoint_idx
+            ].detach().cpu().float()
+            selected_keypoint_scores = keypoint_scores[
+                matches.keypoint_idx
+            ].detach().cpu().float()
+            selector_topk_scores = retrieval.scores[
+                matches.keypoint_idx, :pose_sufficient_topk
+            ].detach().cpu().float()
+            selector_topk_indices = retrieval.indices[
+                matches.keypoint_idx, :pose_sufficient_topk
+            ].detach().cpu().long()
+            selector_features = build_pose_sufficient_features(
+                selector_topk_scores,
+                selector_topk_indices,
+                keypoints=selected_keypoints,
+                keypoint_scores=selected_keypoint_scores,
+                image_hw=(height, width),
+                source_groups=source_groups,
+                dependency_groups=dependency_groups,
+                anchor_statistics=self.pose_sufficient_selector_state[
+                    "anchor_statistics"
+                ],
+                entropy_temperature=float(
+                    self.pose_sufficient_selector_state.get(
+                        "entropy_temperature", 0.05
+                    )
+                ),
+                prior_strength=float(
+                    self.pose_sufficient_selector_state.get(
+                        "prior_strength", 12.0
+                    )
+                ),
+            )
+            selector_probability = predict_pose_sufficient_probability(
+                selector_features,
+                self.pose_sufficient_selector_state["full_model"],
+            )
+            selector_config = self.pose_sufficient_selector_state[
+                "selector_config"
+            ]
+            selector_mask = constrained_pose_sufficient_mask(
+                selector_probability,
+                image_cells=image_grid_cells(
+                    selected_keypoints, (height, width)
+                ),
+                dependency_groups=dependency_groups[
+                    matches.landmark_idx.detach().cpu()
+                ],
+                source_groups=source_groups[
+                    matches.landmark_idx.detach().cpu()
+                ],
+                xyz=self.pose_sufficient_anchor_xyz[
+                    matches.landmark_idx.detach().cpu()
+                ],
+                budget=self.pose_sufficient_selector_budget,
+                minimum_per_image_cell=int(
+                    selector_config["minimum_per_image_cell"]
+                ),
+                minimum_per_spatial_bin=int(
+                    selector_config["minimum_per_spatial_bin"]
+                ),
+                maximum_per_dependency=int(
+                    selector_config["maximum_per_dependency"]
+                ),
+                maximum_per_source=int(
+                    selector_config["maximum_per_source"]
+                ),
+            )
+            selector_device_mask = selector_mask.to(
+                device=matches.keypoint_idx.device
+            )
+            matches = SparseMatchResult(
+                matches.keypoint_idx[selector_device_mask],
+                matches.landmark_idx[selector_device_mask],
+                matches.scores[selector_device_mask],
+            )
+            pose_sufficient_diagnostics.update(
+                {
+                    "sparse_diag_pose_sufficient_selected_count": float(
+                        selector_mask.sum()
+                    ),
+                    "sparse_diag_pose_sufficient_probability_mean": float(
+                        selector_probability.mean()
+                    ),
+                    "sparse_diag_pose_sufficient_probability_p10": float(
+                        torch.quantile(selector_probability, 0.10)
+                    ),
+                    "sparse_diag_pose_sufficient_probability_p90": float(
+                        torch.quantile(selector_probability, 0.90)
+                    ),
+                    "sparse_diag_pose_sufficient_runtime_ms": float(
+                        (clock() - pose_sufficient_start) * 1000.0
+                    ),
+                }
+            )
         native_matchability_scores = None
         native_matchability_diagnostics = {
             "sparse_diag_native_matchability_enabled": float(
@@ -4793,6 +5098,7 @@ class STDLoc:
                 "sparse_diag_frontend_ulfloc_native": 1.0,
             }
             result.update(mask_diagnostics)
+            runtime_diagnostics.update(pose_sufficient_diagnostics)
             runtime_diagnostics["sparse_diag_runtime_total_ms"] = float(
                 (clock() - total_start) * 1000.0
             )
@@ -5043,6 +5349,7 @@ class STDLoc:
             }
         )
         runtime_diagnostics.update(native_matchability_diagnostics)
+        runtime_diagnostics.update(pose_sufficient_diagnostics)
         runtime_diagnostics.update(rerank_diagnostics)
 
         result = {
