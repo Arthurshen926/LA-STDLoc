@@ -1,6 +1,7 @@
 import torch
 
 from scripts.train_lafgs_dual_context_encoder import (
+    _sample_slots_by_category,
     _selected_training_batch,
 )
 
@@ -89,3 +90,21 @@ def test_training_candidates_reject_missing_topk_rows():
         assert "miss teacher rows" in str(error)
     else:
         raise AssertionError("missing top-K rows must be rejected")
+
+
+def test_stratified_sampling_preserves_confusion_quota():
+    valid_slots = torch.arange(20)
+    categories = (
+        torch.tensor([True] * 8 + [False] * 12),
+        torch.tensor([False] * 8 + [True] * 4 + [False] * 8),
+        torch.tensor([False] * 12 + [True] * 4 + [False] * 4),
+        torch.tensor([False] * 16 + [True] * 4),
+    )
+    selected = _sample_slots_by_category(
+        categories,
+        valid_slots,
+        maximum_rows=10,
+        generator=torch.Generator().manual_seed(4),
+    )
+    assert selected.numel() == 10
+    assert int((selected < 8).sum()) == 4

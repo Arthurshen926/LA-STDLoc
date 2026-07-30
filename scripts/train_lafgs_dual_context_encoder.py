@@ -79,6 +79,48 @@ def _aligned_topk(
     )
 
 
+def _sample_slots_by_category(
+    categories: tuple[torch.Tensor, ...],
+    valid_slots: torch.Tensor,
+    *,
+    maximum_rows: int,
+    generator: torch.Generator,
+    fractions: tuple[float, ...] = (0.40, 0.25, 0.20, 0.15),
+) -> torch.Tensor:
+    """Sample disjoint row categories, then deterministically fill shortages."""
+
+    if len(categories) != len(fractions):
+        raise ValueError("sampling categories and fractions must align")
+    if maximum_rows <= 0 or valid_slots.numel() <= int(maximum_rows):
+        return valid_slots
+    selected_parts = []
+    selected_mask = torch.zeros(valid_slots.numel(), dtype=torch.bool)
+    remaining_budget = int(maximum_rows)
+    for category, fraction in zip(categories, fractions):
+        requested = min(
+            int(round(int(maximum_rows) * float(fraction))),
+            remaining_budget,
+        )
+        available = torch.nonzero(
+            torch.as_tensor(category).bool() & ~selected_mask,
+            as_tuple=False,
+        ).reshape(-1)
+        if requested > 0 and available.numel():
+            order = torch.randperm(available.numel(), generator=generator)
+            chosen = available[order[:requested]]
+            selected_parts.append(chosen)
+            selected_mask[chosen] = True
+            remaining_budget -= int(chosen.numel())
+    if remaining_budget > 0:
+        available = torch.nonzero(
+            ~selected_mask, as_tuple=False
+        ).reshape(-1)
+        order = torch.randperm(available.numel(), generator=generator)
+        selected_parts.append(available[order[:remaining_budget]])
+    selected = torch.cat(selected_parts)
+    return valid_slots[selected].sort().values
+
+
 def _selected_training_batch(
     teacher: dict,
     dynamic: dict,
@@ -88,6 +130,7 @@ def _selected_training_batch(
     anchor_count: int,
     topk: dict | None = None,
     confusion_events: dict[int, list[dict]] | None = None,
+    row_sampling: str = "uniform",
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -105,7 +148,63 @@ def _selected_training_batch(
     valid_slots = torch.nonzero(
         offsets[1:] > offsets[:-1], as_tuple=False
     ).reshape(-1)
-    if maximum_rows > 0 and valid_slots.numel() > int(maximum_rows):
+    if row_sampling not in {"uniform", "stratified"}:
+        raise ValueError("row_sampling must be uniform or stratified")
+    if (
+        row_sampling == "stratified"
+        and maximum_rows > 0
+        and valid_slots.numel() > int(maximum_rows)
+    ):
+        dynamic_rows = torch.as_tensor(dynamic["query_rows"]).long()
+        dynamic_top1 = torch.as_tensor(
+            dynamic["top1_anchor_indices"]
+        ).long()
+        top1_by_row = {
+            int(row): int(anchor)
+            for row, anchor in zip(
+                dynamic_rows.tolist(), dynamic_top1.tolist()
+            )
+        }
+        top1_all = torch.as_tensor(
+            [top1_by_row[int(rows[slot])] for slot in valid_slots]
+        ).long()
+        topk_all = (
+            _aligned_topk(topk, rows, valid_slots)
+            if topk is not None
+            else top1_all[:, None]
+        )
+        clean = torch.zeros(valid_slots.numel(), dtype=torch.bool)
+        recoverable = torch.zeros_like(clean)
+        confusion_rows = torch.zeros_like(clean)
+        for local_slot, source_slot in enumerate(valid_slots.tolist()):
+            positive_set = set(
+                int(value)
+                for value in positives[
+                    offsets[source_slot] : offsets[source_slot + 1]
+                ].tolist()
+            )
+            clean[local_slot] = int(top1_all[local_slot]) in positive_set
+            recoverable[local_slot] = any(
+                int(value) in positive_set
+                for value in topk_all[local_slot].tolist()
+            )
+            confusion_rows[local_slot] = bool(
+                confusion_events
+                and int(rows[source_slot]) in confusion_events
+            )
+        categories = (
+            confusion_rows,
+            clean & ~confusion_rows,
+            recoverable & ~clean & ~confusion_rows,
+            ~confusion_rows & ~clean & ~recoverable,
+        )
+        valid_slots = _sample_slots_by_category(
+            categories,
+            valid_slots,
+            maximum_rows=int(maximum_rows),
+            generator=generator,
+        )
+    elif maximum_rows > 0 and valid_slots.numel() > int(maximum_rows):
         order = torch.randperm(valid_slots.numel(), generator=generator)
         valid_slots = valid_slots[order[: int(maximum_rows)]]
     valid_slots = valid_slots.sort().values
@@ -275,6 +374,11 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--query-limit", type=int, default=0)
     parser.add_argument("--maximum-rows-per-query", type=int, default=512)
+    parser.add_argument(
+        "--row-sampling",
+        choices=("uniform", "stratified"),
+        default="uniform",
+    )
     parser.add_argument("--output-dim", type=int, default=64)
     parser.add_argument("--rank", type=int, default=32)
     parser.add_argument("--maximum-residual", type=float, default=0.35)
@@ -439,6 +543,7 @@ def main() -> None:
                 anchor_count=len(raw_map_context),
                 topk=topk.get(name),
                 confusion_events=confusion.get(name),
+                row_sampling=args.row_sampling,
             )
             if not selected_rows.numel():
                 continue

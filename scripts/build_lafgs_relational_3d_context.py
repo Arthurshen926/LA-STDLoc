@@ -32,6 +32,8 @@ def main() -> None:
     parser.add_argument("--neighbor-count", type=int, default=16)
     parser.add_argument("--candidate-multiplier", type=int, default=4)
     parser.add_argument("--minimum-normal-cosine", type=float, default=0.25)
+    parser.add_argument("--same-source-weight", type=float, default=0.25)
+    parser.add_argument("--same-track-weight", type=float, default=1.5)
     parser.add_argument("--chunk-size", type=int, default=128)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -73,6 +75,8 @@ def main() -> None:
         neighbor_count=args.neighbor_count,
         candidate_multiplier=args.candidate_multiplier,
         minimum_normal_cosine=args.minimum_normal_cosine,
+        same_source_weight=args.same_source_weight,
+        same_track_weight=args.same_track_weight,
         chunk_size=args.chunk_size,
     ).cpu()
     descriptor_dim = int(torch.as_tensor(state["anchor_features"]).shape[1])
@@ -90,6 +94,8 @@ def main() -> None:
             "map_neighbor_count": int(args.neighbor_count),
             "candidate_multiplier": int(args.candidate_multiplier),
             "minimum_normal_cosine": float(args.minimum_normal_cosine),
+            "same_source_weight": float(args.same_source_weight),
+            "same_track_weight": float(args.same_track_weight),
             "context_chunk_size": int(args.chunk_size),
             "query_input_dim": int(6 * descriptor_dim + 4),
             "map_input_dim": int(context.shape[1]),

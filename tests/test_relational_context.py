@@ -61,6 +61,34 @@ def test_map_context_is_translation_invariant_and_uses_surface_frame():
     assert not torch.allclose(context, swapped_frame)
 
 
+def test_map_context_does_not_fallback_to_incompatible_surface():
+    features = F.normalize(torch.eye(3), dim=1)
+    xyz = torch.tensor(
+        [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.2, 0.0]]
+    )
+    tangent_x = torch.tensor([[1.0, 0.0, 0.0]]).repeat(3, 1)
+    tangent_y = torch.tensor([[0.0, 1.0, 0.0]]).repeat(3, 1)
+    normals = torch.tensor(
+        [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]
+    )
+    context = relational_map_3d_context(
+        features,
+        xyz,
+        tangent_x,
+        tangent_y,
+        normals,
+        source_ids=torch.arange(3),
+        track_ids=torch.arange(3),
+        surface_scale=torch.ones(3),
+        neighbor_count=2,
+        candidate_multiplier=1,
+        minimum_normal_cosine=0.25,
+    )
+    # The last geometry channel is compatible-neighbor occupancy.
+    assert torch.isclose(context[0, -1], torch.tensor(0.0))
+    assert bool(torch.isfinite(context).all())
+
+
 def test_asymmetric_encoder_accepts_distinct_input_dimensions():
     model = AsymmetricBoundedDualContextEncoder(
         query_input_dim=12,

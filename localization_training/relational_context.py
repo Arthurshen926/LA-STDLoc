@@ -123,6 +123,8 @@ def relational_map_3d_context(
     neighbor_count: int = 16,
     candidate_multiplier: int = 4,
     minimum_normal_cosine: float = 0.25,
+    same_source_weight: float = 0.25,
+    same_track_weight: float = 1.5,
     chunk_size: int = 128,
 ) -> torch.Tensor:
     """Encode true relative geometry in each 2DGS tangent-normal frame."""
@@ -189,19 +191,24 @@ def relational_map_3d_context(
         selected_distance, order = torch.topk(
             penalized, k=count, dim=1, largest=False, sorted=True
         )
-        fallback_distance, fallback_order = torch.topk(
-            nearest_distance, k=count, dim=1, largest=False, sorted=True
-        )
-        invalid = ~torch.isfinite(selected_distance)
-        order = torch.where(invalid, fallback_order, order)
-        selected_distance = torch.where(
-            invalid, fallback_distance, selected_distance
-        )
+        selected_valid = torch.isfinite(selected_distance)
         selected = torch.gather(nearest, 1, order)
         selected_normal_cosine = torch.gather(normal_cosine, 1, order)
         delta = xyz[selected] - xyz[rows, None]
+        valid_count = selected_valid.sum(dim=1)
+        median_slot = ((valid_count - 1).clamp_min(0) // 2).reshape(-1, 1)
+        compatible_scale = torch.gather(
+            selected_distance.masked_fill(~selected_valid, 0.0),
+            1,
+            median_slot,
+        ).reshape(-1)
+        compatible_scale = torch.where(
+            valid_count > 0,
+            compatible_scale,
+            surface_scale[rows],
+        )
         adaptive_scale = torch.maximum(
-            selected_distance.median(dim=1).values,
+            compatible_scale,
             surface_scale[rows],
         ).clamp_min(1e-5)
         local_x = torch.einsum(
@@ -216,13 +223,29 @@ def relational_map_3d_context(
         offset = torch.stack((local_x, local_y), dim=-1)
         basis = _relation_basis(offset)
         same_source = source_ids[selected] == source_ids[rows, None]
-        same_track = track_ids[selected] == track_ids[rows, None]
-        weights = torch.exp(
-            -0.5 * (selected_distance / adaptive_scale[:, None]).square()
+        same_track = (
+            (track_ids[rows, None] >= 0)
+            & (track_ids[selected] >= 0)
+            & (track_ids[selected] == track_ids[rows, None])
         )
+        weights = torch.exp(
+            -0.5
+            * (
+                selected_distance.masked_fill(~selected_valid, 0.0)
+                / adaptive_scale[:, None]
+            ).square()
+        )
+        weights = weights * selected_valid
         weights = weights * selected_normal_cosine.clamp_min(0.0)
         weights = weights * torch.where(
-            same_source, weights.new_full((), 0.25), weights.new_ones(())
+            same_source,
+            weights.new_full((), float(same_source_weight)),
+            weights.new_ones(()),
+        )
+        weights = weights * torch.where(
+            same_track,
+            weights.new_full((), float(same_track_weight)),
+            weights.new_ones(()),
         )
         moments = _weighted_descriptor_moments(
             features[selected], basis, weights
@@ -244,7 +267,7 @@ def relational_map_3d_context(
                 ).sum(dim=1),
                 (normalized_weights * same_source.float()).sum(dim=1),
                 (normalized_weights * same_track.float()).sum(dim=1),
-                valid.gather(1, order).float().mean(dim=1),
+                selected_valid.float().mean(dim=1),
             ),
             dim=1,
         )

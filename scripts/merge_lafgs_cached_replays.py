@@ -35,6 +35,27 @@ def merge(paths: list[str]) -> dict:
         bool(row.get("dependency_sampler_used", False)) for row in rows
     ]
     rescue = [bool(row.get("dependency_rescue_used", False)) for row in rows]
+    inlier_ratio = np.asarray(
+        [
+            float(row["inlier_count"]) / max(int(row["match_count"]), 1)
+            for row in rows
+        ]
+    )
+    raw_precision = np.asarray(
+        [float(row["raw_gt_precision_2px"]) for row in rows]
+    )
+    inlier_precision = np.asarray(
+        [float(row["inlier_gt_precision_2px"]) for row in rows]
+    )
+    matching_ms = np.asarray(
+        [float(row["matching_ms"]) for row in rows if "matching_ms" in row]
+    )
+    context_ms = np.asarray(
+        [float(row.get("context_ms", 0.0)) for row in rows]
+    )
+    ransac_ms = np.asarray(
+        [float(row["ransac_ms"]) for row in rows if "ransac_ms" in row]
+    )
     output = {
         **reference,
         "runtime_scope": "cached_descriptor_matching_and_pnp",
@@ -48,6 +69,11 @@ def merge(paths: list[str]) -> dict:
         "mean_ae_deg": float(np.mean(rotation)),
         "recall_5cm_5deg_percent": float(
             100.0 * np.mean((translation <= 5.0) & (rotation <= 5.0))
+        ),
+        "mean_solver_inlier_ratio_percent": float(100.0 * inlier_ratio.mean()),
+        "raw_gt_precision_2px_percent": float(100.0 * raw_precision.mean()),
+        "inlier_gt_precision_2px_percent": float(
+            100.0 * inlier_precision.mean()
         ),
         "dependency_sampler_query_count": int(sum(dependency)),
         "dependency_sampler_query_fraction_percent": float(
@@ -63,6 +89,18 @@ def merge(paths: list[str]) -> dict:
         "p90_hypotheses": float(np.percentile(hypotheses, 90))
         if hypotheses.size
         else None,
+        "matching_ms_per_query": float(matching_ms.mean())
+        if matching_ms.size
+        else None,
+        "context_ms_per_query": float(context_ms.mean()),
+        "ransac_ms_per_query": float(ransac_ms.mean())
+        if ransac_ms.size
+        else None,
+        "total_ms_per_query": (
+            float(matching_ms.mean() + context_ms.mean() + ransac_ms.mean())
+            if matching_ms.size and ransac_ms.size
+            else None
+        ),
         "results": rows,
     }
     return output

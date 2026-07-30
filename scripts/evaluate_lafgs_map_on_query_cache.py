@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -42,6 +43,11 @@ def _atomic_torch(path: Path, payload: dict) -> None:
     os.replace(temporary, path)
 
 
+def _sha256_tensor(value: torch.Tensor) -> str:
+    value = torch.as_tensor(value).detach().cpu().contiguous()
+    return hashlib.sha256(value.numpy().tobytes()).hexdigest()
+
+
 def _project_errors(xyz, keypoints, K, pose):
     camera = xyz @ pose[:3, :3].T + pose[:3, 3]
     depth = camera[:, 2]
@@ -61,6 +67,11 @@ def main() -> None:
     parser.add_argument("--family-prototype-state", default="")
     parser.add_argument("--context-state", default="")
     parser.add_argument("--context-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--precomputed-topk",
+        default="",
+        help="Exact top-K assignments to replay through one standard PoseLib solve.",
+    )
     parser.add_argument("--reprojection-error", type=float, default=12.0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--query-limit", type=int, default=0)
@@ -110,6 +121,25 @@ def main() -> None:
     )
     cache = cache_payload.get("queries", cache_payload)
     all_names = list(graph["query_names"])
+    precomputed = (
+        torch.load(
+            args.precomputed_topk, map_location="cpu", weights_only=False
+        )
+        if args.precomputed_topk
+        else None
+    )
+    precomputed_by_name = {}
+    if precomputed is not None:
+        if precomputed.get("schema") != "lafgs_exact_topk_outcomes":
+            raise ValueError("unsupported precomputed top-K state")
+        if args.context_state or args.family_prototype_state:
+            raise ValueError(
+                "precomputed top-K cannot be combined with another retrieval branch"
+            )
+        precomputed_by_name = {
+            str(record["query_name"]): record
+            for record in precomputed["records"]
+        }
     if args.query_name_file:
         if args.query_start:
             raise ValueError("query_start cannot be combined with query_name_file")
@@ -131,6 +161,13 @@ def main() -> None:
     if args.query_limit > 0:
         names = names[: args.query_limit]
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
+    if precomputed is not None:
+        if int(precomputed["anchor_count"]) != len(xyz):
+            raise ValueError("precomputed top-K anchor count differs from map")
+        if precomputed["anchor_ids_sha256"] != _sha256_tensor(
+            state["anchor_ids"]
+        ):
+            raise ValueError("precomputed top-K anchor identities differ from map")
     dependency_groups = torch.as_tensor(
         state.get("coarse_dependency_group_ids", state["dependency_group_ids"])
     ).long()
@@ -275,6 +312,9 @@ def main() -> None:
         if args.context_state
         else None,
         "context_weight": float(args.context_weight),
+        "precomputed_topk": str(Path(args.precomputed_topk).resolve())
+        if args.precomputed_topk
+        else None,
         "seed": int(args.seed),
         "reprojection_error": float(args.reprojection_error),
         "query_count_requested": len(names),
@@ -329,6 +369,7 @@ def main() -> None:
         saved_identity.setdefault("minimal_set_record_limit", 0)
         saved_identity.setdefault("context_state", None)
         saved_identity.setdefault("context_weight", 0.0)
+        saved_identity.setdefault("precomputed_topk", None)
         if not saved_identity["dependency_aware_sampler"]:
             saved_identity.setdefault("dependency_sampler_version", None)
         if saved_identity != run_identity:
@@ -437,7 +478,26 @@ def main() -> None:
                 context_seconds += context_duration
             torch.cuda.synchronize()
             start = time.perf_counter()
-            if query_context_gate is not None:
+            if precomputed is not None:
+                assignment = precomputed_by_name.get(name)
+                if assignment is None:
+                    raise ValueError(
+                        f"precomputed top-K has no assignment for {name}"
+                    )
+                assignment_rows = torch.as_tensor(
+                    assignment["query_rows"]
+                ).long()
+                if not torch.equal(rows, assignment_rows):
+                    raise ValueError(
+                        f"precomputed top-K rows differ for {name}"
+                    )
+                top_values = torch.as_tensor(
+                    assignment["topk_scores"]
+                ).float().to(device)[:, :2]
+                top_indices = torch.as_tensor(
+                    assignment["topk_anchor_indices"]
+                ).long().to(device)[:, :2]
+            elif query_context_gate is not None:
                 gate = query_context_gate(
                     query_context,
                     torch.as_tensor(
@@ -739,9 +799,19 @@ def main() -> None:
     summary = {
         "schema": "lafgs_cached_deployment_replay",
         "split": args.split,
-        "runtime_scope": "cached_descriptor_matching_and_pnp",
+        "runtime_scope": (
+            "precomputed_topk_pnp_replay"
+            if precomputed is not None
+            else "cached_descriptor_matching_and_pnp"
+        ),
         "feature_extraction_included": False,
-        "sparse_context_included": context_state is not None,
+        "sparse_context_included": (
+            context_state is not None
+            or (
+                precomputed is not None
+                and "context" in str(precomputed.get("method", ""))
+            )
+        ),
         "runtime_rows_complete": runtime_rows_complete,
         "map": str(Path(args.map).resolve()),
         "metric_state": str(Path(args.metric_state).resolve())
@@ -751,6 +821,9 @@ def main() -> None:
         if args.context_state
         else None,
         "context_weight": float(args.context_weight),
+        "precomputed_topk": str(Path(args.precomputed_topk).resolve())
+        if args.precomputed_topk
+        else None,
         "query_count": len(results),
         "anchor_count": int(xyz.shape[0]),
         "median_te_cm": float(np.median(te)),
