@@ -23,6 +23,10 @@ from localization_training.contextual_descriptor import (
     fuse_local_and_context,
     multiscale_sparse_query_context,
 )
+from localization_training.relational_context import (
+    QueryAmbiguityGate,
+    relational_sparse_query_context,
+)
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -134,6 +138,7 @@ def main() -> None:
     bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1).to(
         device
     )
+    local_bank = bank
     metric = None
     if args.metric_state:
         metric_payload = torch.load(
@@ -150,6 +155,9 @@ def main() -> None:
     context_map = None
     context_config = None
     query_context_projector = None
+    query_context_gate = None
+    context_family_features = None
+    context_family_parents = None
     if args.context_state:
         if float(args.context_weight) <= 0.0:
             raise ValueError("context_state requires a positive context_weight")
@@ -177,11 +185,39 @@ def main() -> None:
             query_context_projector.eval()
             for parameter in query_context_projector.parameters():
                 parameter.requires_grad_(False)
-        bank = fuse_local_and_context(
-            bank,
-            context_map,
-            context_weight=float(args.context_weight),
-        )
+        if "query_gate_state_dict" in context_state:
+            if "prototype_context" in context_state:
+                raise ValueError(
+                    "query gate with context families is not implemented"
+                )
+            query_context_gate = QueryAmbiguityGate(
+                **context_state["query_gate_config"]
+            ).to(device)
+            query_context_gate.load_state_dict(
+                context_state["query_gate_state_dict"]
+            )
+            query_context_gate.eval()
+        else:
+            bank = fuse_local_and_context(
+                local_bank,
+                context_map,
+                context_weight=float(args.context_weight),
+            )
+        if "prototype_context" in context_state:
+            context_family_parents = torch.as_tensor(
+                context_state["prototype_anchor_indices"]
+            ).long().to(device)
+            prototype_context = F.normalize(
+                torch.as_tensor(
+                    context_state["prototype_context"]
+                ).float(),
+                dim=1,
+            ).to(device)
+            context_family_features = fuse_local_and_context(
+                local_bank[context_family_parents],
+                prototype_context,
+                context_weight=float(args.context_weight),
+            )
     family_state = None
     if args.family_prototype_state:
         family_state = torch.load(
@@ -215,6 +251,11 @@ def main() -> None:
                 family_features,
                 context_map[family_parents],
                 context_weight=float(args.context_weight),
+            )
+        if context_family_features is not None:
+            raise ValueError(
+                "local descriptor families and context families cannot be "
+                "combined by this evaluator"
             )
 
     output = Path(args.output)
@@ -332,47 +373,101 @@ def main() -> None:
                     ).float().to(device),
                     dim=1,
                 )
-                query_context = multiscale_sparse_query_context(
-                    all_descriptors,
-                    torch.as_tensor(
-                        cached["native_keypoints"]
-                    ).float().to(device),
-                    torch.as_tensor(
-                        cached["native_scores"]
-                    ).float().to(device),
-                    radii_px=tuple(
-                        float(value)
-                        for value in context_config["sparse_radii_px"]
-                    ),
-                    maximum_neighbors=int(
-                        context_config["maximum_sparse_neighbors"]
-                    ),
-                    chunk_size=int(
-                        context_config.get("context_chunk_size", 256)
-                    ),
-                )
-                if metric is not None:
-                    context_shape = query_context.shape
-                    transformed, _ = metric(
-                        query_context.reshape(-1, context_shape[-1])
+                if (
+                    context_config.get("query_representation")
+                    == "relational_sparse_2d_v1"
+                ):
+                    if metric is not None:
+                        all_descriptors, _ = metric(all_descriptors)
+                    query_context = relational_sparse_query_context(
+                        all_descriptors,
+                        torch.as_tensor(
+                            cached["native_keypoints"]
+                        ).float().to(device),
+                        torch.as_tensor(
+                            cached["native_scores"]
+                        ).float().to(device),
+                        neighbor_count=int(
+                            context_config["query_neighbor_count"]
+                        ),
+                        chunk_size=int(
+                            context_config.get("context_chunk_size", 256)
+                        ),
                     )
-                    query_context = transformed.reshape(context_shape)
-                query_context = flatten_context(query_context)[rows]
+                    query_context = query_context[rows]
+                else:
+                    query_context = multiscale_sparse_query_context(
+                        all_descriptors,
+                        torch.as_tensor(
+                            cached["native_keypoints"]
+                        ).float().to(device),
+                        torch.as_tensor(
+                            cached["native_scores"]
+                        ).float().to(device),
+                        radii_px=tuple(
+                            float(value)
+                            for value in context_config["sparse_radii_px"]
+                        ),
+                        maximum_neighbors=int(
+                            context_config["maximum_sparse_neighbors"]
+                        ),
+                        chunk_size=int(
+                            context_config.get("context_chunk_size", 256)
+                        ),
+                    )
+                    if metric is not None:
+                        context_shape = query_context.shape
+                        transformed, _ = metric(
+                            query_context.reshape(-1, context_shape[-1])
+                        )
+                        query_context = transformed.reshape(context_shape)
+                    query_context = flatten_context(query_context)[rows]
                 if query_context_projector is not None:
                     query_context, _ = query_context_projector(
                         query_context
                     )
-                descriptors = fuse_local_and_context(
-                    descriptors,
-                    query_context,
-                    context_weight=float(args.context_weight),
-                )
+                if query_context_gate is None:
+                    descriptors = fuse_local_and_context(
+                        descriptors,
+                        query_context,
+                        context_weight=float(args.context_weight),
+                    )
                 torch.cuda.synchronize()
                 context_duration = time.perf_counter() - context_start
                 context_seconds += context_duration
             torch.cuda.synchronize()
             start = time.perf_counter()
-            if family_state is None:
+            if query_context_gate is not None:
+                gate = query_context_gate(
+                    query_context,
+                    torch.as_tensor(
+                        cached["native_scores"]
+                    ).float()[rows].to(device),
+                )
+                combined_scores = (
+                    descriptors @ local_bank.T
+                    + float(args.context_weight)
+                    * gate[:, None]
+                    * (query_context @ context_map.T)
+                )
+                top_values, top_indices = torch.topk(
+                    combined_scores,
+                    k=min(2, local_bank.shape[0]),
+                    dim=1,
+                )
+            elif context_family_features is not None:
+                retrieval = chunked_exact_topk_family_prototype(
+                    descriptors,
+                    bank,
+                    context_family_features,
+                    context_family_parents,
+                    topk=min(2, bank.shape[0]),
+                )
+                top_values, top_indices = (
+                    retrieval.scores,
+                    retrieval.indices,
+                )
+            elif family_state is None:
                 top_values, top_indices = torch.topk(
                     descriptors @ bank.T, k=min(2, bank.shape[0]), dim=1
                 )

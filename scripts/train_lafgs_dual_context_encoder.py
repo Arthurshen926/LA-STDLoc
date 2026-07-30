@@ -19,6 +19,10 @@ from localization_training.contextual_descriptor import (
     multiscale_sparse_query_context,
 )
 from localization_training.shared_metric import SharedLowRankMetric
+from localization_training.relational_context import (
+    AsymmetricBoundedDualContextEncoder,
+    relational_sparse_query_context,
+)
 
 
 def _load_metric(path: str, device: torch.device) -> SharedLowRankMetric:
@@ -38,6 +42,43 @@ def _dynamic_by_name(payload: dict) -> dict[str, dict]:
     }
 
 
+def _confusion_events_by_name(payload: dict | None) -> dict[str, dict[int, list[dict]]]:
+    if payload is None:
+        return {}
+    output: dict[str, dict[int, list[dict]]] = {}
+    for event in payload["events"]:
+        name = str(event["query_name"])
+        row = int(event["query_row"])
+        output.setdefault(name, {}).setdefault(row, []).append(event)
+    return output
+
+
+def _aligned_topk(
+    record: dict,
+    rows: torch.Tensor,
+    valid_slots: torch.Tensor,
+) -> torch.Tensor:
+    topk_rows = torch.as_tensor(record["query_rows"]).long()
+    topk = torch.as_tensor(record["topk_anchor_indices"]).long()
+    if topk.ndim != 2 or topk.shape[0] != topk_rows.numel():
+        raise ValueError("top-K outcome rows and candidates do not align")
+    if torch.equal(topk_rows, rows):
+        return topk[valid_slots]
+    row_to_slot = {
+        int(row): index for index, row in enumerate(topk_rows.tolist())
+    }
+    missing = [
+        int(rows[slot])
+        for slot in valid_slots.tolist()
+        if int(rows[slot]) not in row_to_slot
+    ]
+    if missing:
+        raise ValueError(f"top-K outcomes miss teacher rows: {missing[:3]}")
+    return torch.stack(
+        [topk[row_to_slot[int(rows[slot])]] for slot in valid_slots]
+    )
+
+
 def _selected_training_batch(
     teacher: dict,
     dynamic: dict,
@@ -45,7 +86,13 @@ def _selected_training_batch(
     maximum_rows: int,
     generator: torch.Generator,
     anchor_count: int,
+    topk: dict | None = None,
+    confusion_events: dict[int, list[dict]] | None = None,
 ) -> tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
@@ -69,6 +116,10 @@ def _selected_training_batch(
             rows.new_empty(0),
             rows.new_empty(0, dtype=torch.bool),
             rows.new_empty(0),
+            rows.new_empty(0),
+            rows.new_empty(0),
+            rows.new_empty(0),
+            torch.empty(0, dtype=torch.float32),
         )
     slot_lookup = torch.full((rows.numel(),), -1, dtype=torch.long)
     slot_lookup[valid_slots] = torch.arange(valid_slots.numel())
@@ -95,9 +146,40 @@ def _selected_training_batch(
         top1 = torch.as_tensor(
             [row_to_top1[int(rows[slot])] for slot in valid_slots]
         ).long()
-    candidates = torch.unique(
-        torch.cat((positive_anchors, top1)), sorted=True
-    )
+    candidate_parts = [positive_anchors, top1]
+    if topk is not None:
+        candidate_parts.append(
+            _aligned_topk(topk, rows, valid_slots).reshape(-1)
+        )
+    selected_rows = rows[valid_slots]
+    selected_row_lookup = {
+        int(row): local_slot
+        for local_slot, row in enumerate(selected_rows.tolist())
+    }
+    directed_events: list[tuple[int, int, int, float]] = []
+    if confusion_events:
+        graph_anchors = []
+        for row, local_slot in selected_row_lookup.items():
+            for event in confusion_events.get(row, ()):
+                correct = int(event["correct_anchor"])
+                confusing = int(event["confusing_anchor"])
+                if not (
+                    0 <= correct < int(anchor_count)
+                    and 0 <= confusing < int(anchor_count)
+                ):
+                    raise ValueError("confusion event anchor is outside map")
+                graph_anchors.extend((correct, confusing))
+                directed_events.append(
+                    (
+                        local_slot,
+                        correct,
+                        confusing,
+                        max(float(event.get("pose_blame", 0.0)), 0.0),
+                    )
+                )
+        if graph_anchors:
+            candidate_parts.append(torch.as_tensor(graph_anchors).long())
+    candidates = torch.unique(torch.cat(candidate_parts), sorted=True)
     candidate_lookup = torch.full(
         (int(anchor_count),), -1, dtype=torch.long
     )
@@ -112,12 +194,38 @@ def _selected_training_batch(
     clean_top1 = positive_mask[
         torch.arange(valid_slots.numel()), top1_positions
     ]
+    if directed_events:
+        directed_rows = torch.as_tensor(
+            [event[0] for event in directed_events]
+        ).long()
+        directed_correct = candidate_lookup[
+            torch.as_tensor([event[1] for event in directed_events]).long()
+        ]
+        directed_confusing = candidate_lookup[
+            torch.as_tensor([event[2] for event in directed_events]).long()
+        ]
+        directed_weights = torch.as_tensor(
+            [event[3] for event in directed_events], dtype=torch.float32
+        )
+        directed_weights = 1.0 + torch.log1p(directed_weights)
+        directed_weights = directed_weights / directed_weights.mean().clamp_min(
+            1e-8
+        )
+    else:
+        directed_rows = rows.new_empty(0)
+        directed_correct = rows.new_empty(0)
+        directed_confusing = rows.new_empty(0)
+        directed_weights = torch.empty(0, dtype=torch.float32)
     return (
-        rows[valid_slots],
+        selected_rows,
         positive_mask,
         candidates,
         clean_top1,
         top1_positions,
+        directed_rows,
+        directed_correct,
+        directed_confusing,
+        directed_weights,
     )
 
 
@@ -151,6 +259,16 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--dynamic-outcomes", required=True)
+    parser.add_argument(
+        "--topk-outcomes",
+        default="",
+        help="Optional exact top-K candidates aligned to the fixed deployment matcher.",
+    )
+    parser.add_argument(
+        "--confusion-graph",
+        default="",
+        help="Optional query-specific correct/confusing event graph.",
+    )
     parser.add_argument("--raw-context-state", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda")
@@ -168,6 +286,8 @@ def main() -> None:
     parser.add_argument("--keep-top1-weight", type=float, default=1.0)
     parser.add_argument("--keep-top1-margin", type=float, default=0.02)
     parser.add_argument("--trust-weight", type=float, default=0.2)
+    parser.add_argument("--directed-confusion-weight", type=float, default=0.0)
+    parser.add_argument("--directed-confusion-margin", type=float, default=0.05)
     parser.add_argument("--clean-weight", type=float, default=2.0)
     parser.add_argument("--error-weight", type=float, default=3.0)
     parser.add_argument(
@@ -196,6 +316,37 @@ def main() -> None:
         args.dynamic_outcomes, map_location="cpu", weights_only=False
     )
     dynamic = _dynamic_by_name(dynamic_payload)
+    topk_payload = (
+        torch.load(
+            args.topk_outcomes, map_location="cpu", weights_only=False
+        )
+        if args.topk_outcomes
+        else None
+    )
+    topk = (
+        _dynamic_by_name(topk_payload) if topk_payload is not None else {}
+    )
+    if topk_payload is not None:
+        if topk_payload.get("schema") != "lafgs_exact_topk_outcomes":
+            raise ValueError("unsupported top-K outcome state")
+        if int(topk_payload["anchor_count"]) != len(state["anchor_xyz"]):
+            raise ValueError("top-K outcomes do not align with active map")
+    confusion_payload = (
+        torch.load(
+            args.confusion_graph, map_location="cpu", weights_only=False
+        )
+        if args.confusion_graph
+        else None
+    )
+    confusion = _confusion_events_by_name(confusion_payload)
+    if confusion_payload is not None:
+        if (
+            confusion_payload.get("schema")
+            != "lafgs_anchor_family_confusion_graph"
+        ):
+            raise ValueError("unsupported confusion graph")
+        if int(confusion_payload["anchor_count"]) != len(state["anchor_xyz"]):
+            raise ValueError("confusion graph does not align with active map")
     raw_context_payload = torch.load(
         args.raw_context_state, map_location="cpu", weights_only=False
     )
@@ -209,7 +360,12 @@ def main() -> None:
     names = list(teacher["query_names"])
     if args.query_limit > 0:
         names = names[: int(args.query_limit)]
-    if any(name not in cache or name not in dynamic for name in names):
+    if any(
+        name not in cache
+        or name not in dynamic
+        or (topk_payload is not None and name not in topk)
+        for name in names
+    ):
         raise ValueError("dual context training query registries differ")
     teacher_by_name = {
         str(record["query_name"]): record
@@ -226,20 +382,33 @@ def main() -> None:
         dim=1,
     )
     input_dim = int(raw_map_context.shape[1])
-    model = BoundedDualContextEncoder(
-        input_dim=input_dim,
-        output_dim=args.output_dim,
-        rank=args.rank,
-        maximum_residual=args.maximum_residual,
-        seed=args.seed,
-    ).to(device)
+    context_config = raw_context_payload["config"]
+    if (
+        context_config.get("query_representation")
+        == "relational_sparse_2d_v1"
+    ):
+        model = AsymmetricBoundedDualContextEncoder(
+            query_input_dim=int(context_config["query_input_dim"]),
+            map_input_dim=input_dim,
+            output_dim=args.output_dim,
+            rank=args.rank,
+            maximum_residual=args.maximum_residual,
+            seed=args.seed,
+        ).to(device)
+    else:
+        model = BoundedDualContextEncoder(
+            input_dim=input_dim,
+            output_dim=args.output_dim,
+            rank=args.rank,
+            maximum_residual=args.maximum_residual,
+            seed=args.seed,
+        ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
     metric = _load_metric(args.metric_state, device)
-    context_config = raw_context_payload["config"]
     history = []
     for epoch in range(args.epochs):
         order = list(names)
@@ -258,12 +427,18 @@ def main() -> None:
                 candidates,
                 clean_top1,
                 top1_positions,
+                directed_rows,
+                directed_correct,
+                directed_confusing,
+                directed_weights,
             ) = _selected_training_batch(
                 teacher_by_name[name],
                 dynamic[name],
                 maximum_rows=args.maximum_rows_per_query,
                 generator=generator,
                 anchor_count=len(raw_map_context),
+                topk=topk.get(name),
+                confusion_events=confusion.get(name),
             )
             if not selected_rows.numel():
                 continue
@@ -274,36 +449,60 @@ def main() -> None:
                 ).float().to(device),
                 dim=1,
             )
-            query_context = multiscale_sparse_query_context(
-                all_descriptors,
-                torch.as_tensor(
-                    cached["native_keypoints"]
-                ).float().to(device),
-                torch.as_tensor(
-                    cached["native_scores"]
-                ).float().to(device),
-                radii_px=tuple(
-                    float(value)
-                    for value in context_config["sparse_radii_px"]
-                ),
-                maximum_neighbors=int(
-                    context_config["maximum_sparse_neighbors"]
-                ),
-                chunk_size=int(
-                    context_config.get("context_chunk_size", 256)
-                ),
-            )
-            shape = query_context.shape
-            with torch.no_grad():
-                transformed, _ = metric(
-                    query_context.reshape(-1, shape[-1])
+            if (
+                context_config.get("query_representation")
+                == "relational_sparse_2d_v1"
+            ):
+                with torch.no_grad():
+                    transformed_all, _ = metric(all_descriptors)
+                    query_local = transformed_all[selected_rows.to(device)]
+                query_context = relational_sparse_query_context(
+                    transformed_all,
+                    torch.as_tensor(
+                        cached["native_keypoints"]
+                    ).float().to(device),
+                    torch.as_tensor(
+                        cached["native_scores"]
+                    ).float().to(device),
+                    neighbor_count=int(
+                        context_config["query_neighbor_count"]
+                    ),
+                    chunk_size=int(
+                        context_config.get("context_chunk_size", 256)
+                    ),
                 )
-                query_local, _ = metric(
-                    all_descriptors[selected_rows.to(device)]
+                query_context = query_context[selected_rows.to(device)]
+            else:
+                query_context = multiscale_sparse_query_context(
+                    all_descriptors,
+                    torch.as_tensor(
+                        cached["native_keypoints"]
+                    ).float().to(device),
+                    torch.as_tensor(
+                        cached["native_scores"]
+                    ).float().to(device),
+                    radii_px=tuple(
+                        float(value)
+                        for value in context_config["sparse_radii_px"]
+                    ),
+                    maximum_neighbors=int(
+                        context_config["maximum_sparse_neighbors"]
+                    ),
+                    chunk_size=int(
+                        context_config.get("context_chunk_size", 256)
+                    ),
                 )
-            query_context = flatten_context(
-                transformed.reshape(shape)
-            )[selected_rows.to(device)]
+                shape = query_context.shape
+                with torch.no_grad():
+                    transformed, _ = metric(
+                        query_context.reshape(-1, shape[-1])
+                    )
+                    query_local, _ = metric(
+                        all_descriptors[selected_rows.to(device)]
+                    )
+                query_context = flatten_context(
+                    transformed.reshape(shape)
+                )[selected_rows.to(device)]
             candidates = candidates.to(device)
             query_embedding, query_residual = model.query(query_context)
             map_embedding, map_residual = model.map(
@@ -358,6 +557,27 @@ def main() -> None:
                 ).mean()
             else:
                 keep_loss = scores.new_zeros(())
+            if directed_rows.numel():
+                directed_rows = directed_rows.to(device)
+                directed_correct = directed_correct.to(device)
+                directed_confusing = directed_confusing.to(device)
+                directed_weights = directed_weights.to(device)
+                directed_delta = (
+                    scores[directed_rows, directed_confusing]
+                    - scores[directed_rows, directed_correct]
+                    + float(args.directed_confusion_margin)
+                ) / max(float(args.temperature), 1e-6)
+                directed_loss = (
+                    F.softplus(directed_delta) * directed_weights
+                ).mean()
+                directed_accuracy = (
+                    directed_delta
+                    < float(args.directed_confusion_margin)
+                    / max(float(args.temperature), 1e-6)
+                ).float().mean()
+            else:
+                directed_loss = scores.new_zeros(())
+                directed_accuracy = scores.new_zeros(())
             trust_loss = (
                 query_residual.square().sum(dim=1).mean()
                 + map_residual.square().sum(dim=1).mean()
@@ -366,6 +586,7 @@ def main() -> None:
                 metric_loss
                 + float(args.hard_negative_weight) * hard_loss
                 + float(args.keep_top1_weight) * keep_loss
+                + float(args.directed_confusion_weight) * directed_loss
                 + float(args.trust_weight) * trust_loss
             )
             optimizer.zero_grad(set_to_none=True)
@@ -378,6 +599,10 @@ def main() -> None:
                     "metric": float(metric_loss.detach()),
                     "hard": float(hard_loss.detach()),
                     "keep": float(keep_loss.detach()),
+                    "directed": float(directed_loss.detach()),
+                    "directed_accuracy": float(
+                        directed_accuracy.detach()
+                    ),
                     "trust": float(trust_loss.detach()),
                     "clean_fraction": float(clean_top1.float().mean()),
                     "query_residual": float(
@@ -439,6 +664,12 @@ def main() -> None:
             "dynamic_outcomes": str(
                 Path(args.dynamic_outcomes).resolve()
             ),
+            "topk_outcomes": str(Path(args.topk_outcomes).resolve())
+            if args.topk_outcomes
+            else None,
+            "confusion_graph": str(Path(args.confusion_graph).resolve())
+            if args.confusion_graph
+            else None,
             "raw_context_state": str(
                 Path(args.raw_context_state).resolve()
             ),
