@@ -17,6 +17,12 @@ from localization_training.shared_metric import SharedLowRankMetric
 from localization_training.full_primitive_retrieval import (
     chunked_exact_topk_family_prototype,
 )
+from localization_training.contextual_descriptor import (
+    BoundedContextProjector,
+    flatten_context,
+    fuse_local_and_context,
+    multiscale_sparse_query_context,
+)
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -49,6 +55,8 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--metric-state", default="")
     parser.add_argument("--family-prototype-state", default="")
+    parser.add_argument("--context-state", default="")
+    parser.add_argument("--context-weight", type=float, default=0.0)
     parser.add_argument("--reprojection-error", type=float, default=12.0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--query-limit", type=int, default=0)
@@ -138,6 +146,42 @@ def main() -> None:
         metric = SharedLowRankMetric(**metric_payload["metric_config"]).to(device)
         metric.load_state_dict(metric_payload["metric_state_dict"])
         metric.eval()
+    context_state = None
+    context_map = None
+    context_config = None
+    query_context_projector = None
+    if args.context_state:
+        if float(args.context_weight) <= 0.0:
+            raise ValueError("context_state requires a positive context_weight")
+        context_state = torch.load(
+            args.context_state, map_location="cpu", weights_only=False
+        )
+        if context_state.get("schema") != "lafgs_fixed_3d_context_state":
+            raise ValueError("unsupported contextual descriptor state")
+        if not torch.equal(
+            torch.as_tensor(context_state["anchor_ids"]).long(),
+            torch.as_tensor(state["anchor_ids"]).long(),
+        ):
+            raise ValueError("context state does not align with active map")
+        context_map = F.normalize(
+            torch.as_tensor(context_state["anchor_context"]).float(), dim=1
+        ).to(device)
+        context_config = dict(context_state["config"])
+        if "query_projector_state_dict" in context_state:
+            query_context_projector = BoundedContextProjector(
+                **context_state["query_projector_config"]
+            ).to(device)
+            query_context_projector.load_state_dict(
+                context_state["query_projector_state_dict"]
+            )
+            query_context_projector.eval()
+            for parameter in query_context_projector.parameters():
+                parameter.requires_grad_(False)
+        bank = fuse_local_and_context(
+            bank,
+            context_map,
+            context_weight=float(args.context_weight),
+        )
     family_state = None
     if args.family_prototype_state:
         family_state = torch.load(
@@ -166,6 +210,12 @@ def main() -> None:
                 "prototype_temperature", torch.ones(len(family_features))
             )
         ).float().to(device)
+        if context_state is not None:
+            family_features = fuse_local_and_context(
+                family_features,
+                context_map[family_parents],
+                context_weight=float(args.context_weight),
+            )
 
     output = Path(args.output)
     partial = output.with_suffix(output.suffix + ".partial")
@@ -180,6 +230,10 @@ def main() -> None:
         )
         if args.family_prototype_state
         else None,
+        "context_state": str(Path(args.context_state).resolve())
+        if args.context_state
+        else None,
+        "context_weight": float(args.context_weight),
         "seed": int(args.seed),
         "reprojection_error": float(args.reprojection_error),
         "query_count_requested": len(names),
@@ -232,6 +286,8 @@ def main() -> None:
         saved_identity.setdefault("dependency_sampling_model", None)
         saved_identity.setdefault("dependency_risk_score_threshold", 0.0)
         saved_identity.setdefault("minimal_set_record_limit", 0)
+        saved_identity.setdefault("context_state", None)
+        saved_identity.setdefault("context_weight", 0.0)
         if not saved_identity["dependency_aware_sampler"]:
             saved_identity.setdefault("dependency_sampler_version", None)
         if saved_identity != run_identity:
@@ -252,6 +308,7 @@ def main() -> None:
     if len(completed_names) != len(results):
         raise ValueError("partial replay contains duplicate queries")
     matching_seconds = 0.0
+    context_seconds = 0.0
     ransac_seconds = 0.0
     for local_query_index, name in enumerate(names):
         if name in completed_names:
@@ -265,6 +322,54 @@ def main() -> None:
         with torch.no_grad():
             if metric is not None:
                 descriptors, _ = metric(descriptors)
+            context_duration = 0.0
+            if context_state is not None:
+                torch.cuda.synchronize()
+                context_start = time.perf_counter()
+                all_descriptors = F.normalize(
+                    torch.as_tensor(
+                        cached["native_descriptors"]
+                    ).float().to(device),
+                    dim=1,
+                )
+                query_context = multiscale_sparse_query_context(
+                    all_descriptors,
+                    torch.as_tensor(
+                        cached["native_keypoints"]
+                    ).float().to(device),
+                    torch.as_tensor(
+                        cached["native_scores"]
+                    ).float().to(device),
+                    radii_px=tuple(
+                        float(value)
+                        for value in context_config["sparse_radii_px"]
+                    ),
+                    maximum_neighbors=int(
+                        context_config["maximum_sparse_neighbors"]
+                    ),
+                    chunk_size=int(
+                        context_config.get("context_chunk_size", 256)
+                    ),
+                )
+                if metric is not None:
+                    context_shape = query_context.shape
+                    transformed, _ = metric(
+                        query_context.reshape(-1, context_shape[-1])
+                    )
+                    query_context = transformed.reshape(context_shape)
+                query_context = flatten_context(query_context)[rows]
+                if query_context_projector is not None:
+                    query_context, _ = query_context_projector(
+                        query_context
+                    )
+                descriptors = fuse_local_and_context(
+                    descriptors,
+                    query_context,
+                    context_weight=float(args.context_weight),
+                )
+                torch.cuda.synchronize()
+                context_duration = time.perf_counter() - context_start
+                context_seconds += context_duration
             torch.cuda.synchronize()
             start = time.perf_counter()
             if family_state is None:
@@ -455,6 +560,7 @@ def main() -> None:
                     diagnostics.get("ransac_rescue_used", False)
                 ),
                 "matching_ms": float(1000 * matching_duration),
+                "context_ms": float(1000 * context_duration),
                 "ransac_ms": float(1000 * ransac_duration),
                 "minimal_set_records": diagnostics.get(
                     "minimal_set_records", []
@@ -525,9 +631,13 @@ def main() -> None:
     if runtime_rows_complete:
         matching_ms = float(np.mean([row["matching_ms"] for row in results]))
         ransac_ms = float(np.mean([row["ransac_ms"] for row in results]))
+        context_ms = float(
+            np.mean([row.get("context_ms", 0.0) for row in results])
+        )
     else:
         matching_ms = float(1000 * matching_seconds / len(results))
         ransac_ms = float(1000 * ransac_seconds / len(results))
+        context_ms = float(1000 * context_seconds / len(results))
     hypotheses = [
         row["hypotheses"] for row in results if row["hypotheses"] is not None
     ]
@@ -536,11 +646,16 @@ def main() -> None:
         "split": args.split,
         "runtime_scope": "cached_descriptor_matching_and_pnp",
         "feature_extraction_included": False,
+        "sparse_context_included": context_state is not None,
         "runtime_rows_complete": runtime_rows_complete,
         "map": str(Path(args.map).resolve()),
         "metric_state": str(Path(args.metric_state).resolve())
         if args.metric_state
         else None,
+        "context_state": str(Path(args.context_state).resolve())
+        if args.context_state
+        else None,
+        "context_weight": float(args.context_weight),
         "query_count": len(results),
         "anchor_count": int(xyz.shape[0]),
         "median_te_cm": float(np.median(te)),
@@ -570,8 +685,9 @@ def main() -> None:
         if hypotheses
         else None,
         "matching_ms_per_query": matching_ms,
+        "context_ms_per_query": context_ms,
         "ransac_ms_per_query": ransac_ms,
-        "total_ms_per_query": matching_ms + ransac_ms,
+        "total_ms_per_query": matching_ms + context_ms + ransac_ms,
         "results": results,
     }
     output.parent.mkdir(parents=True, exist_ok=True)

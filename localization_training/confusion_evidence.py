@@ -62,6 +62,67 @@ class ConfusionViewPlanningConfig:
     cross_trajectory_bonus: float = 0.35
     different_view_bin_bonus: float = 0.15
     confusing_family_visible_bonus: float = 0.10
+    arc_yaw_degrees: tuple[float, ...] = (-10.0, -5.0, 5.0, 10.0)
+    arc_vertical_fractions: tuple[float, ...] = (0.0,)
+    minimum_pose_novelty: float = 0.15
+    maximum_safe_envelope_scale: float = 3.0
+    context_neighbor_count: int = 16
+    context_separation_weight: float = 8.0
+    pose_novelty_weight: float = 0.5
+    diversity_weight: float = 0.5
+
+
+def filter_confusion_graph_by_context_oracle(
+    confusion_graph: dict,
+    oracle: dict,
+    *,
+    method: str = "O1_cross_trajectory_2d",
+    minimum_positive_fraction: float = 0.5,
+    minimum_records: int = 2,
+) -> tuple[dict, dict]:
+    """Keep only confusion edges that a real-query context oracle can separate."""
+
+    if oracle.get("schema") != "lafgs_real_2d3d_context_oracle":
+        raise ValueError("unsupported context oracle")
+    edge_outcomes = defaultdict(list)
+    for record in oracle["records"]:
+        margins = record.get("margins", {})
+        if method not in margins:
+            raise ValueError(f"context oracle does not contain {method}")
+        if margins[method] is None:
+            continue
+        edge_outcomes[int(record["edge_index"])].append(
+            float(margins[method]) > 0.0
+        )
+    eligible = {
+        edge
+        for edge, outcomes in edge_outcomes.items()
+        if len(outcomes) >= int(minimum_records)
+        and sum(outcomes) / len(outcomes)
+        >= float(minimum_positive_fraction)
+    }
+    filtered = {
+        **confusion_graph,
+        "edges": [
+            edge
+            for edge in confusion_graph["edges"]
+            if int(edge["edge_index"]) in eligible
+        ],
+        "events": [
+            event
+            for event in confusion_graph["events"]
+            if int(event["edge_index"]) in eligible
+        ],
+    }
+    return filtered, {
+        "method": str(method),
+        "minimum_positive_fraction": float(minimum_positive_fraction),
+        "minimum_records": int(minimum_records),
+        "input_edge_count": len(confusion_graph["edges"]),
+        "oracle_edge_count": len(edge_outcomes),
+        "eligible_edge_count": len(eligible),
+        "retained_graph_edge_count": len(filtered["edges"]),
+    }
 
 
 def _positive_lookup(record: dict) -> dict[int, list[int]]:
@@ -207,6 +268,473 @@ def _project_pair(
         & (projected[:, 1] < float(height) - float(margin))
     )
     return projected, visible
+
+
+def _look_at_pose_w2c(center, target, reference_down):
+    center = torch.as_tensor(center).double()
+    target = torch.as_tensor(target).double()
+    forward = F.normalize(target - center, dim=0)
+    down = F.normalize(torch.as_tensor(reference_down).double(), dim=0)
+    right = torch.linalg.cross(down, forward)
+    if float(torch.linalg.vector_norm(right)) < 1e-6:
+        right = torch.linalg.cross(
+            center.new_tensor([0.0, 1.0, 0.0]), forward
+        )
+    right = F.normalize(right, dim=0)
+    down = F.normalize(torch.linalg.cross(forward, right), dim=0)
+    rotation_c2w = torch.stack((right, down, forward), dim=1)
+    pose = torch.eye(4, dtype=torch.double)
+    pose[:3, :3] = rotation_c2w.T
+    pose[:3, 3] = -rotation_c2w.T @ center
+    return pose
+
+
+def _rotate_about_axis(vector, axis, angle_degrees):
+    vector = torch.as_tensor(vector).double()
+    axis = F.normalize(torch.as_tensor(axis).double(), dim=0)
+    angle = math.radians(float(angle_degrees))
+    return (
+        vector * math.cos(angle)
+        + torch.linalg.cross(axis, vector) * math.sin(angle)
+        + axis * torch.dot(axis, vector) * (1.0 - math.cos(angle))
+    )
+
+
+def _pose_novelty(pose_w2c, centers, forwards, local_scale):
+    center, forward = _camera_center_and_forward(pose_w2c)
+    translation = torch.linalg.vector_norm(centers - center, dim=1)
+    angles = torch.rad2deg(
+        torch.acos((forwards @ forward).clamp(-1.0, 1.0))
+    )
+    normalized_translation = translation / max(float(local_scale), 1e-6)
+    combined = torch.sqrt(
+        normalized_translation.square() + (angles / 20.0).square()
+    )
+    nearest = int(torch.argmin(combined))
+    return (
+        float(combined[nearest]),
+        float(normalized_translation[nearest]),
+        float(angles[nearest]),
+    )
+
+
+def _projected_context_separation(
+    xyz, anchors, pose_w2c, K, image_diagonal, neighbor_indices
+):
+    layouts = []
+    for anchor in anchors:
+        indices = torch.cat(
+            (
+                torch.as_tensor([anchor]),
+                neighbor_indices[int(anchor)].cpu(),
+            )
+        ).long()
+        points = xyz[indices]
+        camera = points @ pose_w2c[:3, :3].T + pose_w2c[:3, 3]
+        valid = camera[:, 2] > 1e-4
+        if not bool(valid[0]) or int(valid[1:].sum()) < 2:
+            return 0.0
+        projected = camera[:, :2] / camera[:, 2:3].clamp_min(1e-8)
+        projected = projected @ K[:2, :2].T + K[:2, 2]
+        layouts.append(
+            (projected[1:][valid[1:]] - projected[0])
+            / max(float(image_diagonal), 1.0)
+        )
+    distance = torch.cdist(layouts[0].float(), layouts[1].float())
+    return float(
+        0.5
+        * (
+            distance.min(dim=1).values.mean()
+            + distance.min(dim=0).values.mean()
+        )
+    )
+
+
+def _select_diverse_confusion_views(candidates, config):
+    if not candidates:
+        return []
+    selected = []
+    remaining = torch.ones(len(candidates), dtype=torch.bool)
+    centers = torch.as_tensor(
+        [candidate["camera_center"] for candidate in candidates]
+    ).double()
+    forwards = F.normalize(
+        torch.as_tensor(
+            [candidate["camera_forward"] for candidate in candidates]
+        ).double(),
+        dim=1,
+    )
+    scales = torch.as_tensor(
+        [candidate["source_local_scale"] for candidate in candidates]
+    ).double().clamp_min(1e-6)
+    acquisitions = torch.as_tensor(
+        [candidate["acquisition"] for candidate in candidates]
+    ).double()
+    minimum_diversity = torch.full(
+        (len(candidates),), float("inf"), dtype=torch.double
+    )
+    edge_counts = Counter()
+    source_counts = Counter()
+    trajectory_counts = Counter()
+    while bool(remaining.any()) and len(selected) < int(
+        config.maximum_planned_views
+    ):
+        eligible = remaining.clone()
+        for index, candidate in enumerate(candidates):
+            if not bool(eligible[index]):
+                continue
+            edge = int(candidate["edge_index"])
+            source = str(candidate["source_query"])
+            trajectory = trajectory_id(source)
+            if edge_counts[edge] >= int(config.maximum_views_per_edge):
+                eligible[index] = False
+                continue
+            if source_counts[source] >= int(config.maximum_views_per_source):
+                eligible[index] = False
+                continue
+            if trajectory_counts[trajectory] >= int(
+                config.maximum_views_per_trajectory
+            ):
+                eligible[index] = False
+        if not bool(eligible.any()):
+            break
+        if selected:
+            diversity = minimum_diversity.clamp(0.0, 2.0)
+        else:
+            diversity = torch.zeros_like(minimum_diversity)
+        scores = acquisitions * (
+            1.0 + float(config.diversity_weight) * diversity
+        )
+        scores[~eligible] = -torch.inf
+        best_index = int(torch.argmax(scores))
+        best_score = float(scores[best_index])
+        candidate = candidates[best_index]
+        candidate["diverse_acquisition"] = float(best_score)
+        selected.append(candidate)
+        remaining[best_index] = False
+        edge_counts[int(candidate["edge_index"])] += 1
+        source = str(candidate["source_query"])
+        source_counts[source] += 1
+        trajectory_counts[trajectory_id(source)] += 1
+        translation = torch.linalg.vector_norm(
+            centers - centers[best_index], dim=1
+        ) / scales
+        angles = torch.rad2deg(
+            torch.acos(
+                (forwards @ forwards[best_index]).clamp(-1.0, 1.0)
+            )
+        ) / 20.0
+        minimum_diversity = torch.minimum(
+            minimum_diversity,
+            torch.sqrt(translation.square() + angles.square()),
+        )
+    return selected
+
+
+def plan_reference_guided_confusion_views(
+    *,
+    confusion_graph: dict,
+    state: dict,
+    cache: dict,
+    query_bins: dict[str, int],
+    config: ConfusionViewPlanningConfig,
+) -> list[dict]:
+    """Plan local, confusion-centered arcs between reliable real views."""
+
+    xyz = torch.as_tensor(state["anchor_xyz"]).double()
+    if int(confusion_graph["anchor_count"]) != len(xyz):
+        raise ValueError("reference-guided planner map does not align")
+    names = [
+        str(name)
+        for name in confusion_graph["query_names"]
+        if str(name) in cache
+    ]
+    if not names or any(name not in query_bins for name in names):
+        raise ValueError("reference-guided planner camera registry is invalid")
+    centers, forwards, downs = [], [], []
+    for name in names:
+        pose = torch.as_tensor(cache[name]["pose_w2c"]).double()
+        c2w = torch.linalg.inv(pose)
+        center, forward = _camera_center_and_forward(pose)
+        centers.append(center)
+        forwards.append(forward)
+        downs.append(F.normalize(c2w[:3, 1], dim=0))
+    centers = torch.stack(centers)
+    forwards = torch.stack(forwards)
+    downs = torch.stack(downs)
+    pose_distances = torch.cdist(centers.float(), centers.float()).double()
+    pose_distances.fill_diagonal_(float("inf"))
+    nearest = torch.topk(
+        pose_distances,
+        k=min(8, max(len(names) - 1, 1)),
+        dim=1,
+        largest=False,
+    ).values
+    local_scales = torch.where(
+        torch.isfinite(nearest), nearest, torch.nan
+    ).nanmedian(dim=1).values.clamp_min(1e-3)
+    name_to_index = {name: index for index, name in enumerate(names)}
+    events_by_edge = defaultdict(list)
+    for event in confusion_graph["events"]:
+        if str(event["query_name"]) in name_to_index:
+            events_by_edge[int(event["edge_index"])].append(event)
+    edges = [
+        edge
+        for edge in confusion_graph["edges"]
+        if int(edge["occurrences"]) >= int(config.minimum_edge_occurrences)
+        and int(edge["trajectory_count"])
+        >= int(config.minimum_edge_trajectories)
+    ][: int(config.maximum_edges)]
+    candidates = []
+    for edge in edges:
+        edge_index = int(edge["edge_index"])
+        anchors = (
+            int(edge["correct_anchor"]),
+            int(edge["confusing_anchor"]),
+        )
+        component_center = xyz[
+            torch.as_tensor(anchors).long()
+        ].mean(dim=0)
+        neighbor_indices = {}
+        maximum_context_neighbors = min(
+            max(int(config.context_neighbor_count), 1),
+            max(len(xyz) - 1, 1),
+        )
+        for anchor in anchors:
+            anchor_distance = torch.linalg.vector_norm(
+                xyz - xyz[int(anchor)], dim=1
+            )
+            anchor_distance[int(anchor)] = torch.inf
+            neighbor_indices[int(anchor)] = torch.topk(
+                anchor_distance,
+                k=maximum_context_neighbors,
+                largest=False,
+            ).indices
+        events = sorted(
+            events_by_edge.get(edge_index, []),
+            key=lambda value: (
+                -float(value["pose_blame"]),
+                -float(value["score_margin"]),
+                str(value["query_name"]),
+                int(value["query_row"]),
+            ),
+        )[: int(config.maximum_events_per_edge)]
+        for event in events:
+            source = str(event["query_name"])
+            source_index = name_to_index[source]
+            source_scale = float(local_scales[source_index])
+            references = []
+            for neighbor_index in torch.argsort(
+                pose_distances[source_index]
+            ).tolist():
+                distance = float(
+                    pose_distances[source_index, neighbor_index]
+                )
+                if not math.isfinite(distance):
+                    continue
+                if distance > float(config.maximum_neighbor_scale) * source_scale:
+                    break
+                angle = _view_angle_deg(
+                    forwards[source_index], forwards[neighbor_index]
+                )
+                if angle <= float(config.maximum_view_angle_deg):
+                    references.append((neighbor_index, distance, angle))
+                if len(references) >= int(config.maximum_pose_neighbors):
+                    break
+            cached = cache[source]
+            height, width = map(int, cached["native_input_hw"])
+            K = torch.as_tensor(cached["native_K"]).double()
+            image_diagonal = math.hypot(width, height)
+            for neighbor_index, reference_distance, reference_angle in references:
+                neighbor = names[neighbor_index]
+                source_radial = centers[source_index] - component_center
+                neighbor_radial = centers[neighbor_index] - component_center
+                source_radius = float(torch.linalg.vector_norm(source_radial))
+                neighbor_radius = float(torch.linalg.vector_norm(neighbor_radial))
+                if min(source_radius, neighbor_radius) < 1e-4:
+                    continue
+                source_radial = F.normalize(source_radial, dim=0)
+                neighbor_radial = F.normalize(neighbor_radial, dim=0)
+                for alpha in config.interpolation_alphas:
+                    radial = F.normalize(
+                        (1.0 - float(alpha)) * source_radial
+                        + float(alpha) * neighbor_radial,
+                        dim=0,
+                    )
+                    radius = (
+                        (1.0 - float(alpha)) * source_radius
+                        + float(alpha) * neighbor_radius
+                    )
+                    reference_down = F.normalize(
+                        (1.0 - float(alpha)) * downs[source_index]
+                        + float(alpha) * downs[neighbor_index],
+                        dim=0,
+                    )
+                    for yaw in config.arc_yaw_degrees:
+                        yaw_radial = F.normalize(
+                            _rotate_about_axis(
+                                radial, -reference_down, float(yaw)
+                            ),
+                            dim=0,
+                        )
+                        for vertical in config.arc_vertical_fractions:
+                            center = (
+                                component_center
+                                + radius * yaw_radial
+                                - float(vertical) * radius * reference_down
+                            )
+                            pose = _look_at_pose_w2c(
+                                center, component_center, reference_down
+                            )
+                            projected, visible = _project_pair(
+                                xyz=xyz,
+                                anchors=anchors,
+                                pose_w2c=pose,
+                                K=K,
+                                width=width,
+                                height=height,
+                                margin=float(config.image_margin_px),
+                            )
+                            if not bool(visible[0]):
+                                continue
+                            novelty, translation_novelty, angle_novelty = (
+                                _pose_novelty(
+                                    pose, centers, forwards, source_scale
+                                )
+                            )
+                            nearest_train = float(
+                                torch.linalg.vector_norm(
+                                    centers - center, dim=1
+                                ).min()
+                            )
+                            if novelty < float(config.minimum_pose_novelty):
+                                continue
+                            if nearest_train > (
+                                float(config.maximum_safe_envelope_scale)
+                                * source_scale
+                            ):
+                                continue
+                            context_separation = (
+                                _projected_context_separation(
+                                    xyz,
+                                    anchors,
+                                    pose,
+                                    K,
+                                    image_diagonal,
+                                    neighbor_indices,
+                                )
+                            )
+                            pair_separation = float(
+                                torch.linalg.vector_norm(
+                                    projected[0] - projected[1]
+                                )
+                                / max(image_diagonal, 1.0)
+                            )
+                            cross_trajectory = (
+                                trajectory_id(source)
+                                != trajectory_id(neighbor)
+                            )
+                            different_bin = (
+                                int(query_bins[source])
+                                != int(query_bins[neighbor])
+                            )
+                            utility = math.log1p(
+                                max(float(edge["weight"]), 0.0)
+                            )
+                            utility *= (
+                                1.0
+                                + float(config.context_separation_weight)
+                                * context_separation
+                            )
+                            utility *= (
+                                1.0
+                                + float(config.pose_novelty_weight)
+                                * min(novelty, 2.0)
+                            )
+                            utility *= (
+                                1.0
+                                + float(config.cross_trajectory_bonus)
+                                * float(cross_trajectory)
+                                + float(config.different_view_bin_bonus)
+                                * float(different_bin)
+                                + float(
+                                    config.confusing_family_visible_bonus
+                                )
+                                * float(visible[1])
+                            )
+                            _, camera_forward = _camera_center_and_forward(
+                                pose
+                            )
+                            candidates.append(
+                                {
+                                    "query_id": (
+                                        f"confusion_arc:e{edge_index}:{source}:"
+                                        f"{neighbor}:{float(alpha):.2f}:"
+                                        f"{float(yaw):+.1f}:{float(vertical):+.3f}"
+                                    ),
+                                    "source_query": source,
+                                    "neighbor_query": neighbor,
+                                    "synthetic_alpha": float(alpha),
+                                    "pose_w2c": pose.float().tolist(),
+                                    "width": width,
+                                    "height": height,
+                                    "fovx": float(
+                                        2.0
+                                        * math.atan(
+                                            width / (2.0 * float(K[0, 0]))
+                                        )
+                                    ),
+                                    "fovy": float(
+                                        2.0
+                                        * math.atan(
+                                            height / (2.0 * float(K[1, 1]))
+                                        )
+                                    ),
+                                    "K": K.float(),
+                                    "edge_index": edge_index,
+                                    "correct_anchor": anchors[0],
+                                    "confusing_anchor": anchors[1],
+                                    "image_cell": int(event["image_cell"]),
+                                    "view_bin": int(query_bins[source]),
+                                    "source_view_bin": int(query_bins[source]),
+                                    "neighbor_view_bin": int(query_bins[neighbor]),
+                                    "cross_trajectory": bool(cross_trajectory),
+                                    "source_neighbor_distance": reference_distance,
+                                    "source_local_scale": source_scale,
+                                    "view_angle_deg": reference_angle,
+                                    "correct_family_visible": bool(visible[0]),
+                                    "confusing_family_visible": bool(visible[1]),
+                                    "projected_pair_separation": pair_separation,
+                                    "projected_context_separation": context_separation,
+                                    "pose_novelty": novelty,
+                                    "pose_novelty_translation": translation_novelty,
+                                    "pose_novelty_angle_deg": angle_novelty,
+                                    "nearest_train_distance": nearest_train,
+                                    "arc_yaw_degrees": float(yaw),
+                                    "arc_vertical_fraction": float(vertical),
+                                    "camera_center": center.float().tolist(),
+                                    "camera_forward": camera_forward.float().tolist(),
+                                    "edge_weight": float(edge["weight"]),
+                                    "edge_occurrences": int(edge["occurrences"]),
+                                    "edge_trajectory_count": int(
+                                        edge["trajectory_count"]
+                                    ),
+                                    "pose_blame": float(event["pose_blame"]),
+                                    "acquisition": float(utility),
+                                    "planning_policy": (
+                                        "confusion_component_reference_arc"
+                                    ),
+                                }
+                            )
+    unique = {}
+    for candidate in candidates:
+        previous = unique.get(candidate["query_id"])
+        if (
+            previous is None
+            or candidate["acquisition"] > previous["acquisition"]
+        ):
+            unique[candidate["query_id"]] = candidate
+    return _select_diverse_confusion_views(list(unique.values()), config)
 
 
 def plan_confusion_conditioned_views(

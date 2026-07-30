@@ -7,8 +7,10 @@ from localization_training.confusion_evidence import (
     ContrastiveEvidenceConfig,
     build_anchor_family_confusion_graph,
     build_contrastive_synthetic_record,
+    filter_confusion_graph_by_context_oracle,
     pack_contrastive_synthetic_evidence,
     plan_confusion_conditioned_views,
+    plan_reference_guided_confusion_views,
     synthetic_separability_oracle,
 )
 from localization_training.synthetic_evidence import SyntheticEvidenceConfig
@@ -28,6 +30,59 @@ def _family(anchor_count):
         "prototype_temperature": torch.empty(0),
         "families": [],
     }
+
+
+def test_context_oracle_filter_keeps_only_separable_edges():
+    graph = {
+        "edges": [
+            {"edge_index": 0},
+            {"edge_index": 1},
+            {"edge_index": 2},
+        ],
+        "events": [
+            {"edge_index": 0},
+            {"edge_index": 1},
+            {"edge_index": 2},
+        ],
+    }
+    oracle = {
+        "schema": "lafgs_real_2d3d_context_oracle",
+        "records": [
+            {
+                "edge_index": 0,
+                "margins": {"O1_cross_trajectory_2d": 0.1},
+            },
+            {
+                "edge_index": 0,
+                "margins": {"O1_cross_trajectory_2d": 0.2},
+            },
+            {
+                "edge_index": 1,
+                "margins": {"O1_cross_trajectory_2d": 0.1},
+            },
+            {
+                "edge_index": 1,
+                "margins": {"O1_cross_trajectory_2d": -0.2},
+            },
+            {
+                "edge_index": 2,
+                "margins": {"O1_cross_trajectory_2d": 0.3},
+            },
+            {
+                "edge_index": 2,
+                "margins": {"O1_cross_trajectory_2d": None},
+            },
+        ],
+    }
+    filtered, summary = filter_confusion_graph_by_context_oracle(
+        graph,
+        oracle,
+        minimum_positive_fraction=0.75,
+        minimum_records=2,
+    )
+    assert [edge["edge_index"] for edge in filtered["edges"]] == [0]
+    assert [event["edge_index"] for event in filtered["events"]] == [0]
+    assert summary["eligible_edge_count"] == 1
 
 
 def test_confusion_graph_records_directed_wrong_family_assignment():
@@ -280,6 +335,94 @@ def test_confusion_view_planner_targets_edges_inside_pose_envelope():
     assert all(record["edge_index"] == 0 for record in planned)
     assert all(record["correct_family_visible"] for record in planned)
     assert any(record["cross_trajectory"] for record in planned)
+
+
+def test_reference_guided_arc_is_novel_and_context_scored():
+    names = [
+        "seq1/frame00001.png",
+        "seq1/frame00002.png",
+        "seq2/frame00001.png",
+    ]
+    state = {
+        "anchor_xyz": torch.tensor(
+            [
+                [0.0, 0.0, 4.0],
+                [0.8, 0.0, 4.0],
+                [-0.4, 0.2, 4.0],
+                [0.3, 0.3, 4.2],
+                [1.2, -0.2, 4.1],
+                [0.7, 0.4, 3.8],
+            ]
+        )
+    }
+
+    def pose(center_x):
+        value = torch.eye(4)
+        value[0, 3] = -float(center_x)
+        return value
+
+    cache = {
+        name: {
+            "pose_w2c": pose(center),
+            "native_input_hw": [120, 200],
+            "native_K": torch.tensor(
+                [[100.0, 0.0, 100.0], [0.0, 100.0, 60.0], [0.0, 0.0, 1.0]]
+            ),
+        }
+        for name, center in zip(names, [-0.5, 0.0, 0.5])
+    }
+    graph = {
+        "anchor_count": len(state["anchor_xyz"]),
+        "query_names": names,
+        "edges": [
+            {
+                "edge_index": 0,
+                "correct_anchor": 0,
+                "confusing_anchor": 1,
+                "occurrences": 8,
+                "trajectory_count": 2,
+                "weight": 20.0,
+            }
+        ],
+        "events": [
+            {
+                "edge_index": 0,
+                "query_name": names[0],
+                "query_row": 0,
+                "image_cell": 1,
+                "pose_blame": 2.0,
+                "score_margin": 0.1,
+            }
+        ],
+    }
+    planned = plan_reference_guided_confusion_views(
+        confusion_graph=graph,
+        state=state,
+        cache=cache,
+        query_bins={names[0]: 0, names[1]: 0, names[2]: 1},
+        config=ConfusionViewPlanningConfig(
+            maximum_planned_views=2,
+            maximum_pose_neighbors=2,
+            maximum_views_per_edge=2,
+            maximum_views_per_source=2,
+            minimum_edge_occurrences=1,
+            interpolation_alphas=(0.5,),
+            arc_yaw_degrees=(-5.0, 5.0),
+            minimum_pose_novelty=0.01,
+            context_neighbor_count=2,
+        ),
+    )
+    assert planned
+    assert all(
+        record["planning_policy"]
+        == "confusion_component_reference_arc"
+        for record in planned
+    )
+    assert all(record["pose_novelty"] > 0 for record in planned)
+    assert all(
+        record["projected_context_separation"] >= 0
+        for record in planned
+    )
 
 
 def test_contrastive_render_respects_planned_confusion_edge():

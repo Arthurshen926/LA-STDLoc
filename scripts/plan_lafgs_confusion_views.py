@@ -11,7 +11,9 @@ import torch
 
 from localization_training.confusion_evidence import (
     ConfusionViewPlanningConfig,
+    filter_confusion_graph_by_context_oracle,
     plan_confusion_conditioned_views,
+    plan_reference_guided_confusion_views,
 )
 
 
@@ -23,6 +25,21 @@ def main() -> None:
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--scene", default="")
+    parser.add_argument("--context-oracle", default="")
+    parser.add_argument(
+        "--context-oracle-method",
+        default="O1_cross_trajectory_2d",
+    )
+    parser.add_argument(
+        "--minimum-context-oracle-positive-fraction",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--minimum-context-oracle-records",
+        type=int,
+        default=2,
+    )
     parser.add_argument("--maximum-planned-views", type=int, default=64)
     parser.add_argument("--maximum-edges", type=int, default=256)
     parser.add_argument("--maximum-events-per-edge", type=int, default=3)
@@ -38,11 +55,47 @@ def main() -> None:
     parser.add_argument("--maximum-view-angle-deg", type=float, default=40.0)
     parser.add_argument("--image-margin-px", type=float, default=16.0)
     parser.add_argument("--interpolation-alphas", default="0.35,0.5,0.65")
+    parser.add_argument(
+        "--planning-policy",
+        choices=("interpolation", "reference_guided_arc"),
+        default="interpolation",
+    )
+    parser.add_argument("--arc-yaw-degrees", default="-10,-5,5,10")
+    parser.add_argument("--arc-vertical-fractions", default="0")
+    parser.add_argument("--minimum-pose-novelty", type=float, default=0.15)
+    parser.add_argument(
+        "--maximum-safe-envelope-scale", type=float, default=3.0
+    )
+    parser.add_argument("--context-neighbor-count", type=int, default=16)
+    parser.add_argument(
+        "--context-separation-weight", type=float, default=8.0
+    )
+    parser.add_argument("--pose-novelty-weight", type=float, default=0.5)
+    parser.add_argument("--diversity-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=1,
+        help="Small planner kernels are faster without large OpenMP teams.",
+    )
     args = parser.parse_args()
+    torch.set_num_threads(max(int(args.cpu_threads), 1))
 
     graph = torch.load(
         args.confusion_graph, map_location="cpu", weights_only=False
     )
+    oracle_filter = None
+    if args.context_oracle:
+        oracle = json.loads(Path(args.context_oracle).read_text())
+        graph, oracle_filter = filter_confusion_graph_by_context_oracle(
+            graph,
+            oracle,
+            method=args.context_oracle_method,
+            minimum_positive_fraction=(
+                args.minimum_context_oracle_positive_fraction
+            ),
+            minimum_records=args.minimum_context_oracle_records,
+        )
     state = torch.load(args.map, map_location="cpu", weights_only=False)
     cache_payload = torch.load(
         args.query_cache, map_location="cpu", weights_only=False
@@ -76,8 +129,29 @@ def main() -> None:
             for value in args.interpolation_alphas.split(",")
             if value.strip()
         ),
+        arc_yaw_degrees=tuple(
+            float(value)
+            for value in args.arc_yaw_degrees.split(",")
+            if value.strip()
+        ),
+        arc_vertical_fractions=tuple(
+            float(value)
+            for value in args.arc_vertical_fractions.split(",")
+            if value.strip()
+        ),
+        minimum_pose_novelty=args.minimum_pose_novelty,
+        maximum_safe_envelope_scale=args.maximum_safe_envelope_scale,
+        context_neighbor_count=args.context_neighbor_count,
+        context_separation_weight=args.context_separation_weight,
+        pose_novelty_weight=args.pose_novelty_weight,
+        diversity_weight=args.diversity_weight,
     )
-    planned = plan_confusion_conditioned_views(
+    planner = (
+        plan_reference_guided_confusion_views
+        if args.planning_policy == "reference_guided_arc"
+        else plan_confusion_conditioned_views
+    )
+    planned = planner(
         confusion_graph=graph,
         state=state,
         cache=cache,
@@ -142,6 +216,23 @@ def main() -> None:
         ),
         "targeted_edge_count": len(
             {int(record["edge_index"]) for record in planned}
+        ),
+        "planning_policy": str(args.planning_policy),
+        "context_oracle_filter": oracle_filter,
+        "mean_pose_novelty": (
+            sum(float(record.get("pose_novelty", 0.0)) for record in planned)
+            / len(planned)
+            if planned
+            else 0.0
+        ),
+        "mean_projected_context_separation": (
+            sum(
+                float(record.get("projected_context_separation", 0.0))
+                for record in planned
+            )
+            / len(planned)
+            if planned
+            else 0.0
         ),
         "config": vars(args),
     }
