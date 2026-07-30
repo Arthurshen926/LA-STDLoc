@@ -28,6 +28,8 @@ class SelectionAwareTrainingData:
     weight: torch.Tensor
     baseline_margin: torch.Tensor
     diagnostics: dict[str, float]
+    positive_trainable: torch.Tensor | None = None
+    negative_trainable: torch.Tensor | None = None
 
     def validate(self, representation_count: int) -> None:
         count = len(self.query_features)
@@ -55,6 +57,14 @@ class SelectionAwareTrainingData:
             (self.weight <= 0).any()
         ):
             raise ValueError("selection-aware weights must be positive")
+        for trainable in (
+            self.positive_trainable,
+            self.negative_trainable,
+        ):
+            if trainable is not None and len(trainable) != count:
+                raise ValueError(
+                    "selection-aware trainable masks must align"
+                )
 
 
 @dataclass(frozen=True)
@@ -413,6 +423,7 @@ def build_selection_aware_training_data(
     maximum_neutral_per_query: int = 64,
     maximum_harmful_per_query: int = 64,
     maximum_critical_per_query: int = 32,
+    counterfactual_audit: dict | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> SelectionAwareTrainingData:
     """Build detached local reconstruction evidence from OOF selections."""
@@ -428,6 +439,10 @@ def build_selection_aware_training_data(
         state["anchor_ids"]
     ):
         raise ValueError("selection-aware positives do not align with the map")
+    if counterfactual_audit is not None and names != list(
+        counterfactual_audit["query_names"]
+    ):
+        raise ValueError("selection-aware counterfactual audit differs")
     family_indices = torch.as_tensor(family["landmark_indices"]).long()
     if not torch.equal(
         family_indices.reshape(-1),
@@ -460,6 +475,36 @@ def build_selection_aware_training_data(
         anchor_count=table.anchor_count,
         prototype_count=table.prototype_count,
     )
+    flat_features = torch.cat(
+        (
+            F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1),
+            F.normalize(
+                torch.as_tensor(family["prototype_features"]).float(), dim=1
+            ),
+        )
+    ).to(device)
+    flat_bias = torch.cat(
+        (
+            torch.zeros(table.anchor_count),
+            torch.as_tensor(
+                family.get(
+                    "prototype_bias",
+                    torch.zeros(table.prototype_count),
+                )
+            ).float(),
+        )
+    ).to(device)
+    flat_temperature = torch.cat(
+        (
+            torch.ones(table.anchor_count),
+            torch.as_tensor(
+                family.get(
+                    "prototype_temperature",
+                    torch.ones(table.prototype_count),
+                )
+            ).float(),
+        )
+    ).to(device)
     source = torch.as_tensor(state["source_primitive_ids"]).long()
     dependency = torch.as_tensor(
         state.get("coarse_dependency_group_ids", state["dependency_group_ids"])
@@ -471,12 +516,16 @@ def build_selection_aware_training_data(
     role_blocks = []
     weight_blocks = []
     margin_blocks = []
+    positive_trainable_blocks = []
+    negative_trainable_blocks = []
     role_counts = {
         "neutral": 0,
         "protected": 0,
         "harmful": 0,
         "critical": 0,
         "harmful_without_positive": 0,
+        "counterfactual_family_without_prototype": 0,
+        "strict_basin_protected": 0,
     }
     active_representations: set[int] = set()
 
@@ -484,6 +533,11 @@ def build_selection_aware_training_data(
         selected_record = selected_outcomes["records"][query_index]
         dynamic_record = dynamic_outcomes["records"][query_index]
         positive_record = complete_positive_teacher["records"][query_index]
+        counterfactual_record = (
+            counterfactual_audit["records"][query_index]
+            if counterfactual_audit is not None
+            else None
+        )
         if (
             selected_record["query_name"] != name
             or dynamic_record["query_name"] != name
@@ -554,6 +608,19 @@ def build_selection_aware_training_data(
             margin_blocks.append(
                 top1_score[replay] - top2_score[replay]
             )
+            positive_trainable_blocks.append(
+                torch.ones(len(replay), dtype=torch.bool)
+            )
+            negative_trainable_blocks.append(
+                torch.ones(len(replay), dtype=torch.bool)
+            )
+            if (
+                counterfactual_record is not None
+                and 3.0 <= float(dynamic_record["te_cm"]) <= 8.0
+                and len(protected)
+            ):
+                replay_weight[: len(protected)] = 4.0
+                role_counts["strict_basin_protected"] += len(protected)
             role_counts["protected"] += len(protected)
             role_counts["neutral"] += len(neutral)
             active_representations.update(
@@ -582,6 +649,12 @@ def build_selection_aware_training_data(
             margin_blocks.append(
                 top1_score[critical] - top2_score[critical]
             )
+            positive_trainable_blocks.append(
+                torch.ones(len(critical), dtype=torch.bool)
+            )
+            negative_trainable_blocks.append(
+                torch.ones(len(critical), dtype=torch.bool)
+            )
             role_counts["critical"] += len(critical)
             active_representations.update(
                 top1_representation[critical].tolist()
@@ -596,6 +669,34 @@ def build_selection_aware_training_data(
             maximum_harmful_per_query,
         )
         positives = _positive_anchor_lookup(positive_record)
+        route_by_row = {}
+        target_representation_by_row = {}
+        if counterfactual_record is not None:
+            route_by_row = {
+                int(row): int(route)
+                for row, route in zip(
+                    torch.as_tensor(
+                        counterfactual_record["query_rows"]
+                    ).long().tolist(),
+                    torch.as_tensor(
+                        counterfactual_record["route"]
+                    ).long().tolist(),
+                )
+            }
+            if "target_representation" in counterfactual_record:
+                target_representation_by_row = {
+                    int(row): int(representation)
+                    for row, representation in zip(
+                        torch.as_tensor(
+                            counterfactual_record["query_rows"]
+                        ).long().tolist(),
+                        torch.as_tensor(
+                            counterfactual_record[
+                                "target_representation"
+                            ]
+                        ).long().tolist(),
+                    )
+                }
         for row_index in harmful.tolist():
             legal = positives.get(int(rows[row_index]))
             if legal is None or not len(legal):
@@ -613,6 +714,35 @@ def build_selection_aware_training_data(
             )
             best = int(torch.argmax(legal_score))
             positive_representation = legal_representation[best]
+            route = route_by_row.get(int(rows[row_index]), -1)
+            if counterfactual_record is not None:
+                routed_representation = target_representation_by_row.get(
+                    int(rows[row_index]), -1
+                )
+                if routed_representation >= 0:
+                    positive_representation = torch.tensor(
+                        routed_representation, dtype=torch.long
+                    )
+                    legal_score = (
+                        (
+                            query[row_index]
+                            * flat_features[routed_representation]
+                        ).sum()
+                        / flat_temperature[routed_representation]
+                        + flat_bias[routed_representation]
+                    ).reshape(1).cpu()
+                    best = 0
+                elif route == 0:
+                    positive_representation = legal_representation[best]
+                elif route == 1:
+                    if int(positive_representation) < table.anchor_count:
+                        role_counts[
+                            "counterfactual_family_without_prototype"
+                        ] += 1
+                        continue
+                else:
+                    role_counts["harmful_without_positive"] += 1
+                    continue
             negative_representation = top1_representation[row_index]
             query_blocks.append(query[row_index : row_index + 1].half().cpu())
             positive_blocks.append(positive_representation.reshape(1))
@@ -634,9 +764,16 @@ def build_selection_aware_training_data(
                     - top1_score[row_index]
                 ).reshape(1)
             )
+            positive_trainable_blocks.append(torch.ones(1, dtype=torch.bool))
+            negative_trainable_blocks.append(
+                torch.tensor(
+                    [counterfactual_record is None], dtype=torch.bool
+                )
+            )
             role_counts["harmful"] += 1
             active_representations.add(int(positive_representation))
-            active_representations.add(int(negative_representation))
+            if counterfactual_record is None:
+                active_representations.add(int(negative_representation))
         if progress is not None:
             progress(query_index + 1, len(names))
 
@@ -660,6 +797,8 @@ def build_selection_aware_training_data(
                 sum(value >= table.anchor_count for value in active_representations)
             ),
         },
+        positive_trainable=torch.cat(positive_trainable_blocks).bool(),
+        negative_trainable=torch.cat(negative_trainable_blocks).bool(),
     )
     data.validate(table.anchor_count + table.prototype_count)
     return data
@@ -706,11 +845,21 @@ def optimize_selection_aware_representations(
     optimizer = torch.optim.Adam(
         (raw_delta, raw_bias_delta), lr=float(config.learning_rate)
     )
+    positive_trainable = (
+        torch.ones(len(data.query_features), dtype=torch.bool)
+        if data.positive_trainable is None
+        else torch.as_tensor(data.positive_trainable).bool()
+    )
+    negative_trainable = (
+        torch.ones(len(data.query_features), dtype=torch.bool)
+        if data.negative_trainable is None
+        else torch.as_tensor(data.negative_trainable).bool()
+    )
     active_ids = torch.unique(
         torch.cat(
             (
-                data.positive_representation,
-                data.negative_representation,
+                data.positive_representation[positive_trainable],
+                data.negative_representation[negative_trainable],
             )
         )
     ).to(device)
@@ -732,6 +881,8 @@ def optimize_selection_aware_representations(
         role = data.role[indices].to(device)
         weight = data.weight[indices].to(device)
         baseline_margin = data.baseline_margin[indices].to(device)
+        positive_trainable_batch = positive_trainable[indices].to(device)
+        negative_trainable_batch = negative_trainable[indices].to(device)
         transformed, bounded = bounded_representations(
             base,
             raw_delta,
@@ -746,18 +897,27 @@ def optimize_selection_aware_representations(
             (torch.zeros(anchor_count, device=device), prototype_bias)
         )
 
-        def score(representation: torch.Tensor) -> torch.Tensor:
+        def score(
+            representation: torch.Tensor,
+            trainable: torch.Tensor,
+        ) -> torch.Tensor:
+            feature = transformed[representation]
+            feature = torch.where(
+                trainable[:, None], feature, feature.detach()
+            )
+            bias = representation_bias[representation]
+            bias = torch.where(trainable, bias, bias.detach())
             return (
                 (
                     query
-                    * transformed[representation]
+                    * feature
                 ).sum(dim=1)
                 / temperature[representation]
-                + representation_bias[representation]
+                + bias
             )
 
-        positive_score = score(positive_ids)
-        negative_score = score(negative_ids)
+        positive_score = score(positive_ids, positive_trainable_batch)
+        negative_score = score(negative_ids, negative_trainable_batch)
         ranking, parts = selection_aware_ranking_loss(
             positive_score,
             negative_score,

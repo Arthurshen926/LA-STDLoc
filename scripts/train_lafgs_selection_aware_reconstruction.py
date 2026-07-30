@@ -81,12 +81,21 @@ def main() -> None:
     parser.add_argument("--map", required=True)
     parser.add_argument("--metric-state", required=True)
     parser.add_argument("--family-prototype-state", required=True)
+    parser.add_argument(
+        "--family-training-state",
+        default="",
+        help=(
+            "Optional M-step family initialization. Candidate-graph "
+            "identity remains tied to --family-prototype-state."
+        ),
+    )
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--topk-outcomes", required=True)
     parser.add_argument("--dynamic-outcomes", required=True)
     parser.add_argument("--selected-outcomes", required=True)
     parser.add_argument("--selector-state", required=True)
+    parser.add_argument("--counterfactual-audit", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--maximum-protected-per-query", type=int, default=96)
@@ -114,7 +123,7 @@ def main() -> None:
     device = torch.device(args.device)
     state = torch.load(args.map, map_location="cpu", weights_only=False)
     family = torch.load(
-        args.family_prototype_state,
+        args.family_training_state or args.family_prototype_state,
         map_location="cpu",
         weights_only=False,
     )
@@ -143,6 +152,15 @@ def main() -> None:
     )
     selected = torch.load(
         args.selected_outcomes, map_location="cpu", weights_only=False
+    )
+    counterfactual = (
+        torch.load(
+            args.counterfactual_audit,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.counterfactual_audit
+        else None
     )
     selector_state = torch.load(
         args.selector_state, map_location="cpu", weights_only=False
@@ -185,8 +203,15 @@ def main() -> None:
         )
         expected = {
             "map_sha256": _sha256_file(args.map),
-            "family_sha256": _sha256_file(args.family_prototype_state),
+            "family_sha256": _sha256_file(
+                args.family_training_state or args.family_prototype_state
+            ),
             "selected_sha256": _sha256_file(args.selected_outcomes),
+            "counterfactual_audit_sha256": (
+                _sha256_file(args.counterfactual_audit)
+                if args.counterfactual_audit
+                else None
+            ),
         }
         if any(teacher.get("provenance", {}).get(key) != value for key, value in expected.items()):
             raise ValueError("selection teacher cache provenance differs")
@@ -206,6 +231,7 @@ def main() -> None:
             maximum_neutral_per_query=args.maximum_neutral_per_query,
             maximum_harmful_per_query=args.maximum_harmful_per_query,
             maximum_critical_per_query=args.maximum_critical_per_query,
+            counterfactual_audit=counterfactual,
             progress=data_progress,
         )
         _atomic_torch(
@@ -217,9 +243,15 @@ def main() -> None:
                 "provenance": {
                     "map_sha256": _sha256_file(args.map),
                     "family_sha256": _sha256_file(
-                        args.family_prototype_state
+                        args.family_training_state
+                        or args.family_prototype_state
                     ),
                     "selected_sha256": _sha256_file(args.selected_outcomes),
+                    "counterfactual_audit_sha256": (
+                        _sha256_file(args.counterfactual_audit)
+                        if args.counterfactual_audit
+                        else None
+                    ),
                 },
             },
         )
@@ -266,12 +298,22 @@ def main() -> None:
             "map": args.map,
             "metric_state": args.metric_state,
             "family_prototype_state": args.family_prototype_state,
+            **(
+                {"family_training_state": args.family_training_state}
+                if args.family_training_state
+                else {}
+            ),
             "query_cache": args.query_cache,
             "complete_positive_teacher": args.complete_positive_teacher,
             "topk_outcomes": args.topk_outcomes,
             "dynamic_outcomes": args.dynamic_outcomes,
             "selected_outcomes": args.selected_outcomes,
             "selector_state": args.selector_state,
+            **(
+                {"counterfactual_audit": args.counterfactual_audit}
+                if args.counterfactual_audit
+                else {}
+            ),
         }.items()
     }
     report = {

@@ -104,6 +104,30 @@ def test_pose_sufficient_runtime_feature_and_model_contract():
     ).tolist() == [0, 15]
 
 
+def test_pose_sufficient_history_rates_share_beta_prior_semantics():
+    features = build_pose_sufficient_features(
+        torch.tensor([[0.9, 0.8]]),
+        torch.tensor([[0, 1]]),
+        keypoints=torch.tensor([[10.0, 10.0]]),
+        keypoint_scores=torch.tensor([0.8]),
+        image_hw=(20, 20),
+        source_groups=torch.arange(2),
+        dependency_groups=torch.arange(2),
+        anchor_statistics={
+            "attempts": torch.tensor([0.0, 10.0]),
+            "clean": torch.tensor([0.0, 5.0]),
+            "clean_inlier": torch.tensor([0.0, 4.0]),
+            "harmful_inlier": torch.tensor([0.0, 2.0]),
+        },
+        prior_strength=12.0,
+    )
+    assert torch.allclose(
+        features[0, 10:13],
+        torch.tensor([0.5, 0.4, 0.2]),
+        atol=1e-6,
+    )
+
+
 def test_basis_aware_core_reserve_is_bounded_and_rejects_harmful_rows():
     count = 96
     strict = torch.linspace(0.9, 0.2, count)

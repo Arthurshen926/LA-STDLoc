@@ -134,19 +134,23 @@ def build_pose_sufficient_features(
 
     attempts = folded["attempts"][anchors]
     prior_strength = max(float(prior_strength), 0.0)
-    global_clean_rate = (
-        folded["clean"].sum() / folded["attempts"].sum().clamp_min(1.0)
-    )
+    global_rates = {
+        name: folded[name].sum() / folded["attempts"].sum().clamp_min(1.0)
+        for name in ("clean", "clean_inlier", "harmful_inlier")
+    }
     denominator = attempts + prior_strength
     clean_rate = (
-        folded["clean"][anchors] + prior_strength * global_clean_rate
+        folded["clean"][anchors] + prior_strength * global_rates["clean"]
     ) / denominator.clamp_min(1e-6)
     clean_inlier_rate = (
-        folded["clean_inlier"][anchors] / denominator.clamp_min(1e-6)
-    )
+        folded["clean_inlier"][anchors]
+        + prior_strength * global_rates["clean_inlier"]
+    ) / denominator.clamp_min(1e-6)
     harmful_inlier_rate = (
-        folded["harmful_inlier"][anchors] / denominator.clamp_min(1e-6)
+        folded["harmful_inlier"][anchors]
+        + prior_strength * global_rates["harmful_inlier"]
     )
+    harmful_inlier_rate = harmful_inlier_rate / denominator.clamp_min(1e-6)
     source = torch.as_tensor(source_groups).long().reshape(-1)[anchors]
     dependency = (
         torch.as_tensor(dependency_groups).long().reshape(-1)[anchors]
