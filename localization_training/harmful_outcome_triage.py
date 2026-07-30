@@ -11,15 +11,19 @@ import torch
 RANK_FAILURE = 0
 TEACHER_MISS = 1
 COVERAGE_FAILURE = 2
-ACTIVE_GEOMETRY_FAILURE = 3
-INTRINSICALLY_UNMATCHABLE = 4
+ACTIVE_TRACK_INCONSISTENCY = 3
+UNRESOLVED_NO_VERIFIED_TARGET = 4
+
+# Backward-compatible aliases for V26 artifacts and downstream readers.
+ACTIVE_GEOMETRY_FAILURE = ACTIVE_TRACK_INCONSISTENCY
+INTRINSICALLY_UNMATCHABLE = UNRESOLVED_NO_VERIFIED_TARGET
 
 CATEGORY_NAMES = (
     "active_map_rank_failure",
     "teacher_miss",
     "coverage_failure",
-    "active_geometry_failure",
-    "intrinsically_unmatchable",
+    "active_track_geometry_identity_inconsistency",
+    "unresolved_no_verified_target",
 )
 
 REPRESENTATION_REPAIR = 0
@@ -34,6 +38,18 @@ ACTION_NAMES = (
     "selector_reject",
 )
 
+UNRESOLVED_NO_STABLE_TRACK = 0
+UNRESOLVED_SURFACE_UNCERTAIN = 1
+UNRESOLVED_TRACK_IDENTITY_OR_VISIBILITY = 2
+UNRESOLVED_NO_MAP_SUPPORT = 3
+
+UNRESOLVED_REASON_NAMES = (
+    "no_stable_3d_track",
+    "depth_or_provenance_uncertain",
+    "track_identity_or_visibility_inconsistent",
+    "no_verified_map_support",
+)
+
 
 @dataclass(frozen=True)
 class HarmfulTriageConfig:
@@ -46,6 +62,11 @@ class HarmfulTriageConfig:
     minimum_track_views: int = 3
     minimum_track_view_bins: int = 2
     maximum_track_reprojection_p90_px: float = 4.0
+    minimum_contribution_mass: float = 0.02
+    maximum_depth_std_abs_m: float = 0.05
+    maximum_depth_std_relative: float = 0.02
+    geometry_xyz_threshold_m: float = 0.02
+    geometry_reprojection_improvement_px: float = 1.0
 
 
 def _positive_lookup(record: dict) -> dict[int, torch.Tensor]:
@@ -74,29 +95,142 @@ def _pack_ragged(
     )
 
 
+def _bilinear_samples(
+    image: torch.Tensor,
+    keypoints: torch.Tensor,
+    *,
+    positive_only: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sample a scalar image and expose local interpolation uncertainty."""
+
+    image = torch.as_tensor(image).float().squeeze()
+    points = torch.as_tensor(keypoints).float().reshape(-1, 2)
+    if image.ndim != 2:
+        raise ValueError("surface image must be scalar HxW")
+    height, width = image.shape
+    x = points[:, 0].clamp(0, max(width - 1, 0))
+    y = points[:, 1].clamp(0, max(height - 1, 0))
+    x0 = torch.floor(x).long()
+    y0 = torch.floor(y).long()
+    x1 = (x0 + 1).clamp(max=width - 1)
+    y1 = (y0 + 1).clamp(max=height - 1)
+    dx = x - x0.float()
+    dy = y - y0.float()
+    values = torch.stack(
+        (
+            image[y0, x0],
+            image[y0, x1],
+            image[y1, x0],
+            image[y1, x1],
+        ),
+        dim=1,
+    )
+    weights = torch.stack(
+        (
+            (1.0 - dx) * (1.0 - dy),
+            dx * (1.0 - dy),
+            (1.0 - dx) * dy,
+            dx * dy,
+        ),
+        dim=1,
+    )
+    valid = torch.isfinite(values)
+    if positive_only:
+        valid &= values > 0
+    weights = weights * valid.float()
+    weight_sum = weights.sum(dim=1)
+    mean = (weights * values.nan_to_num()).sum(dim=1) / weight_sum.clamp_min(
+        1e-8
+    )
+    variance = (
+        weights * (values.nan_to_num() - mean[:, None]).square()
+    ).sum(dim=1) / weight_sum.clamp_min(1e-8)
+    mean[weight_sum <= 0] = float("nan")
+    variance[weight_sum <= 0] = float("inf")
+    return mean, variance.sqrt(), weight_sum
+
+
 def _surface_samples(
     cached: dict,
     query_rows: torch.Tensor,
     *,
     raster_valid: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     rows = torch.as_tensor(query_rows).long().reshape(-1)
-    keypoints = torch.as_tensor(cached["native_keypoints"]).float()[rows]
-    height, width = map(int, cached["native_input_hw"])
-    pixels = torch.floor(keypoints).long()
-    x = pixels[:, 0].clamp(0, width - 1)
-    y = pixels[:, 1].clamp(0, height - 1)
-    depth = torch.as_tensor(cached["native_depth"]).float()[y, x]
+    raw_keypoints = torch.as_tensor(cached["native_keypoints"]).float()[rows]
+    depth, depth_std, _ = _bilinear_samples(
+        cached["native_depth"], raw_keypoints, positive_only=True
+    )
     if "native_alpha" in cached:
-        alpha = torch.as_tensor(cached["native_alpha"]).float()[y, x]
+        alpha, _, _ = _bilinear_samples(
+            cached["native_alpha"], raw_keypoints, positive_only=False
+        )
     elif raster_valid is not None:
         alpha = torch.as_tensor(raster_valid).float().reshape(-1)[rows]
     else:
         raise ValueError(
             "query cache lacks native_alpha and no raster validity was supplied"
         )
-    keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
-    return keypoints, depth, alpha
+    keypoints = raw_keypoints + float(cached.get("pixel_center_offset", 0.5))
+    return keypoints, depth, alpha, depth_std
+
+
+def _padded_anchor_sources(
+    offsets: torch.Tensor,
+    primitive_ids: torch.Tensor,
+    weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    offsets = torch.as_tensor(offsets).long()
+    primitive_ids = torch.as_tensor(primitive_ids).long()
+    weights = torch.as_tensor(weights).float()
+    counts = offsets[1:] - offsets[:-1]
+    width = max(int(counts.max()) if counts.numel() else 0, 1)
+    padded_ids = torch.full((len(counts), width), -1, dtype=torch.long)
+    padded_weights = torch.zeros((len(counts), width))
+    for anchor, count in enumerate(counts.tolist()):
+        if count:
+            start = int(offsets[anchor])
+            padded_ids[anchor, :count] = primitive_ids[start : start + count]
+            padded_weights[anchor, :count] = weights[start : start + count]
+    return padded_ids, padded_weights
+
+
+def candidate_provenance_mass(
+    raster_primitive_ids: torch.Tensor,
+    raster_contribution_mass: torch.Tensor,
+    source_ids: torch.Tensor,
+    source_weights: torch.Tensor,
+    *,
+    device: torch.device,
+    anchor_chunk_size: int = 2048,
+) -> torch.Tensor:
+    """Compute keypoint-to-anchor source responsibility mass."""
+
+    raster_ids = torch.as_tensor(raster_primitive_ids).long().to(device)
+    raster_mass = torch.as_tensor(raster_contribution_mass).float().to(device)
+    source_ids = torch.as_tensor(source_ids).long().to(device)
+    source_weights = torch.as_tensor(source_weights).float().to(device)
+    if raster_ids.shape != raster_mass.shape:
+        raise ValueError("raster primitive IDs and mass must align")
+    if source_ids.shape != source_weights.shape:
+        raise ValueError("anchor source IDs and weights must align")
+    output = torch.zeros(
+        (raster_ids.shape[0], source_ids.shape[0]),
+        dtype=torch.float32,
+        device=device,
+    )
+    for start in range(0, source_ids.shape[0], int(anchor_chunk_size)):
+        end = min(start + int(anchor_chunk_size), source_ids.shape[0])
+        matches = (
+            source_ids[None, start:end, :, None]
+            == raster_ids[:, None, None, :]
+        )
+        output[:, start:end] = (
+            matches.float()
+            * source_weights[None, start:end, :, None]
+            * raster_mass[:, None, None, :]
+        ).sum(dim=(-1, -2))
+    return output
 
 
 def project_depth_legal_candidates(
@@ -107,6 +241,8 @@ def project_depth_legal_candidates(
     keypoints: torch.Tensor,
     rendered_depth: torch.Tensor,
     rendered_alpha: torch.Tensor,
+    rendered_depth_std: torch.Tensor | None = None,
+    provenance_mass: torch.Tensor | None = None,
     config: HarmfulTriageConfig,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -118,6 +254,11 @@ def project_depth_legal_candidates(
     points = torch.as_tensor(keypoints).float().to(device)
     reference_depth = torch.as_tensor(rendered_depth).float().to(device)
     alpha = torch.as_tensor(rendered_alpha).float().to(device)
+    depth_std = (
+        torch.zeros_like(reference_depth)
+        if rendered_depth_std is None
+        else torch.as_tensor(rendered_depth_std).float().to(device)
+    )
     camera = xyz @ pose[:3, :3].T + pose[:3, 3]
     depth = camera[:, 2]
     projected = camera @ intrinsics.T
@@ -131,6 +272,13 @@ def project_depth_legal_candidates(
         & (reference_depth > 0)
         & torch.isfinite(alpha)
         & (alpha >= float(config.alpha_minimum))
+        & torch.isfinite(depth_std)
+        & (
+            depth_std
+            <= float(config.maximum_depth_std_abs_m)
+            + float(config.maximum_depth_std_relative)
+            * reference_depth.abs()
+        )
     )
     valid_anchor = torch.isfinite(depth) & (depth > 0)
     depth_legal = (
@@ -142,6 +290,11 @@ def project_depth_legal_candidates(
         )
     )
     finite = torch.isfinite(errors) & depth_legal
+    if provenance_mass is not None:
+        mass = torch.as_tensor(provenance_mass).float().to(device)
+        if mass.shape != finite.shape:
+            raise ValueError("candidate provenance mass must align")
+        finite &= mass >= float(config.minimum_contribution_mass)
     return errors, finite
 
 
@@ -197,6 +350,11 @@ def build_track_evidence(
     tracks = track_payload["tracks"]
     geometry = track_payload["track_geometry"]
     track_count = len(geometry["triangulated"])
+    def geometry_value(name: str, default, dtype=None):
+        if name in geometry:
+            return torch.as_tensor(geometry[name], dtype=dtype)
+        return torch.full((track_count,), default, dtype=dtype)
+
     stable = (
         torch.as_tensor(geometry["triangulated"]).bool()
         & (
@@ -244,10 +402,123 @@ def build_track_evidence(
         "stable": stable,
         "active_by_track": active_by_track,
         "canonical_by_track": assigned,
+        "triangulated_xyz": (
+            torch.as_tensor(
+                geometry.get(
+                    "triangulated_xyz",
+                    torch.full((track_count, 3), float("nan")),
+                )
+            )
+            .float()
+            .reshape(track_count, 3)
+        ),
+        "high_confidence": geometry_value(
+            "triangulation_high_confidence", False, torch.bool
+        ),
+        "view_count": geometry_value(
+            "triangulation_distinct_view_count", 0, torch.long
+        ),
+        "view_bin_count": geometry_value(
+            "triangulation_distinct_view_bin_count", 0, torch.long
+        ),
+        "reprojection_p90": geometry_value(
+            "triangulation_reprojection_p90_px", float("inf"), torch.float32
+        ),
+        "parallax": geometry_value(
+            "triangulation_parallax_deg", 0.0, torch.float32
+        ),
+        "covariance_trace": geometry_value(
+            "triangulation_covariance_trace", float("inf"), torch.float32
+        ),
         "query_bins": torch.as_tensor(track_payload["query_bins"]).long()[
             target_to_source
         ],
     }
+
+
+def _track_quality_order(
+    track_indices: list[int],
+    track: dict,
+) -> list[int]:
+    """Order tracks by geometric support without depending on payload order."""
+
+    return sorted(
+        (int(value) for value in track_indices),
+        key=lambda value: (
+            -int(track["high_confidence"][value]),
+            -int(track["view_bin_count"][value]),
+            -int(track["view_count"][value]),
+            float(track["reprojection_p90"][value]),
+            float(track["covariance_trace"][value]),
+            -float(track["parallax"][value]),
+            value,
+        ),
+    )
+
+
+def _project_one(
+    xyz: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    K: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    xyz = torch.as_tensor(xyz).float().reshape(-1, 3)
+    pose = torch.as_tensor(pose_w2c).float()
+    intrinsic = torch.as_tensor(K).float()
+    camera = xyz @ pose[:3, :3].T + pose[:3, 3]
+    projected = camera @ intrinsic.T
+    uv = projected[:, :2] / camera[:, 2:3].clamp_min(1e-8)
+    return uv, camera[:, 2]
+
+
+def _verified_geometry_track(
+    *,
+    stable_tracks: list[int],
+    track: dict,
+    active_xyz: torch.Tensor,
+    keypoint: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    K: torch.Tensor,
+    config: HarmfulTriageConfig,
+) -> tuple[int, int, float, float] | None:
+    """Return a track/anchor pair only when geometry discrepancy is explicit."""
+
+    best = None
+    for track_index in _track_quality_order(stable_tracks, track):
+        triangulated = track["triangulated_xyz"][track_index]
+        if not bool(torch.isfinite(triangulated).all()):
+            continue
+        tri_uv, tri_depth = _project_one(triangulated[None], pose_w2c, K)
+        if float(tri_depth[0]) <= 0:
+            continue
+        tri_error = float(torch.linalg.norm(tri_uv[0] - keypoint))
+        for anchor in track["active_by_track"].get(track_index, ()):
+            anchor_xyz = active_xyz[int(anchor)]
+            anchor_uv, anchor_depth = _project_one(
+                anchor_xyz[None], pose_w2c, K
+            )
+            if float(anchor_depth[0]) <= 0:
+                continue
+            distance = float(torch.linalg.norm(anchor_xyz - triangulated))
+            improvement = float(
+                torch.linalg.norm(anchor_uv[0] - keypoint) - tri_error
+            )
+            if (
+                distance >= float(config.geometry_xyz_threshold_m)
+                and improvement
+                >= float(config.geometry_reprojection_improvement_px)
+            ):
+                candidate = (
+                    int(track_index),
+                    int(anchor),
+                    distance,
+                    improvement,
+                )
+                if best is None or (improvement, distance) > (
+                    best[3],
+                    best[2],
+                ):
+                    best = candidate
+    return best
 
 
 def _verified_teacher_candidates(
@@ -308,12 +579,42 @@ def triage_harmful_outcomes(
         raise ValueError("positive teacher does not align with the active map")
     cache = query_cache.get("queries", query_cache)
     raster_records = None
+    active_source_ids = active_source_weights = None
+    canonical_source_ids = canonical_source_weights = None
     if raster_provenance is not None:
         if names != list(raster_provenance["query_names"]):
             raise ValueError("raster provenance query registry differs")
         raster_records = raster_provenance["records"]
         if len(raster_records) != len(names):
             raise ValueError("raster provenance record count differs")
+        source_offsets = torch.as_tensor(
+            raster_provenance["anchor_source_offsets"]
+        ).long()
+        if len(source_offsets) != active_count + 1:
+            raise ValueError("raster provenance anchor registry differs")
+        active_source_ids, active_source_weights = _padded_anchor_sources(
+            source_offsets,
+            raster_provenance["anchor_source_primitive_ids"],
+            raster_provenance["anchor_source_weights"],
+        )
+        active_primary = torch.as_tensor(
+            active_map["source_primitive_ids"]
+        ).long()
+        if not bool(
+            (
+                active_source_ids
+                == active_primary[:, None]
+            ).any(dim=1).all()
+        ):
+            raise ValueError(
+                "raster provenance source lineage differs from active map"
+            )
+        canonical_source_ids = torch.as_tensor(
+            canonical_map["source_primitive_ids"]
+        ).long()[:, None]
+        canonical_source_weights = torch.ones_like(
+            canonical_source_ids, dtype=torch.float32
+        )
     track = build_track_evidence(
         track_payload,
         target_query_names=names,
@@ -347,19 +648,63 @@ def triage_harmful_outcomes(
         harmful_rows = rows[harmful_positions]
         cached = cache[name]
         raster_valid = None
+        active_provenance_mass = None
+        canonical_provenance_mass = None
         if raster_records is not None:
             raster_record = raster_records[query_index]
             raster_rows = torch.as_tensor(raster_record["query_rows"]).long()
+            if int(raster_record["query_index"]) != query_index:
+                raise ValueError("raster provenance query order differs")
             raster_valid = torch.zeros(
                 len(cached["native_keypoints"]), dtype=torch.bool
             )
             raster_valid[raster_rows] = torch.as_tensor(
                 raster_record["valid"]
             ).bool()
-        keypoints, rendered_depth, rendered_alpha = _surface_samples(
+            raster_lookup = torch.full(
+                (len(cached["native_keypoints"]),), -1, dtype=torch.long
+            )
+            raster_lookup[raster_rows] = torch.arange(len(raster_rows))
+            raster_positions = raster_lookup[harmful_rows]
+            if bool((raster_positions < 0).any()):
+                raise ValueError(
+                    "harmful rows are absent from raster provenance"
+                )
+            primitive_ids = torch.as_tensor(
+                raster_record["primitive_ids"]
+            ).long()[raster_positions]
+            contribution_mass = torch.as_tensor(
+                raster_record["contribution_mass"]
+            ).float()[raster_positions]
+            active_provenance_mass = candidate_provenance_mass(
+                primitive_ids,
+                contribution_mass,
+                active_source_ids,
+                active_source_weights,
+                device=device,
+            )
+            canonical_provenance_mass = candidate_provenance_mass(
+                primitive_ids,
+                contribution_mass,
+                canonical_source_ids,
+                canonical_source_weights,
+                device=device,
+            )
+        keypoints, rendered_depth, rendered_alpha, rendered_depth_std = (
+            _surface_samples(
             cached,
             harmful_rows,
             raster_valid=raster_valid,
+        )
+        )
+        depth_uncertain = (
+            ~torch.isfinite(rendered_depth_std)
+            | (
+                rendered_depth_std
+                > float(config.maximum_depth_std_abs_m)
+                + float(config.maximum_depth_std_relative)
+                * rendered_depth.abs()
+            )
         )
         if len(harmful_rows):
             active_errors, active_legal = project_depth_legal_candidates(
@@ -369,6 +714,8 @@ def triage_harmful_outcomes(
                 keypoints=keypoints,
                 rendered_depth=rendered_depth,
                 rendered_alpha=rendered_alpha,
+                rendered_depth_std=rendered_depth_std,
+                provenance_mass=active_provenance_mass,
                 config=config,
                 device=device,
             )
@@ -393,6 +740,11 @@ def triage_harmful_outcomes(
         track_indices = []
         track_stable = []
         track_observation_counts = []
+        stable_track_values: list[list[int]] = []
+        geometry_anchor_indices = []
+        geometry_xyz_residuals = []
+        geometry_reprojection_improvements = []
+        unresolved_reasons = []
         canonical_candidates: list[torch.Tensor] = [
             torch.empty(0, dtype=torch.long) for _ in harmful_rows
         ]
@@ -426,11 +778,21 @@ def triage_harmful_outcomes(
                 for value in observations
                 if bool(track["stable"][int(value)])
             ]
-            best_track = stable_observations[0] if stable_observations else (
-                int(observations[0]) if observations else -1
+            stable_observations = _track_quality_order(
+                stable_observations, track
             )
+            best_track = (
+                stable_observations[0]
+                if stable_observations
+                else (int(observations[0]) if observations else -1)
+            )
+            stable_track_values.append(stable_observations)
             track_indices.append(best_track)
             track_stable.append(bool(stable_observations))
+            geometry_anchor_indices.append(-1)
+            geometry_xyz_residuals.append(float("nan"))
+            geometry_reprojection_improvements.append(float("nan"))
+            unresolved_reasons.append(UNRESOLVED_NO_MAP_SUPPORT)
             if len(verified):
                 category = RANK_FAILURE
                 action = REPRESENTATION_REPAIR
@@ -439,7 +801,7 @@ def triage_harmful_outcomes(
                 action = REPRESENTATION_REPAIR
             else:
                 unresolved.append(local)
-                category = INTRINSICALLY_UNMATCHABLE
+                category = UNRESOLVED_NO_VERIFIED_TARGET
                 action = SELECTOR_REJECT
             categories.append(category)
             actions.append(action)
@@ -454,6 +816,14 @@ def triage_harmful_outcomes(
                     keypoints=keypoints[unresolved_tensor],
                     rendered_depth=rendered_depth[unresolved_tensor],
                     rendered_alpha=rendered_alpha[unresolved_tensor],
+                    rendered_depth_std=rendered_depth_std[
+                        unresolved_tensor
+                    ],
+                    provenance_mass=(
+                        canonical_provenance_mass[unresolved_tensor]
+                        if canonical_provenance_mass is not None
+                        else None
+                    ),
                     config=config,
                     device=device,
                 )
@@ -467,40 +837,99 @@ def triage_harmful_outcomes(
             for offset, local in enumerate(unresolved):
                 canonical_candidates[local] = pool_candidates[offset]
                 canonical_errors[local] = pool_errors[offset]
-                track_index = track_indices[local]
-                stable = bool(track_stable[local])
-                active_track_anchor = (
-                    track["active_by_track"].get(int(track_index), ())
-                    if track_index >= 0
-                    else ()
+                stable_tracks = stable_track_values[local]
+                if bool(depth_uncertain[local]) or not bool(
+                    raster_valid[int(harmful_rows[local])]
+                    if raster_valid is not None
+                    else True
+                ):
+                    unresolved_reasons[local] = (
+                        UNRESOLVED_SURFACE_UNCERTAIN
+                    )
+                    continue
+                geometry = _verified_geometry_track(
+                    stable_tracks=stable_tracks,
+                    track=track,
+                    active_xyz=active_xyz,
+                    keypoint=keypoints[local],
+                    pose_w2c=cached["pose_w2c"],
+                    K=cached["native_K"],
+                    config=config,
                 )
-                assigned = (
-                    int(track["canonical_by_track"][track_index])
-                    if track_index >= 0
-                    else -1
-                )
-                canonical_track_available = 0 <= assigned < canonical_count
-                if stable and active_track_anchor:
-                    categories[local] = ACTIVE_GEOMETRY_FAILURE
+                if geometry is not None:
+                    track_index, anchor, distance, improvement = geometry
+                    track_indices[local] = track_index
+                    geometry_anchor_indices[local] = anchor
+                    geometry_xyz_residuals[local] = distance
+                    geometry_reprojection_improvements[local] = improvement
+                    categories[local] = ACTIVE_TRACK_INCONSISTENCY
                     actions[local] = GEOMETRY_REPAIR
-                elif (
+                    continue
+                active_track_available = any(
+                    track["active_by_track"].get(track_index, ())
+                    for track_index in stable_tracks
+                )
+                canonical_track_available = any(
+                    0
+                    <= int(track["canonical_by_track"][track_index])
+                    < canonical_count
+                    for track_index in stable_tracks
+                )
+                if (
                     len(pool_candidates[offset])
-                    or (stable and canonical_track_available)
+                    or (
+                        bool(stable_tracks)
+                        and not active_track_available
+                        and canonical_track_available
+                    )
                 ):
                     categories[local] = COVERAGE_FAILURE
                     actions[local] = STRUCTURE_REPAIR
+                elif bool(stable_tracks) and active_track_available:
+                    unresolved_reasons[local] = (
+                        UNRESOLVED_TRACK_IDENTITY_OR_VISIBILITY
+                    )
+                elif bool(stable_tracks):
+                    categories[local] = COVERAGE_FAILURE
+                    actions[local] = STRUCTURE_REPAIR
+                elif track_observation_counts[local] > 0:
+                    unresolved_reasons[local] = UNRESOLVED_NO_STABLE_TRACK
+                else:
+                    unresolved_reasons[local] = UNRESOLVED_NO_MAP_SUPPORT
 
+        active_candidate_mass = [
+            (
+                active_provenance_mass[local, candidates].detach().cpu()
+                if active_provenance_mass is not None and len(candidates)
+                else torch.ones(len(candidates))
+            )
+            for local, candidates in enumerate(active_candidates)
+        ]
+        canonical_candidate_mass = [
+            (
+                canonical_provenance_mass[local, candidates].detach().cpu()
+                if canonical_provenance_mass is not None and len(candidates)
+                else torch.ones(len(candidates))
+            )
+            for local, candidates in enumerate(canonical_candidates)
+        ]
         active_offsets, active_indices = _pack_ragged(
             active_candidates, dtype=torch.long
         )
         _, active_errors_packed = _pack_ragged(
             active_candidate_errors, dtype=torch.float32
         )
+        _, active_mass_packed = _pack_ragged(
+            active_candidate_mass, dtype=torch.float32
+        )
         canonical_offsets, canonical_indices = _pack_ragged(
             canonical_candidates, dtype=torch.long
         )
         _, canonical_errors_packed = _pack_ragged(
             canonical_errors, dtype=torch.float32
+        )
+        _, canonical_mass_packed = _pack_ragged(
+            canonical_candidate_mass, dtype=torch.float32
         )
         category_tensor = torch.as_tensor(categories, dtype=torch.int8)
         action_tensor = torch.as_tensor(actions, dtype=torch.int8)
@@ -514,20 +943,33 @@ def triage_harmful_outcomes(
             & (rendered_depth > 0)
             & torch.isfinite(rendered_alpha)
             & (rendered_alpha >= float(config.alpha_minimum))
+            & ~depth_uncertain
         )
-        intrinsic = category_tensor == INTRINSICALLY_UNMATCHABLE
-        totals["intrinsic_invalid_surface_support"] += int(
-            (intrinsic & ~surface_support_valid).sum()
+        unresolved_mask = (
+            category_tensor == UNRESOLVED_NO_VERIFIED_TARGET
         )
-        totals["intrinsic_valid_surface_support"] += int(
-            (intrinsic & surface_support_valid).sum()
+        totals["unresolved_invalid_surface_support"] += int(
+            (unresolved_mask & ~surface_support_valid).sum()
+        )
+        totals["unresolved_valid_surface_support"] += int(
+            (unresolved_mask & surface_support_valid).sum()
         )
         observation_count_tensor = torch.as_tensor(
             track_observation_counts, dtype=torch.int16
         )
-        totals["intrinsic_with_track_observation"] += int(
-            (intrinsic & (observation_count_tensor > 0)).sum()
+        totals["unresolved_with_track_observation"] += int(
+            (unresolved_mask & (observation_count_tensor > 0)).sum()
         )
+        unresolved_reason_tensor = torch.as_tensor(
+            unresolved_reasons, dtype=torch.int8
+        )
+        for reason, label in enumerate(UNRESOLVED_REASON_NAMES):
+            totals[f"unresolved_reason_{label}"] += int(
+                (
+                    unresolved_mask
+                    & (unresolved_reason_tensor == reason)
+                ).sum()
+            )
         totals["selected_harmful"] += len(categories)
         totals["invalid_original_alternative"] += sum(invalid_teacher_counts)
         output_records.append(
@@ -548,13 +990,27 @@ def triage_harmful_outcomes(
                 "active_positive_offsets": active_offsets,
                 "active_positive_indices": active_indices,
                 "active_positive_reprojection_errors_px": active_errors_packed,
+                "active_positive_contribution_mass": active_mass_packed,
                 "canonical_positive_offsets": canonical_offsets,
                 "canonical_positive_indices": canonical_indices,
                 "canonical_positive_reprojection_errors_px": canonical_errors_packed,
+                "canonical_positive_contribution_mass": canonical_mass_packed,
                 "track_indices": torch.as_tensor(track_indices, dtype=torch.long),
                 "track_stable": torch.as_tensor(track_stable, dtype=torch.bool),
                 "track_observation_count": observation_count_tensor,
                 "surface_support_valid": surface_support_valid.cpu(),
+                "depth_uncertainty_std_m": rendered_depth_std.cpu(),
+                "unresolved_reason": unresolved_reason_tensor,
+                "geometry_anchor_indices": torch.as_tensor(
+                    geometry_anchor_indices, dtype=torch.long
+                ),
+                "geometry_xyz_residual_m": torch.as_tensor(
+                    geometry_xyz_residuals, dtype=torch.float32
+                ),
+                "geometry_reprojection_improvement_px": torch.as_tensor(
+                    geometry_reprojection_improvements,
+                    dtype=torch.float32,
+                ),
             }
         )
 
@@ -601,8 +1057,8 @@ def triage_harmful_outcomes(
     }
     total_harmful = max(int(totals["selected_harmful"]), 1)
     triage = {
-        "schema": "lafgs_harmful_outcome_triage",
-        "version": 1,
+        "schema": "lafgs_harmful_outcome_triage_v2",
+        "version": 2,
         "query_names": names,
         "active_anchor_count": active_count,
         "canonical_anchor_count": canonical_count,
@@ -619,16 +1075,20 @@ def triage_harmful_outcomes(
             "invalid_original_alternative_count": int(
                 totals["invalid_original_alternative"]
             ),
-            "intrinsically_unmatchable_breakdown": {
+            "unresolved_breakdown": {
                 "invalid_surface_support": int(
-                    totals["intrinsic_invalid_surface_support"]
+                    totals["unresolved_invalid_surface_support"]
                 ),
                 "valid_surface_support": int(
-                    totals["intrinsic_valid_surface_support"]
+                    totals["unresolved_valid_surface_support"]
                 ),
                 "with_track_observation": int(
-                    totals["intrinsic_with_track_observation"]
+                    totals["unresolved_with_track_observation"]
                 ),
+                "reasons": {
+                    label: int(totals[f"unresolved_reason_{label}"])
+                    for label in UNRESOLVED_REASON_NAMES
+                },
             },
             "by_sequence": {
                 key: dict(value) for key, value in sorted(by_sequence.items())
@@ -639,13 +1099,11 @@ def triage_harmful_outcomes(
             },
         },
         "config": asdict(config),
+        "unresolved_reason_names": list(UNRESOLVED_REASON_NAMES),
         "surface_support_source": (
-            "native_alpha"
-            if all(
-                "native_alpha" in cache[name]
-                for name in names
-            )
-            else "raster_provenance_valid"
+            "bilinear_depth_alpha_plus_anchor_raster_contribution"
+            if raster_provenance is not None
+            else "bilinear_native_depth_alpha"
         ),
     }
     completed = {

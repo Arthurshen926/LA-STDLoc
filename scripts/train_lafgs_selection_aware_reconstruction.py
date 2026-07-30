@@ -96,12 +96,17 @@ def main() -> None:
     parser.add_argument("--selected-outcomes", required=True)
     parser.add_argument("--selector-state", required=True)
     parser.add_argument("--counterfactual-audit", default="")
+    parser.add_argument("--basis-teacher", default="")
+    parser.add_argument("--loo-teacher", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--maximum-protected-per-query", type=int, default=96)
     parser.add_argument("--maximum-neutral-per-query", type=int, default=64)
     parser.add_argument("--maximum-harmful-per-query", type=int, default=64)
     parser.add_argument("--maximum-critical-per-query", type=int, default=32)
+    parser.add_argument(
+        "--maximum-basis-hyperedges-per-query", type=int, default=8
+    )
     parser.add_argument("--steps", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--learning-rate", type=float, default=0.02)
@@ -112,6 +117,19 @@ def main() -> None:
     parser.add_argument("--ranking-temperature", type=float, default=0.05)
     parser.add_argument("--descriptor-replay-weight", type=float, default=0.001)
     parser.add_argument("--bias-replay-weight", type=float, default=0.02)
+    parser.add_argument("--topk-replay-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--topk-replay-temperature", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--basis-hyperedge-weight", type=float, default=0.2
+    )
+    parser.add_argument(
+        "--basis-hyperedge-margin", type=float, default=0.01
+    )
+    parser.add_argument(
+        "--basis-hyperedge-temperature", type=float, default=0.05
+    )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
         "--reuse-training-data",
@@ -160,6 +178,24 @@ def main() -> None:
             weights_only=False,
         )
         if args.counterfactual_audit
+        else None
+    )
+    basis_teacher = (
+        torch.load(
+            args.basis_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.basis_teacher
+        else None
+    )
+    loo_teacher = (
+        torch.load(
+            args.loo_teacher,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if args.loo_teacher
         else None
     )
     selector_state = torch.load(
@@ -212,6 +248,16 @@ def main() -> None:
                 if args.counterfactual_audit
                 else None
             ),
+            "basis_teacher_sha256": (
+                _sha256_file(args.basis_teacher)
+                if args.basis_teacher
+                else None
+            ),
+            "loo_teacher_sha256": (
+                _sha256_file(args.loo_teacher)
+                if args.loo_teacher
+                else None
+            ),
         }
         if any(teacher.get("provenance", {}).get(key) != value for key, value in expected.items()):
             raise ValueError("selection teacher cache provenance differs")
@@ -232,6 +278,11 @@ def main() -> None:
             maximum_harmful_per_query=args.maximum_harmful_per_query,
             maximum_critical_per_query=args.maximum_critical_per_query,
             counterfactual_audit=counterfactual,
+            basis_teacher=basis_teacher,
+            loo_teacher=loo_teacher,
+            maximum_basis_hyperedges_per_query=(
+                args.maximum_basis_hyperedges_per_query
+            ),
             progress=data_progress,
         )
         _atomic_torch(
@@ -252,6 +303,16 @@ def main() -> None:
                         if args.counterfactual_audit
                         else None
                     ),
+                    "basis_teacher_sha256": (
+                        _sha256_file(args.basis_teacher)
+                        if args.basis_teacher
+                        else None
+                    ),
+                    "loo_teacher_sha256": (
+                        _sha256_file(args.loo_teacher)
+                        if args.loo_teacher
+                        else None
+                    ),
                 },
             },
         )
@@ -266,6 +327,11 @@ def main() -> None:
         ranking_temperature=args.ranking_temperature,
         descriptor_replay_weight=args.descriptor_replay_weight,
         bias_replay_weight=args.bias_replay_weight,
+        topk_replay_weight=args.topk_replay_weight,
+        topk_replay_temperature=args.topk_replay_temperature,
+        basis_hyperedge_weight=args.basis_hyperedge_weight,
+        basis_hyperedge_margin=args.basis_hyperedge_margin,
+        basis_hyperedge_temperature=args.basis_hyperedge_temperature,
         seed=args.seed,
     )
 
@@ -285,6 +351,18 @@ def main() -> None:
             progress=training_progress,
         )
     )
+    metric_contract = {
+        "path": _resolved(args.metric_state),
+        "sha256": _sha256_file(args.metric_state),
+    }
+    updated_map["metric_state_contract"] = metric_contract
+    updated_family["metric_state_contract"] = metric_contract
+    updated_map["selection_aware_reconstruction"][
+        "metric_state_contract"
+    ] = metric_contract
+    updated_family["selection_aware_reconstruction"][
+        "metric_state_contract"
+    ] = metric_contract
     map_path = output_dir / "anchor_map_macro_round_01.pt"
     family_path = output_dir / "family_macro_round_01.pt"
     _atomic_torch(map_path, updated_map)
@@ -312,6 +390,16 @@ def main() -> None:
             **(
                 {"counterfactual_audit": args.counterfactual_audit}
                 if args.counterfactual_audit
+                else {}
+            ),
+            **(
+                {"basis_teacher": args.basis_teacher}
+                if args.basis_teacher
+                else {}
+            ),
+            **(
+                {"loo_teacher": args.loo_teacher}
+                if args.loo_teacher
                 else {}
             ),
         }.items()

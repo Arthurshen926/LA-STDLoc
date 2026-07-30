@@ -61,6 +61,23 @@ def main() -> None:
     parser.add_argument(
         "--maximum-track-reprojection-p90-px", type=float, default=4.0
     )
+    parser.add_argument(
+        "--minimum-contribution-mass", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--maximum-depth-std-abs-m", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--maximum-depth-std-relative", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--geometry-xyz-threshold-m", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--geometry-reprojection-improvement-px",
+        type=float,
+        default=1.0,
+    )
     args = parser.parse_args()
     paths = {
         "active_map": args.active_map,
@@ -87,6 +104,13 @@ def main() -> None:
         minimum_track_view_bins=args.minimum_track_view_bins,
         maximum_track_reprojection_p90_px=(
             args.maximum_track_reprojection_p90_px
+        ),
+        minimum_contribution_mass=args.minimum_contribution_mass,
+        maximum_depth_std_abs_m=args.maximum_depth_std_abs_m,
+        maximum_depth_std_relative=args.maximum_depth_std_relative,
+        geometry_xyz_threshold_m=args.geometry_xyz_threshold_m,
+        geometry_reprojection_improvement_px=(
+            args.geometry_reprojection_improvement_px
         ),
     )
 

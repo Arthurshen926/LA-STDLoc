@@ -2,10 +2,34 @@ import torch
 
 from localization_training.harmful_outcome_triage import (
     HarmfulTriageConfig,
+    _bilinear_samples,
     _verified_teacher_candidates,
+    candidate_provenance_mass,
     project_depth_legal_candidates,
     triage_harmful_outcomes,
 )
+
+
+def test_bilinear_surface_sampling_reports_depth_discontinuity():
+    mean, std, support = _bilinear_samples(
+        torch.tensor([[1.0, 3.0], [5.0, 7.0]]),
+        torch.tensor([[0.5, 0.5]]),
+        positive_only=True,
+    )
+    assert torch.allclose(mean, torch.tensor([4.0]))
+    assert torch.allclose(std, torch.tensor([5.0**0.5]))
+    assert torch.allclose(support, torch.ones(1))
+
+
+def test_candidate_provenance_mass_is_anchor_specific():
+    mass = candidate_provenance_mass(
+        torch.tensor([[10, 20]]),
+        torch.tensor([[0.3, 0.7]]),
+        torch.tensor([[10, -1], [20, 30]]),
+        torch.tensor([[1.0, 0.0], [0.5, 0.5]]),
+        device=torch.device("cpu"),
+    )
+    assert torch.allclose(mass, torch.tensor([[0.3, 0.35]]))
 
 
 def test_project_depth_legal_candidates_checks_reprojection_and_depth():
@@ -21,6 +45,25 @@ def test_project_depth_legal_candidates_checks_reprojection_and_depth():
     )
     assert torch.allclose(errors, torch.zeros_like(errors))
     assert legal.tolist() == [[True, False]]
+
+
+def test_project_depth_legal_candidates_rejects_uncertain_or_unrelated_surface():
+    _, legal = project_depth_legal_candidates(
+        xyz=torch.tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]]),
+        pose_w2c=torch.eye(4),
+        K=torch.eye(3),
+        keypoints=torch.tensor([[0.0, 0.0]]),
+        rendered_depth=torch.tensor([2.0]),
+        rendered_alpha=torch.tensor([1.0]),
+        rendered_depth_std=torch.tensor([0.2]),
+        provenance_mass=torch.tensor([[0.5, 0.0]]),
+        config=HarmfulTriageConfig(
+            maximum_depth_std_abs_m=0.05,
+            maximum_depth_std_relative=0.0,
+        ),
+        device=torch.device("cpu"),
+    )
+    assert legal.tolist() == [[False, False]]
 
 
 def test_project_depth_legal_candidates_cuda_device_contract():

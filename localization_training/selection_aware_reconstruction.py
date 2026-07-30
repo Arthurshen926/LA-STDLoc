@@ -12,6 +12,10 @@ from localization_training.pose_sufficient_selector import (
     basis_aware_core_reserve_mask,
     image_grid_cells,
 )
+from localization_training.basin_distillation import (
+    HARMFUL_SET,
+    NEAR_MISS_SET,
+)
 
 
 ROLE_NEUTRAL = 0
@@ -30,6 +34,14 @@ class SelectionAwareTrainingData:
     diagnostics: dict[str, float]
     positive_trainable: torch.Tensor | None = None
     negative_trainable: torch.Tensor | None = None
+    replay_query_features: torch.Tensor | None = None
+    replay_representation_indices: torch.Tensor | None = None
+    replay_baseline_logits: torch.Tensor | None = None
+    replay_weights: torch.Tensor | None = None
+    basis_query_features: torch.Tensor | None = None
+    basis_positive_representation: torch.Tensor | None = None
+    basis_negative_representation: torch.Tensor | None = None
+    basis_weights: torch.Tensor | None = None
 
     def validate(self, representation_count: int) -> None:
         count = len(self.query_features)
@@ -65,6 +77,62 @@ class SelectionAwareTrainingData:
                 raise ValueError(
                     "selection-aware trainable masks must align"
                 )
+        replay = (
+            self.replay_query_features,
+            self.replay_representation_indices,
+            self.replay_baseline_logits,
+            self.replay_weights,
+        )
+        if any(value is not None for value in replay):
+            if any(value is None for value in replay):
+                raise ValueError("top-K replay tensors must be provided together")
+            replay_count = len(self.replay_query_features)
+            if (
+                self.replay_query_features.ndim != 2
+                or self.replay_representation_indices.ndim != 2
+                or self.replay_baseline_logits.shape
+                != self.replay_representation_indices.shape
+                or len(self.replay_representation_indices) != replay_count
+                or len(self.replay_weights) != replay_count
+            ):
+                raise ValueError("top-K replay tensors do not align")
+            representations = self.replay_representation_indices
+            if replay_count and (
+                int(representations.min()) < 0
+                or int(representations.max()) >= representation_count
+            ):
+                raise ValueError("top-K replay representation is invalid")
+        basis = (
+            self.basis_query_features,
+            self.basis_positive_representation,
+            self.basis_negative_representation,
+            self.basis_weights,
+        )
+        if any(value is not None for value in basis):
+            if any(value is None for value in basis):
+                raise ValueError("basis hyperedge tensors must be provided together")
+            basis_count = len(self.basis_query_features)
+            if (
+                self.basis_query_features.ndim != 3
+                or self.basis_query_features.shape[1] != 3
+                or self.basis_positive_representation.shape
+                != self.basis_negative_representation.shape
+                or self.basis_positive_representation.shape
+                != self.basis_query_features.shape[:2]
+                or len(self.basis_weights) != basis_count
+            ):
+                raise ValueError("basis hyperedge tensors do not align")
+            representations = torch.cat(
+                (
+                    self.basis_positive_representation.reshape(-1),
+                    self.basis_negative_representation.reshape(-1),
+                )
+            )
+            if basis_count and (
+                int(representations.min()) < 0
+                or int(representations.max()) >= representation_count
+            ):
+                raise ValueError("basis hyperedge representation is invalid")
 
 
 @dataclass(frozen=True)
@@ -90,6 +158,11 @@ class SelectionAwareOptimizationConfig:
     ranking_temperature: float = 0.05
     descriptor_replay_weight: float = 0.001
     bias_replay_weight: float = 0.02
+    topk_replay_weight: float = 0.1
+    topk_replay_temperature: float = 0.05
+    basis_hyperedge_weight: float = 0.2
+    basis_hyperedge_margin: float = 0.01
+    basis_hyperedge_temperature: float = 0.05
     seed: int = 2026
 
 
@@ -424,6 +497,9 @@ def build_selection_aware_training_data(
     maximum_harmful_per_query: int = 64,
     maximum_critical_per_query: int = 32,
     counterfactual_audit: dict | None = None,
+    basis_teacher: dict | None = None,
+    loo_teacher: dict | None = None,
+    maximum_basis_hyperedges_per_query: int = 8,
     progress: Callable[[int, int], None] | None = None,
 ) -> SelectionAwareTrainingData:
     """Build detached local reconstruction evidence from OOF selections."""
@@ -443,6 +519,14 @@ def build_selection_aware_training_data(
         counterfactual_audit["query_names"]
     ):
         raise ValueError("selection-aware counterfactual audit differs")
+    if basis_teacher is not None and names != list(
+        basis_teacher["query_names"]
+    ):
+        raise ValueError("selection-aware basis teacher differs")
+    if loo_teacher is not None and names != list(
+        loo_teacher["query_names"]
+    ):
+        raise ValueError("selection-aware LOO teacher differs")
     family_indices = torch.as_tensor(family["landmark_indices"]).long()
     if not torch.equal(
         family_indices.reshape(-1),
@@ -518,6 +602,14 @@ def build_selection_aware_training_data(
     margin_blocks = []
     positive_trainable_blocks = []
     negative_trainable_blocks = []
+    replay_query_blocks = []
+    replay_representation_blocks = []
+    replay_logit_blocks = []
+    replay_weight_blocks = []
+    basis_query_blocks = []
+    basis_positive_blocks = []
+    basis_negative_blocks = []
+    basis_weight_blocks = []
     role_counts = {
         "neutral": 0,
         "protected": 0,
@@ -526,6 +618,7 @@ def build_selection_aware_training_data(
         "harmful_without_positive": 0,
         "counterfactual_family_without_prototype": 0,
         "strict_basin_protected": 0,
+        "exact_loo_protected": 0,
     }
     active_representations: set[int] = set()
 
@@ -536,6 +629,16 @@ def build_selection_aware_training_data(
         counterfactual_record = (
             counterfactual_audit["records"][query_index]
             if counterfactual_audit is not None
+            else None
+        )
+        basis_record = (
+            basis_teacher["records"][query_index]
+            if basis_teacher is not None
+            else None
+        )
+        loo_record = (
+            loo_teacher["records"][query_index]
+            if loo_teacher is not None
             else None
         )
         if (
@@ -586,6 +689,30 @@ def build_selection_aware_training_data(
             selected_record["strict_probability"],
             maximum_protected_per_query,
         )
+        leverage_positions = torch.empty(0, dtype=torch.long)
+        if loo_record is not None:
+            loo_rows = torch.as_tensor(
+                loo_record["query_rows"]
+            ).long()
+            threshold_crossing = torch.as_tensor(
+                loo_record["threshold_crossing"]
+            ).bool()
+            leverage_rows = set(
+                loo_rows[threshold_crossing].tolist()
+            )
+            if leverage_rows:
+                leverage_positions = torch.as_tensor(
+                    [
+                        local
+                        for local, row in enumerate(rows.tolist())
+                        if int(row) in leverage_rows
+                    ],
+                    dtype=torch.long,
+                )
+                protected = torch.unique(
+                    torch.cat((protected, leverage_positions)),
+                    sorted=True,
+                )
         excluded = roles["harmful"] | roles["critical"] | roles["protected"]
         neutral = _take_evenly(
             ~excluded, maximum_neutral_per_query
@@ -604,6 +731,12 @@ def build_selection_aware_training_data(
                     torch.full((len(neutral),), 0.5),
                 )
             )
+            if len(leverage_positions):
+                leverage_mask = torch.isin(replay, leverage_positions)
+                replay_weight[leverage_mask] = 4.0
+                role_counts["exact_loo_protected"] += int(
+                    leverage_mask.sum()
+                )
             weight_blocks.append(replay_weight)
             margin_blocks.append(
                 top1_score[replay] - top2_score[replay]
@@ -614,13 +747,24 @@ def build_selection_aware_training_data(
             negative_trainable_blocks.append(
                 torch.ones(len(replay), dtype=torch.bool)
             )
-            if (
-                counterfactual_record is not None
-                and 3.0 <= float(dynamic_record["te_cm"]) <= 8.0
-                and len(protected)
-            ):
-                replay_weight[: len(protected)] = 4.0
-                role_counts["strict_basin_protected"] += len(protected)
+            replay_anchors = anchors[replay]
+            replay_query = query[replay]
+            replay_width = replay_anchors.shape[1]
+            replay_representations, replay_logits = winning_representation(
+                replay_query[:, None, :]
+                .expand(-1, replay_width, -1)
+                .reshape(-1, replay_query.shape[1]),
+                replay_anchors.reshape(-1),
+                table,
+            )
+            replay_query_blocks.append(replay_query.half().cpu())
+            replay_representation_blocks.append(
+                replay_representations.reshape(-1, replay_width)
+            )
+            replay_logit_blocks.append(
+                replay_logits.reshape(-1, replay_width)
+            )
+            replay_weight_blocks.append(replay_weight.clone())
             role_counts["protected"] += len(protected)
             role_counts["neutral"] += len(neutral)
             active_representations.update(
@@ -628,6 +772,9 @@ def build_selection_aware_training_data(
             )
             active_representations.update(
                 top2_representation[replay].tolist()
+            )
+            active_representations.update(
+                replay_representations.tolist()
             )
 
         critical = _take_highest(
@@ -774,6 +921,85 @@ def build_selection_aware_training_data(
             active_representations.add(int(positive_representation))
             if counterfactual_record is None:
                 active_representations.add(int(negative_representation))
+        if basis_record is not None:
+            set_rows = torch.as_tensor(
+                basis_record["set_query_rows"]
+            ).long()
+            set_anchors = torch.as_tensor(
+                basis_record["set_anchor_indices"]
+            ).long()
+            set_types = torch.as_tensor(
+                basis_record["set_types"]
+            ).long()
+            parents = torch.as_tensor(
+                basis_record["parent_set_index"]
+            ).long()
+            blame = torch.as_tensor(
+                basis_record["counterfactual_blame"]
+            ).float()
+            near = torch.where(
+                (set_types == NEAR_MISS_SET)
+                & (parents >= 0)
+                & (blame > 0)
+            )[0]
+            if len(near):
+                near = near[
+                    torch.argsort(
+                        blame[near], descending=True, stable=True
+                    )
+                ][: max(int(maximum_basis_hyperedges_per_query), 0)]
+            row_to_local = {
+                int(row): local for local, row in enumerate(rows.tolist())
+            }
+            query_hyperedges = []
+            positive_hyperedges = []
+            negative_hyperedges = []
+            hyperedge_weights = []
+            for child_index in near.tolist():
+                parent_index = int(parents[child_index])
+                if (
+                    parent_index < 0
+                    or parent_index >= len(set_rows)
+                    or int(set_types[parent_index]) != HARMFUL_SET
+                    or not torch.equal(
+                        set_rows[child_index], set_rows[parent_index]
+                    )
+                ):
+                    continue
+                local_rows = [
+                    row_to_local.get(int(row), -1)
+                    for row in set_rows[child_index].tolist()
+                ]
+                if any(value < 0 for value in local_rows):
+                    continue
+                local_rows_tensor = torch.as_tensor(local_rows).long()
+                edge_query = query[local_rows_tensor]
+                positive_representation, _ = winning_representation(
+                    edge_query, set_anchors[child_index], table
+                )
+                negative_representation, _ = winning_representation(
+                    edge_query, set_anchors[parent_index], table
+                )
+                query_hyperedges.append(edge_query.half().cpu())
+                positive_hyperedges.append(positive_representation)
+                negative_hyperedges.append(negative_representation)
+                hyperedge_weights.append(float(blame[child_index]))
+                active_representations.update(
+                    positive_representation.tolist()
+                )
+            if query_hyperedges:
+                weights = torch.as_tensor(hyperedge_weights).float()
+                weights = (
+                    weights / weights.mean().clamp_min(1e-8)
+                ).clamp(0.5, 2.0)
+                basis_query_blocks.append(torch.stack(query_hyperedges))
+                basis_positive_blocks.append(
+                    torch.stack(positive_hyperedges)
+                )
+                basis_negative_blocks.append(
+                    torch.stack(negative_hyperedges)
+                )
+                basis_weight_blocks.append(weights)
         if progress is not None:
             progress(query_index + 1, len(names))
 
@@ -799,6 +1025,60 @@ def build_selection_aware_training_data(
         },
         positive_trainable=torch.cat(positive_trainable_blocks).bool(),
         negative_trainable=torch.cat(negative_trainable_blocks).bool(),
+        replay_query_features=(
+            torch.cat(replay_query_blocks)
+            if replay_query_blocks
+            else None
+        ),
+        replay_representation_indices=(
+            torch.cat(replay_representation_blocks).long()
+            if replay_representation_blocks
+            else None
+        ),
+        replay_baseline_logits=(
+            torch.cat(replay_logit_blocks).float()
+            if replay_logit_blocks
+            else None
+        ),
+        replay_weights=(
+            torch.cat(replay_weight_blocks).float()
+            if replay_weight_blocks
+            else None
+        ),
+        basis_query_features=(
+            torch.cat(basis_query_blocks)
+            if basis_query_blocks
+            else None
+        ),
+        basis_positive_representation=(
+            torch.cat(basis_positive_blocks).long()
+            if basis_positive_blocks
+            else None
+        ),
+        basis_negative_representation=(
+            torch.cat(basis_negative_blocks).long()
+            if basis_negative_blocks
+            else None
+        ),
+        basis_weights=(
+            torch.cat(basis_weight_blocks).float()
+            if basis_weight_blocks
+            else None
+        ),
+    )
+    data.diagnostics.update(
+        {
+            "topk_replay_count": float(
+                len(data.replay_query_features)
+                if data.replay_query_features is not None
+                else 0
+            ),
+            "basis_hyperedge_count": float(
+                len(data.basis_query_features)
+                if data.basis_query_features is not None
+                else 0
+            ),
+        }
     )
     data.validate(table.anchor_count + table.prototype_count)
     return data
@@ -855,19 +1135,34 @@ def optimize_selection_aware_representations(
         if data.negative_trainable is None
         else torch.as_tensor(data.negative_trainable).bool()
     )
-    active_ids = torch.unique(
-        torch.cat(
-            (
-                data.positive_representation[positive_trainable],
-                data.negative_representation[negative_trainable],
-            )
+    active_id_blocks = [
+        data.positive_representation[positive_trainable],
+        data.negative_representation[negative_trainable],
+    ]
+    if data.replay_representation_indices is not None:
+        active_id_blocks.append(
+            data.replay_representation_indices.reshape(-1)
         )
-    ).to(device)
+    if data.basis_positive_representation is not None:
+        active_id_blocks.append(
+            data.basis_positive_representation.reshape(-1)
+        )
+    active_ids = torch.unique(torch.cat(active_id_blocks)).to(device)
     generator = torch.Generator(device="cpu")
     generator.manual_seed(int(config.seed))
     history = []
     pair_count = len(data.query_features)
     batch_size = min(max(int(config.batch_size), 1), pair_count)
+    replay_count = (
+        len(data.replay_query_features)
+        if data.replay_query_features is not None
+        else 0
+    )
+    basis_count = (
+        len(data.basis_query_features)
+        if data.basis_query_features is not None
+        else 0
+    )
 
     for step in range(1, int(config.steps) + 1):
         indices = torch.randint(
@@ -928,6 +1223,117 @@ def optimize_selection_aware_representations(
             preserve_tolerance=float(config.preserve_tolerance),
             temperature=float(config.ranking_temperature),
         )
+        topk_replay = ranking.new_zeros(())
+        if replay_count:
+            replay_batch_size = min(batch_size, replay_count)
+            replay_indices = torch.randint(
+                replay_count,
+                (replay_batch_size,),
+                generator=generator,
+            )
+            replay_query = data.replay_query_features[
+                replay_indices
+            ].float().to(device)
+            replay_representations = data.replay_representation_indices[
+                replay_indices
+            ].to(device)
+            replay_baseline = data.replay_baseline_logits[
+                replay_indices
+            ].to(device)
+            replay_weight = data.replay_weights[
+                replay_indices
+            ].to(device)
+            replay_features = transformed[replay_representations]
+            replay_bias = representation_bias[replay_representations]
+            replay_score = (
+                torch.einsum(
+                    "bd,bkd->bk", replay_query, replay_features
+                )
+                / temperature[replay_representations]
+                + replay_bias
+            )
+            replay_temperature = max(
+                float(config.topk_replay_temperature), 1e-6
+            )
+            baseline_probability = F.softmax(
+                replay_baseline / replay_temperature, dim=1
+            )
+            replay_kl = F.kl_div(
+                F.log_softmax(
+                    replay_score / replay_temperature, dim=1
+                ),
+                baseline_probability,
+                reduction="none",
+            ).sum(dim=1)
+            topk_replay = (
+                replay_kl * replay_weight
+            ).sum() / replay_weight.sum().clamp_min(1e-8)
+
+        basis_hyperedge = ranking.new_zeros(())
+        if basis_count:
+            basis_batch_size = min(
+                max(batch_size // 8, 1), basis_count
+            )
+            basis_indices = torch.randint(
+                basis_count,
+                (basis_batch_size,),
+                generator=generator,
+            )
+            basis_query = data.basis_query_features[
+                basis_indices
+            ].float().to(device)
+            positive_basis = data.basis_positive_representation[
+                basis_indices
+            ].to(device)
+            negative_basis = data.basis_negative_representation[
+                basis_indices
+            ].to(device)
+            basis_weight = data.basis_weights[
+                basis_indices
+            ].to(device)
+
+            def basis_scores(
+                representation: torch.Tensor,
+                *,
+                stop_gradient: bool,
+            ) -> torch.Tensor:
+                feature = transformed[representation]
+                bias = representation_bias[representation]
+                if stop_gradient:
+                    feature = feature.detach()
+                    bias = bias.detach()
+                score_value = (
+                    (basis_query * feature).sum(dim=2)
+                    / temperature[representation]
+                    + bias
+                )
+                softmin_temperature = max(
+                    float(config.basis_hyperedge_temperature), 1e-6
+                )
+                return -softmin_temperature * torch.logsumexp(
+                    -score_value / softmin_temperature, dim=1
+                )
+
+            positive_basis_score = basis_scores(
+                positive_basis, stop_gradient=False
+            )
+            negative_basis_score = basis_scores(
+                negative_basis, stop_gradient=True
+            )
+            scale = max(
+                float(config.basis_hyperedge_temperature), 1e-6
+            )
+            basis_loss = F.softplus(
+                (
+                    float(config.basis_hyperedge_margin)
+                    - positive_basis_score
+                    + negative_basis_score
+                )
+                / scale
+            ) * scale
+            basis_hyperedge = (
+                basis_loss * basis_weight
+            ).sum() / basis_weight.sum().clamp_min(1e-8)
         descriptor_replay = (
             torch.linalg.norm(bounded[active_ids], dim=1)
             / max(float(config.maximum_descriptor_delta), 1e-8)
@@ -939,6 +1345,8 @@ def optimize_selection_aware_representations(
         ).square().mean() if prototype_count else ranking.new_zeros(())
         loss = (
             ranking
+            + float(config.topk_replay_weight) * topk_replay
+            + float(config.basis_hyperedge_weight) * basis_hyperedge
             + float(config.descriptor_replay_weight) * descriptor_replay
             + float(config.bias_replay_weight) * bias_replay
         )
@@ -957,6 +1365,10 @@ def optimize_selection_aware_representations(
                 "ranking_loss": float(ranking.detach()),
                 "preserve_loss": float(parts["preserve"].detach()),
                 "active_loss": float(parts["active"].detach()),
+                "topk_replay_loss": float(topk_replay.detach()),
+                "basis_hyperedge_loss": float(
+                    basis_hyperedge.detach()
+                ),
                 "batch_margin": float(parts["margin"].detach()),
                 "descriptor_replay": float(descriptor_replay.detach()),
                 "bias_replay": float(bias_replay.detach()),

@@ -77,9 +77,33 @@ def assign_descriptor_consistent_repair_routes(
             similarity = values @ values.T
             best: tuple[tuple[int, int, float, int], list[int]] | None = None
             for local, seed in enumerate(remaining):
-                support_local = torch.where(
-                    similarity[local] >= threshold
-                )[0].tolist()
+                # Complete-link growth prevents two mutually inconsistent
+                # appearances from entering one mode merely because both are
+                # close to a permissive seed.
+                support_local = [local]
+                candidates = [
+                    value
+                    for value in range(len(remaining))
+                    if value != local
+                    and float(similarity[local, value]) >= threshold
+                ]
+                candidates.sort(
+                    key=lambda value: (
+                        -float(similarity[local, value]),
+                        remaining[value],
+                    )
+                )
+                for value in candidates:
+                    if bool(
+                        (
+                            similarity[
+                                value,
+                                torch.as_tensor(support_local).long(),
+                            ]
+                            >= threshold
+                        ).all()
+                    ):
+                        support_local.append(value)
                 support = [remaining[value] for value in support_local]
                 trajectories = {
                     str(occurrences[value][1]) for value in support
@@ -94,7 +118,11 @@ def assign_descriptor_consistent_repair_routes(
                 score = (
                     len(trajectories),
                     len(support),
-                    float(similarity[local, support_local].mean()),
+                    float(
+                        similarity[
+                            torch.as_tensor(support_local).long()
+                        ][:, torch.as_tensor(support_local).long()].min()
+                    ),
                     -int(seed),
                 )
                 if best is None or score > best[0]:
@@ -129,6 +157,28 @@ def assign_descriptor_consistent_repair_routes(
     return routes, family_clusters
 
 
+def _repair_targets(record: dict) -> tuple[torch.Tensor, torch.Tensor]:
+    rows = torch.as_tensor(record["query_rows"]).long()
+    if "counterfactual_pose_best" in record:
+        targets = torch.as_tensor(
+            record["counterfactual_pose_best"]
+        ).long()
+    elif "target_anchor_indices" in record:
+        targets = torch.as_tensor(
+            record["target_anchor_indices"]
+        ).long()
+        if "accepted" in record:
+            accepted = torch.as_tensor(record["accepted"]).bool()
+            targets = torch.where(
+                accepted, targets, torch.full_like(targets, -1)
+            )
+    else:
+        raise ValueError("counterfactual audit has no repair target")
+    if len(rows) != len(targets):
+        raise ValueError("counterfactual repair targets do not align")
+    return rows, targets
+
+
 def _pack(values: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     counts = torch.as_tensor([len(value) for value in values], dtype=torch.long)
     offsets = torch.cat((torch.zeros(1, dtype=torch.long), counts.cumsum(0)))
@@ -160,10 +210,7 @@ def route_counterfactual_repairs(
     for query_index, (name, record) in enumerate(
         zip(names, audit["records"])
     ):
-        rows = torch.as_tensor(record["query_rows"]).long()
-        targets = torch.as_tensor(
-            record["counterfactual_pose_best"]
-        ).long()
+        rows, targets = _repair_targets(record)
         for local, (row, target) in enumerate(
             zip(rows.tolist(), targets.tolist())
         ):
@@ -247,10 +294,7 @@ def route_counterfactual_repairs(
     for audit_record, teacher_record in zip(
         routed_records, positive_teacher["records"]
     ):
-        audit_rows = torch.as_tensor(audit_record["query_rows"]).long()
-        audit_targets = torch.as_tensor(
-            audit_record["counterfactual_pose_best"]
-        ).long()
+        audit_rows, audit_targets = _repair_targets(audit_record)
         audit_routes = torch.as_tensor(audit_record["route"]).long()
         routed = {
             int(row): (

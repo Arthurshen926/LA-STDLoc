@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument("--family-output", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
-        "--minimum-primary-repair-trajectories", type=int, default=2
+        "--minimum-primary-repair-trajectories", type=int, default=3
     )
     parser.add_argument(
         "--minimum-family-repair-observations", type=int, default=2
@@ -45,7 +45,7 @@ def main() -> None:
         "--minimum-family-repair-trajectories", type=int, default=2
     )
     parser.add_argument(
-        "--minimum-descriptor-cosine", type=float, default=0.6
+        "--minimum-descriptor-cosine", type=float, default=0.8
     )
     parser.add_argument("--family-prototype-bias", type=float, default=-0.05)
     args = parser.parse_args()

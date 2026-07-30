@@ -40,6 +40,38 @@ def _sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
+def _verify_metric_contract(
+    *,
+    state: dict,
+    metric_payload: dict,
+    metric_path: str,
+) -> None:
+    contract = state.get("metric_state_contract")
+    if contract:
+        expected = contract.get("sha256")
+        actual = _sha256_file(metric_path)
+        if not expected or expected != actual:
+            raise ValueError(
+                "metric state does not match the materialized map contract"
+            )
+        return
+
+    # Legacy V7+ maps predate explicit hashes but retain the metric output
+    # directory. Reject a different experiment state while allowing older
+    # maps without either form of provenance.
+    metric_metadata = state.get("v7_online_metric", {})
+    expected_dir = metric_metadata.get("config", {}).get("output_dir")
+    source_map = metric_payload.get("map_path")
+    if expected_dir and source_map:
+        expected_dir = Path(expected_dir).resolve()
+        source_dir = Path(source_map).resolve().parent
+        metric_dir = Path(metric_path).resolve().parent
+        if source_dir != expected_dir or metric_dir != expected_dir:
+            raise ValueError(
+                "metric state provenance does not match the materialized map"
+            )
+
+
 def _load_family_prototypes(
     path: str,
     *,
@@ -90,8 +122,18 @@ def _load_family_prototypes(
     )
 
 
-def _load_metric(path: str, device: torch.device) -> SharedLowRankMetric:
+def _load_metric(
+    path: str,
+    device: torch.device,
+    *,
+    state: dict,
+) -> SharedLowRankMetric:
     payload = torch.load(path, map_location="cpu", weights_only=False)
+    _verify_metric_contract(
+        state=state,
+        metric_payload=payload,
+        metric_path=path,
+    )
     metric = SharedLowRankMetric(**payload["metric_config"]).to(device)
     metric.load_state_dict(payload["metric_state_dict"])
     metric.eval()
@@ -139,7 +181,7 @@ def main() -> None:
     bank = F.normalize(
         torch.as_tensor(state["anchor_features"]).float().to(device), dim=1
     )
-    metric = _load_metric(args.metric_state, device)
+    metric = _load_metric(args.metric_state, device, state=state)
     topk = min(max(int(args.topk), 1), len(bank))
 
     context_state = None

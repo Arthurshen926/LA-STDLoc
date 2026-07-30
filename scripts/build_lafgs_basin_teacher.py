@@ -196,6 +196,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--map", required=True)
     parser.add_argument("--dynamic-outcomes", required=True)
+    parser.add_argument(
+        "--selection",
+        default="",
+        help="Optional final correspondence-set selection (for example P1-512).",
+    )
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--output", required=True)
@@ -222,9 +227,18 @@ def main() -> None:
         ).resolve(),
         "query_cache": Path(args.query_cache).resolve(),
     }
+    if args.selection:
+        paths["selection"] = Path(args.selection).resolve()
     state = torch.load(paths["map"], map_location="cpu", weights_only=False)
     outcomes = torch.load(
         paths["dynamic_outcomes"], map_location="cpu", weights_only=False
+    )
+    selection = (
+        torch.load(
+            paths["selection"], map_location="cpu", weights_only=False
+        )
+        if "selection" in paths
+        else None
     )
     positives = torch.load(
         paths["complete_positive_teacher"], map_location="cpu", weights_only=False
@@ -241,6 +255,12 @@ def main() -> None:
         raise ValueError("dynamic outcomes do not align with map")
     if int(positives["anchor_count"]) != anchor_count:
         raise ValueError("positive teacher does not align with map")
+    if selection is not None:
+        if names != list(selection["query_names"]):
+            raise ValueError("basis selection query registry differs")
+        if int(selection["anchor_count"]) != anchor_count:
+            raise ValueError("basis selection does not align with map")
+    torch.set_num_threads(1)
 
     xyz = torch.as_tensor(state["anchor_xyz"]).double().numpy()
     dependency = torch.as_tensor(state["dependency_group_ids"]).long().numpy()
@@ -261,10 +281,37 @@ def main() -> None:
     for query_index in range(start, stop):
         name = names[query_index]
         dynamic = outcomes["records"][query_index]
+        selected_record = (
+            selection["records"][query_index]
+            if selection is not None
+            else None
+        )
         positive_lookup = expanded_positive_lookup(positives["records"][query_index])
         cached = cache[name]
-        rows = torch.as_tensor(dynamic["query_rows"]).long().numpy()
-        anchors = torch.as_tensor(dynamic["top1_anchor_indices"]).long().numpy()
+        rows_tensor = torch.as_tensor(dynamic["query_rows"]).long()
+        anchors_tensor = torch.as_tensor(
+            dynamic["top1_anchor_indices"]
+        ).long()
+        if selected_record is not None:
+            selected_rows = torch.as_tensor(
+                selected_record["query_rows"]
+            ).long()
+            if not torch.equal(rows_tensor, selected_rows):
+                raise ValueError("basis selection rows differ")
+            selected_top1 = torch.as_tensor(
+                selected_record["topk_anchor_indices"]
+            ).long()[:, 0]
+            if not torch.equal(anchors_tensor, selected_top1):
+                raise ValueError(
+                    "basis selection and dynamic top1 identities differ"
+                )
+            selected_mask = torch.as_tensor(
+                selected_record["selected_row_mask"]
+            ).bool()
+        else:
+            selected_mask = torch.ones(len(rows_tensor), dtype=torch.bool)
+        rows = rows_tensor[selected_mask].numpy()
+        anchors = anchors_tensor[selected_mask].numpy()
         points2d_all = (
             torch.as_tensor(cached["native_keypoints"]).double().numpy()
             + float(cached.get("pixel_center_offset", 0.5))
@@ -278,13 +325,17 @@ def main() -> None:
         edge_dependency = dependency[anchors]
         edge_surfaces = surfaces[anchors]
         errors = (
-            torch.as_tensor(dynamic["gt_reprojection_errors_px"]).float().numpy()
+            torch.as_tensor(dynamic["gt_reprojection_errors_px"])
+            .float()[selected_mask]
+            .numpy()
         )
-        scores = torch.as_tensor(dynamic["top1_scores"]).float().numpy()
+        dynamic_harmful = torch.as_tensor(
+            dynamic["harmful_inlier_mask"]
+        ).bool()[selected_mask].numpy()
         clean_pool = np.flatnonzero(errors <= float(args.clean_threshold_px))
         harmful_pool = np.flatnonzero(
             (errors > float(args.harmful_threshold_px))
-            | torch.as_tensor(dynamic["harmful_inlier_mask"]).numpy()
+            | dynamic_harmful
         )
         repairable_harmful_pool = np.asarray(
             [
@@ -539,7 +590,7 @@ def main() -> None:
 
     output = {
         "schema": "lafgs_basin_teacher",
-        "version": 2,
+        "version": 3 if selection is not None else 2,
         "query_names": names[start:stop],
         "query_start": start,
         "query_stop": stop,
@@ -557,6 +608,9 @@ def main() -> None:
             ),
         },
         "config": vars(args),
+        "correspondence_set": (
+            "selected_final_set" if selection is not None else "all_rows"
+        ),
         "artifacts": {
             key: {"path": str(path), "sha256": sha256_file(path)}
             for key, path in paths.items()
