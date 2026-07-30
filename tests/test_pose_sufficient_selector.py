@@ -2,6 +2,7 @@ import torch
 
 from localization_training.pose_sufficient_selector import (
     FEATURE_NAMES,
+    basis_aware_core_reserve_mask,
     build_pose_sufficient_features,
     constrained_pose_sufficient_mask,
     image_grid_cells,
@@ -101,3 +102,40 @@ def test_pose_sufficient_runtime_feature_and_model_contract():
     assert image_grid_cells(
         torch.tensor([[0.0, 0.0], [99.0, 49.0]]), (50, 100)
     ).tolist() == [0, 15]
+
+
+def test_basis_aware_core_reserve_is_bounded_and_rejects_harmful_rows():
+    count = 96
+    strict = torch.linspace(0.9, 0.2, count)
+    solver = torch.linspace(0.95, 0.3, count)
+    harmful = torch.zeros(count)
+    harmful[:8] = 0.95
+    x = torch.arange(count).float() % 8
+    y = torch.arange(count).float() // 8
+    points = torch.stack((x * 20 + 5, y * 20 + 5), dim=1)
+    cells = (y.long() % 4) * 4 + (x.long() % 4)
+    xyz = torch.stack((x, y, (x + y) % 5), dim=1)
+    selected, diagnostics = basis_aware_core_reserve_mask(
+        strict,
+        solver,
+        harmful,
+        image_points=points,
+        image_hw=(160, 180),
+        image_cells=cells,
+        dependency_groups=torch.arange(count),
+        source_groups=torch.arange(count),
+        xyz=xyz,
+        core_budget=64,
+        minimum_budget=72,
+        maximum_budget=80,
+        minimum_strict_lcb=0,
+        minimum_dependency_groups=8,
+        minimum_image_cells=8,
+        minimum_log_expected_basis=0,
+        representative_count=32,
+        pair_count=32,
+    )
+    assert 72 <= int(selected.sum()) <= 80
+    assert int(selected[:8].sum()) < 4
+    assert diagnostics["selected_count"] == float(selected.sum())
+    assert diagnostics["image_cell_count"] >= 8

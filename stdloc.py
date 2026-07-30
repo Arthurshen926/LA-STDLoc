@@ -59,9 +59,11 @@ from localization_training.pair_measurement import (
     sample_local_correlation_patch,
 )
 from localization_training.pose_sufficient_selector import (
+    basis_aware_core_reserve_mask,
     build_pose_sufficient_features,
     constrained_pose_sufficient_mask,
     image_grid_cells,
+    predict_multitask_quality,
     predict_pose_sufficient_probability,
 )
 from localization_training.sparse_frontend import (
@@ -3140,10 +3142,11 @@ class STDLoc:
             selector_state = torch.load(
                 full_selector_state_path, map_location="cpu"
             )
-            if (
-                selector_state.get("schema")
-                != "lafgs_pose_sufficient_selector"
-            ):
+            selector_schema = selector_state.get("schema")
+            if selector_schema not in {
+                "lafgs_pose_sufficient_selector",
+                "lafgs_basis_core_reserve_selector",
+            }:
                 raise ValueError("unsupported pose-sufficient selector state")
             if int(selector_state.get("anchor_count", -1)) != int(
                 active_features_flat.shape[0]
@@ -3192,7 +3195,11 @@ class STDLoc:
                         "pose-sufficient selector candidate graph uses a "
                         f"different {label}"
                     )
-            full_model = selector_state.get("full_model")
+            full_model = (
+                selector_state.get("full_models")
+                if selector_schema == "lafgs_basis_core_reserve_selector"
+                else selector_state.get("full_model")
+            )
             statistics = selector_state.get("anchor_statistics")
             if not isinstance(full_model, dict) or not isinstance(
                 statistics, dict
@@ -3210,8 +3217,21 @@ class STDLoc:
                     "a candidate-rejecting shared null head"
                 )
             self.pose_sufficient_selector_state = selector_state
-            self.pose_sufficient_selector_budget = int(
-                sparse_config["pose_sufficient_budget"]
+            if (
+                selector_schema
+                == "lafgs_basis_core_reserve_selector"
+                and torch.get_num_threads() != 1
+            ):
+                # Basis scoring uses many small CPU tensors. A large OpenMP
+                # pool makes this path an order of magnitude slower.
+                torch.set_num_threads(1)
+            self.pose_sufficient_selector_budget = (
+                int(
+                    selector_state["selector_config"]["maximum_budget"]
+                )
+                if selector_schema
+                == "lafgs_basis_core_reserve_selector"
+                else int(sparse_config["pose_sufficient_budget"])
             )
             self.pose_sufficient_source_groups = torch.as_tensor(
                 self.materialized_anchor_map_state["source_primitive_ids"]
@@ -4955,41 +4975,73 @@ class STDLoc:
                     )
                 ),
             )
-            selector_probability = predict_pose_sufficient_probability(
-                selector_features,
-                self.pose_sufficient_selector_state["full_model"],
-            )
             selector_config = self.pose_sufficient_selector_state[
                 "selector_config"
             ]
-            selector_mask = constrained_pose_sufficient_mask(
-                selector_probability,
-                image_cells=image_grid_cells(
-                    selected_keypoints, (height, width)
-                ),
-                dependency_groups=dependency_groups[
-                    matches.landmark_idx.detach().cpu()
-                ],
-                source_groups=source_groups[
-                    matches.landmark_idx.detach().cpu()
-                ],
-                xyz=self.pose_sufficient_anchor_xyz[
-                    matches.landmark_idx.detach().cpu()
-                ],
-                budget=self.pose_sufficient_selector_budget,
-                minimum_per_image_cell=int(
-                    selector_config["minimum_per_image_cell"]
-                ),
-                minimum_per_spatial_bin=int(
-                    selector_config["minimum_per_spatial_bin"]
-                ),
-                maximum_per_dependency=int(
-                    selector_config["maximum_per_dependency"]
-                ),
-                maximum_per_source=int(
-                    selector_config["maximum_per_source"]
-                ),
-            )
+            selected_anchor_indices = matches.landmark_idx.detach().cpu()
+            selected_dependency_groups = dependency_groups[
+                selected_anchor_indices
+            ]
+            selected_source_groups = source_groups[
+                selected_anchor_indices
+            ]
+            selected_anchor_xyz = self.pose_sufficient_anchor_xyz[
+                selected_anchor_indices
+            ]
+            selector_schema = self.pose_sufficient_selector_state["schema"]
+            basis_diagnostics = {}
+            quality_probabilities = None
+            if selector_schema == "lafgs_basis_core_reserve_selector":
+                quality_probabilities = predict_multitask_quality(
+                    selector_features,
+                    self.pose_sufficient_selector_state["full_models"],
+                )
+                selector_probability = quality_probabilities[
+                    "solver_clean"
+                ]
+                selector_mask, basis_diagnostics = (
+                    basis_aware_core_reserve_mask(
+                        quality_probabilities["strict_clean"],
+                        quality_probabilities["solver_clean"],
+                        quality_probabilities["harmful"],
+                        image_points=selected_keypoints,
+                        image_hw=(height, width),
+                        image_cells=image_grid_cells(
+                            selected_keypoints, (height, width)
+                        ),
+                        dependency_groups=selected_dependency_groups,
+                        source_groups=selected_source_groups,
+                        xyz=selected_anchor_xyz,
+                        **selector_config,
+                    )
+                )
+            else:
+                selector_probability = predict_pose_sufficient_probability(
+                    selector_features,
+                    self.pose_sufficient_selector_state["full_model"],
+                )
+                selector_mask = constrained_pose_sufficient_mask(
+                    selector_probability,
+                    image_cells=image_grid_cells(
+                        selected_keypoints, (height, width)
+                    ),
+                    dependency_groups=selected_dependency_groups,
+                    source_groups=selected_source_groups,
+                    xyz=selected_anchor_xyz,
+                    budget=self.pose_sufficient_selector_budget,
+                    minimum_per_image_cell=int(
+                        selector_config["minimum_per_image_cell"]
+                    ),
+                    minimum_per_spatial_bin=int(
+                        selector_config["minimum_per_spatial_bin"]
+                    ),
+                    maximum_per_dependency=int(
+                        selector_config["maximum_per_dependency"]
+                    ),
+                    maximum_per_source=int(
+                        selector_config["maximum_per_source"]
+                    ),
+                )
             selector_device_mask = selector_mask.to(
                 device=matches.keypoint_idx.device
             )
@@ -5011,6 +5063,27 @@ class STDLoc:
                     ),
                     "sparse_diag_pose_sufficient_probability_p90": float(
                         torch.quantile(selector_probability, 0.90)
+                    ),
+                    "sparse_diag_pose_sufficient_strict_probability_mean": float(
+                        quality_probabilities["strict_clean"].mean()
+                        if quality_probabilities is not None
+                        else selector_probability.mean()
+                    ),
+                    "sparse_diag_pose_sufficient_harmful_probability_mean": float(
+                        quality_probabilities["harmful"].mean()
+                        if quality_probabilities is not None
+                        else 0.0
+                    ),
+                    "sparse_diag_pose_sufficient_strict_lcb": float(
+                        basis_diagnostics.get("strict_lcb", 0.0)
+                    ),
+                    "sparse_diag_pose_sufficient_log_expected_basis": float(
+                        basis_diagnostics.get("log_expected_basis", 0.0)
+                    ),
+                    "sparse_diag_pose_sufficient_dependency_group_count": float(
+                        basis_diagnostics.get(
+                            "dependency_group_count", 0.0
+                        )
                     ),
                     "sparse_diag_pose_sufficient_runtime_ms": float(
                         (clock() - pose_sufficient_start) * 1000.0

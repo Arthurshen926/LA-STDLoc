@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from collections import Counter
-from math import ceil
+from math import ceil, comb
 
 import torch
+
+from localization_training.basis_utility import (
+    deterministic_triplets,
+    group_independent_triplets,
+    image_triangle_area_fraction,
+    triangle_shape_quality,
+)
 
 
 FEATURE_NAMES = (
@@ -194,6 +201,23 @@ def predict_pose_sufficient_probability(
     return torch.sigmoid(logits)
 
 
+def predict_multitask_quality(
+    features: torch.Tensor,
+    model_states: dict[str, dict],
+) -> dict[str, torch.Tensor]:
+    """Predict strict-clean, solver-clean, and harmful probabilities."""
+
+    required = ("strict_clean", "solver_clean", "harmful")
+    if any(name not in model_states for name in required):
+        raise ValueError("multi-task selector requires all three quality heads")
+    return {
+        name: predict_pose_sufficient_probability(
+            features, model_states[name]
+        )
+        for name in required
+    }
+
+
 def spatial_octants(xyz: torch.Tensor) -> torch.Tensor:
     """Assign query-relative 3D candidates to eight robust spatial bins."""
 
@@ -303,6 +327,308 @@ def constrained_pose_sufficient_mask(
     selected = torch.zeros(length, dtype=torch.bool)
     selected[torch.as_tensor(selected_indices).long()] = True
     return selected
+
+
+def _expected_basis_count(
+    selected: torch.Tensor,
+    *,
+    usable_probability: torch.Tensor,
+    image_points: torch.Tensor,
+    image_hw: tuple[int, int] | list[int],
+    dependency_groups: torch.Tensor,
+    source_groups: torch.Tensor,
+    xyz: torch.Tensor,
+    sample_count: int = 256,
+) -> float:
+    indices = torch.where(torch.as_tensor(selected).bool())[0]
+    if len(indices) < 3:
+        return 0.0
+    triplets = deterministic_triplets(
+        indices,
+        count=min(int(sample_count), comb(len(indices), 3)),
+        seed=0,
+        query_name="basis-sufficiency",
+    )
+    independent = group_independent_triplets(
+        triplets, dependency_groups, source_groups
+    )
+    image_points = torch.as_tensor(image_points).float().reshape(-1, 2)
+    xyz = torch.as_tensor(xyz).float().reshape(-1, 3)
+    non_degenerate = (
+        (
+            image_triangle_area_fraction(
+                image_points[triplets], image_hw
+            )
+            >= 1e-4
+        )
+        & (triangle_shape_quality(image_points[triplets]) >= 0.01)
+        & (triangle_shape_quality(xyz[triplets]) >= 0.01)
+    )
+    probability = torch.as_tensor(
+        usable_probability
+    ).float().reshape(-1)[triplets].prod(dim=1)
+    expected_rate = (
+        probability * independent.float() * non_degenerate.float()
+    ).mean()
+    return float(expected_rate) * comb(len(indices), 3)
+
+
+def basis_aware_core_reserve_mask(
+    strict_probability: torch.Tensor,
+    solver_probability: torch.Tensor,
+    harmful_probability: torch.Tensor,
+    *,
+    image_points: torch.Tensor,
+    image_hw: tuple[int, int] | list[int],
+    image_cells: torch.Tensor,
+    dependency_groups: torch.Tensor,
+    source_groups: torch.Tensor,
+    xyz: torch.Tensor,
+    core_budget: int = 384,
+    minimum_budget: int = 512,
+    maximum_budget: int = 768,
+    harmful_power: float = 2.0,
+    strict_lcb_z: float = 1.64,
+    minimum_strict_lcb: float = 80.0,
+    minimum_dependency_groups: int = 96,
+    minimum_image_cells: int = 16,
+    minimum_log_expected_basis: float = 11.0,
+    representative_count: int = 64,
+    pair_count: int = 256,
+    maximum_per_dependency: int = 6,
+    maximum_per_source: int = 3,
+    return_details: bool = False,
+) -> (
+    tuple[torch.Tensor, dict[str, float]]
+    | tuple[torch.Tensor, dict[str, float], dict[str, torch.Tensor]]
+):
+    """Build a strict core and add only geometrically useful reserve rows."""
+
+    strict = torch.as_tensor(strict_probability).float().reshape(-1)
+    solver = torch.as_tensor(solver_probability).float().reshape(-1)
+    harmful = torch.as_tensor(harmful_probability).float().reshape(-1)
+    image_points = torch.as_tensor(image_points).float().reshape(-1, 2)
+    image_cells = torch.as_tensor(image_cells).long().reshape(-1)
+    dependency = torch.as_tensor(dependency_groups).long().reshape(-1)
+    source = torch.as_tensor(source_groups).long().reshape(-1)
+    xyz = torch.as_tensor(xyz).float().reshape(-1, 3)
+    length = len(strict)
+    if not all(
+        len(value) == length
+        for value in (
+            solver,
+            harmful,
+            image_points,
+            image_cells,
+            dependency,
+            source,
+            xyz,
+        )
+    ):
+        raise ValueError("basis-aware selector inputs must align")
+    probabilities = torch.stack((strict, solver, harmful), dim=1)
+    if not torch.isfinite(probabilities).all():
+        raise ValueError("basis-aware probabilities must be finite")
+    if bool(((probabilities < 0) | (probabilities > 1)).any()):
+        raise ValueError("basis-aware probabilities must be in [0, 1]")
+
+    maximum = min(max(int(maximum_budget), 4), length)
+    minimum = min(max(int(minimum_budget), 4), maximum)
+    core_count = min(max(int(core_budget), 4), minimum)
+    usable = solver * (1.0 - harmful).clamp_min(0).pow(
+        float(harmful_power)
+    )
+    core_score = strict * (1.0 - harmful).clamp_min(0).pow(
+        float(harmful_power)
+    )
+    core = constrained_pose_sufficient_mask(
+        core_score,
+        image_cells=image_cells,
+        dependency_groups=dependency,
+        source_groups=source,
+        xyz=xyz,
+        budget=core_count,
+        minimum_per_image_cell=4,
+        minimum_per_spatial_bin=2,
+        maximum_per_dependency=4,
+        maximum_per_source=2,
+    )
+
+    core_order = torch.argsort(
+        core_score.masked_fill(~core, float("-inf")),
+        descending=True,
+        stable=True,
+    )
+    representatives = core_order[: min(int(representative_count), int(core.sum()))]
+    pairs = torch.combinations(representatives, r=2)
+    pair_valid = (
+        (dependency[pairs[:, 0]] != dependency[pairs[:, 1]])
+        & (source[pairs[:, 0]] != source[pairs[:, 1]])
+        & (image_cells[pairs[:, 0]] != image_cells[pairs[:, 1]])
+    )
+    pairs = pairs[pair_valid]
+    pair_weight = usable[pairs].prod(dim=1)
+    if len(pairs) > int(pair_count):
+        keep = torch.argsort(
+            pair_weight, descending=True, stable=True
+        )[: int(pair_count)]
+        pairs = pairs[keep]
+        pair_weight = pair_weight[keep]
+    reserve_gain = torch.zeros(length)
+    if len(pairs):
+        candidate = torch.arange(length)[:, None]
+        first = pairs[:, 0][None]
+        second = pairs[:, 1][None]
+        group_valid = (
+            (candidate != first)
+            & (candidate != second)
+            & (dependency[:, None] != dependency[first])
+            & (dependency[:, None] != dependency[second])
+            & (source[:, None] != source[first])
+            & (source[:, None] != source[second])
+            & (image_cells[:, None] != image_cells[first])
+            & (image_cells[:, None] != image_cells[second])
+        )
+        candidate_points = image_points[:, None, :].expand(-1, len(pairs), -1)
+        image_triangles = torch.stack(
+            (
+                candidate_points,
+                image_points[pairs[:, 0]][None].expand(length, -1, -1),
+                image_points[pairs[:, 1]][None].expand(length, -1, -1),
+            ),
+            dim=2,
+        ).reshape(-1, 3, 2)
+        candidate_xyz = xyz[:, None, :].expand(-1, len(pairs), -1)
+        world_triangles = torch.stack(
+            (
+                candidate_xyz,
+                xyz[pairs[:, 0]][None].expand(length, -1, -1),
+                xyz[pairs[:, 1]][None].expand(length, -1, -1),
+            ),
+            dim=2,
+        ).reshape(-1, 3, 3)
+        geometry_valid = (
+            (
+                image_triangle_area_fraction(
+                    image_triangles, image_hw
+                )
+                >= 1e-4
+            )
+            & (triangle_shape_quality(image_triangles) >= 0.01)
+            & (triangle_shape_quality(world_triangles) >= 0.01)
+        ).reshape(length, -1)
+        weighted = (
+            group_valid.float()
+            * geometry_valid.float()
+            * pair_weight[None]
+        )
+        reserve_gain = usable * (
+            weighted.sum(dim=1) / pair_weight.sum().clamp_min(1e-8)
+        )
+    reserve_score = reserve_gain + 0.05 * core_score + 0.02 * usable
+    reserve_score[core] = float("-inf")
+    reserve_order = torch.argsort(
+        reserve_score, descending=True, stable=True
+    ).tolist()
+
+    selected = core.clone()
+    dependency_count = Counter(dependency[selected].tolist())
+    source_count = Counter(source[selected].tolist())
+    expected_basis = _expected_basis_count(
+        selected,
+        usable_probability=usable,
+        image_points=image_points,
+        image_hw=image_hw,
+        dependency_groups=dependency,
+        source_groups=source,
+        xyz=xyz,
+    )
+
+    def sufficient() -> bool:
+        chosen = torch.where(selected)[0]
+        strict_mean = strict[chosen].sum()
+        strict_variance = (
+            strict[chosen] * (1.0 - strict[chosen])
+        ).sum()
+        strict_lcb = strict_mean - float(strict_lcb_z) * torch.sqrt(
+            strict_variance.clamp_min(0)
+        )
+        return (
+            len(chosen) >= minimum
+            and float(strict_lcb) >= float(minimum_strict_lcb)
+            and len(torch.unique(dependency[chosen]))
+            >= int(minimum_dependency_groups)
+            and len(torch.unique(image_cells[chosen]))
+            >= int(minimum_image_cells)
+            and torch.log1p(
+                torch.tensor(expected_basis)
+            ).item()
+            >= float(minimum_log_expected_basis)
+        )
+
+    for index in reserve_order:
+        if int(selected.sum()) >= maximum or sufficient():
+            break
+        group = int(dependency[index])
+        primitive = int(source[index])
+        enforce_caps = int(selected.sum()) < minimum
+        if enforce_caps and (
+            dependency_count[group] >= int(maximum_per_dependency)
+            or source_count[primitive] >= int(maximum_per_source)
+        ):
+            continue
+        selected[index] = True
+        dependency_count[group] += 1
+        source_count[primitive] += 1
+        expected_basis += float(reserve_gain[index]) * comb(
+            int(selected.sum()) - 1, 2
+        )
+
+    if int(selected.sum()) < minimum:
+        for index in reserve_order:
+            if int(selected.sum()) >= minimum:
+                break
+            if not selected[index]:
+                selected[index] = True
+                expected_basis += float(reserve_gain[index]) * comb(
+                    int(selected.sum()) - 1, 2
+                )
+    chosen = torch.where(selected)[0]
+    strict_mean = strict[chosen].sum()
+    strict_variance = (
+        strict[chosen] * (1.0 - strict[chosen])
+    ).sum()
+    strict_lcb = strict_mean - float(strict_lcb_z) * torch.sqrt(
+        strict_variance.clamp_min(0)
+    )
+    diagnostics = {
+        "selected_count": float(len(chosen)),
+        "strict_lcb": float(strict_lcb),
+        "dependency_group_count": float(len(torch.unique(dependency[chosen]))),
+        "image_cell_count": float(len(torch.unique(image_cells[chosen]))),
+        "log_expected_basis": float(
+            torch.log1p(torch.tensor(expected_basis))
+        ),
+        "mean_core_score": float(core_score[core].mean()),
+        "mean_reserve_gain": float(
+            reserve_gain[selected & ~core].mean()
+            if bool((selected & ~core).any())
+            else 0.0
+        ),
+    }
+    if not return_details:
+        return selected, diagnostics
+    return (
+        selected,
+        diagnostics,
+        {
+            "core_mask": core,
+            "usable_probability": usable,
+            "core_score": core_score,
+            "reserve_gain": reserve_gain,
+            "reserve_score": reserve_score,
+        },
+    )
 
 
 def balanced_group_cap(budget: int, group_count: int, multiplier: float) -> int:
