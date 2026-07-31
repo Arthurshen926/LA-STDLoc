@@ -93,6 +93,8 @@ def make_stdloc_eval_cfg(
     sparse_frontend=None,
     metric_state_path=None,
     family_prototype_state_path=None,
+    pose_sufficient_selector_state_path=None,
+    pose_sufficient_budget=None,
     rerank_topk=None,
     rerank_patch_radius=None,
     rerank_patch_step_px=None,
@@ -181,6 +183,16 @@ def make_stdloc_eval_cfg(
             family_prototype_state_path
         )
         sparse["family_prototype_state_model_path"] = artifact_model_path
+    if pose_sufficient_selector_state_path is not None:
+        sparse["use_pose_sufficient_selector"] = True
+        sparse["pose_sufficient_selector_state_path"] = str(
+            pose_sufficient_selector_state_path
+        )
+        sparse["pose_sufficient_selector_state_model_path"] = (
+            artifact_model_path
+        )
+    if pose_sufficient_budget is not None:
+        sparse["pose_sufficient_budget"] = int(pose_sufficient_budget)
     if rerank_state_path is not None:
         sparse["rerank_state_path"] = str(rerank_state_path)
         sparse["rerank_state_model_path"] = artifact_model_path
@@ -551,6 +563,15 @@ def make_stdloc_eval_cfg(
         "family_prototype_state_path": sparse.get(
             "family_prototype_state_path", ""
         ),
+        "use_pose_sufficient_selector": sparse.get(
+            "use_pose_sufficient_selector", False
+        ),
+        "pose_sufficient_selector_state_path": sparse.get(
+            "pose_sufficient_selector_state_path", ""
+        ),
+        "pose_sufficient_budget": sparse.get(
+            "pose_sufficient_budget", 0
+        ),
         "candidate_frontend_match_policy": sparse.get(
             "candidate_frontend_match_policy", "warn"
         ),
@@ -743,6 +764,10 @@ def main():
     )
     parser.add_argument("--metric_state_path", default=None)
     parser.add_argument("--family_prototype_state_path", default=None)
+    parser.add_argument(
+        "--pose_sufficient_selector_state_path", default=None
+    )
+    parser.add_argument("--pose_sufficient_budget", type=int, default=None)
     parser.add_argument("--sparse_ransac_seed", type=int, default=None)
     parser.add_argument("--rerank_topk", type=int, default=None)
     parser.add_argument("--rerank_patch_radius", type=int, default=None)
@@ -909,6 +934,10 @@ def main():
         sparse_ransac_seed=args.sparse_ransac_seed,
         metric_state_path=args.metric_state_path,
         family_prototype_state_path=args.family_prototype_state_path,
+        pose_sufficient_selector_state_path=(
+            args.pose_sufficient_selector_state_path
+        ),
+        pose_sufficient_budget=args.pose_sufficient_budget,
         rerank_topk=args.rerank_topk,
         rerank_patch_radius=args.rerank_patch_radius,
         rerank_patch_step_px=args.rerank_patch_step_px,

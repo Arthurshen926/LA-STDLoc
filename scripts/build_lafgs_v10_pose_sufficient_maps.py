@@ -507,7 +507,8 @@ def main() -> None:
     summary = {
         "schema": "lafgs_v10_pose_sufficient_map_build",
         "core_map": str(core_path),
-        "selection_split": "all_895_mapping_train",
+        "selection_split": "all_mapping_train",
+        "selection_query_count": int(query_weights.numel()),
         "candidate_harmful_rate_max": float(args.maximum_harmful_rate),
         "reserve_mode": args.reserve_mode,
         "target_query_count": int((query_weights > 0).sum()),

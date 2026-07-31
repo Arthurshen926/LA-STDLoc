@@ -16,6 +16,7 @@ try:
         _base_utility,
         _eligible_tracks,
         _materialize,
+        _select_capacity_limited_tracks,
         _track_quality,
     )
 except ModuleNotFoundError:
@@ -23,6 +24,7 @@ except ModuleNotFoundError:
         _base_utility,
         _eligible_tracks,
         _materialize,
+        _select_capacity_limited_tracks,
         _track_quality,
     )
 from localization_training.micro_anchors import fuse_track_descriptors
@@ -299,19 +301,25 @@ def main() -> None:
 
     geometry = payload["track_geometry"]
     quality = _track_quality(geometry)
-    quality_order = torch.argsort(quality, descending=True, stable=True)
     specs = _parse_specs(args.track_cores)
     selected_by_spec = {}
     selected_union = []
+    capacity_by_spec = {}
     for count, tier in specs:
         tier_mask = _eligible_tracks(geometry, tier)
-        selected = quality_order[tier_mask[quality_order]][:count]
-        if selected.numel() != count:
-            raise ValueError(
-                f"{tier} contains {selected.numel()} tracks, needs {count}"
-            )
+        selected, capacity = _select_capacity_limited_tracks(
+            quality, tier_mask, count
+        )
         selected_by_spec[(count, tier)] = selected
         selected_union.append(selected)
+        capacity_by_spec[(count, tier)] = capacity
+        if selected.numel() < count:
+            print(
+                f"{tier} Track core is capacity-limited: "
+                f"requested={count} eligible={int(tier_mask.sum())}; "
+                "preserving the quality gate and using the realized core",
+                flush=True,
+            )
 
     unique_tracks = torch.unique(torch.cat(selected_union), sorted=False)
     print(f"Fusing {unique_tracks.numel()} Track descriptors", flush=True)
@@ -340,7 +348,8 @@ def main() -> None:
         "complete_positive_teacher": str(teacher_path),
         "track_payload": str(payload_path),
         "query_cache": str(query_path),
-        "selection_split": "all_895_mapping_train",
+        "selection_split": "all_mapping_train",
+        "selection_query_count": int(query_groups.numel()),
         "maps": {},
     }
     for track_count, tier in specs:
@@ -390,6 +399,7 @@ def main() -> None:
         torch.save(state, path)
         summary["maps"][tag] = {
             "path": str(path),
+            **capacity_by_spec[(track_count, tier)],
             "track_count": int(tracks.numel()),
             "base_reserve_count": int(reserve.numel()),
             "total_count": budget,

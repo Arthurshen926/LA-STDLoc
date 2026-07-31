@@ -95,6 +95,28 @@ def _eligible_tracks(geometry: dict, quality_tier: str) -> torch.Tensor:
     )
 
 
+def _select_capacity_limited_tracks(
+    quality: torch.Tensor,
+    eligible: torch.Tensor,
+    requested_count: int,
+) -> tuple[torch.Tensor, dict]:
+    quality = torch.as_tensor(quality).float().reshape(-1)
+    eligible = torch.as_tensor(eligible).bool().reshape(-1)
+    if quality.numel() != eligible.numel():
+        raise ValueError("quality and eligible masks must align")
+    if int(requested_count) <= 0:
+        raise ValueError("requested track count must be positive")
+    quality_order = torch.argsort(quality, descending=True, stable=True)
+    selected = quality_order[eligible[quality_order]][: int(requested_count)]
+    report = {
+        "requested_track_count": int(requested_count),
+        "eligible_track_count": int(eligible.sum()),
+        "realized_track_count": int(selected.numel()),
+        "capacity_limited": bool(selected.numel() < int(requested_count)),
+    }
+    return selected, report
+
+
 def _base_utility(graph: dict, base_count: int) -> torch.Tensor:
     legal2 = _normalized_log_score(
         graph["provenance_legal_hit_2px_count"][:base_count]
@@ -315,7 +337,8 @@ def _materialize(
             **canonical.get("provenance", {}),
             "v7_source_map": str(source_map),
             "v7_track_payload": str(payload_path),
-            "selection_split": "all_895_mapping_train",
+            "selection_split": "all_mapping_train",
+            "selection_query_count": len(payload["query_names"]),
             "base_prefix_preserved": False,
         },
     }
@@ -401,16 +424,23 @@ def main() -> None:
         tier_masks[tier] = _eligible_tracks(geometry, tier)
     selected_by_spec = {}
     selected_union = []
-    quality_order = torch.argsort(quality, descending=True, stable=True)
+    capacity_by_spec = {}
     for budget, track_budget, tier in specs:
-        selected = quality_order[tier_masks[tier][quality_order]][:track_budget]
-        if selected.numel() < track_budget:
-            raise ValueError(
-                f"{tier} provides {selected.numel()} tracks, "
-                f"needs {track_budget}"
-            )
+        selected, capacity = _select_capacity_limited_tracks(
+            quality, tier_masks[tier], track_budget
+        )
         selected_by_spec[(budget, track_budget, tier)] = selected
         selected_union.append(selected)
+        capacity_by_spec[(budget, track_budget, tier)] = capacity
+        if selected.numel() < track_budget:
+            print(
+                f"{tier} Track core is capacity-limited: "
+                f"requested={track_budget} "
+                f"eligible={int(tier_masks[tier].sum())}; "
+                "preserving the quality gate and filling the map with "
+                "the ranked base reserve",
+                flush=True,
+            )
     ordered_tracks = torch.unique(torch.cat(selected_union), sorted=False)
     print(
         f"Fusing {ordered_tracks.numel()} Track-First descriptors",
@@ -465,6 +495,7 @@ def main() -> None:
         torch.save(state, path)
         summary["maps"][tag] = {
             "path": str(path),
+            **capacity_by_spec[(budget, track_budget, tier)],
             "track_count": int(tracks.numel()),
             "base_reserve_count": reserve,
             "base_selection": args.base_selection,

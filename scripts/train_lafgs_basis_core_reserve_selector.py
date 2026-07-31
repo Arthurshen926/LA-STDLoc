@@ -34,6 +34,48 @@ from scripts.train_lafgs_pose_sufficient_selector import (
 HEAD_NAMES = ("strict_clean", "solver_clean", "harmful")
 
 
+def _cross_validation_folds(
+    query_names: list[str],
+    *,
+    single_trajectory_fold_count: int,
+) -> tuple[list[str], dict[str, int], str]:
+    """Build scene-independent OOF folds without withholding training data."""
+
+    trajectories = sorted({_trajectory(name) for name in query_names})
+    if len(trajectories) > 1:
+        trajectory_lookup = {
+            trajectory: index
+            for index, trajectory in enumerate(trajectories)
+        }
+        return (
+            trajectories,
+            {
+                name: trajectory_lookup[_trajectory(name)]
+                for name in query_names
+            },
+            "leave_one_trajectory_out",
+        )
+
+    fold_count = min(
+        max(int(single_trajectory_fold_count), 2),
+        len(query_names),
+    )
+    if fold_count < 2:
+        raise ValueError(
+            "selector OOF training requires at least two mapping queries"
+        )
+    fold_names = [
+        f"temporal_block_{index:02d}" for index in range(fold_count)
+    ]
+    fold_lookup = {}
+    for fold_index, indices in enumerate(
+        np.array_split(np.arange(len(query_names)), fold_count)
+    ):
+        for index in indices.tolist():
+            fold_lookup[query_names[index]] = fold_index
+    return fold_names, fold_lookup, "leave_one_temporal_block_out"
+
+
 def _labels(dynamic_record: dict) -> dict[str, torch.Tensor]:
     return {
         "strict_clean": (
@@ -139,6 +181,15 @@ def main() -> None:
     parser.add_argument("--minimum-log-expected-basis", type=float, default=11.0)
     parser.add_argument("--representative-count", type=int, default=64)
     parser.add_argument("--pair-count", type=int, default=256)
+    parser.add_argument(
+        "--single-trajectory-fold-count",
+        type=int,
+        default=5,
+        help=(
+            "Number of contiguous OOF temporal blocks used when all mapping "
+            "queries belong to one trajectory."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
 
@@ -172,12 +223,14 @@ def main() -> None:
         name: _labels(dynamic_by_name[name])
         for name in topk["query_names"]
     }
-    trajectories = sorted({_trajectory(name) for name in topk["query_names"]})
-    trajectory_lookup = {
-        trajectory: index for index, trajectory in enumerate(trajectories)
-    }
-    trajectory_indices = torch.as_tensor(
-        [trajectory_lookup[_trajectory(name)] for name in topk["query_names"]]
+    fold_names, fold_lookup, fold_contract = _cross_validation_folds(
+        list(topk["query_names"]),
+        single_trajectory_fold_count=int(
+            args.single_trajectory_fold_count
+        ),
+    )
+    fold_indices = torch.as_tensor(
+        [fold_lookup[name] for name in topk["query_names"]]
     ).long()
     source = torch.as_tensor(state["source_primitive_ids"]).long()
     dependency = torch.as_tensor(
@@ -186,8 +239,8 @@ def main() -> None:
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
     statistics = _anchor_statistics(
         [dynamic_by_name[name] for name in topk["query_names"]],
-        trajectory_indices,
-        trajectory_count=len(trajectories),
+        fold_indices,
+        trajectory_count=len(fold_names),
         anchor_count=len(anchor_ids),
     )
 
@@ -196,7 +249,7 @@ def main() -> None:
     }
     fold_models = {}
     fold_diagnostics = {}
-    for fold_index, trajectory in enumerate(trajectories):
+    for fold_index, fold_name in enumerate(fold_names):
         folded_statistics = {
             name: values.sum(dim=0) - values[fold_index]
             for name, values in statistics.items()
@@ -218,12 +271,12 @@ def main() -> None:
         train_names = [
             name
             for name in topk["query_names"]
-            if _trajectory(name) != trajectory
+            if fold_lookup[name] != fold_index
         ]
         heldout_names = [
             name
             for name in topk["query_names"]
-            if _trajectory(name) == trajectory
+            if fold_lookup[name] == fold_index
         ]
         train_features = torch.cat(
             [features_by_name[name] for name in train_names]
@@ -231,8 +284,8 @@ def main() -> None:
         heldout_features = torch.cat(
             [features_by_name[name] for name in heldout_names]
         ).numpy()
-        fold_models[trajectory] = {}
-        fold_diagnostics[trajectory] = {}
+        fold_models[fold_name] = {}
+        fold_diagnostics[fold_name] = {}
         for head_index, head_name in enumerate(HEAD_NAMES):
             train_labels = torch.cat(
                 [labels_by_name[name][head_name] for name in train_names]
@@ -256,14 +309,14 @@ def main() -> None:
                     probability[cursor : cursor + count]
                 ).float()
                 cursor += count
-            fold_models[trajectory][head_name] = _model_payload(
+            fold_models[fold_name][head_name] = _model_payload(
                 model, mean, scale
             )
-            fold_diagnostics[trajectory][head_name] = (
+            fold_diagnostics[fold_name][head_name] = (
                 _quality_diagnostics(heldout_labels, probability)
             )
         print(
-            json.dumps({trajectory: fold_diagnostics[trajectory]}),
+            json.dumps({fold_name: fold_diagnostics[fold_name]}),
             flush=True,
         )
 
@@ -454,7 +507,7 @@ def main() -> None:
             {
                 "schema": "lafgs_basis_core_reserve_selector",
                 "version": 1,
-                "fold_contract": "leave_one_trajectory_out",
+                "fold_contract": fold_contract,
                 "fold_models": fold_models,
                 "full_models": full_models,
                 "anchor_statistics": full_statistics,

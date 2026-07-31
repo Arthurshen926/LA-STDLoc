@@ -13,6 +13,7 @@ from scripts.build_lafgs_v7_track_centric_maps import (
     _eligible_tracks,
     _group_balanced_base_utility,
     _normalized_log_score,
+    _select_capacity_limited_tracks,
     _voxel_diverse_order,
 )
 from scripts.build_lafgs_v9_complete_positive_teacher import (
@@ -121,6 +122,21 @@ def test_relaxed_track_tier_is_a_superset_of_broad():
     relaxed = _eligible_tracks(geometry, "relaxed")
     assert bool((broad & ~relaxed).any()) is False
     assert int(relaxed.sum()) > int(broad.sum())
+
+
+def test_track_core_preserves_quality_gate_when_scene_capacity_is_small():
+    selected, report = _select_capacity_limited_tracks(
+        torch.tensor([0.1, 0.8, 0.4, 0.9]),
+        torch.tensor([True, True, False, False]),
+        requested_count=3,
+    )
+    assert selected.tolist() == [1, 0]
+    assert report == {
+        "requested_track_count": 3,
+        "eligible_track_count": 2,
+        "realized_track_count": 2,
+        "capacity_limited": True,
+    }
 
 
 def test_group_balanced_base_utility_rewards_rare_group_support():

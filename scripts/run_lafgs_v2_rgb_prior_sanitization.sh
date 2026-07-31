@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Frozen RGB Gaussian prior -> robust KCS/GWFF -> query-specific Stage-A.
-# The 895 mapping frames are training data and all 182 Cambridge test frames
-# are the development evaluation set. Deployment is exactly one native
-# SuperPoint pass, cosine top-1 retrieval, and one RANSAC/PnP solve.
+# All mapping frames are training data and all Cambridge test frames are the
+# development evaluation set. Deployment is exactly one native SuperPoint
+# pass, cosine top-1 retrieval, and one RANSAC/PnP solve.
 
 if [[ $# -ne 3 ]]; then
   echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty|feature_stripped> <gpu> <bootstrap|stage_a|statistics|sanitize|eval|all>" >&2
@@ -48,7 +48,11 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 EXPERIMENT_ROOT="${LAFGS_SANITIZATION_ROOT:-/mnt/pool/sqy/stdloc_lafgs_rgb_prior_sanitization_20260725}"
-SCENE="OldHospital"
+SCENE="${LAFGS_CAMBRIDGE_SCENE:-OldHospital}"
+case "$SCENE" in
+  GreatCourt|KingsCollege|OldHospital|ShopFacade|StMarysChurch) ;;
+  *) echo "Unsupported Cambridge scene: $SCENE" >&2; exit 2 ;;
+esac
 MODEL_ROOT="${LAFGS_SANITIZATION_MODEL_ROOT:-$EXPERIMENT_ROOT/$SCENE/$MODEL_NAME}"
 RUN_TAG="${LAFGS_SANITIZATION_RUN_TAG:-$VARIANT}"
 SCAFFOLD_BUDGET="${LAFGS_SANITIZATION_SCAFFOLD_BUDGET:-48000}"

@@ -9,6 +9,9 @@ from localization_training.pose_sufficient_selector import (
     predict_pose_sufficient_probability,
     spatial_octants,
 )
+from scripts.train_lafgs_basis_core_reserve_selector import (
+    _cross_validation_folds,
+)
 
 
 def test_spatial_octants_cover_relative_geometry():
@@ -126,6 +129,34 @@ def test_pose_sufficient_history_rates_share_beta_prior_semantics():
         torch.tensor([0.5, 0.4, 0.2]),
         atol=1e-6,
     )
+
+
+def test_selector_oof_folds_preserve_trajectories_when_available():
+    names = [
+        "seq1/frame00001.png",
+        "seq1/frame00002.png",
+        "seq2/frame00001.png",
+    ]
+    folds, lookup, contract = _cross_validation_folds(
+        names, single_trajectory_fold_count=5
+    )
+    assert folds == ["seq1", "seq2"]
+    assert contract == "leave_one_trajectory_out"
+    assert lookup[names[0]] == lookup[names[1]]
+    assert lookup[names[0]] != lookup[names[2]]
+
+
+def test_selector_oof_folds_cover_single_trajectory_with_temporal_blocks():
+    names = [f"seq2/frame{index:05d}.png" for index in range(11)]
+    folds, lookup, contract = _cross_validation_folds(
+        names, single_trajectory_fold_count=5
+    )
+    assert len(folds) == 5
+    assert contract == "leave_one_temporal_block_out"
+    assert set(lookup) == set(names)
+    assert sorted(set(lookup.values())) == list(range(5))
+    assert lookup[names[0]] == lookup[names[1]]
+    assert lookup[names[0]] != lookup[names[-1]]
 
 
 def test_basis_aware_core_reserve_is_bounded_and_rejects_harmful_rows():
