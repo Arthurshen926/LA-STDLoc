@@ -18,6 +18,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "lafgs_preemptive_pose.h"
+
 namespace py = pybind11;
 using poselib::CameraPose;
 using poselib::Point2D;
@@ -679,6 +681,7 @@ PYBIND11_MODULE(_lafgs_poselib, module) {
     module.doc() = "Compiled dependency-aware absolute-pose sampler for LaFGS";
     module.attr("GROUP_SATURATED_SOLVER_VERSION") =
         kGroupSaturatedSolverVersion;
+    bind_preemptive_pose(module);
     module.def(
         "solve_dependency_absolute_pose",
         [](const std::vector<Point2D> &points2d,

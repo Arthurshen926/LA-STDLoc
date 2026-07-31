@@ -5518,6 +5518,34 @@ class STDLoc:
         pose_min_iterations = int(self.config["sparse"]["min_iterations"])
         dependency_kwargs = {}
         query_risk_probability = None
+        if pose_solver == "poselib_preemptive":
+            verification_order = str(
+                self.config["sparse"].get(
+                    "preemptive_verification_order", "low_confidence"
+                )
+            )
+            margin_np = matched_margins.numpy()
+            if verification_order == "input":
+                verification_priorities = np.zeros_like(scores_np)
+            elif verification_order == "low_similarity":
+                verification_priorities = -scores_np
+            elif verification_order == "low_margin":
+                verification_priorities = -margin_np
+            elif verification_order == "low_confidence":
+                verification_priorities = -(scores_np + margin_np)
+            else:
+                raise ValueError(
+                    "preemptive_verification_order must be input, "
+                    "low_similarity, low_margin, or low_confidence"
+                )
+            dependency_kwargs = {
+                "verification_priorities": verification_priorities,
+                "preemptive_check_interval": int(
+                    self.config["sparse"].get(
+                        "preemptive_check_interval", 32
+                    )
+                ),
+            }
         if pose_solver == "poselib_group_saturated":
             if self.group_saturated_surface_groups is None:
                 raise RuntimeError(
@@ -5668,6 +5696,23 @@ class STDLoc:
             runtime_diagnostics[
                 "sparse_diag_group_saturated_solver_used"
             ] = float(pose_solver == "poselib_group_saturated")
+            runtime_diagnostics[
+                "sparse_diag_preemptive_solver_used"
+            ] = float(pose_solver == "poselib_preemptive")
+            runtime_diagnostics[
+                "sparse_diag_preemptive_residual_reduction"
+            ] = float(
+                ransac_diagnostics.get(
+                    "ransac_preemptive_residual_reduction", 0.0
+                )
+            )
+            runtime_diagnostics[
+                "sparse_diag_preemptive_pruned_score_calls"
+            ] = float(
+                ransac_diagnostics.get(
+                    "ransac_preemptive_pruned_score_calls", 0
+                )
+            )
             if pose_solver == "poselib_group_saturated":
                 surface_diagnostics = (
                     self.group_saturated_surface_diagnostics

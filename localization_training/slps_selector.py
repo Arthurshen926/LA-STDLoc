@@ -59,19 +59,31 @@ def _multiplicity(values: torch.Tensor) -> torch.Tensor:
     values = torch.as_tensor(values).long().reshape(-1)
     if not len(values):
         return torch.empty(0, dtype=torch.float32, device=values.device)
-    _, inverse, count = torch.unique(
-        values, sorted=False, return_inverse=True, return_counts=True
-    )
-    return count[inverse].float()
+    groups = _local_group_ids(values)
+    return torch.bincount(groups)[groups].float()
 
 
 def _local_group_ids(values: torch.Tensor) -> torch.Tensor:
     values = torch.as_tensor(values).long().reshape(-1)
     if not len(values):
         return values
-    return torch.unique(
-        values, sorted=True, return_inverse=True
-    )[1]
+    # Negative IDs denote unknown identity, not a shared relation. Treat each
+    # unknown row as a singleton so unrelated base anchors are never pooled.
+    output = torch.empty_like(values)
+    known = values >= 0
+    known_count = 0
+    if bool(known.any()):
+        _, inverse = torch.unique(
+            values[known], sorted=True, return_inverse=True
+        )
+        output[known] = inverse
+        known_count = int(inverse.max()) + 1
+    unknown = ~known
+    if bool(unknown.any()):
+        output[unknown] = known_count + torch.arange(
+            int(unknown.sum()), device=values.device
+        )
+    return output
 
 
 def normalize_relation_groups(
@@ -215,11 +227,24 @@ def beta_track_stability(
     prior = max(float(prior_strength), 0.0)
     global_rate = clean.sum() / attempts.sum().clamp_min(1.0)
     observed = attempts > 0
-    _, inverse = torch.unique(track, sorted=False, return_inverse=True)
-    track_count = int(inverse.max()) + 1 if len(inverse) else 0
     output = torch.zeros(len(track))
+    unknown = track < 0
+    if bool(unknown.any()):
+        unknown_attempts = attempts[:, unknown].sum(dim=0)
+        unknown_clean = clean[:, unknown].sum(dim=0)
+        output[unknown] = (
+            unknown_clean + prior * global_rate
+        ) / (unknown_attempts + prior).clamp_min(1e-6)
+    known = ~unknown
+    if not bool(known.any()):
+        return output.clamp(0.0, 1.0)
+    _, inverse = torch.unique(
+        track[known], sorted=False, return_inverse=True
+    )
+    track_count = int(inverse.max()) + 1
+    known_indices = torch.where(known)[0]
     for track_index in range(track_count):
-        anchors = inverse == track_index
+        anchors = known_indices[inverse == track_index]
         fold_observed = observed[:, anchors].any(dim=1)
         if not bool(fold_observed.any()):
             output[anchors] = float(global_rate)

@@ -1,6 +1,17 @@
 schema: lafgs_v1_slps_cambridge
 version: 1
 
+research_status:
+  decision: no_go
+  scope: learned_correspondence_set_ordering
+  reason: held_out_trajectory_ordering_changes_are_not_risk_identifiable
+  frozen_accuracy_mainline: A1_reconstructed
+  frozen_efficiency_point: P1_fixed_budget
+  descriptor_writeback_allowed: false
+  scene_expansion_allowed: false
+  fixed_budget_risk_certifier: no_go
+  exact_preemptive_verification: parity_only_runtime_no_go
+
 map:
   representation: single_descriptor_track_centric_anchor
   frozen_rgb_prior: external_matcha_rgb_only_2dgs

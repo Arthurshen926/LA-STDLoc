@@ -30,6 +30,8 @@ def solve_pose(
     dependency_rescue_max_iterations=0,
     dependency_rescue_inlier_ratio=0.0,
     group_saturated_cap=8.0,
+    verification_priorities=None,
+    preemptive_check_interval=32,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
@@ -249,6 +251,58 @@ def solve_pose(
             }
         )
         inliers = solver_to_input[np.asarray(inliers, dtype=np.int64).reshape(-1)]
+        return finish(w2c, inliers, info=info)
+
+    elif solver == "poselib_preemptive":
+        from localization_training.preemptive_pose_verification import (
+            solve_preemptive_absolute_pose,
+        )
+
+        w2c, inliers, info = solve_preemptive_absolute_pose(
+            p2d,
+            p3d,
+            K,
+            verification_priorities=solver_ordered(
+                (
+                    verification_priorities
+                    if verification_priorities is not None
+                    else np.zeros(match_num, dtype=np.float64)
+                ),
+                "verification_priorities",
+                np.float64,
+            ),
+            reprojection_error=reprojection_error,
+            confidence=confidence,
+            max_iterations=max_iterations,
+            min_iterations=min_iterations,
+            progressive_sampling=bool(progressive_sampling),
+            max_prosac_iterations=int(max_prosac_iterations),
+            check_interval=int(preemptive_check_interval),
+            seed=ransac_seed,
+        )
+        diagnostics.update(
+            {
+                "ransac_backend": str(info.get("backend", "cpp")),
+                "ransac_preemptive_score_calls": int(
+                    info.get("score_calls", 0)
+                ),
+                "ransac_preemptive_pruned_score_calls": int(
+                    info.get("pruned_score_calls", 0)
+                ),
+                "ransac_preemptive_residual_evaluations": int(
+                    info.get("residual_evaluations", 0)
+                ),
+                "ransac_preemptive_full_residual_evaluations": int(
+                    info.get("full_residual_evaluations", 0)
+                ),
+                "ransac_preemptive_residual_reduction": float(
+                    info.get("residual_evaluation_reduction", 0.0)
+                ),
+            }
+        )
+        inliers = solver_to_input[
+            np.asarray(inliers, dtype=np.int64).reshape(-1)
+        ]
         return finish(w2c, inliers, info=info)
 
     elif solver == "poselib":

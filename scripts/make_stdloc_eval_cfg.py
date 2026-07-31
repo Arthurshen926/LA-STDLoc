@@ -115,6 +115,8 @@ def make_stdloc_eval_cfg(
     group_saturated_surface_voxel_scale_ratio=None,
     group_saturated_surface_minimum_voxel_size=None,
     group_saturated_surface_normal_angle_degrees=None,
+    preemptive_verification_order=None,
+    preemptive_check_interval=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -197,6 +199,14 @@ def make_stdloc_eval_cfg(
     for key, value in group_saturated_values.items():
         if value is not None:
             sparse[key] = float(value)
+    if preemptive_verification_order is not None:
+        sparse["preemptive_verification_order"] = str(
+            preemptive_verification_order
+        )
+    if preemptive_check_interval is not None:
+        sparse["preemptive_check_interval"] = int(
+            preemptive_check_interval
+        )
     if metric_state_path is not None:
         sparse["metric_state_path"] = str(metric_state_path)
         sparse["metric_state_model_path"] = artifact_model_path
@@ -494,6 +504,12 @@ def make_stdloc_eval_cfg(
             "materialized_anchor_map_path"
         ),
         "solver": sparse.get("solver"),
+        "preemptive_verification_order": sparse.get(
+            "preemptive_verification_order"
+        ),
+        "preemptive_check_interval": sparse.get(
+            "preemptive_check_interval"
+        ),
         "group_saturated_cap": sparse.get("group_saturated_cap"),
         "pair_measurement_state_path": sparse.get(
             "pair_measurement_state_path"
@@ -798,12 +814,21 @@ def main():
         choices=[
             "opencv",
             "poselib",
+            "poselib_preemptive",
             "poselib_dependency",
             "poselib_group_saturated",
         ],
         default=None,
     )
     parser.add_argument("--group_saturated_cap", type=float, default=None)
+    parser.add_argument(
+        "--preemptive_verification_order",
+        choices=["input", "low_similarity", "low_margin", "low_confidence"],
+        default=None,
+    )
+    parser.add_argument(
+        "--preemptive_check_interval", type=int, default=None
+    )
     parser.add_argument(
         "--group_saturated_surface_voxel_scale_ratio",
         type=float,
@@ -993,6 +1018,8 @@ def main():
         group_saturated_surface_normal_angle_degrees=(
             args.group_saturated_surface_normal_angle_degrees
         ),
+        preemptive_verification_order=args.preemptive_verification_order,
+        preemptive_check_interval=args.preemptive_check_interval,
         metric_state_path=args.metric_state_path,
         family_prototype_state_path=args.family_prototype_state_path,
         pose_sufficient_selector_state_path=(

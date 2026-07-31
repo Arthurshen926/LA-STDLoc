@@ -12,6 +12,53 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_stdloc_eval_cfg
 
 
 class MakeStdlocEvalCfgTest(unittest.TestCase):
+    def test_writes_preemptive_solver_contract_and_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(
+                yaml.dump({"sparse": {"solver": "poselib"}, "dense": {}})
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                    "--sparse_solver",
+                    "poselib_preemptive",
+                    "--preemptive_verification_order",
+                    "low_confidence",
+                    "--preemptive_check_interval",
+                    "64",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(sparse["solver"], "poselib_preemptive")
+            self.assertEqual(
+                sparse["preemptive_verification_order"], "low_confidence"
+            )
+            self.assertEqual(sparse["preemptive_check_interval"], 64)
+
+            summary = json.loads(proc.stdout)
+            self.assertEqual(summary["solver"], "poselib_preemptive")
+            self.assertEqual(
+                summary["preemptive_verification_order"], "low_confidence"
+            )
+            self.assertEqual(summary["preemptive_check_interval"], 64)
+
     def test_writes_fixed_group_saturated_solver_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

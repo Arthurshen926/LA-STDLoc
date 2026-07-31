@@ -30,7 +30,11 @@ add_subdirectory(
     "${CMAKE_CURRENT_BINARY_DIR}/pybind11"
 )
 
-pybind11_add_module(_lafgs_poselib MODULE lafgs_dependency_pose.cpp)
+pybind11_add_module(
+    _lafgs_poselib MODULE
+    lafgs_dependency_pose.cpp
+    lafgs_preemptive_pose.cpp
+)
 target_link_libraries(_lafgs_poselib PRIVATE PoseLib::PoseLib Eigen3::Eigen)
 target_compile_options(_lafgs_poselib PRIVATE -O3 -Wall -Wextra)
 set_target_properties(

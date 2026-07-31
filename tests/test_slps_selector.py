@@ -58,6 +58,53 @@ def test_slps_feature_and_relation_contracts_align():
         assert torch.equal(values, torch.arange(len(values)))
 
 
+def test_unknown_track_ids_are_independent_singletons():
+    count = 4
+    base = torch.zeros(count, len(FEATURE_NAMES))
+    xyz = torch.arange(count * 3).reshape(count, 3).float()
+    track = torch.tensor([-1, -1, 7, 7])
+    features = build_slps_features(
+        base,
+        xyz=xyz,
+        anchor_type=torch.zeros(count),
+        track_groups=track,
+        track_stability=torch.full((count,), 0.5),
+        anchor_map_support=torch.ones(count),
+    )
+    multiplicity_column = SLPS_FEATURE_NAMES.index(
+        "query_track_multiplicity"
+    )
+    multiplicity = torch.expm1(features[:, multiplicity_column])
+    assert torch.equal(multiplicity, torch.tensor([1.0, 1.0, 2.0, 2.0]))
+
+    relations = build_relation_groups(
+        keypoints=torch.tensor([[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]),
+        image_hw=(8, 8),
+        xyz=xyz,
+        dependency_groups=torch.arange(count),
+        source_groups=torch.arange(count),
+        track_groups=track,
+    )
+    track_column = RELATION_NAMES.index("track")
+    assert relations[0, track_column] != relations[1, track_column]
+    assert relations[2, track_column] == relations[3, track_column]
+
+
+def test_unknown_track_stability_uses_per_anchor_beta_prior():
+    stability = beta_track_stability(
+        attempts_by_fold=torch.tensor(
+            [[10.0, 10.0, 5.0, 5.0], [10.0, 10.0, 5.0, 5.0]]
+        ),
+        clean_inlier_by_fold=torch.tensor(
+            [[10.0, 0.0, 4.0, 4.0], [10.0, 0.0, 4.0, 4.0]]
+        ),
+        track_groups=torch.tensor([-1, -1, 3, 3]),
+        prior_strength=4.0,
+    )
+    assert stability[0] > stability[1]
+    assert torch.equal(stability[2], stability[3])
+
+
 def test_slps_relation_encoder_is_permutation_equivariant():
     features, relations = _inputs()
     model = SLPSSelector(SLPSModelConfig()).eval()
