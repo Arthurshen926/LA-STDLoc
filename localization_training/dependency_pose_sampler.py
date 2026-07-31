@@ -13,8 +13,95 @@ except ImportError:
     _lafgs_poselib = None
 
 
+GROUP_SATURATED_SOLVER_VERSION = "group_saturated_poselib_parity_v2"
+
+
 def compiled_backend_available() -> bool:
     return _lafgs_poselib is not None
+
+
+def compiled_group_saturated_solver_version():
+    if _lafgs_poselib is None:
+        return None
+    return str(
+        getattr(
+            _lafgs_poselib,
+            "GROUP_SATURATED_SOLVER_VERSION",
+            "unknown",
+        )
+    )
+
+
+def solve_group_saturated_absolute_pose(
+    points2d,
+    points3d,
+    K,
+    *,
+    surface_groups,
+    group_cap: float = 8.0,
+    reprojection_error: float = 12.0,
+    confidence: float = 0.99999,
+    max_iterations: int = 100000,
+    min_iterations: int = 1000,
+    seed: int = 0,
+):
+    """Run P3P RANSAC with surface-saturated hypothesis scoring.
+
+    Sampling remains uniform and every input correspondence remains eligible.
+    Only hypothesis ranking changes; final refinement uses all standard
+    reprojection inliers of the selected hypothesis.
+    """
+    points2d = np.asarray(points2d, dtype=np.float64).reshape(-1, 2)
+    points3d = np.asarray(points3d, dtype=np.float64).reshape(-1, 3)
+    K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+    surface_groups = np.asarray(surface_groups, dtype=np.int64).reshape(-1)
+    count = points2d.shape[0]
+    if points3d.shape[0] != count or surface_groups.size != count:
+        raise ValueError("correspondences and surface groups must align")
+    if np.any(surface_groups < 0):
+        raise ValueError("surface groups must be non-negative")
+    if not np.isfinite(group_cap) or float(group_cap) <= 0:
+        raise ValueError("group_cap must be finite and positive")
+    if count < 4:
+        return np.eye(4, dtype=np.float32), np.empty(0, dtype=np.int32), {
+            "iterations": 0,
+            "local_refinements": 0,
+            "group_score": 0.0,
+            "group_capacity": 0.0,
+            "supported_groups": 0,
+            "maximum_group_fraction": 0.0,
+            "group_effective_sample_size": 0.0,
+            "dynamic_trial_multiplier": 3.0,
+            "implementation_version": (
+                compiled_group_saturated_solver_version()
+                or "unavailable"
+            ),
+            "backend": "cpp" if _lafgs_poselib is not None else "unavailable",
+        }
+    if _lafgs_poselib is None:
+        raise RuntimeError(
+            "group-saturated consensus requires the compiled LaFGS PoseLib "
+            "extension; run scripts/build_lafgs_poselib.sh"
+        )
+    w2c, inliers, info = (
+        _lafgs_poselib.solve_group_saturated_absolute_pose(
+            points2d,
+            points3d,
+            K,
+            surface_groups,
+            float(group_cap),
+            float(reprojection_error),
+            float(confidence),
+            int(max_iterations),
+            int(min_iterations),
+            int(seed),
+        )
+    )
+    return (
+        np.asarray(w2c, dtype=np.float32),
+        np.asarray(inliers, dtype=np.int32),
+        dict(info),
+    )
 
 
 def _diverse_set(

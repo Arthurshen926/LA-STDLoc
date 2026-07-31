@@ -29,6 +29,10 @@ from localization_training.full_primitive_retrieval import (
     conditional_core_reserve_topk,
     suppress_redundant_hypotheses,
 )
+from localization_training.gaussian_prior import GaussianPriorGeometry
+from localization_training.group_saturated_consensus import (
+    build_surface_component_groups,
+)
 from localization_training.native_matchability import (
     build_native_matchability_features,
     calibrated_native_matchability,
@@ -2310,6 +2314,60 @@ class STDLoc:
         else:
             self.landmark_indices = sampled_idx
             self.landmarks = sample_gaussians(gaussians, self.landmark_indices)
+        self.group_saturated_surface_groups = None
+        self.group_saturated_surface_diagnostics = {}
+        if sparse_config.get("solver") == "poselib_group_saturated":
+            if self.materialized_anchor_map_state is None:
+                raise ValueError(
+                    "group-saturated consensus requires a materialized anchor map"
+                )
+            if sparse_config.get("dependency_sampling_model_path"):
+                raise ValueError(
+                    "group-saturated consensus cannot be combined with the "
+                    "learned dependency sampler"
+                )
+            scaling = self.landmarks.get_scaling.detach()
+            gaussian_type = "2dgs" if scaling.shape[1] == 2 else "3dgs"
+            prior = GaussianPriorGeometry(
+                gaussian_type=gaussian_type,
+                xyz=self.landmarks.get_xyz.detach(),
+                rotation=self.landmarks.get_rotation.detach(),
+                scaling=scaling,
+            )
+            surface_groups, surface_diagnostics = (
+                build_surface_component_groups(
+                    self.landmarks.get_xyz.detach().cpu().numpy(),
+                    prior.proxy_normals.detach().cpu().numpy(),
+                    voxel_scale_ratio=float(
+                        sparse_config.get(
+                            "group_saturated_surface_voxel_scale_ratio",
+                            0.02,
+                        )
+                    ),
+                    minimum_voxel_size=float(
+                        sparse_config.get(
+                            "group_saturated_surface_minimum_voxel_size",
+                            0.5,
+                        )
+                    ),
+                    maximum_normal_angle_degrees=float(
+                        sparse_config.get(
+                            "group_saturated_surface_normal_angle_degrees",
+                            25.0,
+                        )
+                    ),
+                )
+            )
+            self.group_saturated_surface_groups = torch.from_numpy(
+                surface_groups
+            ).long()
+            self.group_saturated_surface_diagnostics = surface_diagnostics
+            print(
+                "[LaFGS] Group-saturated surface map: "
+                f"{surface_diagnostics['component_count']} components, "
+                f"voxel={surface_diagnostics['voxel_size']:.3f}m, "
+                f"max_size={surface_diagnostics['maximum_component_size']}"
+            )
         dependency_sampling_model_path = sparse_config.get(
             "dependency_sampling_model_path", ""
         )
@@ -5226,6 +5284,22 @@ class STDLoc:
         pose_min_iterations = int(self.config["sparse"]["min_iterations"])
         dependency_kwargs = {}
         query_risk_probability = None
+        if pose_solver == "poselib_group_saturated":
+            if self.group_saturated_surface_groups is None:
+                raise RuntimeError(
+                    "group-saturated surface groups were not initialized"
+                )
+            surface_ids = self.group_saturated_surface_groups[
+                matched_landmark_indices
+            ]
+            dependency_kwargs = {
+                "surface_groups": surface_ids.numpy(),
+                "group_saturated_cap": float(
+                    self.config["sparse"].get(
+                        "group_saturated_cap", 8.0
+                    )
+                ),
+            }
         if self.dependency_sampling_model is not None:
             model = self.dependency_sampling_model["models"]["all"]
             sampling_features = torch.stack(
@@ -5357,6 +5431,53 @@ class STDLoc:
             runtime_diagnostics["sparse_diag_dependency_sampler_used"] = float(
                 pose_solver == "poselib_dependency"
             )
+            runtime_diagnostics[
+                "sparse_diag_group_saturated_solver_used"
+            ] = float(pose_solver == "poselib_group_saturated")
+            if pose_solver == "poselib_group_saturated":
+                surface_diagnostics = (
+                    self.group_saturated_surface_diagnostics
+                )
+                runtime_diagnostics.update(
+                    {
+                        "sparse_diag_group_saturated_score": float(
+                            ransac_diagnostics.get(
+                                "ransac_group_saturated_score", 0.0
+                            )
+                        ),
+                        "sparse_diag_group_saturated_capacity": float(
+                            ransac_diagnostics.get(
+                                "ransac_group_saturated_capacity", 0.0
+                            )
+                        ),
+                        "sparse_diag_group_saturated_supported_groups": float(
+                            ransac_diagnostics.get(
+                                "ransac_group_saturated_supported_groups",
+                                0,
+                            )
+                        ),
+                        "sparse_diag_group_saturated_max_group_fraction": float(
+                            ransac_diagnostics.get(
+                                "ransac_group_saturated_maximum_group_fraction",
+                                0.0,
+                            )
+                        ),
+                        "sparse_diag_group_saturated_group_ess": float(
+                            ransac_diagnostics.get(
+                                "ransac_group_saturated_effective_sample_size",
+                                0.0,
+                            )
+                        ),
+                        "sparse_diag_group_saturated_map_component_count": float(
+                            surface_diagnostics.get("component_count", 0)
+                        ),
+                        "sparse_diag_group_saturated_map_max_component_size": float(
+                            surface_diagnostics.get(
+                                "maximum_component_size", 0
+                            )
+                        ),
+                    }
+                )
         else:
             pose_w2c = np.eye(4, dtype=np.float32)
             inliers = np.empty(0, dtype=np.int64)

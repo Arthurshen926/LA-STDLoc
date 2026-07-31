@@ -29,6 +29,7 @@ def solve_pose(
     sampling_keypoint_scores=None,
     dependency_rescue_max_iterations=0,
     dependency_rescue_inlier_ratio=0.0,
+    group_saturated_cap=8.0,
 ):
     p2d = np.asarray(p2d)
     p3d = np.asarray(p3d)
@@ -64,7 +65,12 @@ def solve_pose(
                 diagnostics["ransac_actual_hypotheses"] = int(iterations)
                 diagnostics["ransac_actual_hypotheses_available"] = True
             if isinstance(info, dict):
-                diagnostics["ransac_refinements"] = int(info.get("refinements", 0))
+                diagnostics["ransac_refinements"] = int(
+                    info.get(
+                        "refinements",
+                        info.get("local_refinements", 0),
+                    )
+                )
                 diagnostics["ransac_model_score"] = float(info.get("model_score", 0.0))
         if inlier_ratio > 0.0:
             success_probability = min(max(float(confidence), 1e-12), 1.0 - 1e-12)
@@ -94,6 +100,12 @@ def solve_pose(
         solver_to_input = np.argsort(-ranking_scores, kind="stable")
         p2d = p2d[solver_to_input]
         p3d = p3d[solver_to_input]
+
+    def solver_ordered(value, name, dtype=None):
+        array = np.asarray(value, dtype=dtype).reshape(-1)
+        if array.shape[0] != match_num:
+            raise ValueError(f"{name} must match the correspondence count")
+        return array[solver_to_input]
 
     if solver == "opencv":
         # OpenCV keeps RANSAC state globally, so set it before every solve.
@@ -133,12 +145,36 @@ def solve_pose(
             p2d,
             p3d,
             K,
-            dependency_groups=dependency_groups,
-            image_cells=image_cells,
-            surface_groups=surface_groups,
-            sampling_scores=scores,
-            sampling_margins=sampling_margins,
-            sampling_keypoint_scores=sampling_keypoint_scores,
+            dependency_groups=solver_ordered(
+                dependency_groups, "dependency_groups", np.int64
+            ),
+            image_cells=solver_ordered(
+                image_cells, "image_cells", np.int64
+            ),
+            surface_groups=solver_ordered(
+                surface_groups, "surface_groups", np.int64
+            ),
+            sampling_scores=(
+                solver_ordered(scores, "scores", np.float64)
+                if scores is not None
+                else None
+            ),
+            sampling_margins=(
+                solver_ordered(
+                    sampling_margins, "sampling_margins", np.float64
+                )
+                if sampling_margins is not None
+                else None
+            ),
+            sampling_keypoint_scores=(
+                solver_ordered(
+                    sampling_keypoint_scores,
+                    "sampling_keypoint_scores",
+                    np.float64,
+                )
+                if sampling_keypoint_scores is not None
+                else None
+            ),
             guided_mixture=dependency_guided_mixture,
             guided_rank_power=dependency_guided_rank_power,
             ground_truth_w2c=ground_truth_w2c,
@@ -165,7 +201,55 @@ def solve_pose(
             info.get("rescue_used", False)
         )
         diagnostics["ransac_backend"] = str(info.get("backend", "python"))
+        inliers = solver_to_input[np.asarray(inliers, dtype=np.int64).reshape(-1)]
         return finish(w2c, inliers)
+
+    elif solver == "poselib_group_saturated":
+        from localization_training.dependency_pose_sampler import (
+            solve_group_saturated_absolute_pose,
+        )
+
+        if surface_groups is None:
+            raise ValueError(
+                "group-saturated pose requires map-side surface groups"
+            )
+        w2c, inliers, info = solve_group_saturated_absolute_pose(
+            p2d,
+            p3d,
+            K,
+            surface_groups=solver_ordered(
+                surface_groups, "surface_groups", np.int64
+            ),
+            group_cap=group_saturated_cap,
+            reprojection_error=reprojection_error,
+            confidence=confidence,
+            max_iterations=max_iterations,
+            min_iterations=min_iterations,
+            seed=ransac_seed,
+        )
+        diagnostics.update(
+            {
+                "ransac_backend": str(info.get("backend", "cpp")),
+                "ransac_group_saturated_cap": float(group_saturated_cap),
+                "ransac_group_saturated_score": float(
+                    info.get("group_score", 0.0)
+                ),
+                "ransac_group_saturated_capacity": float(
+                    info.get("group_capacity", 0.0)
+                ),
+                "ransac_group_saturated_supported_groups": int(
+                    info.get("supported_groups", 0)
+                ),
+                "ransac_group_saturated_maximum_group_fraction": float(
+                    info.get("maximum_group_fraction", 0.0)
+                ),
+                "ransac_group_saturated_effective_sample_size": float(
+                    info.get("group_effective_sample_size", 0.0)
+                ),
+            }
+        )
+        inliers = solver_to_input[np.asarray(inliers, dtype=np.int64).reshape(-1)]
+        return finish(w2c, inliers, info=info)
 
     elif solver == "poselib":
         camera = {

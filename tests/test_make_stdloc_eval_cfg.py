@@ -12,6 +12,64 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "make_stdloc_eval_cfg
 
 
 class MakeStdlocEvalCfgTest(unittest.TestCase):
+    def test_writes_fixed_group_saturated_solver_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            base_cfg = tmp / "base.yaml"
+            out_cfg = tmp / "out.yaml"
+            base_cfg.write_text(
+                yaml.dump(
+                    {
+                        "sparse": {"solver": "poselib"},
+                        "dense": {},
+                    }
+                )
+            )
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--base_cfg",
+                    str(base_cfg),
+                    "--output",
+                    str(out_cfg),
+                    "--artifact_model_path",
+                    "/tmp/model",
+                    "--sparse_solver",
+                    "poselib_group_saturated",
+                    "--group_saturated_cap",
+                    "8",
+                    "--group_saturated_surface_voxel_scale_ratio",
+                    "0.02",
+                    "--group_saturated_surface_minimum_voxel_size",
+                    "0.5",
+                    "--group_saturated_surface_normal_angle_degrees",
+                    "25",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            sparse = yaml.load(
+                out_cfg.read_text(), Loader=yaml.FullLoader
+            )["sparse"]
+            self.assertEqual(sparse["solver"], "poselib_group_saturated")
+            self.assertEqual(sparse["group_saturated_cap"], 8.0)
+            self.assertEqual(
+                sparse["group_saturated_surface_voxel_scale_ratio"], 0.02
+            )
+            self.assertEqual(
+                sparse["group_saturated_surface_minimum_voxel_size"], 0.5
+            )
+            self.assertEqual(
+                sparse[
+                    "group_saturated_surface_normal_angle_degrees"
+                ],
+                25.0,
+            )
+
     def test_binds_pose_sufficient_selector_for_online_test_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

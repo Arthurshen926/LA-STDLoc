@@ -110,6 +110,11 @@ def make_stdloc_eval_cfg(
     rerank_use_learned_null=None,
     rerank_assignment_global_preserve_scale=None,
     sparse_ransac_seed=None,
+    sparse_solver=None,
+    group_saturated_cap=None,
+    group_saturated_surface_voxel_scale_ratio=None,
+    group_saturated_surface_minimum_voxel_size=None,
+    group_saturated_surface_normal_angle_degrees=None,
 ):
     with open(base_cfg) as f:
         cfg = yaml.load(f, Loader=yaml.FullLoader)
@@ -175,6 +180,23 @@ def make_stdloc_eval_cfg(
         sparse["sparse_frontend"] = str(sparse_frontend)
     if sparse_ransac_seed is not None:
         sparse["ransac_seed"] = int(sparse_ransac_seed)
+    if sparse_solver is not None:
+        sparse["solver"] = str(sparse_solver)
+    group_saturated_values = {
+        "group_saturated_cap": group_saturated_cap,
+        "group_saturated_surface_voxel_scale_ratio": (
+            group_saturated_surface_voxel_scale_ratio
+        ),
+        "group_saturated_surface_minimum_voxel_size": (
+            group_saturated_surface_minimum_voxel_size
+        ),
+        "group_saturated_surface_normal_angle_degrees": (
+            group_saturated_surface_normal_angle_degrees
+        ),
+    }
+    for key, value in group_saturated_values.items():
+        if value is not None:
+            sparse[key] = float(value)
     if metric_state_path is not None:
         sparse["metric_state_path"] = str(metric_state_path)
         sparse["metric_state_model_path"] = artifact_model_path
@@ -471,6 +493,8 @@ def make_stdloc_eval_cfg(
         "materialized_anchor_map_path": sparse.get(
             "materialized_anchor_map_path"
         ),
+        "solver": sparse.get("solver"),
+        "group_saturated_cap": sparse.get("group_saturated_cap"),
         "pair_measurement_state_path": sparse.get(
             "pair_measurement_state_path"
         ),
@@ -769,6 +793,32 @@ def main():
     )
     parser.add_argument("--pose_sufficient_budget", type=int, default=None)
     parser.add_argument("--sparse_ransac_seed", type=int, default=None)
+    parser.add_argument(
+        "--sparse_solver",
+        choices=[
+            "opencv",
+            "poselib",
+            "poselib_dependency",
+            "poselib_group_saturated",
+        ],
+        default=None,
+    )
+    parser.add_argument("--group_saturated_cap", type=float, default=None)
+    parser.add_argument(
+        "--group_saturated_surface_voxel_scale_ratio",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--group_saturated_surface_minimum_voxel_size",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--group_saturated_surface_normal_angle_degrees",
+        type=float,
+        default=None,
+    )
     parser.add_argument("--rerank_topk", type=int, default=None)
     parser.add_argument("--rerank_patch_radius", type=int, default=None)
     parser.add_argument("--rerank_patch_step_px", type=float, default=None)
@@ -932,6 +982,17 @@ def main():
         sparse_query_feature_contract=args.sparse_query_feature_contract,
         sparse_frontend=args.sparse_frontend,
         sparse_ransac_seed=args.sparse_ransac_seed,
+        sparse_solver=args.sparse_solver,
+        group_saturated_cap=args.group_saturated_cap,
+        group_saturated_surface_voxel_scale_ratio=(
+            args.group_saturated_surface_voxel_scale_ratio
+        ),
+        group_saturated_surface_minimum_voxel_size=(
+            args.group_saturated_surface_minimum_voxel_size
+        ),
+        group_saturated_surface_normal_angle_degrees=(
+            args.group_saturated_surface_normal_angle_degrees
+        ),
         metric_state_path=args.metric_state_path,
         family_prototype_state_path=args.family_prototype_state_path,
         pose_sufficient_selector_state_path=(
