@@ -1,0 +1,74 @@
+schema: lafgs_v1_slps_cambridge
+version: 1
+
+map:
+  representation: single_descriptor_track_centric_anchor
+  frozen_rgb_prior: external_matcha_rgb_only_2dgs
+  candidate_assignment: global_cosine_top1
+  family_descriptors: false
+
+self_localization_reconstruction:
+  source: frozen_lafgs_v1_a1
+  metric_steps: 175
+  geometry_update: false
+  dense_refinement: false
+  learned_pose_sampler: false
+  test_time_rendering: false
+
+set_outcomes:
+  maximum_queries_per_scene: 384
+  budgets: [256, 384, 512, 768]
+  primary_seed: 2026
+  secondary_seed: 2027
+  reprojection_error_px: 12
+  confidence: 0.99999
+  maximum_hypotheses: 100000
+  minimum_hypotheses: 1000
+  labels:
+    - pose_error
+    - r5
+    - catastrophic
+    - inlier_precision
+    - hypotheses
+    - runtime
+
+selector:
+  name: self_localization_guided_pose_sufficient_set_learning
+  scene_specific: true
+  row_hidden_dim: 32
+  relation_layers: 2
+  relation_graphs:
+    - image
+    - robust_scale_3d
+    - dependency
+    - source
+    - track
+  complementarity_dim: 8
+  utility:
+    - additive_quality
+    - harmful_risk
+    - concave_typed_coverage
+    - latent_logdet_complementarity
+    - cardinality_cost
+  adaptive_budgets: [256, 384, 512, 768]
+  fallback: all_correspondences
+  pose_solves: 1
+
+training:
+  steps: 3000
+  learning_rate: 0.0002
+  weight_decay: 0.0001
+  maximum_sets_per_query: 16
+  validation_fraction: 0.15
+  early_stopping_patience: 8
+  seed: 2026
+
+deployment:
+  sparse_frontend: ulfloc_native_metric
+  keypoints: 2048
+  nms: 2
+  max_matches_per_keypoint: 0
+  max_matches_per_landmark: 0
+  selector: learned_nested_submodular
+  solver: poselib
+  pose_solves: 1

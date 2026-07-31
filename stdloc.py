@@ -70,6 +70,15 @@ from localization_training.pose_sufficient_selector import (
     predict_multitask_quality,
     predict_pose_sufficient_probability,
 )
+from localization_training.slps_selector import (
+    SLPS_BIAS_AWARE_FEATURE_NAMES,
+    build_relation_groups as build_slps_relation_groups,
+    build_slps_features,
+    slps_from_state,
+)
+from localization_training.slps_residual_signatures import (
+    residual_signature_features,
+)
 from localization_training.sparse_frontend import (
     SparseMatchResult,
     build_pair_context_features,
@@ -3182,7 +3191,11 @@ class STDLoc:
         self.pose_sufficient_selector_budget = 0
         self.pose_sufficient_source_groups = None
         self.pose_sufficient_dependency_groups = None
+        self.pose_sufficient_track_groups = None
         self.pose_sufficient_anchor_xyz = None
+        self.pose_sufficient_anchor_type = None
+        self.pose_sufficient_track_stability = None
+        self.slps_selector_model = None
         full_selector_state_path = None
         if bool(sparse_config.get("use_pose_sufficient_selector", False)):
             if self.materialized_anchor_map_state is None:
@@ -3204,6 +3217,7 @@ class STDLoc:
             if selector_schema not in {
                 "lafgs_pose_sufficient_selector",
                 "lafgs_basis_core_reserve_selector",
+                "lafgs_slps_selector",
             }:
                 raise ValueError("unsupported pose-sufficient selector state")
             if int(selector_state.get("anchor_count", -1)) != int(
@@ -3253,12 +3267,13 @@ class STDLoc:
                         "pose-sufficient selector candidate graph uses a "
                         f"different {label}"
                     )
-            full_model = (
-                selector_state.get("full_models")
-                if selector_schema == "lafgs_basis_core_reserve_selector"
-                else selector_state.get("full_model")
-            )
             statistics = selector_state.get("anchor_statistics")
+            if selector_schema == "lafgs_basis_core_reserve_selector":
+                full_model = selector_state.get("full_models")
+            elif selector_schema == "lafgs_pose_sufficient_selector":
+                full_model = selector_state.get("full_model")
+            else:
+                full_model = selector_state.get("model_state_dict")
             if not isinstance(full_model, dict) or not isinstance(
                 statistics, dict
             ):
@@ -3275,6 +3290,33 @@ class STDLoc:
                     "a candidate-rejecting shared null head"
                 )
             self.pose_sufficient_selector_state = selector_state
+            if selector_schema == "lafgs_slps_selector":
+                slps_device = torch.device(
+                    selector_state["selector_config"].get(
+                        "execution_device", active_features_flat.device
+                    )
+                )
+                if slps_device.type not in {"cpu", "cuda"}:
+                    raise ValueError(
+                        "unsupported SLPS selector execution device: "
+                        f"{slps_device}"
+                    )
+                self.slps_selector_model = slps_from_state(
+                    selector_state,
+                    device=slps_device,
+                )
+                needs_residual_signatures = list(
+                    selector_state.get("feature_names", ())
+                ) == list(SLPS_BIAS_AWARE_FEATURE_NAMES)
+                if (
+                    needs_residual_signatures
+                    and selector_state.get("residual_signature_state") is None
+                ):
+                    raise ValueError(
+                        "bias-aware SLPS selector misses residual signatures"
+                    )
+                if slps_device.type == "cpu" and torch.get_num_threads() != 1:
+                    torch.set_num_threads(1)
             if (
                 selector_schema
                 == "lafgs_basis_core_reserve_selector"
@@ -3289,7 +3331,16 @@ class STDLoc:
                 )
                 if selector_schema
                 == "lafgs_basis_core_reserve_selector"
-                else int(sparse_config["pose_sufficient_budget"])
+                else (
+                    max(
+                        int(value)
+                        for value in selector_state["selector_config"][
+                            "budgets"
+                        ]
+                    )
+                    if selector_schema == "lafgs_slps_selector"
+                    else int(sparse_config["pose_sufficient_budget"])
+                )
             )
             self.pose_sufficient_source_groups = torch.as_tensor(
                 self.materialized_anchor_map_state["source_primitive_ids"]
@@ -3302,9 +3353,34 @@ class STDLoc:
                     ],
                 )
             ).long().detach().cpu()
+            self.pose_sufficient_track_groups = torch.as_tensor(
+                self.materialized_anchor_map_state.get(
+                    "track_cluster_ids",
+                    self.materialized_anchor_map_state[
+                        "dependency_group_ids"
+                    ],
+                )
+            ).long().detach().cpu()
             self.pose_sufficient_anchor_xyz = (
                 self.landmarks.get_xyz.detach().cpu().float()
             )
+            self.pose_sufficient_anchor_type = torch.as_tensor(
+                self.materialized_anchor_map_state.get(
+                    "anchor_type",
+                    torch.zeros(
+                        int(active_features_flat.shape[0]), dtype=torch.long
+                    ),
+                )
+            ).long().detach().cpu()
+            if selector_schema == "lafgs_slps_selector":
+                stability = torch.as_tensor(
+                    selector_state["anchor_track_stability"]
+                ).float().reshape(-1)
+                if len(stability) != int(active_features_flat.shape[0]):
+                    raise ValueError(
+                        "SLPS track stability differs from the anchor map"
+                    )
+                self.pose_sufficient_track_stability = stability
         scorer_training_features = None
         if isinstance(self.candidate_teacher_state, dict):
             candidate_features = self.candidate_teacher_state.get("landmark_features")
@@ -3459,7 +3535,15 @@ class STDLoc:
         return sparse_image, sparse_mask
 
     @torch.no_grad()
-    def localize(self, query_image, fovx, fovy, sparse_valid_mask=None, sparse_support_score=None):
+    def localize(
+        self,
+        query_image,
+        fovx,
+        fovy,
+        sparse_valid_mask=None,
+        sparse_support_score=None,
+        query_name=None,
+    ):
         """
         image: torch.Tensor, shape (3, H, W)
         """
@@ -3479,6 +3563,7 @@ class STDLoc:
                 fovy,
                 valid_mask=sparse_valid_mask,
                 support_score=sparse_support_score,
+                query_name=query_name,
             )
             if self.config.get(
                 "sparse_only", self.config["sparse"].get("sparse_only", False)
@@ -4358,6 +4443,7 @@ class STDLoc:
         fovy,
         valid_mask=None,
         support_score=None,
+        query_name=None,
     ):
         """ULF-Loc-style sparse PnP over the active LaFGS landmark bank.
 
@@ -5049,7 +5135,127 @@ class STDLoc:
             selector_schema = self.pose_sufficient_selector_state["schema"]
             basis_diagnostics = {}
             quality_probabilities = None
-            if selector_schema == "lafgs_basis_core_reserve_selector":
+            if selector_schema == "lafgs_slps_selector":
+                selected_track_groups = self.pose_sufficient_track_groups[
+                    selected_anchor_indices
+                ]
+                residual_features = None
+                residual_state = self.pose_sufficient_selector_state.get(
+                    "residual_signature_state"
+                )
+                if residual_state is not None:
+                    residual_config = residual_state["config"]
+                    residual_features = residual_signature_features(
+                        residual_state["statistics"],
+                        anchor_indices=selected_anchor_indices,
+                        keypoints=selected_keypoints,
+                        image_hw=(height, width),
+                        grid_size=int(residual_config["grid_size"]),
+                        clip_px=float(residual_config["clip_px"]),
+                        anchor_prior=float(
+                            residual_config["anchor_prior"]
+                        ),
+                        cell_prior=float(residual_config["cell_prior"]),
+                        rate_prior=float(residual_config["rate_prior"]),
+                    )
+                slps_features = build_slps_features(
+                    selector_features,
+                    xyz=selected_anchor_xyz,
+                    anchor_type=self.pose_sufficient_anchor_type[
+                        selected_anchor_indices
+                    ],
+                    track_groups=selected_track_groups,
+                    track_stability=self.pose_sufficient_track_stability[
+                        selected_anchor_indices
+                    ],
+                    anchor_map_support=torch.as_tensor(
+                        self.pose_sufficient_selector_state[
+                            "anchor_statistics"
+                        ]["attempts"]
+                    ).float()[selected_anchor_indices],
+                    residual_signature_features=residual_features,
+                )
+                slps_relations = build_slps_relation_groups(
+                    keypoints=selected_keypoints,
+                    image_hw=(height, width),
+                    xyz=selected_anchor_xyz,
+                    dependency_groups=selected_dependency_groups,
+                    source_groups=selected_source_groups,
+                    track_groups=selected_track_groups,
+                )
+                slps_encoded = self.slps_selector_model.encode(
+                    slps_features, slps_relations
+                )
+                slps_selection = self.slps_selector_model.select(
+                    slps_features,
+                    slps_relations,
+                    anchor_indices=selected_anchor_indices,
+                    query_name=query_name,
+                    encoded=slps_encoded,
+                    **selector_config,
+                )
+                selector_mask = slps_selection.selected_mask
+                selector_probability = slps_encoded[
+                    "solver_probability"
+                ].detach().cpu()
+                quality_probabilities = {
+                    "strict_clean": slps_encoded[
+                        "strict_probability"
+                    ].detach().cpu(),
+                    "solver_clean": selector_probability,
+                    "harmful": slps_encoded[
+                        "harmful_probability"
+                    ].detach().cpu(),
+                }
+                basis_diagnostics = {
+                    "slps_safe_probability": (
+                        slps_selection.safe_probability
+                    ),
+                    "slps_catastrophic_probability": (
+                        slps_selection.catastrophic_probability
+                    ),
+                    "slps_expected_hypotheses": (
+                        slps_selection.expected_hypotheses
+                    ),
+                    "slps_relative_utility_lcb": (
+                        slps_selection.relative_utility_lcb
+                    ),
+                    "slps_relative_utility_median": (
+                        slps_selection.relative_utility_median
+                    ),
+                    "slps_fallback": float(
+                        slps_selection.used_fallback
+                    ),
+                    "slps_atlas_safe_probability": (
+                        slps_selection.diagnostics.get(
+                            "atlas_safe_"
+                            f"{slps_selection.selected_budget}",
+                            float("nan"),
+                        )
+                    ),
+                    "slps_atlas_catastrophic_probability": (
+                        slps_selection.diagnostics.get(
+                            "atlas_catastrophic_"
+                            f"{slps_selection.selected_budget}",
+                            float("nan"),
+                        )
+                    ),
+                    "slps_atlas_relative_utility": (
+                        slps_selection.diagnostics.get(
+                            "atlas_relative_utility_"
+                            f"{slps_selection.selected_budget}",
+                            float("nan"),
+                        )
+                    ),
+                    "slps_atlas_similarity": (
+                        slps_selection.diagnostics.get(
+                            "atlas_similarity_"
+                            f"{slps_selection.selected_budget}",
+                            float("nan"),
+                        )
+                    ),
+                }
+            elif selector_schema == "lafgs_basis_core_reserve_selector":
                 quality_probabilities = predict_multitask_quality(
                     selector_features,
                     self.pose_sufficient_selector_state["full_models"],
@@ -5142,6 +5348,34 @@ class STDLoc:
                         basis_diagnostics.get(
                             "dependency_group_count", 0.0
                         )
+                    ),
+                    "sparse_diag_slps_safe_probability": float(
+                        basis_diagnostics.get(
+                            "slps_safe_probability", 0.0
+                        )
+                    ),
+                    "sparse_diag_slps_catastrophic_probability": float(
+                        basis_diagnostics.get(
+                            "slps_catastrophic_probability", 0.0
+                        )
+                    ),
+                    "sparse_diag_slps_expected_hypotheses": float(
+                        basis_diagnostics.get(
+                            "slps_expected_hypotheses", 0.0
+                        )
+                    ),
+                    "sparse_diag_slps_relative_utility_lcb": float(
+                        basis_diagnostics.get(
+                            "slps_relative_utility_lcb", 0.0
+                        )
+                    ),
+                    "sparse_diag_slps_relative_utility_median": float(
+                        basis_diagnostics.get(
+                            "slps_relative_utility_median", 0.0
+                        )
+                    ),
+                    "sparse_diag_slps_fallback": float(
+                        basis_diagnostics.get("slps_fallback", 0.0)
                     ),
                     "sparse_diag_pose_sufficient_runtime_ms": float(
                         (clock() - pose_sufficient_start) * 1000.0
@@ -6215,6 +6449,7 @@ if __name__ == "__main__":
             fovx,
             fovy,
             sparse_valid_mask=sparse_valid_mask,
+            query_name=str(camera_info.image_name).replace("\\", "/"),
         )
         loc_res["sparse"]["sparse_valid_mask_policy"] = (
             _EVALUATION_VALID_MASK_POLICY if sparse_valid_mask is not None else "none"
