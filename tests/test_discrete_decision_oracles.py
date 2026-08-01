@@ -12,6 +12,11 @@ from scripts.eval_discrete_decision_oracles import (
     provenance_gt_targets,
     select_candidates,
 )
+from localization_training.joint_assignment_selection import (
+    block_balanced_mask,
+    fixed_set_mask,
+    pose_sufficient_mask,
+)
 from scripts.eval_family_aware_ransac import (
     _cell_balanced_rows,
     _distinct_family_rows,
@@ -107,6 +112,64 @@ class DiscreteDecisionOracleTest(unittest.TestCase):
         np.testing.assert_array_equal(candidates.keypoint_idx, [0, 2])
         np.testing.assert_array_equal(candidates.landmark_idx, [8, 7])
         np.testing.assert_allclose(candidates.scores, [0.8, 0.3])
+
+    def test_block8_selector_balances_occupied_cells_before_refill(self):
+        scores = torch.tensor([0.9, 0.8, 0.7, 0.6, 0.1, 0.05])
+        keypoints = torch.tensor(
+            [
+                [5.0, 5.0],
+                [6.0, 5.0],
+                [7.0, 5.0],
+                [8.0, 5.0],
+                [95.0, 95.0],
+                [94.0, 95.0],
+            ]
+        )
+        selected = block_balanced_mask(
+            scores, keypoints, (100, 100), budget=4, blocks=8
+        )
+        np.testing.assert_array_equal(torch.where(selected)[0], [0, 1, 4, 5])
+
+    def test_fixed_set_protocols_satisfy_budget_without_duplicate_rows(self):
+        count = 1200
+        scores = torch.linspace(1.0, 0.0, count)
+        keypoints = torch.stack(
+            (
+                torch.arange(count).remainder(40).float() * 10.0,
+                torch.arange(count).div(40, rounding_mode="floor").float() * 10.0,
+            ),
+            dim=1,
+        )
+        xyz = torch.stack(
+            (
+                torch.linspace(-2.0, 2.0, count),
+                torch.sin(torch.arange(count).float()),
+                torch.linspace(2.0, 8.0, count),
+            ),
+            dim=1,
+        )
+        dependency = torch.arange(count) // 2
+        source = torch.arange(count) // 3
+        common = (scores, keypoints, xyz, dependency, source, (300, 400))
+        s512 = fixed_set_mask("S512-PoseSufficient", *common)
+        s1024 = fixed_set_mask("S1024-Block8", *common)
+        self.assertEqual(int(s512.sum()), 512)
+        self.assertEqual(int(s1024.sum()), 1024)
+        self.assertEqual(s512.dtype, torch.bool)
+        self.assertEqual(s1024.dtype, torch.bool)
+
+    def test_pose_sufficient_selector_returns_all_below_budget(self):
+        count = 12
+        selected = pose_sufficient_mask(
+            torch.linspace(1.0, 0.0, count),
+            torch.zeros(count, 2),
+            torch.randn(count, 3),
+            torch.arange(count),
+            torch.arange(count),
+            (100, 100),
+            budget=512,
+        )
+        self.assertTrue(bool(selected.all()))
 
     def test_provenance_targets_require_source_and_reprojection(self):
         keypoints = np.asarray([[10.0, 10.0], [20.0, 20.0]])

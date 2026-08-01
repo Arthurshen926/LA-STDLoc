@@ -24,6 +24,7 @@ from localization_training.geometry_selector import GeometryBalancedSelector
 from localization_training.full_primitive_retrieval import (
     ambiguity_gated_context_topk,
     chunked_exact_topk,
+    chunked_exact_topk_preserve_top1,
     chunked_exact_topk_dual_prototype,
     chunked_exact_topk_family_prototype,
     conditional_core_reserve_topk,
@@ -41,6 +42,11 @@ from localization_training.native_matchability import (
 from localization_training.local_assignment import (
     OneOfKAssignmentHead,
     rerank_one_of_k,
+    validate_joint_assignment_state_contract,
+)
+from localization_training.joint_assignment_selection import (
+    FIXED_SET_PROTOCOLS,
+    fixed_set_mask,
 )
 from localization_training.local_context_adapter import (
     LocalContextMetricAdapter,
@@ -465,6 +471,31 @@ def validate_sparse_frontend_config(sparse_config):
                 + ", ".join(changed_candidate_controls)
             )
     return frontend
+
+
+def sparse_diagnostic_flags(diagnostics_config):
+    """Resolve diagnostics with production-safe defaults."""
+
+    diagnostics_config = diagnostics_config or {}
+    enabled = bool(diagnostics_config.get("enabled", False))
+    gt_metrics = bool(diagnostics_config.get("gt_metrics", enabled))
+    return enabled, gt_metrics
+
+
+def diagnostic_native_retrieval_topk(diagnostics_config):
+    """Return diagnostic-only retrieval width without affecting production.
+
+    An absent diagnostics dictionary is a production configuration.  The old
+    default of ``gt_metrics=True`` widened every native top-1 retrieval to 16,
+    even when no diagnostic was consumed.
+    """
+
+    enabled, gt_metrics = sparse_diagnostic_flags(diagnostics_config)
+    return (
+        max(int(diagnostics_config.get("retrieval_topk", 16)), 1)
+        if enabled and gt_metrics
+        else 0
+    )
 
 
 def validate_native_reject_threshold_contract(state_config, sparse_config):
@@ -2535,6 +2566,8 @@ class STDLoc:
         self.landmark_meta = torch.load(full_meta_path) if os.path.exists(full_meta_path) else None
         self.local_assignment_head = None
         self.local_assignment_landmark_statistics = None
+        self.local_assignment_source_groups = None
+        self.local_assignment_dependency_groups = None
         self.local_assignment_runtime_config = {}
         self.local_assignment_topk_mismatch = False
         rerank_state_path = str(sparse_config.get("rerank_state_path", ""))
@@ -2548,6 +2581,9 @@ class STDLoc:
                 ),
             )
             rerank_state = torch.load(full_rerank_state_path, map_location="cpu")
+            is_joint_assignment = validate_joint_assignment_state_contract(
+                rerank_state
+            )
             rerank_config = rerank_state.get("config", {})
             expected_topk = int(sparse_config.get("rerank_topk", 4))
             self.local_assignment_topk_mismatch = (
@@ -2567,6 +2603,37 @@ class STDLoc:
             )
             head_config = rerank_state.get("head_config", {})
             self.local_assignment_runtime_config = dict(rerank_config)
+            assignment_context_version = int(
+                rerank_config.get("context_version", 0)
+            )
+            if assignment_context_version == 1:
+                if self.materialized_anchor_map_state is None:
+                    raise ValueError(
+                        "joint assignment context requires a materialized anchor map"
+                    )
+                source_groups = torch.as_tensor(
+                    self.materialized_anchor_map_state["source_primitive_ids"]
+                ).long().reshape(-1)
+                dependency_groups = torch.as_tensor(
+                    self.materialized_anchor_map_state.get(
+                        "coarse_dependency_group_ids",
+                        self.materialized_anchor_map_state["dependency_group_ids"],
+                    )
+                ).long().reshape(-1)
+                if not (
+                    len(source_groups)
+                    == len(dependency_groups)
+                    == int(self.landmarks.get_xyz.shape[0])
+                ):
+                    raise ValueError(
+                        "joint assignment context metadata does not align with the map"
+                    )
+                self.local_assignment_source_groups = source_groups.to(
+                    self.landmarks.get_xyz.device
+                )
+                self.local_assignment_dependency_groups = dependency_groups.to(
+                    self.landmarks.get_xyz.device
+                )
             self.local_assignment_head = OneOfKAssignmentHead(
                 hidden_dim=int(
                     head_config.get("hidden_dim", 32)
@@ -2585,28 +2652,70 @@ class STDLoc:
                     head_config.get("null_temperature", 1.0)
                 ),
                 null_bias=float(head_config.get("null_bias", 0.0)),
+                null_feature_mode=str(
+                    head_config.get("null_feature_mode", "base5")
+                ),
+                normalize_candidate_features=bool(
+                    head_config.get("normalize_candidate_features", False)
+                ),
             ).to(self.landmarks.get_xyz.device)
             self.local_assignment_head.load_state_dict(
                 rerank_state["head_state_dict"]
             )
             self.local_assignment_head.eval()
-            if "landmark_statistics" in rerank_state:
-                statistic_indices = torch.as_tensor(
+            if "landmark_indices" in rerank_state:
+                assignment_indices = torch.as_tensor(
                     rerank_state["landmark_indices"]
                 ).reshape(-1)
                 active_indices = torch.as_tensor(
                     self.landmark_indices
                 ).reshape(-1).cpu()
-                if not torch.equal(statistic_indices.cpu(), active_indices):
+                if not torch.equal(assignment_indices.cpu(), active_indices):
                     raise ValueError(
-                        "one-of-K reranker landmark statistics do not align "
-                        "with the active bank"
+                        "one-of-K assignment state does not align with the active bank"
                     )
+            if "landmark_statistics" in rerank_state:
                 self.local_assignment_landmark_statistics = torch.as_tensor(
                     rerank_state["landmark_statistics"],
                     device=self.landmarks.get_xyz.device,
                     dtype=self.landmarks.get_loc_feature.dtype,
                 )
+                if is_joint_assignment and self.local_assignment_landmark_statistics.shape[0] != int(
+                    self.landmarks.get_xyz.shape[0]
+                ):
+                    raise ValueError(
+                        "joint assignment landmark statistics do not align with the active bank"
+                    )
+        self.joint_assignment_fixed_selector = str(
+            sparse_config.get("joint_assignment_fixed_selector", "A1-All")
+        )
+        if self.joint_assignment_fixed_selector not in FIXED_SET_PROTOCOLS:
+            raise ValueError(
+                "joint_assignment_fixed_selector must be one of "
+                + ", ".join(FIXED_SET_PROTOCOLS)
+            )
+        if self.joint_assignment_fixed_selector != "A1-All":
+            if self.materialized_anchor_map_state is None:
+                raise ValueError(
+                    "joint assignment fixed selection requires a materialized anchor map"
+                )
+            if bool(sparse_config.get("use_pose_sufficient_selector", False)):
+                raise ValueError(
+                    "joint assignment fixed selection cannot be combined with "
+                    "the legacy learned pose-sufficient selector"
+                )
+            if self.local_assignment_source_groups is None:
+                self.local_assignment_source_groups = torch.as_tensor(
+                    self.materialized_anchor_map_state["source_primitive_ids"],
+                    device=self.landmarks.get_xyz.device,
+                ).long().reshape(-1)
+                self.local_assignment_dependency_groups = torch.as_tensor(
+                    self.materialized_anchor_map_state.get(
+                        "coarse_dependency_group_ids",
+                        self.materialized_anchor_map_state["dependency_group_ids"],
+                    ),
+                    device=self.landmarks.get_xyz.device,
+                ).long().reshape(-1)
         self.local_context_adapter = None
         self.shared_metric_adapter = None
         full_metric_state_path = None
@@ -2642,7 +2751,10 @@ class STDLoc:
                 adapter_state["adapter_state_dict"]
             )
             self.local_context_adapter.eval()
-        if self.sparse_frontend == "ulfloc_native_metric":
+        if self.sparse_frontend in {
+            "ulfloc_native_metric",
+            "ulfloc_native_rerank",
+        } and str(sparse_config.get("metric_state_path", "")):
             full_metric_state_path = resolve_artifact_path(
                 config["model_path"],
                 sparse_config["metric_state_path"],
@@ -3622,6 +3734,9 @@ class STDLoc:
         # detect
         H, W = query_feature_map.shape[-2:]
         diag_cfg = self.config["sparse"].get("diagnostics", {})
+        diagnostics_enabled, diagnostics_gt_metrics = sparse_diagnostic_flags(
+            diag_cfg
+        )
         dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
 
         nms_radius = self.config["sparse"].get("nms", 4)
@@ -4324,7 +4439,7 @@ class STDLoc:
             ),
         }
         result.update(retrieval_diagnostics)
-        if bool(diag_cfg.get("enabled", True)):
+        if diagnostics_enabled:
             result.update(
                 sparse_correspondence_diagnostics(
                     p2d,
@@ -4346,7 +4461,7 @@ class STDLoc:
                 )
             )
         if (
-            bool(diag_cfg.get("gt_metrics", True))
+            diagnostics_gt_metrics
             or bool(diag_cfg.get("dump_correspondences", False))
             or dump_discrete_oracle
         ):
@@ -4474,15 +4589,20 @@ class STDLoc:
         frontend_start = clock()
         rerank_enabled = self.sparse_frontend == "ulfloc_native_rerank"
         adapter_enabled = self.sparse_frontend == "ulfloc_native_adapter"
-        metric_enabled = self.sparse_frontend == "ulfloc_native_metric"
-        sparse = self.feature_extractor.detectAndCompute(
-            sparse_image, top_k=detect_num
-        )[0]
+        metric_enabled = self.shared_metric_adapter is not None
         dense_feature_map = None
         if rerank_enabled or adapter_enabled:
-            dense_feature_map = self.feature_extractor.detectAndComputeDense(
-                sparse_image
-            )[0][0]
+            sparse_batch, dense_outputs = (
+                self.feature_extractor.detectAndComputeWithDense(
+                    sparse_image, top_k=detect_num
+                )
+            )
+            sparse = sparse_batch[0]
+            dense_feature_map = dense_outputs[0][0]
+        else:
+            sparse = self.feature_extractor.detectAndCompute(
+                sparse_image, top_k=detect_num
+            )[0]
         frontend_end = clock()
         keypoints = sparse["keypoints"]
         keypoint_scores = sparse["keypoint_scores"]
@@ -4593,10 +4713,11 @@ class STDLoc:
             else 0
         )
         diag_cfg = self.config["sparse"].get("diagnostics", {})
-        dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
-        diagnostic_topk = (
-            16 if bool(diag_cfg.get("gt_metrics", True)) else 0
+        diagnostics_enabled, diagnostics_gt_metrics = sparse_diagnostic_flags(
+            diag_cfg
         )
+        dump_discrete_oracle = bool(diag_cfg.get("dump_discrete_oracle", False))
+        diagnostic_topk = diagnostic_native_retrieval_topk(diag_cfg)
         oracle_topk = min(
             max(int(diag_cfg.get("oracle_topk", 32)), 1),
             int(landmark_features.shape[0]),
@@ -4622,6 +4743,7 @@ class STDLoc:
             ),
         }
         query_context_bias = None
+        protected_top1_retrieval = False
         query_context_diagnostics = {
             "nearest_similarity_mean": 0.0,
             "nearest_similarity_max": 0.0,
@@ -4724,11 +4846,20 @@ class STDLoc:
                 **retrieval_args,
             )
         elif self.dual_prototype_features is None:
-            retrieval = chunked_exact_topk(
+            protect_plain_top1 = (
+                retrieval_topk > configured_topk and configured_topk == 1
+            )
+            retrieval_function = (
+                chunked_exact_topk_preserve_top1
+                if protect_plain_top1
+                else chunked_exact_topk
+            )
+            retrieval = retrieval_function(
                 query_features,
                 landmark_features,
                 **retrieval_args,
             )
+            protected_top1_retrieval = protect_plain_top1
         else:
             retrieval = chunked_exact_topk_dual_prototype(
                 query_features,
@@ -4739,10 +4870,14 @@ class STDLoc:
             )
         rerank_diagnostics = {
             "sparse_diag_native_rerank_enabled": float(rerank_enabled),
+            "sparse_diag_native_rerank_runtime_ms": 0.0,
             "sparse_diag_native_rerank_topk_mismatch": float(
                 self.local_assignment_topk_mismatch
             ),
             "sparse_diag_native_rerank_topk": 0.0,
+            "sparse_diag_retrieval_protected_top1": float(
+                protected_top1_retrieval
+            ),
             "sparse_diag_native_rerank_kept_ratio": 1.0,
             "sparse_diag_native_rerank_local_peak_mean": 0.0,
             "sparse_diag_native_rerank_local_margin_mean": 0.0,
@@ -4835,6 +4970,7 @@ class STDLoc:
                 ),
             )
         if rerank_enabled:
+            rerank_start = clock()
             rerank_topk = min(
                 int(self.config["sparse"].get("rerank_topk", 4)),
                 int(landmark_features.shape[0]),
@@ -4912,21 +5048,48 @@ class STDLoc:
                 ),
                 max_null_fraction=float(
                     self.config["sparse"].get(
-                        "rerank_null_max_fraction", 1.0
+                        "rerank_null_max_fraction",
+                        self.local_assignment_runtime_config.get(
+                            "maximum_null_fraction", 1.0
+                        ),
                     )
                 ),
                 null_grid_rows=int(
-                    self.config["sparse"].get("rerank_null_grid_rows", 0)
+                    self.config["sparse"].get(
+                        "rerank_null_grid_rows",
+                        self.local_assignment_runtime_config.get(
+                            "null_grid_rows", 0
+                        ),
+                    )
                 ),
                 null_grid_cols=int(
-                    self.config["sparse"].get("rerank_null_grid_cols", 0)
+                    self.config["sparse"].get(
+                        "rerank_null_grid_cols",
+                        self.local_assignment_runtime_config.get(
+                            "null_grid_cols", 0
+                        ),
+                    )
                 ),
                 null_min_kept_per_grid=int(
                     self.config["sparse"].get(
-                        "rerank_null_min_kept_per_grid", 0
+                        "rerank_null_min_kept_per_grid",
+                        self.local_assignment_runtime_config.get(
+                            "null_minimum_kept_per_grid", 0
+                        ),
                     )
                 ),
+                context_version=int(
+                    self.local_assignment_runtime_config.get(
+                        "context_version", 0
+                    )
+                ),
+                keypoint_scores=keypoint_scores,
+                landmark_xyz=self.landmarks.get_xyz,
+                source_groups=self.local_assignment_source_groups,
+                dependency_groups=self.local_assignment_dependency_groups,
+                query_metric=self.shared_metric_adapter,
             )
+            rerank_runtime_ms = (clock() - rerank_start) * 1000.0
             raw_keypoint_idx = torch.nonzero(
                 reranked.keep, as_tuple=False
             ).reshape(-1)
@@ -4961,6 +5124,9 @@ class STDLoc:
             rerank_diagnostics.update(
                 {
                     "sparse_diag_native_rerank_topk": float(rerank_topk),
+                    "sparse_diag_native_rerank_runtime_ms": float(
+                        rerank_runtime_ms
+                    ),
                     "sparse_diag_native_rerank_kept_ratio": float(
                         reranked.keep.float().mean().item()
                     ),
@@ -5054,7 +5220,44 @@ class STDLoc:
             min_match_count=min_candidate_matches,
             refill_trigger_count=candidate_refill_trigger_count,
         )
+        joint_selector_input_count = int(matches.keypoint_idx.numel())
+        joint_selector_runtime_ms = 0.0
+        if (
+            self.joint_assignment_fixed_selector != "A1-All"
+            and matches.keypoint_idx.numel() > 0
+        ):
+            joint_selector_start = clock()
+            selected_landmarks = matches.landmark_idx
+            selected_mask = fixed_set_mask(
+                self.joint_assignment_fixed_selector,
+                matches.scores,
+                keypoints[matches.keypoint_idx],
+                self.landmarks.get_xyz[selected_landmarks],
+                self.local_assignment_dependency_groups[selected_landmarks],
+                self.local_assignment_source_groups[selected_landmarks],
+                (height, width),
+            ).to(device=matches.keypoint_idx.device)
+            matches = SparseMatchResult(
+                matches.keypoint_idx[selected_mask],
+                matches.landmark_idx[selected_mask],
+                matches.scores[selected_mask],
+            )
+            joint_selector_runtime_ms = (
+                clock() - joint_selector_start
+            ) * 1000.0
         pose_sufficient_diagnostics = {
+            "sparse_diag_joint_assignment_fixed_selector_enabled": float(
+                self.joint_assignment_fixed_selector != "A1-All"
+            ),
+            "sparse_diag_joint_assignment_fixed_selector_input_count": float(
+                joint_selector_input_count
+            ),
+            "sparse_diag_joint_assignment_fixed_selector_selected_count": float(
+                matches.keypoint_idx.numel()
+            ),
+            "sparse_diag_joint_assignment_fixed_selector_runtime_ms": float(
+                joint_selector_runtime_ms
+            ),
             "sparse_diag_pose_sufficient_selector_enabled": float(
                 self.pose_sufficient_selector_state is not None
             ),
@@ -5856,7 +6059,7 @@ class STDLoc:
                 for key, value in two_stage_diagnostics.items()
             }
         )
-        if bool(diag_cfg.get("enabled", True)):
+        if diagnostics_enabled:
             result.update(
                 sparse_correspondence_diagnostics(
                     p2d_np,
@@ -5877,7 +6080,7 @@ class STDLoc:
                     ),
                 )
             )
-        if bool(diag_cfg.get("gt_metrics", True)) or bool(
+        if diagnostics_gt_metrics or bool(
             diag_cfg.get("dump_correspondences", False)
         ) or dump_discrete_oracle:
             inliers_flat = np.asarray(inliers, dtype=np.int64).reshape(-1)

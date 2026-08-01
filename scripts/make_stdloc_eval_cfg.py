@@ -65,6 +65,7 @@ def make_stdloc_eval_cfg(
     diagnostics_dump_inliers_only=None,
     diagnostics_dump_discrete_oracle=None,
     diagnostics_oracle_topk=None,
+    diagnostics_retrieval_topk=None,
     diagnostics_grid_rows=None,
     diagnostics_grid_cols=None,
     diagnostics_voxel_size=None,
@@ -95,6 +96,7 @@ def make_stdloc_eval_cfg(
     family_prototype_state_path=None,
     pose_sufficient_selector_state_path=None,
     pose_sufficient_budget=None,
+    joint_assignment_fixed_selector=None,
     rerank_topk=None,
     rerank_patch_radius=None,
     rerank_patch_step_px=None,
@@ -225,6 +227,10 @@ def make_stdloc_eval_cfg(
         )
     if pose_sufficient_budget is not None:
         sparse["pose_sufficient_budget"] = int(pose_sufficient_budget)
+    if joint_assignment_fixed_selector is not None:
+        sparse["joint_assignment_fixed_selector"] = str(
+            joint_assignment_fixed_selector
+        )
     if rerank_state_path is not None:
         sparse["rerank_state_path"] = str(rerank_state_path)
         sparse["rerank_state_model_path"] = artifact_model_path
@@ -445,6 +451,7 @@ def make_stdloc_eval_cfg(
         "dump_inliers_only": (diagnostics_dump_inliers_only, bool),
         "dump_discrete_oracle": (diagnostics_dump_discrete_oracle, bool),
         "oracle_topk": (diagnostics_oracle_topk, int),
+        "retrieval_topk": (diagnostics_retrieval_topk, int),
         "grid_rows": (diagnostics_grid_rows, int),
         "grid_cols": (diagnostics_grid_cols, int),
         "voxel_size": (diagnostics_voxel_size, float),
@@ -612,6 +619,9 @@ def make_stdloc_eval_cfg(
         "pose_sufficient_budget": sparse.get(
             "pose_sufficient_budget", 0
         ),
+        "joint_assignment_fixed_selector": sparse.get(
+            "joint_assignment_fixed_selector", "A1-All"
+        ),
         "candidate_frontend_match_policy": sparse.get(
             "candidate_frontend_match_policy", "warn"
         ),
@@ -762,6 +772,7 @@ def main():
     parser.add_argument("--diagnostics_dump_all", action="store_true", default=None)
     parser.add_argument("--diagnostics_dump_discrete_oracle", action="store_true", default=None)
     parser.add_argument("--diagnostics_oracle_topk", type=int, default=None)
+    parser.add_argument("--diagnostics_retrieval_topk", type=int, default=None)
     parser.add_argument("--diagnostics_grid_rows", type=int, default=None)
     parser.add_argument("--diagnostics_grid_cols", type=int, default=None)
     parser.add_argument("--diagnostics_voxel_size", type=float, default=None)
@@ -808,6 +819,11 @@ def main():
         "--pose_sufficient_selector_state_path", default=None
     )
     parser.add_argument("--pose_sufficient_budget", type=int, default=None)
+    parser.add_argument(
+        "--joint_assignment_fixed_selector",
+        choices=["A1-All", "S512-PoseSufficient", "S1024-Block8"],
+        default=None,
+    )
     parser.add_argument("--sparse_ransac_seed", type=int, default=None)
     parser.add_argument(
         "--sparse_solver",
@@ -980,6 +996,7 @@ def main():
         ),
         diagnostics_dump_discrete_oracle=args.diagnostics_dump_discrete_oracle,
         diagnostics_oracle_topk=args.diagnostics_oracle_topk,
+        diagnostics_retrieval_topk=args.diagnostics_retrieval_topk,
         diagnostics_grid_rows=args.diagnostics_grid_rows,
         diagnostics_grid_cols=args.diagnostics_grid_cols,
         diagnostics_voxel_size=args.diagnostics_voxel_size,
@@ -1026,6 +1043,9 @@ def main():
             args.pose_sufficient_selector_state_path
         ),
         pose_sufficient_budget=args.pose_sufficient_budget,
+        joint_assignment_fixed_selector=(
+            args.joint_assignment_fixed_selector
+        ),
         rerank_topk=args.rerank_topk,
         rerank_patch_radius=args.rerank_patch_radius,
         rerank_patch_step_px=args.rerank_patch_step_px,

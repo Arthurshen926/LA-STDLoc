@@ -14,6 +14,101 @@ class RetrievalResult:
     chunks: int
 
 
+def preserve_retrieval_top1(
+    candidates: RetrievalResult,
+    protected_top1: RetrievalResult,
+) -> RetrievalResult:
+    """Force a separately evaluated top-1 identity into candidate position 0."""
+
+    if (
+        candidates.indices.ndim != 2
+        or protected_top1.indices.shape != (candidates.indices.shape[0], 1)
+        or protected_top1.scores.shape != protected_top1.indices.shape
+        or candidates.scores.shape != candidates.indices.shape
+    ):
+        raise ValueError("protected top-1 retrieval shapes do not align")
+    indices = candidates.indices.clone()
+    scores = candidates.scores.clone()
+    target = protected_top1.indices[:, 0]
+    target_score = protected_top1.scores[:, 0]
+    matches = indices == target[:, None]
+    present = matches.any(dim=1)
+    position = matches.long().argmax(dim=1)
+    position = torch.where(
+        present,
+        position,
+        torch.full_like(position, indices.shape[1] - 1),
+    )
+    row = torch.arange(len(indices), device=indices.device)
+    previous_top1_index = indices[:, 0].clone()
+    previous_top1_score = scores[:, 0].clone()
+    indices[row, position] = previous_top1_index
+    scores[row, position] = previous_top1_score
+    indices[:, 0] = target
+    scores[:, 0] = target_score
+    return RetrievalResult(
+        scores=scores,
+        indices=indices,
+        elapsed_ms=float(candidates.elapsed_ms + protected_top1.elapsed_ms),
+        chunks=int(candidates.chunks + protected_top1.chunks),
+    )
+
+
+def chunked_exact_topk_preserve_top1(
+    query_features,
+    map_features,
+    topk=1,
+    chunk_size=8192,
+):
+    """Exact top-K with K-invariant top-1 from one map-matching pass."""
+
+    if query_features.ndim != 2 or map_features.ndim != 2:
+        raise ValueError("query_features and map_features must be 2D")
+    if query_features.shape[1] != map_features.shape[1]:
+        raise ValueError("query and map feature dimensions must match")
+    count = int(map_features.shape[0])
+    topk = min(max(int(topk), 1), count)
+    chunk_size = max(int(chunk_size), topk)
+    query = F.normalize(query_features.float(), dim=1)
+    best_scores = query.new_full((query.shape[0], topk), -torch.inf)
+    best_indices = torch.zeros(
+        (query.shape[0], topk), dtype=torch.long, device=query.device
+    )
+    top1_scores = query.new_full((query.shape[0], 1), -torch.inf)
+    top1_indices = torch.zeros(
+        (query.shape[0], 1), dtype=torch.long, device=query.device
+    )
+    start_time = time.perf_counter()
+    for start in range(0, count, chunk_size):
+        stop = min(start + chunk_size, count)
+        features = F.normalize(map_features[start:stop].float(), dim=1)
+        scores = query @ features.T
+        indices = torch.arange(start, stop, device=query.device, dtype=torch.long)
+        indices = indices[None].expand(query.shape[0], -1)
+
+        merged_scores = torch.cat((best_scores, scores), dim=1)
+        merged_indices = torch.cat((best_indices, indices), dim=1)
+        best_scores, positions = torch.topk(merged_scores, topk, dim=1)
+        best_indices = torch.gather(merged_indices, 1, positions)
+
+        merged_top1_scores = torch.cat((top1_scores, scores), dim=1)
+        merged_top1_indices = torch.cat((top1_indices, indices), dim=1)
+        top1_scores, positions = torch.topk(merged_top1_scores, 1, dim=1)
+        top1_indices = torch.gather(merged_top1_indices, 1, positions)
+
+    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+    candidates = RetrievalResult(
+        best_scores,
+        best_indices,
+        elapsed_ms,
+        int(math.ceil(count / chunk_size)),
+    )
+    if topk == 1:
+        return candidates
+    protected = RetrievalResult(top1_scores, top1_indices, 0.0, 0)
+    return preserve_retrieval_top1(candidates, protected)
+
+
 def chunked_exact_topk(query_features, map_features, topk=1, chunk_size=8192):
     """Exact cosine top-k without materializing the full query-map matrix."""
     if query_features.ndim != 2 or map_features.ndim != 2:

@@ -4,6 +4,7 @@ from localization_training.local_assignment import OneOfKAssignmentHead
 from scripts.train_one_of_k_reranker import (
     ambiguity_gated_positive_mask,
     assignment_error_breakdown,
+    load_assignment_map_state,
     multi_positive_assignment_loss,
     normalized_landmark_statistics,
     summarize_assignment_counts,
@@ -125,3 +126,18 @@ def test_assignment_breakdown_separates_beneficial_and_harmful_swaps():
     assert counts["beneficial_swaps"] == 1
     assert counts["harmful_swaps"] == 1
     assert summary["clean_top1_retention"] == 0.5
+
+
+def test_assignment_map_loader_accepts_materialized_anchor_schema():
+    rows = load_assignment_map_state(
+        {
+            "anchor_ids": torch.tensor([5, 6]),
+            "anchor_xyz": torch.ones(2, 3),
+            "anchor_features": torch.eye(2),
+            "source_primitive_ids": torch.tensor([2, 2]),
+            "dependency_group_ids": torch.tensor([8, 9]),
+        }
+    )
+    assert rows["identities"].tolist() == [5, 6]
+    assert rows["source_groups"].tolist() == [2, 2]
+    assert rows["dependency_groups"].tolist() == [8, 9]

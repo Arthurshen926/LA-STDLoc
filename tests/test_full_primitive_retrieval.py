@@ -4,9 +4,12 @@ import torch.nn.functional as F
 
 from localization_training.full_primitive_retrieval import (
     chunked_exact_topk,
+    chunked_exact_topk_preserve_top1,
     chunked_exact_topk_dual_prototype,
     chunked_exact_topk_family_prototype,
     conditional_core_reserve_topk,
+    preserve_retrieval_top1,
+    RetrievalResult,
     suppress_redundant_hypotheses,
 )
 
@@ -22,6 +25,62 @@ def test_chunked_exact_topk_matches_dense_cosine():
     assert torch.equal(result.indices, expected_indices)
     assert torch.allclose(result.scores, expected_scores, atol=1e-6)
     assert result.chunks == 4
+
+
+def test_protected_top1_is_invariant_when_wide_topk_uses_another_tie():
+    wide = RetrievalResult(
+        scores=torch.tensor([[1.0, 1.0, 0.8]]),
+        indices=torch.tensor([[4, 3, 2]]),
+        elapsed_ms=2.0,
+        chunks=2,
+    )
+    top1 = RetrievalResult(
+        scores=torch.tensor([[1.0]]),
+        indices=torch.tensor([[3]]),
+        elapsed_ms=1.0,
+        chunks=2,
+    )
+    protected = preserve_retrieval_top1(wide, top1)
+    assert protected.indices.tolist() == [[3, 4, 2]]
+    assert torch.allclose(protected.scores, torch.tensor([[1.0, 1.0, 0.8]]))
+    assert protected.elapsed_ms == 3.0
+
+
+def test_protected_top1_replaces_last_candidate_when_missing():
+    wide = RetrievalResult(
+        scores=torch.tensor([[0.9, 0.8, 0.7]]),
+        indices=torch.tensor([[4, 3, 2]]),
+        elapsed_ms=0.0,
+        chunks=1,
+    )
+    top1 = RetrievalResult(
+        scores=torch.tensor([[1.0]]),
+        indices=torch.tensor([[7]]),
+        elapsed_ms=0.0,
+        chunks=1,
+    )
+    protected = preserve_retrieval_top1(wide, top1)
+    assert protected.indices.tolist() == [[7, 3, 4]]
+    assert torch.allclose(protected.scores, torch.tensor([[1.0, 0.8, 0.9]]))
+
+
+def test_single_pass_protected_topk_matches_independent_top1_and_wide_scores():
+    torch.manual_seed(17)
+    query = torch.randn(9, 7)
+    features = torch.randn(29, 7)
+    # Include exact ties so the top-1 identity contract is exercised rather
+    # than only the generic no-tie path.
+    features[8] = features[3]
+    features[21] = features[3]
+    wide = chunked_exact_topk(query, features, topk=8, chunk_size=11)
+    top1 = chunked_exact_topk(query, features, topk=1, chunk_size=11)
+    expected = preserve_retrieval_top1(wide, top1)
+    actual = chunked_exact_topk_preserve_top1(
+        query, features, topk=8, chunk_size=11
+    )
+    assert torch.equal(actual.indices, expected.indices)
+    assert torch.equal(actual.scores, expected.scores)
+    assert actual.chunks == wide.chunks
 
 
 def test_dual_prototype_retrieval_uses_max_score_per_anchor():

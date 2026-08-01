@@ -134,16 +134,14 @@ class SuperPoint(nn.Module):
         descriptors = F.normalize(descriptors, p=2, dim=1)
         return descriptors, scores
 
-    @torch.inference_mode()
-    def detectAndCompute(self, x, top_k=None, detection_threshold=None):
-        """Return native sparse SuperPoint descriptors for every input image.
-
-        This intentionally does not sample the resized deployment feature
-        pyramid.  It is the API used by the ULF-compatible initializer and by
-        the sparse frontend parity audit.
-        """
-        device = next(self.parameters()).device
-        descriptors_dense, scores = self._dense_outputs(x.to(device))
+    def _sparse_from_dense(
+        self,
+        descriptors_dense,
+        scores,
+        *,
+        top_k=None,
+        detection_threshold=None,
+    ):
         threshold = (
             self.detection_threshold
             if detection_threshold is None
@@ -178,6 +176,39 @@ class SuperPoint(nn.Module):
                 }
             )
         return result
+
+    @torch.inference_mode()
+    def detectAndCompute(self, x, top_k=None, detection_threshold=None):
+        """Return native sparse SuperPoint descriptors for every input image.
+
+        This intentionally does not sample the resized deployment feature
+        pyramid.  It is the API used by the ULF-compatible initializer and by
+        the sparse frontend parity audit.
+        """
+        device = next(self.parameters()).device
+        descriptors_dense, scores = self._dense_outputs(x.to(device))
+        return self._sparse_from_dense(
+            descriptors_dense,
+            scores,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+        )
+
+    @torch.inference_mode()
+    def detectAndComputeWithDense(
+        self, x, top_k=None, detection_threshold=None
+    ):
+        """Return native sparse and dense outputs from one encoder forward."""
+
+        device = next(self.parameters()).device
+        descriptors, scores = self._dense_outputs(x.to(device))
+        sparse = self._sparse_from_dense(
+            descriptors,
+            scores,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+        )
+        return sparse, (descriptors, scores.unsqueeze(1))
 
     @torch.inference_mode()
     def detectAndComputeDense(self, x):

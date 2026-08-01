@@ -21,6 +21,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from localization_training.pose_information import pose_jacobian_analytic
+from localization_training.joint_assignment_selection import fixed_set_mask
 from utils.pose_utils import cal_pose_error, solve_pose
 
 
@@ -257,11 +258,54 @@ def oracle_topk_candidates(topk_landmark_idx, topk_scores, candidate_correct):
     )
 
 
-def run_pose(candidates, keypoint_xy, landmark_xyz, K, query, seed):
-    cv2.setRNGSeed(int(seed))
+def fixed_protocol_candidates(
+    candidates,
+    protocol,
+    keypoint_xy,
+    landmark_xyz,
+    dependency_groups,
+    source_groups,
+    image_hw,
+):
+    """Apply a frozen set selector after one-of-K identity assignment."""
+
+    if not len(candidates.scores):
+        return candidates
+    landmark_idx = np.asarray(candidates.landmark_idx, dtype=np.int64)
+    mask = fixed_set_mask(
+        protocol,
+        torch.as_tensor(candidates.scores),
+        torch.as_tensor(keypoint_xy)[candidates.keypoint_idx],
+        torch.as_tensor(landmark_xyz)[landmark_idx],
+        torch.as_tensor(dependency_groups)[landmark_idx],
+        torch.as_tensor(source_groups)[landmark_idx],
+        image_hw,
+    ).numpy()
+    return candidates.subset(mask)
+
+
+def run_pose(
+    candidates,
+    keypoint_xy,
+    landmark_xyz,
+    K,
+    query,
+    seed,
+    *,
+    return_diagnostics=False,
+):
+    # The dump records the exact deployment seed.  Setting only OpenCV's
+    # global RNG does not affect PoseLib and previously made oracle replay use
+    # PoseLib's default seed zero instead of the frozen frontend contract.
+    ransac_seed = int(
+        query["ransac_seed"].item()
+        if "ransac_seed" in query
+        else seed
+    )
+    cv2.setRNGSeed(ransac_seed)
     p2d = np.asarray(keypoint_xy, dtype=np.float64)[candidates.keypoint_idx]
     p3d = np.asarray(landmark_xyz, dtype=np.float64)[candidates.landmark_idx]
-    pose, inliers = solve_pose(
+    result = solve_pose(
         p2d,
         p3d,
         np.asarray(K, dtype=np.float64),
@@ -270,7 +314,18 @@ def run_pose(candidates, keypoint_xy, landmark_xyz, K, query, seed):
         float(query["confidence"].item()),
         int(query["max_iterations"].item()),
         int(query["min_iterations"].item()),
+        scores=np.asarray(candidates.scores, dtype=np.float64),
+        ransac_seed=ransac_seed,
+        return_diagnostics=return_diagnostics,
     )
+    if return_diagnostics:
+        pose, inliers, diagnostics = result
+        return (
+            np.asarray(pose, dtype=np.float64),
+            np.asarray(inliers).reshape(-1),
+            diagnostics,
+        )
+    pose, inliers = result
     return np.asarray(pose, dtype=np.float64), np.asarray(inliers).reshape(-1)
 
 
@@ -616,6 +671,14 @@ def evaluate(
         source_gaussian_idx = np.asarray(
             bank_file["source_gaussian_idx"], dtype=np.int64
         )
+        dependency_group_id = np.asarray(
+            (
+                bank_file["dependency_group_id"]
+                if "dependency_group_id" in bank_file.files
+                else np.arange(len(landmark_xyz), dtype=np.int64)
+            ),
+            dtype=np.int64,
+        )
         anchor_type = np.asarray(
             (
                 bank_file["anchor_type"]
@@ -661,6 +724,10 @@ def evaluate(
         source_to_landmarks.setdefault(int(source), []).append(int(landmark))
 
     oracle_assignment_ks = (1, 2, 4, 8, 16)
+    fixed_protocols = (
+        "S512-PoseSufficient",
+        "S1024-Block8",
+    )
     methods = (
         "actual",
         "replay",
@@ -677,12 +744,34 @@ def evaluate(
         "O5_signed_coordinate",
         "O6_best_single_swap",
         "O6_all_strict_swaps",
-    ) + tuple(f"OK{topk}_one_of_k" for topk in oracle_assignment_ks)
+    ) + tuple(f"OK{topk}_one_of_k" for topk in oracle_assignment_ks) + tuple(
+        f"A1_{protocol}" for protocol in fixed_protocols
+    ) + tuple(
+        f"OK{topk}_{protocol}"
+        for topk in oracle_assignment_ks
+        for protocol in fixed_protocols
+    )
     errors = {name: {"ae": [], "te": []} for name in methods}
     retrieval_ks = (1, 2, 4, 8, 16, 32)
     retrieval = {
         2.0: {k: [] for k in retrieval_ks},
         4.0: {k: [] for k in retrieval_ks},
+    }
+    retrieval_counts = {
+        radius_px: {
+            k: {
+                "positive_rows": 0,
+                "matchable_positive_rows": 0,
+                "all_rows": 0,
+                "matchable_rows": 0,
+            }
+            for k in retrieval_ks
+        }
+        for radius_px in (2.0, 4.0)
+    }
+    first_positive_rank_counts = {
+        radius_px: np.zeros(max(retrieval_ks) + 2, dtype=np.int64)
+        for radius_px in (2.0, 4.0)
     }
     provenance_coverage = {
         radius: {
@@ -702,6 +791,7 @@ def evaluate(
     cf_positive_queries = 0
     cf_positive_rows = []
     selector_replay_failures = []
+    pose_replay_failures = []
 
     for query_index, query_file in enumerate(manifest["query_files"]):
         with np.load(dump_dir / query_file, allow_pickle=False) as loaded:
@@ -810,9 +900,27 @@ def evaluate(
             denom = max(int(matchable[eval_radius].sum()), 1)
             for recall_k in retrieval_ks:
                 k = min(recall_k, topk_lm.shape[1])
+                positive = candidate_correct[:, :k].any(axis=1)
                 retrieval[eval_radius][recall_k].append(
-                    float(candidate_correct[:, :k].any(axis=1)[matchable[eval_radius]].sum() / denom)
+                    float(positive[matchable[eval_radius]].sum() / denom)
                 )
+                counts = retrieval_counts[eval_radius][recall_k]
+                counts["positive_rows"] += int(positive.sum())
+                counts["matchable_positive_rows"] += int(
+                    positive[matchable[eval_radius]].sum()
+                )
+                counts["all_rows"] += int(len(positive))
+                counts["matchable_rows"] += int(matchable[eval_radius].sum())
+            has_positive = candidate_correct.any(axis=1)
+            first_rank = np.full(len(candidate_correct), topk_lm.shape[1] + 1)
+            first_rank[has_positive] = (
+                candidate_correct[has_positive].argmax(axis=1) + 1
+            )
+            histogram = np.bincount(
+                first_rank,
+                minlength=max(retrieval_ks) + 2,
+            )
+            first_positive_rank_counts[eval_radius][: len(histogram)] += histogram
 
         strict_target = targets[float(radius)]
         strict_matchable = matchable[float(radius)]
@@ -919,6 +1027,18 @@ def evaluate(
             correctness_priority=swapped_correct,
         )
         clean_hard = baseline.subset(hard_correct)
+        baseline_fixed = {
+            protocol: fixed_protocol_candidates(
+                baseline,
+                protocol,
+                keypoint_xy,
+                landmark_xyz,
+                dependency_group_id,
+                source_gaussian_idx,
+                (height, width),
+            )
+            for protocol in fixed_protocols
+        }
         assignment_oracle = oracle_assignment_candidates(
             raw_rows,
             strict_target[raw_rows],
@@ -941,6 +1061,8 @@ def evaluate(
         )
         topk_oracle_poses = {}
         topk_oracle_counts = {}
+        topk_fixed_poses = {}
+        topk_fixed_counts = {}
         for topk in oracle_assignment_ks:
             width_k = min(topk, topk_lm.shape[1])
             oracle_candidates = oracle_topk_candidates(
@@ -957,6 +1079,39 @@ def evaluate(
                 query,
                 seed + query_index,
             )[0]
+            for protocol in fixed_protocols:
+                fixed_candidates = fixed_protocol_candidates(
+                    oracle_candidates,
+                    protocol,
+                    keypoint_xy,
+                    landmark_xyz,
+                    dependency_group_id,
+                    source_gaussian_idx,
+                    (height, width),
+                )
+                topk_fixed_counts[(topk, protocol)] = int(
+                    fixed_candidates.scores.size
+                )
+                topk_fixed_poses[(topk, protocol)] = run_pose(
+                    fixed_candidates,
+                    keypoint_xy,
+                    landmark_xyz,
+                    K,
+                    query,
+                    seed + query_index,
+                )[0]
+
+        baseline_fixed_poses = {
+            protocol: run_pose(
+                candidates,
+                keypoint_xy,
+                landmark_xyz,
+                K,
+                query,
+                seed + query_index,
+            )[0]
+            for protocol, candidates in baseline_fixed.items()
+        }
 
         actual_pose = np.asarray(query["pred_pose_w2c"], dtype=np.float64)
         replay_pose, replay_inliers = run_pose(
@@ -987,6 +1142,11 @@ def evaluate(
         dumped_inliers = dumped_inliers[
             (dumped_inliers >= 0) & (dumped_inliers < len(baseline.scores))
         ]
+        if not (
+            np.allclose(replay_pose, actual_pose, atol=1e-5, rtol=0.0)
+            and np.array_equal(replay_inliers, dumped_inliers)
+        ):
+            pose_replay_failures.append(image_name)
         inlier_set = baseline.subset(dumped_inliers)
         inlier_correct, _ = pair_is_correct(
             keypoint_xy[inlier_set.keypoint_idx],
@@ -1151,6 +1311,15 @@ def evaluate(
                 f"OK{topk}_one_of_k": topk_oracle_poses[topk]
                 for topk in oracle_assignment_ks
             },
+            **{
+                f"A1_{protocol}": baseline_fixed_poses[protocol]
+                for protocol in fixed_protocols
+            },
+            **{
+                f"OK{topk}_{protocol}": topk_fixed_poses[(topk, protocol)]
+                for topk in oracle_assignment_ks
+                for protocol in fixed_protocols
+            },
         }
         per_query_errors = {}
         for method, pose in poses.items():
@@ -1170,6 +1339,19 @@ def evaluate(
                 "one_of_k_oracle_matches": {
                     str(topk): topk_oracle_counts[topk]
                     for topk in oracle_assignment_ks
+                },
+                "fixed_protocol_matches": {
+                    f"A1_{protocol}": int(
+                        baseline_fixed[protocol].scores.size
+                    )
+                    for protocol in fixed_protocols
+                }
+                | {
+                    f"OK{topk}_{protocol}": topk_fixed_counts[
+                        (topk, protocol)
+                    ]
+                    for topk in oracle_assignment_ks
+                    for protocol in fixed_protocols
                 },
                 "hard_matches": int(len(baseline.scores)),
                 "hard_gt_precision_2px": float(hard_correct.mean()),
@@ -1212,6 +1394,40 @@ def evaluate(
         }
         for eval_radius, by_k in retrieval.items()
     }
+    retrieval_weighted_summary = {
+        f"radius_{int(eval_radius)}px": {
+            f"top_{k}": {
+                "positive_row_rate_all": float(
+                    counts["positive_rows"] / max(counts["all_rows"], 1)
+                ),
+                "positive_recall_matchable": float(
+                    counts["matchable_positive_rows"]
+                    / max(counts["matchable_rows"], 1)
+                ),
+                **{name: int(value) for name, value in counts.items()},
+            }
+            for k, counts in by_k.items()
+        }
+        for eval_radius, by_k in retrieval_counts.items()
+    }
+    available_topk = int(manifest.get("oracle_topk", 16))
+    first_positive_rank_summary = {}
+    for eval_radius, counts in first_positive_rank_counts.items():
+        total = int(
+            retrieval_counts[eval_radius][retrieval_ks[0]]["all_rows"]
+        )
+        rank_counts = {
+            str(rank): int(counts[rank])
+            for rank in range(1, min(available_topk, len(counts) - 1) + 1)
+        }
+        positive = sum(rank_counts.values())
+        first_positive_rank_summary[
+            f"radius_{int(eval_radius)}px"
+        ] = {
+            "rank_counts": rank_counts,
+            "no_positive_in_topk": int(total - positive),
+            "total_rows": total,
+        }
     provenance_coverage_summary = {
         f"radius_{int(eval_radius)}px": {
             split: {
@@ -1234,6 +1450,36 @@ def evaluate(
     positive_cf_fraction = cf_positive_queries / max(len(query_records), 1)
     improved_queries = int((oracle_te < base_te - 1e-9).sum())
     clean_bias_improvement = float(np.median(final_bias) - np.median(clean_hard_bias))
+    actual_ae = np.asarray(errors["actual"]["ae"], dtype=np.float64)
+    actual_te = np.asarray(errors["actual"]["te"], dtype=np.float64)
+    actual_catastrophic = (actual_te > 100.0) | (actual_ae > 10.0)
+    actual_r5_failure = (actual_te > 5.0) | (actual_ae > 5.0)
+    actual_tail = actual_te >= np.percentile(actual_te, 90)
+    rescue_summary = {}
+    for method, values in errors.items():
+        if method == "actual":
+            continue
+        method_ae = np.asarray(values["ae"], dtype=np.float64)
+        method_te = np.asarray(values["te"], dtype=np.float64)
+        method_catastrophic = (method_te > 100.0) | (method_ae > 10.0)
+        method_r5 = (method_te <= 5.0) & (method_ae <= 5.0)
+        rescue_summary[method] = {
+            "baseline_catastrophic_count": int(actual_catastrophic.sum()),
+            "catastrophic_rescued_count": int(
+                (actual_catastrophic & ~method_catastrophic).sum()
+            ),
+            "catastrophic_introduced_count": int(
+                (~actual_catastrophic & method_catastrophic).sum()
+            ),
+            "baseline_r5_failure_count": int(actual_r5_failure.sum()),
+            "r5_failure_rescued_count": int(
+                (actual_r5_failure & method_r5).sum()
+            ),
+            "p90_tail_improved_count": int(
+                (actual_tail & (method_te < actual_te - 1e-9)).sum()
+            ),
+            "p90_tail_query_count": int(actual_tail.sum()),
+        }
 
     stop_reasons = []
     if median_gain < 0.1:
@@ -1262,14 +1508,27 @@ def evaluate(
     )
     corr = spearmanr(final_bias, errors["actual"]["te"])
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dump_dir": str(dump_dir),
         "strict_gt_radius_px": float(radius),
         "task_translation_scale_m": translation_scale_m,
         "task_rotation_scale_degrees": rotation_scale_degrees,
         "query_count": len(query_records),
         "selector_replay_failures": selector_replay_failures,
+        "pose_replay_failures": pose_replay_failures,
         "O1_retrieval": retrieval_summary,
+        "topk_identity_coverage": retrieval_weighted_summary,
+        "first_strict_positive_rank": first_positive_rank_summary,
+        "fixed_set_protocols": {
+            "A1-All": "all native top-1 correspondences after the frozen hard frontend",
+            "S512-PoseSufficient": (
+                "deterministic score ordering with 4x4 image, 3D-octant, "
+                "dependency, and source coverage constraints"
+            ),
+            "S1024-Block8": (
+                "deterministic score round-robin over occupied 8x8 image blocks"
+            ),
+        },
         "strict_splat_provenance_coverage": provenance_coverage_summary,
         "geometry_oracle": {
             "track_payload": str(track_payload or ""),
@@ -1298,7 +1557,19 @@ def evaluate(
                 str(topk): summaries[f"OK{topk}_one_of_k"]
                 for topk in oracle_assignment_ks
             },
+            "fixed_top1": {
+                protocol: summaries[f"A1_{protocol}"]
+                for protocol in fixed_protocols
+            },
+            "one_of_k_fixed_set": {
+                str(topk): {
+                    protocol: summaries[f"OK{topk}_{protocol}"]
+                    for protocol in fixed_protocols
+                }
+                for topk in oracle_assignment_ks
+            },
         },
+        "tail_rescue": rescue_summary,
         "discrete_diagnostics": {
             "hard_top1_gt_precision_mean": float(np.mean(hard_precision)),
             "ransac_inlier_gt_precision_mean": float(np.mean(inlier_precision)),
@@ -1380,7 +1651,9 @@ def main():
     )
     print(json.dumps({
         "O1_retrieval": report["O1_retrieval"],
+        "topk_identity_coverage": report["topk_identity_coverage"],
         "P0_oracles": report["P0_oracles"],
+        "tail_rescue": report["tail_rescue"],
         "discrete_diagnostics": report["discrete_diagnostics"],
         "bias_diagnostics": report["bias_diagnostics"],
         "O6_counterfactual": report["O6_counterfactual"],

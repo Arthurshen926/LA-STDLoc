@@ -51,6 +51,7 @@ def _runtime_metrics(rows: list[dict]) -> dict[str, float]:
         "ransac_ms_p90": float(np.nanquantile(ransac, 0.9)),
         "total_ms_mean": float(np.nanmean(total)),
         "total_ms_median": float(np.nanmedian(total)),
+        "total_ms_p90": float(np.nanquantile(total, 0.9)),
         "residual_evaluation_reduction_mean": (
             float(np.nanmean(reduction))
             if bool(np.isfinite(reduction).any())

@@ -61,3 +61,18 @@ class FeatureExtractor(nn.Module):
                 "detectAndComputeDense is currently defined only for SuperPoint"
             )
         return self.model.detectAndComputeDense(image)
+
+    @torch.no_grad()
+    def detectAndComputeWithDense(
+        self, image, top_k=None, detection_threshold=None
+    ):
+        """Expose one-pass native sparse and dense SuperPoint outputs."""
+        if self.feature_type != "sp":
+            raise NotImplementedError(
+                "detectAndComputeWithDense is defined only for SuperPoint"
+            )
+        return self.model.detectAndComputeWithDense(
+            image,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+        )

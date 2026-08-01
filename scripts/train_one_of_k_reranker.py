@@ -16,9 +16,11 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from localization_training.local_assignment import (
+    JOINT_ASSIGNMENT_CONTEXT_FEATURE_NAMES,
     OneOfKAssignmentHead,
     build_one_of_k_features,
 )
+from localization_training.shared_metric import SharedLowRankMetric
 from train_lafgs_map import _cached_native_observations
 
 
@@ -83,6 +85,41 @@ def normalized_landmark_statistics(
         "rescue_utility_log_p95",
         "observation_count_log_p95",
     ]
+
+
+def load_assignment_map_state(state):
+    """Normalize legacy landmark and materialized-anchor map schemas."""
+
+    xyz_key = "landmark_xyz" if "landmark_xyz" in state else "anchor_xyz"
+    feature_key = (
+        "landmark_features" if "landmark_features" in state else "anchor_features"
+    )
+    id_key = "landmark_indices" if "landmark_indices" in state else "anchor_ids"
+    if any(key not in state for key in (xyz_key, feature_key, id_key)):
+        raise ValueError("assignment map misses xyz, descriptor, or identity rows")
+    xyz = torch.as_tensor(state[xyz_key]).float().reshape(-1, 3)
+    features = torch.as_tensor(state[feature_key]).float().reshape(xyz.shape[0], -1)
+    identities = torch.as_tensor(state[id_key]).long().reshape(-1)
+    if not (len(xyz) == len(features) == len(identities)):
+        raise ValueError("assignment map rows do not align")
+    source = torch.as_tensor(
+        state.get("source_primitive_ids", identities)
+    ).long().reshape(-1)
+    dependency = torch.as_tensor(
+        state.get(
+            "coarse_dependency_group_ids",
+            state.get("dependency_group_ids", identities),
+        )
+    ).long().reshape(-1)
+    if len(source) != len(xyz) or len(dependency) != len(xyz):
+        raise ValueError("assignment map source/dependency rows do not align")
+    return {
+        "xyz": xyz,
+        "features": features,
+        "identities": identities,
+        "source_groups": source,
+        "dependency_groups": dependency,
+    }
 
 
 def multi_positive_assignment_loss(
@@ -300,6 +337,11 @@ def main():
     parser.add_argument("--query_cache", required=True)
     parser.add_argument("--visibility_cache", required=True)
     parser.add_argument("--map_state", required=True)
+    parser.add_argument(
+        "--metric_state",
+        default="",
+        help="Frozen query-side metric used by the deployed A1 frontend.",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--topk", type=int, default=4, choices=[4, 8])
     parser.add_argument("--patch_radius", type=int, default=2)
@@ -331,16 +373,41 @@ def main():
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--landmark_statistics", default="")
     parser.add_argument("--global_attractor_statistics", default="")
+    parser.add_argument(
+        "--context_version",
+        type=int,
+        default=0,
+        choices=[0, 1],
+        help="Enable query-normalized 2D/3D repeated-assignment context.",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     state = torch.load(args.map_state, map_location="cpu")
-    bank_xyz = torch.as_tensor(state["landmark_xyz"]).float().to(device)
+    map_rows = load_assignment_map_state(state)
+    bank_xyz = map_rows["xyz"].to(device)
     bank_features = F.normalize(
-        torch.as_tensor(state["landmark_features"]).float().to(device), dim=1
+        map_rows["features"].to(device), dim=1
     )
+    query_metric = None
+    if args.metric_state:
+        metric_payload = torch.load(args.metric_state, map_location="cpu")
+        metric_indices = torch.as_tensor(
+            metric_payload["landmark_indices"]
+        ).long().reshape(-1)
+        if not torch.equal(metric_indices.cpu(), map_rows["identities"].cpu()):
+            raise ValueError("metric state does not align with the assignment map")
+        query_metric = SharedLowRankMetric(
+            **metric_payload["metric_config"]
+        ).to(device)
+        query_metric.load_state_dict(metric_payload["metric_state_dict"])
+        query_metric.eval()
+        for parameter in query_metric.parameters():
+            parameter.requires_grad_(False)
+    source_groups = map_rows["source_groups"].to(device)
+    dependency_groups = map_rows["dependency_groups"].to(device)
     landmark_statistics = None
     landmark_statistic_names = []
     if args.landmark_statistics:
@@ -349,7 +416,7 @@ def main():
             landmark_statistic_names,
         ) = normalized_landmark_statistics(
             args.landmark_statistics,
-            state["landmark_indices"],
+            map_rows["identities"],
             global_attractor_path=(
                 args.global_attractor_statistics or None
             ),
@@ -382,6 +449,9 @@ def main():
         if observations.query_features.numel() == 0:
             continue
         query = F.normalize(observations.query_features, dim=1)
+        if query_metric is not None:
+            with torch.no_grad():
+                query, _ = query_metric(query)
         scores = query @ bank_features.T
         top_scores, top_indices = torch.topk(scores, args.topk, dim=1)
         local_features = build_one_of_k_features(
@@ -395,6 +465,12 @@ def main():
             step_px=args.patch_step_px,
             temperature=args.temperature,
             landmark_statistics=landmark_statistics,
+            context_version=args.context_version,
+            keypoint_scores=observations.query_scores,
+            landmark_xyz=bank_xyz,
+            source_groups=source_groups,
+            dependency_groups=dependency_groups,
+            query_metric=query_metric,
         )
         positives = candidate_positive_mask(
             observations, top_indices, bank_features.shape[0]
@@ -413,6 +489,10 @@ def main():
         0
         if landmark_statistics is None
         else int(landmark_statistics.shape[1])
+    ) + (
+        len(JOINT_ASSIGNMENT_CONTEXT_FEATURE_NAMES)
+        if args.context_version == 1
+        else 0
     )
     head = OneOfKAssignmentHead(
         hidden_dim=args.hidden_dim,
@@ -551,7 +631,7 @@ def main():
             key: value.detach().cpu() for key, value in head.state_dict().items()
         },
         "landmark_indices": torch.as_tensor(
-            state["landmark_indices"]
+            map_rows["identities"]
         ).reshape(-1).cpu(),
         **(
             {
@@ -587,6 +667,11 @@ def main():
             "seed": args.seed,
             "query_count": len(feature_cache),
             "map_state": str(Path(args.map_state).resolve()),
+            "metric_state": (
+                str(Path(args.metric_state).resolve())
+                if args.metric_state
+                else ""
+            ),
             "landmark_statistics": (
                 str(Path(args.landmark_statistics).resolve())
                 if args.landmark_statistics
@@ -598,6 +683,12 @@ def main():
                 else ""
             ),
             "landmark_statistic_names": landmark_statistic_names,
+            "context_version": args.context_version,
+            "context_feature_names": (
+                list(JOINT_ASSIGNMENT_CONTEXT_FEATURE_NAMES)
+                if args.context_version == 1
+                else []
+            ),
         },
         "history": history,
         "null_calibration": null_calibration,

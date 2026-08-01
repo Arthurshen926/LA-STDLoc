@@ -34,6 +34,7 @@ class DetectorFreeObservationBatch:
     bank_depth: torch.Tensor
     bank_projected: torch.Tensor
     bank_visible: torch.Tensor
+    query_scores: Optional[torch.Tensor] = None
     base_bank_uv: Optional[torch.Tensor] = None
     base_bank_depth: Optional[torch.Tensor] = None
     base_bank_projected: Optional[torch.Tensor] = None
@@ -144,6 +145,11 @@ def _select_observation_rows(observations, rows):
         bank_depth=observations.bank_depth,
         bank_projected=observations.bank_projected,
         bank_visible=observations.bank_visible,
+        query_scores=(
+            None
+            if observations.query_scores is None
+            else observations.query_scores[row_indices]
+        ),
         base_bank_uv=observations.base_bank_uv,
         base_bank_depth=observations.base_bank_depth,
         base_bank_projected=observations.base_bank_projected,
@@ -687,6 +693,7 @@ def build_native_sparse_observations(
             bank_depth=bank_depth,
             bank_projected=bank_projected,
             bank_visible=bank_visible,
+            query_scores=native_scores.new_empty((0,)),
             base_bank_uv=base_bank_uv,
             base_bank_depth=base_bank_depth,
             base_bank_projected=base_bank_projected,
@@ -828,6 +835,7 @@ def build_native_sparse_observations(
         bank_depth=bank_depth,
         bank_projected=bank_projected,
         bank_visible=bank_visible,
+        query_scores=query_scores,
         base_bank_uv=base_bank_uv,
         base_bank_depth=base_bank_depth,
         base_bank_projected=base_bank_projected,
@@ -897,6 +905,11 @@ def jitter_detector_free_observations(
         bank_depth=observations.bank_depth,
         bank_projected=observations.bank_projected,
         bank_visible=observations.bank_visible,
+        query_scores=(
+            None
+            if observations.query_scores is None
+            else observations.query_scores[valid]
+        ),
         base_bank_uv=observations.base_bank_uv,
         base_bank_depth=observations.base_bank_depth,
         base_bank_projected=observations.base_bank_projected,

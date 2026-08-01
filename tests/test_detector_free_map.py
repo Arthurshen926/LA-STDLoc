@@ -560,11 +560,12 @@ def test_native_sparse_observations_preserve_detector_coordinates_and_unmatched_
     )
     keypoints = torch.tensor([[4.0, 4.0], [0.0, 0.0]])
     descriptors = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    detector_scores = torch.tensor([1.0, 0.5])
     batch = build_native_sparse_observations(
         bank_xyz,
         keypoints,
         descriptors,
-        torch.tensor([1.0, 0.5]),
+        detector_scores,
         K,
         torch.eye(4),
         image_size=(10, 10),
@@ -576,6 +577,7 @@ def test_native_sparse_observations_preserve_detector_coordinates_and_unmatched_
 
     # The query is an actual detector proposal, not the base anchor projection.
     assert torch.equal(batch.query_uv, keypoints)
+    assert torch.equal(batch.query_scores, detector_scores)
     assert batch.source_indices.tolist() == [0, -1]
     assert torch.allclose(batch.query_features, descriptors)
     assert torch.allclose(batch.base_bank_uv[0], torch.tensor([4.0, 4.0]))

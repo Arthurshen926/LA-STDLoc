@@ -2,6 +2,63 @@ import unittest
 
 
 class STDLocConfigPathTest(unittest.TestCase):
+    def test_rerank_frontend_accepts_the_frozen_a1_metric_contract(self):
+        from stdloc import validate_sparse_frontend_config
+
+        config = {
+            "sparse_frontend": "ulfloc_native_rerank",
+            "query_feature_contract": "native_resized_input",
+            "use_landmark_prior": False,
+            "topk": 1,
+            "rerank_topk": 8,
+            "rerank_state_path": "/tmp/assignment.pt",
+            "metric_state_path": "/tmp/metric.pt",
+        }
+        self.assertEqual(
+            validate_sparse_frontend_config(config), "ulfloc_native_rerank"
+        )
+
+    def test_production_native_retrieval_does_not_enable_diagnostic_topk(self):
+        from stdloc import diagnostic_native_retrieval_topk, sparse_diagnostic_flags
+
+        self.assertEqual(diagnostic_native_retrieval_topk({}), 0)
+        self.assertEqual(sparse_diagnostic_flags({}), (False, False))
+        self.assertEqual(
+            sparse_diagnostic_flags({"enabled": True}), (True, True)
+        )
+        self.assertEqual(
+            sparse_diagnostic_flags({"enabled": False, "gt_metrics": True}),
+            (False, True),
+        )
+        self.assertEqual(
+            diagnostic_native_retrieval_topk(
+                {"enabled": False, "gt_metrics": True}
+            ),
+            0,
+        )
+        self.assertEqual(
+            diagnostic_native_retrieval_topk(
+                {"enabled": True, "gt_metrics": True}
+            ),
+            16,
+        )
+        self.assertEqual(
+            diagnostic_native_retrieval_topk(
+                {
+                    "enabled": True,
+                    "gt_metrics": True,
+                    "retrieval_topk": 8,
+                }
+            ),
+            8,
+        )
+        self.assertEqual(
+            diagnostic_native_retrieval_topk(
+                {"enabled": True, "gt_metrics": False}
+            ),
+            0,
+        )
+
     def test_ulfloc_native_frontend_requires_the_native_direct_contract(self):
         from stdloc import validate_sparse_frontend_config
 
