@@ -34,6 +34,7 @@ class FailureAtlasConfig:
     planner_mode: str = "viewpoint_completion"
     partner_candidates: int = 4
     minimum_normalized_view_gap: float = 0.75
+    minimum_global_pose_novelty: float = 0.75
     maximum_normalized_pair_distance: float = 6.0
     maximum_pair_rotation_degrees: float = 55.0
     view_gap_weight: float = 0.75
@@ -659,6 +660,23 @@ def plan_failure_conditioned_views(
                     cache[right]["pose_w2c"],
                     alpha,
                 )
+                synthetic_center, synthetic_forward = _camera_center_and_forward(pose)
+                global_pose_gaps = [
+                    float(
+                        torch.linalg.norm(synthetic_center - centers[real_name])
+                    )
+                    / view_scale
+                    + _rotation_gap_degrees(
+                        synthetic_forward, forwards[real_name]
+                    )
+                    / max(float(config.maximum_pair_rotation_degrees), 1e-6)
+                    for real_name in all_names
+                ]
+                nearest_real_pose_gap = min(global_pose_gaps)
+                if nearest_real_pose_gap < float(
+                    config.minimum_global_pose_novelty
+                ):
+                    continue
                 height, width = cache[left]["native_input_hw"]
                 K = torch.as_tensor(cache[left]["native_K"]).float()
                 interpolation_novelty = min(float(alpha), 1.0 - float(alpha))
@@ -725,6 +743,7 @@ def plan_failure_conditioned_views(
                         "normalized_pair_distance": float(normalized_distance),
                         "pair_rotation_degrees": float(rotation_gap),
                         "cross_trajectory": bool(cross_trajectory),
+                        "nearest_real_pose_gap": float(nearest_real_pose_gap),
                         "planner_mode": str(config.planner_mode),
                         "acquisition": acquisition,
                     }

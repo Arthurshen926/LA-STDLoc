@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 
 
@@ -5,6 +7,98 @@ def _flat_camera_tensor(value, trailing_dims):
     if value is None:
         return None
     return value.reshape(-1, *value.shape[-trailing_dims:]) if trailing_dims else value.reshape(-1)
+
+
+def anchor_source_csr(
+    state: dict,
+    track_payload: dict | None = None,
+    full_prior_pool: dict | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Recover the Gaussian source family supporting every localization anchor."""
+    count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
+    source = torch.as_tensor(state["source_primitive_ids"]).long()
+    track_ids = torch.as_tensor(state["track_cluster_ids"]).long()
+    anchor_ids = torch.as_tensor(state["anchor_ids"]).long()
+    families: list[dict[int, float]] = [
+        {int(source[row]): 1.0} for row in range(count)
+    ]
+
+    assignment = track_payload.get("assignment") if track_payload is not None else None
+    if assignment is not None and {
+        "track_landmark_offsets",
+        "track_landmark_indices",
+    }.issubset(assignment):
+        offsets = torch.as_tensor(assignment["track_landmark_offsets"]).long()
+        landmark_rows = torch.as_tensor(assignment["track_landmark_indices"]).long()
+        primitive_ids = torch.as_tensor(track_payload["landmark_indices"]).long()
+        costs = torch.as_tensor(
+            assignment.get(
+                "track_landmark_costs",
+                torch.zeros_like(landmark_rows, dtype=torch.float32),
+            )
+        ).float()
+        for row in torch.nonzero(track_ids >= 0).reshape(-1).tolist():
+            track = int(track_ids[row])
+            if track + 1 >= offsets.numel():
+                continue
+            start, end = int(offsets[track]), int(offsets[track + 1])
+            if end <= start:
+                continue
+            weights = torch.softmax(-costs[start:end], dim=0)
+            families[row] = {
+                int(primitive_ids[int(local)]): float(weight)
+                for local, weight in zip(
+                    landmark_rows[start:end].tolist(), weights.tolist()
+                )
+            }
+
+    if full_prior_pool is not None:
+        pool_ids = torch.as_tensor(full_prior_pool["anchor_ids"]).long()
+        pool_lookup = {
+            int(anchor_id): row for row, anchor_id in enumerate(pool_ids.tolist())
+        }
+        offsets = torch.as_tensor(
+            full_prior_pool["full_prior_source_group_offsets"]
+        ).long()
+        primitive_ids = torch.as_tensor(
+            full_prior_pool["full_prior_source_group_primitive_ids"]
+        ).long()
+        responsibilities = torch.as_tensor(
+            full_prior_pool["full_prior_source_group_responsibilities"]
+        ).float()
+        canonical = int(full_prior_pool["canonical_anchor_count"])
+        for row in range(count):
+            pool_row = pool_lookup.get(int(anchor_ids[row]))
+            if pool_row is None or pool_row < canonical:
+                continue
+            local = pool_row - canonical
+            if local + 1 >= offsets.numel():
+                continue
+            start, end = int(offsets[local]), int(offsets[local + 1])
+            if end <= start:
+                continue
+            weights = responsibilities[start:end].clamp_min(0)
+            weights = weights / weights.sum().clamp_min(1e-8)
+            families[row] = {
+                int(primitive): float(weight)
+                for primitive, weight in zip(
+                    primitive_ids[start:end].tolist(), weights.tolist()
+                )
+            }
+
+    csr_offsets = [0]
+    csr_ids = []
+    csr_weights = []
+    for family in families:
+        for primitive, weight in sorted(family.items()):
+            csr_ids.append(primitive)
+            csr_weights.append(weight)
+        csr_offsets.append(len(csr_ids))
+    return (
+        torch.tensor(csr_offsets, dtype=torch.int64),
+        torch.tensor(csr_ids, dtype=torch.int64),
+        torch.tensor(csr_weights, dtype=torch.float32),
+    )
 
 
 @torch.no_grad()

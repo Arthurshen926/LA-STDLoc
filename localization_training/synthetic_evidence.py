@@ -11,8 +11,12 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class SyntheticEvidenceConfig:
     topk_keypoints: int = 2048
-    positive_radius_px: float = 4.0
+    positive_radius_px: float = 2.0
+    ambiguous_radius_px: float = 6.0
     positives_per_keypoint: int = 4
+    association_candidates_per_keypoint: int = 8
+    minimum_source_provenance_mass: float = 0.05
+    require_raster_provenance: bool = False
     minimum_alpha: float = 0.5
     absolute_depth_tolerance: float = 0.08
     relative_depth_tolerance: float = 0.03
@@ -121,10 +125,14 @@ def depth_warped_reference_residual(
     x = (x + 0.5) * float(width) / float(low_width) - 0.5
     y = (y + 0.5) * float(height) / float(low_height) - 0.5
     K = torch.as_tensor(render_K).float()
+    # x/y are feature-grid indices. Intrinsics operate on physical pixel
+    # centers, so unprojection must add the sparse frontend's 0.5 offset.
+    physical_x = x + 0.5
+    physical_y = y + 0.5
     camera = torch.stack(
         (
-            (x - K[0, 2]) / K[0, 0] * low_depth,
-            (y - K[1, 2]) / K[1, 1] * low_depth,
+            (physical_x - K[0, 2]) / K[0, 0] * low_depth,
+            (physical_y - K[1, 2]) / K[1, 1] * low_depth,
             low_depth,
         ),
         dim=-1,
@@ -155,20 +163,24 @@ def depth_warped_reference_residual(
             / depth.clamp_min(1e-8)
             + reference_K[1, 2]
         )
+        # Projection returns physical coordinates; all internal sparse
+        # evidence uses grid-index coordinates.
+        u_grid = u - 0.5
+        v_grid = v - 0.5
         valid = (
             torch.isfinite(depth)
             & (depth > 0)
-            & (u >= 0)
-            & (u < reference_width)
-            & (v >= 0)
-            & (v < reference_height)
+            & (u_grid >= 0)
+            & (u_grid <= reference_width - 1)
+            & (v_grid >= 0)
+            & (v_grid <= reference_height - 1)
             & torch.isfinite(low_depth.reshape(-1))
             & (low_depth.reshape(-1) > 0)
         )
         grid = torch.stack(
             (
-                (u + 0.5) / max(reference_width, 1) * 2.0 - 1.0,
-                (v + 0.5) / max(reference_height, 1) * 2.0 - 1.0,
+                (u_grid + 0.5) / max(reference_width, 1) * 2.0 - 1.0,
+                (v_grid + 0.5) / max(reference_height, 1) * 2.0 - 1.0,
             ),
             dim=1,
         ).reshape(1, low_height, low_width, 2)
@@ -377,7 +389,7 @@ def project_existing_anchors(
             K[1, 1] * camera[:, 1] / depth.clamp_min(1e-8) + K[1, 2],
         ),
         dim=1,
-    )
+    ) - 0.5
     return projected, depth, depth > 0
 
 
@@ -485,6 +497,175 @@ def keypoint_positive_csr(
     )
 
 
+def _csr_from_rows(rows: list[list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
+    offsets = [0]
+    values = []
+    for row in rows:
+        values.extend(int(value) for value in row)
+        offsets.append(len(values))
+    return (
+        torch.tensor(offsets, dtype=torch.long),
+        torch.tensor(values, dtype=torch.long),
+    )
+
+
+def _candidate_source_provenance_mass(
+    candidate_anchors: torch.Tensor,
+    *,
+    keypoint_primitive_ids: torch.Tensor,
+    keypoint_primitive_weights: torch.Tensor,
+    keypoint_provenance_valid: torch.Tensor,
+    anchor_source_offsets: torch.Tensor,
+    anchor_source_primitive_ids: torch.Tensor,
+    anchor_source_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Score whether each candidate anchor actually supports the rendered pixel."""
+    candidates = torch.as_tensor(candidate_anchors).long().cpu()
+    primitive_ids = torch.as_tensor(keypoint_primitive_ids).long().cpu()
+    primitive_weights = torch.as_tensor(keypoint_primitive_weights).float().cpu()
+    provenance_valid = torch.as_tensor(keypoint_provenance_valid).bool().cpu()
+    offsets = torch.as_tensor(anchor_source_offsets).long().cpu()
+    source_ids = torch.as_tensor(anchor_source_primitive_ids).long().cpu()
+    source_weights = torch.as_tensor(anchor_source_weights).float().cpu()
+    if primitive_ids.shape != primitive_weights.shape:
+        raise ValueError("synthetic primitive IDs and weights do not align")
+    if primitive_ids.shape[0] != candidates.shape[0]:
+        raise ValueError("synthetic provenance rows do not align with keypoints")
+    if provenance_valid.numel() != candidates.shape[0]:
+        raise ValueError("synthetic provenance-valid rows do not align")
+
+    mass = torch.zeros(candidates.shape, dtype=torch.float32)
+    for row in range(candidates.shape[0]):
+        if not bool(provenance_valid[row]):
+            continue
+        pixel_mass = {
+            int(primitive): float(weight)
+            for primitive, weight in zip(
+                primitive_ids[row].tolist(), primitive_weights[row].tolist()
+            )
+            if float(weight) > 0
+        }
+        for column, anchor in enumerate(candidates[row].tolist()):
+            start, end = int(offsets[anchor]), int(offsets[anchor + 1])
+            mass[row, column] = sum(
+                pixel_mass.get(int(source), 0.0) * float(source_weight)
+                for source, source_weight in zip(
+                    source_ids[start:end].tolist(), source_weights[start:end].tolist()
+                )
+            )
+    return mass
+
+
+def keypoint_strong_ambiguous_csr(
+    *,
+    keypoints: torch.Tensor,
+    projected_xy: torch.Tensor,
+    visible_anchor_indices: torch.Tensor,
+    config: SyntheticEvidenceConfig,
+    keypoint_provenance: dict | None = None,
+    anchor_source: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+    distance_chunk: int = 2048,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    """Build 2px strong and 2-6px ambiguous labels with source provenance."""
+    keypoints = torch.as_tensor(keypoints).float()
+    projected_xy = torch.as_tensor(projected_xy, device=keypoints.device).float()
+    visible_anchor_indices = torch.as_tensor(
+        visible_anchor_indices, device=keypoints.device
+    ).long()
+    rows = torch.arange(keypoints.shape[0], dtype=torch.long)
+    if not keypoints.numel() or not visible_anchor_indices.numel():
+        empty_offsets = torch.zeros(keypoints.shape[0] + 1, dtype=torch.long)
+        return (
+            rows,
+            empty_offsets,
+            torch.empty(0, dtype=torch.long),
+            empty_offsets.clone(),
+            torch.empty(0, dtype=torch.long),
+            {"candidate_pair_count": 0, "provenance_supported_pair_count": 0},
+        )
+
+    visible_xy = projected_xy[visible_anchor_indices]
+    candidate_count = min(
+        max(
+            int(config.association_candidates_per_keypoint),
+            int(config.positives_per_keypoint),
+        ),
+        int(visible_xy.shape[0]),
+    )
+    distance_blocks = []
+    anchor_blocks = []
+    for start in range(0, len(keypoints), max(int(distance_chunk), 1)):
+        stop = min(len(keypoints), start + max(int(distance_chunk), 1))
+        distances = torch.cdist(keypoints[start:stop], visible_xy)
+        values, local = torch.topk(
+            distances, k=candidate_count, largest=False, dim=1
+        )
+        distance_blocks.append(values.cpu())
+        anchor_blocks.append(visible_anchor_indices[local].cpu())
+    distances = torch.cat(distance_blocks)
+    anchors = torch.cat(anchor_blocks)
+
+    if keypoint_provenance is None or anchor_source is None:
+        if config.require_raster_provenance:
+            raise ValueError(
+                "canonical synthetic labels require keypoint raster provenance "
+                "and anchor source CSR"
+            )
+        source_mass = torch.ones_like(distances)
+    else:
+        source_mass = _candidate_source_provenance_mass(
+            anchors,
+            keypoint_primitive_ids=keypoint_provenance["primitive_ids"],
+            keypoint_primitive_weights=keypoint_provenance["contribution_mass"],
+            keypoint_provenance_valid=keypoint_provenance["valid"],
+            anchor_source_offsets=anchor_source[0],
+            anchor_source_primitive_ids=anchor_source[1],
+            anchor_source_weights=anchor_source[2],
+        )
+    provenance_supported = source_mass >= float(
+        config.minimum_source_provenance_mass
+    )
+    maximum = max(int(config.positives_per_keypoint), 1)
+    strong_rows = []
+    ambiguous_rows = []
+    for row in range(len(keypoints)):
+        strong_rows.append(
+            anchors[row][
+                provenance_supported[row]
+                & (distances[row] <= float(config.positive_radius_px))
+            ][:maximum].tolist()
+        )
+        ambiguous_rows.append(
+            anchors[row][
+                provenance_supported[row]
+                & (distances[row] > float(config.positive_radius_px))
+                & (distances[row] <= float(config.ambiguous_radius_px))
+            ][:maximum].tolist()
+        )
+    strong_offsets, strong_indices = _csr_from_rows(strong_rows)
+    ambiguous_offsets, ambiguous_indices = _csr_from_rows(ambiguous_rows)
+    return (
+        rows,
+        strong_offsets,
+        strong_indices,
+        ambiguous_offsets,
+        ambiguous_indices,
+        {
+            "candidate_pair_count": int(
+                (distances <= float(config.ambiguous_radius_px)).sum()
+            ),
+            "provenance_supported_pair_count": int(
+                (
+                    provenance_supported
+                    & (distances <= float(config.ambiguous_radius_px))
+                ).sum()
+            ),
+            "strong_pair_count": int(strong_indices.numel()),
+            "ambiguous_pair_count": int(ambiguous_indices.numel()),
+        },
+    )
+
+
 def build_synthetic_evidence_record(
     *,
     name: str,
@@ -500,6 +681,8 @@ def build_synthetic_evidence_record(
     source_query: str,
     config: SyntheticEvidenceConfig,
     device: torch.device,
+    keypoint_provenance: dict | None = None,
+    anchor_source: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
 ) -> dict:
     """Create filtered multi-positive appearance evidence for fixed anchors."""
     keypoints = torch.as_tensor(sparse["keypoints"]).float()
@@ -513,6 +696,11 @@ def build_synthetic_evidence_record(
     point_keep = valid_points & (
         support_points if config.require_support_mask else True
     )
+    if keypoint_provenance is not None:
+        keypoint_provenance = {
+            key: torch.as_tensor(value)[point_keep]
+            for key, value in keypoint_provenance.items()
+        }
     keypoints = keypoints[point_keep.to(keypoints.device)]
     descriptors = descriptors[point_keep.to(descriptors.device)]
     scores = scores[point_keep.to(scores.device)]
@@ -544,11 +732,20 @@ def build_synthetic_evidence_record(
         .float()
         .mean()
     )
-    rows, offsets, positives = keypoint_positive_csr(
+    (
+        rows,
+        offsets,
+        positives,
+        ambiguous_offsets,
+        ambiguous_indices,
+        provenance_diagnostics,
+    ) = keypoint_strong_ambiguous_csr(
         keypoints=keypoints.to(device),
         projected_xy=projected,
         visible_anchor_indices=visible_indices,
         config=config,
+        keypoint_provenance=keypoint_provenance,
+        anchor_source=anchor_source,
     )
     positive_pair_count = int(positives.numel())
     matchable_count = int(((offsets[1:] - offsets[:-1]) > 0).sum())
@@ -586,7 +783,10 @@ def build_synthetic_evidence_record(
         "query_rows": rows,
         "positive_offsets": offsets,
         "positive_indices": positives,
+        "ambiguous_offsets": ambiguous_offsets,
+        "ambiguous_indices": ambiguous_indices,
         "positive_pair_count": positive_pair_count,
+        "ambiguous_pair_count": int(ambiguous_indices.numel()),
         "matchable_keypoint_count": matchable_count,
         "matchable_rate": matchable_rate,
         "original_keypoint_count": original_keypoint_count,
@@ -594,6 +794,8 @@ def build_synthetic_evidence_record(
         "visible_anchor_count": int(visible_indices.numel()),
         "alpha_coverage": alpha_coverage,
         "valid_mask_summary": dict(valid_mask_result.summary),
+        "raster_provenance_diagnostics": provenance_diagnostics,
+        "label_policy": "2px strong; 2-6px ambiguous; anchor-source raster gated",
         "config": asdict(config),
     }
 
@@ -630,6 +832,17 @@ def pack_synthetic_evidence(records: list[dict], *, provenance: dict) -> dict:
             "rejected_view_count": len(records) - len(accepted),
             "positive_pair_count": sum(
                 int(record["positive_pair_count"]) for record in accepted
+            ),
+            "ambiguous_pair_count": sum(
+                int(record.get("ambiguous_pair_count", 0)) for record in accepted
+            ),
+            "provenance_supported_pair_count": sum(
+                int(
+                    record.get("raster_provenance_diagnostics", {}).get(
+                        "provenance_supported_pair_count", 0
+                    )
+                )
+                for record in accepted
             ),
             "matchable_rate_mean": (
                 float(

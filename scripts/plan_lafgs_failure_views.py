@@ -37,6 +37,7 @@ def main() -> None:
     )
     parser.add_argument("--partner-candidates", type=int, default=4)
     parser.add_argument("--minimum-normalized-view-gap", type=float, default=0.75)
+    parser.add_argument("--minimum-global-pose-novelty", type=float, default=0.75)
     parser.add_argument(
         "--maximum-normalized-pair-distance", type=float, default=6.0
     )
@@ -64,6 +65,7 @@ def main() -> None:
         planner_mode=args.planner_mode,
         partner_candidates=args.partner_candidates,
         minimum_normalized_view_gap=args.minimum_normalized_view_gap,
+        minimum_global_pose_novelty=args.minimum_global_pose_novelty,
         maximum_normalized_pair_distance=args.maximum_normalized_pair_distance,
         maximum_pair_rotation_degrees=args.maximum_pair_rotation_degrees,
         view_gap_weight=args.view_gap_weight,
@@ -137,6 +139,7 @@ def main() -> None:
             "planner_mode": config.planner_mode,
             "partner_candidates": config.partner_candidates,
             "minimum_normalized_view_gap": config.minimum_normalized_view_gap,
+            "minimum_global_pose_novelty": config.minimum_global_pose_novelty,
             "maximum_normalized_pair_distance": (
                 config.maximum_normalized_pair_distance
             ),

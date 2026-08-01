@@ -58,6 +58,7 @@ def test_view_planner_uses_only_render_eligible_high_risk_queries():
         maximum_planned_views=2,
         interpolation_alphas=(0.5,),
         planner_mode="adjacent",
+        minimum_global_pose_novelty=0.0,
     )
     planned = plan_failure_conditioned_views(
         atlas=atlas, cache=cache, config=config
@@ -101,8 +102,9 @@ def test_view_planner_caps_correlated_views_per_source():
         config=FailureAtlasConfig(
             maximum_planned_views=4,
             maximum_views_per_source=1,
-            interpolation_alphas=(0.35, 0.65),
-            planner_mode="adjacent",
+                interpolation_alphas=(0.35, 0.65),
+                planner_mode="adjacent",
+                minimum_global_pose_novelty=0.0,
         ),
     )
     assert len(planned) == 2
@@ -145,9 +147,11 @@ def test_viewpoint_completion_prefers_cross_bin_novel_views():
             maximum_planned_views=2,
             interpolation_alphas=(0.5,),
             minimum_normalized_view_gap=0.25,
+            minimum_global_pose_novelty=0.25,
             maximum_normalized_pair_distance=10.0,
         ),
     )
     assert planned
     assert all(record["view_gap"] > 0 for record in planned)
+    assert all(record["nearest_real_pose_gap"] >= 0.25 for record in planned)
     assert any(record["cross_trajectory"] for record in planned)

@@ -258,6 +258,7 @@ def _build_training_records(
     promotion_negative_blocks = []
     promotion_weight_blocks = []
     promotion_type_blocks = []
+    ambiguous_blocks = []
     legal4_blocks = []
     if critical_teacher is not None and positive_teacher is None:
         raise ValueError("pose-critical teacher requires a complete-positive teacher")
@@ -351,6 +352,13 @@ def _build_training_records(
             ambiguous_offsets = torch.as_tensor(
                 teacher_record["ambiguous_offsets"]
             ).long()
+            ambiguous_blocks.append(
+                _csr_first_k(
+                    ambiguous_offsets,
+                    teacher_record["ambiguous_indices"],
+                    max_positives,
+                )
+            )
             legal4_blocks.append(
                 (ambiguous_offsets[1:] - ambiguous_offsets[:-1]) > 0
             )
@@ -390,7 +398,16 @@ def _build_training_records(
             chunk_legal4 = (
                 candidate_valid & ((flags & 4) != 0)
             ).any(dim=1).cpu()
+            chunk_ambiguous = _first_k(
+                local,
+                (local >= 0)
+                & candidate_valid
+                & ((flags & 4) != 0)
+                & ((flags & 2) == 0),
+                max_positives,
+            ).cpu()
             positive_blocks.extend(chunk_positives.split(chunk_counts))
+            ambiguous_blocks.extend(chunk_ambiguous.split(chunk_counts))
             legal4_blocks.extend(chunk_legal4.split(chunk_counts))
     query_bins = torch.empty_like(torch.as_tensor(payload["query_bins"]).long())
     query_bins[payload_to_graph] = torch.as_tensor(payload["query_bins"]).long()
@@ -400,6 +417,12 @@ def _build_training_records(
     for query_index, record in enumerate(graph_records):
         cache_rows = torch.as_tensor(record["query_rows"]).long()
         positives = positive_blocks[query_index].clone()
+        ambiguous = ambiguous_blocks[query_index].clone()
+        ignored_anchors = (
+            ambiguous
+            if record.get("ambiguous_training_policy") == "ignore"
+            else torch.full_like(ambiguous, -1)
+        )
         positive_weights = (
             positive_weight_blocks[query_index].clone()
             if positive_weight_blocks
@@ -485,6 +508,7 @@ def _build_training_records(
                 "deployment_rows": cache_rows,
                 "cache_rows": cache_rows,
                 "positives": positives,
+                "ignored_anchors": ignored_anchors,
                 "positive_weights": positive_weights,
                 "critical_row_weights": row_weights,
                 "promotion_positive_anchor": promotion_positive,
@@ -512,6 +536,16 @@ def _build_training_records(
             positive_teacher["diagnostics"]["strong_pair_count"]
             if positive_teacher is not None
             else 0
+        ),
+        "ambiguous_pair_count": int(
+            sum((values >= 0).sum() for values in ambiguous_blocks)
+        ),
+        "ignored_ambiguous_pair_count": int(
+            sum(
+                (values >= 0).sum()
+                for values, record in zip(ambiguous_blocks, graph_records)
+                if record.get("ambiguous_training_policy") == "ignore"
+            )
         ),
         "query_groups": query_bins.tolist(),
         "evidence_source_counts": {
@@ -580,6 +614,7 @@ def _multi_positive_list_loss(
     harmful_weight: float,
     harmful_indices: torch.Tensor | None = None,
     positive_weights: torch.Tensor | None = None,
+    ignored_indices: torch.Tensor | None = None,
 ):
     scores = query @ bank.T
     top_scores, top_indices = torch.topk(
@@ -600,10 +635,18 @@ def _multi_positive_list_loss(
         (top_indices[:, :, None] == positives[:, None, :])
         & positive_mask[:, None, :]
     ).any(dim=2)
+    if ignored_indices is None:
+        top_is_ignored = torch.zeros_like(top_is_positive)
+    else:
+        ignored_valid = ignored_indices >= 0
+        top_is_ignored = (
+            (top_indices[:, :, None] == ignored_indices[:, None, :])
+            & ignored_valid[:, None, :]
+        ).any(dim=2)
     denominator_scores = torch.cat([top_scores, positive_scores], dim=1)
     denominator_mask = torch.cat(
         [
-            ~top_is_positive,
+            ~top_is_positive & ~top_is_ignored,
             positive_mask,
         ],
         dim=1,
@@ -1484,6 +1527,7 @@ def main() -> None:
             dim=1,
         ).to(device)
         positives = record["positives"][rows].to(device)
+        ignored_anchors = record["ignored_anchors"][rows].to(device)
         positive_weights = record["positive_weights"][rows].to(device)
         critical_row_weights = record["critical_row_weights"][rows].to(device)
         promotion_positive = record["promotion_positive_anchor"][rows].to(device)
@@ -1522,6 +1566,14 @@ def main() -> None:
             dtype=torch.long,
             device=device,
         )[:, None]
+        harmful_survivors = torch.where(
+            (
+                (harmful_survivors == ignored_anchors)
+                & (ignored_anchors >= 0)
+            ).any(dim=1, keepdim=True),
+            torch.full_like(harmful_survivors, -1),
+            harmful_survivors,
+        )
         anchor, bounded_anchor = _bounded_anchor_features(
             raw_features, anchor_residual, args.anchor_residual
         )
@@ -1545,6 +1597,7 @@ def main() -> None:
                 args.harmful_weight,
                 harmful_indices=harmful_survivors[matchable],
                 positive_weights=positive_weights[matchable],
+                ignored_indices=ignored_anchors[matchable],
             )[0]
         keypoint_score = torch.as_tensor(
             cache[names[query_index]]["native_scores"]

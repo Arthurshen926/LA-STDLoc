@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,12 @@ import torch
 from PIL import Image
 
 from encoders.sp_encoder.export_image_embeddings import SuperPoint
+from gaussian_renderer import render_from_pose_gsplat
+from localization_training.splat_provenance import (
+    anchor_source_csr,
+    bank_splat_provenance_2dgs,
+    bank_splat_provenance_3dgs,
+)
 from localization_training.synthetic_evidence import (
     RenderQualityFilterConfig,
     SyntheticEvidenceConfig,
@@ -22,6 +29,7 @@ from localization_training.synthetic_evidence import (
     synthetic_positive_teacher_payload,
     synthetic_query_cache_payload,
 )
+from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from valid_support_mask import (
     NoReferenceValidSupportMaskBuilder,
     NoReferenceValidSupportMaskConfig,
@@ -69,8 +77,25 @@ def main() -> None:
     parser.add_argument("--mask-output-dir", default="")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--topk-keypoints", type=int, default=2048)
-    parser.add_argument("--positive-radius-px", type=float, default=4.0)
+    parser.add_argument("--positive-radius-px", type=float, default=2.0)
+    parser.add_argument("--ambiguous-radius-px", type=float, default=6.0)
     parser.add_argument("--positives-per-keypoint", type=int, default=4)
+    parser.add_argument("--association-candidates-per-keypoint", type=int, default=8)
+    parser.add_argument("--minimum-source-provenance-mass", type=float, default=0.05)
+    parser.add_argument("--gaussian-ply", default="")
+    parser.add_argument(
+        "--gaussian-type", choices=("2dgs", "3dgs"), default="2dgs"
+    )
+    parser.add_argument("--sh-degree", type=int, default=3)
+    parser.add_argument("--track-payload", default="")
+    parser.add_argument("--full-prior-pool", default="")
+    parser.add_argument(
+        "--require-raster-provenance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--provenance-topk-primitives", type=int, default=16)
+    parser.add_argument("--provenance-candidate-topk", type=int, default=64)
     parser.add_argument("--minimum-alpha", type=float, default=0.5)
     parser.add_argument(
         "--absolute-depth-tolerance", type=float, default=0.08
@@ -121,9 +146,45 @@ def main() -> None:
             "canonical rendering QA requires --real-query-cache for "
             "rendered-depth warping"
         )
+    if args.require_raster_provenance and not args.gaussian_ply:
+        raise ValueError(
+            "canonical synthetic evidence requires --gaussian-ply for "
+            "anchor/source-specific raster provenance"
+        )
 
     device = torch.device(args.device)
     state = torch.load(args.map, map_location="cpu", weights_only=False)
+    track_payload = (
+        torch.load(args.track_payload, map_location="cpu", weights_only=False)
+        if args.track_payload
+        else None
+    )
+    full_prior_pool = (
+        torch.load(args.full_prior_pool, map_location="cpu", weights_only=False)
+        if args.full_prior_pool
+        else None
+    )
+    anchor_source = anchor_source_csr(state, track_payload, full_prior_pool)
+    source_universe = torch.unique(anchor_source[1]).sort().values
+    gaussians = None
+    provenance_function = None
+    if args.require_raster_provenance:
+        gaussians = (
+            GaussianModel_2dgs(args.sh_degree)
+            if args.gaussian_type == "2dgs"
+            else GaussianModel(args.sh_degree)
+        )
+        gaussians.load_ply(args.gaussian_ply)
+        gaussians = gaussians.cuda().eval()
+        if source_universe.numel() == 0:
+            raise ValueError("synthetic anchor source universe is empty")
+        if int(source_universe.max()) >= int(gaussians.get_xyz.shape[0]):
+            raise ValueError("synthetic anchor source IDs exceed Gaussian prior")
+        provenance_function = (
+            bank_splat_provenance_2dgs
+            if args.gaussian_type == "2dgs"
+            else bank_splat_provenance_3dgs
+        )
     manifest = _load_jsonl(args.render_manifest)
     output_path = Path(args.output).resolve()
     partial_path = output_path.with_suffix(output_path.suffix + ".partial")
@@ -160,7 +221,13 @@ def main() -> None:
     config = SyntheticEvidenceConfig(
         topk_keypoints=args.topk_keypoints,
         positive_radius_px=args.positive_radius_px,
+        ambiguous_radius_px=args.ambiguous_radius_px,
         positives_per_keypoint=args.positives_per_keypoint,
+        association_candidates_per_keypoint=(
+            args.association_candidates_per_keypoint
+        ),
+        minimum_source_provenance_mass=args.minimum_source_provenance_mass,
+        require_raster_provenance=args.require_raster_provenance,
         minimum_alpha=args.minimum_alpha,
         absolute_depth_tolerance=args.absolute_depth_tolerance,
         relative_depth_tolerance=args.relative_depth_tolerance,
@@ -272,6 +339,43 @@ def main() -> None:
                 image[None].to(device),
                 top_k=args.topk_keypoints,
             )[0]
+        keypoint_provenance = None
+        if args.require_raster_provenance:
+            fovx = 2.0 * math.atan(
+                float(width) / (2.0 * float(synthetic_K[0, 0]))
+            )
+            fovy = 2.0 * math.atan(
+                float(height) / (2.0 * float(synthetic_K[1, 1]))
+            )
+            package = render_from_pose_gsplat(
+                gaussians,
+                torch.as_tensor(manifest_record["pose_w2c"]).to(device).float(),
+                fovx,
+                fovy,
+                width,
+                height,
+                bg_color=torch.zeros(3, device=device),
+                render_mode="RGB+ED",
+                rgb_only=True,
+                return_rgb_meta=True,
+                rasterize_mode="antialiased",
+            )
+            local_ids, contribution_mass, provenance_valid = provenance_function(
+                torch.as_tensor(sparse["keypoints"]).to(device).float(),
+                source_universe.to(device),
+                package["rgb_meta"],
+                rendered_depth=torch.as_tensor(render_evidence["depth"]).to(device),
+                topk=args.provenance_topk_primitives,
+                candidate_topk=args.provenance_candidate_topk,
+                depth_abs_tolerance=args.absolute_depth_tolerance,
+                depth_rel_tolerance=args.relative_depth_tolerance,
+            )
+            keypoint_provenance = {
+                "primitive_ids": source_universe[local_ids.cpu()],
+                "contribution_mass": contribution_mass.cpu(),
+                "valid": provenance_valid.cpu(),
+            }
+            del package, local_ids, contribution_mass, provenance_valid
         record = build_synthetic_evidence_record(
             name=str(manifest_record["query_id"]),
             sparse=sparse,
@@ -290,6 +394,8 @@ def main() -> None:
             source_query=str(meta["source_query"]),
             config=config,
             device=device,
+            keypoint_provenance=keypoint_provenance,
+            anchor_source=anchor_source,
         )
         record["frame_path"] = str(frame_path.resolve())
         record["render_evidence_path"] = str(evidence_path.resolve())
@@ -311,6 +417,7 @@ def main() -> None:
                     "view_count": len(manifest),
                     "accepted": record["accepted"],
                     "positive_pairs": record["positive_pair_count"],
+                    "ambiguous_pairs": record["ambiguous_pair_count"],
                     "matchable_rate": record["matchable_rate"],
                     "visible_anchors": record["visible_anchor_count"],
                     "alpha_coverage": record["alpha_coverage"],

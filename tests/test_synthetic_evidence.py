@@ -6,6 +6,7 @@ from localization_training.synthetic_evidence import (
     build_render_quality_mask,
     depth_warped_reference_residual,
     keypoint_positive_csr,
+    keypoint_strong_ambiguous_csr,
     project_existing_anchors,
     render_visible_anchor_mask,
     synthetic_positive_teacher_payload,
@@ -112,9 +113,42 @@ def test_project_existing_anchors_uses_fixed_world_geometry():
     projected, depth, valid = project_existing_anchors(
         xyz, torch.eye(4), K
     )
-    assert torch.allclose(projected[0], torch.tensor([50.0, 40.0]))
+    assert torch.allclose(projected[0], torch.tensor([49.5, 39.5]))
     assert depth.tolist() == [2.0, -1.0]
     assert valid.tolist() == [True, False]
+
+
+def test_synthetic_labels_require_anchor_source_raster_support():
+    config = SyntheticEvidenceConfig(
+        positive_radius_px=2.0,
+        ambiguous_radius_px=6.0,
+        require_raster_provenance=True,
+        minimum_source_provenance_mass=0.05,
+    )
+    rows, offsets, positives, ambiguous_offsets, ambiguous, diagnostics = (
+        keypoint_strong_ambiguous_csr(
+            keypoints=torch.tensor([[1.0, 1.0]]),
+            projected_xy=torch.tensor([[1.0, 1.0], [1.1, 1.0]]),
+            visible_anchor_indices=torch.tensor([0, 1]),
+            config=config,
+            keypoint_provenance={
+                "primitive_ids": torch.tensor([[10, 12]]),
+                "contribution_mass": torch.tensor([[0.9, 0.1]]),
+                "valid": torch.tensor([True]),
+            },
+            anchor_source=(
+                torch.tensor([0, 1, 2]),
+                torch.tensor([10, 11]),
+                torch.tensor([1.0, 1.0]),
+            ),
+        )
+    )
+    assert rows.tolist() == [0]
+    assert offsets.tolist() == [0, 1]
+    assert positives.tolist() == [0]
+    assert ambiguous_offsets.tolist() == [0, 0]
+    assert ambiguous.numel() == 0
+    assert diagnostics["provenance_supported_pair_count"] == 1
 
 
 def test_synthetic_evidence_defaults_to_support_mask_and_preserves_labels():

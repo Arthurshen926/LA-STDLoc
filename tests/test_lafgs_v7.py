@@ -227,6 +227,32 @@ def test_listwise_loss_rewards_any_positive_and_penalizes_harmful_mass():
     assert float(harmful) > float(clean)
 
 
+def test_listwise_loss_ignores_loose_radius_ambiguous_anchor():
+    query = torch.tensor([[1.0, 0.0]])
+    bank = torch.tensor([[0.8, 0.6], [1.0, 0.0], [-1.0, 0.0]])
+    positives = torch.tensor([[0]])
+    ordinary, _, _ = _multi_positive_list_loss(
+        query,
+        bank,
+        positives,
+        topk=3,
+        temperature=0.1,
+        harmful_prior=None,
+        harmful_weight=0.0,
+    )
+    ignored, _, _ = _multi_positive_list_loss(
+        query,
+        bank,
+        positives,
+        topk=3,
+        temperature=0.1,
+        harmful_prior=None,
+        harmful_weight=0.0,
+        ignored_indices=torch.tensor([[1]]),
+    )
+    assert float(ignored) < float(ordinary)
+
+
 def test_listwise_pose_critical_weight_prefers_critical_positive():
     query = torch.tensor([[1.0, 0.0]])
     bank = torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]])

@@ -24,6 +24,7 @@ GAUSSIAN_TYPE="${LAFGS_EVAL_GAUSSIAN_TYPE_OVERRIDE:-2dgs}"
 SH_DEGREE="${LAFGS_EVAL_SH_DEGREE_OVERRIDE:-3}"
 SPARSE_FRONTEND="${LAFGS_EVAL_SPARSE_FRONTEND_OVERRIDE:-ulfloc_native_metric}"
 MAP_INPUT_MODE="${LAFGS_EVAL_MAP_INPUT_MODE_OVERRIDE:-materialized}"
+EVALUATION_CAMERA_SUBSET="${LAFGS_EVAL_CAMERA_SUBSET_OVERRIDE:-test}"
 SOURCE_ROOT="$DATA_ROOT/$SCENE"
 BOOTSTRAP="$SCENE_ROOT/runs/frozen_v1/bootstrap"
 OUTPUT="$OUTPUT_ROOT/$SCENE/$LABEL/seed$SEED"
@@ -89,7 +90,7 @@ esac
     --sh_degree "$SH_DEGREE" --feature_type sp --resolution 1 --longest_edge 0 \
     --norm_before_render --iteration 30000 --cfg "$CFG" \
     --prefix "lafgs-$SCENE-$LABEL-seed$SEED" \
-    --sparse_only --evaluation_camera_subset test \
+    --sparse_only --evaluation_camera_subset "$EVALUATION_CAMERA_SUBSET" \
     2>&1 | tee "$OUTPUT/eval.log"
 )
 RESULT="$(sed -n 's/^Output path: //p' "$OUTPUT/eval.log" | tail -n 1)"

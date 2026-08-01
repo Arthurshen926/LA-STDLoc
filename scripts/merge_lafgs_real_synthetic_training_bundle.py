@@ -94,7 +94,11 @@ def main() -> None:
         for record in real_graph["records"]
     ]
     synthetic_graph_records = [
-        {**record, "evidence_source": "rendered_viewpoint_completion"}
+        {
+            **record,
+            "evidence_source": "rendered_viewpoint_completion",
+            "ambiguous_training_policy": "ignore",
+        }
         for record in synthetic_graph["records"]
     ]
     graph["records"] = _renumber(real_graph_records + synthetic_graph_records)

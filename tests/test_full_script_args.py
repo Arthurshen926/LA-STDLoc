@@ -35,6 +35,7 @@ SELECT_PSEUDO_QUERY_POOL_SCRIPT = Path(__file__).resolve().parents[1] / "scripts
 PLAIN_SPARSE_EVAL_SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "run_lafgs_plain_sparse_eval.sh"
 )
+STDLOC_SCRIPT = Path(__file__).resolve().parents[1] / "stdloc.py"
 
 
 class FullRunScriptArgsTest(unittest.TestCase):
@@ -966,6 +967,18 @@ class FullRunScriptArgsTest(unittest.TestCase):
         )[0]
         self.assertIn("--landmark_feature_override_path", feature_override_case)
         self.assertIn("--override_landmark_features", feature_override_case)
+
+    def test_plain_sparse_mapping_gate_is_supported_end_to_end(self):
+        runner = PLAIN_SPARSE_EVAL_SCRIPT.read_text()
+        stdloc = STDLOC_SCRIPT.read_text()
+
+        self.assertIn("LAFGS_EVAL_CAMERA_SUBSET_OVERRIDE", runner)
+        self.assertIn('choices=["test", "train", "candidate_validation"]', stdloc)
+        self.assertIn(
+            'elif args.evaluation_camera_subset == "train":',
+            stdloc,
+        )
+        self.assertIn("test_cameras = scene.getTrainCameras()", stdloc)
 
 
 if __name__ == "__main__":

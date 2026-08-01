@@ -6441,7 +6441,7 @@ if __name__ == "__main__":
     parser.add_argument("--sparse_only", action="store_true")
     parser.add_argument(
         "--evaluation_camera_subset",
-        choices=["test", "candidate_validation"],
+        choices=["test", "train", "candidate_validation"],
         default="test",
     )
     parser.add_argument(
@@ -6661,6 +6661,9 @@ if __name__ == "__main__":
             f"{len(test_cameras)} mode={args.candidate_split_mode} "
             f"seed={args.candidate_split_seed}"
         )
+    elif args.evaluation_camera_subset == "train":
+        test_cameras = scene.getTrainCameras()
+        print(f"Mapping cameras: {len(test_cameras)}")
     else:
         test_cameras = scene.getTestCameras()
 
