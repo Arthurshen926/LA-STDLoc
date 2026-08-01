@@ -30,6 +30,20 @@ def main() -> None:
         "--maximum-views-per-component", type=int, default=8
     )
     parser.add_argument("--interpolation-alphas", default="0.35,0.5,0.65")
+    parser.add_argument(
+        "--planner-mode",
+        choices=("adjacent", "viewpoint_completion"),
+        default="viewpoint_completion",
+    )
+    parser.add_argument("--partner-candidates", type=int, default=4)
+    parser.add_argument("--minimum-normalized-view-gap", type=float, default=0.75)
+    parser.add_argument(
+        "--maximum-normalized-pair-distance", type=float, default=6.0
+    )
+    parser.add_argument("--maximum-pair-rotation-degrees", type=float, default=55.0)
+    parser.add_argument("--view-gap-weight", type=float, default=0.75)
+    parser.add_argument("--anchor-coverage-weight", type=float, default=0.5)
+    parser.add_argument("--artifact-risk-weight", type=float, default=0.75)
     args = parser.parse_args()
 
     atlas = torch.load(args.atlas, map_location="cpu", weights_only=False)
@@ -47,6 +61,14 @@ def main() -> None:
             for value in args.interpolation_alphas.split(",")
             if value.strip()
         ),
+        planner_mode=args.planner_mode,
+        partner_candidates=args.partner_candidates,
+        minimum_normalized_view_gap=args.minimum_normalized_view_gap,
+        maximum_normalized_pair_distance=args.maximum_normalized_pair_distance,
+        maximum_pair_rotation_degrees=args.maximum_pair_rotation_degrees,
+        view_gap_weight=args.view_gap_weight,
+        anchor_coverage_weight=args.anchor_coverage_weight,
+        artifact_risk_weight=args.artifact_risk_weight,
     )
     planned = plan_failure_conditioned_views(
         atlas=atlas,
@@ -112,6 +134,15 @@ def main() -> None:
             ),
             "maximum_views_per_component": args.maximum_views_per_component,
             "interpolation_alphas": list(config.interpolation_alphas),
+            "planner_mode": config.planner_mode,
+            "partner_candidates": config.partner_candidates,
+            "minimum_normalized_view_gap": config.minimum_normalized_view_gap,
+            "maximum_normalized_pair_distance": (
+                config.maximum_normalized_pair_distance
+            ),
+            "maximum_pair_rotation_degrees": (
+                config.maximum_pair_rotation_degrees
+            ),
         },
     }
     path.with_suffix(".json").write_text(

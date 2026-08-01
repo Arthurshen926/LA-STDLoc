@@ -146,3 +146,98 @@ def bank_splat_provenance_2dgs(
         out_weight[start:end] = selected_weight
         out_valid[start:end] = valid
     return out_idx, out_weight, out_valid
+
+
+@torch.no_grad()
+def bank_splat_provenance_3dgs(
+    keypoint_xy,
+    landmark_global_indices,
+    rgb_meta,
+    *,
+    rendered_depth=None,
+    topk=4,
+    candidate_topk=32,
+    depth_abs_tolerance=0.05,
+    depth_rel_tolerance=0.02,
+    chunk_size=128,
+):
+    """Compute bank-conditioned 3DGS composition at query keypoints."""
+    means2d = _flat_camera_tensor(rgb_meta.get("means2d"), 1)
+    conics = _flat_camera_tensor(rgb_meta.get("conics"), 1)
+    depths = _flat_camera_tensor(rgb_meta.get("depths"), 0)
+    opacities = _flat_camera_tensor(rgb_meta.get("opacities"), 0)
+    radii = rgb_meta.get("radii")
+    if any(value is None for value in (means2d, conics, depths, opacities, radii)):
+        raise ValueError("3DGS provenance requires means2d/conics/depths/opacities/radii")
+    radii = (
+        radii.reshape(-1, radii.shape[-1]).amax(dim=-1)
+        if radii.dim() > 2
+        else radii.reshape(-1)
+    )
+    device = keypoint_xy.device
+    dtype = keypoint_xy.dtype
+    global_idx = torch.as_tensor(
+        landmark_global_indices, device=device, dtype=torch.long
+    ).reshape(-1)
+    means2d = means2d.to(device=device, dtype=dtype)[global_idx]
+    conics = conics.to(device=device, dtype=dtype)[global_idx]
+    depths = depths.to(device=device, dtype=dtype)[global_idx]
+    opacities = opacities.to(device=device, dtype=dtype)[global_idx]
+    visible = radii.to(device=device)[global_idx] > 0
+    count = int(keypoint_xy.shape[0])
+    k = min(max(int(topk), 1), max(int(global_idx.numel()), 1))
+    candidate_k = min(max(int(candidate_topk), k), max(int(global_idx.numel()), 1))
+    out_idx = torch.zeros((count, k), device=device, dtype=torch.long)
+    out_weight = torch.zeros((count, k), device=device, dtype=dtype)
+    out_valid = torch.zeros(count, device=device, dtype=torch.bool)
+    if count == 0 or global_idx.numel() == 0:
+        return out_idx, out_weight, out_valid
+    depth_image = (
+        rendered_depth.squeeze().to(device=device, dtype=dtype)
+        if rendered_depth is not None
+        else None
+    )
+    for start in range(0, count, max(int(chunk_size), 1)):
+        end = min(start + max(int(chunk_size), 1), count)
+        xy = keypoint_xy[start:end] + 0.5
+        delta = xy[:, None, :] - means2d[None]
+        exponent = -0.5 * (
+            conics[None, :, 0] * delta[:, :, 0].square()
+            + 2.0 * conics[None, :, 1] * delta[:, :, 0] * delta[:, :, 1]
+            + conics[None, :, 2] * delta[:, :, 1].square()
+        )
+        alpha = (opacities[None] * torch.exp(exponent.clamp(max=0))).clamp(max=0.999)
+        alpha = alpha.masked_fill(~visible[None] | ~torch.isfinite(alpha), 0.0)
+        if depth_image is not None and depth_image.dim() == 2:
+            px = keypoint_xy[start:end, 0].long().clamp(0, depth_image.shape[1] - 1)
+            py = keypoint_xy[start:end, 1].long().clamp(0, depth_image.shape[0] - 1)
+            surface_depth = depth_image[py, px]
+            tolerance = float(depth_abs_tolerance) + float(depth_rel_tolerance) * surface_depth.abs()
+            depth_ok = (depths[None] - surface_depth[:, None]).abs() <= tolerance[:, None]
+            depth_ok = depth_ok | ~(surface_depth[:, None] > 0)
+            alpha = alpha.masked_fill(~depth_ok, 0.0)
+        candidate_alpha, candidate_idx = torch.topk(alpha, candidate_k, dim=1)
+        depth_order = depths[candidate_idx].argsort(dim=1)
+        sorted_alpha = candidate_alpha.gather(1, depth_order)
+        sorted_idx = candidate_idx.gather(1, depth_order)
+        transmittance = torch.cumprod(
+            torch.cat(
+                (torch.ones_like(sorted_alpha[:, :1]), 1.0 - sorted_alpha[:, :-1]),
+                dim=1,
+            ),
+            dim=1,
+        )
+        composition = sorted_alpha * transmittance
+        selected_weight, selected_order = torch.topk(composition, k, dim=1)
+        selected_idx = sorted_idx.gather(1, selected_order)
+        weight_sum = selected_weight.sum(dim=1, keepdim=True)
+        valid = weight_sum[:, 0] > 1e-8
+        selected_weight = torch.where(
+            valid[:, None],
+            selected_weight / weight_sum.clamp_min(1e-8),
+            torch.zeros_like(selected_weight),
+        )
+        out_idx[start:end] = selected_idx
+        out_weight[start:end] = selected_weight
+        out_valid[start:end] = valid
+    return out_idx, out_weight, out_valid

@@ -57,6 +57,7 @@ def test_view_planner_uses_only_render_eligible_high_risk_queries():
     config = FailureAtlasConfig(
         maximum_planned_views=2,
         interpolation_alphas=(0.5,),
+        planner_mode="adjacent",
     )
     planned = plan_failure_conditioned_views(
         atlas=atlas, cache=cache, config=config
@@ -101,7 +102,52 @@ def test_view_planner_caps_correlated_views_per_source():
             maximum_planned_views=4,
             maximum_views_per_source=1,
             interpolation_alphas=(0.35, 0.65),
+            planner_mode="adjacent",
         ),
     )
     assert len(planned) == 2
     assert len({record["source_query"] for record in planned}) == 2
+
+
+def test_viewpoint_completion_prefers_cross_bin_novel_views():
+    cache = {}
+    for index in range(4):
+        pose = torch.eye(4)
+        pose[0, 3] = -float(index)
+        name = f"seq{1 + index // 2}/frame{index:05d}.png"
+        cache[name] = {
+            "pose_w2c": pose,
+            "native_input_hw": [80, 120],
+            "native_K": torch.tensor(
+                [[100.0, 0.0, 60.0], [0.0, 100.0, 40.0], [0.0, 0.0, 1.0]]
+            ),
+        }
+    atlas = {
+        "query_names": list(cache),
+        "records": [
+            {
+                "query_name": name,
+                "render_eligible": index == 0,
+                "risk": 3.0,
+                "positive_topk_recall": 0.5,
+                "legal_top1_recall": 0.2,
+                "view_bin": index,
+                "source_component": 7,
+                "failure_class": "view_appearance_deficiency",
+            }
+            for index, name in enumerate(cache)
+        ],
+    }
+    planned = plan_failure_conditioned_views(
+        atlas=atlas,
+        cache=cache,
+        config=FailureAtlasConfig(
+            maximum_planned_views=2,
+            interpolation_alphas=(0.5,),
+            minimum_normalized_view_gap=0.25,
+            maximum_normalized_pair_distance=10.0,
+        ),
+    )
+    assert planned
+    assert all(record["view_gap"] > 0 for record in planned)
+    assert any(record["cross_trajectory"] for record in planned)

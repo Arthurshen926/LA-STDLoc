@@ -21,7 +21,10 @@ def test_compress_2dgs_rgb_meta_keeps_only_landmark_bank():
     assert compressed["radii"].tolist() == [4.0, 1.0]
     assert compressed["rendered_depth"] is meta["rendered_depth"]
 
-from localization_training.splat_provenance import bank_splat_provenance_2dgs
+from localization_training.splat_provenance import (
+    bank_splat_provenance_2dgs,
+    bank_splat_provenance_3dgs,
+)
 
 
 def _centered_transform(x, y):
@@ -77,3 +80,24 @@ def test_2dgs_provenance_depth_guard_removes_occluded_landmark():
     assert valid.tolist() == [True]
     assert idx[0, 0].item() == 0
     assert weight[0, 1].item() == 0.0
+
+
+def test_3dgs_provenance_uses_projected_conics_and_transmittance():
+    meta = {
+        "means2d": torch.tensor([[[2.5, 2.5], [4.5, 2.5]]]),
+        "conics": torch.tensor([[[1.0, 0.0, 1.0], [1.0, 0.0, 1.0]]]),
+        "depths": torch.tensor([[1.0, 2.0]]),
+        "opacities": torch.tensor([[0.8, 0.8]]),
+        "radii": torch.tensor([[3, 3]]),
+    }
+    idx, weight, valid = bank_splat_provenance_3dgs(
+        torch.tensor([[2.0, 2.0]]),
+        torch.tensor([0, 1]),
+        meta,
+        topk=2,
+        depth_abs_tolerance=10.0,
+    )
+    assert valid.tolist() == [True]
+    assert idx[0, 0].item() == 0
+    assert weight[0, 0] > weight[0, 1]
+    torch.testing.assert_close(weight.sum(dim=1), torch.ones(1))

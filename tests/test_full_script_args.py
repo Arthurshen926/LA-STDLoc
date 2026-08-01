@@ -32,6 +32,9 @@ OLDHOSPITAL_OBJECTIVE_ABLATION_SCRIPT = (
 CAPACITY_ABLATION_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_la_capacity_fullchain_ablation.sh"
 REFACTORED_MAINLINE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_la_refactored_mainline.sh"
 SELECT_PSEUDO_QUERY_POOL_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "select_pseudo_query_pool.py"
+PLAIN_SPARSE_EVAL_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "scripts" / "run_lafgs_plain_sparse_eval.sh"
+)
 
 
 class FullRunScriptArgsTest(unittest.TestCase):
@@ -954,6 +957,15 @@ class FullRunScriptArgsTest(unittest.TestCase):
         self.assertIn("require_cuda_toolchain()", text)
         self.assertIn('"$CUDA_HOME/bin/nvcc"', text)
         self.assertIn("cuda_runtime.h", text)
+
+    def test_plain_sparse_feature_override_is_explicitly_enabled(self):
+        text = PLAIN_SPARSE_EVAL_SCRIPT.read_text()
+
+        feature_override_case = text.split("feature_override)", 1)[1].split(
+            ";;", 1
+        )[0]
+        self.assertIn("--landmark_feature_override_path", feature_override_case)
+        self.assertIn("--override_landmark_features", feature_override_case)
 
 
 if __name__ == "__main__":

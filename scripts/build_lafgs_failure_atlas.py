@@ -21,7 +21,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--map", required=True)
     parser.add_argument("--metric-state", required=True)
-    parser.add_argument("--family-state", required=True)
+    parser.add_argument(
+        "--family-state",
+        default="",
+        help="Optional appearance family. Omit for the frozen A1 base-metric matcher.",
+    )
     parser.add_argument("--dynamic-outcomes", required=True)
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--query-cache", required=True)
@@ -52,14 +56,30 @@ def main() -> None:
         "--maximum-views-per-component", type=int, default=8
     )
     parser.add_argument("--interpolation-alphas", default="0.35,0.5,0.65")
+    parser.add_argument(
+        "--planner-mode",
+        choices=("adjacent", "viewpoint_completion"),
+        default="viewpoint_completion",
+    )
+    parser.add_argument("--partner-candidates", type=int, default=4)
+    parser.add_argument("--minimum-normalized-view-gap", type=float, default=0.75)
+    parser.add_argument(
+        "--maximum-normalized-pair-distance", type=float, default=6.0
+    )
+    parser.add_argument("--maximum-pair-rotation-degrees", type=float, default=55.0)
+    parser.add_argument("--view-gap-weight", type=float, default=0.75)
+    parser.add_argument("--anchor-coverage-weight", type=float, default=0.5)
+    parser.add_argument("--artifact-risk-weight", type=float, default=0.75)
     args = parser.parse_args()
 
     state = torch.load(args.map, map_location="cpu", weights_only=False)
     metric_payload = torch.load(
         args.metric_state, map_location="cpu", weights_only=False
     )
-    family = torch.load(
-        args.family_state, map_location="cpu", weights_only=False
+    family = (
+        torch.load(args.family_state, map_location="cpu", weights_only=False)
+        if args.family_state
+        else None
     )
     dynamic = torch.load(
         args.dynamic_outcomes, map_location="cpu", weights_only=False
@@ -110,6 +130,14 @@ def main() -> None:
             for value in args.interpolation_alphas.split(",")
             if value.strip()
         ),
+        planner_mode=args.planner_mode,
+        partner_candidates=args.partner_candidates,
+        minimum_normalized_view_gap=args.minimum_normalized_view_gap,
+        maximum_normalized_pair_distance=args.maximum_normalized_pair_distance,
+        maximum_pair_rotation_degrees=args.maximum_pair_rotation_degrees,
+        view_gap_weight=args.view_gap_weight,
+        anchor_coverage_weight=args.anchor_coverage_weight,
+        artifact_risk_weight=args.artifact_risk_weight,
     )
 
     def progress(completed: int, query_count: int) -> None:
@@ -145,6 +173,7 @@ def main() -> None:
     json_payload = {
         "schema": atlas["schema"],
         "version": atlas["version"],
+        "matcher": atlas["matcher"],
         "summary": atlas["summary"],
         "config": atlas["config"],
         "cells": atlas["cells"],

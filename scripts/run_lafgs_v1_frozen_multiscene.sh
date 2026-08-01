@@ -30,9 +30,28 @@ PYTHON="${PYTHON:-/root/miniconda3/envs/cybersim_agent/bin/python}"
 DATA_ROOT="${CAMBRIDGE_DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}"
 MATCHA_ROOT="${CAMBRIDGE_MATCHA_2DGS_ROOT:-/root/MAtCha/output_cambridge_full_retained_v2}"
 EXPERIMENT_ROOT="${LAFGS_V1_MULTISCENE_ROOT:-/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731}"
+PRIOR_PROFILE="${LAFGS_V1_PRIOR_PROFILE_OVERRIDE:-rgb_2dgs}"
+case "$PRIOR_PROFILE" in
+  rgb_2dgs) GAUSSIAN_TYPE="2dgs"; SH_DEGREE=3 ;;
+  rgb_nosky|rgb_sky_dirty) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=0 ;;
+  *) echo "Unsupported frozen prior profile: $PRIOR_PROFILE" >&2; exit 2 ;;
+esac
+if [[ "$GAUSSIAN_TYPE" == "2dgs" ]]; then
+  GEOMETRY_TEACHER_IDENTITY_MODE="track_first_provenance"
+  GEOMETRY_TEACHER_TAG="g3_track_provenance_v1"
+else
+  # The in-training composition teacher is 2DGS-specific. 3DGS source
+  # lineage is attached later by the generic raster-provenance stage.
+  GEOMETRY_TEACHER_IDENTITY_MODE="track_first"
+  GEOMETRY_TEACHER_TAG="g2_track_first_v1"
+fi
 CONFIG="$REPO_ROOT/configs/lafgs_v1_frozen_cambridge.yaml"
 ROOT="$EXPERIMENT_ROOT/$SCENE"
-MODEL_ROOT="$ROOT/prior/rgb_matcha_2dgs"
+MODEL_ROOT="${LAFGS_V1_MODEL_ROOT_OVERRIDE:-$ROOT/prior/rgb_matcha_2dgs}"
+EXTERNAL_PRIOR=0
+if [[ -n "${LAFGS_V1_MODEL_ROOT_OVERRIDE:-}" ]]; then
+  EXTERNAL_PRIOR=1
+fi
 SOURCE_ROOT="$DATA_ROOT/$SCENE"
 RUN_TAG="frozen_v1"
 RUN_ROOT="$ROOT/runs/$RUN_TAG"
@@ -98,7 +117,7 @@ EVAL_SKIP_SUMMARY="${LAFGS_EVAL_SKIP_SUMMARY:-0}"
 
 BOOTSTRAP="$RUN_ROOT/bootstrap"
 STAGE_A="$RUN_ROOT/stage_a_combined_${STAGE_A_STEPS}"
-STATISTICS="$RUN_ROOT/statistics_combined_${STAGE_A_STEPS}_frozen_g3_track_provenance_v1"
+STATISTICS="$RUN_ROOT/statistics_combined_${STAGE_A_STEPS}_frozen_${GEOMETRY_TEACHER_TAG}"
 QUERY_CACHE="$RUN_ROOT/query_cache_native_fullres_k2048.pt"
 SPARSE_QUERY_CACHE="$RUN_ROOT/query_cache_native_sparse_teacher.pt"
 VISIBILITY="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native.pt"
@@ -201,11 +220,13 @@ register_contract() {
 
 prepare() {
   require_file "$CONFIG"
-  require_file "$SOURCE_PLY"
   require_file "$MASKS"
   require_file "$SP_WEIGHTS"
   mkdir -p "$ROOT/prior" "$ROOT/audit"
-  if [[ ! -f "$ROOT/audit/matcha_protocol.json" ]]; then
+  if [[ "$EXTERNAL_PRIOR" == "0" ]]; then
+    require_file "$SOURCE_PLY"
+  fi
+  if [[ "$EXTERNAL_PRIOR" == "0" && ! -f "$ROOT/audit/matcha_protocol.json" ]]; then
     run_logged matcha_protocol_audit \
       "$PYTHON" scripts/audit_cambridge_matcha_2dgs_protocol.py \
       --runs_root "$MATCHA_ROOT" --data_root "$DATA_ROOT" \
@@ -213,19 +234,19 @@ prepare() {
       --output_json "$ROOT/audit/matcha_protocol.json" \
       --output_markdown "$ROOT/audit/matcha_protocol.md"
   fi
-  if [[ ! -f "$PRIOR_MANIFEST" ]]; then
+  if [[ "$EXTERNAL_PRIOR" == "0" && ! -f "$PRIOR_MANIFEST" ]]; then
     run_logged export_rgb_prior \
       "$PYTHON" scripts/export_rgb_gaussian_prior.py \
       --input_ply "$SOURCE_PLY" --output_model "$MODEL_ROOT" \
-      --gaussian_type 2dgs --sh_degree 3 \
+      --gaussian_type "$GAUSSIAN_TYPE" --sh_degree "$SH_DEGREE" \
       --source_path "$SOURCE_ROOT" --images processed \
       --longest_edge 0 --iteration 30000 --prior_kind rgb_only
   fi
   require_file "$PLY"
   require_file "$PRIOR_MANIFEST"
-  register_contract "$PLY" "$CONTRACTS/rgb_prior.json" rgb_only_2dgs \
-    --parent "matcha_source=$SOURCE_PLY" \
-    --config-json "{\"scene\":\"$SCENE\",\"iteration\":30000}"
+  register_contract "$PLY" "$CONTRACTS/rgb_prior.json" "rgb_only_$GAUSSIAN_TYPE" \
+    --parent "source_prior_manifest=$PRIOR_MANIFEST" \
+    --config-json "{\"scene\":\"$SCENE\",\"iteration\":30000,\"profile\":\"$PRIOR_PROFILE\"}"
 }
 
 base() {
@@ -239,11 +260,13 @@ base() {
     export LAFGS_STAGE_A_STEPS="$STAGE_A_STEPS"
     export LAFGS_SANITIZATION_SOURCE_STEP="$STAGE_A_STEPS"
     export LAFGS_STATISTICS_CHECKPOINT_STEP="$STAGE_A_STEPS"
+    export LAFGS_GEOMETRY_TEACHER_IDENTITY_MODE="$GEOMETRY_TEACHER_IDENTITY_MODE"
+    export LAFGS_GEOMETRY_TEACHER_TAG="$GEOMETRY_TEACHER_TAG"
     export LAFGS_GEOMETRY_TEACHER_TRACK_EPIPOLAR_CANDIDATE_TOPK=4
     export LAFGS_GEOMETRY_TEACHER_TRACK_ALLOW_CHAIN_TRACKS=1
     export LAFGS_GEOMETRY_TEACHER_PROVENANCE_GROUP_MAX_LANDMARKS=4
     bash scripts/run_lafgs_v2_rgb_prior_sanitization.sh \
-      rgb_2dgs "$GPU" statistics
+      "$PRIOR_PROFILE" "$GPU" statistics
   fi
   if [[ ! -f "$SPARSE_QUERY_CACHE" ]]; then
     run_logged slim_query_cache \
@@ -265,7 +288,7 @@ base() {
     track_first_payload \
     --parent "query_cache=$CONTRACTS/query_cache.json" \
     --parent "stage_a=$BASE_STATE" \
-    --config-json "{\"checkpoint\":$STAGE_A_STEPS,\"identity\":\"track_first_provenance\"}"
+    --config-json "{\"checkpoint\":$STAGE_A_STEPS,\"identity\":\"$GEOMETRY_TEACHER_IDENTITY_MODE\"}"
 }
 
 graph() {
@@ -291,7 +314,8 @@ graph() {
       env CUDA_VISIBLE_DEVICES="$GPU" \
       "$PYTHON" scripts/build_lafgs_raster_provenance_cache.py \
       --anchor-map "$CANONICAL" --query-cache "$QUERY_CACHE" \
-      --gaussian-ply "$PLY" --function-graph "$GRAPH_V2" \
+      --gaussian-ply "$PLY" --gaussian-type "$GAUSSIAN_TYPE" \
+      --sh-degree "$SH_DEGREE" --function-graph "$GRAPH_V2" \
       --track-payload "$TRACK_PAYLOAD" \
       --deployment-mask-cache "$MASKS" \
       --output "$RASTER_PROVENANCE"
@@ -365,7 +389,8 @@ self_localization_reconstruction() {
       env CUDA_VISIBLE_DEVICES="$GPU" \
       "$PYTHON" scripts/build_lafgs_raster_provenance_cache.py \
       --anchor-map "$ADD_MAP" --query-cache "$QUERY_CACHE" \
-      --gaussian-ply "$PLY" --track-payload "$TRACK_PAYLOAD" \
+      --gaussian-ply "$PLY" --gaussian-type "$GAUSSIAN_TYPE" \
+      --sh-degree "$SH_DEGREE" --track-payload "$TRACK_PAYLOAD" \
       --deployment-mask-cache "$MASKS" --output "$RECON_PROVENANCE"
   fi
   if [[ ! -f "$RECON_TEACHER" ]]; then
@@ -539,8 +564,8 @@ eval_one() {
     export STDLOC_RESULTS_ROOT="$output/results"
     "$PYTHON" stdloc.py \
       --model_path "$MODEL_ROOT" --source_path "$SOURCE_ROOT" \
-      --images processed --data_device cpu --gaussian_type 2dgs \
-      --sh_degree 3 --feature_type sp --resolution 1 --longest_edge 0 \
+      --images processed --data_device cpu --gaussian_type "$GAUSSIAN_TYPE" \
+      --sh_degree "$SH_DEGREE" --feature_type sp --resolution 1 --longest_edge 0 \
       --norm_before_render --iteration 30000 --cfg "$cfg" \
       --prefix "lafgs-v1-$SCENE-$label-seed$seed" \
       --sparse_only --evaluation_camera_subset test \

@@ -31,6 +31,14 @@ class FailureAtlasConfig:
     maximum_views_per_trajectory: int = 16
     maximum_views_per_component: int = 8
     interpolation_alphas: tuple[float, ...] = (0.35, 0.5, 0.65)
+    planner_mode: str = "viewpoint_completion"
+    partner_candidates: int = 4
+    minimum_normalized_view_gap: float = 0.75
+    maximum_normalized_pair_distance: float = 6.0
+    maximum_pair_rotation_degrees: float = 55.0
+    view_gap_weight: float = 0.75
+    anchor_coverage_weight: float = 0.5
+    artifact_risk_weight: float = 0.75
 
 
 def _record_positive_sets(record: dict) -> dict[int, set[int]]:
@@ -83,6 +91,7 @@ def _safe_rate(mask: torch.Tensor) -> float:
 def _basin_query_stats(record: dict | None) -> dict:
     if record is None:
         return {
+            "basin_evidence_available": False,
             "strict_set_count": 0,
             "precision_set_count": 0,
             "harmful_set_count": 0,
@@ -92,6 +101,7 @@ def _basin_query_stats(record: dict | None) -> dict:
     types = torch.as_tensor(record["set_types"]).long()
     repair = torch.as_tensor(record["repair_order"]).long()
     return {
+        "basin_evidence_available": True,
         "strict_set_count": int((levels == 3).sum()),
         "precision_set_count": int((levels >= 2).sum()),
         "harmful_set_count": int((types == 1).sum()),
@@ -108,6 +118,8 @@ def _failure_class(record: dict, config: FailureAtlasConfig) -> str:
     ):
         return "repeated_assignment_deficiency"
     if (
+        record["basin_evidence_available"]
+        and
         record["strict_set_count"] == 0
         and record["positive_topk_recall"]
         >= float(config.minimum_render_topk_recall)
@@ -126,7 +138,12 @@ def _risk_scores(records: list[dict]) -> None:
     harmful = np.asarray(
         [float(value["harmful_set_count"]) for value in records]
     )
-    harmful_scale = max(float(np.median(harmful[harmful > 0])), 1.0)
+    positive_harmful = harmful[harmful > 0]
+    harmful_scale = (
+        max(float(np.median(positive_harmful)), 1.0)
+        if positive_harmful.size
+        else 1.0
+    )
     for record, log_hypotheses in zip(records, hypotheses.tolist()):
         record["risk_terms"] = {
             "translation": min(float(record["te_cm"]) / 50.0, 4.0),
@@ -137,7 +154,10 @@ def _risk_scores(records: list[dict]) -> None:
             "harmful_basin": min(
                 float(record["harmful_set_count"]) / harmful_scale, 3.0
             ),
-            "strict_deficit": float(record["strict_set_count"] == 0),
+            "strict_deficit": float(
+                record["basin_evidence_available"]
+                and record["strict_set_count"] == 0
+            ),
         }
         terms = record["risk_terms"]
         record["risk"] = float(
@@ -246,7 +266,7 @@ def build_failure_atlas(
     *,
     state: dict,
     metric: SharedLowRankMetric,
-    family: dict,
+    family: dict | None,
     dynamic: dict,
     positives: dict,
     cache: dict,
@@ -256,7 +276,7 @@ def build_failure_atlas(
     device: torch.device,
     progress=None,
 ) -> dict:
-    """Audit real self-localization outcomes under the deployed family matcher."""
+    """Audit real self-localization outcomes under the deployed matcher."""
     names = list(dynamic["query_names"])
     if names != list(positives["query_names"]):
         raise ValueError("failure atlas query registries differ")
@@ -298,9 +318,17 @@ def build_failure_atlas(
                 dim=1,
             ).to(device)
             query, _ = metric(raw)
-            _, top_anchors, top_modes, _ = family_topk(
-                query, bank, family, config.topk
-            )
+            if family is None:
+                _, top_anchors = torch.topk(
+                    query @ bank.T,
+                    k=min(int(config.topk), int(bank.shape[0])),
+                    dim=1,
+                )
+                top_modes = torch.full_like(top_anchors, -1)
+            else:
+                _, top_anchors, top_modes, _ = family_topk(
+                    query, bank, family, config.topk
+                )
             top_anchors = top_anchors.cpu()
             top_modes = top_modes.cpu()
             positives_by_row = _record_positive_sets(
@@ -413,7 +441,8 @@ def build_failure_atlas(
     failures = Counter(record["failure_class"] for record in records)
     return {
         "schema": "lafgs_view_conditioned_failure_atlas",
-        "version": 1,
+        "version": 2,
+        "matcher": "base_metric" if family is None else "appearance_family",
         "query_names": names,
         "anchor_count": anchor_count,
         "records": records,
@@ -492,13 +521,49 @@ def interpolate_pose_w2c(
     return torch.linalg.inv(result).float()
 
 
+def _camera_center_and_forward(pose_w2c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    c2w = torch.linalg.inv(torch.as_tensor(pose_w2c).double())
+    return c2w[:3, 3], F.normalize(c2w[:3, 2].float(), dim=0).double()
+
+
+def _rotation_gap_degrees(first: torch.Tensor, second: torch.Tensor) -> float:
+    cosine = float(torch.dot(first, second).clamp(-1.0, 1.0))
+    return math.degrees(math.acos(cosine))
+
+
+def _mapping_view_scale(names: list[str], cache: dict) -> float:
+    """Estimate a scene-independent local camera-spacing scale."""
+    by_trajectory: dict[str, list[str]] = defaultdict(list)
+    for name in names:
+        by_trajectory[trajectory_id(name)].append(name)
+    distances = []
+    for sequence in by_trajectory.values():
+        sequence.sort(key=lambda value: (_frame_number(value), value))
+        for left, right in zip(sequence, sequence[1:]):
+            left_center, _ = _camera_center_and_forward(cache[left]["pose_w2c"])
+            right_center, _ = _camera_center_and_forward(cache[right]["pose_w2c"])
+            distance = float(torch.linalg.norm(left_center - right_center))
+            if math.isfinite(distance) and distance > 1e-6:
+                distances.append(distance)
+    if distances:
+        return max(float(np.median(distances)), 1e-4)
+    centers = torch.stack(
+        [_camera_center_and_forward(cache[name]["pose_w2c"])[0] for name in names]
+    )
+    if centers.shape[0] < 2:
+        return 1.0
+    pairwise = torch.cdist(centers.float(), centers.float())
+    pairwise.fill_diagonal_(torch.inf)
+    return max(float(pairwise.amin(dim=1).median()), 1e-4)
+
+
 def plan_failure_conditioned_views(
     *,
     atlas: dict,
     cache: dict,
     config: FailureAtlasConfig,
 ) -> list[dict]:
-    """Plan in-envelope views adjacent to high-risk real mapping queries."""
+    """Plan in-envelope views that complete missing localization viewpoints."""
     records = {
         str(record["query_name"]): record for record in atlas["records"]
     }
@@ -507,18 +572,86 @@ def plan_failure_conditioned_views(
         by_trajectory[trajectory_id(name)].append(str(name))
     for names in by_trajectory.values():
         names.sort(key=lambda value: (_frame_number(value), value))
+    all_names = [str(name) for name in atlas["query_names"]]
+    view_scale = _mapping_view_scale(all_names, cache)
+    centers = {}
+    forwards = {}
+    for name in all_names:
+        centers[name], forwards[name] = _camera_center_and_forward(
+            cache[name]["pose_w2c"]
+        )
     candidates = []
     for name, failure in records.items():
         if not bool(failure["render_eligible"]):
             continue
-        sequence = by_trajectory[trajectory_id(name)]
-        position = sequence.index(name)
-        neighbors = []
-        if position > 0:
-            neighbors.append(sequence[position - 1])
-        if position + 1 < len(sequence):
-            neighbors.append(sequence[position + 1])
+        source_trajectory = trajectory_id(name)
+        if str(config.planner_mode) == "adjacent":
+            sequence = by_trajectory[source_trajectory]
+            position = sequence.index(name)
+            neighbors = []
+            if position > 0:
+                neighbors.append(sequence[position - 1])
+            if position + 1 < len(sequence):
+                neighbors.append(sequence[position + 1])
+        elif str(config.planner_mode) == "viewpoint_completion":
+            partner_scores = []
+            for partner in all_names:
+                if partner == name:
+                    continue
+                partner_failure = records[partner]
+                different_trajectory = trajectory_id(partner) != source_trajectory
+                different_bin = int(partner_failure["view_bin"]) != int(
+                    failure["view_bin"]
+                )
+                if not different_trajectory and not different_bin:
+                    continue
+                normalized_distance = float(
+                    torch.linalg.norm(centers[name] - centers[partner])
+                ) / view_scale
+                rotation_gap = _rotation_gap_degrees(
+                    forwards[name], forwards[partner]
+                )
+                if normalized_distance > float(
+                    config.maximum_normalized_pair_distance
+                ):
+                    continue
+                if rotation_gap > float(config.maximum_pair_rotation_degrees):
+                    continue
+                view_gap = (
+                    min(normalized_distance / 3.0, 2.0)
+                    + min(
+                        rotation_gap
+                        / max(float(config.maximum_pair_rotation_degrees), 1e-6),
+                        1.0,
+                    )
+                    + 0.5 * float(different_trajectory)
+                    + 0.25 * float(different_bin)
+                )
+                if view_gap < float(config.minimum_normalized_view_gap):
+                    continue
+                artifact_risk = (
+                    max(normalized_distance - 3.0, 0.0) / 3.0
+                    + rotation_gap
+                    / max(float(config.maximum_pair_rotation_degrees), 1e-6)
+                )
+                partner_scores.append(
+                    (view_gap - artifact_risk, view_gap, artifact_risk, partner)
+                )
+            partner_scores.sort(key=lambda value: (-value[0], value[3]))
+            neighbors = [
+                value[3]
+                for value in partner_scores[: max(int(config.partner_candidates), 1)]
+            ]
+        else:
+            raise ValueError(f"unsupported failure-view planner mode: {config.planner_mode}")
         for neighbor in neighbors:
+            normalized_distance = float(
+                torch.linalg.norm(centers[name] - centers[neighbor])
+            ) / view_scale
+            rotation_gap = _rotation_gap_degrees(
+                forwards[name], forwards[neighbor]
+            )
+            cross_trajectory = trajectory_id(neighbor) != source_trajectory
             for alpha in config.interpolation_alphas:
                 left, right = name, neighbor
                 pose = interpolate_pose_w2c(
@@ -528,14 +661,33 @@ def plan_failure_conditioned_views(
                 )
                 height, width = cache[left]["native_input_hw"]
                 K = torch.as_tensor(cache[left]["native_K"]).float()
+                interpolation_novelty = min(float(alpha), 1.0 - float(alpha))
+                view_gap = (
+                    interpolation_novelty * normalized_distance
+                    + interpolation_novelty
+                    * rotation_gap
+                    / max(float(config.maximum_pair_rotation_degrees), 1e-6)
+                    + 0.5 * float(cross_trajectory)
+                )
+                coverage_need = 1.0 - float(failure["positive_topk_recall"])
+                artifact_risk = (
+                    max(normalized_distance - 3.0, 0.0) / 3.0
+                    + rotation_gap
+                    / max(float(config.maximum_pair_rotation_degrees), 1e-6)
+                    + 0.25 * abs(float(alpha) - 0.5)
+                )
+                assignment_need = max(
+                    failure["positive_topk_recall"]
+                    - failure["legal_top1_recall"],
+                    0.0,
+                )
                 acquisition = float(failure["risk"]) * (
                     1.0
-                    + max(
-                        failure["positive_topk_recall"]
-                        - failure["legal_top1_recall"],
-                        0.0,
-                    )
+                    + assignment_need
                 )
+                acquisition += float(config.view_gap_weight) * view_gap
+                acquisition += float(config.anchor_coverage_weight) * coverage_need
+                acquisition -= float(config.artifact_risk_weight) * artifact_risk
                 candidates.append(
                     {
                         "query_id": (
@@ -567,6 +719,13 @@ def plan_failure_conditioned_views(
                         ),
                         "failure_class": failure["failure_class"],
                         "risk": float(failure["risk"]),
+                        "view_gap": float(view_gap),
+                        "anchor_coverage_need": float(coverage_need),
+                        "artifact_risk": float(artifact_risk),
+                        "normalized_pair_distance": float(normalized_distance),
+                        "pair_rotation_degrees": float(rotation_gap),
+                        "cross_trajectory": bool(cross_trajectory),
+                        "planner_mode": str(config.planner_mode),
                         "acquisition": acquisition,
                     }
                 )

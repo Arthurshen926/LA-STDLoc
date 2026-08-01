@@ -13,8 +13,11 @@ from pathlib import Path
 import torch
 
 from gaussian_renderer import render_from_pose_gsplat
-from localization_training.splat_provenance import bank_splat_provenance_2dgs
-from scene.gaussian_model import GaussianModel_2dgs
+from localization_training.splat_provenance import (
+    bank_splat_provenance_2dgs,
+    bank_splat_provenance_3dgs,
+)
+from scene.gaussian_model import GaussianModel, GaussianModel_2dgs
 from scripts.run_lafgs_alternating_structure import _deployment_valid_mask
 
 
@@ -34,6 +37,19 @@ def _anchor_source_csr(
 
     if track_payload is not None:
         assignment = track_payload["assignment"]
+        has_source_family = {
+            "track_landmark_offsets",
+            "track_landmark_indices",
+        }.issubset(assignment)
+        if not has_source_family:
+            # G2 Track-First stores one assigned source per materialized anchor.
+            # The state already carries that assignment in source_primitive_ids;
+            # only G3 provenance can expand it into a weighted primitive family.
+            assignment = None
+    else:
+        assignment = None
+
+    if assignment is not None:
         offsets = torch.as_tensor(
             assignment["track_landmark_offsets"]
         ).long()
@@ -121,6 +137,10 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--gaussian-ply", required=True)
     parser.add_argument(
+        "--gaussian-type", choices=("2dgs", "3dgs"), default="2dgs"
+    )
+    parser.add_argument("--sh-degree", type=int, default=3)
+    parser.add_argument(
         "--function-graph",
         default="",
         help=(
@@ -185,13 +205,17 @@ def main() -> None:
     if args.deployment_mask_cache:
         with Path(args.deployment_mask_cache).open("rb") as handle:
             deployment_masks = pickle.load(handle)
-    gaussians = GaussianModel_2dgs(3)
+    gaussians = (
+        GaussianModel_2dgs(args.sh_degree)
+        if args.gaussian_type == "2dgs"
+        else GaussianModel(args.sh_degree)
+    )
     gaussians.load_ply(args.gaussian_ply)
     gaussians = gaussians.cuda().eval()
     primitive_count = int(gaussians.get_xyz.shape[0])
     if int(source_universe.max()) >= primitive_count:
         raise ValueError(
-            "anchor source IDs exceed frozen 2DGS primitive count"
+            "anchor source IDs exceed frozen Gaussian primitive count"
         )
 
     names = list(query_cache)
@@ -257,8 +281,13 @@ def main() -> None:
             return_rgb_meta=True,
             rasterize_mode="antialiased",
         )
+        provenance_function = (
+            bank_splat_provenance_2dgs
+            if args.gaussian_type == "2dgs"
+            else bank_splat_provenance_3dgs
+        )
         local_ids, weights, provenance_valid = (
-            bank_splat_provenance_2dgs(
+            provenance_function(
                 keypoints.cuda(),
                 query_source_universe.cuda(),
                 package["rgb_meta"],

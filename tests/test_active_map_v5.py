@@ -32,6 +32,26 @@ def test_anchor_source_csr_recovers_track_family():
     assert torch.isclose(weights[1:3].sum(), torch.tensor(1.0))
 
 
+def test_anchor_source_csr_accepts_g2_single_source_assignment():
+    state = {
+        "anchor_xyz": torch.zeros(3, 3),
+        "source_primitive_ids": torch.tensor([5, 6, 7]),
+        "track_cluster_ids": torch.tensor([-1, 0, -1]),
+        "anchor_ids": torch.tensor([0, 1, 2]),
+    }
+    track = {
+        "assignment": {
+            "track_landmark_index": torch.tensor([1]),
+            "track_landmark_distance_m": torch.tensor([0.02]),
+        },
+        "landmark_indices": torch.tensor([5, 6, 7]),
+    }
+    offsets, ids, weights = _anchor_source_csr(state, track, None)
+    assert offsets.tolist() == [0, 1, 2, 3]
+    assert ids.tolist() == [5, 6, 7]
+    assert weights.tolist() == [1.0, 1.0, 1.0]
+
+
 def test_candidate_provenance_mass_uses_source_family_weights():
     indices = torch.tensor([[0, 1]])
     primitive_ids = torch.tensor([[10, 11, 12]])

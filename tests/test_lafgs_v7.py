@@ -39,6 +39,7 @@ from scripts.train_lafgs_v7_online_metric import (
     _multi_positive_list_loss,
     _replace_refreshed_pairs,
     _save_checkpoint,
+    _trajectory_stable_promotion_loss,
     _query_index_remap as _training_query_index_remap,
 )
 

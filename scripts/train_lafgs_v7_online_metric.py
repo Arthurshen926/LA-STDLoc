@@ -254,7 +254,13 @@ def _build_training_records(
     positive_blocks = []
     positive_weight_blocks = []
     row_weight_blocks = []
+    promotion_positive_blocks = []
+    promotion_negative_blocks = []
+    promotion_weight_blocks = []
+    promotion_type_blocks = []
     legal4_blocks = []
+    if critical_teacher is not None and positive_teacher is None:
+        raise ValueError("pose-critical teacher requires a complete-positive teacher")
     if positive_teacher is not None:
         if int(positive_teacher["anchor_count"]) != int(
             state["anchor_xyz"].shape[0]
@@ -301,6 +307,38 @@ def _build_training_records(
                     .float()
                     .clamp_min(1e-8)
                     .pow(float(critical_row_power))
+                )
+                row_count = int(teacher_rows.numel())
+                promotion_positive_blocks.append(
+                    torch.as_tensor(
+                        critical_record.get(
+                            "promotion_positive_anchor",
+                            torch.full((row_count,), -1, dtype=torch.long),
+                        )
+                    ).long()
+                )
+                promotion_negative_blocks.append(
+                    torch.as_tensor(
+                        critical_record.get(
+                            "promotion_negative_anchor",
+                            torch.full((row_count,), -1, dtype=torch.long),
+                        )
+                    ).long()
+                )
+                promotion_weight_blocks.append(
+                    torch.as_tensor(
+                        critical_record.get(
+                            "promotion_weights", torch.zeros(row_count)
+                        )
+                    ).float()
+                )
+                promotion_type_blocks.append(
+                    torch.as_tensor(
+                        critical_record.get(
+                            "promotion_types",
+                            torch.zeros(row_count, dtype=torch.uint8),
+                        )
+                    ).to(torch.uint8)
                 )
             else:
                 positive_blocks.append(
@@ -372,6 +410,41 @@ def _build_training_records(
             if row_weight_blocks
             else torch.ones(positives.shape[0], dtype=torch.float32)
         )
+        promotion_positive = (
+            promotion_positive_blocks[query_index].clone()
+            if promotion_positive_blocks
+            else torch.full((positives.shape[0],), -1, dtype=torch.long)
+        )
+        promotion_negative = (
+            promotion_negative_blocks[query_index].clone()
+            if promotion_negative_blocks
+            else torch.full((positives.shape[0],), -1, dtype=torch.long)
+        )
+        promotion_weights = (
+            promotion_weight_blocks[query_index].clone()
+            if promotion_weight_blocks
+            else torch.zeros(positives.shape[0], dtype=torch.float32)
+        )
+        promotion_types = (
+            promotion_type_blocks[query_index].clone()
+            if promotion_type_blocks
+            else torch.zeros(positives.shape[0], dtype=torch.uint8)
+        )
+        for value, label in (
+            (promotion_positive, "positive"),
+            (promotion_negative, "negative"),
+            (promotion_weights, "weight"),
+            (promotion_types, "type"),
+        ):
+            if value.numel() != positives.shape[0]:
+                raise ValueError(f"candidate promotion {label} rows do not align")
+        valid_promotion_anchor = (
+            ((promotion_positive >= 0) & (promotion_positive < state["anchor_xyz"].shape[0]))
+            & ((promotion_negative >= 0) & (promotion_negative < state["anchor_xyz"].shape[0]))
+        )
+        promotion_weights = torch.where(
+            valid_promotion_anchor, promotion_weights, torch.zeros_like(promotion_weights)
+        )
         query_exact = exact.get(query_index, {})
         if (
             positive_teacher is None
@@ -414,9 +487,16 @@ def _build_training_records(
                 "positives": positives,
                 "positive_weights": positive_weights,
                 "critical_row_weights": row_weights,
+                "promotion_positive_anchor": promotion_positive,
+                "promotion_negative_anchor": promotion_negative,
+                "promotion_weights": promotion_weights,
+                "promotion_types": promotion_types,
                 "matchable": valid,
                 "null_weight": null_weight,
                 "group": int(query_bins[query_index]),
+                "evidence_source": str(
+                    record.get("evidence_source", "real_mapping")
+                ),
             }
         )
     return records, {
@@ -425,13 +505,48 @@ def _build_training_records(
         "base_anchor_count": int(base_rows.numel()),
         "complete_positive_teacher_enabled": positive_teacher is not None,
         "pose_critical_teacher_enabled": critical_teacher is not None,
+        "trajectory_stable_promotion_rows": int(
+            sum((value > 0).sum() for value in promotion_weight_blocks)
+        ),
         "complete_positive_pair_count": int(
             positive_teacher["diagnostics"]["strong_pair_count"]
             if positive_teacher is not None
             else 0
         ),
         "query_groups": query_bins.tolist(),
+        "evidence_source_counts": {
+            source: sum(record["evidence_source"] == source for record in records)
+            for source in sorted({record["evidence_source"] for record in records})
+        },
     }
+
+
+def _trajectory_stable_promotion_loss(
+    score_matrix: torch.Tensor,
+    positive_anchor: torch.Tensor,
+    negative_anchor: torch.Tensor,
+    weights: torch.Tensor,
+    *,
+    margin: float,
+) -> tuple[torch.Tensor, int]:
+    valid = (
+        (positive_anchor >= 0)
+        & (positive_anchor < score_matrix.shape[1])
+        & (negative_anchor >= 0)
+        & (negative_anchor < score_matrix.shape[1])
+        & (weights > 0)
+    )
+    if not bool(valid.any()):
+        return torch.zeros((), device=score_matrix.device), 0
+    rows = torch.nonzero(valid, as_tuple=False).reshape(-1)
+    positive_scores = score_matrix[rows, positive_anchor[rows]]
+    negative_scores = score_matrix[rows, negative_anchor[rows]]
+    losses = F.softplus(float(margin) + negative_scores - positive_scores)
+    selected_weights = weights[rows]
+    return (
+        (losses * selected_weights).sum() / selected_weights.sum().clamp_min(1e-8),
+        int(rows.numel()),
+    )
 
 
 def _bounded_anchor_features(
@@ -1031,6 +1146,11 @@ def main() -> None:
     parser.add_argument("--basin-rotation-reward-scale-deg", type=float, default=2.0)
     parser.add_argument("--critical-pair-power", type=float, default=1.0)
     parser.add_argument("--critical-row-power", type=float, default=1.0)
+    parser.add_argument("--trajectory-stable-weight", type=float, default=0.0)
+    parser.add_argument("--trajectory-stable-margin", type=float, default=0.02)
+    parser.add_argument(
+        "--trajectory-stable-sampling-ratio", type=float, default=0.0
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--checkpoint-steps", default="100,250,500")
@@ -1077,6 +1197,8 @@ def main() -> None:
         raise ValueError("critical_pair_power must be in [0, 1]")
     if not 0.0 <= args.critical_row_power <= 1.0:
         raise ValueError("critical_row_power must be in [0, 1]")
+    if not 0.0 <= args.trajectory_stable_sampling_ratio <= 1.0:
+        raise ValueError("trajectory-stable sampling ratio must be in [0, 1]")
     torch.manual_seed(args.seed)
     device = torch.device("cuda")
     state = torch.load(args.map, map_location="cpu", weights_only=False)
@@ -1218,6 +1340,11 @@ def main() -> None:
     clean_pairs = {}
     harmful_pairs = {}
     generator = torch.Generator().manual_seed(args.seed + 1)
+    stable_query_indices = [
+        index
+        for index, record in enumerate(records)
+        if bool((record["promotion_weights"] > 0).any())
+    ]
     checkpoints = {
         int(value)
         for value in args.checkpoint_steps.split(",")
@@ -1315,18 +1442,40 @@ def main() -> None:
             print(json.dumps(history[-1]), flush=True)
             refresh_index += 1
 
-        query_index = int(
-            torch.randint(len(records), (1,), generator=generator)
+        sample_stable = bool(
+            stable_query_indices
+            and float(args.trajectory_stable_sampling_ratio) > 0
+            and float(torch.rand((), generator=generator))
+            < float(args.trajectory_stable_sampling_ratio)
+        )
+        query_index = (
+            stable_query_indices[
+                int(
+                    torch.randint(
+                        len(stable_query_indices), (1,), generator=generator
+                    )
+                )
+            ]
+            if sample_stable
+            else int(torch.randint(len(records), (1,), generator=generator))
         )
         record = records[query_index]
         count = int(record["cache_rows"].numel())
         if count == 0:
             continue
-        rows = torch.randint(
-            count,
-            (min(args.batch_size, count),),
-            generator=generator,
-        )
+        batch_count = min(args.batch_size, count)
+        rows = torch.randint(count, (batch_count,), generator=generator)
+        if sample_stable:
+            stable_rows = torch.nonzero(
+                record["promotion_weights"] > 0, as_tuple=False
+            ).reshape(-1)
+            stable_take = min(max(batch_count // 4, 1), batch_count)
+            stable_choice = stable_rows[
+                torch.randint(
+                    stable_rows.numel(), (stable_take,), generator=generator
+                )
+            ]
+            rows[:stable_take] = stable_choice
         cache_rows = record["cache_rows"][rows]
         query = F.normalize(
             torch.as_tensor(
@@ -1337,6 +1486,9 @@ def main() -> None:
         positives = record["positives"][rows].to(device)
         positive_weights = record["positive_weights"][rows].to(device)
         critical_row_weights = record["critical_row_weights"][rows].to(device)
+        promotion_positive = record["promotion_positive_anchor"][rows].to(device)
+        promotion_negative = record["promotion_negative_anchor"][rows].to(device)
+        promotion_weights = record["promotion_weights"][rows].to(device)
         matchable = record["matchable"][rows].to(device)
         null_weight = record["null_weight"][rows].to(device)
         current_clean = clean_pairs.get(query_index, {})
@@ -1420,6 +1572,15 @@ def main() -> None:
             if bool(matchable.any())
             else torch.zeros((), device=device)
         ) * group_weight
+        stable_promotion_loss, stable_promotion_count = (
+            _trajectory_stable_promotion_loss(
+                score_matrix,
+                promotion_positive,
+                promotion_negative,
+                promotion_weights,
+                margin=args.trajectory_stable_margin,
+            )
+        )
         basin_good_loss = torch.zeros((), device=device)
         basin_blame_loss = torch.zeros((), device=device)
         basin_counterfactual_loss = torch.zeros((), device=device)
@@ -1562,6 +1723,7 @@ def main() -> None:
         )
         loss = (
             task_loss
+            + float(args.trajectory_stable_weight) * stable_promotion_loss
             + float(args.null_weight) * null_loss
             + float(args.trust_weight) * trust
             + float(args.basin_weight)
@@ -1603,6 +1765,11 @@ def main() -> None:
                 "step": step,
                 "loss": float(loss.detach()),
                 "task_loss": float(task_loss.detach()),
+                "trajectory_stable_promotion_loss": float(
+                    stable_promotion_loss.detach()
+                ),
+                "trajectory_stable_promotion_count": stable_promotion_count,
+                "trajectory_stable_sampled_query": sample_stable,
                 "trust_loss": float(trust.detach()),
                 "null_loss": float(null_loss.detach()),
                 "basin_good_loss": float(basin_good_loss.detach()),
@@ -1615,6 +1782,7 @@ def main() -> None:
                 "basin_strict_sets": basin_tiers["strict"],
                 "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
+                "evidence_source": record["evidence_source"],
                 "phase": phase,
             }
             history.append(row)
