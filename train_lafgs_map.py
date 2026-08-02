@@ -698,8 +698,33 @@ def _cache_signature(dataset, args):
         "native",
         "native_plus_anchor",
     }
+    model_path = Path(dataset.model_path).resolve()
+    prior_manifest_path = model_path / "rgb_prior_manifest.json"
+    if prior_manifest_path.is_file():
+        prior_manifest = json.loads(prior_manifest_path.read_text())
+        prior_fingerprint = {
+            "manifest_present": True,
+            "gaussian_type": str(prior_manifest.get("gaussian_type", "")),
+            "primitive_count": int(prior_manifest.get("primitive_count", -1)),
+            "geometry_sha256": str(prior_manifest.get("geometry_sha256", "")),
+            "appearance_sha256": str(prior_manifest.get("appearance_sha256", "")),
+            "exported_ply_sha256": str(prior_manifest.get("exported_ply_sha256", "")),
+        }
+    else:
+        ply_path = (
+            model_path
+            / "point_cloud"
+            / f"iteration_{int(args.load_iteration)}"
+            / "point_cloud.ply"
+        )
+        stat = ply_path.stat() if ply_path.is_file() else None
+        prior_fingerprint = {
+            "manifest_present": False,
+            "ply_size": int(stat.st_size) if stat is not None else -1,
+            "ply_mtime_ns": int(stat.st_mtime_ns) if stat is not None else -1,
+        }
     payload = {
-        "version": 9,
+        "version": 10,
         "query_feature_contract": str(args.query_feature_contract),
         "feature_resize_mode": (
             "resize_image_then_native_stride8"
@@ -714,7 +739,10 @@ def _cache_signature(dataset, args):
         "coordinate_convention": "feature_grid_index_plus_half_physical_v1",
         "pixel_center_offset": float(PIXEL_CENTER_OFFSET),
         "valid_mask_policy": _VALID_MASK_POLICY,
-        "model_path": os.path.abspath(dataset.model_path),
+        "model_path": str(model_path),
+        # Query caches contain rendered depth/alpha. Their identity must include
+        # the frozen RGB prior, not just the image/frontend protocol.
+        "rgb_prior_fingerprint": prior_fingerprint,
         "source_path": os.path.abspath(dataset.source_path),
         "load_iteration": int(args.load_iteration),
         "feature_type": str(dataset.feature_type),
@@ -751,6 +779,7 @@ def _cache_payload_compatible(cached_payload, expected_payload):
         "pixel_center_offset",
         "valid_mask_policy",
         "model_path",
+        "rgb_prior_fingerprint",
         "source_path",
         "load_iteration",
         "feature_type",

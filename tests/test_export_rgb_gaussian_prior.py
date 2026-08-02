@@ -112,6 +112,7 @@ def test_export_rgb_prior_accepts_native_2dgs_two_scale_schema(tmp_path):
         iteration=30000,
         prior_kind="rgb_only",
         prior_training_used_feature_loss=False,
+        white_background=False,
     )
 
     output_names = set(
@@ -130,3 +131,5 @@ def test_export_rgb_prior_accepts_native_2dgs_two_scale_schema(tmp_path):
     assert "loc_feature_0" not in output_names
     assert manifest["gaussian_type"] == "2dgs"
     assert manifest["prior_training_used_feature_loss"] is False
+    assert manifest["white_background"] is False
+    assert "white_background=False" in (output_model / "cfg_args").read_text()

@@ -712,7 +712,8 @@ class FullRunScriptArgsTest(unittest.TestCase):
 
     def test_prepare_baseline_artifacts_script_builds_missing_scene_baselines(self):
         text = PREPARE_BASELINES_SCRIPT.read_text()
-        self.assertIn("SOURCE_ROOT=${SOURCE_ROOT:-/mnt/pool/sqy/ulfloc_repro_20260607}", text)
+        self.assertIn("SOURCE_ROOT=${SOURCE_ROOT:-}", text)
+        self.assertIn('if [[ -z "$SOURCE_ROOT" ]]; then', text)
         self.assertIn("TARGET_ROOT=${TARGET_ROOT:-/mnt/pool/sqy/stdloc_la_full_runs}", text)
         self.assertIn("SCENES=${SCENES:-ShopFacade KingsCollege OldHospital}", text)
         self.assertIn("SKIP_DETECTOR=${SKIP_DETECTOR:-0}", text)

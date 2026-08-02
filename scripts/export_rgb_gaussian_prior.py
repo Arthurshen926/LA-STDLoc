@@ -49,6 +49,7 @@ def export_rgb_prior(
     iteration,
     prior_kind,
     prior_training_used_feature_loss,
+    white_background=True,
 ):
     input_ply = Path(input_ply).expanduser().resolve()
     output_model = Path(output_model).expanduser().resolve()
@@ -160,6 +161,7 @@ def export_rgb_prior(
         "prior_training_used_feature_loss": bool(
             prior_training_used_feature_loss
         ),
+        "white_background": bool(white_background),
         "source_localization_state_present": bool(localization_removed),
         "localization_state_present": False,
         "detector_state_present": False,
@@ -184,7 +186,7 @@ def export_rgb_prior(
         sh_degree=int(sh_degree),
         source_path=str(Path(source_path).expanduser().resolve()),
         speedup=False,
-        white_background=True,
+        white_background=bool(white_background),
     )
     (output_model / "cfg_args").write_text(str(cfg))
     return manifest
@@ -208,6 +210,11 @@ def main():
     parser.add_argument(
         "--prior_training_used_feature_loss", action="store_true"
     )
+    parser.add_argument(
+        "--black_background",
+        action="store_true",
+        help="Record the official black-background RGB training convention.",
+    )
     args = parser.parse_args()
     manifest = export_rgb_prior(
         args.input_ply,
@@ -222,6 +229,7 @@ def main():
         prior_training_used_feature_loss=(
             args.prior_training_used_feature_loss
         ),
+        white_background=not args.black_background,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))
 

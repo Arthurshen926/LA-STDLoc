@@ -17,8 +17,8 @@ case "$SCENE" in
   *) echo "Unsupported Cambridge scene: $SCENE" >&2; exit 2 ;;
 esac
 case "$GPU" in
-  0|1) ;;
-  *) echo "Frozen multi-scene experiments are restricted to GPU 0 or 1" >&2; exit 2 ;;
+  0|1|2) ;;
+  *) echo "GPU must be 0, 1, or 2" >&2; exit 2 ;;
 esac
 case "$MODE" in
   prepare|base|graph|map|reconstruct|family|selector|eval|all) ;;
@@ -34,6 +34,8 @@ PRIOR_PROFILE="${LAFGS_V1_PRIOR_PROFILE_OVERRIDE:-rgb_2dgs}"
 case "$PRIOR_PROFILE" in
   rgb_2dgs) GAUSSIAN_TYPE="2dgs"; SH_DEGREE=3 ;;
   rgb_nosky|rgb_sky_dirty) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=0 ;;
+  vanilla_2dgs) GAUSSIAN_TYPE="2dgs"; SH_DEGREE=3 ;;
+  vanilla_3dgs) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=3 ;;
   *) echo "Unsupported frozen prior profile: $PRIOR_PROFILE" >&2; exit 2 ;;
 esac
 if [[ "$GAUSSIAN_TYPE" == "2dgs" ]]; then
@@ -45,7 +47,7 @@ else
   GEOMETRY_TEACHER_IDENTITY_MODE="track_first"
   GEOMETRY_TEACHER_TAG="g2_track_first_v1"
 fi
-CONFIG="$REPO_ROOT/configs/lafgs_v1_frozen_cambridge.yaml"
+CONFIG="${LAFGS_V1_CONFIG_OVERRIDE:-$REPO_ROOT/configs/lafgs_v1_frozen_cambridge.yaml}"
 ROOT="$EXPERIMENT_ROOT/$SCENE"
 MODEL_ROOT="${LAFGS_V1_MODEL_ROOT_OVERRIDE:-$ROOT/prior/rgb_matcha_2dgs}"
 EXTERNAL_PRIOR=0
@@ -112,14 +114,14 @@ PY
 if [[ -n "${LAFGS_FROZEN_SEEDS_OVERRIDE:-}" ]]; then
   FROZEN_SEEDS="$LAFGS_FROZEN_SEEDS_OVERRIDE"
 fi
-EVAL_VARIANTS="${LAFGS_EVAL_VARIANTS_OVERRIDE:-A0_bootstrap A1_reconstructed A2_family_all A3_p1_fixed512}"
+EVAL_VARIANTS="${LAFGS_EVAL_VARIANTS_OVERRIDE:-A0_bootstrap A1_reconstructed}"
 EVAL_SKIP_SUMMARY="${LAFGS_EVAL_SKIP_SUMMARY:-0}"
 
 BOOTSTRAP="$RUN_ROOT/bootstrap"
 STAGE_A="$RUN_ROOT/stage_a_combined_${STAGE_A_STEPS}"
 STATISTICS="$RUN_ROOT/statistics_combined_${STAGE_A_STEPS}_frozen_${GEOMETRY_TEACHER_TAG}"
-QUERY_CACHE="$RUN_ROOT/query_cache_native_fullres_k2048.pt"
-SPARSE_QUERY_CACHE="$RUN_ROOT/query_cache_native_sparse_teacher.pt"
+QUERY_CACHE="${LAFGS_V1_QUERY_CACHE_OVERRIDE:-$RUN_ROOT/query_cache_native_fullres_k2048.pt}"
+SPARSE_QUERY_CACHE="${LAFGS_V1_SPARSE_QUERY_CACHE_OVERRIDE:-$RUN_ROOT/query_cache_native_sparse_teacher.pt}"
 VISIBILITY="$RUN_ROOT/visibility_${SCAFFOLD_BUDGET}_native.pt"
 BASE_STATE="$STAGE_A/${STAGE_A_STEPS}_lafgs_map_state.pt"
 BOOTSTRAP_STATE="$BOOTSTRAP/0_lafgs_map_state.pt"
@@ -256,6 +258,7 @@ base() {
     export LAFGS_SANITIZATION_ROOT="$EXPERIMENT_ROOT"
     export LAFGS_SANITIZATION_MODEL_ROOT="$MODEL_ROOT"
     export LAFGS_SANITIZATION_RUN_TAG="$RUN_TAG"
+    export LAFGS_QUERY_CACHE_PATH="$QUERY_CACHE"
     export LAFGS_SANITIZATION_SCAFFOLD_BUDGET="$SCAFFOLD_BUDGET"
     export LAFGS_STAGE_A_STEPS="$STAGE_A_STEPS"
     export LAFGS_SANITIZATION_SOURCE_STEP="$STAGE_A_STEPS"
@@ -532,6 +535,23 @@ selector() {
     --config-json "{\"retrieval_topk\":$SELECTOR_TOPK,\"budget\":$SELECTOR_BUDGET,\"single_trajectory_oof_folds\":$SELECTOR_OOF_FOLDS,\"seed\":2026}"
 }
 
+deployment_eval_prerequisites() {
+  # A0/A1 inference consumes only the frozen RGB prior and materialized
+  # localization maps.  Do not make deployment evaluation depend on mutable
+  # offline query caches that are not read by stdloc.py.
+  prepare
+  for path in \
+    "$BOOTSTRAP_STATE" "$BOOTSTRAP/sampled_idx.pkl" \
+    "$BOOTSTRAP/landmark_meta.pt" "$RECON_MAP" "$METRIC_STATE" \
+    "$CONTRACTS/rgb_prior.json" "$CONTRACTS/reconstructed_map.json"; do
+    require_file "$path"
+  done
+  "$PYTHON" scripts/lafgs_artifact_contract.py verify \
+    --manifest "$CONTRACTS/rgb_prior.json"
+  "$PYTHON" scripts/lafgs_artifact_contract.py verify \
+    --manifest "$CONTRACTS/reconstructed_map.json"
+}
+
 eval_one() {
   local label="$1"
   local seed="$2"
@@ -760,7 +780,8 @@ PY
 evaluate() {
   case " $EVAL_VARIANTS " in
     *" A3_p1_fixed512 "*) selector ;;
-    *) family_refinement ;;
+    *" A2_family_all "*) family_refinement ;;
+    *) deployment_eval_prerequisites ;;
   esac
   local seed
   for seed in $FROZEN_SEEDS; do

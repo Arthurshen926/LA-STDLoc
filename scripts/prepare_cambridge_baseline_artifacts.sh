@@ -2,7 +2,7 @@
 set -euo pipefail
 
 DATA_ROOT=${DATA_ROOT:-/mnt/pool/sqy/Cambridge_stdloc}
-SOURCE_ROOT=${SOURCE_ROOT:-/mnt/pool/sqy/ulfloc_repro_20260607}
+SOURCE_ROOT=${SOURCE_ROOT:-}
 TARGET_ROOT=${TARGET_ROOT:-/mnt/pool/sqy/stdloc_la_full_runs}
 SCENES=${SCENES:-ShopFacade KingsCollege OldHospital}
 BASELINE_ITERS=${BASELINE_ITERS:-30000}
@@ -12,6 +12,11 @@ REQUIRE_LOC_FEATURE=${REQUIRE_LOC_FEATURE:-1}
 TRAIN_MISSING_BASELINE=${TRAIN_MISSING_BASELINE:-0}
 FORCE_BASELINE_TRAIN=${FORCE_BASELINE_TRAIN:-0}
 CFG=${CFG:-configs/stdloc_cambridge.yaml}
+
+if [[ -z "$SOURCE_ROOT" ]]; then
+  echo "SOURCE_ROOT is required and must contain one subdirectory per Cambridge scene." >&2
+  exit 2
+fi
 
 if [[ -z "${PYTHON:-}" ]]; then
   if [[ -x /root/miniconda3/envs/ulfloc_repro/bin/python ]]; then
