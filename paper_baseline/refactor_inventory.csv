@@ -1,0 +1,706 @@
+path,imported_by_paper_mainline,runtime_executed,keep,replacement,action
+.gitignore,no,unknown,review,root-level release equivalent,review
+.gitmodules,no,unknown,review,root-level release equivalent,review
+LA_plan.md,no,unknown,no,rewritten release documentation,delete
+LA_update0.md,no,unknown,no,rewritten release documentation,delete
+LA_update0_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update1.md,no,unknown,no,rewritten release documentation,delete
+LA_update10_synthetic_pool_selection.md,no,unknown,no,rewritten release documentation,delete
+LA_update11_training_mainline_refactor.md,no,unknown,no,rewritten release documentation,delete
+LA_update12_training_mainline_boundaries.md,no,unknown,no,rewritten release documentation,delete
+LA_update13_clean_default_validation.md,no,unknown,no,rewritten release documentation,delete
+LA_update14_training_mainline_refactor.md,no,unknown,no,rewritten release documentation,delete
+LA_update15_training_mainline_refactor_results.md,no,unknown,no,rewritten release documentation,delete
+LA_update16_stage_aware_soft_reliability.md,no,unknown,no,rewritten release documentation,delete
+LA_update17_stage_aware_direct_objective.md,no,unknown,no,rewritten release documentation,delete
+LA_update18_stage_source_diagnostics_and_500step.md,no,unknown,no,rewritten release documentation,delete
+LA_update19_source_stage_cross_tab.md,no,unknown,no,rewritten release documentation,delete
+LA_update1_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update2.md,no,unknown,no,rewritten release documentation,delete
+LA_update20_source_ablation_train_rgb_only.md,no,unknown,no,rewritten release documentation,delete
+LA_update21_training_mainline_refactor.md,no,unknown,no,rewritten release documentation,delete
+LA_update22_cache_aligned_mainline.md,no,unknown,no,rewritten release documentation,delete
+LA_update23_training_mainline_refactor.md,no,unknown,no,rewritten release documentation,delete
+LA_update24_training_mainline_fullchain_100_500.md,no,unknown,no,rewritten release documentation,delete
+LA_update25_training_mainline_refactor.md,no,unknown,no,rewritten release documentation,delete
+LA_update26_capacity_fullchain_ablation.md,no,unknown,no,rewritten release documentation,delete
+LA_update27_refactored_training_mainline.md,no,unknown,no,rewritten release documentation,delete
+LA_update28_refactored_mainline_500step_results.md,no,unknown,no,rewritten release documentation,delete
+LA_update29_clean_mainline_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update2_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update3.md,no,unknown,no,rewritten release documentation,delete
+LA_update30_oldhospital_objective_ablation.md,no,unknown,no,rewritten release documentation,delete
+LA_update31_oldhospital_objective_multiseed.md,no,unknown,no,rewritten release documentation,delete
+LA_update32_pnp_aware_landmark_utility.md,no,unknown,no,rewritten release documentation,delete
+LA_update3_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update4_pseudo_query_closure.md,no,unknown,no,rewritten release documentation,delete
+LA_update5_synthetic_rgb_fix.md,no,unknown,no,rewritten release documentation,delete
+LA_update6_rgb_teacher_appearance_uncertainty.md,no,unknown,no,rewritten release documentation,delete
+LA_update7_wildgaussians_oldhospital.md,no,unknown,no,rewritten release documentation,delete
+LA_update8_wildgaussians_synthetic_quality.md,no,unknown,no,rewritten release documentation,delete
+LA_update9_synthetic_qa_gating.md,no,unknown,no,rewritten release documentation,delete
+LICENSE,no,unknown,review,root-level release equivalent,review
+README.md,no,unknown,review,root-level release equivalent,review
+arguments/__init__.py,yes,unknown,yes,root-level core module,migrate
+assets/STDLoc_pipeline.png,no,unknown,review,root-level release equivalent,review
+assets/logo.jpg,no,unknown,review,root-level release equivalent,review
+cache_sparse_poses.py,no,unknown,review,root-level release equivalent,review
+configs/lafgs_paper_mainline.yaml,no,entrypoint,yes,root-level core module + thin CLI,migrate
+configs/lafgs_v1_frozen_cambridge.yaml,no,unknown,review,root-level release equivalent,review
+configs/lafgs_v1_slps_cambridge.yaml,no,unknown,no,none; excluded by frozen method,delete
+configs/locaware/cambridge.yaml,no,unknown,review,root-level release equivalent,review
+configs/locaware/lafgs_v2_oldhospital_canonical_48k_a4.json,no,unknown,review,root-level release equivalent,review
+configs/stdloc_7scenes.yaml,no,unknown,review,root-level release equivalent,review
+configs/stdloc_cambridge.yaml,no,unknown,review,root-level release equivalent,review
+configs/stdloc_cambridge_efficient.yaml,no,unknown,review,root-level release equivalent,review
+cpp/CMakeLists.txt,no,unknown,review,root-level release equivalent,review
+cpp/lafgs_dependency_pose.cpp,no,unknown,no,none; excluded by frozen method,delete
+cpp/lafgs_preemptive_pose.cpp,no,unknown,no,none; excluded by frozen method,delete
+cpp/lafgs_preemptive_pose.h,no,unknown,no,none; excluded by frozen method,delete
+datasets/colmap_from_nvm.py,no,unknown,review,root-level release equivalent,review
+datasets/preprocess.py,no,unknown,review,root-level release equivalent,review
+docs/LAFGS_PAPER_MAINLINE.md,no,unknown,no,rewritten release documentation,delete
+docs/LAFGS_SLPS_NO_GO.md,no,unknown,no,rewritten release documentation,delete
+docs/LAFGS_V2.md,no,unknown,no,rewritten release documentation,delete
+docs/la_stdloc_mainline.md,no,unknown,no,rewritten release documentation,delete
+docs/lafgs_v2_track_geometry_teacher_20260726.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-23-la-stdloc-v02-feature-distillation.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-26-artifact-aware-teacher-selection.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-26-la-qualitative-diagnostics.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-26-render-artifact-continuous-weight.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-26-render-artifact-local-and-pose-forward.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-06-30-la-mainline-reset.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-07-01-pnp-aware-landmark-utility.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-07-03-lafgs-mainline.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-07-06-lafgs-geometry-feedback-v2.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-07-08-lafgs-feedback-path-fixes.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/plans/2026-07-08-sfm-from-zero-staged-lafgs.md,no,unknown,no,rewritten release documentation,delete
+docs/superpowers/specs/2026-07-03-lafgs-mainline-design.md,no,unknown,no,rewritten release documentation,delete
+encoders/feature_extractor.py,yes,unknown,yes,root-level core module,migrate
+encoders/r2d2_encoder/export_image_embeddings.py,yes,unknown,yes,root-level core module,migrate
+encoders/sp_encoder/export_image_embeddings.py,yes,unknown,yes,root-level core module,migrate
+encoders/sp_encoder/weights/superpoint_v1.pth,no,unknown,review,root-level release equivalent,review
+gaussian_renderer/__init__.py,yes,unknown,yes,root-level core module,migrate
+gaussian_renderer/network_gui.py,no,unknown,review,root-level release equivalent,review
+la_artifacts/__init__.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/detector.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/nerfbaselines_visuals.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/no_reference_valid_mask.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/pseudo_query.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/pseudo_query_training.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/quality_gate.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/repair.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/rgb_teacher.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/rgb_teacher_health.py,no,unknown,no,external dependency or removed research path,delete
+la_artifacts/valid_mask.py,no,unknown,no,external dependency or removed research path,delete
+la_diagnostics/__init__.py,no,unknown,no,external dependency or removed research path,delete
+la_diagnostics/qualitative.py,no,unknown,no,external dependency or removed research path,delete
+la_diagnostics/teacher_stage.py,no,unknown,no,external dependency or removed research path,delete
+lafgs/__init__.py,no,unknown,review,root-level release equivalent,review
+lafgs/priors/__init__.py,no,unknown,review,root-level release equivalent,review
+lafgs/priors/anysplat.py,no,unknown,review,root-level release equivalent,review
+lafgs/priors/quality.py,no,unknown,review,root-level release equivalent,review
+lafgs/protocol.py,no,unknown,review,root-level release equivalent,review
+lafgs/visualization/__init__.py,no,unknown,review,root-level release equivalent,review
+lafgs/visualization/paper.py,no,unknown,review,root-level release equivalent,review
+localization_training/__init__.py,yes,unknown,yes,root-level core module,migrate
+localization_training/absolute_set_risk.py,no,unknown,no,none,delete
+localization_training/alternating_map.py,yes,unknown,yes,root-level core module,migrate
+localization_training/appearance_calibration.py,no,unknown,no,none,delete
+localization_training/appearance_family.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/artifact_contract.py,yes,unknown,yes,root-level core module,migrate
+localization_training/basin_distillation.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/basis_utility.py,yes,unknown,yes,root-level core module,migrate
+localization_training/candidate_basin_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/candidate_context_rescue.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/confusion_directed_metric.py,no,unknown,no,none,delete
+localization_training/confusion_evidence.py,no,unknown,no,none,delete
+localization_training/contextual_descriptor.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/correspondence.py,yes,unknown,yes,root-level core module,migrate
+localization_training/counterfactual_positive_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/counterfactual_repair_routing.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/dense_distill.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/dense_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/dependency_pose_sampler.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/descriptor_diagnostics.py,no,unknown,no,none,delete
+localization_training/detector_free_map.py,yes,unknown,yes,root-level core module,migrate
+localization_training/direct_landmark_teacher.py,yes,unknown,yes,root-level core module,migrate
+localization_training/episode_sampler.py,yes,unknown,yes,root-level core module,migrate
+localization_training/eval_analysis.py,no,unknown,no,none,delete
+localization_training/evidence_graph_contract.py,yes,unknown,yes,root-level core module,migrate
+localization_training/exact_counterfactual_pose_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/failure_atlas.py,no,unknown,no,none,delete
+localization_training/feature_cache.py,no,unknown,no,none,delete
+localization_training/fixed_budget_certifier.py,no,unknown,no,none,delete
+localization_training/full_primitive_retrieval.py,yes,unknown,yes,root-level core module,migrate
+localization_training/functional_replay.py,yes,unknown,yes,root-level core module,migrate
+localization_training/gaussian_prior.py,yes,unknown,yes,root-level core module,migrate
+localization_training/gaussian_stats.py,no,unknown,no,none,delete
+localization_training/geometry_selector.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/geometry_teacher.py,yes,unknown,yes,root-level core module,migrate
+localization_training/group_saturated_consensus.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/hard_candidate_teacher.py,yes,unknown,yes,root-level core module,migrate
+localization_training/harmful_outcome_triage.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/joint_assignment_selection.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/joint_assignment_training.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/lafgs_reconstruction.py,yes,unknown,yes,root-level core module,migrate
+localization_training/landmark_distill.py,yes,unknown,yes,root-level core module,migrate
+localization_training/local_assignment.py,yes,unknown,yes,root-level core module,migrate
+localization_training/local_context_adapter.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/losses.py,no,unknown,no,none,delete
+localization_training/mainline.py,no,unknown,no,none,delete
+localization_training/map_information_bias.py,no,unknown,no,none,delete
+localization_training/map_sanitization.py,no,unknown,no,none,delete
+localization_training/micro_anchors.py,yes,unknown,yes,root-level core module,migrate
+localization_training/native_matchability.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/pair_measurement.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/pair_reliability.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/pair_scorer.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/pose_information.py,yes,unknown,yes,root-level core module,migrate
+localization_training/pose_refiner.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/pose_sufficient_selector.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/positive_retrieval.py,no,unknown,no,none,delete
+localization_training/preemptive_pose_verification.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/progressive_coreset.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/prototype_optimization.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/query_context.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/rank_budget.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/relational_context.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/render_artifacts.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/repair_activation_calibration.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/scene_normalization.py,no,unknown,no,none,delete
+localization_training/seed_graph_context.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/selection_aware_reconstruction.py,no,unknown,no,none,delete
+localization_training/shared_metric.py,yes,unknown,yes,root-level core module,migrate
+localization_training/slps_residual_signatures.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/slps_selector.py,yes,unknown,no,none; excluded by frozen method,delete
+localization_training/sparse_candidate_teacher.py,no,unknown,no,none,delete
+localization_training/sparse_frontend.py,yes,unknown,yes,root-level core module,migrate
+localization_training/splat_provenance.py,yes,unknown,yes,root-level core module,migrate
+localization_training/surface_anchor.py,yes,unknown,yes,root-level core module,migrate
+localization_training/synthetic_evidence.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/topology_controller.py,no,unknown,no,none,delete
+localization_training/trajectory_stable_candidate.py,no,unknown,no,none; excluded by frozen method,delete
+localization_training/ulf_initializer.py,yes,unknown,yes,root-level core module,migrate
+localization_training/verified_structure_update.py,no,unknown,no,none,delete
+lpipsPyTorch/__init__.py,no,unknown,review,root-level release equivalent,review
+lpipsPyTorch/modules/lpips.py,no,unknown,review,root-level release equivalent,review
+lpipsPyTorch/modules/networks.py,no,unknown,review,root-level release equivalent,review
+lpipsPyTorch/modules/utils.py,no,unknown,review,root-level release equivalent,review
+prior_reconstruction/__init__.py,no,unknown,review,root-level release equivalent,review
+prior_reconstruction/anysplat.py,no,unknown,review,root-level release equivalent,review
+requirements.txt,no,unknown,review,root-level release equivalent,review
+scene/__init__.py,yes,unknown,yes,root-level core module,migrate
+scene/cameras.py,yes,unknown,yes,root-level core module,migrate
+scene/colmap_loader.py,yes,unknown,yes,root-level core module,migrate
+scene/dataset_readers.py,yes,unknown,yes,root-level core module,migrate
+scene/gaussian_model.py,yes,unknown,yes,root-level core module,migrate
+scene/kpdetector.py,yes,unknown,yes,root-level core module,migrate
+scripts/align_anysplat_feedforward_prior.py,no,unknown,no,none,delete
+scripts/analyze_paired_sparse_results.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/analyze_solver_threshold_sweep.py,no,unknown,no,none,delete
+scripts/apply_lafgs_slps_selector.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/archive_lafgs_legacy_outputs.sh,no,unknown,no,none,delete
+scripts/archive_lafgs_phase2_outputs.sh,no,unknown,no,none,delete
+scripts/attach_lafgs_full_prior_provenance.py,no,unknown,no,none,delete
+scripts/audit_cambridge_matcha_2dgs_protocol.py,no,unknown,no,none,delete
+scripts/audit_lafgs_basin_field.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_lafgs_confusion_delta.py,no,unknown,no,none,delete
+scripts/audit_lafgs_context_oracle.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_lafgs_context_switches.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_lafgs_harmful_outcomes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_lafgs_separability_oracle.py,no,unknown,no,none,delete
+scripts/audit_lafgs_sparse_semantics.py,no,unknown,no,none,delete
+scripts/audit_lafgs_tail_coverage.py,no,unknown,no,none,delete
+scripts/audit_lafgs_v24_bottlenecks.py,no,unknown,no,none,delete
+scripts/audit_lafgs_v25_bases.py,no,unknown,no,none,delete
+scripts/audit_matcha_2dgs_valid_support.py,no,unknown,no,none,delete
+scripts/audit_pose_forward_render_artifacts.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_pseudo_teacher_cache.py,no,unknown,no,none,delete
+scripts/audit_render_artifacts.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/audit_sparse_candidate_delta.py,no,unknown,no,none,delete
+scripts/audit_valid_support_masks.py,no,unknown,no,none,delete
+scripts/augment_lafgs_slps_residual_signatures.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/augment_lafgs_slps_self_outcomes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/augment_surface_geometry_evidence.py,no,unknown,no,none,delete
+scripts/blend_lafgs_map_states.py,no,unknown,no,none,delete
+scripts/blend_lafgs_micro_anchor_descriptors.py,no,unknown,no,none,delete
+scripts/bootstrap_mvinit_loc_state.py,no,unknown,no,none,delete
+scripts/build_dual_prototype_oracle.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_joint_assignment_scene_graph.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_3d_context_state.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_alternating_candidate_pool.py,no,unknown,no,none,delete
+scripts/build_lafgs_anchor_function_stats.py,yes,unknown,yes,root-level core module,migrate
+scripts/build_lafgs_basin_conflict_anchors.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_basin_family_prototypes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_basin_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_basis_aware_map.py,no,unknown,no,none,delete
+scripts/build_lafgs_candidate_basin_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_candidate_context_rescue.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_confusion_graph.py,no,unknown,no,none,delete
+scripts/build_lafgs_contrastive_synthetic_evidence.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_counterfactual_positive_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_evidence_graph_contract.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_exact_counterfactual_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_exact_loo_teacher.py,no,unknown,no,none,delete
+scripts/build_lafgs_failure_atlas.py,no,unknown,no,none,delete
+scripts/build_lafgs_fixed_budget_anchor_maps.py,no,unknown,no,none,delete
+scripts/build_lafgs_full_prior_micro_anchors.py,no,unknown,no,none,delete
+scripts/build_lafgs_function_graph_v3.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_functional_pruning_curve.py,no,unknown,no,none,delete
+scripts/build_lafgs_geometry_teacher.py,no,unknown,no,none,delete
+scripts/build_lafgs_keypoint_function_graph.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_lgo_baselines.py,no,unknown,no,none,delete
+scripts/build_lafgs_lgo_candidate_maps.py,no,unknown,no,none,delete
+scripts/build_lafgs_micro_anchor_bank.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_micro_anchor_capacity_sweep.py,no,unknown,no,none,delete
+scripts/build_lafgs_micro_anchor_marginal_selection.py,no,unknown,no,none,delete
+scripts/build_lafgs_micro_anchor_surface_geometry.py,no,unknown,no,none,delete
+scripts/build_lafgs_micro_anchor_v2_additive_audits.py,no,unknown,no,none,delete
+scripts/build_lafgs_micro_anchor_v2_sweep.py,no,unknown,no,none,delete
+scripts/build_lafgs_observed_context_families.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_pair_reliability_gate.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_pose_critical_teacher.py,no,unknown,no,none,delete
+scripts/build_lafgs_poselib.sh,no,unknown,no,none,delete
+scripts/build_lafgs_query_rescue_maps.py,no,unknown,no,none,delete
+scripts/build_lafgs_raster_provenance_cache.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_redundancy_groups.py,no,unknown,no,none,delete
+scripts/build_lafgs_redundancy_groups_v3.py,no,unknown,no,none,delete
+scripts/build_lafgs_relational_3d_context.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_relational_context_families.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_sampler_oof.py,no,unknown,no,none,delete
+scripts/build_lafgs_slps_residual_signatures.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_slps_set_outcomes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_strict_context_oracle.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_synthetic_evidence.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_topk_outcomes.py,no,unknown,no,none,delete
+scripts/build_lafgs_trajectory_stable_candidate_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_lafgs_v10_pose_sufficient_maps.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_v5_bidirectional_maps.py,no,unknown,no,none,delete
+scripts/build_lafgs_v6_query_group_maps.py,no,unknown,no,none,delete
+scripts/build_lafgs_v7_track_centric_maps.py,yes,unknown,yes,root-level core module,migrate
+scripts/build_lafgs_v9_complete_positive_teacher.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_v9_minimum_sufficient_maps.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/build_lafgs_verified_structure_proposal.py,no,unknown,no,none,delete
+scripts/build_pseudo_query_manifest.py,no,unknown,no,none,delete
+scripts/build_pseudo_teacher_cache.py,no,unknown,no,none,delete
+scripts/build_query_context_index.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/build_track_teacher_query_cache.py,no,unknown,no,none,delete
+scripts/calibrate_candidate_scales.py,no,unknown,no,none,delete
+scripts/calibrate_lafgs_appearance_modes.py,no,unknown,no,none,delete
+scripts/calibrate_lafgs_repair_activations.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/check_rgb_teacher_checkpoint.py,no,unknown,no,none,delete
+scripts/compare_pseudo_query_backends.py,no,unknown,no,none,delete
+scripts/compare_sparse_identity.py,no,unknown,no,none,delete
+scripts/compose_lafgs_policy_replay.py,no,unknown,no,none,delete
+scripts/compute_scene_normalization.py,no,unknown,no,none,delete
+scripts/corrupt_localization_anchors.py,no,unknown,no,none,delete
+scripts/dataset_preprocess.sh,no,unknown,no,none,delete
+scripts/diagnose_dense_responsibility.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/diagnose_lafgs_geometry_drift.py,no,unknown,no,none,delete
+scripts/diagnose_sparse_descriptors.py,no,unknown,no,none,delete
+scripts/diagnose_sparse_inliers.py,no,unknown,no,none,delete
+scripts/diagnose_sparse_stage_delta.py,no,unknown,no,none,delete
+scripts/diagnose_stdloc_teacher_stages.py,no,unknown,no,none,delete
+scripts/distill_lafgs_pruned_function.py,no,unknown,no,none,delete
+scripts/distill_one_of_k_to_field.py,no,unknown,no,none,delete
+scripts/eval_candidate_oracles.py,no,unknown,no,none,delete
+scripts/eval_discrete_decision_oracles.py,no,unknown,no,none,delete
+scripts/eval_family_aware_ransac.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/eval_lafgs_dense_refinement.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/eval_lafgs_ulfloc_frontend_parity.py,no,unknown,no,none,delete
+scripts/eval_seed_graph_context_oracles.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/evaluate_7scenes.sh,no,unknown,no,none,delete
+scripts/evaluate_cambridge.sh,no,unknown,no,none,delete
+scripts/evaluate_joint_assignment_p0.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/evaluate_lafgs_fixed_budget_certifier.py,no,unknown,no,none,delete
+scripts/evaluate_lafgs_group_consensus_oracle.py,no,unknown,no,none,delete
+scripts/evaluate_lafgs_group_saturated_solver.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/evaluate_lafgs_map_on_query_cache.py,no,unknown,no,none,delete
+scripts/evaluate_lafgs_preemptive_parity.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/evaluate_lafgs_slps_oracle_dump.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/evaluate_no_reference_valid_masks.py,no,unknown,no,none,delete
+scripts/evaluate_offtheshelf_gaussian_prior.py,no,unknown,no,none,delete
+scripts/evaluate_shopfacade_mapfim_field_ablation.sh,no,unknown,no,none,delete
+scripts/evaluate_sparse_locaware.sh,no,unknown,no,none,delete
+scripts/evaluate_support_sparse_pnp.py,no,unknown,no,none,delete
+scripts/evaluate_valid_masks.py,no,unknown,no,none,delete
+scripts/export_rgb_gaussian_prior.py,no,unknown,no,none,delete
+scripts/extend_lafgs_metric_state.py,no,unknown,no,none,delete
+scripts/fit_lafgs_slps_outcome_atlas.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/gate_pseudo_query_manifest.py,no,unknown,no,none,delete
+scripts/interpolate_candidate_state.py,no,unknown,no,none,delete
+scripts/interpolate_candidate_teacher_state.py,no,unknown,no,none,delete
+scripts/interpolate_lafgs_descriptor_state.py,no,unknown,no,none,delete
+scripts/lafgs_artifact_contract.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/lafgs_dense_diagnostics.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/make_lafgs_paper_figures.py,no,unknown,no,none,delete
+scripts/make_lafgs_sampler_eval_cfg.py,no,unknown,no,none,delete
+scripts/make_lafgs_slps_fixed_budget_state.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/make_stdloc_eval_cfg.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/mask_lafgs_context_to_confusion_families.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/materialize_candidate_field.py,no,unknown,no,none,delete
+scripts/materialize_candidate_teacher_trust_state.py,no,unknown,no,none,delete
+scripts/materialize_lafgs_active_map_stage.py,no,unknown,no,none,delete
+scripts/merge_lafgs_anchor_function_stats.py,no,unknown,no,none,delete
+scripts/merge_lafgs_basin_teachers.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/merge_lafgs_cached_replays.py,no,unknown,no,none,delete
+scripts/merge_lafgs_dynamic_outcomes.py,no,unknown,no,none,delete
+scripts/merge_lafgs_exact_counterfactual_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/merge_lafgs_keypoint_function_graph.py,no,unknown,no,none,delete
+scripts/merge_lafgs_lgo_baselines.py,no,unknown,no,none,delete
+scripts/merge_lafgs_nested_band_lgo.py,no,unknown,no,none,delete
+scripts/merge_lafgs_raster_provenance_cache.py,no,unknown,no,none,delete
+scripts/merge_lafgs_real_synthetic_training_bundle.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/merge_lafgs_synthetic_evidence.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/merge_stdloc_eval_shards.py,no,unknown,no,none,delete
+scripts/plan_lafgs_confusion_views.py,no,unknown,no,none,delete
+scripts/plan_lafgs_failure_views.py,no,unknown,no,none,delete
+scripts/prepare_anysplat_cambridge_windows.py,no,unknown,no,none,delete
+scripts/prepare_cambridge_baseline_artifacts.sh,no,unknown,no,none,delete
+scripts/prepare_cambridge_mapping_only_colmap.py,no,unknown,no,none,delete
+scripts/prepare_cambridge_official_eval_colmap.py,no,unknown,no,none,delete
+scripts/prepare_colmap_flat_image_view.py,no,unknown,no,none,delete
+scripts/prepare_lafgs_factor_state.py,no,unknown,no,none,delete
+scripts/prepare_nerfbaselines_colmap_dataset.py,no,unknown,no,none,delete
+scripts/prepare_rgb_teacher_manifest.py,no,unknown,no,none,delete
+scripts/rebind_geometry_teacher_to_state.py,no,unknown,no,none,delete
+scripts/redistill_lafgs_bank.py,no,unknown,no,none,delete
+scripts/refit_lafgs_pruned_replacements.py,no,unknown,no,none,delete
+scripts/remap_topology_landmarks.py,no,unknown,no,none,delete
+scripts/render_matcha_records.py,no,unknown,no,none,delete
+scripts/render_pseudo_query_manifest.py,no,unknown,no,none,delete
+scripts/repair_lafgs_localization_anchors.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/repair_render_artifacts.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/route_lafgs_counterfactual_repairs.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_anysplat_feedforward.py,no,unknown,no,none,delete
+scripts/run_cambridge_best_crossscene.sh,no,unknown,no,none,delete
+scripts/run_cambridge_lafgs_rawxyz_map.sh,no,unknown,no,none,delete
+scripts/run_cambridge_matcha_pretrained_mainline.sh,no,unknown,no,none,delete
+scripts/run_cambridge_strict_2dgs_scene.sh,no,unknown,no,none,delete
+scripts/run_cambridge_v14_f0_scene.sh,no,unknown,no,none,delete
+scripts/run_densekl_v03_cambridge.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_geometry_balance_2x2_shopfacade.sh,no,unknown,no,none,delete
+scripts/run_la_capacity_fullchain_ablation.sh,no,unknown,no,none,delete
+scripts/run_la_clean_control_matrix.sh,no,unknown,no,none,delete
+scripts/run_la_clean_real_train_mainline.sh,no,unknown,no,none,delete
+scripts/run_la_oldhospital_objective_ablation.sh,no,unknown,no,none,delete
+scripts/run_la_pseudo_query_pipeline.sh,no,unknown,no,none,delete
+scripts/run_la_qualitative_diagnostics.py,no,unknown,no,none,delete
+scripts/run_la_refactored_mainline.sh,no,unknown,no,none,delete
+scripts/run_la_update2_dense_long_worker.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_la_update2_long_worker.sh,no,unknown,no,none,delete
+scripts/run_la_update3_p0_worker.sh,no,unknown,no,none,delete
+scripts/run_lafgs_active_map_v2.py,no,unknown,no,none,delete
+scripts/run_lafgs_alternating_reconstruction.sh,no,unknown,no,none,delete
+scripts/run_lafgs_alternating_structure.py,yes,unknown,yes,root-level core module,migrate
+scripts/run_lafgs_anysplat_prior_matrix.sh,no,unknown,no,none,delete
+scripts/run_lafgs_cambridge_guarded_pnp.py,no,unknown,no,none,delete
+scripts/run_lafgs_dense_refinement_oldhospital.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_full_prior_capacity.sh,no,unknown,no,none,delete
+scripts/run_lafgs_full_prior_marginal.sh,no,unknown,no,none,delete
+scripts/run_lafgs_functional_curve_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_joint_assignment_p0.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_joint_assignment_p1.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_joint_assignment_production_profile.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_map_list_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_micro_anchor_v5_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_nested_band_lgo.py,no,unknown,no,none,delete
+scripts/run_lafgs_offtheshelf_prior_matrix.sh,no,unknown,no,none,delete
+scripts/run_lafgs_plain_sparse_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_preemptive_cross_scene_profile.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v10_clean_rebuild.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v1_frozen_multiscene.sh,no,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/run_lafgs_v1_group_consensus_oracle.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v1_group_saturated_consensus.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v1_slps.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_alltrain_control_protected.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_bootstrap_matrix.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_canonical_native_mainline.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_controlled_anchor_sanitization.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_factor_matrix.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_matcha_clean_scene.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_micro_anchor_capacity.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_micro_anchor_v2_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_native_objective_ablation.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_pair_inlier_refinement.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_pnp_value_rank.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_progressive_legacy_shopfacade.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_protected_micro_anchor_eval.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_protected_prune_refresh.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_protected_semidense_v2.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_query_context_p0.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_rank_budget_oracle.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_retrieval_width_ablation.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_rgb_prior_sanitization.sh,no,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/run_lafgs_v2_robust_ba_refresh.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_robust_initializer_ablation.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_seed_graph_oracles.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_selflocal_assignment_mainline.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_selflocal_semidense.sh,no,unknown,no,none; excluded by frozen method,delete
+scripts/run_lafgs_v2_shopfacade.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_shopfacade_observation_ablation.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_track_teacher_ablation.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_ulfparity_alternating.sh,no,unknown,no,none,delete
+scripts/run_lafgs_v2_widebank_distill_refresh.sh,no,unknown,no,none,delete
+scripts/run_locaware_cambridge_full.sh,no,unknown,no,none,delete
+scripts/run_locaware_v02_shopfacade.sh,no,unknown,no,none,delete
+scripts/run_locaware_v03_multiscene.sh,no,unknown,no,none,delete
+scripts/run_locaware_v03_shopfacade.sh,no,unknown,no,none,delete
+scripts/run_locaware_v03_topology_full.sh,no,unknown,no,none,delete
+scripts/run_shopfacade_mapfim_detector_adaptation.sh,no,unknown,no,none,delete
+scripts/run_shopfacade_mapfim_field_ablation.sh,no,unknown,no,none,delete
+scripts/run_shopfacade_topology_bank_continuation.sh,no,unknown,no,none,delete
+scripts/run_stdloc_rgb_only_2dgs_prior.sh,no,unknown,no,none,delete
+scripts/sanitize_lafgs_landmarks.py,no,unknown,no,none,delete
+scripts/select_candidate_checkpoint.py,no,unknown,no,none,delete
+scripts/select_lafgs_clean_initialization.py,no,unknown,no,none,delete
+scripts/select_lafgs_dense_refinement_gate.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/select_lafgs_group_consensus_queries.py,no,unknown,no,none,delete
+scripts/select_lafgs_map_checkpoint.py,no,unknown,no,none,delete
+scripts/select_lafgs_micro_anchor_extensions.py,no,unknown,no,none,delete
+scripts/select_pseudo_query_pool.py,no,unknown,no,none,delete
+scripts/slice_lafgs_materialized_anchor_extension.py,no,unknown,no,none,delete
+scripts/slim_lafgs_query_cache.py,no,unknown,no,none,delete
+scripts/subset_landmark_visibility.py,no,unknown,no,none,delete
+scripts/summarize_cambridge_crossscene.py,no,unknown,no,none,delete
+scripts/summarize_cambridge_strict_2dgs.py,no,unknown,no,none,delete
+scripts/summarize_cambridge_v14_f0.py,no,unknown,no,none,delete
+scripts/summarize_joint_assignment_p0.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_joint_assignment_p1.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_joint_assignment_production_profile.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_la_update2_dense_long.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_la_update2_long_closure.py,no,unknown,no,none,delete
+scripts/summarize_lafgs_cambridge.py,no,unknown,no,none,delete
+scripts/summarize_lafgs_group_consensus_oracle.py,no,unknown,no,none,delete
+scripts/summarize_lafgs_group_saturated_solver.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_lafgs_prior_robustness.py,no,unknown,no,none,delete
+scripts/summarize_lafgs_slps.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_lafgs_v1_multiscene.py,no,unknown,no,none,delete
+scripts/summarize_lafgs_v2_bootstrap_matrix.py,no,unknown,no,none,delete
+scripts/summarize_preemptive_cross_scene_profile.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/summarize_rank_oracle_dump.py,no,unknown,no,none,delete
+scripts/summarize_rgb_prior_sanitization.py,no,unknown,no,none,delete
+scripts/summarize_topology_risk_events.py,no,unknown,no,none,delete
+scripts/train_7scenes.sh,no,unknown,no,none,delete
+scripts/train_cambridge.sh,no,unknown,no,none,delete
+scripts/train_joint_assignment_loso.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_basin_prototypes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_basis_core_reserve_selector.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_candidate_context_gate.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_candidate_context_pair_scorer.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_confusion_directed_metric.py,no,unknown,no,none,delete
+scripts/train_lafgs_contrastive_prototypes.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_dense_field_refinement.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_dual_context_encoder.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_micro_anchor_descriptors.py,no,unknown,no,none,delete
+scripts/train_lafgs_pose_sufficient_selector.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_relational_ambiguity_gate.py,no,unknown,no,none,delete
+scripts/train_lafgs_selection_aware_reconstruction.py,no,unknown,no,none,delete
+scripts/train_lafgs_slps_selector.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_lafgs_v6_conflict_features.py,no,unknown,no,none,delete
+scripts/train_lafgs_v7_online_metric.py,yes,entrypoint,yes,root-level core module + thin CLI,migrate
+scripts/train_local_context_adapter.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_locaware_cambridge.sh,no,unknown,no,none,delete
+scripts/train_native_matchability_calibrator.py,no,unknown,no,none; excluded by frozen method,delete
+scripts/train_one_of_k_reranker.py,no,unknown,no,none,delete
+scripts/transfer_lafgs_selection_mask.py,no,unknown,no,none,delete
+scripts/validate_lafgs_paper_mainline.py,no,unknown,no,none,delete
+scripts/verify_geometry_teacher_statistics.py,no,unknown,no,none,delete
+scripts/verify_lafgs_canonical_manifest.py,no,unknown,no,none,delete
+scripts/verify_lafgs_direct_holdout.py,no,unknown,no,none,delete
+scripts/visualize_nerfbaselines_predictions.py,no,unknown,no,none,delete
+scripts/visualize_pseudo_query_pipeline.py,no,unknown,no,none,delete
+stdloc.py,yes,entrypoint,yes,localization/localizer.py,migrate
+submodules/Mask2Former,no,unknown,no,external dependency or removed research path,delete
+submodules/gsplat,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/ext.cpp,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/setup.py,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/simple_knn.cu,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/simple_knn.h,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/simple_knn/.gitkeep,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/spatial.cu,no,unknown,no,external dependency or removed research path,delete
+submodules/simple-knn/spatial.h,no,unknown,no,external dependency or removed research path,delete
+tests/test_absolute_set_risk.py,no,unknown,no,none,delete
+tests/test_active_map_v5.py,no,unknown,no,none,delete
+tests/test_alternating_map.py,no,unknown,no,none,delete
+tests/test_anysplat_prior.py,no,unknown,no,none,delete
+tests/test_arguments.py,no,unknown,no,none,delete
+tests/test_artifact_contract.py,no,unknown,no,none,delete
+tests/test_basin_conflict_anchors.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_basin_distillation.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_basin_family_prototypes.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_basin_prototype_training.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_basis_aware_map.py,no,unknown,no,none,delete
+tests/test_basis_utility.py,no,unknown,no,none,delete
+tests/test_build_lafgs_topk_outcomes.py,no,unknown,no,none,delete
+tests/test_cached_deployment_replay.py,no,unknown,no,none,delete
+tests/test_cambridge_matcha_2dgs_protocol.py,no,unknown,no,none,delete
+tests/test_cambridge_matcha_mainline_runner.py,no,unknown,no,none,delete
+tests/test_cambridge_strict_2dgs_summary.py,no,unknown,no,none,delete
+tests/test_cambridge_v14_f0.py,no,unknown,no,none,delete
+tests/test_candidate_basin_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_candidate_context_pair_scorer.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_candidate_context_rescue.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_candidate_oracles.py,no,unknown,no,none,delete
+tests/test_candidate_scale_calibration.py,no,unknown,no,none,delete
+tests/test_checkpoint_compat.py,no,unknown,no,none,delete
+tests/test_compose_lafgs_policy_replay.py,no,unknown,no,none,delete
+tests/test_confusion_directed_metric.py,no,unknown,no,none,delete
+tests/test_confusion_evidence.py,no,unknown,no,none,delete
+tests/test_context_training_contract.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_contextual_descriptor.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_counterfactual_positive_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_counterfactual_repair_routing.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_covariance_pose_refinement.py,no,unknown,no,none,delete
+tests/test_dense_distill.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_dense_teacher_losses.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_dependency_pose_sampler.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_descriptor_diagnostics.py,no,unknown,no,none,delete
+tests/test_detector_free_map.py,no,unknown,no,none,delete
+tests/test_detector_soft_targets.py,no,unknown,no,none,delete
+tests/test_direct_landmark_teacher.py,no,unknown,no,none,delete
+tests/test_discrete_decision_oracles.py,no,unknown,no,none,delete
+tests/test_dual_prototype_oracle.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_episode_geometry.py,no,unknown,no,none,delete
+tests/test_episode_sampler.py,no,unknown,no,none,delete
+tests/test_eval_analysis.py,no,unknown,no,none,delete
+tests/test_evaluate_lafgs_preemptive_parity.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_evaluate_offtheshelf_gaussian_prior.py,no,unknown,no,none,delete
+tests/test_evidence_graph_contract.py,no,unknown,no,none,delete
+tests/test_exact_counterfactual_pose_teacher.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_export_rgb_gaussian_prior.py,no,unknown,no,none,delete
+tests/test_extend_lafgs_metric_state.py,no,unknown,no,none,delete
+tests/test_failure_atlas.py,no,unknown,no,none,delete
+tests/test_fixed_budget_certifier.py,no,unknown,no,none,delete
+tests/test_full_primitive_retrieval.py,no,unknown,no,none,delete
+tests/test_full_script_args.py,no,unknown,no,none,delete
+tests/test_functional_replay.py,no,unknown,no,none,delete
+tests/test_gaussian_prior.py,no,unknown,no,none,delete
+tests/test_geometry_selector.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_geometry_teacher.py,no,unknown,no,none,delete
+tests/test_group_saturated_consensus.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_hard_candidate_preservation.py,no,unknown,no,none,delete
+tests/test_harmful_outcome_triage.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_interpolate_candidate_state.py,no,unknown,no,none,delete
+tests/test_joint_assignment_loso.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_joint_assignment_production_profile.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_joint_assignment_training.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_kpdetector_matchability.py,no,unknown,no,none,delete
+tests/test_la_artifacts.py,no,unknown,no,none,delete
+tests/test_la_qualitative_diagnostics.py,no,unknown,no,none,delete
+tests/test_la_update_summarizers.py,no,unknown,no,none,delete
+tests/test_lafgs_cambridge_experiments.py,no,unknown,no,none,delete
+tests/test_lafgs_checkpoint_integrity.py,no,unknown,no,none,delete
+tests/test_lafgs_dense_field_refinement.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_lafgs_dense_refinement_diagnostics.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_lafgs_dense_refinement_gate.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_lafgs_dense_refinement_local_matching.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_lafgs_geometry_drift_diagnostics.py,no,unknown,no,none,delete
+tests/test_lafgs_mainline.py,no,unknown,no,none,delete
+tests/test_lafgs_paper_mainline_protocol.py,no,unknown,no,none,delete
+tests/test_lafgs_query_cache_signature.py,no,unknown,no,none,delete
+tests/test_lafgs_reconstruction.py,no,unknown,no,none,delete
+tests/test_lafgs_release_protocol.py,no,unknown,no,none,delete
+tests/test_lafgs_training_args_logging.py,no,unknown,no,none,delete
+tests/test_lafgs_v7.py,no,unknown,no,none,delete
+tests/test_landmark_distill.py,no,unknown,no,none,delete
+tests/test_local_assignment.py,no,unknown,no,none,delete
+tests/test_local_context_adapter.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_localization_utility.py,no,unknown,no,none,delete
+tests/test_locaware_losses.py,no,unknown,no,none,delete
+tests/test_make_stdloc_eval_cfg.py,no,unknown,no,none,delete
+tests/test_map_information_bias.py,no,unknown,no,none,delete
+tests/test_map_sanitization.py,no,unknown,no,none,delete
+tests/test_materialize_candidate_field.py,no,unknown,no,none,delete
+tests/test_merge_lafgs_cached_replays.py,no,unknown,no,none,delete
+tests/test_merge_lafgs_dynamic_outcomes.py,no,unknown,no,none,delete
+tests/test_merge_stdloc_eval_shards.py,no,unknown,no,none,delete
+tests/test_micro_anchors.py,no,unknown,no,none,delete
+tests/test_native_matchability.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_no_reference_valid_mask.py,no,unknown,no,none,delete
+tests/test_one_of_k_reranker_training.py,no,unknown,no,none,delete
+tests/test_pair_measurement.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_pair_reliability.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_pair_scorer.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_pose_forward_audit.py,no,unknown,no,none,delete
+tests/test_pose_information.py,no,unknown,no,none,delete
+tests/test_pose_refiner.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_pose_sufficient_selector.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_positive_retrieval.py,no,unknown,no,none,delete
+tests/test_preemptive_pose_verification.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_prepare_cambridge_mapping_only_colmap.py,no,unknown,no,none,delete
+tests/test_prepare_cambridge_official_eval_colmap.py,no,unknown,no,none,delete
+tests/test_prepare_colmap_flat_image_view.py,no,unknown,no,none,delete
+tests/test_progressive_coreset.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_pseudo_query_ab.py,no,unknown,no,none,delete
+tests/test_query_context.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_rank_budget.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_relational_context.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_render_artifact_audit.py,no,unknown,no,none,delete
+tests/test_render_artifact_weights.py,no,unknown,no,none,delete
+tests/test_renderer_loc_grad.py,no,unknown,no,none,delete
+tests/test_repair_activation_calibration.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_scene_loaded_lr_scale.py,no,unknown,no,none,delete
+tests/test_scene_normalization.py,no,unknown,no,none,delete
+tests/test_seed_graph_context.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_select_candidate_checkpoint.py,no,unknown,no,none,delete
+tests/test_select_lafgs_clean_initialization.py,no,unknown,no,none,delete
+tests/test_select_lafgs_map_checkpoint.py,no,unknown,no,none,delete
+tests/test_selection_aware_reconstruction.py,no,unknown,no,none,delete
+tests/test_slim_lafgs_query_cache.py,no,unknown,no,none,delete
+tests/test_slps_residual_signatures.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_slps_selector.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_sparse_candidate_teacher.py,no,unknown,no,none,delete
+tests/test_sparse_frontend.py,no,unknown,no,none,delete
+tests/test_splat_provenance.py,no,unknown,no,none,delete
+tests/test_stdloc_config_paths.py,no,unknown,no,none,delete
+tests/test_summarize_group_saturated_solver.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_summarize_joint_assignment_p1.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_summarize_lafgs_prior_robustness.py,no,unknown,no,none,delete
+tests/test_summarize_lafgs_v1_multiscene.py,no,unknown,no,none,delete
+tests/test_superpoint_joint_forward.py,no,unknown,no,none,delete
+tests/test_support_sparse_pnp.py,no,unknown,no,none,delete
+tests/test_surface_anchor.py,no,unknown,no,none,delete
+tests/test_synthetic_evidence.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_teacher_stage_diagnostics.py,no,unknown,no,none,delete
+tests/test_topk_metric_contract.py,no,unknown,no,none,delete
+tests/test_topology_controller.py,no,unknown,no,none,delete
+tests/test_topology_stats.py,no,unknown,no,none,delete
+tests/test_train_coreset_v2.py,no,unknown,no,none,delete
+tests/test_train_locaware_masks.py,no,unknown,no,none,delete
+tests/test_trajectory_stable_candidate.py,no,unknown,no,none; excluded by frozen method,delete
+tests/test_two_stage_pose_refinement.py,no,unknown,no,none,delete
+tests/test_ulfloc_initializer.py,no,unknown,no,none,delete
+tests/test_v10_pose_sufficient_maps.py,no,unknown,no,none,delete
+tests/test_valid_support_mask_audit_scripts.py,no,unknown,no,none,delete
+tests/test_valid_support_mask_package.py,no,unknown,no,none,delete
+tests/test_verified_structure_update.py,no,unknown,no,none,delete
+tests/test_verify_geometry_teacher_statistics.py,no,unknown,no,none,delete
+tests/test_verify_lafgs_direct_holdout.py,no,unknown,no,none,delete
+tests/test_viewpoint_training_bundle.py,no,unknown,no,none; excluded by frozen method,delete
+train.py,no,unknown,review,root-level release equivalent,review
+train_coreset_v2.py,no,unknown,review,root-level release equivalent,review
+train_detector.py,no,unknown,review,root-level release equivalent,review
+train_lafgs.py,no,unknown,review,root-level release equivalent,review
+train_lafgs_map.py,yes,entrypoint,yes,features + evidence + map_learning,migrate
+train_locaware.py,no,unknown,review,root-level release equivalent,review
+utils/camera_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/camera_utils_ori.py,no,unknown,review,root-level release equivalent,review
+utils/clip_utils.py,no,unknown,review,root-level release equivalent,review
+utils/general_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/graphics_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/image_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/loss_utils.py,no,unknown,review,root-level release equivalent,review
+utils/match_sampling.py,no,unknown,review,root-level release equivalent,review
+utils/mcube_utils.py,no,unknown,review,root-level release equivalent,review
+utils/mesh_utils.py,no,unknown,review,root-level release equivalent,review
+utils/pose_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/render_utils.py,no,unknown,review,root-level release equivalent,review
+utils/sample.py,no,unknown,review,root-level release equivalent,review
+utils/sh_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/system_utils.py,yes,unknown,yes,root-level core module,migrate
+utils/viz.py,no,unknown,review,root-level release equivalent,review
+valid_support_mask/__init__.py,no,unknown,no,external dependency or removed research path,delete
+valid_support_mask/no_reference.py,no,unknown,no,external dependency or removed research path,delete
+valid_support_mask/score_mask.py,no,unknown,no,external dependency or removed research path,delete

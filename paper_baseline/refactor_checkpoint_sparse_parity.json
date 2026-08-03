@@ -1,0 +1,16 @@
+{
+  "schema": "lafgs_sparse_parity_report",
+  "version": 1,
+  "totals": {
+    "query_count": 16,
+    "keypoints_exact": 16,
+    "top1_exact": 16,
+    "scores_close": 16,
+    "inliers_exact": 16,
+    "poses_close": 16
+  },
+  "maximum_absolute_score_error": 3.5762786865234375e-07,
+  "maximum_absolute_pose_error": 0.0,
+  "failures": [],
+  "passed": true
+}

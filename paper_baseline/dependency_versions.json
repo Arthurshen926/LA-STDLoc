@@ -1,0 +1,14 @@
+{
+  "python": "3.9.12 (main, Jun  1 2022, 11:38:51) \n[GCC 7.5.0]",
+  "platform": "Linux-4.15.0-213-generic-x86_64-with-glibc2.31",
+  "packages": {
+    "numpy": "1.26.4",
+    "opencv-python": null,
+    "pyyaml": "6.0.3",
+    "scipy": "1.13.1",
+    "torch": "2.0.1+cu118"
+  },
+  "torch_cuda": "11.8",
+  "cuda_available": true,
+  "cudnn": 8700
+}

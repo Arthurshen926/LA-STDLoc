@@ -1,0 +1,212 @@
+[
+  {
+    "q": 0,
+    "shape": [
+      2025,
+      16
+    ],
+    "id_exact_pct": 100.0,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 1810,
+    "positive_count_new": 1810
+  },
+  {
+    "q": 16,
+    "shape": [
+      2024,
+      16
+    ],
+    "id_exact_pct": 64.37129378318787,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 7883,
+    "positive_count_new": 7883
+  },
+  {
+    "q": 32,
+    "shape": [
+      2025,
+      16
+    ],
+    "id_exact_pct": 46.367284655570984,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 7200,
+    "positive_count_new": 7200
+  },
+  {
+    "q": 48,
+    "shape": [
+      2015,
+      16
+    ],
+    "id_exact_pct": 58.6941659450531,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 9300,
+    "positive_count_new": 9300
+  },
+  {
+    "q": 64,
+    "shape": [
+      2048,
+      16
+    ],
+    "id_exact_pct": 75.079345703125,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 12423,
+    "positive_count_new": 12423
+  },
+  {
+    "q": 80,
+    "shape": [
+      2042,
+      16
+    ],
+    "id_exact_pct": 52.95053720474243,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 7887,
+    "positive_count_new": 7887
+  },
+  {
+    "q": 96,
+    "shape": [
+      2045,
+      16
+    ],
+    "id_exact_pct": 57.548898458480835,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 8092,
+    "positive_count_new": 8092
+  },
+  {
+    "q": 112,
+    "shape": [
+      2033,
+      16
+    ],
+    "id_exact_pct": 77.57009267807007,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 11357,
+    "positive_count_new": 11357
+  },
+  {
+    "q": 128,
+    "shape": [
+      2029,
+      16
+    ],
+    "id_exact_pct": 66.00850224494934,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 9877,
+    "positive_count_new": 9877
+  },
+  {
+    "q": 144,
+    "shape": [
+      2000,
+      16
+    ],
+    "id_exact_pct": 67.47499704360962,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 6881,
+    "positive_count_new": 6881
+  },
+  {
+    "q": 160,
+    "shape": [
+      2044,
+      16
+    ],
+    "id_exact_pct": 55.684322118759155,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 7255,
+    "positive_count_new": 7255
+  },
+  {
+    "q": 176,
+    "shape": [
+      2040,
+      16
+    ],
+    "id_exact_pct": 32.63173997402191,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 4474,
+    "positive_count_new": 4474
+  },
+  {
+    "q": 192,
+    "shape": [
+      1920,
+      16
+    ],
+    "id_exact_pct": 55.76171875,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 8305,
+    "positive_count_new": 8305
+  },
+  {
+    "q": 208,
+    "shape": [
+      2048,
+      16
+    ],
+    "id_exact_pct": 60.589599609375,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 7.62939453125e-06,
+    "positive_count_old": 9611,
+    "positive_count_new": 9611
+  },
+  {
+    "q": 224,
+    "shape": [
+      2011,
+      16
+    ],
+    "id_exact_pct": 67.37008690834045,
+    "active_id_exact_pct": 100.0,
+    "positive_set_equal_pct": 100.0,
+    "valid_diff": 0,
+    "mass_max_abs": 0.0,
+    "positive_count_old": 8192,
+    "positive_count_new": 8192
+  }
+]

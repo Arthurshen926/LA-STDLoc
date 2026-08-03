@@ -1,0 +1,43 @@
+{
+  "map": {
+    "anchor_ids": {
+      "exact": true,
+      "max_abs": 0.0
+    },
+    "anchor_xyz": {
+      "exact": true,
+      "max_abs": 0.0
+    },
+    "anchor_features": {
+      "exact": false,
+      "max_abs": 2.9802322387695312e-08
+    },
+    "source_primitive_ids": {
+      "exact": true,
+      "max_abs": 0.0
+    },
+    "track_cluster_ids": {
+      "exact": true,
+      "max_abs": 0.0
+    },
+    "anchor_type": {
+      "exact": true,
+      "max_abs": 0.0
+    }
+  },
+  "metric": {
+    "down.weight": {
+      "exact": false,
+      "max_abs": 2.2351741790771484e-08
+    },
+    "down.bias": {
+      "exact": false,
+      "max_abs": 7.450580596923828e-09
+    },
+    "up.weight": {
+      "exact": false,
+      "max_abs": 1.862645149230957e-09
+    }
+  },
+  "within_fp32_gate": true
+}

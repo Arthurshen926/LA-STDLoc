@@ -1,0 +1,50 @@
+{
+  "schema": "lafgs_paper_baseline",
+  "version": 1,
+  "git_commit": "22b65f58327c6c57c4525eea98653fe9255c048a",
+  "git_describe": "archive-full-research-20260803",
+  "branch": "codex/paper-release-root",
+  "source_tag": "paper-mainline-baseline-v1",
+  "config": {
+    "schema": "lafgs_resolved_mainline_config",
+    "version": 1,
+    "config_path": "paper_baseline/resolved_config.yaml",
+    "config_sha256": "ad9facac0b824932805c3749f329173b0cefd6bb30576d9c98a73ff337149648",
+    "resolved_config_sha256": "24105643dda41613bd15e430ef34eb1d74001af5a3d5c9e8a03a2c7f897c9729",
+    "offline_chain": [
+      "frozen_rgb_gaussian_prior",
+      "native_superpoint_mapping_observations",
+      "kcs_gwff_initialization",
+      "track_first_cross_view_tracks",
+      "robust_triangulation",
+      "gaussian_raster_provenance",
+      "track_centric_localization_anchor_pool",
+      "localization_topology_distillation",
+      "self_localization_guided_descriptor_reconstruction",
+      "compact_single_descriptor_map"
+    ],
+    "deployment": {
+      "sparse_frontend": "ulfloc_native_metric",
+      "query_feature_contract": "native_resized_input",
+      "keypoints": 2048,
+      "nms": 2,
+      "global_topk": 1,
+      "max_matches_per_keypoint": 0,
+      "max_matches_per_landmark": 0,
+      "reprojection_error_px": 12,
+      "solver": "poselib",
+      "pose_solves": 1,
+      "dense_refinement": false,
+      "rendering": false,
+      "valid_mask_policy": "object_and_sky_and_distortion_v1"
+    }
+  },
+  "scenes": [
+    "ShopFacade",
+    "OldHospital"
+  ],
+  "environment": {
+    "cuda_visible_devices": null,
+    "python_executable": "python"
+  }
+}

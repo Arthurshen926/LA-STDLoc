@@ -1,0 +1,10 @@
+{
+  "checked_queries": 15,
+  "semantic_gate": "positive-mass provenance only; zero-mass padding IDs are undefined",
+  "active_primitive_ids_exact": true,
+  "positive_sets_exact": true,
+  "valid_masks_exact": true,
+  "maximum_mass_error": 7.62939453125e-06,
+  "zero_mass_padding_order_ignored": true,
+  "passed": true
+}

@@ -1,0 +1,36 @@
+{
+  "old_keys": [
+    "anchor_features",
+    "anchor_ids",
+    "anchor_type",
+    "anchor_xyz",
+    "base_anchor_count",
+    "config",
+    "micro_anchor_count",
+    "micro_anchor_quality",
+    "provenance",
+    "requested_micro_anchor_budget",
+    "schema",
+    "source_primitive_ids",
+    "track_cluster_ids",
+    "version"
+  ],
+  "new_keys": [
+    "anchor_features",
+    "anchor_ids",
+    "anchor_type",
+    "anchor_xyz",
+    "base_anchor_count",
+    "config",
+    "micro_anchor_count",
+    "micro_anchor_quality",
+    "provenance",
+    "requested_micro_anchor_budget",
+    "schema",
+    "source_primitive_ids",
+    "track_cluster_ids",
+    "version"
+  ],
+  "differences": 0,
+  "detail": []
+}

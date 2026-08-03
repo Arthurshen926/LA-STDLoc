@@ -1,0 +1,63 @@
+{
+  "schema": "lafgs_full_chain_release_gate",
+  "version": 1,
+  "scene": "ShopFacade",
+  "reuse_policy": "external_prior_only",
+  "legacy_artifacts_reused": false,
+  "prior": {
+    "type": "matcha_2dgs",
+    "primitive_count": 1202378,
+    "normalized_ply_sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb",
+    "geometry_exact_after_import": true,
+    "appearance_exact_after_import": true
+  },
+  "superpoint": {
+    "mapping_query_count": 231,
+    "keypoints_exact": true,
+    "descriptors_exact": true,
+    "scores_exact": true,
+    "camera_intrinsics_exact": true,
+    "camera_poses_exact": true
+  },
+  "initialization": {
+    "scaffold_anchor_count": 48000,
+    "kcs_anchor_ids_exact": true,
+    "initial_state_tensors_exact": true,
+    "stage_a_state_tensors_exact": true,
+    "visibility_tensors_exact": true
+  },
+  "tracks": {
+    "track_count": 26905,
+    "triangulated_track_count": 9284,
+    "track_payload_tensors_exact_with_fp32_tolerance": true,
+    "maximum_assignment_cost_error": 5.960464477539063e-08
+  },
+  "topology": {
+    "eligible_medium_track_count": 6692,
+    "track_core_count": 6692,
+    "coverage_reserve_count": 197,
+    "pose_reserve_count": 256,
+    "final_track_anchor_count": 6692,
+    "final_base_anchor_count": 453,
+    "final_anchor_count": 7145
+  },
+  "training": {
+    "stage_a_steps": 1000,
+    "metric_steps": 175,
+    "final_task_loss": 0.009572068229317665,
+    "final_trust_loss": 6.479707735707052e-06
+  },
+  "localization": {
+    "query_count": 103,
+    "median_te_cm": 1.808062195777893,
+    "mean_te_cm": 4.6469455991772195,
+    "p90_te_cm": 7.312294244766234,
+    "median_ae_deg": 0.09916274076308142,
+    "mean_ae_deg": 0.21677078165856795,
+    "recall_2cm_2deg_percent": 55.33980582524271,
+    "recall_5cm_5deg_percent": 81.55339805825243,
+    "catastrophic_regression": false,
+    "frozen_deployment_metrics_exact": true
+  },
+  "passed": true
+}

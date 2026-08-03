@@ -1,0 +1,109 @@
+{
+  "matcha_2dgs": {
+    "type": "2dgs",
+    "count": 817587,
+    "means0": [
+      18.629220962524414,
+      20.14324188232422,
+      1.9431620836257935
+    ],
+    "scales0": [
+      -3.220693826675415,
+      -3.827246904373169
+    ],
+    "rotation0": [
+      1.0598775148391724,
+      0.3001316785812378,
+      -0.062009770423173904,
+      -0.3350357115268707
+    ],
+    "primitive_id_last": 817586,
+    "sha_exact": true
+  },
+  "vanilla_2dgs": {
+    "type": "2dgs",
+    "count": 777515,
+    "means0": [
+      12.78509521484375,
+      8.816767692565918,
+      0.18173885345458984
+    ],
+    "scales0": [
+      -2.0502541065216064,
+      -2.7146244049072266
+    ],
+    "rotation0": [
+      0.45773857831954956,
+      -0.1746664047241211,
+      -0.0409495085477829,
+      1.3092957735061646
+    ],
+    "primitive_id_last": 777514,
+    "sha_exact": true,
+    "runtime_provenance_smoke": {
+      "query_count": 1,
+      "source_primitive_count": 48000,
+      "valid_keypoint_rows": 1126,
+      "contribution_mass_sum": 1125.9954833984375,
+      "passed": true
+    }
+  },
+  "vanilla_3dgs": {
+    "type": "3dgs",
+    "count": 1132962,
+    "means0": [
+      12.970293998718262,
+      9.23843002319336,
+      0.17736296355724335
+    ],
+    "scales0": [
+      -1.5146820545196533,
+      -6.445284843444824,
+      -0.3228257894515991
+    ],
+    "rotation0": [
+      0.7644990682601929,
+      0.2986295819282532,
+      0.023975396528840065,
+      0.14075113832950592
+    ],
+    "primitive_id_last": 1132961,
+    "sha_exact": true,
+    "runtime_provenance_smoke": {
+      "query_count": 1,
+      "source_primitive_count": 48000,
+      "valid_keypoint_rows": 540,
+      "contribution_mass_sum": 539.9953002929688,
+      "passed": true
+    }
+  },
+  "anysplat": {
+    "type": "3dgs",
+    "count": 3000000,
+    "means0": [
+      -0.21669098734855652,
+      -0.1956053376197815,
+      16.688730239868164
+    ],
+    "scales0": [
+      -1.8777780532836914,
+      -5.592897891998291,
+      -9.719109535217285
+    ],
+    "rotation0": [
+      0.22261565923690796,
+      0.11793535947799683,
+      0.9580511450767517,
+      -0.13664387166500092
+    ],
+    "primitive_id_last": 2999999,
+    "sha_exact": true,
+    "runtime_provenance_smoke": {
+      "query_count": 1,
+      "source_primitive_count": 48000,
+      "valid_keypoint_rows": 764,
+      "contribution_mass_sum": 764.0062255859375,
+      "passed": true
+    }
+  }
+}

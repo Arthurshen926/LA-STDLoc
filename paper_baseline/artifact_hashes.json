@@ -1,0 +1,70 @@
+{
+  "ShopFacade": {
+    "prior_ply": {
+      "size_bytes": 293381741,
+      "sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb"
+    },
+    "prior_manifest": {
+      "size_bytes": 2080,
+      "sha256": "c2a6b48a5b55d44d2a2fdadb060375ca18f6dd4f47789798262501006c7dc950"
+    },
+    "query_cache": {
+      "size_bytes": 7497238899,
+      "sha256": "68d1c24b140d7b9ca187468f76e06ad8d9eef8085ab7649cf6b2035ff4b8afa9"
+    },
+    "track_payload": {
+      "size_bytes": 8468875,
+      "sha256": "b2117c58b63f1d60c5a823ddd572863bd36b68ff53cd6b77225464f504a3d944"
+    },
+    "function_graph": {
+      "size_bytes": 313962685,
+      "sha256": "fe57bed418a21bebaa7f438c1df70af58f6a6ce0abd30f7ec6849968473729d0"
+    },
+    "raster_provenance": {
+      "size_bytes": 48765013,
+      "sha256": "1acb93a917dc3296e76151ec5a548c227891dba829c502192929210cfe67f4d0"
+    },
+    "anchor_map": {
+      "size_bytes": 15131255,
+      "sha256": "49f1e7dac41ebdf3c5080bdafb0a141191c4a0a771edff1a7e8610ab4d13dfdb"
+    },
+    "metric_state": {
+      "size_bytes": 92815,
+      "sha256": "3f5b34caa435c0001e1b27b2976e82448ea0885c4296236393f81ee1ac1f2a28"
+    }
+  },
+  "OldHospital": {
+    "prior_ply": {
+      "size_bytes": 199492736,
+      "sha256": "f2dbd089a23bf8f7d0d61e32f34a684d59147519f85db1d7b935e3d8936394d0"
+    },
+    "prior_manifest": {
+      "size_bytes": 2086,
+      "sha256": "0f9000411753bbbb31d6991fcf26b542c193992b867936257d67881322827c91"
+    },
+    "query_cache": {
+      "size_bytes": 29055996925,
+      "sha256": "61fe2a50aae8c38eab7b57ae7ca4eccaf408d16a610049a7aa095d6d25bbb9f7"
+    },
+    "track_payload": {
+      "size_bytes": 21077195,
+      "sha256": "9335fdcd15e6709a61283ec75f422726582d0e7c331cccf95005415c744276d2"
+    },
+    "function_graph": {
+      "size_bytes": 1202304253,
+      "sha256": "3ce9999e69cb47a5fbd87c72ddcf14c5a6fc2213caf0eb457d2008a355d37a94"
+    },
+    "raster_provenance": {
+      "size_bytes": 186713517,
+      "sha256": "40b5b278ae4d66c0a47cca53c12862ca23b6f28b54d1d9b8d9acd6c429b15bb4"
+    },
+    "anchor_map": {
+      "size_bytes": 21651255,
+      "sha256": "7c433c0f649cc6678616684521a24bf971d64cc9c0562e0e866abb0050f79466"
+    },
+    "metric_state": {
+      "size_bytes": 117455,
+      "sha256": "d0ff1115f7b2636a6835cdaa80b1651af3172e745b2c19587d4d81d44cce402f"
+    }
+  }
+}

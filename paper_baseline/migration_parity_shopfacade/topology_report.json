@@ -1,0 +1,15 @@
+{
+  "old_map": "baseline://ShopFacade/compact_map",
+  "new_map": "./paper_baseline/migration_parity_shopfacade/compact_map/minimum_sufficient_core08000_medium_qrows096_total06889.pt",
+  "old_count": 6889,
+  "new_count": 6889,
+  "semantic_differences": 1,
+  "detail": [
+    [
+      "root.provenance.v7_source_map",
+      "value",
+      "baseline://ShopFacade/canonical_map",
+      "./paper_baseline/migration_parity_shopfacade/canonical_48000.pt"
+    ]
+  ]
+}

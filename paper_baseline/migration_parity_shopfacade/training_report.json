@@ -1,0 +1,21 @@
+{
+  "map_fields_exact": {
+    "anchor_ids": true,
+    "anchor_xyz": true,
+    "anchor_features": true,
+    "source_primitive_ids": true,
+    "track_cluster_ids": true,
+    "anchor_type": true
+  },
+  "metric_weights_exact": {
+    "down.weight": true,
+    "down.bias": true,
+    "up.weight": true
+  },
+  "disabled_null_head_state_exact": {
+    "linear.weight": true,
+    "linear.bias": true
+  },
+  "training_history_metadata_difference": "current research commit records disabled trajectory-stable fields; output tensors are unchanged",
+  "passed": true
+}

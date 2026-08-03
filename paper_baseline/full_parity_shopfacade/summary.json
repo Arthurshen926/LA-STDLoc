@@ -1,0 +1,11 @@
+{
+  "query_count": 103,
+  "median_te_cm": 1.808062195777893,
+  "mean_te_cm": 4.6469455991772195,
+  "p90_te_cm": 7.312294244766234,
+  "median_ae_deg": 0.09916274076308142,
+  "mean_ae_deg": 0.21677078165856795,
+  "recall_2cm_2deg_percent": 55.33980582524271,
+  "recall_5cm_5deg_percent": 81.55339805825243,
+  "runtime_ms_mean": 551.8536419580573
+}

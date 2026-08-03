@@ -1,0 +1,136 @@
+{
+  "schema": "lafgs_sparse_golden_fixture",
+  "version": 1,
+  "query_count": 16,
+  "landmark_bank_sha256": "a528841e18f7d61a672390d6d24e81466d9d5d9ad5012ec2717b75579776178a",
+  "queries": [
+    {
+      "image_name": "seq1/frame00001.png",
+      "file": "query_0000.npz",
+      "sha256": "9c7648664dd85f5eb93263a2c9ee151f82ebe3f4ca02dc1bda9c86d2a2ab1d95",
+      "keypoint_count": 1989,
+      "match_count": 1989,
+      "inlier_count": 417
+    },
+    {
+      "image_name": "seq1/frame00002.png",
+      "file": "query_0001.npz",
+      "sha256": "211cce2e94a81a53ef8d354a04ecf9c47ddebffd659b554aff452c2ff1497168",
+      "keypoint_count": 2011,
+      "match_count": 2011,
+      "inlier_count": 442
+    },
+    {
+      "image_name": "seq1/frame00003.png",
+      "file": "query_0002.npz",
+      "sha256": "8a92697de9eb0208427116607013a1a007b3aaff902802155d06e89f21c7ec07",
+      "keypoint_count": 2005,
+      "match_count": 2005,
+      "inlier_count": 447
+    },
+    {
+      "image_name": "seq1/frame00004.png",
+      "file": "query_0003.npz",
+      "sha256": "3bc450e8d50fe0c6788bccf8ae7ae0ef9786cecaba4bc9a931d766f442259fa9",
+      "keypoint_count": 1986,
+      "match_count": 1986,
+      "inlier_count": 452
+    },
+    {
+      "image_name": "seq1/frame00005.png",
+      "file": "query_0004.npz",
+      "sha256": "e3151810f3966bb5c5deb84e135ad00368b5120655a2bbd6595ab318f5abc089",
+      "keypoint_count": 1999,
+      "match_count": 1999,
+      "inlier_count": 405
+    },
+    {
+      "image_name": "seq1/frame00006.png",
+      "file": "query_0005.npz",
+      "sha256": "ca8c70e4565a92c819d66a7637332d76a1cba9b6f8a2ef872471f21a414841ef",
+      "keypoint_count": 1994,
+      "match_count": 1994,
+      "inlier_count": 426
+    },
+    {
+      "image_name": "seq1/frame00007.png",
+      "file": "query_0006.npz",
+      "sha256": "f5dda8b92cfba4d69bdffd0665f35b37756ef59f5085a83c6fb3606061c1f2a5",
+      "keypoint_count": 1997,
+      "match_count": 1997,
+      "inlier_count": 427
+    },
+    {
+      "image_name": "seq1/frame00008.png",
+      "file": "query_0007.npz",
+      "sha256": "077b3a3abebba7757127e17b8d11831918294eea8b188880ffb8e54145c199a0",
+      "keypoint_count": 1971,
+      "match_count": 1971,
+      "inlier_count": 447
+    },
+    {
+      "image_name": "seq1/frame00009.png",
+      "file": "query_0008.npz",
+      "sha256": "9faaee2895964d5a9738666b8f217b5f0b68d644671dda5db428e2a2fb8a9d51",
+      "keypoint_count": 2012,
+      "match_count": 2012,
+      "inlier_count": 490
+    },
+    {
+      "image_name": "seq1/frame00010.png",
+      "file": "query_0009.npz",
+      "sha256": "4f3365a91c194873c842573cee17c0d5129e26aba2db346e2232cd6689a22c67",
+      "keypoint_count": 1994,
+      "match_count": 1994,
+      "inlier_count": 573
+    },
+    {
+      "image_name": "seq1/frame00011.png",
+      "file": "query_0010.npz",
+      "sha256": "935f788ca24a129e73d4c23cc0dcef7fe7e9b4570e320d02ad1e1921063fe58b",
+      "keypoint_count": 1971,
+      "match_count": 1971,
+      "inlier_count": 547
+    },
+    {
+      "image_name": "seq1/frame00012.png",
+      "file": "query_0011.npz",
+      "sha256": "d5a5bff91f563a6caa0731bae973d0694fe0d01c1f960b452b4154b19936cf9d",
+      "keypoint_count": 1978,
+      "match_count": 1978,
+      "inlier_count": 572
+    },
+    {
+      "image_name": "seq1/frame00013.png",
+      "file": "query_0012.npz",
+      "sha256": "ce40fbd877400fbf016added7ded5af9b53261bddfe46fcb3f4eb5c0305b7397",
+      "keypoint_count": 1984,
+      "match_count": 1984,
+      "inlier_count": 542
+    },
+    {
+      "image_name": "seq1/frame00014.png",
+      "file": "query_0013.npz",
+      "sha256": "8226773bd49bc49f90f73d68d65907035478f7495bfe80bf37f8a4d148744ed9",
+      "keypoint_count": 1981,
+      "match_count": 1981,
+      "inlier_count": 529
+    },
+    {
+      "image_name": "seq1/frame00015.png",
+      "file": "query_0014.npz",
+      "sha256": "8ae20f8af873354c8258a708cfe565e5d87cf6e023c6fbd10ffc61db233cc045",
+      "keypoint_count": 1993,
+      "match_count": 1993,
+      "inlier_count": 557
+    },
+    {
+      "image_name": "seq1/frame00016.png",
+      "file": "query_0015.npz",
+      "sha256": "aec280991ac306a25e845378e06e74f0f505db257ecb84193ebd47323ae0ef7c",
+      "keypoint_count": 1971,
+      "match_count": 1971,
+      "inlier_count": 545
+    }
+  ]
+}
