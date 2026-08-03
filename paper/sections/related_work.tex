@@ -2,26 +2,37 @@
 
 \paragraph{Sparse visual localization.}
 Classical structure-based localization matches local image descriptors to a 3D
-landmark map and estimates pose with a robust geometric solver. Learned local
-features improve repeatability and matching, but the landmark topology is
-usually inherited from SfM or selected after reconstruction. \method retains
-the sparse deployment interface while moving task-specific learning into map
-construction.
+landmark map and estimates pose with a robust geometric solver. Large-scale
+benchmarks establish this matching-and-PnP formulation as a strong and
+interpretable localization baseline~\cite{sattler2018benchmarking}, while
+hierarchical systems combine image retrieval with learned local features to
+improve scalability~\cite{sarlin2019hloc}. SuperPoint jointly learns repeatable
+keypoints and descriptors~\cite{detone2018superpoint}; however, the 3D landmark
+topology used at deployment is still normally inherited from SfM. \method
+retains the conventional sparse interface but moves task-specific descriptor
+and topology learning into offline map reconstruction.
 
 \paragraph{Gaussian scene representations.}
 3D and 2D Gaussian Splatting optimize explicit primitives for photometric
-rendering. Several localization systems render appearance or attach features
-to Gaussian primitives. Our formulation instead treats the Gaussian model as a
-frozen geometric and visibility scaffold: localization identities and PnP
-points are reconstructed from real feature tracks and need not correspond
-one-to-one with primitives.
+rendering~\cite{kerbl2023gaussian,huang20242dgs}. Gaussian localization methods
+either optimize query pose through differentiable rendering~\cite{botashev2024gsloc}
+or attach and render local features for sparse-to-dense
+matching~\cite{huang2025stdloc}. SplatLoc distills descriptors to selected
+Gaussian primitives~\cite{zhai2024splatloc}, whereas ULF-Loc avoids alpha-blend
+descriptor bias through keypoint-consensus sampling and geometry-weighted
+fusion~\cite{gu2026ulfloc}. These approaches retain Gaussian identity as the
+basic localization support. Our formulation instead freezes the Gaussian model
+as a geometric, visibility, and lineage scaffold: localization identity and PnP
+geometry are reconstructed from real feature tracks and need not correspond
+one-to-one with rendering primitives.
 
 \paragraph{Compact localization maps.}
 Map compression commonly ranks or prunes existing 3D points according to
-visibility, descriptor quality, or pose coverage. Our topology is reconstructed
-jointly with descriptor evidence: track-derived anchors form the core, Gaussian
-lineage supplies coverage candidates, and mapping-view self-localization
-provides task-specific functional evidence.
-
-\TODO{Replace this concise positioning with citation-grounded discussion before
-submission.}
+visibility, descriptor quality, or pose coverage. Hybrid compression preserves
+a small set of fully described points and a larger compressed support set under
+a memory budget~\cite{camposeco2019hybrid}; SceneSqueezer learns point selection
+for compact relocalization maps~\cite{yang2022scenesqueezer}. Both select from an
+existing landmark set. \method reconstructs localization topology together with
+descriptor evidence: track-derived anchors form the core, Gaussian lineage
+supplies coverage candidates, and mapping-view self-localization supplies the
+functional signal used to distill a compact map.
