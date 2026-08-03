@@ -35,12 +35,18 @@ Run unit and golden tests:
 
 ```bash
 pytest -q
+LAFGS_RUN_CUDA_SMOKE=1 pytest -q tests/test_renderer_smoke.py
 python -m evaluation.parity \
   --fixture paper_baseline/golden_fixture \
   --dataset-root /data/Cambridge/ShopFacade \
   --map /data/maps/ShopFacade/anchor_map_step_0175.pt \
   --metric-state /data/maps/ShopFacade/metric_state_step_0175.pt
 ```
+
+The CUDA smoke must run from an activated environment so the `ninja`
+executable installed with the Python package is present on `PATH`. Importing
+`gsplat` alone does not compile or execute its rasterizer and is not a
+sufficient release check.
 
 The frozen full-evaluation summaries are in `paper_baseline/expected_metrics.json`.
 Refactoring is accepted only when keypoints, top-1 IDs, inliers, poses, and

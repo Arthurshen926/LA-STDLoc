@@ -122,7 +122,20 @@ def _scene_metrics(scene: SceneBaseline) -> tuple[dict[str, Any], list[dict[str,
 
 def _dependency_versions() -> dict[str, Any]:
     packages = {}
-    for name in ("numpy", "opencv-python", "pyyaml", "scipy", "torch"):
+    for name in (
+        "gsplat",
+        "ninja",
+        "numpy",
+        "opencv-python",
+        "Pillow",
+        "plyfile",
+        "poselib",
+        "pyyaml",
+        "scipy",
+        "torch",
+        "torchvision",
+        "tqdm",
+    ):
         try:
             packages[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
