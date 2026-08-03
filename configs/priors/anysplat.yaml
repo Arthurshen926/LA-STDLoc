@@ -1,0 +1,6 @@
+schema: lafgs_prior_adapter
+version: 1
+type: 3dgs
+source_method: anysplat
+requires_mapping_only_sim3: true
+frozen: true

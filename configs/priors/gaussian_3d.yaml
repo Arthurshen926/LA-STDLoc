@@ -1,0 +1,5 @@
+schema: lafgs_prior_adapter
+version: 1
+type: 3dgs
+scale_dimensions: 3
+frozen: true

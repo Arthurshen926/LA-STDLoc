@@ -1,0 +1,6 @@
+schema: lafgs_dataset
+version: 1
+name: cambridge_landmarks
+images: processed
+split_source: dataset_test.txt
+pixel_center_offset: 0.5

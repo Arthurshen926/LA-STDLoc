@@ -1,0 +1,6 @@
+schema: lafgs_dataset
+version: 1
+name: 7scenes
+images: processed
+split_source: sparse/0/list_test.txt
+pixel_center_offset: 0.5

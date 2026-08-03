@@ -1,0 +1,104 @@
+schema: lafgs_paper_mainline
+version: 1
+
+method:
+  name: Rendering-to-Localization Topology Distillation
+  status: frozen
+  offline_chain:
+    - frozen_rgb_gaussian_prior
+    - native_superpoint_mapping_observations
+    - kcs_gwff_initialization
+    - track_first_cross_view_tracks
+    - robust_triangulation
+    - gaussian_raster_provenance
+    - track_centric_localization_anchor_pool
+    - localization_topology_distillation
+    - self_localization_guided_descriptor_reconstruction
+    - compact_single_descriptor_map
+
+prior:
+  kind: off_the_shelf_rgb_gaussian
+  iteration: 30000
+  frozen: true
+  accepts:
+    - vanilla_3dgs
+    - vanilla_2dgs
+    - enhanced_2dgs
+    - anysplat_ff_3dgs
+
+initialization:
+  scaffold_budget: 48000
+  kcs_keypoints: 2048
+  kcs_radius_px: 1
+  kcs_min_visible_views: 4
+  kcs_min_votes: 2
+  kcs_min_consensus_rate: 0.01
+  kcs_view_bins: 4
+  kcs_min_distinct_view_bins: 2
+  kcs_trajectory_bins: 4
+  kcs_min_distinct_trajectory_bins: 2
+  gwff_trim_fraction: 0.1
+  support_mask_policy: support_rgb_only
+
+reconstruction:
+  stage_a_steps: 1000
+  stage_a:
+    feature_learning_rate: 0.00005
+    weight_decay: 0.0001
+    hypothesis_topk: 32
+    positive_radius_px: 2
+    negative_radius_px: 8
+    keep_weight: 1
+    keep_margin: 0.05
+    swap_weight: 1
+    swap_margin: 0.05
+    miss_weight: 1
+    miss_margin: 0.05
+    global_attractor_weight: 0.25
+    trust_weight: 0.02
+    local_peak_weight: 0.01
+    local_peak_start_step: 500
+    local_peak_interval: 5
+    local_peak_max_anchors: 64
+    local_peak_neighbors: 8
+    local_peak_radius_px: 8
+    local_peak_sigma_px: 2
+    local_peak_temperature: 0.07
+    local_identity_weight: 0.25
+    margin_preservation_weight: 4
+    high_precision_weight: 0.02
+    high_precision_start_step: 500
+    high_precision_interval: 5
+  track_core: 8000
+  minimum_rows_per_mapping_query: 96
+  maximum_reserve: 16000
+  pose_reserve_additions: 256
+  metric_steps: 175
+  metric_rank: 16
+  metric_residual: 0.05
+  learning_rate: 0.0002
+  temperature: 0.04
+  harmful_weight: 0.1
+  trust_weight: 1.0
+  group_dro_eta: 0.03
+
+deployment:
+  sparse_frontend: ulfloc_native_metric
+  query_feature_contract: native_resized_input
+  keypoints: 2048
+  nms: 2
+  global_topk: 1
+  max_matches_per_keypoint: 0
+  max_matches_per_landmark: 0
+  reprojection_error_px: 12
+  confidence: 0.99999
+  maximum_iterations: 100000
+  minimum_iterations: 1000
+  solver: poselib
+  pose_solves: 1
+  valid_mask_policy: object_and_sky_and_distortion_v1
+
+seeds:
+  - 2026
+  - 2027
+  - 2028
