@@ -29,6 +29,20 @@ The stable CLI sequence is `import_prior.py`, `build_evidence.py`,
 `distill_map.py`, `train_map.py`, `evaluate.py`, and `visualize.py`.
 `run_pipeline.py` invokes the same package APIs end to end.
 
+Evaluate the A0 bootstrap through the same sparse runtime by passing the frozen
+Stage-A state. The CLI materializes the 48K map with an exact identity metric:
+
+```bash
+python scripts/evaluate.py \
+  --dataset /data/scene \
+  --stage-state /data/run/bootstrap/stage_a/1000_lafgs_map_state.pt \
+  --output /data/run/evaluation_a0_seed2026 \
+  --seed 2026
+```
+
+For A1, pass `--map` and `--metric-state` as before. These modes are mutually
+exclusive and share the same frontend, matching, PoseLib, and reporting code.
+
 ## Parity gates
 
 Run unit and golden tests:
