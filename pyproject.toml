@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lafgs"
+version = "0.1.0"
+description = "Rendering-to-localization topology distillation for Gaussian scene priors"
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+license = {file = "LICENSE"}
+dependencies = [
+  "gsplat==1.5.3",
+  "matplotlib>=3.7",
+  "numpy>=1.24,<2",
+  "opencv-python>=4.8",
+  "Pillow>=10",
+  "plyfile>=1.1",
+  "poselib==2.0.5",
+  "PyYAML>=6",
+  "scipy>=1.10",
+  "torch>=2.0,<2.5",
+  "torchvision>=0.15,<0.20",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[tool.setuptools]
+packages = [
+  "common", "data", "evaluation", "evidence", "features",
+  "localization", "map_learning", "priors", "topology", "visualization",
+]
+
+[tool.setuptools.package-data]
+features = ["weights/*.pth"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

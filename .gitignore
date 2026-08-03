@@ -9,8 +9,6 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
-# Optional pinned upstream checkout used only to build the LaFGS C++ sampler.
-third_party/PoseLib/
 develop-eggs/
 dist/
 downloads/
@@ -179,4 +177,16 @@ cython_debug/
 datasets/7scenes
 datasets/cambridge
 results/
-map_*/
+/map_outputs*/
+/map_runs*/
+/map_checkpoints*/
+
+# Runtime artifacts are never committed; compact result manifests live under
+# paper_baseline/ and results/manifests/.
+runs/
+outputs/
+cache/
+checkpoints/
+wandb/
+*.pth
+*.ckpt
