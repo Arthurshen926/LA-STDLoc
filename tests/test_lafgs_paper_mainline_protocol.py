@@ -60,3 +60,29 @@ def test_off_the_shelf_matrix_is_mapping_only_and_gpu2_locked():
     assert 'local full_cache="$run_root/query_cache_native_fullres_k2048.pt"' in runner
     assert 'local sparse_cache="$run_root/query_cache_native_sparse_teacher.pt"' in runner
     assert "stdloc_lafgs_v1_frozen_multiscene" not in runner
+
+
+def test_anysplat_matrix_is_pure_feedforward_mapping_only_and_gpu2_locked():
+    runner = (
+        ROOT / "scripts" / "run_lafgs_anysplat_prior_matrix.sh"
+    ).read_text()
+    assert 'if [[ "$GPU" != "2" ]]' in runner
+    assert '"post_optimization_used": False' in runner
+    assert '"test_pose_used_for_alignment": False' in runner
+    assert '"task_specific_gaussian_pruning_used": False' in runner
+    assert 'LAFGS_EVAL_VARIANTS_OVERRIDE="A0_bootstrap A1_reconstructed"' in runner
+    assert 'LAFGS_V1_PRIOR_PROFILE_OVERRIDE=anysplat_ff' in runner
+    assert 'PRIOR_TAG="${LAFGS_ANYSPLAT_PROFILE:-anysplat_ff}"' in runner
+    assert 'LAFGS_ANYSPLAT_REQUIRE_COMPLETE_MAPPING_INPUT' in runner
+    assert 'manifest["selected_image_count"] == manifest["mapping_image_count"]' in runner
+    assert 'LAFGS_ANYSPLAT_PRESELECTION_MULTIPLIER' in runner
+    assert 'local full_cache="$run_root/query_cache_native_fullres_k2048.pt"' in runner
+    assert 'local sparse_cache="$run_root/query_cache_native_sparse_teacher.pt"' in runner
+
+
+def test_frozen_mainline_rechecks_track_payload_after_idempotent_resume():
+    runner = (ROOT / "scripts" / "run_lafgs_v1_frozen_multiscene.sh").read_text()
+    require_loop = runner.index('for path in \\\n    "$QUERY_CACHE"')
+    verify = runner.index('scripts/verify_geometry_teacher_statistics.py', require_loop)
+    contract = runner.index('register_contract "$QUERY_CACHE"', require_loop)
+    assert require_loop < verify < contract

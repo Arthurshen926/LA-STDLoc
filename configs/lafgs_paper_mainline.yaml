@@ -36,6 +36,7 @@ prior:
     - vanilla_3dgs
     - vanilla_2dgs
     - enhanced_2dgs
+    - anysplat_ff_3dgs
 
 initialization:
   scaffold_budget: 48000

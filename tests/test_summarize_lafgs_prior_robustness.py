@@ -1,4 +1,8 @@
 import json
+import os
+
+import pytest
+import torch
 
 from scripts.summarize_lafgs_prior_robustness import (
     _tail_diagnostics,
@@ -108,6 +112,110 @@ def test_summarize_profile_accepts_isolated_lafgs_namespace(tmp_path):
     )
 
     assert record["complete"] is True
+
+
+def test_summarize_profile_reports_feedforward_cost_and_alignment(tmp_path):
+    prior = tmp_path / "priors" / "Scene" / "anysplat_ff"
+    lafgs = tmp_path / "lafgs" / "anysplat_ff" / "Scene"
+    _write(
+        prior / "offtheshelf_prior_protocol.json",
+        {
+            "model_load_seconds": 2.0,
+            "feedforward_seconds": 3.0,
+            "alignment_and_fusion_seconds": 4.0,
+            "total_prior_seconds": 9.0,
+            "feedforward_summary": {
+                "windows": [
+                    {"primitive_count": 20, "peak_vram_bytes": 2 * 1024**3}
+                ]
+            },
+            "mapping_only_sim3_alignment": {
+                "primitive_count": 10,
+                "windows": [
+                    {
+                        "camera_center_error_m": {"p90": 0.5},
+                        "camera_rotation_error_deg": {"p90": 1.5},
+                    }
+                ],
+            },
+        },
+    )
+    milestones = [
+        lafgs / "contracts" / "rgb_prior.json",
+        lafgs / "runs" / "frozen_v1" / "query_cache_native_fullres_k2048.pt",
+        lafgs
+        / "self_localization_reconstruction"
+        / "complete_positive_teacher.pt",
+        lafgs / "self_localization_reconstruction" / "training_report.json",
+    ]
+    for index, path in enumerate(milestones):
+        _write(path, {"stage": index})
+        timestamp = 100.0 + 60.0 * index
+        os.utime(path, (timestamp, timestamp))
+
+    record = summarize_profile(tmp_path, "Scene", "anysplat_ff")
+
+    diagnostics = record["feedforward_prior_diagnostics"]
+    assert diagnostics["raw_primitive_count"] == 20
+    assert diagnostics["fused_primitive_count"] == 10
+    assert diagnostics["peak_vram_gib"] == 2.0
+    markdown = render_markdown([record])
+    assert "2.00/3.00/4.00/9.00" in markdown
+    assert "20->10" in markdown
+    assert record["lafgs_build_diagnostics"]["lafgs_total_seconds"] == 180.0
+    assert record["lafgs_build_diagnostics"]["prior_plus_lafgs_seconds"] == 189.0
+    assert "1.00/1.00/1.00/3.00/3.15" in markdown
+
+
+def test_summarize_profile_reports_fail_closed_feedforward_geometry_gate(tmp_path):
+    prior = tmp_path / "priors" / "Scene" / "anysplat_ff_allviews"
+    lafgs = tmp_path / "lafgs" / "anysplat_ff_allviews" / "Scene"
+    _write(
+        prior / "offtheshelf_prior_protocol.json",
+        {
+            "controls": {"prior_uses_complete_mapping_split": True},
+            "feedforward_summary": {"windows": [{"primitive_count": 1}]},
+            "mapping_only_sim3_alignment": {"windows": []},
+        },
+    )
+    statistics = (
+        lafgs
+        / "runs"
+        / "frozen_v1"
+        / "statistics_combined_1000_frozen_g2_track_first_v1"
+    )
+    statistics.mkdir(parents=True)
+    torch.save(
+        {
+            "diagnostics": {
+                "geometry_teacher_triangulated_track_count": 5,
+                "geometry_teacher_high_confidence_track_count": 0,
+                "geometry_teacher_assigned_landmark_count": 0,
+            },
+            "track_geometry": {
+                "triangulation_rendered_depth_absolute_median_m": torch.tensor(
+                    [0.1, 0.2, 1.0]
+                )
+            },
+        },
+        statistics / "track_micro_anchor_payload.pt",
+    )
+
+    record = summarize_profile(
+        tmp_path,
+        "Scene",
+        "anysplat_ff_allviews",
+        lafgs_namespace="lafgs",
+    )
+
+    diagnostics = record["track_geometry_diagnostics"]
+    assert diagnostics["geometry_gate_status"] == "fail_zero_high_confidence_tracks"
+    assert diagnostics["rendered_depth_absolute_median_m"]["p50"] == pytest.approx(
+        0.2
+    )
+    markdown = render_markdown([record])
+    assert "Feed-Forward Geometry Gate" in markdown
+    assert "fail_zero_high_confidence_tracks" in markdown
 
 
 def test_enhanced_matcha_summary_exposes_selected_view_protocol(tmp_path):

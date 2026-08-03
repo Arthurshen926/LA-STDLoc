@@ -7,7 +7,7 @@ set -euo pipefail
 # pass, cosine top-1 retrieval, and one RANSAC/PnP solve.
 
 if [[ $# -ne 3 ]]; then
-  echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty|vanilla_2dgs|vanilla_3dgs|feature_stripped> <gpu> <bootstrap|stage_a|statistics|sanitize|eval|all>" >&2
+  echo "Usage: bash $0 <rgb_2dgs|rgb_nosky|rgb_sky_dirty|vanilla_2dgs|vanilla_3dgs|anysplat_ff|feature_stripped> <gpu> <bootstrap|stage_a|statistics|sanitize|eval|all>" >&2
   exit 2
 fi
 
@@ -43,6 +43,12 @@ case "$VARIANT" in
     MODEL_NAME="vanilla_3dgs"
     GAUSSIAN_TYPE="3dgs"
     SH_DEGREE=3
+    PRIOR_KIND="rgb_only"
+    ;;
+  anysplat_ff)
+    MODEL_NAME="anysplat_ff"
+    GAUSSIAN_TYPE="3dgs"
+    SH_DEGREE=0
     PRIOR_KIND="rgb_only"
     ;;
   feature_stripped)

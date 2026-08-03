@@ -22,6 +22,142 @@ def _first_map(report: dict[str, Any] | None) -> dict[str, Any] | None:
     return next(iter(report["maps"].values()))
 
 
+def _feedforward_prior_diagnostics(protocol: dict[str, Any]) -> dict[str, Any] | None:
+    feedforward = protocol.get("feedforward_summary") or {}
+    alignment = protocol.get("mapping_only_sim3_alignment") or {}
+    ff_windows = feedforward.get("windows") or []
+    alignment_windows = alignment.get("windows") or []
+    if not ff_windows and not alignment_windows:
+        return None
+
+    center_p90 = [
+        float(window["camera_center_error_m"]["p90"])
+        for window in alignment_windows
+        if window.get("camera_center_error_m", {}).get("p90") is not None
+    ]
+    rotation_p90 = [
+        float(window["camera_rotation_error_deg"]["p90"])
+        for window in alignment_windows
+        if window.get("camera_rotation_error_deg", {}).get("p90") is not None
+    ]
+    return {
+        "raw_primitive_count": sum(
+            int(window.get("primitive_count", 0)) for window in ff_windows
+        ),
+        "fused_primitive_count": alignment.get("primitive_count"),
+        "peak_vram_gib": (
+            max(float(window.get("peak_vram_bytes", 0)) for window in ff_windows)
+            / (1024**3)
+            if ff_windows
+            else None
+        ),
+        "window_count": len(alignment_windows or ff_windows),
+        "center_error_p90_m_mean_over_windows": (
+            sum(center_p90) / len(center_p90) if center_p90 else None
+        ),
+        "center_error_p90_m_max_over_windows": max(center_p90) if center_p90 else None,
+        "rotation_error_p90_deg_mean_over_windows": (
+            sum(rotation_p90) / len(rotation_p90) if rotation_p90 else None
+        ),
+        "rotation_error_p90_deg_max_over_windows": (
+            max(rotation_p90) if rotation_p90 else None
+        ),
+    }
+
+
+def _lafgs_build_diagnostics(
+    lafgs_root: Path,
+    *,
+    prior_seconds: float | int | None,
+) -> dict[str, Any] | None:
+    """Estimate persisted stage costs without inventing unavailable telemetry."""
+    milestones = {
+        "start": lafgs_root / "contracts" / "rgb_prior.json",
+        "query_cache": (
+            lafgs_root
+            / "runs"
+            / "frozen_v1"
+            / "query_cache_native_fullres_k2048.pt"
+        ),
+        "teacher": (
+            lafgs_root
+            / "self_localization_reconstruction"
+            / "complete_positive_teacher.pt"
+        ),
+        "metric_map": (
+            lafgs_root
+            / "self_localization_reconstruction"
+            / "training_report.json"
+        ),
+    }
+    if not all(path.is_file() for path in milestones.values()):
+        return None
+    times = {name: path.stat().st_mtime for name, path in milestones.items()}
+    if not (
+        times["start"]
+        <= times["query_cache"]
+        <= times["teacher"]
+        <= times["metric_map"]
+    ):
+        return None
+    lafgs_seconds = times["metric_map"] - times["start"]
+    return {
+        "timing_source": "artifact_mtime_estimate",
+        "query_cache_seconds": times["query_cache"] - times["start"],
+        "evidence_and_topology_seconds": (
+            times["teacher"] - times["query_cache"]
+        ),
+        "metric_reconstruction_seconds": (
+            times["metric_map"] - times["teacher"]
+        ),
+        "lafgs_total_seconds": lafgs_seconds,
+        "prior_plus_lafgs_seconds": (
+            float(prior_seconds) + lafgs_seconds
+            if prior_seconds is not None
+            else None
+        ),
+        "lafgs_peak_vram_gib": None,
+    }
+
+
+def _track_geometry_diagnostics(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    import torch
+
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    diagnostics = payload.get("diagnostics", {})
+    geometry = payload.get("track_geometry", {})
+    depth = torch.as_tensor(
+        geometry.get("triangulation_rendered_depth_absolute_median_m", [])
+    ).float()
+    depth = depth[torch.isfinite(depth)]
+    high_confidence = int(
+        diagnostics.get("geometry_teacher_high_confidence_track_count", 0)
+    )
+    result = {
+        "triangulated_track_count": int(
+            diagnostics.get("geometry_teacher_triangulated_track_count", 0)
+        ),
+        "high_confidence_track_count": high_confidence,
+        "assigned_landmark_count": int(
+            diagnostics.get("geometry_teacher_assigned_landmark_count", 0)
+        ),
+        "geometry_gate_status": (
+            "pass" if high_confidence > 0 else "fail_zero_high_confidence_tracks"
+        ),
+    }
+    if depth.numel():
+        result["rendered_depth_absolute_median_m"] = {
+            "count": int(depth.numel()),
+            "p10": float(depth.quantile(0.1)),
+            "p50": float(depth.quantile(0.5)),
+            "p90": float(depth.quantile(0.9)),
+            "fraction_at_most_0p15m": float((depth <= 0.15).float().mean()),
+        }
+    return result
+
+
 def _aggregate_metrics(results: dict[str, Any], stage: str) -> dict[str, Any] | None:
     stage_results = results.get("results", {}).get(stage, {})
     aggregate = stage_results.get("seed_aggregate")
@@ -197,7 +333,35 @@ def summarize_profile(
             "primitive_count": prior.get("primitive_count"),
             "ply_bytes": source_ply.stat().st_size if source_ply.is_file() else None,
             "training_seconds": protocol.get("training_seconds"),
+            "model_load_seconds": protocol.get("model_load_seconds"),
+            "feedforward_seconds": protocol.get("feedforward_seconds"),
+            "alignment_and_fusion_seconds": protocol.get(
+                "alignment_and_fusion_seconds"
+            ),
+            "alignment_timing_source": protocol.get("alignment_timing_source"),
+            "total_prior_seconds": protocol.get(
+                "total_prior_seconds", protocol.get("training_seconds")
+            ),
+            "feedforward_input_view_count": protocol.get(
+                "feedforward_input", {}
+            ).get("selected_image_count"),
+            "feedforward_window_count": len(
+                protocol.get("feedforward_input", {}).get("windows", [])
+            ),
+            "prior_uses_complete_mapping_split": protocol.get("controls", {}).get(
+                "prior_uses_complete_mapping_split"
+            ),
+            "post_optimization_used": protocol.get("controls", {}).get(
+                "post_optimization_used"
+            ),
         }
+        if diagnostics := _feedforward_prior_diagnostics(protocol):
+            result["feedforward_prior_diagnostics"] = diagnostics
+        if diagnostics := _lafgs_build_diagnostics(
+            lafgs_root,
+            prior_seconds=result["prior"].get("total_prior_seconds"),
+        ):
+            result["lafgs_build_diagnostics"] = diagnostics
     if quality:
         quality_summary = quality.get("summary", quality)
         result["heldout_rgb_quality"] = {
@@ -228,6 +392,9 @@ def summarize_profile(
                 "geometry_teacher_high_confidence_track_count"
             ),
         }
+    track_payload = statistics_root / "track_micro_anchor_payload.pt"
+    if diagnostics := _track_geometry_diagnostics(track_payload):
+        result["track_geometry_diagnostics"] = diagnostics
     if compact:
         result["topology_distillation"] = {
             "track_core_count": compact.get("track_count"),
@@ -390,7 +557,7 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
     lines = [
         "# LaFGS Off-the-Shelf Prior Robustness",
         "",
-        "| Scene | Prior | Prior views | Mask | Primitives | PSNR | Tracks (tri.) | Anchors | A0 Med/Mean/P90 cm | A1 Med/Mean/P90 cm | Raw P@2 A0->A1 | Inlier P@2 A0->A1 |",
+        "| Scene | Prior | Prior views | Mask | Primitives | PSNR | Tracks (tri./HC) | Anchors | A0 Med/Mean/P90 cm | A1 Med/Mean/P90 cm | Raw P@2 A0->A1 | Inlier P@2 A0->A1 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for record in records:
@@ -414,17 +581,26 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
             f"{_format(_mean(record, 'A0_bootstrap', 'inlier_gt_precision_2px_percent'))}"
             f"->{_format(_mean(record, 'A1_reconstructed', 'inlier_gt_precision_2px_percent'))}"
         )
+        prior_views = _format(prior.get("mapping_image_count"))
+        if prior.get("feedforward_input_view_count") is not None:
+            prior_views = (
+                f"{_format(prior.get('feedforward_input_view_count'))}/"
+                f"{prior_views}"
+            )
         lines.append(
             "| "
             + " | ".join(
                 (
                     record["scene"],
                     record["profile"],
-                    _format(prior.get("mapping_image_count")),
+                    prior_views,
                     "yes" if prior.get("semantic_mask_used") else "no",
                     _format(prior.get("primitive_count")),
                     _format(quality.get("psnr_db_mean")),
-                    _format(tracks.get("triangulated_track_count")),
+                    (
+                        f"{_format(tracks.get('triangulated_track_count'))}/"
+                        f"{_format(tracks.get('high_confidence_track_count'))}"
+                    ),
                     _format(topology.get("final_anchor_count")),
                     a0_pose,
                     a1_pose,
@@ -436,6 +612,9 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
         )
     lines.extend(
         [
+            "",
+            "For feed-forward priors, `Prior views` is reported as "
+            "`FF input/all downstream mapping`.",
             "",
             "## Tail Diagnostics",
             "",
@@ -450,15 +629,135 @@ def render_markdown(records: list[dict[str, Any]]) -> str:
         tail = record.get("tail_diagnostics", {})
         values = []
         for stage in ("A0_bootstrap", "A1_reconstructed"):
-            diagnostics = tail.get(stage, {})
+            diagnostics = tail.get(stage)
             values.append(
-                f"{diagnostics.get('persistent_failure_count', 0)}/"
-                f"{diagnostics.get('seed_unstable_failure_count', 0)}"
+                f"{diagnostics['persistent_failure_count']}/"
+                f"{diagnostics['seed_unstable_failure_count']}"
+                if diagnostics
+                else "-"
             )
         lines.append(
             f"| {record['scene']} | {record['profile']} | "
             f"{values[0]} | {values[1]} |"
         )
+    feedforward_records = [
+        record for record in records if record.get("feedforward_prior_diagnostics")
+    ]
+    if feedforward_records:
+        lines.extend(
+            [
+                "",
+                "## Feed-Forward Prior Cost And Alignment",
+                "",
+                "| Scene | Prior | Load/FF/Align/Total s | Peak VRAM GiB | Raw->Fused primitives | Center p90 mean/max m | Rotation p90 mean/max deg |",
+                "|---|---:|---:|---:|---:|---:|---:|",
+            ]
+        )
+        for record in feedforward_records:
+            prior = record["prior"]
+            diagnostics = record["feedforward_prior_diagnostics"]
+            cost = "/".join(
+                _format(prior.get(key))
+                for key in (
+                    "model_load_seconds",
+                    "feedforward_seconds",
+                    "alignment_and_fusion_seconds",
+                    "total_prior_seconds",
+                )
+            )
+            primitives = (
+                f"{_format(diagnostics.get('raw_primitive_count'))}->"
+                f"{_format(diagnostics.get('fused_primitive_count'))}"
+            )
+            center = (
+                f"{_format(diagnostics.get('center_error_p90_m_mean_over_windows'))}/"
+                f"{_format(diagnostics.get('center_error_p90_m_max_over_windows'))}"
+            )
+            rotation = (
+                f"{_format(diagnostics.get('rotation_error_p90_deg_mean_over_windows'))}/"
+                f"{_format(diagnostics.get('rotation_error_p90_deg_max_over_windows'))}"
+            )
+            lines.append(
+                f"| {record['scene']} | {record['profile']} | {cost} | "
+                f"{_format(diagnostics.get('peak_vram_gib'))} | {primitives} | "
+                f"{center} | {rotation} |"
+            )
+        geometry_records = [
+            record
+            for record in feedforward_records
+            if record.get("track_geometry_diagnostics")
+        ]
+        if geometry_records:
+            lines.extend(
+                [
+                    "",
+                    "## Feed-Forward Geometry Gate",
+                    "",
+                    "The gate uses the frozen Track-First thresholds; it is not "
+                    "relaxed for feed-forward priors.",
+                    "",
+                    "| Scene | Prior | Complete mapping FF input | Gate | Triangulated/HC/assigned | Rendered-depth p10/p50/p90 m | <=15 cm |",
+                    "|---|---:|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for record in geometry_records:
+                prior = record["prior"]
+                diagnostics = record["track_geometry_diagnostics"]
+                depth = diagnostics.get("rendered_depth_absolute_median_m", {})
+                depth_quantiles = "/".join(
+                    _format(depth.get(key)) for key in ("p10", "p50", "p90")
+                )
+                counts = "/".join(
+                    _format(diagnostics.get(key))
+                    for key in (
+                        "triangulated_track_count",
+                        "high_confidence_track_count",
+                        "assigned_landmark_count",
+                    )
+                )
+                lines.append(
+                    f"| {record['scene']} | {record['profile']} | "
+                    f"{'yes' if prior.get('prior_uses_complete_mapping_split') else 'no'} | "
+                    f"{diagnostics['geometry_gate_status']} | {counts} | "
+                    f"{depth_quantiles} | "
+                    f"{_format(depth.get('fraction_at_most_0p15m', 0.0) * 100.0)}% |"
+                )
+        build_records = [
+            record
+            for record in feedforward_records
+            if record.get("lafgs_build_diagnostics")
+        ]
+        if build_records:
+            lines.extend(
+                [
+                    "",
+                    "## Localization Map Build Cost",
+                    "",
+                    "Durations below are artifact-mtime estimates. LaFGS peak "
+                    "VRAM was not instrumented in these runs and is left unknown.",
+                    "",
+                    "| Scene | Prior | Cache/Evidence+Topology/Metric/LaFGS/Total min | LaFGS peak VRAM GiB |",
+                    "|---|---:|---:|---:|",
+                ]
+            )
+            for record in build_records:
+                diagnostics = record["lafgs_build_diagnostics"]
+                cost = "/".join(
+                    _format(diagnostics.get(key) / 60.0)
+                    if diagnostics.get(key) is not None
+                    else "-"
+                    for key in (
+                        "query_cache_seconds",
+                        "evidence_and_topology_seconds",
+                        "metric_reconstruction_seconds",
+                        "lafgs_total_seconds",
+                        "prior_plus_lafgs_seconds",
+                    )
+                )
+                lines.append(
+                    f"| {record['scene']} | {record['profile']} | {cost} | "
+                    f"{_format(diagnostics.get('lafgs_peak_vram_gib'))} |"
+                )
     return "\n".join(lines) + "\n"
 
 

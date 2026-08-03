@@ -36,6 +36,7 @@ case "$PRIOR_PROFILE" in
   rgb_nosky|rgb_sky_dirty) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=0 ;;
   vanilla_2dgs) GAUSSIAN_TYPE="2dgs"; SH_DEGREE=3 ;;
   vanilla_3dgs) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=3 ;;
+  anysplat_ff) GAUSSIAN_TYPE="3dgs"; SH_DEGREE=0 ;;
   *) echo "Unsupported frozen prior profile: $PRIOR_PROFILE" >&2; exit 2 ;;
 esac
 if [[ "$GAUSSIAN_TYPE" == "2dgs" ]]; then
@@ -281,6 +282,12 @@ base() {
     "$BASE_STATE" "$TRACK_PAYLOAD"; do
     require_file "$path"
   done
+  # Statistics are materialized before their fail-closed semantic audit. Keep
+  # the audit outside the creation branch so an interrupted run cannot bypass
+  # it merely because the payload already exists.
+  "$PYTHON" scripts/verify_geometry_teacher_statistics.py \
+    --statistics "$TRACK_PAYLOAD" \
+    --expected_identity "$GEOMETRY_TEACHER_IDENTITY_MODE"
   register_contract "$QUERY_CACHE" "$CONTRACTS/query_cache.json" query_cache \
     --parent "rgb_prior=$CONTRACTS/rgb_prior.json" \
     --parent "superpoint=$SP_WEIGHTS" \
