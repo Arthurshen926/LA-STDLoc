@@ -12,7 +12,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import torch
 
-from prior_reconstruction.anysplat import (
+from lafgs.priors.anysplat import (
     colmap_qvec_to_rotation,
     fit_similarity_from_camera_poses,
     spatial_confidence_coreset,

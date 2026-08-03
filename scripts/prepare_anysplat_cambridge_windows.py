@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from prior_reconstruction.anysplat import (
+from lafgs.priors.anysplat import (
     colmap_qvec_to_rotation,
     select_trajectory_windows,
 )
