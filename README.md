@@ -101,5 +101,6 @@ branch.
 
 ## License
 
-MIT. The bundled SuperPoint implementation and weights retain their upstream
-attribution; see [`docs/third_party.md`](docs/third_party.md).
+LaFGS code is MIT licensed. SuperPoint weights are not redistributed and retain
+their upstream noncommercial terms; see
+[`docs/third_party.md`](docs/third_party.md).

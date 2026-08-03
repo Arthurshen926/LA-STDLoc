@@ -2,11 +2,17 @@
   "python": "3.9.12 (main, Jun  1 2022, 11:38:51) \n[GCC 7.5.0]",
   "platform": "Linux-4.15.0-213-generic-x86_64-with-glibc2.31",
   "packages": {
+    "gsplat": "1.5.3",
     "numpy": "1.26.4",
-    "opencv-python": null,
+    "opencv-python-headless": "4.12.0.88",
+    "Pillow": "10.4.0",
+    "plyfile": "1.1.3",
+    "poselib": "2.0.5",
     "pyyaml": "6.0.3",
     "scipy": "1.13.1",
-    "torch": "2.0.1+cu118"
+    "torch": "2.0.1+cu118",
+    "torchvision": "0.15.2+cu118",
+    "tqdm": "4.67.3"
   },
   "torch_cuda": "11.8",
   "cuda_available": true,

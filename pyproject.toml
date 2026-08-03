@@ -33,9 +33,6 @@ packages = [
   "localization", "map_learning", "priors", "topology", "visualization",
 ]
 
-[tool.setuptools.package-data]
-features = ["weights/*.pth"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

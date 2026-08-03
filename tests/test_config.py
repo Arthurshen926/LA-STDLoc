@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from common.config import OFFLINE_CHAIN, load_mainline_config
+from features.superpoint import resolve_superpoint_weights
 
 
 def test_frozen_config_contract():
@@ -39,3 +40,15 @@ def test_all_declared_packages_are_present():
     }
     for package in declared:
         assert (root / package / "__init__.py").is_file()
+
+
+def test_missing_superpoint_weight_fails_with_download_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("LAFGS_SUPERPOINT_WEIGHTS", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    packaged = Path(__file__).resolve().parents[1] / "features/weights/superpoint_v1.pth"
+    if packaged.is_file():
+        pytest.skip("source checkout still has a private local weight")
+    with pytest.raises(FileNotFoundError, match="not redistributed"):
+        resolve_superpoint_weights()

@@ -1,8 +1,45 @@
-import torch
-import torch.nn.functional as F
-import torch.nn as nn
+import hashlib
+import os
 from pathlib import Path
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms
+
+
+SUPERPOINT_WEIGHT_SHA256 = (
+    "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e"
+)
+SUPERPOINT_UPSTREAM_URL = (
+    "https://github.com/magicleap/SuperPointPretrainedNetwork/"
+    "raw/master/superpoint_v1.pth"
+)
+
+
+def resolve_superpoint_weights() -> Path:
+    """Resolve user-supplied upstream weights and enforce frozen parity."""
+    environment = os.environ.get("LAFGS_SUPERPOINT_WEIGHTS")
+    candidates = (
+        [Path(environment).expanduser()] if environment else []
+    ) + [
+        Path.home() / ".cache/lafgs/superpoint_v1.pth",
+        Path(__file__).parent / "weights/superpoint_v1.pth",
+    ]
+    path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    if path is None:
+        raise FileNotFoundError(
+            "SuperPoint weights are not redistributed by LaFGS. Download "
+            f"{SUPERPOINT_UPSTREAM_URL}, then set LAFGS_SUPERPOINT_WEIGHTS "
+            "or place the file at ~/.cache/lafgs/superpoint_v1.pth."
+        )
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != SUPERPOINT_WEIGHT_SHA256:
+        raise RuntimeError(
+            f"SuperPoint weight SHA256 mismatch for {path}: {digest} != "
+            f"{SUPERPOINT_WEIGHT_SHA256}"
+        )
+    return path.resolve()
 
 
 def batched_nms(scores, nms_radius: int):
@@ -94,8 +131,8 @@ class SuperPoint(nn.Module):
             c5, out_channels,
             kernel_size=1, stride=1, padding=0)
 
-        path = Path(__file__).parent / 'weights/superpoint_v1.pth'
-        self.load_state_dict(torch.load(str(path)), strict=False)
+        path = resolve_superpoint_weights()
+        self.load_state_dict(torch.load(str(path), map_location="cpu"), strict=False)
 
         print('Loaded SuperPoint model')
 
