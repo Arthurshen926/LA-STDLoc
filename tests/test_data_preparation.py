@@ -4,7 +4,11 @@ import numpy as np
 from PIL import Image
 
 from data.datasets import ColmapDataset
-from data.preparation import prepare_7scenes, prepare_12scenes
+from data.preparation import (
+    prepare_7scenes,
+    prepare_12scenes,
+    prepare_reference_model_scene,
+)
 
 
 def _write_image(path: Path, size=(640, 480)) -> None:
@@ -113,3 +117,47 @@ def test_prepare_12scenes_reads_official_4x4_intrinsics(tmp_path: Path):
         "cx": 649.0,
         "cy": 483.5,
     }
+
+
+def test_prepare_reference_model_discards_points_and_test_prior_images(
+    tmp_path: Path,
+):
+    source = tmp_path / "source"
+    mapping_name = "seq-01/frame-000000.color.png"
+    test_name = "seq-02/frame-000000.color.png"
+    _write_image(source / mapping_name)
+    _write_image(source / test_name)
+
+    reference = tmp_path / "reference" / "sfm_gt"
+    reference.mkdir(parents=True)
+    (reference / "cameras.txt").write_text(
+        "1 PINHOLE 640 480 527.745 527.745 320 240\n"
+    )
+    (reference / "images.txt").write_text(
+        "1 1 0 0 0 1 0 0 1 seq-01/frame-000000.color.png\n\n"
+        "2 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
+    )
+    (reference / "points3D.txt").write_text(
+        "1 0 0 1 255 255 255 0.1 1 0\n"
+    )
+    (reference / "list_test.txt").write_text(test_name + "\n")
+
+    output = tmp_path / "prepared"
+    manifest = prepare_reference_model_scene(
+        source, reference, output, dataset="7Scenes/chess"
+    )
+    dataset = ColmapDataset(output)
+    prior_text = (output / "prior_input/sparse/0/images.txt").read_text()
+    assert manifest["pose_source"] == "published_sfm_pseudo_ground_truth"
+    assert manifest["mapping_frames"] == 1
+    assert manifest["test_frames"] == 1
+    assert manifest["reference_points_used"] is False
+    assert manifest["reference_feature_observations_used"] is False
+    assert [camera.image_name for camera in dataset.split("test")] == [test_name]
+    assert mapping_name in prior_text
+    assert test_name not in prior_text
+    assert (output / "prior_input/images" / mapping_name).is_symlink()
+    assert not (output / "prior_input/images" / test_name).exists()
+    assert "Reference points deliberately excluded" in (
+        output / "prior_input/sparse/0/points3D.txt"
+    ).read_text()

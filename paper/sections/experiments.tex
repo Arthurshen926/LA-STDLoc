@@ -18,12 +18,15 @@ counts; map memory; build time; and localization P50/P90 latency.
 The evaluation covers five Cambridge Landmarks scenes, all seven 7Scenes
 scenes, and all twelve 12Scenes scenes. The indoor main tables use the same
 off-the-shelf prior: the official vanilla 2DGS training recipe applied to the
-mapping RGB images and mapping poses, without semantic masks, depth
-supervision, localization features, or task-specific Gaussian pruning. The
-prior and every localization-map artifact exclude test images. Table~\ref{tab:indoor_protocol}
-summarizes the frozen indoor protocol. Invalid 12Scenes frames whose published
-poses contain non-finite values are excluded before either mapping or
-evaluation.
+mapping RGB images and the published SfM pseudo-ground-truth (pGT) camera
+registries~\cite{brachmann2021pgt}, without semantic masks, depth supervision,
+localization features, or task-specific Gaussian pruning. We import camera
+poses and the official split, but discard the reference model's 3D points and
+feature observations. A new mapping-only SfM triangulation initializes the RGB
+Gaussian prior. The prior and every localization-map artifact therefore
+exclude test images. Table~\ref{tab:indoor_protocol} summarizes the frozen
+indoor protocol. Results based on the original D-SLAM poses are treated as a
+separate protocol and are not mixed into the main tables.
 
 \begin{table}[t]
   \centering
@@ -36,7 +39,7 @@ evaluation.
     Dataset & Scenes & Mapping & Test \\
     \midrule
     7Scenes  & 7  & 30,000 & 17,000 \\
-    12Scenes & 12 & 16,926 & 5,702 \\
+    12Scenes & 12 & 16,989 & 5,782 \\
     \bottomrule
   \end{tabular}
 \end{table}
