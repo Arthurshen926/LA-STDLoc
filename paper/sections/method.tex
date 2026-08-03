@@ -27,6 +27,27 @@ selected descriptor from visible observations, weighting incidence and view
 geometry and trimming low-consensus descriptor observations. This bootstrap is
 an initialization, not the final landmark identity.
 
+\subsection{Wide-Scaffold Self-Localization}
+
+The wide 48K scaffold localizes every mapping view with the same global
+retrieval used at deployment. At iteration $s$, known mapping poses label the
+current candidates. Its Stage-A reconstruction objective separates:
+\begin{equation}
+  \mathcal{L}_{\mathrm{wide}} =
+  \lambda_k\mathcal{L}_{\mathrm{keep}}+
+  \lambda_s\mathcal{L}_{\mathrm{swap}}+
+  \lambda_m\mathcal{L}_{\mathrm{miss}}+
+  \lambda_a\mathcal{L}_{\mathrm{attractor}}+
+  \lambda_l\mathcal{L}_{\mathrm{local}}+
+  \lambda_t\mathcal{L}_{\mathrm{trust}}.
+\end{equation}
+The keep term protects correct high-margin assignments; swap and miss rank a
+geometrically valid positive above the selected wrong candidate or retrieve a
+positive absent from the current top ranks. Global-attractor suppression,
+local peak preservation, and a protected pose-critical set prevent ordinary
+match gains from damaging precise correspondences. This 1K-step state is our
+A0 baseline and supplies descriptors for the subsequent Track-First stage.
+
 \subsection{Track-First Evidence and Geometry}
 
 We build reciprocal, cycle-consistent cross-view associations from the native
@@ -43,29 +64,6 @@ then returns visible primitive IDs and composition mass at each observation.
 Aggregating this provenance gives surface support $\ell_t$ without replacing
 $\mathbf{x}_t^*$ by a primitive center.
 
-\subsection{Self-Localization-Guided Reconstruction}
-
-At iteration $s$, the current map retrieves a top-$K$ candidate set for each
-native mapping keypoint. Known mapping poses label outcomes relative to the
-current map. The reconstruction objective separates:
-\begin{equation}
-  \mathcal{L}_{\mathrm{SL}} =
-  \lambda_k\mathcal{L}_{\mathrm{keep}}+
-  \lambda_s\mathcal{L}_{\mathrm{swap}}+
-  \lambda_m\mathcal{L}_{\mathrm{miss}}+
-  \lambda_a\mathcal{L}_{\mathrm{attractor}}+
-  \lambda_l\mathcal{L}_{\mathrm{local}}+
-  \lambda_t\mathcal{L}_{\mathrm{trust}}.
-\end{equation}
-The keep term protects already correct high-margin assignments. Swap and miss
-terms rank a geometrically valid positive above the selected wrong candidate or
-retrieve a positive absent from the current top ranks. The global-attractor
-term suppresses landmarks that collect false matches across queries. A weak
-local peak objective sharpens spatially nearby alternatives, while a protected
-set prevents such updates from damaging pose-critical correspondences. Because
-candidates are regenerated from the current descriptors, this is an online
-matching loop during offline reconstruction rather than static post-processing.
-
 \subsection{Localization Topology Distillation}
 
 The candidate universe contains track-centric anchors and Gaussian-supported
@@ -76,8 +74,13 @@ purely appearance-driven map. The resulting topology has a scene-dependent
 size determined by the frozen selection rule rather than a manually chosen
 per-scene target.
 
-On this fixed compact topology, a short low-rank metric update uses the complete
-positive teacher and group-robust weighting. The deployed descriptor remains a
+\subsection{Compact Self-Localization Refresh}
+
+On the fixed compact topology, a 175-step bounded low-rank metric update uses
+complete-positive retrieval, current-map hard outcomes, and trajectory-group
+robust weighting. Because candidates are regenerated from current descriptors,
+both Stage-A and this compact refresh are online matching loops during offline
+reconstruction rather than static post-processing. The deployed map retains a
 single vector per anchor; no family prototypes, learned sampler, dense stage,
 or test-time rendering is required.
 

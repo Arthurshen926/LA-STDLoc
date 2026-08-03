@@ -17,12 +17,13 @@ OFFLINE_CHAIN = (
     "frozen_rgb_gaussian_prior",
     "native_superpoint_mapping_observations",
     "kcs_gwff_initialization",
+    "wide_scaffold_self_localization_reconstruction",
     "track_first_cross_view_tracks",
     "robust_triangulation",
     "gaussian_raster_provenance",
     "track_centric_localization_anchor_pool",
     "localization_topology_distillation",
-    "self_localization_guided_descriptor_reconstruction",
+    "compact_map_self_localization_metric_refresh",
     "compact_single_descriptor_map",
 )
 TOP_LEVEL_KEYS = frozenset(

@@ -23,6 +23,12 @@ mapping views and trajectory bins. GWFF initializes each selected descriptor by
 geometry-weighted fusion with robust cosine trimming. These steps initialize the
 field; they are not the final learning objective.
 
+The resulting wide 48K scaffold first runs 1K steps of self-localization-guided
+descriptor reconstruction. Current global candidates produce keep, swap, miss,
+and false-attractor outcomes; bounded trust and protected local-peak terms keep
+already precise correspondences stable. This Stage-A state is the A0 baseline
+and the descriptor source used to construct Track-First evidence.
+
 ## Evidence and topology
 
 Track-First matching builds cross-view tracks before assigning Gaussian
@@ -34,24 +40,14 @@ Topology distillation first retains a quality-ranked Track core, then adds the
 smallest configured coverage reserve needed for mapping-query support and pose
 diversity. The output stores one descriptor and one 3D point per active anchor.
 
-## Descriptor reconstruction
-
-The current map repeatedly performs the same global sparse retrieval used at
-deployment. Mapping poses label the current top candidates as:
-
-- **keep:** current top-1 is a valid geometric positive;
-- **swap:** another retrieved candidate is the correct positive;
-- **miss:** no positive reached the candidate set;
-- **reject:** a projected candidate is a false attractor.
-
-The frozen Stage-A objective combines keep/swap/miss ranking, global-attractor
-suppression, bounded descriptor trust, local peak preservation, and a
-high-precision current-map protection set. Geometry and RGB appearance remain
-frozen.
+## Compact metric refresh
 
 After topology distillation, a bounded low-rank metric is shared by mapping
 queries and map descriptors. Complete-positive retrieval, current-map hard
 outcomes, and trajectory-group DRO train this final A1 stage for 175 steps.
+This short refresh preserves the single-descriptor compact map and uses the
+same self-localization evidence as deployment. Geometry and RGB appearance
+remain frozen in both descriptor-reconstruction stages.
 
 ## Deployment
 

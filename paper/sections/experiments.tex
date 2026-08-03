@@ -48,10 +48,10 @@ A representative prior-flexibility subset compares vanilla 3DGS, vanilla
 2DGS, an enhanced 2DGS prior, and a feed-forward AnySplat prior while keeping
 every localization-map stage fixed.
 
-Our principal comparison is between the Gaussian-supported KCS/GWFF bootstrap
-(A0), defined as the 48K Stage-A scaffold with the identity descriptor metric,
-and the complete compact reconstructed map (A1), which uses the learned shared
-metric. Both use exactly the same full-resolution native SuperPoint frontend,
+Our principal comparison is between A0, the 48K KCS/GWFF-initialized scaffold
+after 1K steps of wide-map self-localization reconstruction and an identity
+deployment metric, and A1, the distilled compact map after its 175-step shared
+metric refresh. Both use exactly the same full-resolution native SuperPoint frontend,
 uncapped global top-1 correspondences, and PoseLib settings. We evaluate each
 fixed map with RANSAC seeds 2026, 2027, and 2028 and report their distribution,
 rather than selecting a seed per scene. Track-only and base-only maps are
