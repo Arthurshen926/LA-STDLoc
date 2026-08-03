@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 import numpy as np
 import torch
@@ -21,6 +22,7 @@ class LocalizationResult:
     matches: Top1Matches
     pose: PoseEstimate
     intrinsic: np.ndarray
+    runtime_ms: dict[str, float]
 
 
 def load_shared_metric(
@@ -91,12 +93,27 @@ class SparseLocalizer:
         fov_y: float,
         valid_mask: torch.Tensor | None = None,
     ) -> LocalizationResult:
+        def synchronize() -> None:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+
+        synchronize()
+        total_started = time.perf_counter()
+        frontend_started = total_started
         sparse = self.frontend(image, valid_mask=valid_mask)
+        synchronize()
+        frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
+
+        matching_started = time.perf_counter()
         matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
         points_2d = sparse.keypoints[matches.keypoint_indices].cpu().numpy()
         points_3d = self.anchor_xyz[matches.anchor_indices].cpu().numpy()
+        synchronize()
+        matching_ms = (time.perf_counter() - matching_started) * 1000.0
         height, width = sparse.image_hw
         intrinsic = camera_intrinsics(fov_x, fov_y, width, height)
+
+        ransac_started = time.perf_counter()
         pose = solve_absolute_pose(
             points_2d + 0.5,
             points_3d,
@@ -107,4 +124,16 @@ class SparseLocalizer:
             min_iterations=self.min_iterations,
             seed=self.seed,
         )
-        return LocalizationResult(sparse, matches, pose, intrinsic)
+        ransac_ms = (time.perf_counter() - ransac_started) * 1000.0
+        return LocalizationResult(
+            sparse,
+            matches,
+            pose,
+            intrinsic,
+            {
+                "frontend_ms": frontend_ms,
+                "matching_ms": matching_ms,
+                "ransac_ms": ransac_ms,
+                "total_ms": (time.perf_counter() - total_started) * 1000.0,
+            },
+        )

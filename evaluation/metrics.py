@@ -39,6 +39,7 @@ def summarize_pose_errors(
         "p90_te_cm": float(np.percentile(translation, 90)),
         "median_ae_deg": float(np.median(rotation)),
         "mean_ae_deg": float(np.mean(rotation)),
+        "p90_ae_deg": float(np.percentile(rotation, 90)),
         "recall_2cm_2deg_percent": float(
             100.0 * np.mean((translation < 2.0) & (rotation < 2.0))
         ),
