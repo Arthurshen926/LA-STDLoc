@@ -17,13 +17,41 @@ counts; map memory; build time; and localization P50/P90 latency.
 
 The evaluation covers five Cambridge Landmarks scenes, all seven 7Scenes
 scenes, and all twelve 12Scenes scenes. The indoor main tables use the same
-off-the-shelf Gaussian-prior method without semantic masks. A representative
-prior-flexibility subset compares vanilla 3DGS, vanilla 2DGS, an enhanced 2DGS
-prior, and a feed-forward AnySplat prior while keeping every localization-map
-stage fixed.
+off-the-shelf prior: the official vanilla 2DGS training recipe applied to the
+mapping RGB images and mapping poses, without semantic masks, depth
+supervision, localization features, or task-specific Gaussian pruning. The
+prior and every localization-map artifact exclude test images. Table~\ref{tab:indoor_protocol}
+summarizes the frozen indoor protocol. Invalid 12Scenes frames whose published
+poses contain non-finite values are excluded before either mapping or
+evaluation.
+
+\begin{table}[t]
+  \centering
+  \caption{Frozen indoor evaluation protocol. Counts are images after checking
+  image--pose availability and finite poses.}
+  \label{tab:indoor_protocol}
+  \small
+  \begin{tabular}{lrrr}
+    \toprule
+    Dataset & Scenes & Mapping & Test \\
+    \midrule
+    7Scenes  & 7  & 30,000 & 17,000 \\
+    12Scenes & 12 & 16,926 & 5,702 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+A representative prior-flexibility subset compares vanilla 3DGS, vanilla
+2DGS, an enhanced 2DGS prior, and a feed-forward AnySplat prior while keeping
+every localization-map stage fixed.
 
 Our principal comparison is between the Gaussian-supported KCS/GWFF bootstrap
-(A0) and the complete reconstructed map (A1). Track-only and base-only maps are
+(A0), defined as the 48K Stage-A scaffold with the identity descriptor metric,
+and the complete compact reconstructed map (A1), which uses the learned shared
+metric. Both use exactly the same full-resolution native SuperPoint frontend,
+uncapped global top-1 correspondences, and PoseLib settings. We evaluate each
+fixed map with RANSAC seeds 2026, 2027, and 2028 and report their distribution,
+rather than selecting a seed per scene. Track-only and base-only maps are
 reported on representative scenes to isolate track identity and Gaussian
 coverage.
 
