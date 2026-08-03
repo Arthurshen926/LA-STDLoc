@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 from common.config import load_mainline_config
 from map_learning.trainer import train
@@ -18,6 +19,41 @@ from map_learning.trainer import train
 def _run(module: str, *arguments: object) -> None:
     command = [sys.executable, "-m", module, *(str(value) for value in arguments)]
     subprocess.run(command, check=True)
+
+
+def _run_parallel(module: str, argument_sets: list[list[object]]) -> None:
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                module,
+                *(str(value) for value in arguments),
+            ]
+        )
+        for arguments in argument_sets
+    ]
+    try:
+        pending = set(processes)
+        while pending:
+            for process in tuple(pending):
+                status = process.poll()
+                if status is None:
+                    continue
+                pending.remove(process)
+                if status:
+                    raise subprocess.CalledProcessError(
+                        status, process.args
+                    )
+            if pending:
+                time.sleep(0.1)
+    except BaseException:
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+        for process in processes:
+            process.wait()
+        raise
 
 
 def resolve_prior_ply(prior: str | Path) -> Path:
@@ -301,6 +337,7 @@ def build_evidence(
     visibility_cache: str | Path,
     output: str | Path,
     valid_masks: str | Path | None = None,
+    function_graph_shards: int = 1,
 ) -> dict[str, Path]:
     """Build the frozen canonical map and real-image localization evidence."""
     output = Path(output).expanduser().resolve()
@@ -324,14 +361,52 @@ def build_evidence(
         arguments: list[object] = [
             "--anchor-map", canonical,
             "--query-cache", query_cache,
-            "--output", graph_v2,
             "--topk", 64,
         ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
         if visibility_cache:
             arguments += ["--raster-visibility-cache", visibility_cache]
-        _run("evidence.function_graph", *arguments)
+        shard_count = int(function_graph_shards)
+        if shard_count < 1:
+            raise ValueError("function_graph_shards must be positive")
+        if shard_count == 1:
+            _run(
+                "evidence.function_graph",
+                *arguments,
+                "--output",
+                graph_v2,
+            )
+        else:
+            shard_paths = [
+                output
+                / f"function_graph_v2.shard_{index:03d}_of_{shard_count:03d}.pt"
+                for index in range(shard_count)
+            ]
+            _run_parallel(
+                "evidence.function_graph",
+                [
+                    [
+                        *arguments,
+                        "--output",
+                        shard_paths[index],
+                        "--num-shards",
+                        shard_count,
+                        "--shard-index",
+                        index,
+                    ]
+                    for index in range(shard_count)
+                ],
+            )
+            _run(
+                "evidence.merge_function_graph",
+                "--inputs",
+                *shard_paths,
+                "--output",
+                graph_v2,
+            )
+            for shard_path in shard_paths:
+                shard_path.unlink()
     if not provenance.is_file():
         arguments = [
             "--anchor-map", canonical,

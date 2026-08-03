@@ -23,6 +23,10 @@ The mapping split is used in full; the test split is read only by the final
 evaluation stage. Re-running the command reuses only artifacts whose contracts
 match.
 
+Use `--function-graph-shards 4` when host memory permits parallel function
+graph construction. Shards preserve the global query indices and PoseLib seeds;
+the merged artifact is semantically identical to the default single-shard run.
+
 ## Stage commands
 
 The stable CLI sequence is `import_prior.py`, `build_evidence.py`,
