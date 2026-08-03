@@ -8,12 +8,14 @@ scene/
   sparse/0/cameras.bin
   sparse/0/images.bin
   sparse/0/points3D.bin      # optional to LaFGS after camera loading
-  dataset_test.txt           # Cambridge test image names and poses
+  dataset_test.txt           # Cambridge test image names and poses, or
+  sparse/0/list_test.txt     # indoor pGT test image names
 ```
 
 Text-form COLMAP files are accepted when binary files are absent. Camera poses
 and RGB images used to construct a prior or localization map must come only from
-the mapping split. `dataset_test.txt` defines held-out evaluation queries.
+the mapping split. `dataset_test.txt` (Cambridge) or `sparse/0/list_test.txt`
+(indoor pGT) defines held-out evaluation queries.
 
 LaFGS consumes the image dimensions and camera intrinsics recorded by COLMAP.
 The canonical configuration uses full processed resolution (`resolution=1`,
@@ -60,6 +62,14 @@ generated `prior_input/` contains only mapping images and cameras, so the RGB
 Gaussian prior must be triangulated and reconstructed again without test
 images. Raw D-SLAM-pose and SfM-pGT results are separate protocols and must not
 be combined in one table.
+
+The complete published pGT registries used by the paper contain 26,000 mapping
+and 17,000 test images across seven 7Scenes scenes, and 16,989 mapping and 5,782
+test images across twelve 12Scenes scenes. These are registry counts after
+checking image availability and finite poses, not frame estimates from the raw
+archives. Every scene manifest records the source camera model and parameters,
+the mapping/test counts, and hashes of the reference camera registry and test
+list.
 
 Without `--reference-model`, 7Scenes RGB poses are calibrated from the original
 depth-sensor poses with the published Kinect extrinsic and use the standard
