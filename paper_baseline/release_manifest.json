@@ -1,0 +1,117 @@
+{
+  "schema": "lafgs_paper_release",
+  "version": 1,
+  "release_branch": "codex/paper-release-root",
+  "source_commit": "8a202292623d04b9888ff5610941ba9fc21a54de",
+  "release_tag": "lafgs-paper-code-v1",
+  "source_tags": [
+    "archive-full-research-20260803",
+    "paper-mainline-baseline-v1"
+  ],
+  "canonical_config": {
+    "path": "configs/paper_mainline.yaml",
+    "sha256": "ce0d2bfdf9828e210827162dd8f091e3879a88d22c4ed2cc40056a9d9a550c88"
+  },
+  "method": {
+    "offline": [
+      "frozen RGB Gaussian prior",
+      "native SuperPoint mapping observations",
+      "robust KCS/GWFF initialization",
+      "Track-First cycle-consistent tracks",
+      "robust triangulation",
+      "Gaussian raster provenance",
+      "Track core plus Gaussian coverage reserve",
+      "self-localization descriptor reconstruction",
+      "compact single-descriptor localization map"
+    ],
+    "online": [
+      "native SuperPoint",
+      "global cosine top-1 without match caps",
+      "one standard PoseLib PnP/RANSAC"
+    ]
+  },
+  "deployment_parity": {
+    "golden_16_queries": {
+      "passed": true,
+      "keypoints_exact": 16,
+      "top1_exact": 16,
+      "inliers_exact": 16,
+      "poses_exact_within_tolerance": 16,
+      "maximum_absolute_score_error": 3.5762786865234375e-07,
+      "maximum_absolute_pose_error": 0.0,
+      "report": "paper_baseline/refactor_checkpoint_sparse_parity.json",
+      "report_sha256": "706d2203d8f152f0790facad2c3930999fba780993abbc3209b18fa6ca72a9fa"
+    },
+    "ShopFacade": {
+      "query_count": 103,
+      "median_te_cm": 1.808062195777893,
+      "mean_te_cm": 4.6469455991772195,
+      "p90_te_cm": 7.312294244766234,
+      "median_ae_deg": 0.09916274076308142,
+      "mean_ae_deg": 0.21677078165856795,
+      "recall_2cm_2deg_percent": 55.33980582524271,
+      "recall_5cm_5deg_percent": 81.55339805825243,
+      "summary": "paper_baseline/full_parity_shopfacade/summary.json",
+      "summary_sha256": "72ec7670506e87b9a2ea1537d1a1f5ca5f1ccca2023beec2fba38094785ef7d3"
+    },
+    "OldHospital": {
+      "query_count": 182,
+      "median_te_cm": 10.062048211693764,
+      "mean_te_cm": 19.477198261174035,
+      "p90_te_cm": 44.04941588640216,
+      "median_ae_deg": 0.20599307590080296,
+      "mean_ae_deg": 0.304634766177415,
+      "recall_2cm_2deg_percent": 2.7472527472527473,
+      "recall_5cm_5deg_percent": 26.373626373626376,
+      "summary": "paper_baseline/full_parity_oldhospital/summary.json",
+      "summary_sha256": "02c86ce030e887a81bac651df9548c9fb7788ff2622989572bc55f35ac3b5dfa"
+    }
+  },
+  "full_chain_clean_rebuild": {
+    "scene": "ShopFacade",
+    "external_prior_only": true,
+    "legacy_artifacts_reused": false,
+    "final_anchor_count": 7145,
+    "frozen_deployment_metrics_exact": true,
+    "passed": true,
+    "report": "paper_baseline/full_chain_clean_rebuild_shopfacade.json",
+    "report_sha256": "e18f24bca2cc8b9ad12a1919b788cb5f96abbf05ae2252d7572d8398d4755ab1"
+  },
+  "training_parity": {
+    "stage_a_objective_contract_tests": true,
+    "metric_training_175_steps_within_fp32_gate": true,
+    "maximum_map_descriptor_error": 2.9802322387695312e-08,
+    "maximum_metric_parameter_error": 2.2351741790771484e-08,
+    "report": "paper_baseline/migration_parity_shopfacade/minimal_training_report.json"
+  },
+  "prior_adapter_parity": {
+    "vanilla_3dgs": true,
+    "vanilla_2dgs": true,
+    "anysplat": true,
+    "matcha_2dgs": true,
+    "runtime_provenance_smoke": true,
+    "report": "paper_baseline/prior_adapter_parity.json",
+    "report_sha256": "049faf3eb1e7d3ee91e48cf15a66786f4187cf45fdc8c3da3fd5426cc774c285"
+  },
+  "release_checks": {
+    "pytest": "29 passed",
+    "ruff": "passed",
+    "compileall": "passed",
+    "diff_check": "passed",
+    "cli_help_smoke": "7/7",
+    "core_import_smoke": "15/15",
+    "clean_clone_wheel_import": "10/10",
+    "clean_clone_cli_help_smoke": "7/7",
+    "clean_clone_golden_fixture": "16/16 hashes verified",
+    "wheel_isolated_import": "passed",
+    "superpoint_weight_sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e"
+  },
+  "scope": {
+    "rgb_prior_training_bundled": false,
+    "semantic_model_bundled": false,
+    "external_reconstruction_repositories_bundled": false,
+    "git_submodules": false,
+    "superpoint_weight_bundled": false,
+    "test_images_used_for_training": false
+  }
+}
