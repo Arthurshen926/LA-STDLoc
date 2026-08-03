@@ -1,27 +1,28 @@
 {
   "schema": "lafgs_paper_release",
-  "version": 1,
+  "version": "1.1",
   "release_branch": "codex/paper-release-root",
-  "source_commit": "8a202292623d04b9888ff5610941ba9fc21a54de",
-  "release_tag": "lafgs-paper-code-v1",
+  "source_commit": "5a2bd694ae43b2e6c02088bd6fb9f879a70680e9",
+  "release_tag": "lafgs-paper-code-v1.1",
   "source_tags": [
     "archive-full-research-20260803",
     "paper-mainline-baseline-v1"
   ],
   "canonical_config": {
     "path": "configs/paper_mainline.yaml",
-    "sha256": "ce0d2bfdf9828e210827162dd8f091e3879a88d22c4ed2cc40056a9d9a550c88"
+    "sha256": "5ff3d4c952eedc249f82e65c441c92b406a1845d0933a57356d3f04365376046"
   },
   "method": {
     "offline": [
       "frozen RGB Gaussian prior",
       "native SuperPoint mapping observations",
       "robust KCS/GWFF initialization",
+      "wide-scaffold self-localization descriptor reconstruction",
       "Track-First cycle-consistent tracks",
       "robust triangulation",
       "Gaussian raster provenance",
       "Track core plus Gaussian coverage reserve",
-      "self-localization descriptor reconstruction",
+      "compact-map self-localization metric refresh",
       "compact single-descriptor localization map"
     ],
     "online": [
@@ -77,6 +78,34 @@
     "report": "paper_baseline/full_chain_clean_rebuild_shopfacade.json",
     "report_sha256": "e18f24bca2cc8b9ad12a1919b788cb5f96abbf05ae2252d7572d8398d4755ab1"
   },
+  "formal_indoor_pgt_smoke": {
+    "protocol": "published_sfm_pgt_cameras_with_mapping_only_retriangulation",
+    "registry_counts": {
+      "7Scenes": {
+        "scenes": 7,
+        "mapping_images": 26000,
+        "test_images": 17000
+      },
+      "12Scenes": {
+        "scenes": 12,
+        "mapping_images": 16989,
+        "test_images": 5782
+      }
+    },
+    "scene": "7Scenes/heads",
+    "prior": "official_vanilla_2dgs_mapping_rgb_only",
+    "prior_primitive_count": 530183,
+    "track_count": 95107,
+    "triangulated_track_count": 28836,
+    "a0_anchor_count": 48000,
+    "a1_anchor_count": 8264,
+    "a1_track_anchor_count": 8000,
+    "a1_base_anchor_count": 264,
+    "three_seed_zero_catastrophic_failures": true,
+    "passed": true,
+    "report": "paper_baseline/indoor_pgt_heads_v1.json",
+    "report_sha256": "65afafd302cd0189d6d93d55c905a687e1a746a79d9aea1132755d03a54d177f"
+  },
   "training_parity": {
     "stage_a_objective_contract_tests": true,
     "metric_training_175_steps_within_fp32_gate": true,
@@ -94,7 +123,8 @@
     "report_sha256": "049faf3eb1e7d3ee91e48cf15a66786f4187cf45fdc8c3da3fd5426cc774c285"
   },
   "release_checks": {
-    "pytest": "29 passed",
+    "pytest": "34 passed, 1 CUDA-gated skip",
+    "cuda_renderer_smoke": "1 passed",
     "ruff": "passed",
     "compileall": "passed",
     "diff_check": "passed",
