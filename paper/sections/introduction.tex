@@ -1,0 +1,40 @@
+\section{Introduction}
+
+Gaussian Splatting reconstructs an explicit scene representation that is
+effective for rendering. Its primitives, however, inherit their number,
+support, and geometry from a photometric objective. A single surface region can
+be represented by many splats; one splat can support several repeatable image
+features; and floaters that are tolerable for rendering can become harmful 3D
+correspondences. Consequently, a rendering primitive is not necessarily a
+localization landmark.
+
+We study a different objective: reconstruct a sparse localization layer from
+a frozen, off-the-shelf RGB Gaussian scene prior. The desired map should retain
+landmarks that are repeatedly detected, descriptor-distinctive, geometrically
+reliable, useful to PnP, and compact. Importantly, the expensive reasoning is
+restricted to offline map construction. Online localization remains the
+standard sparse pipeline of descriptor extraction, one global top-1 match per
+keypoint, and one PnP/RANSAC solve.
+
+\method addresses this problem through \emph{rendering-to-localization topology
+distillation}. Real mapping images first define track identities independently
+of Gaussian IDs. Robust triangulation supplies PnP geometry, and raster
+provenance connects each track-centric anchor to the supporting Gaussian
+surface. A self-localization loop then applies the current map to the mapping
+views and learns from kept correspondences, swaps, missed positives, and false
+attractors. Finally, a pose-coverage-aware distillation stage produces a compact
+single-descriptor map.
+
+Our contributions are:
+\begin{itemize}
+  \item Gaussian-supported track-centric anchors that separate rendering
+        primitive identity, feature-track identity, and localization identity.
+  \item Self-localization-guided descriptor reconstruction that learns from the
+        current map's sparse retrieval outcomes rather than static feature
+        averaging alone.
+  \item Task-specific topology distillation that converts a large candidate
+        universe into a compact, pose-sufficient localization map.
+  \item A prior-flexible construction protocol that keeps the RGB Gaussian
+        frozen and reconstructs localization geometry from real image tracks,
+        limiting primitive-level error propagation.
+\end{itemize}

@@ -1,0 +1,43 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\input{macros}
+
+\title{LaFGS: Rendering-to-Localization Topology Distillation\\
+for Compact Gaussian-Supported Visual Maps}
+\author{Anonymous Authors}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Photometric Gaussian primitives are designed to explain image formation, not
+to serve as sparse localization landmarks. We present \method, an offline map
+reconstruction method that distills an arbitrary frozen RGB Gaussian prior
+into a compact track-centric localization layer. Real mapping images define
+cross-view feature identities and independently triangulated geometry, while
+Gaussian raster provenance supplies surface support without imposing a
+one-to-one primitive-to-landmark correspondence. The map then repeatedly
+localizes its mapping views and uses the resulting retrieval outcomes to
+reconstruct descriptors and select a pose-sufficient topology. At deployment,
+the learned map requires only native SuperPoint extraction, global cosine
+top-1 matching, and one standard PnP/RANSAC solve. Experiments are designed to
+test localization accuracy, map compactness, prior flexibility, and transfer
+across Cambridge Landmarks, 7Scenes, and 12Scenes.
+\end{abstract}
+
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/method}
+\input{sections/experiments}
+\input{sections/conclusion}
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}

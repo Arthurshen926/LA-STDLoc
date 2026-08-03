@@ -1,0 +1,39 @@
+\section{Experiments}
+
+\subsection{Protocol}
+
+We freeze one method configuration across scenes. Mapping images are used for
+Gaussian-prior construction and all offline localization-map learning; official
+test images are used only for evaluation. The deployment frontend uses native
+SuperPoint, full-resolution coordinates with the explicit pixel-center
+convention, global cosine top-1 matching, and one PoseLib PnP/RANSAC solve.
+
+We report median, mean, and 90th-percentile translation and rotation error;
+recall at $5\,$cm/$5^\circ$; raw and RANSAC-inlier correspondence precision at
+2 and 4 pixels; catastrophic failures; primitive, track, and final anchor
+counts; map memory; build time; and localization P50/P90 latency.
+
+\subsection{Datasets and Baselines}
+
+The evaluation covers five Cambridge Landmarks scenes, all seven 7Scenes
+scenes, and all twelve 12Scenes scenes. The indoor main tables use the same
+off-the-shelf Gaussian-prior method without semantic masks. A representative
+prior-flexibility subset compares vanilla 3DGS, vanilla 2DGS, an enhanced 2DGS
+prior, and a feed-forward AnySplat prior while keeping every localization-map
+stage fixed.
+
+Our principal comparison is between the Gaussian-supported KCS/GWFF bootstrap
+(A0) and the complete reconstructed map (A1). Track-only and base-only maps are
+reported on representative scenes to isolate track identity and Gaussian
+coverage.
+
+\input{tables/main_results}
+
+\subsection{Analysis Plan}
+
+The evaluation tests four questions: whether A1 consistently improves A0;
+whether compact topology preserves both central and tail pose accuracy; whether
+the reconstructed map is robust to off-the-shelf prior quality; and whether the
+offline cost yields a simpler online pipeline. A scene failure is attributed
+only after auditing dataset convention, prior reconstruction, track coverage,
+and candidate precision under the frozen protocol.

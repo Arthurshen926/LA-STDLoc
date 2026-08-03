@@ -1,0 +1,90 @@
+\section{Method}
+
+\subsection{Problem Formulation}
+
+Let a frozen RGB Gaussian prior be
+$\Gprior=\{(\boldsymbol\mu_j,\boldsymbol\Sigma_j,
+\alpha_j,\mathbf{c}_j)\}_{j=1}^{N_G}$ and let the mapping set
+$\Queries=\{(I_q,K_q,T_q)\}$ contain RGB images with calibrated poses. We
+reconstruct a localization map
+\begin{equation}
+  \Anchors=\{(\mathbf{x}_i,\mathbf{d}_i,\ell_i)\}_{i=1}^{N_A},
+\end{equation}
+where $\mathbf{x}_i\in\R^3$ is PnP geometry, $\mathbf{d}_i$ is one deployment
+descriptor, and $\ell_i$ stores Gaussian support lineage. In general,
+\begin{equation}
+  \text{Gaussian ID}\neq\text{track ID}\neq\text{anchor ID}.
+\end{equation}
+The prior remains frozen throughout localization-map reconstruction.
+
+\subsection{KCS/GWFF Bootstrap}
+
+Native SuperPoint observations are extracted from every mapping image. We
+select a broad Gaussian-supported scaffold with keypoint-consensus sampling
+(KCS): a primitive must receive support from multiple views, viewpoint bins,
+and trajectory bins. Geometry-weighted feature fusion (GWFF) initializes each
+selected descriptor from visible observations, weighting incidence and view
+geometry and trimming low-consensus descriptor observations. This bootstrap is
+an initialization, not the final landmark identity.
+
+\subsection{Track-First Evidence and Geometry}
+
+We build reciprocal, cycle-consistent cross-view associations from the native
+observations. A track $t\in\Tracks$ is accepted only when its observations span
+sufficient views and viewpoint bins. Its 3D position is estimated independently
+of Gaussian centers by robust multi-view triangulation:
+\begin{equation}
+  \mathbf{x}_t^*=
+  \arg\min_{\mathbf{x}}\sum_{(q,\mathbf{u})\in t}
+  \rho\!\left(\left\|\pi(K_q,T_q,\mathbf{x})-\mathbf{u}\right\|_2\right),
+\end{equation}
+subject to parallax, reprojection, and covariance gates. Gaussian rasterization
+then returns visible primitive IDs and composition mass at each observation.
+Aggregating this provenance gives surface support $\ell_t$ without replacing
+$\mathbf{x}_t^*$ by a primitive center.
+
+\subsection{Self-Localization-Guided Reconstruction}
+
+At iteration $s$, the current map retrieves a top-$K$ candidate set for each
+native mapping keypoint. Known mapping poses label outcomes relative to the
+current map. The reconstruction objective separates:
+\begin{equation}
+  \mathcal{L}_{\mathrm{SL}} =
+  \lambda_k\mathcal{L}_{\mathrm{keep}}+
+  \lambda_s\mathcal{L}_{\mathrm{swap}}+
+  \lambda_m\mathcal{L}_{\mathrm{miss}}+
+  \lambda_a\mathcal{L}_{\mathrm{attractor}}+
+  \lambda_l\mathcal{L}_{\mathrm{local}}+
+  \lambda_t\mathcal{L}_{\mathrm{trust}}.
+\end{equation}
+The keep term protects already correct high-margin assignments. Swap and miss
+terms rank a geometrically valid positive above the selected wrong candidate or
+retrieve a positive absent from the current top ranks. The global-attractor
+term suppresses landmarks that collect false matches across queries. A weak
+local peak objective sharpens spatially nearby alternatives, while a protected
+set prevents such updates from damaging pose-critical correspondences. Because
+candidates are regenerated from the current descriptors, this is an online
+matching loop during offline reconstruction rather than static post-processing.
+
+\subsection{Localization Topology Distillation}
+
+The candidate universe contains track-centric anchors and Gaussian-supported
+coverage candidates. We first select a reliable track core using cross-view and
+geometric evidence. A coverage reserve then adds candidates only where mapping
+queries lack enough usable rows, with pose-information scoring preventing a
+purely appearance-driven map. The resulting topology has a scene-dependent
+size determined by the frozen selection rule rather than a manually chosen
+per-scene target.
+
+On this fixed compact topology, a short low-rank metric update uses the complete
+positive teacher and group-robust weighting. The deployed descriptor remains a
+single vector per anchor; no family prototypes, learned sampler, dense stage,
+or test-time rendering is required.
+
+\subsection{Sparse Deployment}
+
+For a query image, native SuperPoint produces keypoints and descriptors. A
+shared metric transforms query and map descriptors, cosine top-1 matching
+produces one correspondence per keypoint, and one standard PoseLib PnP/RANSAC
+call estimates the pose. All correspondences are passed to the solver without a
+landmark-side match cap or a learned test-time selector.

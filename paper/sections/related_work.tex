@@ -1,0 +1,27 @@
+\section{Related Work}
+
+\paragraph{Sparse visual localization.}
+Classical structure-based localization matches local image descriptors to a 3D
+landmark map and estimates pose with a robust geometric solver. Learned local
+features improve repeatability and matching, but the landmark topology is
+usually inherited from SfM or selected after reconstruction. \method retains
+the sparse deployment interface while moving task-specific learning into map
+construction.
+
+\paragraph{Gaussian scene representations.}
+3D and 2D Gaussian Splatting optimize explicit primitives for photometric
+rendering. Several localization systems render appearance or attach features
+to Gaussian primitives. Our formulation instead treats the Gaussian model as a
+frozen geometric and visibility scaffold: localization identities and PnP
+points are reconstructed from real feature tracks and need not correspond
+one-to-one with primitives.
+
+\paragraph{Compact localization maps.}
+Map compression commonly ranks or prunes existing 3D points according to
+visibility, descriptor quality, or pose coverage. Our topology is reconstructed
+jointly with descriptor evidence: track-derived anchors form the core, Gaussian
+lineage supplies coverage candidates, and mapping-view self-localization
+provides task-specific functional evidence.
+
+\TODO{Replace this concise positioning with citation-grounded discussion before
+submission.}
