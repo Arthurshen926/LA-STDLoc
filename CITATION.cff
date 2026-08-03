@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+title: LaFGS
+message: Please cite the accompanying LaFGS paper when using this software.
+type: software
+authors:
+  - name: LaFGS Authors
+license: MIT
+repository-code: https://github.com/Arthurshen926/LA-STDLoc
+version: 0.1.0
+date-released: 2026-08-03
