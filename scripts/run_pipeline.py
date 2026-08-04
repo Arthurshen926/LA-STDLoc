@@ -32,6 +32,7 @@ def main() -> None:
     parser.add_argument("--valid-masks", default="")
     parser.add_argument("--function-graph-shards", type=int, default=1)
     parser.add_argument("--provenance-shards", type=int, default=1)
+    parser.add_argument("--observation-shards", type=int, default=1)
     parser.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -57,6 +58,7 @@ def main() -> None:
         valid_masks=args.valid_masks or None,
         function_graph_shards=args.function_graph_shards,
         provenance_shards=args.provenance_shards,
+        observation_shards=args.observation_shards,
     )
     compact_map = distill_compact_map(
         canonical_map=evidence["canonical_map"],
@@ -79,6 +81,7 @@ def main() -> None:
         config=args.config,
         valid_masks=args.valid_masks or None,
         provenance_shards=args.provenance_shards,
+        observation_shards=args.observation_shards,
     )
     outputs = {
         **artifacts,

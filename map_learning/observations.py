@@ -185,6 +185,7 @@ def build_teacher(
     depth_rel_tolerance: float,
     alpha_minimum: float,
     contribution_minimum: float,
+    query_indices: list[int] | None = None,
 ) -> dict:
     xyz = torch.as_tensor(anchor_map["anchor_xyz"]).float()
     source = torch.as_tensor(anchor_map["source_primitive_ids"]).long()
@@ -214,7 +215,13 @@ def build_teacher(
     positive_rows = 0
     exact_positive_count = 0
 
-    for query_index, provenance_record in enumerate(provenance["records"]):
+    selected_queries = (
+        list(range(len(names)))
+        if query_indices is None
+        else [int(index) for index in query_indices]
+    )
+    for completed, query_index in enumerate(selected_queries, start=1):
+        provenance_record = provenance["records"][query_index]
         name = names[query_index]
         cached = cache[name]
         query_rows = torch.as_tensor(
@@ -313,11 +320,11 @@ def build_teacher(
                 "ambiguous_indices": ambiguous_indices,
             }
         )
-        if (query_index + 1) % 50 == 0:
+        if completed % 50 == 0 or completed == len(selected_queries):
             print(
                 json.dumps(
                     {
-                        "completed_queries": query_index + 1,
+                        "completed_queries": completed,
                         "positive_rows": positive_rows,
                         "strong_pairs": total_strong,
                     }
@@ -362,9 +369,13 @@ def main() -> None:
     parser.add_argument("--depth-rel-tolerance", type=float, default=0.02)
     parser.add_argument("--alpha-minimum", type=float, default=0.01)
     parser.add_argument("--contribution-minimum", type=float, default=1e-4)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("complete positive teacher construction requires CUDA")
+    if not 0 <= args.shard_index < args.num_shards:
+        raise ValueError("invalid shard index")
     anchor_map = torch.load(
         args.anchor_map, map_location="cpu", weights_only=False
     )
@@ -389,6 +400,17 @@ def main() -> None:
         depth_rel_tolerance=args.depth_rel_tolerance,
         alpha_minimum=args.alpha_minimum,
         contribution_minimum=args.contribution_minimum,
+        query_indices=[
+            index
+            for index in range(len(provenance["query_names"]))
+            if index % args.num_shards == args.shard_index
+        ],
+    )
+    teacher["config"].update(
+        {
+            "num_shards": int(args.num_shards),
+            "shard_index": int(args.shard_index),
+        }
     )
     teacher.update(
         {

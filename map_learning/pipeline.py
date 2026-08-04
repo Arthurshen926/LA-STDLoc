@@ -387,6 +387,7 @@ def build_evidence(
     valid_masks: str | Path | None = None,
     function_graph_shards: int = 1,
     provenance_shards: int = 1,
+    observation_shards: int = 1,
 ) -> dict[str, Path]:
     """Build the frozen canonical map and real-image localization evidence."""
     output = Path(output).expanduser().resolve()
@@ -450,13 +451,17 @@ def build_evidence(
             "--output", graph,
         )
     if not teacher.is_file():
-        _run(
-            "map_learning.observations",
+        _run_query_shards(
+            module="map_learning.observations",
+            merge_module="map_learning.merge_observations",
+            arguments=[
             "--anchor-map", canonical,
             "--query-cache", query_cache,
             "--raster-provenance", provenance,
             "--track-payload", track_payload,
-            "--output", teacher,
+            ],
+            output=teacher,
+            shard_count=observation_shards,
         )
     if not contract.is_file():
         _run(
@@ -551,6 +556,7 @@ def train_compact_map(
     config: str | Path,
     valid_masks: str | Path | None = None,
     provenance_shards: int = 1,
+    observation_shards: int = 1,
 ) -> dict[str, Path]:
     """Rebuild compact-map labels, then run frozen A1 reconstruction."""
     output = Path(output).expanduser().resolve()
@@ -576,13 +582,17 @@ def train_compact_map(
             shard_count=provenance_shards,
         )
     if not teacher.is_file():
-        _run(
-            "map_learning.observations",
+        _run_query_shards(
+            module="map_learning.observations",
+            merge_module="map_learning.merge_observations",
+            arguments=[
             "--anchor-map", compact_map,
             "--query-cache", query_cache,
             "--raster-provenance", provenance,
             "--track-payload", track_payload,
-            "--output", teacher,
+            ],
+            output=teacher,
+            shard_count=observation_shards,
         )
     reconstruction = load_mainline_config(config).values["reconstruction"]
     steps = int(reconstruction["metric_steps"])

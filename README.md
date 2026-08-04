@@ -70,10 +70,10 @@ python scripts/run_pipeline.py \
   --output /data/runs/OldHospital
 ```
 
-For large mapping sets, `--function-graph-shards N --provenance-shards N`
-evaluates independent query shards concurrently and deterministically merges
-them. These are exact execution backends; they do not change the frozen method
-or per-query seeds.
+For large mapping sets, use `--function-graph-shards N --provenance-shards N
+--observation-shards N`. These options evaluate independent query shards
+concurrently and deterministically merge them. They are exact execution
+backends and do not change the frozen method or per-query seeds.
 
 The seven stable CLIs under `scripts/` expose the same stages individually.
 All defaults are resolved through [`configs/paper_mainline.yaml`](configs/paper_mainline.yaml).
