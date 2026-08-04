@@ -56,6 +56,54 @@ def _run_parallel(module: str, argument_sets: list[list[object]]) -> None:
         raise
 
 
+def _run_query_shards(
+    *,
+    module: str,
+    merge_module: str,
+    arguments: list[object],
+    output: Path,
+    shard_count: int,
+) -> None:
+    shard_count = int(shard_count)
+    if shard_count < 1:
+        raise ValueError("query shard count must be positive")
+    if shard_count == 1:
+        _run(module, *arguments, "--output", output)
+        return
+    shard_paths = [
+        output.parent
+        / (
+            f"{output.stem}.shard_{index:03d}_of_"
+            f"{shard_count:03d}{output.suffix}"
+        )
+        for index in range(shard_count)
+    ]
+    _run_parallel(
+        module,
+        [
+            [
+                *arguments,
+                "--output",
+                shard_paths[index],
+                "--num-shards",
+                shard_count,
+                "--shard-index",
+                index,
+            ]
+            for index in range(shard_count)
+        ],
+    )
+    _run(
+        merge_module,
+        "--inputs",
+        *shard_paths,
+        "--output",
+        output,
+    )
+    for shard_path in shard_paths:
+        shard_path.unlink()
+
+
 def resolve_prior_ply(prior: str | Path) -> Path:
     """Resolve the normalized Gaussian PLY without depending on a producer repo."""
     prior = Path(prior).expanduser().resolve()
@@ -338,6 +386,7 @@ def build_evidence(
     output: str | Path,
     valid_masks: str | Path | None = None,
     function_graph_shards: int = 1,
+    provenance_shards: int = 1,
 ) -> dict[str, Path]:
     """Build the frozen canonical map and real-image localization evidence."""
     output = Path(output).expanduser().resolve()
@@ -367,46 +416,13 @@ def build_evidence(
             arguments += ["--deployment-mask-cache", valid_masks]
         if visibility_cache:
             arguments += ["--raster-visibility-cache", visibility_cache]
-        shard_count = int(function_graph_shards)
-        if shard_count < 1:
-            raise ValueError("function_graph_shards must be positive")
-        if shard_count == 1:
-            _run(
-                "evidence.function_graph",
-                *arguments,
-                "--output",
-                graph_v2,
-            )
-        else:
-            shard_paths = [
-                output
-                / f"function_graph_v2.shard_{index:03d}_of_{shard_count:03d}.pt"
-                for index in range(shard_count)
-            ]
-            _run_parallel(
-                "evidence.function_graph",
-                [
-                    [
-                        *arguments,
-                        "--output",
-                        shard_paths[index],
-                        "--num-shards",
-                        shard_count,
-                        "--shard-index",
-                        index,
-                    ]
-                    for index in range(shard_count)
-                ],
-            )
-            _run(
-                "evidence.merge_function_graph",
-                "--inputs",
-                *shard_paths,
-                "--output",
-                graph_v2,
-            )
-            for shard_path in shard_paths:
-                shard_path.unlink()
+        _run_query_shards(
+            module="evidence.function_graph",
+            merge_module="evidence.merge_function_graph",
+            arguments=arguments,
+            output=graph_v2,
+            shard_count=function_graph_shards,
+        )
     if not provenance.is_file():
         arguments = [
             "--anchor-map", canonical,
@@ -416,11 +432,16 @@ def build_evidence(
             "--sh-degree", sh_degree,
             "--function-graph", graph_v2,
             "--track-payload", track_payload,
-            "--output", provenance,
         ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
-        _run("priors.provenance", *arguments)
+        _run_query_shards(
+            module="priors.provenance",
+            merge_module="priors.merge_provenance",
+            arguments=arguments,
+            output=provenance,
+            shard_count=provenance_shards,
+        )
     if not graph.is_file():
         _run(
             "evidence.evidence_graph",
@@ -529,6 +550,7 @@ def train_compact_map(
     output: str | Path,
     config: str | Path,
     valid_masks: str | Path | None = None,
+    provenance_shards: int = 1,
 ) -> dict[str, Path]:
     """Rebuild compact-map labels, then run frozen A1 reconstruction."""
     output = Path(output).expanduser().resolve()
@@ -543,11 +565,16 @@ def train_compact_map(
             "--gaussian-type", gaussian_type,
             "--sh-degree", sh_degree,
             "--track-payload", track_payload,
-            "--output", provenance,
         ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
-        _run("priors.provenance", *arguments)
+        _run_query_shards(
+            module="priors.provenance",
+            merge_module="priors.merge_provenance",
+            arguments=arguments,
+            output=provenance,
+            shard_count=provenance_shards,
+        )
     if not teacher.is_file():
         _run(
             "map_learning.observations",
