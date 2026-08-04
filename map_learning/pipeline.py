@@ -493,6 +493,7 @@ def distill_compact_map(
     query_cache: str | Path,
     output: str | Path,
     config: str | Path,
+    pose_scoring_shards: int = 1,
 ) -> Path:
     """Materialize the Track core plus Gaussian-supported coverage reserve."""
     cfg = load_mainline_config(config).values["reconstruction"]
@@ -527,17 +528,73 @@ def distill_compact_map(
         f"pose_sufficient_add{int(cfg['pose_reserve_additions']):04d}.pt"
     )
     if not final.is_file():
-        _run(
-            "topology.coverage_reserve",
+        arguments: list[object] = [
             "--core-map", matches[0],
             "--canonical-map", canonical_map,
             "--function-graph", function_graph,
             "--complete-positive-teacher", positive_teacher,
             "--track-payload", track_payload,
             "--query-cache", query_cache,
-            "--output-dir", reserve_dir,
             "--reserve-additions", cfg["pose_reserve_additions"],
-        )
+        ]
+        shard_count = int(pose_scoring_shards)
+        if shard_count < 1:
+            raise ValueError("pose_scoring_shards must be positive")
+        if shard_count == 1:
+            _run(
+                "topology.coverage_reserve",
+                *arguments,
+                "--output-dir",
+                reserve_dir,
+            )
+        else:
+            shard_root = reserve_dir / "scoring_shards"
+            shard_dirs = [
+                shard_root / f"shard_{index:03d}_of_{shard_count:03d}"
+                for index in range(shard_count)
+            ]
+            for shard_dir in shard_dirs:
+                shard_dir.mkdir(parents=True, exist_ok=True)
+            _run_parallel(
+                "topology.coverage_reserve",
+                [
+                    [
+                        *arguments,
+                        "--output-dir",
+                        shard_dirs[index],
+                        "--score-only",
+                        "--scoring-num-shards",
+                        shard_count,
+                        "--scoring-shard-index",
+                        index,
+                    ]
+                    for index in range(shard_count)
+                ],
+            )
+            shard_paths = [
+                shard_dir / "pose_reserve_scoring.pt"
+                for shard_dir in shard_dirs
+            ]
+            merged_scoring = reserve_dir / "pose_reserve_scoring_merged.pt"
+            _run(
+                "topology.merge_pose_scoring",
+                "--inputs",
+                *shard_paths,
+                "--output",
+                merged_scoring,
+            )
+            _run(
+                "topology.coverage_reserve",
+                *arguments,
+                "--output-dir",
+                reserve_dir,
+                "--pose-scoring-cache",
+                merged_scoring,
+            )
+            for shard_path, shard_dir in zip(shard_paths, shard_dirs):
+                shard_path.unlink()
+                shard_dir.rmdir()
+            shard_root.rmdir()
     if not final.is_file():
         raise RuntimeError(f"Compact map was not produced: {final}")
     return final

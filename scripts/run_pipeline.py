@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--function-graph-shards", type=int, default=1)
     parser.add_argument("--provenance-shards", type=int, default=1)
     parser.add_argument("--observation-shards", type=int, default=1)
+    parser.add_argument("--pose-scoring-shards", type=int, default=1)
     parser.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -68,6 +69,7 @@ def main() -> None:
         query_cache=artifacts["query_cache"],
         output=args.output / "topology",
         config=args.config,
+        pose_scoring_shards=args.pose_scoring_shards,
     )
     trained = train_compact_map(
         compact_map=compact_map,

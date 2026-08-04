@@ -23,10 +23,11 @@ The mapping split is used in full; the test split is read only by the final
 evaluation stage. Re-running the command reuses only artifacts whose contracts
 match.
 
-Use `--function-graph-shards 4 --provenance-shards 4 --observation-shards 4`
-when host memory permits parallel evidence construction. Shards preserve the
-global query indices and PoseLib seeds; merged artifacts are semantically
-identical to the default single-shard run.
+Use `--function-graph-shards 4 --provenance-shards 4 --observation-shards 4
+--pose-scoring-shards 4` when host memory permits parallel evidence
+construction. Shards preserve global query indices and PoseLib seeds; pose
+scores are merged before one global greedy selection. The results are
+semantically identical to the default single-shard run.
 
 ## Stage commands
 

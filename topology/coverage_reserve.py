@@ -183,6 +183,9 @@ def main() -> None:
         default="",
         help="Reuse a completed, identity-checked scoring cache from another reserve objective.",
     )
+    parser.add_argument("--score-only", action="store_true")
+    parser.add_argument("--scoring-num-shards", type=int, default=1)
+    parser.add_argument("--scoring-shard-index", type=int, default=0)
     parser.add_argument(
         "--reserve-mode",
         choices=("all", "precision", "robustness"),
@@ -194,6 +197,8 @@ def main() -> None:
         default=True,
     )
     args = parser.parse_args()
+    if not 0 <= args.scoring_shard_index < args.scoring_num_shards:
+        raise ValueError("invalid pose scoring shard index")
 
     core_path = Path(args.core_map).resolve()
     canonical_path = Path(args.canonical_map).resolve()
@@ -295,7 +300,13 @@ def main() -> None:
 
     query_candidates: list[list[tuple[int, float]]] = []
     query_diagnostics = []
+    selected_query_indices = [
+        index
+        for index in range(len(teacher["records"]))
+        if index % args.scoring_num_shards == args.scoring_shard_index
+    ]
     scoring_identity = {
+        "schema": "lafgs_pose_reserve_scoring_v2",
         "core_map": str(core_path),
         "canonical_map": str(canonical_path),
         "function_graph": str(graph_path),
@@ -303,6 +314,7 @@ def main() -> None:
         "query_cache": str(query_path),
         "dependency_voxel_size": float(args.dependency_voxel_size),
         "maximum_harmful_rate": float(args.maximum_harmful_rate),
+        "top_candidates_per_query": int(args.top_candidates_per_query),
     }
     scoring_partial = output_dir / "pose_reserve_scoring.partial.pt"
     local_scoring_cache = output_dir / "pose_reserve_scoring.pt"
@@ -321,6 +333,9 @@ def main() -> None:
             raise ValueError("pose reserve scoring cache identity mismatch")
         query_candidates = saved_scoring["query_candidates"]
         query_diagnostics = saved_scoring["query_diagnostics"]
+        selected_query_indices = saved_scoring.get(
+            "query_indices", list(range(len(query_candidates)))
+        )
     elif scoring_partial.is_file():
         saved_scoring = torch.load(
             scoring_partial, map_location="cpu", weights_only=False
@@ -329,11 +344,19 @@ def main() -> None:
             raise ValueError("pose reserve partial identity mismatch")
         query_candidates = saved_scoring["query_candidates"]
         query_diagnostics = saved_scoring["query_diagnostics"]
+        saved_indices = saved_scoring.get("query_indices")
+        if saved_indices is not None:
+            if list(saved_indices) != selected_query_indices:
+                raise ValueError("pose reserve partial shard indices mismatch")
     eye = torch.eye(6, dtype=torch.float64) * 1e-6
-    for completed, record in enumerate(teacher["records"], start=1):
+    for completed, query_index in enumerate(
+        selected_query_indices, start=1
+    ):
         if completed <= len(query_candidates):
             continue
-        query_index = int(record["query_index"])
+        record = teacher["records"][query_index]
+        if int(record["query_index"]) != query_index:
+            raise ValueError("teacher records are not in global query order")
         name = teacher["query_names"][query_index]
         cached = query_cache[name]
         K = torch.as_tensor(cached["native_K"]).float()
@@ -461,19 +484,24 @@ def main() -> None:
             torch.save(
                 {
                     "identity": scoring_identity,
+                    "query_indices": selected_query_indices,
                     "query_candidates": query_candidates,
                     "query_diagnostics": query_diagnostics,
                 },
                 temporary,
             )
             os.replace(temporary, scoring_partial)
-            print(f"pose reserve scoring: {completed}/{len(teacher['records'])}")
-    if len(query_candidates) != len(teacher["records"]):
+            print(
+                f"pose reserve scoring shard {args.scoring_shard_index}: "
+                f"{completed}/{len(selected_query_indices)}"
+            )
+    if len(query_candidates) != len(selected_query_indices):
         raise RuntimeError("pose reserve scoring did not cover every query")
     temporary = local_scoring_cache.with_suffix(".pt.tmp")
     torch.save(
         {
             "identity": scoring_identity,
+            "query_indices": selected_query_indices,
             "query_candidates": query_candidates,
             "query_diagnostics": query_diagnostics,
         },
@@ -481,6 +509,11 @@ def main() -> None:
     )
     os.replace(temporary, local_scoring_cache)
     scoring_partial.unlink(missing_ok=True)
+    if args.score_only:
+        print(local_scoring_cache)
+        return
+    if selected_query_indices != list(range(len(teacher["records"]))):
+        raise ValueError("selection requires a complete pose scoring cache")
 
     additions = sorted(
         {int(value) for value in args.reserve_additions.split(",")}
