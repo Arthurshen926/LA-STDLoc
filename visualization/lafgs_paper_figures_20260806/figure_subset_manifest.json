@@ -1,0 +1,59 @@
+{
+  "figures": {
+    "5": {
+      "audit": {
+        "path": "/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/prior_robustness_complete_with_anysplat_strict_audit.json",
+        "sha256": "d5bb529fd6860e48f061549ee28d36c8935ca6663ff0078269dea9e71f4db780",
+        "size_bytes": 82923
+      },
+      "figure": "prior_flexibility",
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.svg"
+      },
+      "profiles": {
+        "anysplat_ff": {
+          "A0_median_te_cm": 26.706283787886303,
+          "A1_inlier_gt_precision_2px_percent": 41.98627348459786,
+          "A1_median_te_cm": 10.767414172490438,
+          "A1_raw_gt_precision_2px_percent": 7.553815679510305,
+          "final_anchor_count": 9131,
+          "prior_primitives": 3000000,
+          "prior_seconds": 242.40372587367892,
+          "psnr_db_mean": 9.689681650518061,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_anysplat_ff_seq8__frame00061.png"
+        },
+        "vanilla_2dgs": {
+          "A0_median_te_cm": 14.402277519305548,
+          "A1_inlier_gt_precision_2px_percent": 40.77608295019619,
+          "A1_median_te_cm": 10.901590809226036,
+          "A1_raw_gt_precision_2px_percent": 7.766643950485086,
+          "final_anchor_count": 11127,
+          "prior_primitives": 777515,
+          "prior_seconds": 3438.0,
+          "psnr_db_mean": 13.746075148110862,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_vanilla_2dgs_seq8__frame00061.png"
+        },
+        "vanilla_3dgs": {
+          "A0_median_te_cm": 13.540822267532349,
+          "A1_inlier_gt_precision_2px_percent": 41.191490200575224,
+          "A1_median_te_cm": 9.493337323268255,
+          "A1_raw_gt_precision_2px_percent": 7.661880423920245,
+          "final_anchor_count": 10699,
+          "prior_primitives": 1132962,
+          "prior_seconds": 3052.0,
+          "psnr_db_mean": 13.806521295191168,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_vanilla_3dgs_seq8__frame00061.png"
+        }
+      },
+      "protocol": "only the frozen RGB Gaussian prior changes",
+      "render_view": "seq8/frame00061.png",
+      "scene": "OldHospital",
+      "schema": "lafgs_publication_figure",
+      "version": 1
+    }
+  },
+  "schema": "lafgs_publication_figure_subset",
+  "version": 1
+}

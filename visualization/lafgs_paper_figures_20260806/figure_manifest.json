@@ -1,0 +1,216 @@
+{
+  "device": "cuda:0",
+  "figures": {
+    "figure_01": {
+      "counts": {
+        "final_anchors": 7145,
+        "prior_primitives": 1202378,
+        "wide_candidates": 48000
+      },
+      "figure": "method_overview",
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_01_method_overview.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_01_method_overview.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_01_method_overview.svg"
+      },
+      "qualitative_query": "seq3/frame00065.png",
+      "schema": "lafgs_publication_figure",
+      "stages": [
+        "frozen Gaussian scaffold",
+        "real-image feature tracks",
+        "robustly triangulated localization anchors",
+        "candidate evidence universe",
+        "compact topology distillation",
+        "self-localization-guided descriptor reconstruction",
+        "one-shot sparse deployment"
+      ],
+      "version": 1
+    },
+    "figure_02": {
+      "figure": "rendering_primitive_not_localization_landmark",
+      "observation_images": [
+        "seq2/frame00162.png",
+        "seq2/frame00163.png",
+        "seq2/frame00220.png",
+        "seq2/frame00226.png"
+      ],
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_02_primitive_not_landmark.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_02_primitive_not_landmark.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_02_primitive_not_landmark.svg"
+      },
+      "schema": "lafgs_publication_figure",
+      "source_primitive_id": 287494,
+      "track_ids": [
+        3311,
+        2061,
+        2026,
+        11641
+      ],
+      "version": 1
+    },
+    "figure_03": {
+      "counts": {
+        "feature_tracks": 26905,
+        "final_anchors": 7145,
+        "gaussian_reserve": 453,
+        "kcs_gwff_candidates": 48000,
+        "rgb_gaussian_primitives": 1202378,
+        "track_core": 6692,
+        "triangulated_tracks": 9284
+      },
+      "figure": "topology_distillation",
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_03_topology_distillation.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_03_topology_distillation.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_03_topology_distillation.svg"
+      },
+      "schema": "lafgs_publication_figure",
+      "version": 1
+    },
+    "figure_04": {
+      "figure": "A0_vs_A1_matches",
+      "legend": {
+        "cyan_ring": "PoseLib RANSAC inlier",
+        "green": "GT-clean correspondence (<=2 px)",
+        "red": "false correspondence (>2 px)",
+        "red_segment": "clipped GT reprojection residual of a harmful inlier"
+      },
+      "metrics": {
+        "A0": {
+          "inlier_gt_precision_2px_percent": 21.04018912529551,
+          "inliers": 423,
+          "matches": 2015,
+          "raw_gt_precision_2px_percent": 4.416873449131513,
+          "rotation_error_deg": 0.2077545443351522,
+          "translation_error_cm": 4.642229899764061
+        },
+        "A1": {
+          "inlier_gt_precision_2px_percent": 66.31439894319684,
+          "inliers": 757,
+          "matches": 2015,
+          "raw_gt_precision_2px_percent": 24.913151364764268,
+          "rotation_error_deg": 0.0771584392483457,
+          "translation_error_cm": 1.3496709056198597
+        }
+      },
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_04_a0_vs_a1_matches.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_04_a0_vs_a1_matches.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_04_a0_vs_a1_matches.svg"
+      },
+      "query": "seq3/frame00065.png",
+      "schema": "lafgs_publication_figure",
+      "seed": 2026,
+      "version": 1
+    },
+    "figure_05": {
+      "audit": {
+        "path": "/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/prior_robustness_complete_with_anysplat_strict_audit.json",
+        "sha256": "d5bb529fd6860e48f061549ee28d36c8935ca6663ff0078269dea9e71f4db780",
+        "size_bytes": 82923
+      },
+      "figure": "prior_flexibility",
+      "outputs": {
+        "pdf": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.pdf",
+        "png": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.png",
+        "svg": "/mnt/pool/sqy/lafgs_paper_figures_20260806/figure_05_prior_flexibility.svg"
+      },
+      "profiles": {
+        "anysplat_ff": {
+          "A0_median_te_cm": 26.706283787886303,
+          "A1_inlier_gt_precision_2px_percent": 41.98627348459786,
+          "A1_median_te_cm": 10.767414172490438,
+          "A1_raw_gt_precision_2px_percent": 7.553815679510305,
+          "final_anchor_count": 9131,
+          "prior_primitives": 3000000,
+          "prior_seconds": 242.40372587367892,
+          "psnr_db_mean": 9.689681650518061,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_anysplat_ff_seq8__frame00061.png"
+        },
+        "vanilla_2dgs": {
+          "A0_median_te_cm": 14.402277519305548,
+          "A1_inlier_gt_precision_2px_percent": 40.77608295019619,
+          "A1_median_te_cm": 10.901590809226036,
+          "A1_raw_gt_precision_2px_percent": 7.766643950485086,
+          "final_anchor_count": 11127,
+          "prior_primitives": 777515,
+          "prior_seconds": 3438.0,
+          "psnr_db_mean": 13.746075148110862,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_vanilla_2dgs_seq8__frame00061.png"
+        },
+        "vanilla_3dgs": {
+          "A0_median_te_cm": 13.540822267532349,
+          "A1_inlier_gt_precision_2px_percent": 41.191490200575224,
+          "A1_median_te_cm": 9.493337323268255,
+          "A1_raw_gt_precision_2px_percent": 7.661880423920245,
+          "final_anchor_count": 10699,
+          "prior_primitives": 1132962,
+          "prior_seconds": 3052.0,
+          "psnr_db_mean": 13.806521295191168,
+          "render": "/mnt/pool/sqy/lafgs_paper_figures_20260806/cache/prior_renders/OldHospital_vanilla_3dgs_seq8__frame00061.png"
+        }
+      },
+      "protocol": "only the frozen RGB Gaussian prior changes",
+      "render_view": "seq8/frame00061.png",
+      "scene": "OldHospital",
+      "schema": "lafgs_publication_figure",
+      "version": 1
+    }
+  },
+  "schema": "lafgs_publication_figure_set",
+  "seed": 2026,
+  "sources": {
+    "ShopFacade_A0": {
+      "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/runs/frozen_v1/bootstrap/0_lafgs_map_state.pt",
+      "sha256": "f703a11a94ac52225a4311d3f010a4b65b58874efe336453322f86a196045328",
+      "size_bytes": 51132449
+    },
+    "ShopFacade_A1": {
+      "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/self_localization_reconstruction/anchor_map_step_0175.pt",
+      "sha256": "49f1e7dac41ebdf3c5080bdafb0a141191c4a0a771edff1a7e8610ab4d13dfdb",
+      "size_bytes": 15131255
+    },
+    "ShopFacade_prior": {
+      "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+      "sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb",
+      "size_bytes": 293381741
+    },
+    "ShopFacade_track_payload": {
+      "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/runs/frozen_v1/statistics_combined_1000_frozen_g3_track_provenance_v1/track_micro_anchor_payload.pt",
+      "sha256": "b2117c58b63f1d60c5a823ddd572863bd36b68ff53cd6b77225464f504a3d944",
+      "size_bytes": 8468875
+    },
+    "mainline_config": {
+      "path": "/root/STDLoc/configs/paper_mainline.yaml",
+      "sha256": "9be12b31ca6d43e20353e4e87ec9224ad59bbae24fc98462dfa3bd54cdb3da27",
+      "size_bytes": 3641
+    }
+  },
+  "style": {
+    "color_semantics": {
+      "a0": "#7B61A8",
+      "a1": "#009E73",
+      "anchor": "#D55E00",
+      "candidate": "#7B61A8",
+      "clean": "#009E73",
+      "core": "#009E73",
+      "false": "#D62728",
+      "ink": "#17202A",
+      "inlier": "#00A6D6",
+      "line": "#CBD5E1",
+      "muted": "#667085",
+      "panel": "#F8FAFC",
+      "primitive": "#8B95A5",
+      "reserve": "#E69F00",
+      "track": "#0072B2"
+    },
+    "font": "DejaVu Sans",
+    "raster_output": "PNG at 360 dpi",
+    "vector_outputs": [
+      "PDF",
+      "SVG"
+    ]
+  },
+  "version": 1
+}
