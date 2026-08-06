@@ -117,15 +117,34 @@ def _select_capacity_limited_tracks(
     return selected, report
 
 
+def _graph_counter(graph: dict, semantic: str, legacy: str) -> torch.Tensor:
+    """Read semantic V2 counters while retaining old artifact compatibility."""
+    if semantic in graph:
+        return torch.as_tensor(graph[semantic])
+    return torch.as_tensor(graph[legacy])
+
+
 def _base_utility(graph: dict, base_count: int) -> torch.Tensor:
     legal2 = _normalized_log_score(
-        graph["provenance_legal_hit_2px_count"][:base_count]
+        _graph_counter(
+            graph,
+            "provenance_legal_hit_strong_count",
+            "provenance_legal_hit_2px_count",
+        )[:base_count]
     )
     legal4 = _normalized_log_score(
-        graph["provenance_legal_hit_4px_count"][:base_count]
+        _graph_counter(
+            graph,
+            "provenance_legal_hit_clean_count",
+            "provenance_legal_hit_4px_count",
+        )[:base_count]
     )
     clean = _normalized_log_score(
-        graph["provenance_solver_inlier_gtclean_2px_count"][:base_count]
+        _graph_counter(
+            graph,
+            "provenance_solver_inlier_gtclean_strong_count",
+            "provenance_solver_inlier_gtclean_2px_count",
+        )[:base_count]
     )
     harmful = _normalized_log_score(
         graph["provenance_harmful_solver_inlier_count"][:base_count]

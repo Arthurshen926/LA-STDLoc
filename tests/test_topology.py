@@ -1,4 +1,9 @@
+import itertools
+import random
+
 import torch
+
+from topology.adaptive_distillation import _project_world_covariance
 
 from topology.distillation import greedy_query_multicover
 from topology.coverage_reserve import greedy_pose_reserve
@@ -52,6 +57,29 @@ def test_matching_coverage_uses_augmenting_reassignment():
     assert state.counts.tolist() == [2]
 
 
+def test_incremental_matching_matches_bruteforce_on_random_small_graphs():
+    generator = random.Random(2026)
+    for _ in range(25):
+        candidate_count = generator.randint(1, 6)
+        row_count = generator.randint(1, 5)
+        edges = []
+        for _candidate in range(candidate_count):
+            rows = tuple(
+                row for row in range(row_count) if generator.random() < 0.5
+            )
+            edges.append({0: rows} if rows else {})
+        state = IncrementalBipartiteCoverage(1, edges)
+        for candidate in range(candidate_count):
+            state.add(candidate)
+        optimum = 0
+        choices = [(-1, *edges[candidate].get(0, ())) for candidate in range(candidate_count)]
+        for assignment in itertools.product(*choices):
+            used = [row for row in assignment if row >= 0]
+            if len(used) == len(set(used)):
+                optimum = max(optimum, len(used))
+        assert state.counts.tolist() == [optimum]
+
+
 def test_matching_reserve_caps_target_at_feasible_rank():
     edges = [{0: (0, 1)}, {0: (0, 1)}]
     selected, _, report = greedy_matching_reserve(
@@ -73,6 +101,23 @@ def test_spatial_voxels_do_not_depend_on_source_identity():
     groups = spatial_voxel_ids(xyz, 1.0)
     assert groups[0] == groups[1]
     assert groups[0] != groups[2]
+
+
+def test_anisotropic_landmark_covariance_is_projected_with_full_jacobian():
+    point = torch.tensor([[1.0, 0.5, 4.0]], dtype=torch.float64)
+    covariance = torch.diag(
+        torch.tensor([0.01, 0.04, 0.09], dtype=torch.float64)
+    )[None]
+    intrinsic = torch.tensor(
+        [[800.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    )
+    projected = _project_world_covariance(
+        point, covariance, intrinsic, torch.eye(4, dtype=torch.float64)
+    )
+    assert projected.shape == (1, 2, 2)
+    assert projected[0, 0, 0] != projected[0, 1, 1]
+    assert projected[0, 0, 1] > 0
 
 
 def test_dynamic_pose_reserve_updates_full_information_and_stops_naturally():
@@ -100,3 +145,59 @@ def test_dynamic_pose_reserve_updates_full_information_and_stops_naturally():
     assert selected.tolist() == [0, 1]
     assert report["selection_is_dynamic"] is True
     assert report["objective"].startswith("task_scaled_full_se3")
+
+
+def test_pose_assignment_uses_augmenting_reassignment():
+    eye = torch.eye(6, dtype=torch.float64)
+    evidence = [
+        [PoseEvidence(0, (0, 1), eye, 0, 0, 0)],
+        [PoseEvidence(0, (0,), eye, 1, 0, 1)],
+    ]
+    selected, report = greedy_dynamic_pose_reserve(
+        evidence,
+        initial_information=eye[None] * 1e-4,
+        initial_used_rows=[set()],
+        initial_image_cells=[set()],
+        initial_depth_bins=[set()],
+        initial_spatial_voxels=[set()],
+        candidates=[0, 1],
+        source_ids=torch.tensor([0, 1]),
+        voxel_ids=torch.tensor([0, 1]),
+        maximum_additions=2,
+        minimum_relative_gain=0,
+        image_diversity_weight=0,
+        depth_diversity_weight=0,
+        voxel_diversity_weight=0,
+    )
+    assert selected.tolist() == [0, 1]
+    assert report["augmenting_row_assignment"] is True
+    assert report["row_reassignment_count"] >= 1
+
+
+def test_pose_reserve_uses_objective_relative_natural_stop():
+    eye = torch.eye(6, dtype=torch.float64)
+    evidence = [[PoseEvidence(0, (0,), eye, 0, 0, 0)]]
+    evidence += [
+        [PoseEvidence(0, (index,), eye * 1e-8, 0, 0, index)]
+        for index in range(1, 5)
+    ]
+    selected, report = greedy_dynamic_pose_reserve(
+        evidence,
+        initial_information=eye[None] * 1e-4,
+        initial_used_rows=[set()],
+        initial_image_cells=[set()],
+        initial_depth_bins=[set()],
+        initial_spatial_voxels=[set()],
+        candidates=list(range(5)),
+        source_ids=torch.arange(5),
+        voxel_ids=torch.arange(5),
+        maximum_additions=5,
+        minimum_relative_gain=0,
+        minimum_objective_relative_gain=0.01,
+        minimum_additions=1,
+        image_diversity_weight=0,
+        depth_diversity_weight=0,
+        voxel_diversity_weight=0,
+    )
+    assert selected.tolist() == [0]
+    assert report["stop_reason"] == "objective_relative_marginal_gain"

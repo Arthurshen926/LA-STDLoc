@@ -1277,6 +1277,36 @@ def _automatic_ulf_voxel_size(xyz, budget, extent_quantile=0.0):
     return max((volume / max(int(budget), 1)) ** (1.0 / 3.0), 1e-4)
 
 
+def _resolve_consensus_capacity(
+    consensus_count: int,
+    requested_budget: int,
+    *,
+    allow_nonconsensus_fallback: bool,
+    allow_underfill: bool,
+) -> tuple[int, bool, str]:
+    """Resolve a safety cap without silently changing KCS eligibility."""
+    consensus_count = int(consensus_count)
+    requested_budget = int(requested_budget)
+    if consensus_count <= 0:
+        raise RuntimeError("Robust KCS gates produced no consensus landmarks")
+    if consensus_count >= requested_budget:
+        return requested_budget, False, "consensus_saturation_cap"
+    if allow_nonconsensus_fallback and allow_underfill:
+        raise ValueError(
+            "non-consensus fallback and consensus underfill are mutually exclusive"
+        )
+    if allow_nonconsensus_fallback:
+        return requested_budget, True, "fixed_with_nonconsensus_fallback"
+    if allow_underfill:
+        return consensus_count, False, "consensus_saturation_cap"
+    raise RuntimeError(
+        "Robust KCS gates produced too few consensus landmarks: "
+        f"eligible={consensus_count} budget={requested_budget}. Relax a "
+        "named gate, enable consensus underfill, or explicitly enable "
+        "non-consensus fallback for a fixed-budget compatibility run."
+    )
+
+
 def _build_ulf_robust_consensus_landmark_indices(
     gaussians,
     cameras,
@@ -1309,7 +1339,10 @@ def _build_ulf_robust_consensus_landmark_indices(
     base_eligible = finite_opacity & (opacity >= opacity_threshold)
     if int(args.scaffold_budget) <= 0:
         raise ValueError("Robust ULF consensus requires a positive scaffold budget")
-    if int(base_eligible.sum().item()) < int(args.scaffold_budget):
+    if (
+        int(base_eligible.sum().item()) < int(args.scaffold_budget)
+        and not bool(args.ulf_consensus_allow_underfill)
+    ):
         raise ValueError(
             "Robust ULF consensus budget exceeds the opacity-eligible primitive pool"
         )
@@ -1664,16 +1697,15 @@ def _build_ulf_robust_consensus_landmark_indices(
         if args.ulf_consensus_allow_nonconsensus_fallback is None
         else bool(args.ulf_consensus_allow_nonconsensus_fallback)
     )
-    fallback_to_non_consensus = False
     consensus_count = int(consensus_eligible.sum().item())
-    if consensus_count < requested_budget:
-        if not allow_fallback:
-            raise RuntimeError(
-                "Robust KCS gates produced too few consensus landmarks: "
-                f"eligible={consensus_count} budget={requested_budget}. "
-                "Relax a named gate explicitly or pass --ulf_consensus_allow_nonconsensus_fallback."
-            )
-        fallback_to_non_consensus = True
+    effective_budget, fallback_to_non_consensus, capacity_policy = (
+        _resolve_consensus_capacity(
+            consensus_count,
+            requested_budget,
+            allow_nonconsensus_fallback=allow_fallback,
+            allow_underfill=bool(args.ulf_consensus_allow_underfill),
+        )
+    )
     # Rate only becomes a score after it has first been enforced as a gate.
     vote_score = (
         consensus_votes.float()
@@ -1686,7 +1718,7 @@ def _build_ulf_robust_consensus_landmark_indices(
     if voxel_size <= 0.0:
         voxel_size = _automatic_ulf_voxel_size(
             xyz[base_eligible],
-            requested_budget,
+            effective_budget,
             extent_quantile=args.ulf_consensus_extent_quantile,
         )
     if fallback_to_non_consensus:
@@ -1710,17 +1742,18 @@ def _build_ulf_robust_consensus_landmark_indices(
     else:
         selected = coverage_balanced_score(
             xyz,
-            requested_budget,
+            effective_budget,
             vote_score,
             voxel_size=voxel_size,
             max_per_voxel=args.ulf_consensus_max_per_voxel,
             eligible=consensus_eligible,
             allow_overflow=True,
         )
-    if selected.numel() != requested_budget:
+    if selected.numel() != effective_budget:
         raise RuntimeError(
-            "Robust ULF consensus scaffold could not satisfy the requested budget: "
-            f"requested={requested_budget} selected={selected.numel()}"
+            "Robust ULF consensus scaffold could not satisfy its resolved capacity: "
+            f"requested_cap={requested_budget} resolved={effective_budget} "
+            f"selected={selected.numel()}"
         )
     selected_votes = consensus_votes[selected]
     selected_rates = consensus_rate[selected]
@@ -1729,6 +1762,12 @@ def _build_ulf_robust_consensus_landmark_indices(
         "strict_ulf_parity": False,
         "budget": int(selected.numel()),
         "requested_budget": requested_budget,
+        "resolved_budget": effective_budget,
+        "capacity_policy": capacity_policy,
+        "underfilled_to_consensus_saturation": bool(
+            effective_budget < requested_budget
+            and not fallback_to_non_consensus
+        ),
         "eligible_primitives": int(base_eligible.sum().item()),
         "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
         "fallback_to_non_consensus": bool(fallback_to_non_consensus),
@@ -2170,6 +2209,8 @@ def _load_or_build_landmark_indices(
         if metadata_path.exists():
             with metadata_path.open() as handle:
                 metadata = json.load(handle)
+        if args.scaffold_mode == "ulf_robust_consensus":
+            _assert_cached_consensus_scaffold(metadata, args)
         metadata.setdefault("mode", f"{args.scaffold_mode}_cached")
         metadata.setdefault("budget", int(indices.numel()))
         return indices, path, metadata
@@ -2195,6 +2236,63 @@ def _load_or_build_landmark_indices(
         f"{output_path} count={indices.numel()}"
     )
     return indices.cpu(), output_path, diagnostics
+
+
+def _assert_cached_consensus_scaffold(metadata, args):
+    """Reject a cached KCS scaffold produced under a different policy."""
+    if not metadata:
+        raise ValueError(
+            "cached robust scaffold lacks metadata; regenerate the scaffold"
+        )
+    expected = {
+        "requested_budget": int(args.scaffold_budget),
+        "consensus_sparse_keypoints": int(args.ulf_consensus_keypoints),
+        "consensus_radius_px": float(args.ulf_consensus_radius_px),
+        "minimum_votes": max(int(args.ulf_consensus_min_votes), 1),
+        "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
+        "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
+        "distinct_view_bins": int(args.ulf_consensus_view_bins),
+        "minimum_distinct_view_bins": int(
+            args.ulf_consensus_min_distinct_view_bins
+        ),
+        "distinct_trajectory_bins": int(args.ulf_consensus_trajectory_bins),
+        "minimum_distinct_trajectory_bins": int(
+            args.ulf_consensus_min_distinct_trajectory_bins
+        ),
+        "independent_bin_scoring": bool(
+            args.ulf_consensus_independent_bin_scoring
+        ),
+        "candidate_cap_per_view": int(
+            args.ulf_consensus_max_candidates_per_view
+        ),
+        "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
+        "voxel_extent_quantile": float(args.ulf_consensus_extent_quantile),
+        "support_view_sampling": str(args.ulf_support_view_sampling),
+        "support_mask_policy": str(args.ulf_support_mask_policy),
+    }
+    for key, target in expected.items():
+        if key not in metadata:
+            raise ValueError(
+                f"cached robust scaffold lacks {key}; regenerate the scaffold"
+            )
+        value = metadata[key]
+        if isinstance(target, float):
+            matches = math.isclose(
+                float(value), target, rel_tol=1e-7, abs_tol=1e-7
+            )
+        else:
+            matches = value == target
+        if not matches:
+            raise ValueError(
+                "cached robust scaffold policy mismatch for "
+                f"{key}: {value!r} != {target!r}; regenerate the scaffold"
+            )
+    if bool(args.ulf_consensus_allow_underfill):
+        if metadata.get("capacity_policy") != "consensus_saturation_cap":
+            raise ValueError(
+                "cached robust scaffold used fixed non-consensus fallback; "
+                "regenerate it for adaptive consensus saturation"
+            )
 
 
 def _visibility_signature(dataset, args, landmark_indices):
@@ -4539,7 +4637,11 @@ def build_parser():
     parser.add_argument('--scaffold_mode', choices=['file', 'ulf_robust_consensus'], default='ulf_robust_consensus')
     parser.add_argument('--landmark_path', default='sampled_idx.pkl')
     parser.add_argument('--generated_landmark_path', default='robust_kcs_ids.pkl')
-    parser.add_argument('--regenerate_scaffold', action="store_true")
+    parser.add_argument(
+        '--regenerate_scaffold',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument('--scaffold_budget', type=int, default=16384)
     parser.add_argument('--scaffold_min_opacity', type=float, default=0.05)
     parser.add_argument('--scaffold_opacity_keep_quantile', type=float, default=0.0)
@@ -4554,6 +4656,7 @@ def build_parser():
     parser.add_argument('--ulf_consensus_min_distinct_trajectory_bins', type=int, default=0)
     parser.add_argument('--ulf_consensus_independent_bin_scoring', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--ulf_consensus_allow_nonconsensus_fallback', action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument('--ulf_consensus_allow_underfill', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--ulf_consensus_max_views', type=int, default=0)
     parser.add_argument('--ulf_support_view_sampling', choices=['uniform', 'pose_diverse'], default='uniform')
     parser.add_argument('--ulf_consensus_distance_chunk', type=int, default=8192)
@@ -4601,7 +4704,7 @@ def build_parser():
     parser.add_argument('--native_semidense_neighbors', type=int, default=1)
     parser.add_argument('--native_semidense_neighborhood_radius_m', type=float, default=0.25)
     parser.add_argument('--native_semidense_normal_cosine', type=float, default=0.8)
-    parser.add_argument('--native_semidense_local_radius_px', type=int, default=8)
+    parser.add_argument('--native_semidense_local_radius_px', type=float, default=8.0)
     parser.add_argument('--native_semidense_target_sigma_px', type=float, default=2.0)
     parser.add_argument('--native_semidense_temperature', type=float, default=0.07)
     parser.add_argument('--native_semidense_protected_v2', action=argparse.BooleanOptionalAction, default=False)

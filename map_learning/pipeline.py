@@ -7,6 +7,8 @@ method logic lives in shell runners or environment-variable overrides.
 from __future__ import annotations
 
 import json
+import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +26,11 @@ def _run(module: str, *arguments: object) -> None:
 
 
 def _run_parallel(module: str, argument_sets: list[list[object]]) -> None:
+    visible_devices = [
+        value.strip()
+        for value in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+        if value.strip()
+    ]
     processes = [
         subprocess.Popen(
             [
@@ -31,9 +38,19 @@ def _run_parallel(module: str, argument_sets: list[list[object]]) -> None:
                 "-m",
                 module,
                 *(str(value) for value in arguments),
-            ]
+            ],
+            env=(
+                {
+                    **os.environ,
+                    "CUDA_VISIBLE_DEVICES": visible_devices[
+                        index % len(visible_devices)
+                    ],
+                }
+                if visible_devices
+                else None
+            ),
         )
-        for arguments in argument_sets
+        for index, arguments in enumerate(argument_sets)
     ]
     try:
         pending = set(processes)
@@ -104,6 +121,106 @@ def _run_query_shards(
     )
     for shard_path in shard_paths:
         shard_path.unlink()
+
+
+def _assert_adaptive_threshold_contract(
+    *,
+    graph: Path | None,
+    provenance: Path,
+    teacher: Path,
+    parameters: dict,
+) -> None:
+    """Reject stale artifacts that mix incompatible scene thresholds."""
+    import torch
+
+    provenance_payload = torch.load(
+        provenance, map_location="cpu", weights_only=False
+    )
+    teacher_payload = torch.load(teacher, map_location="cpu", weights_only=False)
+    expected = {
+        "depth_abs_tolerance_m": float(
+            parameters["evidence_depth_abs_tolerance_m"]
+        )
+    }
+    actual = {
+        "provenance.depth_abs_tolerance_m": float(
+            provenance_payload["config"]["depth_abs_tolerance_m"]
+        ),
+        "teacher.depth_abs_tolerance_m": float(
+            teacher_payload["config"]["depth_abs_tolerance_m"]
+        ),
+    }
+    expected.update(
+        {
+            "strong_radius_px": float(parameters["positive_radius_px"]),
+            "ambiguous_radius_px": float(parameters["negative_radius_px"]),
+        }
+    )
+    actual.update(
+        {
+            "teacher.strong_radius_px": float(
+                teacher_payload["config"]["strong_radius_px"]
+            ),
+            "teacher.ambiguous_radius_px": float(
+                teacher_payload["config"]["ambiguous_radius_px"]
+            ),
+        }
+    )
+    if graph is not None:
+        graph_payload = torch.load(graph, map_location="cpu", weights_only=False)
+        thresholds = graph_payload.get("resolved_thresholds")
+        if thresholds is None:
+            raise ValueError("adaptive function graph lacks resolved thresholds")
+        for name in (
+            "strong_radius_px",
+            "clean_radius_px",
+            "ambiguous_radius_px",
+            "pnp_reprojection_error_px",
+            "harm_radius_px",
+            "depth_abs_tolerance_m",
+        ):
+            actual[f"graph.{name}"] = float(thresholds[name])
+        expected.update(
+            {
+                "clean_radius_px": float(parameters["clean_radius_px"]),
+                "pnp_reprojection_error_px": float(
+                    parameters["ransac_reprojection_px"]
+                ),
+                "harm_radius_px": float(parameters["harm_radius_px"]),
+            }
+        )
+    expected_by_suffix = {
+        key: value for key, value in expected.items()
+    }
+    for qualified, value in actual.items():
+        suffix = qualified.split(".", 1)[1]
+        target = expected_by_suffix[suffix]
+        if not math.isclose(value, target, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError(
+                f"adaptive threshold mismatch for {qualified}: {value} != {target}"
+            )
+
+
+def _assert_compact_training_threshold_contract(
+    report: Path,
+    parameters: dict,
+) -> None:
+    """Prevent a resumed adaptive run from accepting a stale metric refresh."""
+    if not report.is_file():
+        raise ValueError("adaptive compact training report is missing")
+    payload = json.loads(report.read_text())
+    config = payload.get("config", {})
+    expected = {
+        "ransac_reprojection_px": float(parameters["ransac_reprojection_px"]),
+        "clean_reprojection_px": float(parameters["clean_radius_px"]),
+    }
+    for name, target in expected.items():
+        actual = float(config.get(name, float("nan")))
+        if not math.isclose(actual, target, rel_tol=1e-6, abs_tol=1e-8):
+            raise ValueError(
+                f"adaptive compact training threshold mismatch for {name}: "
+                f"expected {target}, found {actual}"
+            )
 
 
 def resolve_prior_ply(prior: str | Path) -> Path:
@@ -203,15 +320,17 @@ def build_bootstrap_and_tracks(
     )
     if adaptive and has_camera_model:
         mapping_cameras = ColmapDataset(dataset, images="processed").split("mapping")
-        diagonals = sorted(
-            (camera.width * camera.width + camera.height * camera.height) ** 0.5
+        if not mapping_cameras:
+            raise ValueError("adaptive calibration requires mapping cameras")
+        focals = sorted(
+            math.sqrt(
+                (camera.width / (2.0 * math.tan(camera.fov_x / 2.0)))
+                * (camera.height / (2.0 * math.tan(camera.fov_y / 2.0)))
+            )
             for camera in mapping_cameras
         )
-        if not diagonals:
-            raise ValueError("adaptive calibration requires mapping cameras")
-        diagonal = diagonals[len(diagonals) // 2]
-        prebootstrap_pixel_scale = diagonal / float(
-            adaptive["reference_image_diagonal_px"]
+        prebootstrap_angular_scale = focals[len(focals) // 2] / float(
+            adaptive.get("reference_focal_px", 1672.028076171875)
         )
         pose_bins = round(
             (
@@ -223,15 +342,18 @@ def build_bootstrap_and_tracks(
         pose_bins = max(int(adaptive["pose_bins_minimum"]), pose_bins)
         pose_bins = min(int(adaptive["pose_bins_maximum"]), pose_bins)
     else:
-        prebootstrap_pixel_scale = 1.0
+        prebootstrap_angular_scale = 1.0
         pose_bins = int(initialization["kcs_view_bins"])
     native_keypoint_count = (
         resolve_keypoint_count(cfg["deployment"], mapping_cameras)
         if adaptive and has_camera_model
         else int(initialization["kcs_keypoints"])
     )
-    native_association_radius = max(0.5, 2.0 * prebootstrap_pixel_scale)
-    kcs_radius = max(0.5, float(initialization["kcs_radius_px"]) * prebootstrap_pixel_scale)
+    native_association_radius = max(0.5, 2.0 * prebootstrap_angular_scale)
+    kcs_radius = max(
+        0.5,
+        float(initialization["kcs_radius_px"]) * prebootstrap_angular_scale,
+    )
     common = _common_bootstrap_arguments(
         dataset=dataset,
         prior=prior,
@@ -253,7 +375,11 @@ def build_bootstrap_and_tracks(
             "--output_dir", init_dir,
             "--scaffold_mode", "ulf_robust_consensus",
             "--generated_landmark_path", init_dir / "robust_ids.pkl",
-            "--regenerate_scaffold",
+            (
+                "--no-regenerate_scaffold"
+                if (init_dir / "robust_ids.pkl").is_file()
+                else "--regenerate_scaffold"
+            ),
             "--scaffold_budget", (
                 adaptive["scaffold_safety_cap"]
                 if adaptive
@@ -262,7 +388,7 @@ def build_bootstrap_and_tracks(
             "--scaffold_min_opacity", 0,
             "--scaffold_opacity_keep_quantile", 0.1,
             "--initialization_mode", "ulf_robust_geometry",
-            "--ulf_consensus_keypoints", initialization["kcs_keypoints"],
+            "--ulf_consensus_keypoints", native_keypoint_count,
             "--ulf_consensus_radius_px", kcs_radius,
             "--ulf_consensus_min_visible_views", initialization["kcs_min_visible_views"],
             "--ulf_consensus_min_votes", initialization["kcs_min_votes"],
@@ -272,7 +398,11 @@ def build_bootstrap_and_tracks(
             "--ulf_consensus_trajectory_bins", pose_bins,
             "--ulf_consensus_min_distinct_trajectory_bins", initialization["kcs_min_distinct_trajectory_bins"],
             "--ulf_consensus_independent_bin_scoring",
-            "--ulf_consensus_allow_nonconsensus_fallback",
+            (
+                "--ulf_consensus_allow_underfill"
+                if adaptive
+                else "--ulf_consensus_allow_nonconsensus_fallback"
+            ),
             "--ulf_consensus_extent_quantile", 0.01,
             "--ulf_support_view_sampling", "uniform",
             "--ulf_support_mask_policy", initialization["support_mask_policy"],
@@ -354,8 +484,14 @@ def build_bootstrap_and_tracks(
             "--native_semidense_interval", stage["local_peak_interval"],
             "--native_semidense_max_anchors", stage["local_peak_max_anchors"],
             "--native_semidense_neighbors", stage["local_peak_neighbors"],
-            "--native_semidense_local_radius_px", stage["local_peak_radius_px"],
-            "--native_semidense_target_sigma_px", stage["local_peak_sigma_px"],
+            "--native_semidense_local_radius_px", (
+                parameters["semidense_local_radius_px"]
+                if parameters is not None else stage["local_peak_radius_px"]
+            ),
+            "--native_semidense_target_sigma_px", (
+                parameters["semidense_sigma_px"]
+                if parameters is not None else stage["local_peak_sigma_px"]
+            ),
             "--native_semidense_temperature", stage["local_peak_temperature"],
             "--native_semidense_protected_v2",
             "--native_semidense_measurement_min_reprojection_px", positive_radius,
@@ -367,7 +503,10 @@ def build_bootstrap_and_tracks(
                 parameters["surface_max_distance_m"] if parameters is not None else 0.15
             ),
             "--native_semidense_surface_normal_cosine", 0.95,
-            "--native_semidense_projected_neighbor_radius_px", 64,
+            "--native_semidense_projected_neighbor_radius_px", (
+                parameters["projected_neighbor_radius_px"]
+                if parameters is not None else 64
+            ),
             "--native_semidense_local_identity_weight", stage["local_identity_weight"],
             "--native_semidense_margin_preservation_weight", stage["margin_preservation_weight"],
             "--native_semidense_reference_refresh_steps", (
@@ -382,7 +521,10 @@ def build_bootstrap_and_tracks(
             "--native_protected_set_interval", stage["high_precision_interval"],
             "--native_protected_set_refresh_visits", 1,
             "--native_protected_set_ransac_seed", 0,
-            "--native_protected_set_ransac_reprojection_px", negative_radius,
+            "--native_protected_set_ransac_reprojection_px", (
+                parameters["ransac_reprojection_px"]
+                if parameters is not None else 12
+            ),
             "--native_protected_set_ransac_max_iterations", 5000,
             "--native_protected_set_ransac_min_iterations", 100,
             "--native_protected_set_max_pose_error_cm", 100,
@@ -411,12 +553,15 @@ def build_bootstrap_and_tracks(
             "--log_interval", 100,
         )
     identity = "track_first_provenance" if gaussian_type == "2dgs" else "track_first"
-    track_payload = track_dir / "track_micro_anchor_payload.pt"
-    if not track_payload.is_file():
+    def build_track_payload(directory: Path, resolved_parameters) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        payload_path = directory / "track_micro_anchor_payload.pt"
+        if payload_path.is_file():
+            return payload_path
         track_args: list[object] = [
             *common,
             "--query_cache_policy", "readonly",
-            "--output_dir", track_dir,
+            "--output_dir", directory,
             "--scaffold_mode", "file",
             "--landmark_path", landmark_ids,
             "--initial_state_path", stage_state,
@@ -425,35 +570,51 @@ def build_bootstrap_and_tracks(
             "--native_outcome_mode",
             "--retrieval_weight", 0,
             "--trust_weight", 0,
-            "--positive_radius_px", positive_radius,
-            "--negative_radius_px", negative_radius,
+            "--positive_radius_px", (
+                resolved_parameters["positive_radius_px"]
+                if resolved_parameters is not None else positive_radius
+            ),
+            "--negative_radius_px", (
+                resolved_parameters["negative_radius_px"]
+                if resolved_parameters is not None else negative_radius
+            ),
             "--save_independent_geometry_teacher",
             "--geometry_teacher_identity_mode", identity,
             "--geometry_teacher_min_views", 3,
             "--geometry_teacher_view_bins", (
-                parameters["view_bin_count"] if parameters is not None else 8
+                resolved_parameters["view_bin_count"]
+                if resolved_parameters is not None else 8
             ),
             "--geometry_teacher_min_view_bins", 2,
             "--geometry_teacher_min_parallax_deg", 1,
             "--geometry_teacher_parallax_quantile", 0.75,
-            "--geometry_teacher_max_reprojection_px", positive_radius,
+            "--geometry_teacher_max_reprojection_px", (
+                resolved_parameters["positive_radius_px"]
+                if resolved_parameters is not None else positive_radius
+            ),
             "--geometry_teacher_max_covariance_trace_m2", (
-                0.01 * parameters["covariance_scale"] if parameters is not None else 0.01
+                0.01 * resolved_parameters["covariance_scale"]
+                if resolved_parameters is not None else 0.01
             ),
             "--geometry_teacher_max_rendered_depth_residual_m", (
-                parameters["depth_residual_m"] if parameters is not None else 0.15
+                resolved_parameters["depth_residual_m"]
+                if resolved_parameters is not None else 0.15
             ),
             "--geometry_teacher_min_rendered_depth_observations", 2,
             "--geometry_teacher_track_pair_neighbors", 6,
             "--geometry_teacher_track_min_similarity", 0.65,
             "--geometry_teacher_track_min_margin", 0.01,
-            "--geometry_teacher_track_max_epipolar_error_px", positive_radius,
+            "--geometry_teacher_track_max_epipolar_error_px", (
+                resolved_parameters["positive_radius_px"]
+                if resolved_parameters is not None else positive_radius
+            ),
             "--geometry_teacher_track_epipolar_candidate_topk", 4,
             "--geometry_teacher_track_epipolar_recovered_min_similarity", -1,
             "--geometry_teacher_track_epipolar_recovered_min_margin", -1,
             "--geometry_teacher_track_allow_chain_tracks",
             "--geometry_teacher_track_assignment_max_distance_m", (
-                parameters["assignment_distance_m"] if parameters is not None else 0.2
+                resolved_parameters["assignment_distance_m"]
+                if resolved_parameters is not None else 0.2
             ),
             "--geometry_teacher_track_assignment_min_margin_m", 0,
             "--save_track_micro_anchor_payload",
@@ -470,10 +631,43 @@ def build_bootstrap_and_tracks(
                 "--geometry_teacher_provenance_group_min_consensus_rate", 0.10,
             ]
         _run("map_learning.bootstrap", *track_args)
+        return payload_path
+
+    track_payload = build_track_payload(track_dir, parameters)
     if adaptive and query_cache.is_file() and track_payload.is_file():
         full_calibration = calibrate_scene(
             query_cache, track_payload, policy=adaptive
         )
+        preliminary_scale = float(parameters["metric_scale"])
+        full_scale = float(full_calibration["parameters"]["metric_scale"])
+        scale_ratio = full_scale / max(preliminary_scale, 1e-12)
+        relative_drift = max(scale_ratio, 1.0 / max(scale_ratio, 1e-12)) - 1.0
+        threshold = float(
+            adaptive.get("calibration_rebuild_relative_drift", 0.25)
+        )
+        rebuilt = relative_drift > threshold
+        if rebuilt:
+            track_payload = build_track_payload(
+                run / "tracks_refined", full_calibration["parameters"]
+            )
+            refined = calibrate_scene(query_cache, track_payload, policy=adaptive)
+            refined["refinement"] = {
+                "preliminary_to_full_scale_ratio": scale_ratio,
+                "relative_drift": relative_drift,
+                "rebuild_threshold": threshold,
+                "track_evidence_rebuilt": True,
+                "first_pass_track_payload": str(
+                    (track_dir / "track_micro_anchor_payload.pt").resolve()
+                ),
+            }
+            full_calibration = refined
+        else:
+            full_calibration["refinement"] = {
+                "preliminary_to_full_scale_ratio": scale_ratio,
+                "relative_drift": relative_drift,
+                "rebuild_threshold": threshold,
+                "track_evidence_rebuilt": False,
+            }
         (run / "scene_calibration.json").write_text(
             json.dumps(full_calibration, indent=2, sort_keys=True) + "\n"
         )
@@ -502,6 +696,7 @@ def build_evidence(
     sh_degree: int,
     visibility_cache: str | Path,
     output: str | Path,
+    config: str | Path = "configs/paper_mainline.yaml",
     valid_masks: str | Path | None = None,
     function_graph_shards: int = 1,
     provenance_shards: int = 1,
@@ -510,6 +705,21 @@ def build_evidence(
     """Build the frozen canonical map and real-image localization evidence."""
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    resolved_config = load_mainline_config(config).values
+    calibration = (
+        calibrate_scene(
+            query_cache,
+            track_payload,
+            policy=resolved_config["adaptive"],
+        )
+        if int(resolved_config["version"]) >= 2
+        else None
+    )
+    parameters = calibration["parameters"] if calibration is not None else None
+    if calibration is not None:
+        (output / "scene_calibration.json").write_text(
+            json.dumps(calibration, indent=2, sort_keys=True) + "\n"
+        )
     canonical = output / "canonical_map.pt"
     graph_v2 = output / "function_graph_v2.pt"
     provenance = output / "raster_provenance.pt"
@@ -531,6 +741,15 @@ def build_evidence(
             "--query-cache", query_cache,
             "--topk", 64,
         ]
+        if parameters is not None:
+            arguments += [
+                "--strong-radius-px", parameters["positive_radius_px"],
+                "--clean-radius-px", parameters["clean_radius_px"],
+                "--ambiguous-radius-px", parameters["negative_radius_px"],
+                "--pnp-reprojection-error-px", parameters["ransac_reprojection_px"],
+                "--harm-radius-px", parameters["harm_radius_px"],
+                "--depth-abs-tolerance-m", parameters["evidence_depth_abs_tolerance_m"],
+            ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
         if visibility_cache:
@@ -552,6 +771,11 @@ def build_evidence(
             "--function-graph", graph_v2,
             "--track-payload", track_payload,
         ]
+        if parameters is not None:
+            arguments += [
+                "--depth-abs-tolerance-m",
+                parameters["evidence_depth_abs_tolerance_m"],
+            ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
         _run_query_shards(
@@ -573,13 +797,30 @@ def build_evidence(
             module="map_learning.observations",
             merge_module="map_learning.merge_observations",
             arguments=[
-            "--anchor-map", canonical,
-            "--query-cache", query_cache,
-            "--raster-provenance", provenance,
-            "--track-payload", track_payload,
+                "--anchor-map", canonical,
+                "--query-cache", query_cache,
+                "--raster-provenance", provenance,
+                "--track-payload", track_payload,
+                *(
+                    [
+                        "--strong-radius-px", parameters["positive_radius_px"],
+                        "--ambiguous-radius-px", parameters["negative_radius_px"],
+                        "--depth-abs-tolerance-m",
+                        parameters["evidence_depth_abs_tolerance_m"],
+                    ]
+                    if parameters is not None
+                    else []
+                ),
             ],
             output=teacher,
             shard_count=observation_shards,
+        )
+    if parameters is not None:
+        _assert_adaptive_threshold_contract(
+            graph=graph,
+            provenance=provenance,
+            teacher=teacher,
+            parameters=parameters,
         )
     if not contract.is_file():
         _run(
@@ -593,13 +834,16 @@ def build_evidence(
             "--positive-teacher", teacher,
             "--output", contract,
         )
-    return {
+    result = {
         "canonical_map": canonical,
         "function_graph": graph,
         "positive_teacher": teacher,
         "raster_provenance": provenance,
         "evidence_contract": contract,
     }
+    if calibration is not None:
+        result["scene_calibration"] = output / "scene_calibration.json"
+    return result
 
 
 def distill_compact_map(
@@ -756,6 +1000,21 @@ def train_compact_map(
     """Rebuild compact-map labels, then run frozen A1 reconstruction."""
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    resolved_config = load_mainline_config(config).values
+    calibration = (
+        calibrate_scene(
+            query_cache,
+            track_payload,
+            policy=resolved_config["adaptive"],
+        )
+        if int(resolved_config["version"]) >= 2
+        else None
+    )
+    parameters = calibration["parameters"] if calibration is not None else None
+    if calibration is not None:
+        (output / "scene_calibration.json").write_text(
+            json.dumps(calibration, indent=2, sort_keys=True) + "\n"
+        )
     provenance = output / "raster_provenance.pt"
     teacher = output / "complete_positive_teacher.pt"
     if not provenance.is_file():
@@ -767,6 +1026,11 @@ def train_compact_map(
             "--sh-degree", sh_degree,
             "--track-payload", track_payload,
         ]
+        if parameters is not None:
+            arguments += [
+                "--depth-abs-tolerance-m",
+                parameters["evidence_depth_abs_tolerance_m"],
+            ]
         if valid_masks:
             arguments += ["--deployment-mask-cache", valid_masks]
         _run_query_shards(
@@ -781,15 +1045,31 @@ def train_compact_map(
             module="map_learning.observations",
             merge_module="map_learning.merge_observations",
             arguments=[
-            "--anchor-map", compact_map,
-            "--query-cache", query_cache,
-            "--raster-provenance", provenance,
-            "--track-payload", track_payload,
+                "--anchor-map", compact_map,
+                "--query-cache", query_cache,
+                "--raster-provenance", provenance,
+                "--track-payload", track_payload,
+                *(
+                    [
+                        "--strong-radius-px", parameters["positive_radius_px"],
+                        "--ambiguous-radius-px", parameters["negative_radius_px"],
+                        "--depth-abs-tolerance-m",
+                        parameters["evidence_depth_abs_tolerance_m"],
+                    ]
+                    if parameters is not None
+                    else []
+                ),
             ],
             output=teacher,
             shard_count=observation_shards,
         )
-    resolved_config = load_mainline_config(config).values
+    if parameters is not None:
+        _assert_adaptive_threshold_contract(
+            graph=Path(function_graph),
+            provenance=provenance,
+            teacher=teacher,
+            parameters=parameters,
+        )
     reconstruction = resolved_config["reconstruction"]
     steps = (
         int(
@@ -821,7 +1101,21 @@ def train_compact_map(
             harmful_weight=float(reconstruction["harmful_weight"]),
             trust_weight=float(reconstruction["trust_weight"]),
             group_dro_eta=float(reconstruction["group_dro_eta"]),
+            ransac_reprojection_px=(
+                float(parameters["ransac_reprojection_px"])
+                if parameters is not None
+                else float(resolved_config["deployment"]["reprojection_error_px"])
+            ),
+            clean_reprojection_px=(
+                float(parameters["clean_radius_px"])
+                if parameters is not None
+                else 4.0
+            ),
             seed=2026,
+        )
+    if parameters is not None:
+        _assert_compact_training_threshold_contract(
+            output / "training_report.json", parameters
         )
     return {
         "compact_provenance": provenance,

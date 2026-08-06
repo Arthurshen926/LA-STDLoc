@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-import math
 
 import yaml
 
@@ -79,6 +80,15 @@ class MainlineConfig:
                 raise ValueError("task translation tolerance must be positive")
             if float(adaptive.get("task_rotation_deg", 0)) <= 0:
                 raise ValueError("task rotation tolerance must be positive")
+            residual_quantile = float(
+                adaptive.get("ransac_track_residual_quantile", 0.975)
+            )
+            if not 0.5 <= residual_quantile < 1.0:
+                raise ValueError(
+                    "RANSAC track-residual quantile must lie in [0.5, 1)"
+                )
+            if float(adaptive.get("ransac_reprojection_maximum_px", 12.0)) <= 0:
+                raise ValueError("RANSAC residual safety cap must be positive")
         deployment = values.get("deployment", {})
         required = {
             "sparse_frontend": "ulfloc_native_metric",
@@ -130,18 +140,86 @@ def load_mainline_config(path: str | Path) -> MainlineConfig:
 
 
 def resolve_reprojection_error_px(
-    deployment: Mapping[str, Any], cameras
+    deployment: Mapping[str, Any], cameras, scene_calibration: Mapping[str, Any] | None = None
 ) -> float:
     """Resolve the PnP threshold at the evaluated processed resolution."""
-    fraction = deployment.get("reprojection_error_diagonal_fraction")
     cameras = list(cameras)
-    if fraction is None or not cameras:
+    if scene_calibration is not None:
+        if scene_calibration.get("schema") != "lafgs_mapping_only_scene_calibration":
+            raise ValueError("unsupported scene-calibration schema")
+        sources = scene_calibration.get("sources", {})
+        uses_test = scene_calibration.get(
+            "uses_test_queries", sources.get("uses_test_queries")
+        )
+        if uses_test is not False:
+            raise ValueError("deployment calibration must be mapping-only")
+        statistics = scene_calibration.get("statistics", {})
+        calibrated_count = statistics.get("query_count")
+        if calibrated_count is not None and int(calibrated_count) != len(cameras):
+            raise ValueError(
+                "scene calibration mapping-query count differs from the dataset"
+            )
+        calibrated_focal = statistics.get("focal_px")
+        if calibrated_focal is not None and cameras:
+            focals = sorted(
+                math.sqrt(
+                    (
+                        float(camera.width)
+                        / (2.0 * math.tan(float(camera.fov_x) / 2.0))
+                    )
+                    * (
+                        float(camera.height)
+                        / (2.0 * math.tan(float(camera.fov_y) / 2.0))
+                    )
+                )
+                for camera in cameras
+            )
+            dataset_focal = focals[len(focals) // 2]
+            if not math.isclose(
+                dataset_focal,
+                float(calibrated_focal),
+                rel_tol=0.01,
+                abs_tol=1e-3,
+            ):
+                raise ValueError(
+                    "scene calibration focal scale differs from the dataset"
+                )
+        parameters = scene_calibration.get("parameters", {})
+        value = float(parameters.get("ransac_reprojection_px", 0.0))
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("scene calibration has no valid RANSAC threshold")
+        return value
+    angular_tangent = deployment.get("reprojection_error_angular_tangent")
+    fraction = deployment.get("reprojection_error_diagonal_fraction")
+    if not cameras:
+        return float(deployment["reprojection_error_px"])
+    if angular_tangent is not None:
+        focals = sorted(
+            math.sqrt(
+                (float(camera.width) / (2.0 * math.tan(float(camera.fov_x) / 2.0)))
+                * (float(camera.height) / (2.0 * math.tan(float(camera.fov_y) / 2.0)))
+            )
+            for camera in cameras
+        )
+        return max(
+            2.0,
+            float(angular_tangent) * focals[len(focals) // 2],
+        )
+    if fraction is None:
         return float(deployment["reprojection_error_px"])
     diagonals = sorted(
         math.hypot(float(camera.width), float(camera.height))
         for camera in cameras
     )
     return max(2.0, float(fraction) * diagonals[len(diagonals) // 2])
+
+
+def load_scene_calibration(path: str | Path) -> dict[str, Any]:
+    path = Path(path).expanduser().resolve()
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError("scene calibration must resolve to a mapping")
+    return payload
 
 
 def resolve_keypoint_count(deployment: Mapping[str, Any], cameras) -> int:

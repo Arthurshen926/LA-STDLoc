@@ -160,15 +160,36 @@ def _exact_dense(
     return values, values >= 0
 
 
-def _sample_surface(cached: dict, query_rows: torch.Tensor):
+def _sample_surface(
+    cached: dict,
+    query_rows: torch.Tensor,
+    provenance_record: dict | None = None,
+):
     keypoints = torch.as_tensor(cached["native_keypoints"]).float()[query_rows]
+    if provenance_record is not None and {
+        "rendered_depth",
+        "rendered_alpha",
+    } <= provenance_record.keys():
+        depth = torch.as_tensor(provenance_record["rendered_depth"]).float()
+        alpha = torch.as_tensor(provenance_record["rendered_alpha"]).float()
+        if depth.shape != query_rows.shape or alpha.shape != query_rows.shape:
+            raise ValueError(
+                "raster-provenance surface samples must align with query_rows"
+            )
+        return keypoints, depth, alpha, "raster_provenance"
     height, width = (int(value) for value in cached["native_input_hw"])
     pixels = torch.floor(keypoints).long()
     x = pixels[:, 0].clamp(0, width - 1)
     y = pixels[:, 1].clamp(0, height - 1)
     depth = torch.as_tensor(cached["native_depth"]).float()[y, x]
+    if "native_alpha" not in cached:
+        raise KeyError(
+            "complete-positive teacher requires rendered_alpha in raster "
+            "provenance or native_alpha in the query cache; rebuild raster "
+            "provenance with the current pipeline"
+        )
     alpha = torch.as_tensor(cached["native_alpha"]).float()[y, x]
-    return keypoints, depth, alpha
+    return keypoints, depth, alpha, "query_cache"
 
 
 @torch.no_grad()
@@ -214,6 +235,7 @@ def build_teacher(
     total_ambiguous = 0
     positive_rows = 0
     exact_positive_count = 0
+    surface_sample_sources: set[str] = set()
 
     selected_queries = (
         list(range(len(names)))
@@ -241,9 +263,15 @@ def build_teacher(
         )
         candidates = candidates.to(device)
         candidate_valid = candidate_valid.to(device)
-        keypoint_grid, rendered_depth, rendered_alpha = _sample_surface(
-            cached, query_rows
+        (
+            keypoint_grid,
+            rendered_depth,
+            rendered_alpha,
+            surface_sample_source,
+        ) = _sample_surface(
+            cached, query_rows, provenance_record
         )
+        surface_sample_sources.add(surface_sample_source)
         keypoints = keypoint_grid + float(
             cached.get("pixel_center_offset", 0.5)
         )
@@ -352,6 +380,7 @@ def build_teacher(
             "depth_rel_tolerance": float(depth_rel_tolerance),
             "alpha_minimum": float(alpha_minimum),
             "contribution_minimum": float(contribution_minimum),
+            "surface_sample_sources": sorted(surface_sample_sources),
         },
     }
 

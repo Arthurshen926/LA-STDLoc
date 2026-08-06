@@ -198,6 +198,18 @@ def main() -> None:
                 depth_rel_tolerance=args.depth_rel_tolerance,
             )
         )
+        pixels = torch.floor(keypoints).long()
+        pixel_x = pixels[:, 0].clamp(0, width - 1)
+        pixel_y = pixels[:, 1].clamp(0, height - 1)
+        rendered_depth = package["depth"]
+        rendered_alpha = package.get("alphas", package.get("rend_alpha"))
+        if rendered_depth is None or rendered_alpha is None:
+            raise RuntimeError(
+                "RGB Gaussian render must return depth and alpha for "
+                "raster-provenance supervision"
+            )
+        rendered_depth = rendered_depth.squeeze()
+        rendered_alpha = rendered_alpha.squeeze()
         records.append(
             {
                 "query_index": query_index,
@@ -207,6 +219,15 @@ def main() -> None:
                 ].to(torch.int32),
                 "contribution_mass": weights.cpu().to(torch.float16),
                 "valid": provenance_valid.cpu(),
+                # Keep surface validity in the same render/provenance frame.
+                # This also decouples the teacher from legacy query-cache
+                # schemas that did not persist raster alpha.
+                "rendered_depth": rendered_depth[
+                    pixel_y, pixel_x
+                ].cpu().to(torch.float32),
+                "rendered_alpha": rendered_alpha[
+                    pixel_y, pixel_x
+                ].cpu().to(torch.float16),
             }
         )
         del package, local_ids, weights, provenance_valid

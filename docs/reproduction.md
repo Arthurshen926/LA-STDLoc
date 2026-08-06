@@ -23,11 +23,25 @@ The mapping split is used in full; the test split is read only by the final
 evaluation stage. Re-running the command reuses only artifacts whose contracts
 match.
 
-The default V2 configuration derives pixel thresholds, metric thresholds,
+The default V2 configuration derives angular pixel thresholds, metric thresholds,
 query exposure, pose/view bins, matching-rank targets, and final topology size
 from mapping-only statistics. Every resolved value is stored in
-`scene_calibration.json`. Use `configs/paper_mainline_frozen_v1.yaml` only to
+`scene_calibration.json`; stale mixed-threshold artifacts are rejected. Use
+`configs/paper_mainline_frozen_v1.yaml` only to
 reproduce the historical fixed 48K/8K/96/256/1000/175 protocol.
+
+In adaptive V2, `scaffold_safety_cap` is an upper bound. A scaffold with fewer
+KCS-eligible primitives remains smaller; fixed-budget non-consensus fallback is
+reserved for explicit V1 compatibility. Raster provenance persists sampled
+depth and alpha from the same frozen-prior render used for primitive lineage.
+Legacy query caches without `native_alpha` therefore require current raster
+provenance and cannot silently treat every pixel as valid surface support.
+
+The YAML keeps globally shared policy constants and resource caps, while
+`scene_calibration.json` records scene-derived values. Do not copy a metric
+reference constant from an artifact produced by a different baseline
+statistic: the current scale definition is the median first-to-last camera span
+of real co-visible mapping tracks.
 
 Use `--function-graph-shards 4 --provenance-shards 4 --observation-shards 4
 --pose-scoring-shards 4` when host memory permits parallel evidence
@@ -51,6 +65,13 @@ python scripts/evaluate.py \
   --output /data/run/evaluation_a0_seed2026 \
   --seed 2026
 ```
+
+Adaptive maps store `scene_calibration.json` beside the trained map. The
+evaluator discovers it automatically so the final PoseLib solve uses the same
+mapping-derived RANSAC gate as self-localization training. Use
+`--scene-calibration` only when evaluating a relocated map artifact; a
+calibration that does not explicitly declare `uses_test_queries: false` is
+rejected.
 
 For A1, pass `--map` and `--metric-state` as before. These modes are mutually
 exclusive and share the same frontend, matching, PoseLib, and reporting code.

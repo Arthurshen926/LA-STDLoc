@@ -54,6 +54,10 @@ def main() -> None:
     parser.add_argument("--depth-abs-tolerance-m", type=float, default=0.05)
     parser.add_argument("--depth-rel-tolerance", type=float, default=0.02)
     parser.add_argument("--alpha-min", type=float, default=0.01)
+    parser.add_argument("--strong-radius-px", type=float, default=2.0)
+    parser.add_argument("--clean-radius-px", type=float, default=4.0)
+    parser.add_argument("--ambiguous-radius-px", type=float, default=8.0)
+    parser.add_argument("--pnp-reprojection-error-px", type=float, default=12.0)
     parser.add_argument("--harm-radius-px", type=float, default=12.0)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -179,9 +183,9 @@ def main() -> None:
                     "raster visibility does not align with anchors or sources"
                 )
             depth_legal &= candidate_visible
-        legal2 = depth_legal & (errors <= 2.0)
-        legal4 = depth_legal & (errors <= 4.0)
-        legal8 = depth_legal & (errors <= 8.0)
+        legal2 = depth_legal & (errors <= float(args.strong_radius_px))
+        legal4 = depth_legal & (errors <= float(args.clean_radius_px))
+        legal8 = depth_legal & (errors <= float(args.ambiguous_radius_px))
         legal_flags = (
             depth_legal.to(torch.uint8)
             | (legal2.to(torch.uint8) << 1)
@@ -209,7 +213,7 @@ def main() -> None:
             xyz[indices[:, 0]].numpy(),
             torch.as_tensor(cached["native_K"]).numpy(),
             solver="poselib",
-            reprojection_error=12.0,
+            reprojection_error=float(args.pnp_reprojection_error_px),
             confidence=0.99999,
             max_iterations=100000,
             min_iterations=1000,
@@ -254,6 +258,7 @@ def main() -> None:
                 "top_scores": scores.to(torch.float16),
                 "legal_flags": legal_flags,
                 "solver_inlier": solver_inlier,
+                "harmful_solver_inlier": harmful,
             }
         )
         diagnostics.append(
@@ -279,6 +284,19 @@ def main() -> None:
                 flush=True,
             )
 
+    semantic_counters = {
+        "legal_hit_strong_count": counters["legal_hit_2px_count"],
+        "legal_hit_clean_count": counters["legal_hit_4px_count"],
+        "legal_hit_ambiguous_count": counters["legal_hit_8px_count"],
+        "legal_winner_strong_count": counters["legal_winner_2px_count"],
+        "legal_winner_clean_count": counters["legal_winner_4px_count"],
+        "solver_inlier_gtclean_strong_count": counters[
+            "solver_inlier_gtclean_2px_count"
+        ],
+        "solver_inlier_gtclean_clean_count": counters[
+            "solver_inlier_gtclean_4px_count"
+        ],
+    }
     output = {
         "schema": "lafgs_keypoint_function_graph_shard",
         "version": 2,
@@ -301,7 +319,17 @@ def main() -> None:
         "query_diagnostics": diagnostics,
         "config": vars(args),
         "raster_visibility_enabled": raster_visibility is not None,
+        "resolved_thresholds": {
+            "strong_radius_px": float(args.strong_radius_px),
+            "clean_radius_px": float(args.clean_radius_px),
+            "ambiguous_radius_px": float(args.ambiguous_radius_px),
+            "pnp_reprojection_error_px": float(args.pnp_reprojection_error_px),
+            "harm_radius_px": float(args.harm_radius_px),
+            "depth_abs_tolerance_m": float(args.depth_abs_tolerance_m),
+            "depth_rel_tolerance": float(args.depth_rel_tolerance),
+        },
         **counters,
+        **semantic_counters,
     }
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

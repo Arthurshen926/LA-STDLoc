@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import torch
 
 from data.splits import split_support_query_cameras
+from evidence.evidence_graph import _same_anchor_map
 from map_learning.bootstrap import _cache_payload_compatible
 from map_learning.bootstrap import build_parser as build_bootstrap_parser
 from map_learning.pipeline import build_bootstrap_and_tracks
@@ -96,3 +97,25 @@ def test_pipeline_only_emits_supported_bootstrap_arguments(tmp_path, monkeypatch
         parsed = parser.parse_args(arguments)
         assert parsed.query_feature_contract == "native_resized_input"
         assert parsed.initialization_mode == "ulf_robust_geometry"
+
+
+def test_bootstrap_accepts_fractional_adaptive_pixel_radius():
+    parser, _ = build_bootstrap_parser()
+    parsed = parser.parse_args([
+        "--source_path", "/dataset",
+        "--model_path", "/prior",
+        "--output_dir", "/output",
+        "--gaussian_type", "2dgs",
+        "--native_semidense_local_radius_px", "2.525053269801378",
+    ])
+    assert parsed.native_semidense_local_radius_px == 2.525053269801378
+
+
+def test_evidence_graph_accepts_relocated_identical_anchor_map(tmp_path):
+    left = tmp_path / "left.pt"
+    right = tmp_path / "right.pt"
+    left.write_bytes(b"identical anchor map")
+    right.write_bytes(left.read_bytes())
+    assert _same_anchor_map(str(left), str(right))
+    right.write_bytes(b"different anchor map")
+    assert not _same_anchor_map(str(left), str(right))

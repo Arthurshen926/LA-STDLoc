@@ -21,6 +21,13 @@ COUNTER_KEYS = (
     "solver_inlier_gtclean_2px_count",
     "solver_inlier_gtclean_4px_count",
     "harmful_solver_inlier_count",
+    "legal_hit_strong_count",
+    "legal_hit_clean_count",
+    "legal_hit_ambiguous_count",
+    "legal_winner_strong_count",
+    "legal_winner_clean_count",
+    "solver_inlier_gtclean_strong_count",
+    "solver_inlier_gtclean_clean_count",
 )
 
 
@@ -42,6 +49,8 @@ def merge_function_graph_shards(paths: list[Path]) -> dict:
         "query_names",
         "raster_visibility_enabled",
     )
+    if "resolved_thresholds" in first:
+        invariant_keys = (*invariant_keys, "resolved_thresholds")
     tensor_invariant_keys = (
         "source_primitive_ids",
         "track_cluster_ids",
@@ -99,6 +108,8 @@ def merge_function_graph_shards(paths: list[Path]) -> dict:
         "shard_index": -1,
     }
     for key in COUNTER_KEYS:
+        if key not in first:
+            continue
         output[key] = torch.stack(
             [torch.as_tensor(shard[key]).long() for shard in shards]
         ).sum(dim=0)

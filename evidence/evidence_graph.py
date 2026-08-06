@@ -9,6 +9,14 @@ from pathlib import Path
 
 import torch
 
+from common.hashing import sha256_file
+
+
+def _same_anchor_map(left: str, right: str) -> bool:
+    left_path = Path(left).resolve()
+    right_path = Path(right).resolve()
+    return left_path == right_path or sha256_file(left_path) == sha256_file(right_path)
+
 
 def _padded_anchor_sources(provenance: dict):
     offsets = torch.as_tensor(
@@ -92,7 +100,7 @@ def main() -> None:
     provenance = torch.load(
         args.raster_provenance, map_location="cpu", weights_only=False
     )
-    if graph["anchor_map"] != provenance["anchor_map"]:
+    if not _same_anchor_map(graph["anchor_map"], provenance["anchor_map"]):
         raise ValueError("functional graph and provenance anchor maps differ")
     if graph["query_names"] != provenance["query_names"]:
         raise ValueError("functional graph and provenance query names differ")
@@ -178,7 +186,9 @@ def main() -> None:
             counters["provenance_solver_inlier_gtclean_4px_count"],
             indices[:, 0][solver_inlier & legal4[:, 0]],
         )
-        harmful = solver_inlier & ~legal4[:, 0]
+        harmful = torch.as_tensor(
+            record.get("harmful_solver_inlier", solver_inlier & ~legal4[:, 0])
+        ).bool()
         _increment(
             counters["provenance_harmful_solver_inlier_count"],
             indices[:, 0][harmful],
@@ -198,6 +208,26 @@ def main() -> None:
         if len(records) % 25 == 0:
             print(f"function graph V3: {len(records)} queries", flush=True)
 
+    semantic_counters = {
+        "provenance_legal_hit_strong_count": counters[
+            "provenance_legal_hit_2px_count"
+        ],
+        "provenance_legal_hit_clean_count": counters[
+            "provenance_legal_hit_4px_count"
+        ],
+        "provenance_legal_hit_ambiguous_count": counters[
+            "provenance_legal_hit_8px_count"
+        ],
+        "provenance_legal_winner_strong_count": counters[
+            "provenance_legal_winner_2px_count"
+        ],
+        "provenance_solver_inlier_gtclean_strong_count": counters[
+            "provenance_solver_inlier_gtclean_2px_count"
+        ],
+        "provenance_solver_inlier_gtclean_clean_count": counters[
+            "provenance_solver_inlier_gtclean_4px_count"
+        ],
+    }
     output = {
         **graph,
         "schema": "lafgs_keypoint_function_graph",
@@ -211,6 +241,7 @@ def main() -> None:
         "anchor_source_family_size": source_counts,
         "config_v3": vars(args),
         **counters,
+        **semantic_counters,
     }
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

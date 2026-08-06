@@ -38,6 +38,7 @@ from topology.pose_information import (
 )
 from topology.track_core import (
     _base_utility,
+    _graph_counter,
     _materialize,
     _track_quality,
     _track_source_ids,
@@ -156,9 +157,11 @@ def _candidate_matchability(
     opportunity = torch.as_tensor(
         graph["provenance_opportunity_count"][:base_count]
     ).float()
-    legal = torch.as_tensor(
-        graph["provenance_legal_hit_2px_count"][:base_count]
-    ).float()
+    legal = _graph_counter(
+        graph,
+        "provenance_legal_hit_strong_count",
+        "provenance_legal_hit_2px_count",
+    )[:base_count].float()
     harmful = torch.as_tensor(
         graph["provenance_harmful_solver_inlier_count"][:base_count]
     ).float()
@@ -176,6 +179,43 @@ def _ordered_rows(record: dict, query_cache: dict) -> tuple[int, ...]:
         return rows
     score = torch.as_tensor(query_cache["native_scores"])
     return tuple(sorted(rows, key=lambda row: (-float(score[row]), row)))
+
+
+def _query_row_matchability(cached: dict, rows: tuple[int, ...]) -> float:
+    """Return a query-conditioned repeatability factor for one candidate edge."""
+    if not rows:
+        return 0.0
+    score = torch.as_tensor(cached["native_scores"]).float().reshape(-1)
+    finite = score[torch.isfinite(score)]
+    if finite.numel() < 2:
+        return 1.0
+    low = torch.quantile(finite, 0.1)
+    high = torch.quantile(finite, 0.9)
+    selected = score[torch.as_tensor(rows).long()].max()
+    normalized = ((selected - low) / (high - low).clamp_min(1e-6)).clamp(0, 1)
+    # Do not discard weak detections completely: global track/graph evidence is
+    # still informative, while the query factor downweights fragile views.
+    return float(0.5 + 0.5 * normalized)
+
+
+def _project_world_covariance(
+    points: torch.Tensor,
+    covariance_world: torch.Tensor,
+    intrinsic: torch.Tensor,
+    pose_w2c: torch.Tensor,
+) -> torch.Tensor:
+    """Project anisotropic 3D landmark covariance into image coordinates."""
+    camera = points @ pose_w2c[:3, :3].T + pose_w2c[:3, 3]
+    x, y, z = camera.unbind(dim=1)
+    z = z.clamp_min(1e-8)
+    dproj = points.new_zeros((points.shape[0], 2, 3))
+    dproj[:, 0, 0] = intrinsic[0, 0] / z
+    dproj[:, 0, 2] = -intrinsic[0, 0] * x / z.square()
+    dproj[:, 1, 1] = intrinsic[1, 1] / z
+    dproj[:, 1, 2] = -intrinsic[1, 1] * y / z.square()
+    jacobian = dproj @ pose_w2c[:3, :3]
+    projected = jacobian @ covariance_world @ jacobian.transpose(1, 2)
+    return 0.5 * (projected + projected.transpose(1, 2))
 
 
 def _build_pose_evidence(
@@ -196,7 +236,7 @@ def _build_pose_evidence(
         for query in candidate_edges:
             query_candidates[int(query)].append(candidate)
     evidence: list[list[PoseEvidence]] = [[] for _ in edges]
-    track_count = int(track_covariance.numel())
+    track_count = int(track_covariance.shape[0])
     for query, candidates in enumerate(query_candidates):
         if not candidates:
             continue
@@ -213,26 +253,39 @@ def _build_pose_evidence(
         )
         ones = torch.ones((points.shape[0], 1), dtype=torch.float64)
         depth = (pose @ torch.cat((points, ones), dim=1).T)[2]
-        covariance = torch.full(
-            (points.shape[0],), float(pixel_variance), dtype=torch.float64
-        )
+        covariance = torch.eye(2, dtype=torch.float64)[None].repeat(
+            points.shape[0], 1, 1
+        ) * float(pixel_variance)
         track_mask = candidate_tensor < track_count
         if bool(track_mask.any()):
-            focal = torch.sqrt(K[0, 0] * K[1, 1])
-            covariance[track_mask] += (
-                focal.square()
-                * track_covariance[candidate_tensor[track_mask]].double()
-                / (3.0 * depth[track_mask].square().clamp_min(1e-6))
+            selected_covariance = track_covariance[
+                candidate_tensor[track_mask]
+            ].double()
+            if selected_covariance.ndim == 1:
+                selected_covariance = torch.diag_embed(
+                    (selected_covariance / 3.0)[:, None].expand(-1, 3)
+                )
+            covariance[track_mask] += _project_world_covariance(
+                points[track_mask], selected_covariance, K, pose
             )
+        row_matchability = []
+        ordered_rows = []
+        for candidate in candidates:
+            rows = _ordered_rows(edges[candidate][query], cached)
+            ordered_rows.append(rows)
+            row_matchability.append(_query_row_matchability(cached, rows))
+        query_matchability = matchability[candidate_tensor].double() * torch.as_tensor(
+            row_matchability, dtype=torch.float64
+        )
         information = fisher_contributions(
             jacobian,
-            weights=matchability[candidate_tensor].double(),
+            weights=query_matchability,
             measurement_covariance=covariance,
         )
         keypoints = torch.as_tensor(cached["native_keypoints"]).float()
         height, width = (int(value) for value in cached["native_input_hw"])
         for local, candidate in enumerate(candidates):
-            rows = _ordered_rows(edges[candidate][query], cached)
+            rows = ordered_rows[local]
             if not rows:
                 continue
             point = keypoints[rows[0]]
@@ -247,6 +300,7 @@ def _build_pose_evidence(
                     image_cell=cell_y * 4 + cell_x,
                     depth_bin=depth_bin,
                     spatial_voxel=int(voxel_ids[candidate]),
+                    matchability=float(query_matchability[local]),
                 )
             )
     return evidence
@@ -257,7 +311,14 @@ def _initial_pose_state(
     matching: IncrementalBipartiteCoverage,
     evidence_by_candidate,
     query_count: int,
-) -> tuple[torch.Tensor, list[set[int]], list[set[int]], list[set[int]], list[set[int]]]:
+) -> tuple[
+    torch.Tensor,
+    list[set[int]],
+    list[set[int]],
+    list[set[int]],
+    list[set[int]],
+    list[dict[int, int]],
+]:
     information = torch.eye(6, dtype=torch.float64)[None].repeat(query_count, 1, 1)
     information *= 1e-4
     rows = [set() for _ in range(query_count)]
@@ -265,6 +326,7 @@ def _initial_pose_state(
     depths = [set() for _ in range(query_count)]
     voxels = [set() for _ in range(query_count)]
     selected_set = set(torch.as_tensor(selected).long().tolist())
+    assignments = [dict() for _ in range(query_count)]
     evidence_lookup = [
         {item.query: item for item in candidate} for candidate in evidence_by_candidate
     ]
@@ -277,10 +339,11 @@ def _initial_pose_state(
                 continue
             information[query] += item.information
             rows[query].add(int(row))
+            assignments[query][int(candidate)] = int(row)
             cells[query].add(item.image_cell)
             depths[query].add(item.depth_bin)
             voxels[query].add(item.spatial_voxel)
-    return information, rows, cells, depths, voxels
+    return information, rows, cells, depths, voxels, assignments
 
 
 def main() -> None:
@@ -312,11 +375,17 @@ def main() -> None:
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     query_payload = torch.load(query_path, map_location="cpu", weights_only=False)
     query_cache = query_payload.get("queries", query_payload)
-    statistics = derive_mapping_statistics(query_payload, payload)
+    statistics = derive_mapping_statistics(
+        query_payload,
+        payload,
+        track_residual_quantile=float(
+            policy.get("ransac_track_residual_quantile", 0.975)
+        ),
+    )
     parameters = derive_adaptive_parameters(statistics, policy)
     calibration = {
         "schema": "lafgs_mapping_only_scene_calibration",
-        "version": 1,
+        "version": 2,
         "statistics": asdict(statistics),
         "parameters": asdict(parameters),
         "policy": dict(policy),
@@ -377,7 +446,12 @@ def main() -> None:
     ).float()
     harmful_rate = harmful / opportunity.clamp_min(1)
     base_eligible = (
-        torch.as_tensor(graph["provenance_legal_hit_2px_count"][:base_count]) > 0
+        _graph_counter(
+            graph,
+            "provenance_legal_hit_strong_count",
+            "provenance_legal_hit_2px_count",
+        )[:base_count]
+        > 0
     ) & (harmful_rate <= float(policy["maximum_harmful_rate"]))
     core_mask = torch.zeros(track_count, dtype=torch.bool)
     core_mask[core] = True
@@ -418,9 +492,16 @@ def main() -> None:
     matchability = _candidate_matchability(
         payload, graph, base_count, parameters.track_reprojection_median_px
     )
-    track_covariance = torch.as_tensor(
-        geometry["triangulation_covariance_trace"]
-    ).float().clamp_min(0)
+    if "triangulation_covariance_matrix" in geometry:
+        track_covariance = torch.as_tensor(
+            geometry["triangulation_covariance_matrix"]
+        ).float()
+        covariance_model = "anisotropic_triangulation_covariance_projected_by_Jx"
+    else:
+        track_covariance = torch.as_tensor(
+            geometry["triangulation_covariance_trace"]
+        ).float().clamp_min(0)
+        covariance_model = "isotropic_trace_fallback_projected_by_Jx"
     selected_mask = torch.zeros(len(edges), dtype=torch.bool)
     selected_mask[selected] = True
     pose_candidates = reserve_candidates[
@@ -453,7 +534,7 @@ def main() -> None:
     )
     pose_selected, pose_report = greedy_dynamic_pose_reserve(
         pose_evidence,
-        *initial,
+        *initial[:5],
         pose_candidates.tolist(),
         source_ids,
         voxel_ids,
@@ -462,10 +543,19 @@ def main() -> None:
         maximum_per_source=int(policy["maximum_per_source"]),
         maximum_per_voxel=int(policy["maximum_per_spatial_voxel"]),
         minimum_relative_gain=float(policy["pose_minimum_relative_gain"]),
+        minimum_objective_relative_gain=float(
+            policy.get("pose_minimum_objective_relative_gain", 0.0)
+        ),
+        minimum_additions=int(policy.get("pose_minimum_additions", 0)),
         image_diversity_weight=float(policy["image_diversity_weight"]),
         depth_diversity_weight=float(policy["depth_diversity_weight"]),
         voxel_diversity_weight=float(policy["voxel_diversity_weight"]),
+        initial_assignments=initial[5],
     )
+    pose_report["matchability_model"] = (
+        "query_specific_detector_repeatability_x_candidate_global_reliability"
+    )
+    pose_report["covariance_model"] = covariance_model
     selected = torch.unique(torch.cat((selected, pose_selected)), sorted=False)
     selected_tracks = selected[selected < track_count]
     selected_base = selected[selected >= track_count] - track_count

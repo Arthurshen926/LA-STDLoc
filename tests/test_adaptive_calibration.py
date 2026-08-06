@@ -1,8 +1,10 @@
 import math
 
 import torch
+import pytest
 
 from common.calibration import (
+    REFERENCE_EFFECTIVE_BASELINE_M,
     derive_adaptive_parameters,
     derive_mapping_statistics,
 )
@@ -74,6 +76,20 @@ def test_metric_thresholds_follow_mapping_sim3_scale():
     assert scaled.task_rotation_deg == base.task_rotation_deg == 5.0
 
 
+def test_reference_track_span_resolves_unit_metric_scale():
+    query, payload = _synthetic_scene(
+        scale=REFERENCE_EFFECTIVE_BASELINE_M / 2.0
+    )
+    parameters = derive_adaptive_parameters(
+        derive_mapping_statistics(query, payload)
+    )
+    assert math.isclose(parameters.metric_scale, 1.0, rel_tol=1e-6)
+    assert math.isclose(parameters.dependency_voxel_m, 0.5, rel_tol=1e-6)
+    assert math.isclose(
+        parameters.evidence_depth_abs_tolerance_m, 0.05, rel_tol=1e-6
+    )
+
+
 def test_pixel_thresholds_follow_processed_resolution():
     query, payload = _synthetic_scene()
     small_query, small_payload = _synthetic_scene(image_scale=0.5)
@@ -93,6 +109,22 @@ def test_pixel_thresholds_follow_processed_resolution():
         0.5,
         rel_tol=1e-3,
     )
+
+
+def test_geometric_pixel_thresholds_follow_focal_not_only_diagonal():
+    query, payload = _synthetic_scene()
+    wide_query, wide_payload = _synthetic_scene()
+    for record in wide_query["queries"].values():
+        record["native_K"] = record["native_K"].clone()
+        record["native_K"][0, 0] *= 0.5
+        record["native_K"][1, 1] *= 0.5
+    base = derive_adaptive_parameters(derive_mapping_statistics(query, payload))
+    wide = derive_adaptive_parameters(
+        derive_mapping_statistics(wide_query, wide_payload)
+    )
+    assert base.image_pixel_scale == wide.image_pixel_scale
+    assert math.isclose(wide.angular_pixel_scale / base.angular_pixel_scale, 0.5)
+    assert math.isclose(wide.ransac_reprojection_px / base.ransac_reprojection_px, 0.5)
 
 
 def test_training_steps_are_query_exposure_epochs():
@@ -117,3 +149,37 @@ def test_pose_bins_grow_with_mapping_sequence_but_remain_bounded():
     large = derive_adaptive_parameters(large_statistics)
     assert small.view_bin_count == 2
     assert large.view_bin_count == 8
+
+
+def test_ransac_threshold_uses_mapping_track_residual_floor():
+    query, payload = _synthetic_scene(image_scale=0.5)
+    payload["track_geometry"].update(
+        {
+            "triangulation_reprojection_p90_px": torch.tensor([4.0, 8.0]),
+            "track_confidence_level": torch.tensor([2, 2]),
+        }
+    )
+    statistics = derive_mapping_statistics(
+        query, payload, track_residual_quantile=0.95
+    )
+    parameters = derive_adaptive_parameters(
+        statistics, {"ransac_reprojection_maximum_px": 12.0}
+    )
+    expected = float(torch.quantile(torch.tensor([4.0, 8.0]), 0.95))
+    assert parameters.ransac_reprojection_px == pytest.approx(expected)
+    assert parameters.harm_radius_px == pytest.approx(expected)
+
+
+def test_ransac_track_floor_is_capped_without_clipping_angular_scale():
+    query, payload = _synthetic_scene(image_scale=2.0)
+    payload["track_geometry"].update(
+        {
+            "triangulation_reprojection_p90_px": torch.tensor([40.0, 80.0]),
+            "track_confidence_level": torch.tensor([2, 2]),
+        }
+    )
+    parameters = derive_adaptive_parameters(
+        derive_mapping_statistics(query, payload),
+        {"ransac_reprojection_maximum_px": 12.0},
+    )
+    assert parameters.ransac_reprojection_px == pytest.approx(24.0, rel=2e-5)

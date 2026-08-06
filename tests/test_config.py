@@ -7,6 +7,7 @@ from common.config import (
     OFFLINE_CHAIN,
     load_mainline_config,
     resolve_keypoint_count,
+    resolve_reprojection_error_px,
 )
 from features.superpoint import resolve_superpoint_weights
 
@@ -19,6 +20,7 @@ def test_frozen_config_contract():
     assert config.values["deployment"]["pose_solves"] == 1
     assert config.values["version"] == 2
     assert config.values["adaptive"]["calibration_split"] == "all_mapping_train"
+    assert config.values["adaptive"]["ransac_track_residual_quantile"] == 0.975
 
 
 def test_legacy_frozen_config_remains_available():
@@ -37,6 +39,69 @@ def test_adaptive_keypoint_density_has_a_safety_floor():
         "configs/paper_mainline.yaml"
     ).values["deployment"]
     assert resolve_keypoint_count(deployment, [Camera()]) == 1024
+
+
+def test_deployment_pnp_threshold_follows_focal_scale():
+    class ReferenceCamera:
+        width = 1920
+        height = 1080
+        fov_x = 2.0 * __import__("math").atan(width / (2.0 * 1672.028076171875))
+        fov_y = 2.0 * __import__("math").atan(height / (2.0 * 1672.028076171875))
+
+    class WideCamera:
+        width = 1920
+        height = 1080
+        fov_x = 2.0 * __import__("math").atan(width / (2.0 * 836.0140380859375))
+        fov_y = 2.0 * __import__("math").atan(height / (2.0 * 836.0140380859375))
+
+    deployment = load_mainline_config(
+        "configs/paper_mainline.yaml"
+    ).values["deployment"]
+    reference = resolve_reprojection_error_px(deployment, [ReferenceCamera()])
+    wide = resolve_reprojection_error_px(deployment, [WideCamera()])
+    assert reference == pytest.approx(12.0)
+    assert wide == pytest.approx(6.0)
+
+
+def test_deployment_prefers_mapping_only_scene_calibration():
+    class Camera:
+        width = 1920
+        height = 1080
+        fov_x = 2.0 * __import__("math").atan(width / (2.0 * 1672.028076171875))
+        fov_y = 2.0 * __import__("math").atan(height / (2.0 * 1672.028076171875))
+
+    deployment = load_mainline_config(
+        "configs/paper_mainline.yaml"
+    ).values["deployment"]
+    calibration = {
+        "schema": "lafgs_mapping_only_scene_calibration",
+        "sources": {"uses_test_queries": False},
+        "parameters": {"ransac_reprojection_px": 7.25},
+        "statistics": {"query_count": 1, "focal_px": 1672.028076171875},
+    }
+    assert resolve_reprojection_error_px(deployment, [Camera()], calibration) == 7.25
+    calibration["sources"]["uses_test_queries"] = True
+    with pytest.raises(ValueError, match="mapping-only"):
+        resolve_reprojection_error_px(deployment, [Camera()], calibration)
+
+
+def test_deployment_rejects_calibration_from_another_scene():
+    class Camera:
+        width = 640
+        height = 480
+        fov_x = fov_y = 1.0
+
+    deployment = load_mainline_config(
+        "configs/paper_mainline.yaml"
+    ).values["deployment"]
+    calibration = {
+        "schema": "lafgs_mapping_only_scene_calibration",
+        "sources": {"uses_test_queries": False},
+        "parameters": {"ransac_reprojection_px": 7.25},
+        "statistics": {"query_count": 2, "focal_px": 500.0},
+    }
+    with pytest.raises(ValueError, match="query count"):
+        resolve_reprojection_error_px(deployment, [Camera()], calibration)
 
 
 def test_unknown_config_section_fails_closed(tmp_path: Path):

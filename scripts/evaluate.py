@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from common.config import (
+    load_scene_calibration,
     load_mainline_config,
     resolve_keypoint_count,
     resolve_reprojection_error_px,
@@ -24,6 +25,14 @@ def main() -> None:
     parser.add_argument("--images", default="processed")
     parser.add_argument("--map", type=Path)
     parser.add_argument("--metric-state", type=Path)
+    parser.add_argument(
+        "--scene-calibration",
+        type=Path,
+        help=(
+            "Mapping-only calibration JSON. By default the evaluator uses "
+            "scene_calibration.json beside the trained map when present."
+        ),
+    )
     parser.add_argument(
         "--stage-state",
         type=Path,
@@ -50,14 +59,32 @@ def main() -> None:
     deployment = load_mainline_config(args.config).values["deployment"]
     dataset = ColmapDataset(args.dataset, images=args.images)
     cameras = dataset.split(args.split)
+    calibration_cameras = dataset.split("mapping")
+    calibration_path = args.scene_calibration
+    inferred_calibrations = [map_path.parent / "scene_calibration.json"]
+    if args.stage_state is not None:
+        inferred_calibrations.insert(
+            0, args.stage_state.parent.parent / "scene_calibration.json"
+        )
+    if calibration_path is None:
+        calibration_path = next(
+            (path for path in inferred_calibrations if path.is_file()), None
+        )
+    scene_calibration = (
+        load_scene_calibration(calibration_path)
+        if calibration_path is not None
+        else None
+    )
+    keypoint_count = resolve_keypoint_count(deployment, calibration_cameras)
+    reprojection_error_px = resolve_reprojection_error_px(
+        deployment, calibration_cameras, scene_calibration
+    )
     localizer = SparseLocalizer(
         map_path,
         metric_path,
         device=args.device,
-        keypoint_count=resolve_keypoint_count(deployment, cameras),
-        reprojection_error_px=resolve_reprojection_error_px(
-            deployment, cameras
-        ),
+        keypoint_count=keypoint_count,
+        reprojection_error_px=reprojection_error_px,
         confidence=deployment["confidence"],
         max_iterations=deployment["maximum_iterations"],
         min_iterations=deployment["minimum_iterations"],
@@ -68,6 +95,27 @@ def main() -> None:
         localizer=localizer,
         cameras=cameras,
         output=args.output,
+    )
+    (args.output / "deployment_contract.json").write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_sparse_deployment_contract",
+                "version": 1,
+                "keypoint_count": int(keypoint_count),
+                "ransac_reprojection_px": float(reprojection_error_px),
+                "scene_calibration": (
+                    str(calibration_path.resolve())
+                    if calibration_path is not None
+                    else None
+                ),
+                "calibration_split": "mapping",
+                "evaluated_split": args.split,
+                "pose_solves": 1,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
     print(json.dumps(result["summary"], indent=2))
 

@@ -11,6 +11,7 @@ from data.datasets import ColmapDataset
 from evaluation.evaluator import evaluate_dataset
 from localization.localizer import SparseLocalizer
 from common.config import (
+    load_scene_calibration,
     load_mainline_config,
     resolve_keypoint_count,
     resolve_reprojection_error_px,
@@ -60,6 +61,7 @@ def main() -> None:
         sh_degree=args.sh_degree,
         visibility_cache=artifacts["visibility_cache"],
         output=args.output / "evidence",
+        config=args.config,
         valid_masks=args.valid_masks or None,
         function_graph_shards=args.function_graph_shards,
         provenance_shards=args.provenance_shards,
@@ -100,14 +102,19 @@ def main() -> None:
         deployment = load_mainline_config(args.config).values["deployment"]
         dataset = ColmapDataset(args.dataset, images="processed")
         test_cameras = dataset.split("test")
+        mapping_cameras = dataset.split("mapping")
+        calibration_path = Path(trained["trained_map"]).parent / "scene_calibration.json"
+        scene_calibration = load_scene_calibration(calibration_path)
+        keypoint_count = resolve_keypoint_count(deployment, mapping_cameras)
+        reprojection_error_px = resolve_reprojection_error_px(
+            deployment, mapping_cameras, scene_calibration
+        )
         localizer = SparseLocalizer(
             trained["trained_map"],
             trained["metric_state"],
             device=args.device,
-            keypoint_count=resolve_keypoint_count(deployment, test_cameras),
-            reprojection_error_px=resolve_reprojection_error_px(
-                deployment, test_cameras
-            ),
+            keypoint_count=keypoint_count,
+            reprojection_error_px=reprojection_error_px,
             confidence=deployment["confidence"],
             max_iterations=deployment["maximum_iterations"],
             min_iterations=deployment["minimum_iterations"],
@@ -118,6 +125,23 @@ def main() -> None:
             localizer=localizer,
             cameras=test_cameras,
             output=args.output / "evaluation",
+        )
+        (args.output / "evaluation" / "deployment_contract.json").write_text(
+            json.dumps(
+                {
+                    "schema": "lafgs_sparse_deployment_contract",
+                    "version": 1,
+                    "keypoint_count": int(keypoint_count),
+                    "ransac_reprojection_px": float(reprojection_error_px),
+                    "scene_calibration": str(calibration_path.resolve()),
+                    "calibration_split": "mapping",
+                    "evaluated_split": "test",
+                    "pose_solves": 1,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
         )
         print(json.dumps(result["summary"], indent=2))
         outputs["evaluation"] = args.output / "evaluation"

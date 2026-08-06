@@ -210,6 +210,8 @@ def _refresh_ransac_outcomes(
     device: torch.device,
     query_indices: list[int],
     seed: int,
+    ransac_reprojection_px: float,
+    clean_reprojection_px: float,
 ):
     bank, _ = metric(raw_features)
     xyz_cpu = torch.as_tensor(state["anchor_xyz"]).float()
@@ -239,7 +241,7 @@ def _refresh_ransac_outcomes(
             keypoint.numpy(),
             xyz_cpu[index.cpu()].numpy(),
             intrinsic.numpy(),
-            reprojection_error_px=12.0,
+            reprojection_error_px=float(ransac_reprojection_px),
             confidence=0.99999,
             max_iterations=100000,
             min_iterations=1000,
@@ -258,7 +260,7 @@ def _refresh_ransac_outcomes(
                 intrinsic,
                 torch.as_tensor(cached["pose_w2c"]).float(),
             )
-            clean_mask = errors <= 4.0
+            clean_mask = errors <= float(clean_reprojection_px)
             clean.index_add_(
                 0, index.cpu()[inliers[clean_mask]], torch.ones(int(clean_mask.sum()))
             )
@@ -411,6 +413,8 @@ def train(
     group_dro_eta: float = 0.03,
     refresh_interval: int = 0,
     refresh_shards: int = 7,
+    ransac_reprojection_px: float = 12.0,
+    clean_reprojection_px: float = 4.0,
     seed: int = 2026,
 ) -> dict:
     torch.manual_seed(int(seed))
@@ -461,6 +465,8 @@ def train(
         "group_dro_eta": float(group_dro_eta),
         "refresh_interval": int(refresh_interval),
         "refresh_shards": int(refresh_shards),
+        "ransac_reprojection_px": float(ransac_reprojection_px),
+        "clean_reprojection_px": float(clean_reprojection_px),
         "seed": int(seed),
         **data_report,
     }
@@ -482,6 +488,8 @@ def train(
                     device=device,
                     query_indices=shards[shard_index],
                     seed=seed,
+                    ransac_reprojection_px=ransac_reprojection_px,
+                    clean_reprojection_px=clean_reprojection_px,
                 )
             )
             churn = _replace_refreshed_pairs(
@@ -661,6 +669,8 @@ def main() -> None:
     parser.add_argument("--group-dro-eta", type=float, default=0.03)
     parser.add_argument("--refresh-interval", type=int, default=0)
     parser.add_argument("--refresh-shards", type=int, default=7)
+    parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
+    parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
     train(
@@ -686,6 +696,8 @@ def main() -> None:
         group_dro_eta=args.group_dro_eta,
         refresh_interval=args.refresh_interval,
         refresh_shards=args.refresh_shards,
+        ransac_reprojection_px=args.ransac_reprojection_px,
+        clean_reprojection_px=args.clean_reprojection_px,
         seed=args.seed,
     )
 

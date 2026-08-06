@@ -993,6 +993,9 @@ def robust_triangulate_associations(
     covariance_trace = torch.full(
         (landmark_count,), float("inf"), dtype=torch.float64
     )
+    covariance_matrix = torch.full(
+        (landmark_count, 3, 3), float("nan"), dtype=torch.float64
+    )
     rendered_depth_signed_median_m = torch.full(
         (landmark_count,), float("nan"), dtype=torch.float64
     )
@@ -1125,6 +1128,7 @@ def robust_triangulate_associations(
         reprojection_p90_px[landmark] = torch.quantile(residual, 0.9)
         condition_number[landmark] = condition
         covariance_trace[landmark] = torch.trace(covariance)
+        covariance_matrix[landmark] = covariance
         if rendered_depth is not None:
             valid_depth = (
                 finite
@@ -1180,6 +1184,7 @@ def robust_triangulate_associations(
         "triangulation_parallax_deg": parallax_deg.float(),
         "triangulation_condition_number": condition_number.float(),
         "triangulation_covariance_trace": covariance_trace.float(),
+        "triangulation_covariance_matrix": covariance_matrix.float(),
         "triangulation_rendered_depth_signed_median_m": (
             rendered_depth_signed_median_m.float()
         ),
