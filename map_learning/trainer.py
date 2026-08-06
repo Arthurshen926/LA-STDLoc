@@ -177,6 +177,44 @@ def _group_pose_risk(errors_cm: list[float]) -> float:
     return float(smooth_mean + 0.5 * tail + 0.5 * near_five)
 
 
+def full_refresh_interval(steps: int, shards: int) -> int:
+    """Space refreshes so every rotating shard is replayed at least once."""
+    steps = int(steps)
+    shards = int(shards)
+    if steps < 1 or shards < 1:
+        raise ValueError("steps and refresh shards must be positive")
+    if shards == 1:
+        return max(steps, 1)
+    return max((steps - 1) // (shards - 1), 1)
+
+
+def _update_group_dro_weights(
+    weights: torch.Tensor,
+    risk: torch.Tensor,
+    *,
+    eta: float,
+    maximum_uniform_ratio: float,
+) -> torch.Tensor:
+    """Apply a centered entropic DRO update with a capped simplex safeguard."""
+    weights = torch.as_tensor(weights)
+    risk = torch.as_tensor(risk, device=weights.device, dtype=weights.dtype)
+    if weights.ndim != 1 or risk.shape != weights.shape:
+        raise ValueError("group weights and risks must be aligned vectors")
+    if float(maximum_uniform_ratio) < 1.0:
+        raise ValueError("maximum group-weight ratio must be at least one")
+    centered = risk - risk.mean()
+    updated = weights * torch.exp((float(eta) * centered).clamp(min=-20.0, max=20.0))
+    updated /= updated.sum().clamp_min(1e-8)
+    uniform = 1.0 / max(updated.numel(), 1)
+    cap = min(float(maximum_uniform_ratio) * uniform, 1.0)
+    maximum = float(updated.max())
+    if maximum > cap and maximum > uniform:
+        alpha = (cap - uniform) / (maximum - uniform)
+        updated = uniform + float(alpha) * (updated - uniform)
+        updated /= updated.sum().clamp_min(1e-8)
+    return updated
+
+
 def _project_errors(xyz, keypoints, intrinsic, pose):
     camera = xyz @ pose[:3, :3].T + pose[:3, 3]
     depth = camera[:, 2]
@@ -399,6 +437,7 @@ def train(
     query_cache_path: str | Path,
     positive_teacher_path: str | Path,
     output_dir: str | Path,
+    initial_metric_state_path: str | Path | None = None,
     steps: int = 175,
     checkpoint_steps: tuple[int, ...] = (175,),
     batch_size: int = 512,
@@ -411,6 +450,7 @@ def train(
     harmful_weight: float = 0.1,
     trust_weight: float = 1.0,
     group_dro_eta: float = 0.03,
+    group_dro_max_weight_ratio: float = 1e9,
     refresh_interval: int = 0,
     refresh_shards: int = 7,
     ransac_reprojection_px: float = 12.0,
@@ -430,13 +470,31 @@ def train(
         graph, payload, state, teacher, max_positives
     )
     raw_features = F.normalize(
-        torch.as_tensor(state["anchor_features"]).float(), dim=1
+        torch.as_tensor(
+            state.get("v7_metric_raw_features", state["anchor_features"])
+        ).float(),
+        dim=1,
     ).to(device)
     metric = SharedLowRankMetric(
         descriptor_dim=raw_features.shape[1],
         rank=rank,
         max_residual_norm=metric_residual,
     ).to(device)
+    if initial_metric_state_path is not None:
+        initial_metric = torch.load(
+            initial_metric_state_path, map_location="cpu", weights_only=False
+        )
+        expected_ids = torch.as_tensor(state["anchor_ids"]).long().reshape(-1)
+        metric_ids = (
+            torch.as_tensor(initial_metric["landmark_indices"]).long().reshape(-1)
+        )
+        if not torch.equal(metric_ids, expected_ids):
+            raise ValueError("initial metric state does not align with the anchor map")
+        if dict(initial_metric["metric_config"]) != metric.export_config():
+            raise ValueError(
+                "initial metric configuration differs from requested training"
+            )
+        metric.load_state_dict(initial_metric["metric_state_dict"])
     optimizer = torch.optim.AdamW(
         metric.parameters(), lr=learning_rate, weight_decay=1e-4
     )
@@ -463,11 +521,17 @@ def train(
         "harmful_weight": float(harmful_weight),
         "trust_weight": float(trust_weight),
         "group_dro_eta": float(group_dro_eta),
+        "group_dro_max_weight_ratio": float(group_dro_max_weight_ratio),
         "refresh_interval": int(refresh_interval),
         "refresh_shards": int(refresh_shards),
         "ransac_reprojection_px": float(ransac_reprojection_px),
         "clean_reprojection_px": float(clean_reprojection_px),
         "seed": int(seed),
+        "initial_metric_state": (
+            str(Path(initial_metric_state_path).resolve())
+            if initial_metric_state_path is not None
+            else None
+        ),
         **data_report,
     }
     checkpoints = set(int(value) for value in checkpoint_steps)
@@ -498,8 +562,12 @@ def train(
             risk = torch.zeros_like(group_weights)
             for group, value in group_risks.items():
                 risk[group] = float(value)
-            group_weights *= torch.exp(float(group_dro_eta) * risk)
-            group_weights /= group_weights.sum().clamp_min(1e-8)
+            group_weights = _update_group_dro_weights(
+                group_weights,
+                risk,
+                eta=group_dro_eta,
+                maximum_uniform_ratio=group_dro_max_weight_ratio,
+            )
             row = {
                 "step": step - 1,
                 "event": "self_localization_refresh",
@@ -522,6 +590,10 @@ def train(
                     (harmful_prior > 0).float().mean()
                 ),
                 "group_weight_max": float(group_weights.max()),
+                "group_weight_effective_count": float(
+                    group_weights.sum().square()
+                    / group_weights.square().sum().clamp_min(1e-8)
+                ),
                 **churn,
             }
             history.append(row)
@@ -655,6 +727,7 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--initial-metric-state")
     parser.add_argument("--steps", type=int, default=175)
     parser.add_argument("--checkpoint-steps", default="175")
     parser.add_argument("--batch-size", type=int, default=512)
@@ -667,6 +740,7 @@ def main() -> None:
     parser.add_argument("--harmful-weight", type=float, default=0.1)
     parser.add_argument("--trust-weight", type=float, default=1.0)
     parser.add_argument("--group-dro-eta", type=float, default=0.03)
+    parser.add_argument("--group-dro-max-weight-ratio", type=float, default=1e9)
     parser.add_argument("--refresh-interval", type=int, default=0)
     parser.add_argument("--refresh-shards", type=int, default=7)
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
@@ -680,6 +754,7 @@ def main() -> None:
         query_cache_path=args.query_cache,
         positive_teacher_path=args.complete_positive_teacher,
         output_dir=args.output_dir,
+        initial_metric_state_path=args.initial_metric_state,
         steps=args.steps,
         checkpoint_steps=tuple(
             int(value) for value in args.checkpoint_steps.split(",") if value
@@ -694,6 +769,7 @@ def main() -> None:
         harmful_weight=args.harmful_weight,
         trust_weight=args.trust_weight,
         group_dro_eta=args.group_dro_eta,
+        group_dro_max_weight_ratio=args.group_dro_max_weight_ratio,
         refresh_interval=args.refresh_interval,
         refresh_shards=args.refresh_shards,
         ransac_reprojection_px=args.ransac_reprojection_px,

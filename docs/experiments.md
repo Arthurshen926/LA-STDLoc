@@ -60,3 +60,31 @@ at 12 pixels and reproduces the prior adaptive result.
 These two scenes establish scale adaptation and catch the indoor solver-gate
 failure, but they are not sufficient evidence for universal non-inferiority.
 The full Cambridge, 7Scenes, and 12Scenes evaluation remains required.
+
+## Deployment-aware topology revision gate
+
+A one-pass mapping-only revision was tested after compact reconstruction on
+ShopFacade. It replayed exact global top-1 plus standard PoseLib on all 231
+mapping views, scored counterfactual clean replacements, clean/harmful solver
+inliers, full-SE(3) Fisher deletion loss, and matching-rank criticality, then
+protected anchors with non-improving replacements in the worst 10% mapping
+queries. The revision removed 7 of 6,357 anchors, all from the Gaussian reserve;
+the matching-rank p10 remained 159 against a target of 119.
+
+| Test method, three-seed mean | Anchors | Median TE | Mean TE | P90 TE | Raw P@2 | Inlier P@2 | 2 cm recall | 5 cm recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Adaptive V2 | 6,357 | 1.993 cm | 4.7449 cm | 8.318 cm | 9.979% | 42.538% | 50.49% | 81.55% |
+| Revision only | 6,350 | 1.981 cm | 4.7439 cm | 8.350 cm | 9.977% | 42.547% | 51.46% | 81.55% |
+| Revision + 44-step full-shard refresh | 6,350 | 1.981 cm | 4.7496 cm | 8.350 cm | 9.982% | 42.552% | 51.46% | 82.52% |
+
+The original trainer replayed only one of seven rotating mapping shards when
+`refresh_interval=0`. Enabling all shards exposed an uncapped entropic Group-DRO
+collapse: one trajectory group reached 98.6% weight after two refreshes. A
+capped update (at most three times uniform weight) fixes that failure mode and
+kept an effective 5.1--5.3 groups during the short refresh.
+
+The result is mixed rather than Pareto improving: median, clean precision, and
+recall improve slightly, while mean, P90, and RANSAC hypotheses do not. The
+mapping-only meaningful-improvement gate therefore rejects the revision as a
+default method. The frozen adaptive mainline and its one-shot deployment remain
+unchanged; the revision is retained as an opt-in, reproducible experiment.
