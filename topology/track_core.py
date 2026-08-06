@@ -255,6 +255,7 @@ def _materialize(
     source_map: Path,
     payload_path: Path,
     dependency_voxel_size: float,
+    separate_spatial_dependency: bool = False,
 ) -> dict:
     base_rows = torch.as_tensor(base_rows).long()
     track_indices = torch.as_tensor(track_indices).long()
@@ -293,12 +294,19 @@ def _materialize(
         ),
     }
     all_xyz = fields["anchor_xyz"]
-    all_sources = fields["source_primitive_ids"].long()
     dependency_voxel = torch.floor(
         all_xyz / float(dependency_voxel_size)
     ).long()
+    dependency_key = (
+        dependency_voxel
+        if separate_spatial_dependency
+        else torch.cat(
+            [fields["source_primitive_ids"].long()[:, None], dependency_voxel],
+            dim=1,
+        )
+    )
     coarse_dependency = torch.unique(
-        torch.cat([all_sources[:, None], dependency_voxel], dim=1),
+        dependency_key,
         dim=0,
         return_inverse=True,
     )[1]
@@ -309,7 +317,7 @@ def _materialize(
             + int(torch.as_tensor(geometry["triangulated"]).numel()),
         )
     )
-    return {
+    state = {
         "version": 1,
         "schema": "lafgs_materialized_anchor_map",
         "anchor_ids": torch.arange(budget, dtype=torch.long),
@@ -342,6 +350,14 @@ def _materialize(
             "base_prefix_preserved": False,
         },
     }
+    if separate_spatial_dependency:
+        state["source_dependency_group_ids"] = fields[
+            "source_primitive_ids"
+        ].long()
+        state["track_centric_reconstruction"][
+            "dependency_group_semantics"
+        ] = "spatial_voxel_only_with_separate_source_lineage"
+    return state
 
 
 def main() -> None:

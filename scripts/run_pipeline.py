@@ -10,7 +10,11 @@ from pathlib import Path
 from data.datasets import ColmapDataset
 from evaluation.evaluator import evaluate_dataset
 from localization.localizer import SparseLocalizer
-from common.config import load_mainline_config
+from common.config import (
+    load_mainline_config,
+    resolve_keypoint_count,
+    resolve_reprojection_error_px,
+)
 from map_learning.pipeline import (
     build_bootstrap_and_tracks,
     build_evidence,
@@ -95,12 +99,15 @@ def main() -> None:
     if args.evaluate:
         deployment = load_mainline_config(args.config).values["deployment"]
         dataset = ColmapDataset(args.dataset, images="processed")
+        test_cameras = dataset.split("test")
         localizer = SparseLocalizer(
             trained["trained_map"],
             trained["metric_state"],
             device=args.device,
-            keypoint_count=deployment["keypoints"],
-            reprojection_error_px=deployment["reprojection_error_px"],
+            keypoint_count=resolve_keypoint_count(deployment, test_cameras),
+            reprojection_error_px=resolve_reprojection_error_px(
+                deployment, test_cameras
+            ),
             confidence=deployment["confidence"],
             max_iterations=deployment["maximum_iterations"],
             min_iterations=deployment["minimum_iterations"],
@@ -109,7 +116,7 @@ def main() -> None:
         result = evaluate_dataset(
             dataset=dataset,
             localizer=localizer,
-            cameras=dataset.split("test"),
+            cameras=test_cameras,
             output=args.output / "evaluation",
         )
         print(json.dumps(result["summary"], indent=2))

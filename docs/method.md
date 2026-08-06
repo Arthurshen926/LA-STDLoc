@@ -23,7 +23,8 @@ mapping views and trajectory bins. GWFF initializes each selected descriptor by
 geometry-weighted fusion with robust cosine trimming. These steps initialize the
 field; they are not the final learning objective.
 
-The resulting wide 48K scaffold first runs 1K steps of self-localization-guided
+The resulting wide scaffold uses 48K only as a safety cap. It first runs a
+mapping-query-epoch-calibrated schedule of self-localization-guided
 descriptor reconstruction. Current global candidates produce keep, swap, miss,
 and false-attractor outcomes; bounded trust and protected local-peak terms keep
 already precise correspondences stable. This Stage-A state is the A0 baseline
@@ -36,15 +37,20 @@ lineage. Robust triangulation rejects low-parallax and high-reprojection tracks.
 The canonical candidate universe combines these independent track anchors with
 Gaussian-supported coverage candidates.
 
-Topology distillation first retains a quality-ranked Track core, then adds the
-smallest configured coverage reserve needed for mapping-query support and pose
-diversity. The output stores one descriptor and one 3D point per active anchor.
+Topology distillation retains quality-ranked tracks until the p10 per-query
+anchor-keypoint bipartite matching rank reaches a mapping-derived target. A
+mixed pool of leftover tracks and Gaussian anchors then closes feasible query
+coverage. The final reserve is selected by dynamic, task-scaled full-SE(3)
+D-optimal gain plus additive image/depth/spatial diversity. Query rows have
+unit capacity, the Hessian is updated after every addition, source lineage and
+spatial voxel capacity are separate, and all fixed counts are safety caps.
 
 ## Compact metric refresh
 
 After topology distillation, a bounded low-rank metric is shared by mapping
 queries and map descriptors. Complete-positive retrieval, current-map hard
-outcomes, and trajectory-group DRO train this final A1 stage for 175 steps.
+outcomes, and trajectory-group DRO train this final A1 stage for a fixed number
+of mapping-query epochs rather than a dataset-dependent fixed step count.
 This short refresh preserves the single-descriptor compact map and uses the
 same self-localization evidence as deployment. Geometry and RGB appearance
 remain frozen in both descriptor-reconstruction stages.
@@ -55,3 +61,6 @@ The query image is processed once by native SuperPoint. Every descriptor takes
 its global cosine top-1 anchor without landmark or keypoint caps. All resulting
 2D-3D correspondences enter one standard PoseLib absolute-pose RANSAC solve.
 The fixed pixel convention adds `0.5` to grid-index keypoints before PnP.
+Pixel thresholds and detector density are resolved from processed mapping/test
+resolution. Metric geometry thresholds use mapping track-graph baseline; the
+5 cm/5 degree pose task scale remains fixed across datasets.

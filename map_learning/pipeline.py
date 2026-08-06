@@ -12,7 +12,9 @@ import subprocess
 import sys
 import time
 
-from common.config import load_mainline_config
+from common.calibration import calibrate_scene
+from common.config import load_mainline_config, resolve_keypoint_count
+from data.datasets import ColmapDataset
 from map_learning.trainer import train
 
 
@@ -137,6 +139,8 @@ def _common_bootstrap_arguments(
     sh_degree: int,
     query_cache: Path,
     visibility_cache: Path,
+    native_keypoint_count: int = 2048,
+    native_association_radius_px: float = 2.0,
 ) -> list[object]:
     return [
         "--model_path", prior,
@@ -158,11 +162,11 @@ def _common_bootstrap_arguments(
         "--visibility_mode", "rasterizer",
         "--objective", "hard",
         "--observation_source", "native",
-        "--native_keypoint_count", 2048,
-        "--max_observations", 2048,
-        "--validation_observations", 2048,
+        "--native_keypoint_count", native_keypoint_count,
+        "--max_observations", native_keypoint_count,
+        "--validation_observations", native_keypoint_count,
         "--native_sampling_mode", "detector_grid",
-        "--native_association_radius_px", 2,
+        "--native_association_radius_px", native_association_radius_px,
         "--validation_ratio", 0,
         "--split_mode", "stratified_temporal_block",
         "--split_seed", 2026,
@@ -191,6 +195,43 @@ def build_bootstrap_and_tracks(
         directory.mkdir(parents=True, exist_ok=True)
     query_cache = run / "query_cache.pt"
     visibility = run / "visibility.pt"
+    adaptive = cfg.get("adaptive")
+    sparse = dataset / "sparse/0"
+    has_camera_model = any(
+        (sparse / name).is_file()
+        for name in ("images.bin", "images.txt")
+    )
+    if adaptive and has_camera_model:
+        mapping_cameras = ColmapDataset(dataset, images="processed").split("mapping")
+        diagonals = sorted(
+            (camera.width * camera.width + camera.height * camera.height) ** 0.5
+            for camera in mapping_cameras
+        )
+        if not diagonals:
+            raise ValueError("adaptive calibration requires mapping cameras")
+        diagonal = diagonals[len(diagonals) // 2]
+        prebootstrap_pixel_scale = diagonal / float(
+            adaptive["reference_image_diagonal_px"]
+        )
+        pose_bins = round(
+            (
+                len(mapping_cameras)
+                / float(adaptive["queries_per_pose_bin_squared"])
+            )
+            ** 0.5
+        )
+        pose_bins = max(int(adaptive["pose_bins_minimum"]), pose_bins)
+        pose_bins = min(int(adaptive["pose_bins_maximum"]), pose_bins)
+    else:
+        prebootstrap_pixel_scale = 1.0
+        pose_bins = int(initialization["kcs_view_bins"])
+    native_keypoint_count = (
+        resolve_keypoint_count(cfg["deployment"], mapping_cameras)
+        if adaptive and has_camera_model
+        else int(initialization["kcs_keypoints"])
+    )
+    native_association_radius = max(0.5, 2.0 * prebootstrap_pixel_scale)
+    kcs_radius = max(0.5, float(initialization["kcs_radius_px"]) * prebootstrap_pixel_scale)
     common = _common_bootstrap_arguments(
         dataset=dataset,
         prior=prior,
@@ -199,6 +240,8 @@ def build_bootstrap_and_tracks(
         sh_degree=sh_degree,
         query_cache=query_cache,
         visibility_cache=visibility,
+        native_keypoint_count=native_keypoint_count,
+        native_association_radius_px=native_association_radius,
     )
     bootstrap_state = init_dir / "0_lafgs_map_state.pt"
     landmark_ids = init_dir / "sampled_idx.pkl"
@@ -211,18 +254,22 @@ def build_bootstrap_and_tracks(
             "--scaffold_mode", "ulf_robust_consensus",
             "--generated_landmark_path", init_dir / "robust_ids.pkl",
             "--regenerate_scaffold",
-            "--scaffold_budget", initialization["scaffold_budget"],
+            "--scaffold_budget", (
+                adaptive["scaffold_safety_cap"]
+                if adaptive
+                else initialization["scaffold_budget"]
+            ),
             "--scaffold_min_opacity", 0,
             "--scaffold_opacity_keep_quantile", 0.1,
             "--initialization_mode", "ulf_robust_geometry",
             "--ulf_consensus_keypoints", initialization["kcs_keypoints"],
-            "--ulf_consensus_radius_px", initialization["kcs_radius_px"],
+            "--ulf_consensus_radius_px", kcs_radius,
             "--ulf_consensus_min_visible_views", initialization["kcs_min_visible_views"],
             "--ulf_consensus_min_votes", initialization["kcs_min_votes"],
             "--ulf_consensus_min_rate", initialization["kcs_min_consensus_rate"],
-            "--ulf_consensus_view_bins", initialization["kcs_view_bins"],
+            "--ulf_consensus_view_bins", pose_bins,
             "--ulf_consensus_min_distinct_view_bins", initialization["kcs_min_distinct_view_bins"],
-            "--ulf_consensus_trajectory_bins", initialization["kcs_trajectory_bins"],
+            "--ulf_consensus_trajectory_bins", pose_bins,
             "--ulf_consensus_min_distinct_trajectory_bins", initialization["kcs_min_distinct_trajectory_bins"],
             "--ulf_consensus_independent_bin_scoring",
             "--ulf_consensus_allow_nonconsensus_fallback",
@@ -232,7 +279,7 @@ def build_bootstrap_and_tracks(
             "--ulf_consensus_max_views", 0,
             "--ulf_fusion_max_views", 0,
             "--ulf_fusion_min_cosine", 0,
-            "--ulf_fusion_view_bins", 4,
+            "--ulf_fusion_view_bins", pose_bins,
             "--ulf_fusion_descriptor_trim_fraction", initialization["gwff_trim_fraction"],
             "--ulf_fusion_descriptor_min_cosine", -1,
             "--ulf_fusion_trim_histogram_bins", 64,
@@ -243,7 +290,40 @@ def build_bootstrap_and_tracks(
             "--steps", 0,
             "--save_steps", 0,
         )
-    steps = int(reconstruction["stage_a_steps"])
+    preliminary_calibration = (
+        calibrate_scene(query_cache, policy=adaptive)
+        if adaptive and query_cache.is_file()
+        else None
+    )
+    parameters = (
+        preliminary_calibration["parameters"]
+        if preliminary_calibration is not None
+        else None
+    )
+    if preliminary_calibration is not None:
+        (run / "preliminary_scene_calibration.json").write_text(
+            json.dumps(preliminary_calibration, indent=2, sort_keys=True) + "\n"
+        )
+    steps = (
+        int(parameters["stage_a_steps"])
+        if parameters is not None
+        else (
+            1000
+            if adaptive and reconstruction["stage_a_steps"] == "adaptive"
+            else int(reconstruction["stage_a_steps"])
+        )
+    )
+    positive_radius = (
+        parameters["positive_radius_px"]
+        if parameters is not None
+        else stage["positive_radius_px"]
+    )
+    negative_radius = (
+        parameters["negative_radius_px"]
+        if parameters is not None
+        else stage["negative_radius_px"]
+    )
+    stage_midpoint = max(1, round(0.5 * steps))
     stage_state = stage_dir / f"{steps}_lafgs_map_state.pt"
     if not stage_state.is_file():
         _run(
@@ -268,7 +348,9 @@ def build_bootstrap_and_tracks(
             "--native_global_attractor_support_power", 0.5,
             "--native_global_attractor_max_score", 4,
             "--native_semidense_weight", stage["local_peak_weight"],
-            "--native_semidense_start_step", stage["local_peak_start_step"],
+            "--native_semidense_start_step", (
+                stage_midpoint if parameters is not None else stage["local_peak_start_step"]
+            ),
             "--native_semidense_interval", stage["local_peak_interval"],
             "--native_semidense_max_anchors", stage["local_peak_max_anchors"],
             "--native_semidense_neighbors", stage["local_peak_neighbors"],
@@ -276,40 +358,54 @@ def build_bootstrap_and_tracks(
             "--native_semidense_target_sigma_px", stage["local_peak_sigma_px"],
             "--native_semidense_temperature", stage["local_peak_temperature"],
             "--native_semidense_protected_v2",
-            "--native_semidense_measurement_min_reprojection_px", 2,
-            "--native_semidense_measurement_max_reprojection_px", 8,
-            "--native_semidense_surface_point_plane_m", 0.03,
-            "--native_semidense_surface_max_distance_m", 0.15,
+            "--native_semidense_measurement_min_reprojection_px", positive_radius,
+            "--native_semidense_measurement_max_reprojection_px", negative_radius,
+            "--native_semidense_surface_point_plane_m", (
+                parameters["surface_point_plane_m"] if parameters is not None else 0.03
+            ),
+            "--native_semidense_surface_max_distance_m", (
+                parameters["surface_max_distance_m"] if parameters is not None else 0.15
+            ),
             "--native_semidense_surface_normal_cosine", 0.95,
             "--native_semidense_projected_neighbor_radius_px", 64,
             "--native_semidense_local_identity_weight", stage["local_identity_weight"],
             "--native_semidense_margin_preservation_weight", stage["margin_preservation_weight"],
-            "--native_semidense_reference_refresh_steps", 500,
+            "--native_semidense_reference_refresh_steps", (
+                stage_midpoint if parameters is not None else 500
+            ),
             "--native_semidense_alternate_global",
             "--native_semidense_max_gradient_ratio", 0.25,
             "--native_protected_set_weight", stage["high_precision_weight"],
-            "--native_protected_set_start_step", stage["high_precision_start_step"],
+            "--native_protected_set_start_step", (
+                stage_midpoint if parameters is not None else stage["high_precision_start_step"]
+            ),
             "--native_protected_set_interval", stage["high_precision_interval"],
             "--native_protected_set_refresh_visits", 1,
             "--native_protected_set_ransac_seed", 0,
-            "--native_protected_set_ransac_reprojection_px", 8,
+            "--native_protected_set_ransac_reprojection_px", negative_radius,
             "--native_protected_set_ransac_max_iterations", 5000,
             "--native_protected_set_ransac_min_iterations", 100,
             "--native_protected_set_max_pose_error_cm", 100,
-            "--native_protected_set_max_useful", 96,
-            "--native_protected_set_max_harmful", 96,
+            "--native_protected_set_max_useful", (
+                parameters["matching_rows_target"] if parameters is not None else 96
+            ),
+            "--native_protected_set_max_harmful", (
+                parameters["matching_rows_target"] if parameters is not None else 96
+            ),
             "--native_protected_set_grid_rows", 4,
             "--native_protected_set_grid_cols", 4,
             "--native_protected_set_depth_bins", 4,
-            "--native_protected_set_surface_voxel_m", 0.25,
+            "--native_protected_set_surface_voxel_m", (
+                parameters["surface_group_voxel_m"] if parameters is not None else 0.25
+            ),
             "--native_protected_set_max_per_surface_group", 2,
             "--retrieval_weight", 1,
             "--trust_weight", stage["trust_weight"],
             "--feature_lr", stage["feature_learning_rate"],
             "--weight_decay", stage["weight_decay"],
             "--hypothesis_topk", stage["hypothesis_topk"],
-            "--positive_radius_px", stage["positive_radius_px"],
-            "--negative_radius_px", stage["negative_radius_px"],
+            "--positive_radius_px", positive_radius,
+            "--negative_radius_px", negative_radius,
             "--steps", steps,
             "--save_steps", steps,
             "--log_interval", 100,
@@ -329,27 +425,36 @@ def build_bootstrap_and_tracks(
             "--native_outcome_mode",
             "--retrieval_weight", 0,
             "--trust_weight", 0,
-            "--positive_radius_px", 2,
-            "--negative_radius_px", 8,
+            "--positive_radius_px", positive_radius,
+            "--negative_radius_px", negative_radius,
             "--save_independent_geometry_teacher",
             "--geometry_teacher_identity_mode", identity,
             "--geometry_teacher_min_views", 3,
+            "--geometry_teacher_view_bins", (
+                parameters["view_bin_count"] if parameters is not None else 8
+            ),
             "--geometry_teacher_min_view_bins", 2,
             "--geometry_teacher_min_parallax_deg", 1,
             "--geometry_teacher_parallax_quantile", 0.75,
-            "--geometry_teacher_max_reprojection_px", 2,
-            "--geometry_teacher_max_covariance_trace_m2", 0.01,
-            "--geometry_teacher_max_rendered_depth_residual_m", 0.15,
+            "--geometry_teacher_max_reprojection_px", positive_radius,
+            "--geometry_teacher_max_covariance_trace_m2", (
+                0.01 * parameters["covariance_scale"] if parameters is not None else 0.01
+            ),
+            "--geometry_teacher_max_rendered_depth_residual_m", (
+                parameters["depth_residual_m"] if parameters is not None else 0.15
+            ),
             "--geometry_teacher_min_rendered_depth_observations", 2,
             "--geometry_teacher_track_pair_neighbors", 6,
             "--geometry_teacher_track_min_similarity", 0.65,
             "--geometry_teacher_track_min_margin", 0.01,
-            "--geometry_teacher_track_max_epipolar_error_px", 2,
+            "--geometry_teacher_track_max_epipolar_error_px", positive_radius,
             "--geometry_teacher_track_epipolar_candidate_topk", 4,
             "--geometry_teacher_track_epipolar_recovered_min_similarity", -1,
             "--geometry_teacher_track_epipolar_recovered_min_margin", -1,
             "--geometry_teacher_track_allow_chain_tracks",
-            "--geometry_teacher_track_assignment_max_distance_m", 0.2,
+            "--geometry_teacher_track_assignment_max_distance_m", (
+                parameters["assignment_distance_m"] if parameters is not None else 0.2
+            ),
             "--geometry_teacher_track_assignment_min_margin_m", 0,
             "--save_track_micro_anchor_payload",
             "--steps", 0,
@@ -365,13 +470,26 @@ def build_bootstrap_and_tracks(
                 "--geometry_teacher_provenance_group_min_consensus_rate", 0.10,
             ]
         _run("map_learning.bootstrap", *track_args)
-    return {
+    if adaptive and query_cache.is_file() and track_payload.is_file():
+        full_calibration = calibrate_scene(
+            query_cache, track_payload, policy=adaptive
+        )
+        (run / "scene_calibration.json").write_text(
+            json.dumps(full_calibration, indent=2, sort_keys=True) + "\n"
+        )
+    artifacts = {
         "base_state": stage_state,
         "track_payload": track_payload,
         "query_cache": query_cache,
         "visibility_cache": visibility,
         "landmark_ids": landmark_ids,
     }
+    if adaptive:
+        artifacts["preliminary_scene_calibration"] = (
+            run / "preliminary_scene_calibration.json"
+        )
+        artifacts["scene_calibration"] = run / "scene_calibration.json"
+    return artifacts
 
 
 def build_evidence(
@@ -496,8 +614,28 @@ def distill_compact_map(
     pose_scoring_shards: int = 1,
 ) -> Path:
     """Materialize the Track core plus Gaussian-supported coverage reserve."""
-    cfg = load_mainline_config(config).values["reconstruction"]
+    resolved_config = load_mainline_config(config).values
+    cfg = resolved_config["reconstruction"]
     output = Path(output).expanduser().resolve()
+    if int(resolved_config["version"]) >= 2:
+        output.mkdir(parents=True, exist_ok=True)
+        report_path = output / "adaptive_distillation_build.json"
+        if not report_path.is_file():
+            _run(
+                "topology.adaptive_distillation",
+                "--canonical-map", canonical_map,
+                "--function-graph", function_graph,
+                "--complete-positive-teacher", positive_teacher,
+                "--track-payload", track_payload,
+                "--query-cache", query_cache,
+                "--output-dir", output,
+                "--config", config,
+            )
+        report = json.loads(report_path.read_text())
+        final = Path(report["map"])
+        if not final.is_file():
+            raise RuntimeError(f"Adaptive compact map was not produced: {final}")
+        return final
     core_dir, reserve_dir = output / "track_core", output / "coverage_reserve"
     core_dir.mkdir(parents=True, exist_ok=True)
     reserve_dir.mkdir(parents=True, exist_ok=True)
@@ -651,8 +789,19 @@ def train_compact_map(
             output=teacher,
             shard_count=observation_shards,
         )
-    reconstruction = load_mainline_config(config).values["reconstruction"]
-    steps = int(reconstruction["metric_steps"])
+    resolved_config = load_mainline_config(config).values
+    reconstruction = resolved_config["reconstruction"]
+    steps = (
+        int(
+            calibrate_scene(
+                query_cache,
+                track_payload,
+                policy=resolved_config["adaptive"],
+            )["parameters"]["metric_steps"]
+        )
+        if int(resolved_config["version"]) >= 2
+        else int(reconstruction["metric_steps"])
+    )
     trained_map = output / f"anchor_map_step_{steps:04d}.pt"
     metric_state = output / f"metric_state_step_{steps:04d}.pt"
     if not trained_map.is_file() or not metric_state.is_file():

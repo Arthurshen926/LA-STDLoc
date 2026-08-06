@@ -1,9 +1,9 @@
 schema: lafgs_paper_mainline
-version: 2
+version: 1
 
 method:
   name: Rendering-to-Localization Topology Distillation
-  status: adaptive
+  status: frozen
   offline_chain:
     - frozen_rgb_gaussian_prior
     - native_superpoint_mapping_observations
@@ -42,7 +42,7 @@ initialization:
   support_mask_policy: support_rgb_only
 
 reconstruction:
-  stage_a_steps: adaptive
+  stage_a_steps: 1000
   stage_a:
     feature_learning_rate: 0.00005
     weight_decay: 0.0001
@@ -70,11 +70,11 @@ reconstruction:
     high_precision_weight: 0.02
     high_precision_start_step: 500
     high_precision_interval: 5
-  track_core: adaptive
-  minimum_rows_per_mapping_query: adaptive
-  maximum_reserve: adaptive
-  pose_reserve_additions: adaptive
-  metric_steps: adaptive
+  track_core: 8000
+  minimum_rows_per_mapping_query: 96
+  maximum_reserve: 16000
+  pose_reserve_additions: 256
+  metric_steps: 175
   metric_rank: 16
   metric_residual: 0.05
   learning_rate: 0.0002
@@ -87,15 +87,11 @@ deployment:
   sparse_frontend: ulfloc_native_metric
   query_feature_contract: native_resized_input
   keypoints: 2048
-  keypoint_reference_area_px: 2073600
-  keypoint_minimum: 1024
-  keypoint_maximum: 2048
   nms: 2
   global_topk: 1
   max_matches_per_keypoint: 0
   max_matches_per_landmark: 0
   reprojection_error_px: 12
-  reprojection_error_diagonal_fraction: 0.005447348607662378
   confidence: 0.99999
   maximum_iterations: 100000
   minimum_iterations: 1000
@@ -107,34 +103,3 @@ seeds:
   - 2026
   - 2027
   - 2028
-
-adaptive:
-  calibration_split: all_mapping_train
-  reference_image_diagonal_px: 2202.9071700822983
-  reference_effective_baseline_m: 2.06756077
-  matching_rows_fraction: 0.06
-  matching_rows_minimum: 32
-  matching_rows_maximum: 192
-  stage_a_query_epochs: 4.33
-  metric_query_epochs: 0.76
-  queries_per_pose_bin_squared: 16
-  pose_bins_minimum: 2
-  pose_bins_maximum: 8
-  task_translation_m: 0.05
-  task_rotation_deg: 5.0
-  depth_residual_fraction: 0.01
-  scaffold_safety_cap: 48000
-  track_core_minimum: 0
-  track_core_maximum: 16000
-  track_core_check_interval: 64
-  coverage_reserve_maximum: 16000
-  pose_reserve_maximum: 512
-  pose_minimum_relative_gain: 0.02
-  pose_minimum_matchability: 0.10
-  maximum_harmful_rate: 0.10
-  maximum_per_source: 1
-  maximum_per_spatial_voxel: 3
-  image_diversity_weight: 0.05
-  depth_diversity_weight: 0.05
-  voxel_diversity_weight: 0.05
-  descriptor_trim_fraction: 0.2

@@ -5,7 +5,7 @@ Gaussian scene prior and posed mapping images. Rendering primitives are treated
 as surface support, not as localization identities. The identities and PnP
 geometry are reconstructed from cross-view SuperPoint tracks.
 
-The frozen paper pipeline is:
+The adaptive paper pipeline is:
 
 ```text
 RGB Gaussian prior (frozen)
@@ -59,7 +59,7 @@ prior reconstruction, evidence construction, or map learning.
 
 ## Reconstruct
 
-The canonical command runs the complete frozen method and, by default,
+The canonical command runs the complete method and, by default,
 evaluates the official test split:
 
 ```bash
@@ -74,10 +74,12 @@ For large mapping sets, use `--function-graph-shards N --provenance-shards N
 --observation-shards N --pose-scoring-shards N`. These options evaluate
 independent query shards concurrently and deterministically merge them before
 the single global topology selection. They are exact execution backends and do
-not change the frozen method or per-query seeds.
+not change the method or per-query seeds.
 
 The seven stable CLIs under `scripts/` expose the same stages individually.
-All defaults are resolved through [`configs/paper_mainline.yaml`](configs/paper_mainline.yaml).
+All adaptive defaults are resolved through
+[`configs/paper_mainline.yaml`](configs/paper_mainline.yaml). The historical
+fixed protocol remains available as `configs/paper_mainline_frozen_v1.yaml`.
 
 ## Evaluate
 

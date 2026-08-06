@@ -7,7 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
-from common.config import load_mainline_config
+from common.config import (
+    load_mainline_config,
+    resolve_keypoint_count,
+    resolve_reprojection_error_px,
+)
 from data.datasets import ColmapDataset
 from evaluation.bootstrap import materialize_a0
 from evaluation.evaluator import evaluate_dataset
@@ -45,12 +49,15 @@ def main() -> None:
         map_path, metric_path = args.map, args.metric_state
     deployment = load_mainline_config(args.config).values["deployment"]
     dataset = ColmapDataset(args.dataset, images=args.images)
+    cameras = dataset.split(args.split)
     localizer = SparseLocalizer(
         map_path,
         metric_path,
         device=args.device,
-        keypoint_count=deployment["keypoints"],
-        reprojection_error_px=deployment["reprojection_error_px"],
+        keypoint_count=resolve_keypoint_count(deployment, cameras),
+        reprojection_error_px=resolve_reprojection_error_px(
+            deployment, cameras
+        ),
         confidence=deployment["confidence"],
         max_iterations=deployment["maximum_iterations"],
         min_iterations=deployment["minimum_iterations"],
@@ -59,7 +66,7 @@ def main() -> None:
     result = evaluate_dataset(
         dataset=dataset,
         localizer=localizer,
-        cameras=dataset.split(args.split),
+        cameras=cameras,
         output=args.output,
     )
     print(json.dumps(result["summary"], indent=2))

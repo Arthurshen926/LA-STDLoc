@@ -23,6 +23,12 @@ The mapping split is used in full; the test split is read only by the final
 evaluation stage. Re-running the command reuses only artifacts whose contracts
 match.
 
+The default V2 configuration derives pixel thresholds, metric thresholds,
+query exposure, pose/view bins, matching-rank targets, and final topology size
+from mapping-only statistics. Every resolved value is stored in
+`scene_calibration.json`. Use `configs/paper_mainline_frozen_v1.yaml` only to
+reproduce the historical fixed 48K/8K/96/256/1000/175 protocol.
+
 Use `--function-graph-shards 4 --provenance-shards 4 --observation-shards 4
 --pose-scoring-shards 4` when host memory permits parallel evidence
 construction. Shards preserve global query indices and PoseLib seeds; pose
@@ -35,13 +41,13 @@ The stable CLI sequence is `import_prior.py`, `build_evidence.py`,
 `distill_map.py`, `train_map.py`, `evaluate.py`, and `visualize.py`.
 `run_pipeline.py` invokes the same package APIs end to end.
 
-Evaluate the A0 bootstrap through the same sparse runtime by passing the frozen
-Stage-A state. The CLI materializes the 48K map with an exact identity metric:
+Evaluate the A0 bootstrap through the same sparse runtime by passing its
+Stage-A state. The CLI materializes the wide map with an exact identity metric:
 
 ```bash
 python scripts/evaluate.py \
   --dataset /data/scene \
-  --stage-state /data/run/bootstrap/stage_a/1000_lafgs_map_state.pt \
+  --stage-state /data/run/bootstrap/stage_a/STEPS_lafgs_map_state.pt \
   --output /data/run/evaluation_a0_seed2026 \
   --seed 2026
 ```

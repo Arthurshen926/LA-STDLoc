@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from common.config import OFFLINE_CHAIN, load_mainline_config
+from common.config import (
+    OFFLINE_CHAIN,
+    load_mainline_config,
+    resolve_keypoint_count,
+)
 from features.superpoint import resolve_superpoint_weights
 
 
@@ -13,6 +17,26 @@ def test_frozen_config_contract():
     assert config.values["prior"]["frozen"] is True
     assert config.values["deployment"]["global_topk"] == 1
     assert config.values["deployment"]["pose_solves"] == 1
+    assert config.values["version"] == 2
+    assert config.values["adaptive"]["calibration_split"] == "all_mapping_train"
+
+
+def test_legacy_frozen_config_remains_available():
+    config = load_mainline_config("configs/paper_mainline_frozen_v1.yaml")
+    assert config.values["version"] == 1
+    assert config.values["reconstruction"]["track_core"] == 8000
+    assert config.values["deployment"]["reprojection_error_px"] == 12
+
+
+def test_adaptive_keypoint_density_has_a_safety_floor():
+    class Camera:
+        width = 640
+        height = 480
+
+    deployment = load_mainline_config(
+        "configs/paper_mainline.yaml"
+    ).values["deployment"]
+    assert resolve_keypoint_count(deployment, [Camera()]) == 1024
 
 
 def test_unknown_config_section_fails_closed(tmp_path: Path):
