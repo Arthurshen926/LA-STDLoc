@@ -16,6 +16,38 @@ class Top1Matches:
 
 
 @torch.inference_mode()
+def suppress_duplicate_anchor_matches(matches: Top1Matches) -> Top1Matches:
+    """Keep the highest-scoring query correspondence for each anchor.
+
+    The retained rows are returned in their original query-keypoint order so
+    the option changes only correspondence multiplicity, not solver ordering.
+    """
+    count = int(matches.scores.numel())
+    if not (
+        matches.keypoint_indices.numel()
+        == matches.anchor_indices.numel()
+        == count
+    ):
+        raise ValueError("top-1 match rows do not align")
+    if count < 2:
+        return matches
+    score_order = torch.argsort(matches.scores, descending=True, stable=True)
+    anchor_order = torch.argsort(
+        matches.anchor_indices[score_order], stable=True
+    )
+    grouped = score_order[anchor_order]
+    grouped_anchors = matches.anchor_indices[grouped]
+    first = torch.ones(count, dtype=torch.bool, device=grouped.device)
+    first[1:] = grouped_anchors[1:] != grouped_anchors[:-1]
+    retained = torch.sort(grouped[first]).values
+    return Top1Matches(
+        keypoint_indices=matches.keypoint_indices[retained],
+        anchor_indices=matches.anchor_indices[retained],
+        scores=matches.scores[retained],
+    )
+
+
+@torch.inference_mode()
 def global_cosine_top1(
     query_descriptors: torch.Tensor,
     anchor_descriptors: torch.Tensor,

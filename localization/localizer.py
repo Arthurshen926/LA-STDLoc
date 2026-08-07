@@ -11,7 +11,11 @@ import torch
 import torch.nn.functional as F
 
 from localization.frontend import NativeSuperPointFrontend, SparseFeatures
-from localization.matcher import Top1Matches, global_cosine_top1
+from localization.matcher import (
+    Top1Matches,
+    global_cosine_top1,
+    suppress_duplicate_anchor_matches,
+)
 from localization.pose_solver import PoseEstimate, camera_intrinsics, solve_absolute_pose
 from map_learning.metric import SharedLowRankMetric
 
@@ -23,6 +27,7 @@ class LocalizationResult:
     pose: PoseEstimate
     intrinsic: np.ndarray
     runtime_ms: dict[str, float]
+    match_diagnostics: dict[str, int | float]
 
 
 def load_shared_metric(
@@ -53,6 +58,7 @@ class SparseLocalizer:
         max_iterations: int = 100000,
         min_iterations: int = 1000,
         seed: int = 2026,
+        suppress_duplicate_anchors: bool = False,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -83,6 +89,7 @@ class SparseLocalizer:
         self.max_iterations = int(max_iterations)
         self.min_iterations = int(min_iterations)
         self.seed = int(seed)
+        self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
 
     @torch.inference_mode()
     def localize(
@@ -105,7 +112,14 @@ class SparseLocalizer:
         frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
 
         matching_started = time.perf_counter()
-        matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
+        raw_matches = global_cosine_top1(
+            sparse.descriptors, self.anchor_features
+        )
+        matches = (
+            suppress_duplicate_anchor_matches(raw_matches)
+            if self.suppress_duplicate_anchors
+            else raw_matches
+        )
         points_2d = sparse.keypoints[matches.keypoint_indices].cpu().numpy()
         points_3d = self.anchor_xyz[matches.anchor_indices].cpu().numpy()
         synchronize()
@@ -135,5 +149,17 @@ class SparseLocalizer:
                 "matching_ms": matching_ms,
                 "ransac_ms": ransac_ms,
                 "total_ms": (time.perf_counter() - total_started) * 1000.0,
+            },
+            {
+                "top1_match_count": int(raw_matches.scores.numel()),
+                "retained_match_count": int(matches.scores.numel()),
+                "duplicate_anchor_count": int(
+                    raw_matches.scores.numel() - matches.scores.numel()
+                ),
+                "duplicate_anchor_fraction": float(
+                    1.0
+                    - matches.scores.numel()
+                    / max(int(raw_matches.scores.numel()), 1)
+                ),
             },
         )

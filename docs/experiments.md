@@ -88,3 +88,53 @@ recall improve slightly, while mean, P90, and RANSAC hypotheses do not. The
 mapping-only meaningful-improvement gate therefore rejects the revision as a
 default method. The frozen adaptive mainline and its one-shot deployment remain
 unchanged; the revision is retained as an opt-in, reproducible experiment.
+
+## Cross-fitted swap and duplicate-suppression follow-up
+
+The two remaining topology/deployment hypotheses were tested without changing
+the frozen Adaptive V3 map learner. A cross-fitted swap miner used alternating
+contiguous mapping-trajectory blocks for proposal and gate. It searched 1,576
+unused broad tracks and 3,364 unused Gaussian candidates, and proposed only
+four pairs whose positive descriptor could replace a wrong Gaussian winner on
+at least two rows. Three one-for-one swaps preserved the 119-row matching-rank
+constraint and kept the ShopFacade map at 6,357 anchors (5,726 tracks plus 631
+Gaussian reserve anchors).
+
+| ShopFacade mapping fold | Median TE | Mean TE | P90 TE | CVaR95 | Raw P@2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Selection, before | 1.801 cm | 2.720 cm | 4.489 cm | 17.427 cm | 15.583% |
+| Selection, after | 1.841 cm | 2.717 cm | 4.489 cm | 17.418 cm | 15.588% |
+| Held-out gate, before | 1.241 cm | 25.646 cm | 4.416 cm | 461.949 cm | 12.798% |
+| Held-out gate, after | 1.241 cm | 25.652 cm | 4.413 cm | 461.949 cm | 12.801% |
+
+The held-out meaningful-improvement gate rejected the swaps. Test was not
+consulted. This closes the selection-bias gap in the original prune-only
+revision and shows that the observed assignment gains do not transfer into a
+material pose improvement.
+
+The second experiment retained only the highest-cosine query match for each
+anchor before the same single PoseLib solve. It is opt-in; the default still
+passes every global top-1 correspondence to PoseLib.
+
+| Scene / method | Queries | Median TE | Mean TE | P90 TE | Raw P@2 | Inlier P@2 | Hypotheses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| ShopFacade adaptive | 103 | 1.993 cm | 4.745 cm | 8.318 cm | 9.979% | 42.538% | 4,318 |
+| ShopFacade duplicate suppression | 103 | 1.951 cm | 4.832 cm | 9.515 cm | 12.994% | 44.066% | 2,232 |
+| Heads adaptive | 1,000 | 0.498 cm | 0.620 cm | 1.144 cm | 11.142% | 24.278% | 3,713 |
+| Heads duplicate suppression | 1,000 | 2.586 cm | 2.786 cm | 4.150 cm | 1.035% | 2.000% | 2,914 |
+
+ShopFacade removes 25.0% of correspondences and approximately halves RANSAC
+hypotheses, but worsens mean, P90, and 5 cm recall. Heads removes 28.1% and
+fails structurally: descriptor score alone cannot decide which of several
+query keypoints assigned to one landmark is geometrically correct. The same
+failure appears in two seeds over the complete 1,000-query test split. Online
+one-to-one suppression is therefore a No-Go, not part of the paper method.
+
+These results trigger the predeclared stop condition for further structural
+revision. Adaptive V3 remains frozen; cross-fitted swap and duplicate
+suppression stay as reproducible negative-result modules.
+
+As a release guard, the unmodified deployment option was rerun on all 103
+ShopFacade test queries with seed 2026. Every estimated pose matrix, match
+count, error metric, precision metric, and RANSAC-iteration count exactly
+matched the registered Adaptive V3 artifact.

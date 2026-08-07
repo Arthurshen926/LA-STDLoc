@@ -1,7 +1,11 @@
 import torch
 import pytest
 
-from localization.matcher import global_cosine_top1
+from localization.matcher import (
+    Top1Matches,
+    global_cosine_top1,
+    suppress_duplicate_anchor_matches,
+)
 from localization.localizer import load_shared_metric
 from map_learning.metric import SharedLowRankMetric
 from map_learning.trainer import _update_group_dro_weights, full_refresh_interval
@@ -21,6 +25,28 @@ def test_global_matcher_has_no_landmark_cap():
     matches = global_cosine_top1(query, bank)
     assert matches.anchor_indices.tolist() == [0, 0, 1]
     assert matches.keypoint_indices.tolist() == [0, 1, 2]
+
+
+def test_duplicate_anchor_suppression_keeps_best_and_query_order():
+    matches = Top1Matches(
+        keypoint_indices=torch.tensor([2, 5, 9, 12, 20]),
+        anchor_indices=torch.tensor([4, 7, 4, 8, 7]),
+        scores=torch.tensor([0.8, 0.7, 0.9, 0.6, 0.65]),
+    )
+    retained = suppress_duplicate_anchor_matches(matches)
+    assert retained.keypoint_indices.tolist() == [5, 9, 12]
+    assert retained.anchor_indices.tolist() == [7, 4, 8]
+    assert retained.scores.tolist() == pytest.approx([0.7, 0.9, 0.6])
+
+
+def test_duplicate_anchor_suppression_breaks_score_ties_stably():
+    matches = Top1Matches(
+        keypoint_indices=torch.tensor([3, 6, 8]),
+        anchor_indices=torch.tensor([2, 2, 5]),
+        scores=torch.tensor([0.5, 0.5, 0.4]),
+    )
+    retained = suppress_duplicate_anchor_matches(matches)
+    assert retained.keypoint_indices.tolist() == [3, 8]
 
 
 def test_metric_state_must_match_anchor_registry(tmp_path):

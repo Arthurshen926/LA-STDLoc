@@ -84,6 +84,7 @@ def collect_deployment_statistics(
     seed: int,
     retrieval_topk: int = 8,
     progress_label: str = "mapping replay",
+    query_indices: list[int] | torch.Tensor | None = None,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
@@ -118,8 +119,18 @@ def collect_deployment_statistics(
     counters = {
         name: torch.zeros(count, dtype=torch.float64) for name in names_of_counters
     }
+    selected_queries = (
+        list(range(len(names)))
+        if query_indices is None
+        else [int(value) for value in torch.as_tensor(query_indices).tolist()]
+    )
+    if not selected_queries:
+        raise ValueError("deployment replay query subset is empty")
+    if min(selected_queries) < 0 or max(selected_queries) >= len(names):
+        raise ValueError("deployment replay query index is out of range")
     query_rows = []
-    for query_index, record in enumerate(teacher["records"]):
+    for completed, query_index in enumerate(selected_queries, start=1):
+        record = teacher["records"][query_index]
         cached = cache[names[query_index]]
         rows = torch.as_tensor(record["query_rows"]).long()
         descriptors = F.normalize(
@@ -232,13 +243,13 @@ def collect_deployment_statistics(
                 "hypotheses": int(estimate.diagnostics.get("iterations", 0)),
             }
         )
-        if (query_index + 1) % 25 == 0 or query_index + 1 == len(names):
+        if completed % 25 == 0 or completed == len(selected_queries):
             print(
                 json.dumps(
                     {
                         "event": progress_label,
-                        "queries_complete": query_index + 1,
-                        "query_count": len(names),
+                        "queries_complete": completed,
+                        "query_count": len(selected_queries),
                     }
                 ),
                 flush=True,

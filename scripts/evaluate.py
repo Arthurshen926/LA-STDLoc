@@ -45,6 +45,14 @@ def main() -> None:
     parser.add_argument("--split", choices=("mapping", "test"), default="test")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--suppress-duplicate-anchors",
+        action="store_true",
+        help=(
+            "Keep only the highest-score query match per landmark before the "
+            "single PoseLib solve."
+        ),
+    )
     args = parser.parse_args()
     if args.stage_state:
         if args.map or args.metric_state:
@@ -89,6 +97,7 @@ def main() -> None:
         max_iterations=deployment["maximum_iterations"],
         min_iterations=deployment["minimum_iterations"],
         seed=args.seed,
+        suppress_duplicate_anchors=args.suppress_duplicate_anchors,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -111,6 +120,9 @@ def main() -> None:
                 "calibration_split": "mapping",
                 "evaluated_split": args.split,
                 "pose_solves": 1,
+                "duplicate_anchor_suppression": bool(
+                    args.suppress_duplicate_anchors
+                ),
             },
             indent=2,
             sort_keys=True,

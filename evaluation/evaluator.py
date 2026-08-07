@@ -97,6 +97,7 @@ def evaluate_dataset(
                 "translation_error_cm": translation,
                 "keypoints": int(result.sparse_features.keypoints.shape[0]),
                 "matches": int(result.matches.scores.numel()),
+                **result.match_diagnostics,
                 "inliers": int(result.pose.inliers.size),
                 "ransac_iterations": int(result.pose.diagnostics.get("iterations", 0)),
                 **cleanliness,
@@ -135,6 +136,12 @@ def evaluate_dataset(
     )
     summary["catastrophic_100cm_count"] = int(
         np.count_nonzero(np.asarray(translation_errors) >= 100.0)
+    )
+    summary["duplicate_anchor_fraction_percent"] = 100.0 * float(
+        sum(row["duplicate_anchor_count"] for row in rows)
+    ) / max(sum(row["top1_match_count"] for row in rows), 1)
+    summary["retained_matches_mean"] = float(
+        np.mean([row["retained_match_count"] for row in rows])
     )
     for name in ("frontend_ms", "matching_ms", "ransac_ms", "total_ms"):
         values = np.asarray([row[name] for row in rows], dtype=np.float64)
