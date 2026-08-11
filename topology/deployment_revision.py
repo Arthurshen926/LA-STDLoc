@@ -40,6 +40,27 @@ def _csr_values(record: dict, prefix: str, row: int) -> torch.Tensor:
     return indices[int(offsets[row]) : int(offsets[row + 1])]
 
 
+def _csr_contains_per_row(
+    record: dict, prefix: str, values: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Vectorized CSR membership and non-empty masks for one value per row."""
+    offsets = torch.as_tensor(record[f"{prefix}_offsets"]).long()
+    indices = torch.as_tensor(record[f"{prefix}_indices"]).long()
+    values = torch.as_tensor(values).long().reshape(-1)
+    if offsets.numel() < values.numel() + 1:
+        raise ValueError(f"{prefix} CSR has fewer rows than deployment values")
+    offsets = offsets[: values.numel() + 1]
+    indices = indices[: int(offsets[-1])]
+    counts = offsets[1:] - offsets[:-1]
+    row_ids = torch.repeat_interleave(torch.arange(values.numel()), counts)
+    matched = torch.zeros(values.numel(), dtype=torch.bool)
+    if indices.numel():
+        hits = indices == values[row_ids]
+        if bool(hits.any()):
+            matched[row_ids[hits]] = True
+    return matched, counts > 0
+
+
 def _safe_percent(numerator: int, denominator: int) -> float:
     return 100.0 * float(numerator) / max(int(denominator), 1)
 
@@ -65,6 +86,9 @@ def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
         "raw_gt_precision_percent": _safe_percent(correct, raw),
         "inlier_gt_precision_percent": _safe_percent(clean, inliers),
         "solver_inlier_ratio_percent": _safe_percent(inliers, raw),
+        "retained_matches_mean": float(
+            np.mean([row["correspondences"] for row in query_rows])
+        ),
         "mean_hypotheses": float(np.mean([row["hypotheses"] for row in query_rows])),
     }
 
@@ -85,6 +109,8 @@ def collect_deployment_statistics(
     retrieval_topk: int = 8,
     progress_label: str = "mapping replay",
     query_indices: list[int] | torch.Tensor | None = None,
+    deployment_row_limit: int = 0,
+    collect_anchor_statistics: bool = True,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
@@ -133,12 +159,23 @@ def collect_deployment_statistics(
         record = teacher["records"][query_index]
         cached = cache[names[query_index]]
         rows = torch.as_tensor(record["query_rows"]).long()
+        if int(deployment_row_limit) > 0:
+            # Native detector rows are score-ranked cache indices.  A K-prefix
+            # is therefore row < K, not the first K entries of a potentially
+            # sparse teacher record.
+            rows = rows[rows < int(deployment_row_limit)]
+            if rows.numel() == 0:
+                raise ValueError(
+                    f"query {names[query_index]} has no teacher rows in requested "
+                    f"deployment prefix {int(deployment_row_limit)}"
+                )
         descriptors = F.normalize(
             torch.as_tensor(cached["native_descriptors"]).float()[rows], dim=1
         ).to(device)
         adapted, _ = metric(descriptors)
+        effective_topk = int(retrieval_topk) if collect_anchor_statistics else 1
         scores, indices = torch.topk(
-            adapted @ bank.T, k=min(int(retrieval_topk), count), dim=1
+            adapted @ bank.T, k=min(effective_topk, count), dim=1
         )
         del scores
         indices_cpu = indices.cpu()
@@ -146,27 +183,35 @@ def collect_deployment_statistics(
         counters["winner_count"].index_add_(
             0, winners, torch.ones(winners.numel(), dtype=torch.float64)
         )
-        current_correct = torch.zeros(winners.numel(), dtype=torch.bool)
-        for local, winner in enumerate(winners.tolist()):
-            positives = _csr_values(record, "positive", local)
-            ambiguous = _csr_values(record, "ambiguous", local)
-            correct = bool((positives == winner).any())
-            current_correct[local] = correct
-            if correct:
-                counters["correct_winner_count"][winner] += 1
-            elif bool((ambiguous == winner).any()):
-                counters["ambiguous_winner_count"][winner] += 1
-            elif positives.numel():
-                counters["false_attractor_count"][winner] += 1
-            replacement_correct = False
-            for alternative in indices_cpu[local, 1:].tolist():
-                if alternative == winner:
-                    continue
-                replacement_correct = bool((positives == alternative).any())
-                break
-            counters["counterfactual_clean_gain"][winner] += float(
-                replacement_correct
-            ) - float(correct)
+        current_correct, has_positive = _csr_contains_per_row(
+            record, "positive", winners
+        )
+        current_ambiguous, _ = _csr_contains_per_row(record, "ambiguous", winners)
+        correct_winners = winners[current_correct]
+        ambiguous_winners = winners[~current_correct & current_ambiguous]
+        false_winners = winners[
+            ~current_correct & ~current_ambiguous & has_positive
+        ]
+        for counter_name, selected in (
+            ("correct_winner_count", correct_winners),
+            ("ambiguous_winner_count", ambiguous_winners),
+            ("false_attractor_count", false_winners),
+        ):
+            counters[counter_name].index_add_(
+                0, selected, torch.ones(selected.numel(), dtype=torch.float64)
+            )
+        if collect_anchor_statistics:
+            for local, winner in enumerate(winners.tolist()):
+                positives = _csr_values(record, "positive", local)
+                replacement_correct = False
+                for alternative in indices_cpu[local, 1:].tolist():
+                    if alternative == winner:
+                        continue
+                    replacement_correct = bool((positives == alternative).any())
+                    break
+                counters["counterfactual_clean_gain"][winner] += float(
+                    replacement_correct
+                ) - float(current_correct[local])
 
         keypoints = torch.as_tensor(cached["native_keypoints"]).float()[rows]
         keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
@@ -201,7 +246,7 @@ def collect_deployment_statistics(
                 harmful_anchor,
                 torch.ones(harmful_anchor.numel(), dtype=torch.float64),
             )
-            if clean_anchor.numel():
+            if clean_anchor.numel() and collect_anchor_statistics:
                 clean_points = xyz[clean_anchor].double()
                 jacobian = task_scaled_pose_jacobian(
                     pose_jacobian_analytic(
@@ -241,6 +286,7 @@ def collect_deployment_statistics(
                 "inliers": int(inliers.numel()),
                 "clean_inliers": int(clean_mask.sum()),
                 "hypotheses": int(estimate.diagnostics.get("iterations", 0)),
+                "correspondences": int(rows.numel()),
             }
         )
         if completed % 25 == 0 or completed == len(selected_queries):

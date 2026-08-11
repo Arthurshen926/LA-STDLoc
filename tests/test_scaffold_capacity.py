@@ -76,6 +76,7 @@ def _resume_metadata() -> dict:
         "minimum_consensus_rate": args.ulf_consensus_min_rate,
         "distinct_view_bins": args.ulf_consensus_view_bins,
         "minimum_distinct_view_bins": args.ulf_consensus_min_distinct_view_bins,
+        "trajectory_bins_per_group": args.ulf_consensus_trajectory_bins,
         "distinct_trajectory_bins": args.ulf_consensus_trajectory_bins,
         "minimum_distinct_trajectory_bins": (
             args.ulf_consensus_min_distinct_trajectory_bins
@@ -96,3 +97,34 @@ def test_cached_adaptive_scaffold_requires_matching_policy() -> None:
     stale["consensus_sparse_keypoints"] = 2048
     with pytest.raises(ValueError, match="policy mismatch"):
         _assert_cached_consensus_scaffold(stale, _resume_args())
+
+
+def test_cached_multitrajectory_scaffold_recovers_legacy_per_group_policy() -> None:
+    metadata = _resume_metadata()
+    metadata.pop("trajectory_bins_per_group")
+    metadata["distinct_trajectory_bins"] = 16
+    metadata["views"] = [
+        {
+            "image_name": f"seq{sequence}/frame{index:04d}.png",
+            "trajectory_bin": sequence * 8 + index,
+        }
+        for sequence in range(2)
+        for index in range(8)
+    ]
+    _assert_cached_consensus_scaffold(metadata, _resume_args())
+
+
+def test_cached_multitrajectory_scaffold_rejects_legacy_bin_mismatch() -> None:
+    metadata = _resume_metadata()
+    metadata.pop("trajectory_bins_per_group")
+    metadata["distinct_trajectory_bins"] = 14
+    metadata["views"] = [
+        {
+            "image_name": f"seq{sequence}/frame{index:04d}.png",
+            "trajectory_bin": sequence * 7 + (index % 7),
+        }
+        for sequence in range(2)
+        for index in range(8)
+    ]
+    with pytest.raises(ValueError, match="trajectory_bins_per_group"):
+        _assert_cached_consensus_scaffold(metadata, _resume_args())

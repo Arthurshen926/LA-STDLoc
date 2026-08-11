@@ -902,6 +902,163 @@ def _reprojection_normal_matrix(
     )
 
 
+def _surface_supported_weak_axis_update(
+    *,
+    point: torch.Tensor,
+    reprojection_normal: torch.Tensor,
+    reprojection_covariance: torch.Tensor,
+    uv: torch.Tensor,
+    camera_K: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    rendered_depth: torch.Tensor,
+    base_weight: torch.Tensor,
+    huber_m: float,
+    maximum_correction_m: float,
+    maximum_weak_information_ratio: float,
+    minimum_depth_improvement_fraction: float,
+    maximum_reprojection_increase_px: float,
+    covariance_sigma_m: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict] | None:
+    """Use a frozen rendered surface only along triangulation's weak axis.
+
+    Real-image tracks retain ownership of identity and tangent geometry.  The
+    rendered depth is treated as one correlated, noisy measurement and must
+    pass an observation-level cross-fit before it can reduce depth uncertainty.
+    """
+    valid = torch.isfinite(rendered_depth) & (rendered_depth > 0)
+    if int(valid.sum()) < 3:
+        return None
+    eigenvalues, eigenvectors = torch.linalg.eigh(reprojection_normal)
+    if (
+        not bool(torch.isfinite(eigenvalues).all())
+        or float(eigenvalues[1]) <= 1e-12
+    ):
+        return None
+    weak_ratio = float(eigenvalues[0] / eigenvalues[1])
+    if weak_ratio > float(maximum_weak_information_ratio):
+        return None
+    weak_axis = eigenvectors[:, 0]
+    depth_jacobian = pose_w2c[:, 2, :3] @ weak_axis
+    valid &= depth_jacobian.abs() >= 1e-3
+    valid_rows = torch.nonzero(valid, as_tuple=False).flatten()
+    if valid_rows.numel() < 3:
+        return None
+
+    # Interleaving observations prevents a correction fitted to one local
+    # trajectory fragment from validating itself on the same rendered samples.
+    fit_rows = valid_rows[::2]
+    validation_rows = valid_rows[1::2]
+    if fit_rows.numel() < 2 or validation_rows.numel() < 1:
+        return None
+    projected, camera_depth = _project(point, camera_K, pose_w2c)
+    base_depth_residual = camera_depth - rendered_depth
+    base_reprojection = torch.linalg.norm(projected - uv, dim=1)
+
+    def solve_delta(rows: torch.Tensor) -> torch.Tensor:
+        coefficient = depth_jacobian[rows]
+        residual = base_depth_residual[rows]
+        weights = base_weight[rows].clamp_min(1e-6)
+        delta = -(weights * coefficient * residual).sum() / (
+            weights * coefficient.square()
+        ).sum().clamp_min(1e-12)
+        for _ in range(3):
+            revised = residual + coefficient * delta
+            robust = torch.where(
+                revised.abs() <= float(huber_m),
+                torch.ones_like(revised),
+                float(huber_m) / revised.abs().clamp_min(1e-12),
+            )
+            combined = weights * robust
+            delta = -(combined * coefficient * residual).sum() / (
+                combined * coefficient.square()
+            ).sum().clamp_min(1e-12)
+        return delta.clamp(
+            -float(maximum_correction_m), float(maximum_correction_m)
+        )
+
+    fitted_delta = solve_delta(fit_rows)
+    candidate = point + fitted_delta * weak_axis
+    candidate_projected, candidate_depth = _project(
+        candidate, camera_K, pose_w2c
+    )
+    candidate_reprojection = torch.linalg.norm(candidate_projected - uv, dim=1)
+    base_validation_depth = base_depth_residual[validation_rows].abs().median()
+    candidate_validation_depth = (
+        candidate_depth[validation_rows] - rendered_depth[validation_rows]
+    ).abs().median()
+    depth_improved = candidate_validation_depth <= base_validation_depth * (
+        1.0 - float(minimum_depth_improvement_fraction)
+    )
+    already_consistent = (
+        base_validation_depth <= float(covariance_sigma_m)
+        and candidate_validation_depth <= float(covariance_sigma_m)
+    )
+    reprojection_safe = candidate_reprojection[validation_rows].median() <= (
+        base_reprojection[validation_rows].median()
+        + float(maximum_reprojection_increase_px)
+    )
+    if not bool((depth_improved | already_consistent) & reprojection_safe):
+        return None
+
+    # Refit after the held-out gate.  Surface observations are normalized to
+    # one effective measurement because renderer errors are correlated.
+    final_delta = solve_delta(valid_rows)
+    revised_point = point + final_delta * weak_axis
+    revised_projected, revised_depth = _project(
+        revised_point, camera_K, pose_w2c
+    )
+    revised_reprojection = torch.linalg.norm(revised_projected - uv, dim=1)
+    if revised_reprojection.median() > (
+        base_reprojection.median() + float(maximum_reprojection_increase_px)
+    ):
+        return None
+    revised_depth_residual = revised_depth[valid_rows] - rendered_depth[valid_rows]
+    # A capped step that merely moves toward a distant rendered surface must
+    # not receive surface-derived covariance.  It remains a valid pure-image
+    # triangulation and falls back unchanged.
+    if revised_depth_residual.abs().median() > float(covariance_sigma_m):
+        return None
+    if revised_depth_residual.abs().median() > (
+        base_depth_residual[valid_rows].abs().median()
+        + 0.25 * float(covariance_sigma_m)
+    ):
+        return None
+
+    surface_robust = torch.where(
+        revised_depth_residual.abs() <= float(huber_m),
+        torch.ones_like(revised_depth_residual),
+        float(huber_m) / revised_depth_residual.abs().clamp_min(1e-12),
+    )
+    surface_weight = base_weight[valid_rows] * surface_robust
+    surface_weight /= surface_weight.sum().clamp_min(1e-12)
+    effective_jacobian_sq = (
+        surface_weight * depth_jacobian[valid_rows].square()
+    ).sum()
+    surface_precision = effective_jacobian_sq / max(
+        float(covariance_sigma_m) ** 2, 1e-12
+    )
+    fused_precision = torch.linalg.inv(reprojection_covariance) + (
+        surface_precision * weak_axis[:, None] * weak_axis[None, :]
+    )
+    fused_covariance = torch.linalg.inv(fused_precision)
+    fused_eigenvalues = torch.linalg.eigvalsh(fused_precision)
+    fused_condition = fused_eigenvalues[-1] / fused_eigenvalues[0].clamp_min(1e-12)
+    report = {
+        "correction_m": float(final_delta.abs()),
+        "signed_correction_m": float(final_delta),
+        "weak_information_ratio": weak_ratio,
+        "depth_before_m": float(base_depth_residual[valid_rows].abs().median()),
+        "depth_after_m": float(revised_depth_residual.abs().median()),
+        "validation_depth_before_m": float(base_validation_depth),
+        "validation_depth_after_m": float(candidate_validation_depth),
+        "reprojection_delta_px": float(
+            revised_reprojection.median() - base_reprojection.median()
+        ),
+        "observation_count": int(valid_rows.numel()),
+    }
+    return revised_point, fused_covariance, fused_condition, report
+
+
 def robust_triangulate_associations(
     *,
     landmark_count: int,
@@ -925,6 +1082,13 @@ def robust_triangulate_associations(
     maximum_covariance_trace_m2: float = float("inf"),
     maximum_rendered_depth_residual_m: float = float("inf"),
     minimum_rendered_depth_observations: int = 0,
+    surface_support_enabled: bool = False,
+    surface_support_huber_m: float = 0.02,
+    surface_support_maximum_correction_m: float = 0.08,
+    surface_support_maximum_weak_information_ratio: float = 0.25,
+    surface_support_minimum_depth_improvement_fraction: float = 0.10,
+    surface_support_maximum_reprojection_increase_px: float = 0.05,
+    surface_support_covariance_sigma_m: float = 0.02,
 ) -> dict[str, torch.Tensor]:
     """Robustly triangulate descriptor-only cross-view landmark associations."""
     previous_thread_count = torch.get_num_threads()
@@ -996,6 +1160,21 @@ def robust_triangulate_associations(
     covariance_matrix = torch.full(
         (landmark_count, 3, 3), float("nan"), dtype=torch.float64
     )
+    image_only_xyz = torch.full(
+        (landmark_count, 3), float("nan"), dtype=torch.float64
+    )
+    image_only_covariance_trace = torch.full(
+        (landmark_count,), float("inf"), dtype=torch.float64
+    )
+    image_only_covariance_matrix = torch.full(
+        (landmark_count, 3, 3), float("nan"), dtype=torch.float64
+    )
+    image_only_reprojection_median_px = torch.full(
+        (landmark_count,), float("inf"), dtype=torch.float64
+    )
+    image_only_reprojection_p90_px = torch.full(
+        (landmark_count,), float("inf"), dtype=torch.float64
+    )
     rendered_depth_signed_median_m = torch.full(
         (landmark_count,), float("nan"), dtype=torch.float64
     )
@@ -1006,6 +1185,17 @@ def robust_triangulate_associations(
         landmark_count, dtype=torch.long
     )
     triangulated = torch.zeros(landmark_count, dtype=torch.bool)
+    surface_supported = torch.zeros(landmark_count, dtype=torch.bool)
+    surface_correction_m = torch.zeros(landmark_count, dtype=torch.float64)
+    surface_weak_information_ratio = torch.full(
+        (landmark_count,), float("nan"), dtype=torch.float64
+    )
+    surface_depth_improvement_m = torch.zeros(
+        landmark_count, dtype=torch.float64
+    )
+    surface_reprojection_delta_px = torch.zeros(
+        landmark_count, dtype=torch.float64
+    )
 
     unique_landmarks, counts = torch.unique_consecutive(
         landmark_index, return_counts=True
@@ -1122,6 +1312,42 @@ def robust_triangulate_associations(
         condition = (
             reprojection_eigenvalues[-1] / reprojection_eigenvalues[0]
         )
+        image_only_xyz[landmark] = point
+        image_only_covariance_trace[landmark] = torch.trace(covariance)
+        image_only_covariance_matrix[landmark] = covariance
+        image_only_reprojection_median_px[landmark] = residual.median()
+        image_only_reprojection_p90_px[landmark] = torch.quantile(residual, 0.9)
+        surface_report = None
+        if bool(surface_support_enabled) and rendered_depth is not None:
+            surface_result = _surface_supported_weak_axis_update(
+                point=point,
+                reprojection_normal=reprojection_normal,
+                reprojection_covariance=covariance,
+                uv=uv[selected],
+                camera_K=camera_K[queries],
+                pose_w2c=pose_w2c[queries],
+                rendered_depth=rendered_depth[selected],
+                base_weight=base_weight,
+                huber_m=surface_support_huber_m,
+                maximum_correction_m=surface_support_maximum_correction_m,
+                maximum_weak_information_ratio=(
+                    surface_support_maximum_weak_information_ratio
+                ),
+                minimum_depth_improvement_fraction=(
+                    surface_support_minimum_depth_improvement_fraction
+                ),
+                maximum_reprojection_increase_px=(
+                    surface_support_maximum_reprojection_increase_px
+                ),
+                covariance_sigma_m=surface_support_covariance_sigma_m,
+            )
+            if surface_result is not None:
+                point, covariance, condition, surface_report = surface_result
+                projected, depth = _project(
+                    point, camera_K[queries], pose_w2c[queries]
+                )
+                residual = torch.linalg.norm(projected - uv[selected], dim=1)
+                finite = torch.isfinite(residual) & (depth > 0)
         triangulated_xyz[landmark] = point
         observation_count[landmark] = int(finite.sum())
         reprojection_median_px[landmark] = residual.median()
@@ -1129,6 +1355,19 @@ def robust_triangulate_associations(
         condition_number[landmark] = condition
         covariance_trace[landmark] = torch.trace(covariance)
         covariance_matrix[landmark] = covariance
+        if surface_report is not None:
+            surface_supported[landmark] = True
+            surface_correction_m[landmark] = surface_report["correction_m"]
+            surface_weak_information_ratio[landmark] = surface_report[
+                "weak_information_ratio"
+            ]
+            surface_depth_improvement_m[landmark] = (
+                surface_report["depth_before_m"]
+                - surface_report["depth_after_m"]
+            )
+            surface_reprojection_delta_px[landmark] = surface_report[
+                "reprojection_delta_px"
+            ]
         if rendered_depth is not None:
             valid_depth = (
                 finite
@@ -1185,6 +1424,19 @@ def robust_triangulate_associations(
         "triangulation_condition_number": condition_number.float(),
         "triangulation_covariance_trace": covariance_trace.float(),
         "triangulation_covariance_matrix": covariance_matrix.float(),
+        "triangulation_image_only_xyz": image_only_xyz.float(),
+        "triangulation_image_only_covariance_trace": (
+            image_only_covariance_trace.float()
+        ),
+        "triangulation_image_only_covariance_matrix": (
+            image_only_covariance_matrix.float()
+        ),
+        "triangulation_image_only_reprojection_median_px": (
+            image_only_reprojection_median_px.float()
+        ),
+        "triangulation_image_only_reprojection_p90_px": (
+            image_only_reprojection_p90_px.float()
+        ),
         "triangulation_rendered_depth_signed_median_m": (
             rendered_depth_signed_median_m.float()
         ),
@@ -1193,6 +1445,17 @@ def robust_triangulate_associations(
         ),
         "triangulation_rendered_depth_observation_count": (
             rendered_depth_observation_count
+        ),
+        "triangulation_surface_supported": surface_supported,
+        "triangulation_surface_correction_m": surface_correction_m.float(),
+        "triangulation_surface_weak_information_ratio": (
+            surface_weak_information_ratio.float()
+        ),
+        "triangulation_surface_depth_improvement_m": (
+            surface_depth_improvement_m.float()
+        ),
+        "triangulation_surface_reprojection_delta_px": (
+            surface_reprojection_delta_px.float()
         ),
     }
     torch.set_num_threads(previous_thread_count)

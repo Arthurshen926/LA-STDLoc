@@ -16,8 +16,17 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from map_learning.metric import SharedLowRankMetric
+from map_learning.alias_teacher import (
+    RecurrentAliasTeacher,
+    alias_group_ranking_loss,
+    build_recurrent_alias_teacher,
+    protected_clean_margin_loss,
+    replace_query_assignments,
+)
+from map_learning.soft_pose import soft_pose_bias_loss
 from localization.pose_solver import solve_absolute_pose
 
 
@@ -117,6 +126,71 @@ def _build_training_records(
         ),
         "query_groups": query_bins.tolist(),
     }
+
+
+def limit_training_records(
+    records: list[dict], maximum_cache_row: int
+) -> tuple[list[dict], dict]:
+    """Restrict an evidence-rich cache to a nested deployment detector prefix."""
+    maximum_cache_row = int(maximum_cache_row)
+    if maximum_cache_row <= 0:
+        return records, {
+            "deployment_row_limit": 0,
+            "deployment_rows_before": int(
+                sum(record["cache_rows"].numel() for record in records)
+            ),
+            "deployment_rows_after": int(
+                sum(record["cache_rows"].numel() for record in records)
+            ),
+        }
+    limited = []
+    before = 0
+    after = 0
+    for record in records:
+        rows = torch.as_tensor(record["cache_rows"]).long()
+        keep = rows < maximum_cache_row
+        before += int(rows.numel())
+        after += int(keep.sum())
+        revised = dict(record)
+        for key in (
+            "deployment_rows",
+            "cache_rows",
+            "positives",
+            "ignored_anchors",
+            "matchable",
+        ):
+            revised[key] = torch.as_tensor(record[key])[keep]
+        limited.append(revised)
+    if after == 0:
+        raise ValueError("deployment row limit removed every mapping observation")
+    return limited, {
+        "deployment_row_limit": maximum_cache_row,
+        "deployment_rows_before": before,
+        "deployment_rows_after": after,
+    }
+
+
+def resolve_density_prefixes(
+    records: list[dict],
+    deployment_row_limit: int,
+    fractions: tuple[float, ...],
+) -> tuple[int, ...]:
+    """Resolve scene-independent nested prefixes in native detector rank space."""
+    if not fractions:
+        raise ValueError("density prefix fractions cannot be empty")
+    values = sorted(set(float(value) for value in fractions))
+    if values[-1] != 1.0 or values[0] <= 0.0 or values[-1] > 1.0:
+        raise ValueError("density prefix fractions must lie in (0, 1] and include 1")
+    inferred = max(
+        int(torch.as_tensor(record["cache_rows"]).max().item()) + 1
+        for record in records
+        if torch.as_tensor(record["cache_rows"]).numel()
+    )
+    maximum = int(deployment_row_limit) if int(deployment_row_limit) > 0 else inferred
+    prefixes = tuple(sorted(set(max(int(round(maximum * value)), 1) for value in values)))
+    if prefixes[-1] != maximum:
+        raise RuntimeError("density prefix resolution lost the full deployment density")
+    return prefixes
 
 
 def _build_rotating_shards(groups: torch.Tensor, count: int) -> list[list[int]]:
@@ -250,18 +324,34 @@ def _refresh_ransac_outcomes(
     seed: int,
     ransac_reprojection_px: float,
     clean_reprojection_px: float,
+    deployment_row_limit: int = 0,
+    anchor_residual_parameter: torch.Tensor | None = None,
+    anchor_residual_max_norm: float = 0.0,
 ):
-    bank, _ = metric(raw_features)
+    bank, _, _ = bounded_anchor_bank(
+        metric,
+        raw_features,
+        anchor_residual_parameter,
+        anchor_residual_max_norm,
+    )
     xyz_cpu = torch.as_tensor(state["anchor_xyz"]).float()
     harmful = torch.zeros(bank.shape[0])
     clean = torch.zeros(bank.shape[0])
     harmful_pairs: dict[int, dict[int, int]] = defaultdict(dict)
     clean_pairs: dict[int, dict[int, int]] = defaultdict(dict)
+    false_top1_pairs: dict[int, dict[int, int]] = defaultdict(dict)
+    clean_margin_pairs: dict[int, dict[int, float]] = defaultdict(dict)
     group_error: dict[int, list[float]] = defaultdict(list)
     rows = []
     for query_index in np.asarray(query_indices, dtype=int).tolist():
         cached = cache[names[query_index]]
-        deployment_rows = training_records[query_index]["deployment_rows"].long()
+        record = training_records[query_index]
+        deployment_rows = record["deployment_rows"].long()
+        if int(deployment_row_limit) > 0:
+            deployment_rows = deployment_rows[deployment_rows < int(deployment_row_limit)]
+        if deployment_rows.numel() == 0:
+            continue
+        record_rows = torch.searchsorted(record["cache_rows"].long(), deployment_rows)
         descriptors = F.normalize(
             torch.as_tensor(cached["native_descriptors"]).float()[deployment_rows],
             dim=1,
@@ -271,6 +361,20 @@ def _refresh_ransac_outcomes(
             adapted @ bank.T, k=min(8, bank.shape[0]), dim=1
         )
         index = top_indices[:, 0]
+        positives = record["positives"][record_rows]
+        ignored = record["ignored_anchors"][record_rows]
+        has_positive = (positives >= 0).any(dim=1)
+        top1_positive = (
+            (positives == index.cpu()[:, None]) & (positives >= 0)
+        ).any(dim=1)
+        top1_ignored = (
+            (ignored == index.cpu()[:, None]) & (ignored >= 0)
+        ).any(dim=1)
+        false_top1 = has_positive & ~top1_positive & ~top1_ignored
+        for cache_row, anchor in zip(
+            deployment_rows[false_top1].tolist(), index.cpu()[false_top1].tolist()
+        ):
+            false_top1_pairs[query_index][int(cache_row)] = int(anchor)
         keypoint = torch.as_tensor(cached["native_keypoints"]).float()[
             deployment_rows
         ] + float(cached.get("pixel_center_offset", 0.5))
@@ -314,6 +418,12 @@ def _refresh_ransac_outcomes(
             ):
                 target = clean_pairs if is_clean else harmful_pairs
                 target[query_index][int(cache_row)] = int(anchor)
+            if top_scores.shape[1] >= 2:
+                margins = (top_scores[:, 0] - top_scores[:, 1]).detach().cpu()
+                for local in inliers[clean_mask].tolist():
+                    clean_margin_pairs[query_index][
+                        int(deployment_rows[local])
+                    ] = float(margins[local])
         rows.append(
             {
                 "query_index": query_index,
@@ -330,7 +440,48 @@ def _refresh_ransac_outcomes(
         rows,
         dict(clean_pairs),
         dict(harmful_pairs),
+        dict(false_top1_pairs),
+        dict(clean_margin_pairs),
     )
+
+
+def alias_repair_anchor_indices(
+    teacher: RecurrentAliasTeacher,
+    records: list[dict],
+    *,
+    include_positives: bool,
+) -> tuple[torch.Tensor, dict[str, int]]:
+    """Return the bounded parameter rows allowed to repair alias rankings.
+
+    A ranking repair has two map-side participants: the recurrent false winner
+    and the legal positive it beat.  Suppressing only the false winner discards
+    half of that gradient and can damage views where the winner is legitimate.
+    """
+    false_anchors = set(int(value) for value in teacher.active_anchors.tolist())
+    positive_anchors: set[int] = set()
+    if include_positives:
+        for query, assignments in teacher.row_anchors.items():
+            cache_rows = torch.as_tensor(records[int(query)]["cache_rows"]).long()
+            requested = torch.as_tensor(sorted(assignments), dtype=torch.long)
+            positions = torch.searchsorted(cache_rows, requested)
+            if bool((positions >= cache_rows.numel()).any()) or not torch.equal(
+                cache_rows[positions], requested
+            ):
+                raise ValueError("alias teacher row is absent from training record")
+            positives = torch.as_tensor(records[int(query)]["positives"]).long()[
+                positions
+            ]
+            positive_anchors.update(
+                int(value) for value in positives[positives >= 0].tolist()
+            )
+    combined = torch.as_tensor(
+        sorted(false_anchors | positive_anchors), dtype=torch.long
+    )
+    return combined, {
+        "alias_false_trainable_anchor_count": int(len(false_anchors)),
+        "alias_positive_trainable_anchor_count": int(len(positive_anchors)),
+        "alias_pair_trainable_anchor_count": int(combined.numel()),
+    }
 
 
 def _multi_positive_list_loss(
@@ -390,6 +541,24 @@ def _multi_positive_list_loss(
     return list_loss + float(harmful_weight) * harmful_loss
 
 
+def bounded_anchor_bank(
+    metric: SharedLowRankMetric,
+    raw_features: torch.Tensor,
+    anchor_residual_parameter: torch.Tensor | None,
+    maximum_norm: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Apply a shared query metric plus a bounded anchor-specific residual."""
+    shared, shared_residual = metric(raw_features)
+    if anchor_residual_parameter is None or float(maximum_norm) <= 0.0:
+        return shared, shared_residual, torch.zeros_like(shared)
+    residual = torch.as_tensor(anchor_residual_parameter)
+    norm = torch.linalg.norm(residual, dim=1, keepdim=True)
+    residual = residual * torch.clamp(
+        float(maximum_norm) / norm.clamp_min(1e-8), max=1.0
+    )
+    return F.normalize(shared + residual, dim=1), shared_residual, residual
+
+
 def _save_checkpoint(
     output_dir: Path,
     step: int,
@@ -398,12 +567,24 @@ def _save_checkpoint(
     raw_features: torch.Tensor,
     history: list[dict],
     config: dict,
+    anchor_residual_parameter: torch.Tensor | None = None,
+    anchor_residual_max_norm: float = 0.0,
 ) -> None:
     with torch.no_grad():
-        transformed, _ = metric(raw_features)
+        transformed, _, anchor_residual = bounded_anchor_bank(
+            metric,
+            raw_features,
+            anchor_residual_parameter,
+            anchor_residual_max_norm,
+        )
     output = dict(state)
     output["v7_metric_raw_features"] = raw_features.detach().cpu()
     output["anchor_features"] = transformed.detach().cpu()
+    if anchor_residual_parameter is not None:
+        output["v7_anchor_residual_parameter"] = (
+            anchor_residual_parameter.detach().cpu()
+        )
+        output["v7_anchor_residual"] = anchor_residual.detach().cpu()
     output["v7_online_metric"] = {
         "schema": "lafgs_self_localization_descriptor_reconstruction",
         "version": 1,
@@ -453,10 +634,48 @@ def train(
     group_dro_max_weight_ratio: float = 1e9,
     refresh_interval: int = 0,
     refresh_shards: int = 7,
+    initial_ransac_refresh: bool = True,
+    deployment_row_limit: int = 0,
+    density_prefix_fractions: tuple[float, ...] = (1.0,),
+    density_dro_eta: float = 0.03,
+    density_dro_max_weight_ratio: float = 3.0,
+    alias_weight: float = 0.0,
+    alias_margin: float = 0.05,
+    alias_minimum_distinct_groups: int = 2,
+    alias_minimum_queries: int = 3,
+    alias_minimum_occurrences: int = 6,
+    alias_minimum_rows_per_query: int = 2,
+    alias_query_replay_fraction: float = 0.5,
+    alias_require_harmful_inlier: bool = False,
+    protected_clean_weight: float = 0.0,
+    protected_clean_minimum_margin: float = 0.05,
+    protected_clean_margin_slack: float = 0.01,
+    protected_clean_task_scale: float = 0.25,
+    anchor_feature_residual_max_norm: float = 0.0,
+    anchor_feature_residual_trust_weight: float = 1.0,
+    anchor_feature_residual_alias_only: bool = False,
+    anchor_feature_residual_include_alias_positives: bool = False,
+    freeze_shared_metric: bool = False,
+    soft_pose_weight: float = 0.0,
+    soft_pose_topk: int = 8,
+    soft_pose_temperature: float = 0.05,
+    soft_pose_inlier_softness_px: float = 1.0,
+    soft_pose_minimum_depth: float = 1e-4,
+    soft_pose_miss_weight: float = 0.05,
+    task_translation_m: float = 0.05,
+    task_rotation_deg: float = 5.0,
     ransac_reprojection_px: float = 12.0,
     clean_reprojection_px: float = 4.0,
     seed: int = 2026,
 ) -> dict:
+    if not 0.0 <= float(alias_query_replay_fraction) <= 1.0:
+        raise ValueError("alias_query_replay_fraction must lie in [0, 1]")
+    if float(alias_weight) < 0.0 or float(protected_clean_weight) < 0.0:
+        raise ValueError("alias and protected-clean weights must be non-negative")
+    if not 0.0 <= float(protected_clean_task_scale) <= 1.0:
+        raise ValueError("protected_clean_task_scale must lie in [0, 1]")
+    if float(anchor_feature_residual_max_norm) < 0.0:
+        raise ValueError("anchor feature residual bound must be non-negative")
     torch.manual_seed(int(seed))
     device = torch.device("cuda")
     state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -468,6 +687,13 @@ def train(
     names = list(graph["query_names"])
     records, data_report = _build_training_records(
         graph, payload, state, teacher, max_positives
+    )
+    records, row_limit_report = limit_training_records(
+        records, deployment_row_limit
+    )
+    data_report.update(row_limit_report)
+    density_prefixes = resolve_density_prefixes(
+        records, deployment_row_limit, density_prefix_fractions
     )
     raw_features = F.normalize(
         torch.as_tensor(
@@ -495,20 +721,67 @@ def train(
                 "initial metric configuration differs from requested training"
             )
         metric.load_state_dict(initial_metric["metric_state_dict"])
+    if freeze_shared_metric:
+        for parameter in metric.parameters():
+            parameter.requires_grad_(False)
+    anchor_residual_parameter = None
+    if float(anchor_feature_residual_max_norm) > 0.0:
+        initial_anchor_residual = state.get(
+            "v7_anchor_residual_parameter", torch.zeros_like(raw_features.cpu())
+        )
+        anchor_residual_parameter = nn.Parameter(
+            torch.as_tensor(initial_anchor_residual).float().to(device)
+        )
+        if anchor_residual_parameter.shape != raw_features.shape:
+            raise ValueError("anchor residual state does not align with compact map")
+    parameters_to_optimize = [
+        parameter for parameter in metric.parameters() if parameter.requires_grad
+    ]
+    if anchor_residual_parameter is not None:
+        parameters_to_optimize.append(anchor_residual_parameter)
+    if not parameters_to_optimize:
+        raise ValueError("descriptor reconstruction has no trainable parameters")
     optimizer = torch.optim.AdamW(
-        metric.parameters(), lr=learning_rate, weight_decay=1e-4
+        parameters_to_optimize, lr=learning_rate, weight_decay=1e-4
     )
     groups = torch.as_tensor(data_report["query_groups"]).long()
     group_count = int(groups.max()) + 1
     group_weights = torch.ones(group_count, device=device) / group_count
     clean_pairs: dict = {}
     harmful_pairs: dict = {}
+    false_top1_pairs: dict = {}
+    clean_margin_pairs: dict = {}
+    alias_teacher = RecurrentAliasTeacher(
+        row_anchors={},
+        row_weights={},
+        active_anchors=torch.empty(0, dtype=torch.long),
+        diagnostics={
+            "observed_false_assignment_count": 0,
+            "observed_false_anchor_count": 0,
+            "solver_conditioned_alias": bool(alias_require_harmful_inlier),
+            "solver_conditioned_false_assignment_count": 0,
+            "solver_conditioned_false_anchor_count": 0,
+            "recurrent_alias_anchor_count": 0,
+            "active_alias_anchor_count": 0,
+            "active_alias_query_group_count": 0,
+            "active_alias_row_count": 0,
+            "active_alias_anchor_fraction": 0.0,
+        },
+    )
+    alias_repair_anchors = torch.empty(0, dtype=torch.long)
+    alias_repair_diagnostics = {
+        "alias_false_trainable_anchor_count": 0,
+        "alias_positive_trainable_anchor_count": 0,
+        "alias_pair_trainable_anchor_count": 0,
+    }
     generator = torch.Generator().manual_seed(int(seed) + 1)
     shards = _build_rotating_shards(groups, refresh_shards)
     refresh_index = 0
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     history = []
+    density_weights = torch.ones(len(density_prefixes), device=device)
+    density_weights /= density_weights.sum()
     config = {
         "steps": int(steps),
         "batch_size": int(batch_size),
@@ -524,6 +797,47 @@ def train(
         "group_dro_max_weight_ratio": float(group_dro_max_weight_ratio),
         "refresh_interval": int(refresh_interval),
         "refresh_shards": int(refresh_shards),
+        "initial_ransac_refresh": bool(initial_ransac_refresh),
+        "deployment_row_limit": int(deployment_row_limit),
+        "density_prefix_fractions": [float(value) for value in density_prefix_fractions],
+        "density_prefixes": list(density_prefixes),
+        "density_dro_eta": float(density_dro_eta),
+        "density_dro_max_weight_ratio": float(density_dro_max_weight_ratio),
+        "alias_weight": float(alias_weight),
+        "alias_margin": float(alias_margin),
+        "alias_minimum_distinct_groups": int(alias_minimum_distinct_groups),
+        "alias_minimum_queries": int(alias_minimum_queries),
+        "alias_minimum_occurrences": int(alias_minimum_occurrences),
+        "alias_minimum_rows_per_query": int(alias_minimum_rows_per_query),
+        "alias_query_replay_fraction": float(alias_query_replay_fraction),
+        "alias_require_harmful_inlier": bool(alias_require_harmful_inlier),
+        "protected_clean_weight": float(protected_clean_weight),
+        "protected_clean_minimum_margin": float(
+            protected_clean_minimum_margin
+        ),
+        "protected_clean_margin_slack": float(protected_clean_margin_slack),
+        "protected_clean_task_scale": float(protected_clean_task_scale),
+        "anchor_feature_residual_max_norm": float(
+            anchor_feature_residual_max_norm
+        ),
+        "anchor_feature_residual_trust_weight": float(
+            anchor_feature_residual_trust_weight
+        ),
+        "anchor_feature_residual_alias_only": bool(
+            anchor_feature_residual_alias_only
+        ),
+        "anchor_feature_residual_include_alias_positives": bool(
+            anchor_feature_residual_include_alias_positives
+        ),
+        "freeze_shared_metric": bool(freeze_shared_metric),
+        "soft_pose_weight": float(soft_pose_weight),
+        "soft_pose_topk": int(soft_pose_topk),
+        "soft_pose_temperature": float(soft_pose_temperature),
+        "soft_pose_inlier_softness_px": float(soft_pose_inlier_softness_px),
+        "soft_pose_minimum_depth": float(soft_pose_minimum_depth),
+        "soft_pose_miss_weight": float(soft_pose_miss_weight),
+        "task_translation_m": float(task_translation_m),
+        "task_rotation_deg": float(task_rotation_deg),
         "ransac_reprojection_px": float(ransac_reprojection_px),
         "clean_reprojection_px": float(clean_reprojection_px),
         "seed": int(seed),
@@ -536,38 +850,127 @@ def train(
     }
     checkpoints = set(int(value) for value in checkpoint_steps)
     for step in range(1, int(steps) + 1):
-        if step == 1 or (
-            refresh_interval > 0 and (step - 1) % int(refresh_interval) == 0
+        if (step == 1 and initial_ransac_refresh) or (
+            step > 1
+            and refresh_interval > 0
+            and (step - 1) % int(refresh_interval) == 0
         ):
             shard_index = refresh_index % len(shards)
-            harmful_prior, group_risks, outcomes, clean, harmful = (
-                _refresh_ransac_outcomes(
-                    metric=metric,
-                    raw_features=raw_features,
-                    state=state,
-                    cache=cache,
-                    names=names,
-                    groups=groups,
-                    training_records=records,
-                    device=device,
-                    query_indices=shards[shard_index],
-                    seed=seed,
-                    ransac_reprojection_px=ransac_reprojection_px,
-                    clean_reprojection_px=clean_reprojection_px,
+            refresh_results = []
+            for density_prefix in density_prefixes:
+                refresh_results.append(
+                    _refresh_ransac_outcomes(
+                        metric=metric,
+                        raw_features=raw_features,
+                        state=state,
+                        cache=cache,
+                        names=names,
+                        groups=groups,
+                        training_records=records,
+                        device=device,
+                        query_indices=shards[shard_index],
+                        seed=seed,
+                        ransac_reprojection_px=ransac_reprojection_px,
+                        clean_reprojection_px=clean_reprojection_px,
+                        deployment_row_limit=density_prefix,
+                        anchor_residual_parameter=anchor_residual_parameter,
+                        anchor_residual_max_norm=anchor_feature_residual_max_norm,
+                    )
                 )
-            )
+            (
+                harmful_prior,
+                _,
+                outcomes,
+                clean,
+                harmful,
+                refreshed_false_top1,
+                refreshed_clean_margins,
+            ) = refresh_results[-1]
             churn = _replace_refreshed_pairs(
                 clean_pairs, harmful_pairs, shards[shard_index], clean, harmful
             )
+            replace_query_assignments(
+                false_top1_pairs,
+                shards[shard_index],
+                refreshed_false_top1,
+            )
+            replace_query_assignments(
+                clean_margin_pairs,
+                shards[shard_index],
+                refreshed_clean_margins,
+            )
+            alias_teacher = build_recurrent_alias_teacher(
+                false_top1_pairs,
+                groups,
+                anchor_count=int(raw_features.shape[0]),
+                minimum_distinct_groups=alias_minimum_distinct_groups,
+                minimum_queries=alias_minimum_queries,
+                minimum_occurrences=alias_minimum_occurrences,
+                minimum_rows_per_query=alias_minimum_rows_per_query,
+                solver_harmful_assignments=(
+                    harmful_pairs if alias_require_harmful_inlier else None
+                ),
+            )
+            alias_repair_anchors, alias_repair_diagnostics = (
+                alias_repair_anchor_indices(
+                    alias_teacher,
+                    records,
+                    include_positives=(
+                        anchor_feature_residual_include_alias_positives
+                    ),
+                )
+            )
             risk = torch.zeros_like(group_weights)
-            for group, value in group_risks.items():
-                risk[group] = float(value)
+            for _, group_risks, *_ in refresh_results:
+                for group, value in group_risks.items():
+                    risk[group] = max(float(risk[group]), float(value))
             group_weights = _update_group_dro_weights(
                 group_weights,
                 risk,
                 eta=group_dro_eta,
                 maximum_uniform_ratio=group_dro_max_weight_ratio,
             )
+            density_risk = torch.as_tensor(
+                [
+                    _group_pose_risk([value["te_cm"] for value in result[2]])
+                    for result in refresh_results
+                ],
+                device=device,
+                dtype=density_weights.dtype,
+            )
+            density_weights = _update_group_dro_weights(
+                density_weights,
+                density_risk,
+                eta=density_dro_eta,
+                maximum_uniform_ratio=density_dro_max_weight_ratio,
+            )
+            density_outcomes = []
+            for prefix, result, risk_value, weight in zip(
+                density_prefixes,
+                refresh_results,
+                density_risk.tolist(),
+                density_weights.tolist(),
+            ):
+                values = result[2]
+                density_outcomes.append(
+                    {
+                        "prefix": int(prefix),
+                        "mean_te_cm": float(
+                            np.mean([value["te_cm"] for value in values])
+                        ),
+                        "risk": float(risk_value),
+                        "weight": float(weight),
+                        "mean_hypotheses": float(
+                            np.mean(
+                                [
+                                    value["hypotheses"]
+                                    for value in values
+                                    if value["hypotheses"] is not None
+                                ]
+                            )
+                        ),
+                    }
+                )
             row = {
                 "step": step - 1,
                 "event": "self_localization_refresh",
@@ -594,20 +997,74 @@ def train(
                     group_weights.sum().square()
                     / group_weights.square().sum().clamp_min(1e-8)
                 ),
+                "density_outcomes": density_outcomes,
+                "density_weight_max": float(density_weights.max()),
+                **alias_teacher.diagnostics,
+                **alias_repair_diagnostics,
                 **churn,
             }
             history.append(row)
             print(json.dumps(row), flush=True)
             refresh_index += 1
 
-        query_index = int(torch.randint(len(records), (1,), generator=generator))
+        active_alias_queries = tuple(sorted(alias_teacher.row_anchors))
+        replay_alias_query = (
+            float(alias_weight) > 0.0
+            and bool(active_alias_queries)
+            and float(torch.rand((), generator=generator))
+            < float(alias_query_replay_fraction)
+        )
+        if replay_alias_query:
+            query_index = active_alias_queries[
+                int(
+                    torch.randint(
+                        len(active_alias_queries), (1,), generator=generator
+                    )
+                )
+            ]
+        else:
+            query_index = int(torch.randint(len(records), (1,), generator=generator))
         record = records[query_index]
-        count = int(record["cache_rows"].numel())
+        query_alias_anchors = alias_teacher.row_anchors.get(query_index, {})
+        query_alias_weights = alias_teacher.row_weights.get(query_index, {})
+        density_index = (step - 1) % len(density_prefixes)
+        density_prefix = density_prefixes[density_index]
+        eligible_rows = torch.nonzero(
+            record["cache_rows"] < int(density_prefix), as_tuple=False
+        ).reshape(-1)
+        count = int(eligible_rows.numel())
         if count == 0:
             continue
-        rows = torch.randint(
-            count, (min(int(batch_size), count),), generator=generator
-        )
+        sample_count = min(int(batch_size), count)
+        if float(alias_weight) > 0.0 and query_alias_anchors:
+            mandatory_mask = torch.as_tensor(
+                [
+                    int(record["cache_rows"][row]) in query_alias_anchors
+                    for row in eligible_rows
+                ],
+                dtype=torch.bool,
+            )
+            mandatory = eligible_rows[mandatory_mask]
+            optional = eligible_rows[~mandatory_mask]
+            if mandatory.numel() > sample_count:
+                mandatory = mandatory[
+                    torch.randperm(mandatory.numel(), generator=generator)[
+                        :sample_count
+                    ]
+                ]
+            remaining = sample_count - int(mandatory.numel())
+            optional = optional[
+                torch.randperm(optional.numel(), generator=generator)[:remaining]
+            ]
+            rows = torch.cat((mandatory, optional))
+        elif float(protected_clean_weight) > 0.0:
+            rows = eligible_rows[
+                torch.randperm(count, generator=generator)[:sample_count]
+            ]
+        else:
+            rows = eligible_rows[
+                torch.randint(count, (sample_count,), generator=generator)
+            ]
         cache_rows = record["cache_rows"][rows]
         query = F.normalize(
             torch.as_tensor(cache[names[query_index]]["native_descriptors"])
@@ -655,8 +1112,43 @@ def train(
             harmful_survivors,
         )
 
+        alias_anchors = torch.as_tensor(
+            [query_alias_anchors.get(int(row), -1) for row in cache_rows],
+            dtype=torch.long,
+            device=device,
+        )
+        alias_row_weights = torch.as_tensor(
+            [query_alias_weights.get(int(row), 0.0) for row in cache_rows],
+            dtype=torch.float32,
+            device=device,
+        )
+        current_clean_margins = clean_margin_pairs.get(query_index, {})
+        protected_margin = torch.as_tensor(
+            [current_clean_margins.get(int(row), float("nan")) for row in cache_rows],
+            dtype=torch.float32,
+            device=device,
+        )
+        protected_anchor = clean_survivors.clone()
+        protect = (
+            (protected_anchor >= 0)
+            & torch.isfinite(protected_margin)
+            & (protected_margin >= float(protected_clean_minimum_margin))
+        )
+        protected_anchor[~protect] = -1
+        protected_floor = protected_margin - float(protected_clean_margin_slack)
+        protected_floor[~protect] = torch.nan
+
         adapted_query, query_residual = metric(query)
-        adapted_anchor, anchor_residual = metric(raw_features)
+        (
+            adapted_anchor,
+            shared_anchor_residual,
+            anchor_feature_residual,
+        ) = bounded_anchor_bank(
+            metric,
+            raw_features,
+            anchor_residual_parameter,
+            anchor_feature_residual_max_norm,
+        )
         list_loss = torch.zeros(adapted_query.shape[0], device=device)
         if bool(matchable.any()):
             list_loss[matchable] = _multi_positive_list_loss(
@@ -670,32 +1162,137 @@ def train(
                 harmful_weight=harmful_weight,
             )
         if bool(matchable.any()):
-            row_weights = torch.ones_like(list_loss[matchable])
+            all_row_weights = torch.ones_like(list_loss)
+            if float(protected_clean_weight) > 0.0:
+                all_row_weights[protect] = float(protected_clean_task_scale)
+            row_weights = all_row_weights[matchable]
             task_loss = (
                 (list_loss[matchable] * row_weights).sum()
                 / row_weights.sum().clamp_min(1e-8)
             )
         else:
             task_loss = torch.zeros((), device=device)
-        task_loss *= group_weights[int(record["group"])] * float(group_count)
+        alias_loss, alias_diagnostics = alias_group_ranking_loss(
+            adapted_query,
+            adapted_anchor,
+            positives,
+            alias_anchors,
+            alias_row_weights,
+            margin=alias_margin,
+            temperature=temperature,
+        )
+        protected_loss, protected_diagnostics = protected_clean_margin_loss(
+            adapted_query,
+            adapted_anchor,
+            protected_anchor,
+            protected_floor,
+        )
+        task_scale = (
+            group_weights[int(record["group"])]
+            * float(group_count)
+            * density_weights[density_index]
+            * float(len(density_prefixes))
+        )
+        task_loss *= task_scale
+        alias_loss *= task_scale
+        protected_loss *= task_scale
         trust_loss = (
             query_residual.square().sum(dim=1).mean()
-            + anchor_residual.square().sum(dim=1).mean()
+            + shared_anchor_residual.square().sum(dim=1).mean()
             + torch.zeros((), device=device)
         )
-        loss = task_loss + float(trust_weight) * trust_loss
+        anchor_feature_trust_loss = anchor_feature_residual.square().sum(dim=1).mean()
+        if float(soft_pose_weight) > 0.0:
+            cached = cache[names[query_index]]
+            keypoint_xy = (
+                torch.as_tensor(cached["native_keypoints"]).float()[cache_rows]
+                + float(cached.get("pixel_center_offset", 0.5))
+            )
+            soft_pose_loss, soft_pose_diagnostics = soft_pose_bias_loss(
+                query_features=adapted_query,
+                anchor_features=adapted_anchor,
+                anchor_xyz=torch.as_tensor(state["anchor_xyz"]).float(),
+                keypoint_xy=keypoint_xy,
+                intrinsic=torch.as_tensor(cached["native_K"]).float(),
+                pose_gt_w2c=torch.as_tensor(cached["pose_w2c"]).float(),
+                topk=soft_pose_topk,
+                temperature=soft_pose_temperature,
+                inlier_threshold_px=clean_reprojection_px,
+                inlier_softness_px=soft_pose_inlier_softness_px,
+                minimum_depth=soft_pose_minimum_depth,
+                miss_weight=soft_pose_miss_weight,
+                task_translation_m=task_translation_m,
+                task_rotation_deg=task_rotation_deg,
+            )
+        else:
+            soft_pose_loss = task_loss.new_zeros(())
+            soft_pose_diagnostics = {"soft_pose_active": 0.0}
+        loss = (
+            task_loss
+            + float(alias_weight) * alias_loss
+            + float(protected_clean_weight) * protected_loss
+            + float(trust_weight) * trust_loss
+            + float(anchor_feature_residual_trust_weight)
+            * anchor_feature_trust_loss
+            + float(soft_pose_weight) * soft_pose_loss
+        )
+        if not bool(torch.isfinite(loss).item()):
+            raise FloatingPointError(
+                "Non-finite descriptor reconstruction loss at "
+                f"step={step}, query_index={query_index}, "
+                f"task={float(task_loss.detach())}, "
+                f"alias={float(alias_loss.detach())}, "
+                f"protected={float(protected_loss.detach())}, "
+                f"trust={float(trust_loss.detach())}, "
+                f"anchor_feature_trust={float(anchor_feature_trust_loss.detach())}, "
+                f"soft_pose={float(soft_pose_loss.detach())}"
+            )
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(metric.parameters(), 1.0)
+        trainable_anchor_count = int(raw_features.shape[0])
+        if (
+            anchor_feature_residual_alias_only
+            and anchor_residual_parameter is not None
+        ):
+            trainable = torch.zeros(
+                raw_features.shape[0], dtype=torch.bool, device=device
+            )
+            active = alias_repair_anchors.to(device)
+            if active.numel():
+                trainable[active] = True
+            if anchor_residual_parameter.grad is not None:
+                anchor_residual_parameter.grad.mul_(trainable[:, None])
+            trainable_anchor_count = int(trainable.sum())
+        torch.nn.utils.clip_grad_norm_(parameters_to_optimize, 1.0)
         optimizer.step()
         if step == 1 or step % 25 == 0 or step == steps:
             row = {
                 "step": step,
                 "loss": float(loss.detach()),
                 "task_loss": float(task_loss.detach()),
+                "alias_loss": float(alias_loss.detach()),
+                "protected_clean_loss": float(protected_loss.detach()),
                 "trust_loss": float(trust_loss.detach()),
+                "anchor_feature_trust_loss": float(
+                    anchor_feature_trust_loss.detach()
+                ),
+                "anchor_feature_residual_mean": float(
+                    torch.linalg.norm(anchor_feature_residual.detach(), dim=1).mean()
+                ),
+                "anchor_feature_residual_max": float(
+                    torch.linalg.norm(anchor_feature_residual.detach(), dim=1).max()
+                ),
+                "trainable_anchor_count": int(trainable_anchor_count),
+                "soft_pose_loss": float(soft_pose_loss.detach()),
                 "matchable_fraction": float(matchable.float().mean()),
                 "group": int(record["group"]),
+                "density_prefix": int(density_prefix),
+                "density_weight": float(density_weights[density_index]),
+                "alias_query_replay": bool(replay_alias_query),
+                "active_alias_query_count": int(len(active_alias_queries)),
+                **alias_diagnostics,
+                **protected_diagnostics,
+                **soft_pose_diagnostics,
             }
             history.append(row)
             print(json.dumps(row), flush=True)
@@ -708,6 +1305,8 @@ def train(
                 raw_features,
                 history,
                 config,
+                anchor_residual_parameter=anchor_residual_parameter,
+                anchor_residual_max_norm=anchor_feature_residual_max_norm,
             )
     report = {
         "schema": "lafgs_self_localization_training",
@@ -743,6 +1342,58 @@ def main() -> None:
     parser.add_argument("--group-dro-max-weight-ratio", type=float, default=1e9)
     parser.add_argument("--refresh-interval", type=int, default=0)
     parser.add_argument("--refresh-shards", type=int, default=7)
+    parser.add_argument(
+        "--initial-ransac-refresh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--deployment-row-limit", type=int, default=0)
+    parser.add_argument("--density-prefix-fractions", default="1.0")
+    parser.add_argument("--density-dro-eta", type=float, default=0.03)
+    parser.add_argument("--density-dro-max-weight-ratio", type=float, default=3.0)
+    parser.add_argument("--alias-weight", type=float, default=0.0)
+    parser.add_argument("--alias-margin", type=float, default=0.05)
+    parser.add_argument("--alias-minimum-distinct-groups", type=int, default=2)
+    parser.add_argument("--alias-minimum-queries", type=int, default=3)
+    parser.add_argument("--alias-minimum-occurrences", type=int, default=6)
+    parser.add_argument("--alias-minimum-rows-per-query", type=int, default=2)
+    parser.add_argument("--alias-query-replay-fraction", type=float, default=0.5)
+    parser.add_argument(
+        "--alias-require-harmful-inlier",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--protected-clean-weight", type=float, default=0.0)
+    parser.add_argument("--protected-clean-minimum-margin", type=float, default=0.05)
+    parser.add_argument("--protected-clean-margin-slack", type=float, default=0.01)
+    parser.add_argument("--protected-clean-task-scale", type=float, default=0.25)
+    parser.add_argument("--anchor-feature-residual-max-norm", type=float, default=0.0)
+    parser.add_argument(
+        "--anchor-feature-residual-trust-weight", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--anchor-feature-residual-alias-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--anchor-feature-residual-include-alias-positives",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--freeze-shared-metric",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--soft-pose-weight", type=float, default=0.0)
+    parser.add_argument("--soft-pose-topk", type=int, default=8)
+    parser.add_argument("--soft-pose-temperature", type=float, default=0.05)
+    parser.add_argument("--soft-pose-inlier-softness-px", type=float, default=1.0)
+    parser.add_argument("--soft-pose-minimum-depth", type=float, default=1e-4)
+    parser.add_argument("--soft-pose-miss-weight", type=float, default=0.05)
+    parser.add_argument("--task-translation-m", type=float, default=0.05)
+    parser.add_argument("--task-rotation-deg", type=float, default=5.0)
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
     parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)
@@ -772,6 +1423,46 @@ def main() -> None:
         group_dro_max_weight_ratio=args.group_dro_max_weight_ratio,
         refresh_interval=args.refresh_interval,
         refresh_shards=args.refresh_shards,
+        initial_ransac_refresh=args.initial_ransac_refresh,
+        deployment_row_limit=args.deployment_row_limit,
+        density_prefix_fractions=tuple(
+            float(value)
+            for value in args.density_prefix_fractions.split(",")
+            if value
+        ),
+        density_dro_eta=args.density_dro_eta,
+        density_dro_max_weight_ratio=args.density_dro_max_weight_ratio,
+        alias_weight=args.alias_weight,
+        alias_margin=args.alias_margin,
+        alias_minimum_distinct_groups=args.alias_minimum_distinct_groups,
+        alias_minimum_queries=args.alias_minimum_queries,
+        alias_minimum_occurrences=args.alias_minimum_occurrences,
+        alias_minimum_rows_per_query=args.alias_minimum_rows_per_query,
+        alias_query_replay_fraction=args.alias_query_replay_fraction,
+        alias_require_harmful_inlier=args.alias_require_harmful_inlier,
+        protected_clean_weight=args.protected_clean_weight,
+        protected_clean_minimum_margin=args.protected_clean_minimum_margin,
+        protected_clean_margin_slack=args.protected_clean_margin_slack,
+        protected_clean_task_scale=args.protected_clean_task_scale,
+        anchor_feature_residual_max_norm=args.anchor_feature_residual_max_norm,
+        anchor_feature_residual_trust_weight=(
+            args.anchor_feature_residual_trust_weight
+        ),
+        anchor_feature_residual_alias_only=(
+            args.anchor_feature_residual_alias_only
+        ),
+        anchor_feature_residual_include_alias_positives=(
+            args.anchor_feature_residual_include_alias_positives
+        ),
+        freeze_shared_metric=args.freeze_shared_metric,
+        soft_pose_weight=args.soft_pose_weight,
+        soft_pose_topk=args.soft_pose_topk,
+        soft_pose_temperature=args.soft_pose_temperature,
+        soft_pose_inlier_softness_px=args.soft_pose_inlier_softness_px,
+        soft_pose_minimum_depth=args.soft_pose_minimum_depth,
+        soft_pose_miss_weight=args.soft_pose_miss_weight,
+        task_translation_m=args.task_translation_m,
+        task_rotation_deg=args.task_rotation_deg,
         ransac_reprojection_px=args.ransac_reprojection_px,
         clean_reprojection_px=args.clean_reprojection_px,
         seed=args.seed,

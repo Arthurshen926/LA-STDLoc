@@ -313,6 +313,38 @@ def _track_observation_lookup(payload: dict) -> dict[int, list[int]]:
     return observations
 
 
+def _selected_track_observation_lookup(
+    payload: dict, track_indices: torch.Tensor
+) -> dict[int, torch.Tensor]:
+    """Index only requested tracks while preserving observation order."""
+    requested = torch.as_tensor(track_indices, dtype=torch.long).reshape(-1)
+    track_rows = torch.as_tensor(
+        payload["tracks"]["track_index"], dtype=torch.long
+    ).reshape(-1)
+    if requested.numel() == 0:
+        return {}
+    if bool((requested < 0).any()):
+        raise ValueError("track indices must be non-negative")
+    selected_track = torch.zeros(
+        max(int(track_rows.max()) + 1, int(requested.max()) + 1),
+        dtype=torch.bool,
+    )
+    selected_track[requested] = True
+    observations = torch.nonzero(
+        selected_track[track_rows], as_tuple=False
+    ).reshape(-1)
+    selected_rows = track_rows[observations]
+    order = torch.argsort(selected_rows, stable=True)
+    observations = observations[order]
+    selected_rows = selected_rows[order]
+    unique, counts = torch.unique_consecutive(selected_rows, return_counts=True)
+    offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    return {
+        int(track): observations[int(offsets[row]) : int(offsets[row + 1])]
+        for row, track in enumerate(unique.tolist())
+    }
+
+
 def fuse_track_descriptors(
     *,
     payload: dict,
@@ -325,17 +357,22 @@ def fuse_track_descriptors(
     query_names = payload["query_names"]
     tracks = payload["tracks"]
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
-    observation_by_track = _track_observation_lookup(payload)
+    track_indices = torch.as_tensor(track_indices, dtype=torch.long).reshape(-1)
+    observation_by_track = _selected_track_observation_lookup(
+        payload, track_indices
+    )
+    cached_descriptors = {
+        name: torch.as_tensor(cache[name]["native_descriptors"])
+        for name in query_names
+    }
     features = []
-    for track in torch.as_tensor(track_indices, dtype=torch.long).tolist():
+    for track in track_indices.tolist():
         observations = observation_by_track[int(track)]
         query_indices = tracks["query_index"][observations].long()
         keypoint_indices = tracks["keypoint_index"][observations].long()
         descriptors = torch.stack(
             [
-                torch.as_tensor(
-                    cache[query_names[int(query)]]["native_descriptors"]
-                )[int(keypoint)]
+                cached_descriptors[query_names[int(query)]][int(keypoint)]
                 for query, keypoint in zip(
                     query_indices.tolist(), keypoint_indices.tolist()
                 )

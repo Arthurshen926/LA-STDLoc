@@ -6,6 +6,8 @@ import yaml
 from common.config import (
     OFFLINE_CHAIN,
     load_mainline_config,
+    materialize_keypoint_factor_config,
+    materialize_deployment_keypoint_config,
     resolve_keypoint_count,
     resolve_reprojection_error_px,
 )
@@ -39,6 +41,31 @@ def test_adaptive_keypoint_density_has_a_safety_floor():
         "configs/paper_mainline.yaml"
     ).values["deployment"]
     assert resolve_keypoint_count(deployment, [Camera()]) == 1024
+
+
+def test_keypoint_factor_config_locks_mapping_and_deployment_density(tmp_path):
+    path = materialize_keypoint_factor_config(
+        "configs/paper_mainline.yaml", tmp_path / "k2048.yaml", 2048
+    )
+    values = load_mainline_config(path).values
+    assert values["initialization"]["kcs_keypoints"] == 2048
+    assert values["deployment"]["keypoints"] == 2048
+    assert values["deployment"]["keypoint_minimum"] == 2048
+    assert values["deployment"]["keypoint_maximum"] == 2048
+
+
+def test_deployment_keypoint_config_preserves_evidence_density(tmp_path):
+    source = load_mainline_config("configs/paper_mainline.yaml").values
+    path = materialize_deployment_keypoint_config(
+        "configs/paper_mainline.yaml", tmp_path / "deploy2048.yaml", 2048
+    )
+    values = load_mainline_config(path).values
+    assert values["initialization"]["kcs_keypoints"] == source["initialization"][
+        "kcs_keypoints"
+    ]
+    assert values["deployment"]["keypoints"] == 2048
+    assert values["deployment"]["keypoint_minimum"] == 2048
+    assert values["deployment"]["keypoint_maximum"] == 2048
 
 
 def test_deployment_pnp_threshold_follows_focal_scale():

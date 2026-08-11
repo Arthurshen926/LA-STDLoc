@@ -34,14 +34,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--guided-sampling",
+        action="store_true",
+        help=(
+            "Sort unchanged top-1 correspondences by descriptor margin, "
+            "mapping matchability, and map uncertainty for one PoseLib PROSAC solve."
+        ),
+    )
+    parser.add_argument(
         "--stage-state",
         type=Path,
         help="Evaluate A0 by materializing a Stage-A state with an identity metric.",
     )
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--config", type=Path, default="configs/paper_mainline.yaml"
-    )
+    parser.add_argument("--config", type=Path, default="configs/paper_mainline.yaml")
     parser.add_argument("--split", choices=("mapping", "test"), default="test")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=2026)
@@ -98,6 +104,7 @@ def main() -> None:
         min_iterations=deployment["minimum_iterations"],
         seed=args.seed,
         suppress_duplicate_anchors=args.suppress_duplicate_anchors,
+        guided_sampling=args.guided_sampling,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -120,9 +127,8 @@ def main() -> None:
                 "calibration_split": "mapping",
                 "evaluated_split": args.split,
                 "pose_solves": 1,
-                "duplicate_anchor_suppression": bool(
-                    args.suppress_duplicate_anchors
-                ),
+                "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
+                "guided_sampling": bool(args.guided_sampling),
             },
             indent=2,
             sort_keys=True,

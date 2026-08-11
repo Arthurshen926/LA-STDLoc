@@ -13,6 +13,8 @@ from localization.localizer import SparseLocalizer
 from common.config import (
     load_scene_calibration,
     load_mainline_config,
+    materialize_keypoint_factor_config,
+    materialize_surface_track_config,
     resolve_keypoint_count,
     resolve_reprojection_error_px,
 )
@@ -41,15 +43,42 @@ def main() -> None:
     parser.add_argument("--pose-scoring-shards", type=int, default=1)
     parser.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--keypoints",
+        type=int,
+        choices=(1024, 2048),
+        help=(
+            "Lock detector density for mapping observations, reconstruction, "
+            "and sparse deployment in a materialized factor config."
+        ),
+    )
+    parser.add_argument(
+        "--surface-supported-tracks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable the cross-fitted weak-axis surface geometry factor.",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    config = Path(args.config)
+    if args.keypoints is not None:
+        config = materialize_keypoint_factor_config(
+            config,
+            args.output / f"factor_config_k{args.keypoints}.yaml",
+            args.keypoints,
+        )
+    if args.surface_supported_tracks:
+        config = materialize_surface_track_config(
+            config,
+            args.output / "factor_config_surface_tracks.yaml",
+        )
     artifacts = build_bootstrap_and_tracks(
         dataset=args.dataset,
         prior=args.prior,
         output=args.output,
         gaussian_type=args.gaussian_type,
         sh_degree=args.sh_degree,
-        config=args.config,
+        config=config,
     )
     prior_ply = resolve_prior_ply(args.prior)
     evidence = build_evidence(
@@ -61,11 +90,12 @@ def main() -> None:
         sh_degree=args.sh_degree,
         visibility_cache=artifacts["visibility_cache"],
         output=args.output / "evidence",
-        config=args.config,
+        config=config,
         valid_masks=args.valid_masks or None,
         function_graph_shards=args.function_graph_shards,
         provenance_shards=args.provenance_shards,
         observation_shards=args.observation_shards,
+        scene_calibration=artifacts.get("scene_calibration"),
     )
     compact_map = distill_compact_map(
         canonical_map=evidence["canonical_map"],
@@ -74,7 +104,7 @@ def main() -> None:
         track_payload=artifacts["track_payload"],
         query_cache=artifacts["query_cache"],
         output=args.output / "topology",
-        config=args.config,
+        config=config,
         pose_scoring_shards=args.pose_scoring_shards,
     )
     trained = train_compact_map(
@@ -86,10 +116,11 @@ def main() -> None:
         gaussian_type=args.gaussian_type,
         sh_degree=args.sh_degree,
         output=args.output / "map_learning",
-        config=args.config,
+        config=config,
         valid_masks=args.valid_masks or None,
         provenance_shards=args.provenance_shards,
         observation_shards=args.observation_shards,
+        scene_calibration=artifacts.get("scene_calibration"),
     )
     outputs = {
         **artifacts,
@@ -99,7 +130,7 @@ def main() -> None:
         "compact_map": compact_map,
     }
     if args.evaluate:
-        deployment = load_mainline_config(args.config).values["deployment"]
+        deployment = load_mainline_config(config).values["deployment"]
         dataset = ColmapDataset(args.dataset, images="processed")
         test_cameras = dataset.split("test")
         mapping_cameras = dataset.split("mapping")
@@ -137,6 +168,8 @@ def main() -> None:
                     "calibration_split": "mapping",
                     "evaluated_split": "test",
                     "pose_solves": 1,
+                    "duplicate_anchor_suppression": False,
+                    "guided_sampling": False,
                 },
                 indent=2,
                 sort_keys=True,

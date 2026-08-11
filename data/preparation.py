@@ -8,13 +8,17 @@ external steps so this module does not introduce a hidden prior implementation.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -69,6 +73,18 @@ class PreparedFrame:
     source_image: Path
     pose_c2w: np.ndarray
     is_test: bool
+
+
+@dataclass(frozen=True)
+class CameraRectification:
+    """A COLMAP-calibrated image remap into the canonical pinhole domain."""
+
+    pinhole: tuple[float, float, float, float]
+    remap_x: np.ndarray | None
+    remap_y: np.ndarray | None
+    valid_mask: np.ndarray
+    source_model: str
+    source_parameters: tuple[float, ...]
 
 
 def _sha256(path: Path) -> str:
@@ -144,6 +160,150 @@ def _pinhole_parameters(camera) -> tuple[float, float, float, float]:
         f"Unsupported reference camera model {camera.model!r}; "
         "LaFGS requires a pinhole-compatible RGB model"
     )
+
+
+def _camera_rectification(camera) -> CameraRectification:
+    """Build a same-resolution COLMAP-to-OpenCV rectification map.
+
+    COLMAP coordinates place the top-left pixel center at ``(0.5, 0.5)``;
+    OpenCV's remap grid uses ``(0, 0)``.  Shifting the principal point by half
+    a pixel while constructing the remap preserves the coordinate contract
+    used by sparse keypoints and PnP throughout LaFGS.
+    """
+    params = np.asarray(camera.params, dtype=np.float64)
+    fx, fy, cx, cy = _pinhole_parameters(camera)
+    width, height = int(camera.width), int(camera.height)
+    if camera.model in {"SIMPLE_PINHOLE", "PINHOLE"}:
+        return CameraRectification(
+            pinhole=(fx, fy, cx, cy),
+            remap_x=None,
+            remap_y=None,
+            valid_mask=np.ones((height, width), dtype=np.bool_),
+            source_model=str(camera.model),
+            source_parameters=tuple(float(value) for value in params),
+        )
+    if camera.model == "SIMPLE_RADIAL":
+        if params.size != 4:
+            raise ValueError(f"Invalid SIMPLE_RADIAL camera {camera.id}")
+        distortion = np.array([params[3], 0.0, 0.0, 0.0, 0.0])
+    elif camera.model == "OPENCV":
+        if params.size != 8:
+            raise ValueError(f"Invalid OPENCV camera {camera.id}")
+        distortion = np.array(
+            [params[4], params[5], params[6], params[7], 0.0],
+            dtype=np.float64,
+        )
+    else:
+        raise ValueError(
+            f"Unsupported reference camera model {camera.model!r}; "
+            "LaFGS requires a pinhole-compatible RGB model"
+        )
+
+    camera_matrix = np.array(
+        [[fx, 0.0, cx - 0.5], [0.0, fy, cy - 0.5], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    remap_x, remap_y = cv2.initUndistortRectifyMap(
+        camera_matrix,
+        distortion,
+        np.eye(3, dtype=np.float64),
+        camera_matrix,
+        (width, height),
+        cv2.CV_32FC1,
+    )
+    source_support = np.ones((height, width), dtype=np.uint8)
+    valid_mask = cv2.remap(
+        source_support,
+        remap_x,
+        remap_y,
+        interpolation=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ).astype(np.bool_)
+    return CameraRectification(
+        pinhole=(fx, fy, cx, cy),
+        remap_x=remap_x,
+        remap_y=remap_y,
+        valid_mask=valid_mask,
+        source_model=str(camera.model),
+        source_parameters=tuple(float(value) for value in params),
+    )
+
+
+def _write_rectified_image(
+    source: Path,
+    target: Path,
+    rectification: CameraRectification,
+) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"Refusing to replace rectified image {target}")
+    expected_size = (
+        int(rectification.valid_mask.shape[1]),
+        int(rectification.valid_mask.shape[0]),
+    )
+    with Image.open(source) as image:
+        if image.size != expected_size:
+            raise ValueError(
+                f"Image/calibration size mismatch for {source}: "
+                f"{image.size} != {expected_size}"
+            )
+        value = (
+            np.asarray(image.convert("RGB"))
+            if rectification.remap_x is not None
+            else None
+        )
+    if rectification.remap_x is None:
+        _link(source, target)
+        return
+    rectified = cv2.remap(
+        value,
+        rectification.remap_x,
+        rectification.remap_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    save_kwargs = {}
+    if target.suffix.lower() in {".jpg", ".jpeg"}:
+        save_kwargs = {"quality": 95, "subsampling": 0}
+    elif target.suffix.lower() == ".png":
+        save_kwargs = {"compress_level": 1}
+    Image.fromarray(rectified).save(target, **save_kwargs)
+
+
+def _write_rectified_images(tasks) -> None:
+    workers = min(8, max(1, os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(_write_rectified_image, *task) for task in tasks]
+        for future in futures:
+            future.result()
+
+
+def _rectification_manifest(camera, value: CameraRectification) -> dict:
+    height, width = value.valid_mask.shape
+    if value.remap_x is None:
+        max_displacement = 0.0
+    else:
+        grid_x, grid_y = np.meshgrid(
+            np.arange(width, dtype=np.float32),
+            np.arange(height, dtype=np.float32),
+        )
+        displacement = np.hypot(value.remap_x - grid_x, value.remap_y - grid_y)
+        max_displacement = float(displacement.max())
+    fx, fy, cx, cy = value.pinhole
+    return {
+        "source_model": value.source_model,
+        "source_parameters": list(value.source_parameters),
+        "output_model": "PINHOLE",
+        "output_parameters": [fx, fy, cx, cy],
+        "output_width": int(camera.width),
+        "output_height": int(camera.height),
+        "maximum_remap_displacement_px": max_displacement,
+        "valid_pixel_fraction": float(value.valid_mask.mean()),
+        "interpolation": "opencv_linear",
+        "pixel_center_conversion": "colmap_plus_half_to_opencv_zero",
+    }
 
 
 def _sequence_names(path: Path) -> tuple[str, ...]:
@@ -407,9 +567,13 @@ def prepare_reference_model_scene(
     sparse.mkdir(parents=True, exist_ok=True)
     prior_sparse.mkdir(parents=True, exist_ok=True)
 
-    camera_lines = ["# Canonical pinhole cameras from the published reference model."]
+    rectifications = {
+        int(camera_id): _camera_rectification(camera)
+        for camera_id, camera in sorted(cameras.items())
+    }
+    camera_lines = ["# Rectified pinhole cameras from the published reference model."]
     for camera_id, camera in sorted(cameras.items()):
-        fx, fy, cx, cy = _pinhole_parameters(camera)
+        fx, fy, cx, cy = rectifications[int(camera_id)].pinhole
         camera_lines.append(
             f"{camera_id} PINHOLE {int(camera.width)} {int(camera.height)} "
             f"{fx:.17g} {fy:.17g} {cx:.17g} {cy:.17g}"
@@ -423,18 +587,30 @@ def prepare_reference_model_scene(
         "# Mapping-only published pseudo-GT cameras; reference points discarded."
     ]
     mapping_count = 0
+    rectification_tasks = []
+    mask_channels = {}
+    camera_masks = {
+        camera_id: (
+            np.ones_like(value.valid_mask),
+            np.ones_like(value.valid_mask),
+            value.valid_mask,
+        )
+        for camera_id, value in rectifications.items()
+    }
     for name, image in sorted(registered.items()):
         camera = cameras.get(int(image.camera_id))
         if camera is None:
             raise ValueError(f"Image {name!r} refers to missing camera {image.camera_id}")
         source_image = _resolve_reference_image(source, name)
-        with Image.open(source_image) as value:
-            if value.size != (int(camera.width), int(camera.height)):
-                raise ValueError(
-                    f"Image/calibration size mismatch for {source_image}: "
-                    f"{value.size} != {(int(camera.width), int(camera.height))}"
-                )
-        _link(source_image, processed / name)
+        processed_image = processed / name
+        rectification_tasks.append(
+            (
+                source_image,
+                processed_image,
+                rectifications[int(image.camera_id)],
+            )
+        )
+        mask_channels[name] = camera_masks[int(image.camera_id)]
         values = [
             int(image.id),
             *np.asarray(image.qvec, dtype=np.float64).tolist(),
@@ -446,8 +622,23 @@ def prepare_reference_model_scene(
         all_lines.extend((row, ""))
         if name not in test_names:
             mapping_count += 1
-            _link(source_image, prior_images / name)
-            mapping_lines.extend((row, ""))
+            _link(processed_image, prior_images / name)
+            # A mapping-only subset can inherit sparse, non-contiguous image
+            # IDs from the full reference model.  Reindex it so COLMAP's
+            # single-camera frame IDs remain a closed 1..N registry during
+            # known-pose triangulation.
+            mapping_values = [
+                mapping_count,
+                *np.asarray(image.qvec, dtype=np.float64).tolist(),
+                *np.asarray(image.tvec, dtype=np.float64).tolist(),
+                int(image.camera_id),
+                name,
+            ]
+            mapping_lines.extend((" ".join(map(str, mapping_values)), ""))
+
+    _write_rectified_images(rectification_tasks)
+    with (output / "masks.pkl").open("wb") as handle:
+        pickle.dump(mask_channels, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     (sparse / "images.txt").write_text("\n".join(all_lines) + "\n")
     (prior_sparse / "images.txt").write_text("\n".join(mapping_lines) + "\n")
@@ -473,9 +664,21 @@ def prepare_reference_model_scene(
             str(camera_id): np.asarray(camera.params, dtype=np.float64).tolist()
             for camera_id, camera in sorted(cameras.items())
         },
-        "camera_model_normalization": (
-            "pinhole_focal_principal_point; distortion coefficients ignored"
-        ),
+        "camera_model_normalization": "calibrated_undistortion_to_pinhole",
+        "prior_input_image_ids": "contiguous_mapping_only_1_based",
+        "undistortion": {
+            "enabled": any(
+                value.remap_x is not None for value in rectifications.values()
+            ),
+            "mapping_and_test_share_domain": True,
+            "camera_models": {
+                str(camera_id): _rectification_manifest(
+                    cameras[camera_id], rectifications[camera_id]
+                )
+                for camera_id in sorted(rectifications)
+            },
+            "valid_masks": "masks.pkl",
+        },
         "reference_test_list_sha256": _sha256(test_list),
         "camera_convention": "COLMAP_world_to_camera",
         "pixel_center_convention": "grid_index_plus_half_at_pnp",

@@ -166,10 +166,17 @@ def read_intrinsics_text(path):
                 elems = line.split()
                 camera_id = int(elems[0])
                 model = elems[1]
-                assert model == "PINHOLE", "While the loader support other types, the rest of the code assumes PINHOLE"
+                if model not in CAMERA_MODEL_NAMES:
+                    raise ValueError(f"Unsupported COLMAP camera model: {model}")
                 width = int(elems[2])
                 height = int(elems[3])
                 params = np.array(tuple(map(float, elems[4:])))
+                expected = CAMERA_MODEL_NAMES[model].num_params
+                if params.size != expected:
+                    raise ValueError(
+                        f"Camera {camera_id} model {model} expects {expected} "
+                        f"parameters, got {params.size}"
+                    )
                 cameras[camera_id] = Camera(id=camera_id, model=model,
                                             width=width, height=height,
                                             params=params)

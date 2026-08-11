@@ -138,3 +138,59 @@ As a release guard, the unmodified deployment option was rerun on all 103
 ShopFacade test queries with seed 2026. Every estimated pose matrix, match
 count, error metric, precision metric, and RANSAC-iteration count exactly
 matched the registered Adaptive V3 artifact.
+
+## Geometry, one-shot guidance, and targeted descriptor follow-up
+
+Three remaining hypotheses were implemented as opt-in mapping-only revisions.
+Adaptive V3 remains the default. Geometry and descriptor revisions used
+disjoint temporal fit, point-validation, and pose-gate blocks. Guided sampling
+used fixed all-mapping matchability statistics and a complete mapping replay;
+it is therefore a weaker development gate, not a cross-fitted claim. None of
+the three inspected test queries before its declared mapping gate.
+
+The first revision refined only the 633 selected Gaussian reserve positions in
+their source-splat local tangent/normal frames. Mapping positives supplied the
+reprojection term, while source 2DGS scales and the calibrated surface bounds
+formed the trust region. Of 62 reserve anchors with sufficient three-way
+observations, 34 passed point validation. Their median displacement was 0.521
+cm (P90 1.132 cm, maximum 3.086 cm). On 75 unseen mapping views, median/mean/P90
+changed from 1.972/3.464/4.150 cm to 1.955/3.461/4.126 cm, so the weak-positive
+gate passed.
+
+| ShopFacade test, three-seed mean | Median TE | Mean TE | P90 TE | Raw P@2 | Inlier P@2 | Hypotheses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Adaptive V3 | 1.993 cm | 4.7449 cm | 8.318 cm | 9.979% | 42.538% | 4,318.2 |
+| Bounded reserve geometry | 1.993 cm | 4.7438 cm | 8.321 cm | 9.981% | 42.545% | 4,318.1 |
+
+The full test result is effectively neutral: mean and precision improve by a
+noise-level amount, P90 worsens by 0.002 cm, and recall is unchanged. The
+geometry branch is therefore valid evidence that bounded surface refinement
+can operate safely, but it is not promoted to the default method.
+
+The second revision preserved every global top-1 correspondence and sorted it
+by descriptor margin, mapping-derived anchor matchability, and normalized 3D
+covariance before one PoseLib PROSAC solve. The mapping gate showed a small P90
+improvement (4.622 to 4.527 cm), but only 25 of 231 poses changed and RANSAC
+hypotheses fell by just 0.77%. The complete test result rejected the hypothesis:
+
+| ShopFacade test, three-seed mean | Median TE | Mean TE | P90 TE | CVaR95 | Hypotheses |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Standard one-shot PoseLib | 1.993 cm | 4.7438 cm | 8.321 cm | 39.738 cm | 4,318.1 |
+| Guided one-shot PoseLib | 1.993 cm | 4.7535 cm | 8.321 cm | 39.799 cm | 4,321.2 |
+
+The final revision calibrated only Gaussian reserve descriptors that repeatedly
+won an incorrect mapping top-1 while retaining legal positives in disjoint fit
+and validation blocks. Descriptor changes were bounded to 0.025, and validation
+required fewer false wins without losing any existing correct wins. Seven
+anchors had sufficient cross-fitted evidence and two passed anchor-level
+validation. On the unseen pose gate, mean changed by 0.00013 cm, P90 by 0.0062
+cm, and raw P@2 was identical. This did not meet the predeclared meaningful
+improvement threshold, so test was not run.
+
+Together these experiments narrow the remaining limitation: reserve geometry
+and isolated harmful descriptors can be changed safely, but neither is the
+dominant ShopFacade error source. Mapping-only reliability ordering also does
+not transfer into better one-shot RANSAC behavior. The frozen Adaptive V3
+topology, descriptors, and standard PoseLib deployment remain the registered
+mainline; complete multi-scene benchmarking has higher value than further
+single-scene local revisions.

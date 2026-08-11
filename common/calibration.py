@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,6 +14,68 @@ import torch
 REFERENCE_IMAGE_DIAGONAL_PX = math.hypot(1920.0, 1080.0)
 REFERENCE_FOCAL_PX = 1672.028076171875
 REFERENCE_EFFECTIVE_BASELINE_M = 2.06756077
+
+
+def query_calibration_sidecar_path(query_cache_path: str | Path) -> Path:
+    path = Path(query_cache_path)
+    return path.with_suffix(".calibration.pt")
+
+
+def write_query_calibration_sidecar(
+    query_cache_path: str | Path,
+    query_cache: Mapping[str, Any],
+) -> Path:
+    """Persist only the mapping metadata required by scene calibration."""
+    source = Path(query_cache_path).expanduser().resolve()
+    stat = source.stat()
+    output = query_calibration_sidecar_path(source)
+    if output.is_file():
+        existing = torch.load(output, map_location="cpu", weights_only=False)
+        if (
+            existing.get("schema") == "lafgs_query_calibration_sidecar"
+            and existing.get("source_size") == stat.st_size
+            and existing.get("source_mtime_ns") == stat.st_mtime_ns
+        ):
+            return output
+    records = {}
+    for name, record in _queries(query_cache).items():
+        keypoint_count = record.get("native_keypoint_count")
+        if keypoint_count is None:
+            keypoint_count = torch.as_tensor(record["native_keypoints"]).shape[0]
+        records[name] = {
+            "pose_w2c": torch.as_tensor(record["pose_w2c"]).detach().cpu(),
+            "native_input_hw": [int(value) for value in record["native_input_hw"]],
+            "native_K": torch.as_tensor(record["native_K"]).detach().cpu(),
+            "native_keypoint_count": int(keypoint_count),
+        }
+    payload = {
+        "schema": "lafgs_query_calibration_sidecar",
+        "version": 1,
+        "source_query_cache": str(source),
+        "source_size": stat.st_size,
+        "source_mtime_ns": stat.st_mtime_ns,
+        "queries": records,
+    }
+    temporary = output.with_name(f".{output.name}.tmp.{os.getpid()}")
+    torch.save(payload, temporary)
+    os.replace(temporary, output)
+    return output
+
+
+def _load_query_calibration_payload(query_cache_path: str | Path) -> Mapping[str, Any]:
+    source = Path(query_cache_path).expanduser().resolve()
+    sidecar = query_calibration_sidecar_path(source)
+    if sidecar.is_file():
+        payload = torch.load(sidecar, map_location="cpu", weights_only=False)
+        stat = source.stat()
+        if (
+            payload.get("schema") == "lafgs_query_calibration_sidecar"
+            and payload.get("source_query_cache") == str(source)
+            and payload.get("source_size") == stat.st_size
+            and payload.get("source_mtime_ns") == stat.st_mtime_ns
+        ):
+            return payload
+    return torch.load(source, map_location="cpu", weights_only=False)
 
 
 def _quantile(values: torch.Tensor, value: float, fallback: float) -> float:
@@ -167,9 +230,10 @@ def derive_mapping_statistics(
         diagonals.append(math.hypot(width, height))
         K = torch.as_tensor(record["native_K"]).double()
         focals.append(math.sqrt(float(K[0, 0] * K[1, 1])))
-        keypoint_counts.append(
-            int(torch.as_tensor(record["native_keypoints"]).shape[0])
-        )
+        keypoint_count = record.get("native_keypoint_count")
+        if keypoint_count is None:
+            keypoint_count = torch.as_tensor(record["native_keypoints"]).shape[0]
+        keypoint_counts.append(int(keypoint_count))
     diagonal = torch.as_tensor(diagonals, dtype=torch.float64)
     focal = torch.as_tensor(focals, dtype=torch.float64)
     counts = torch.as_tensor(keypoint_counts, dtype=torch.float64)
@@ -324,9 +388,7 @@ def calibrate_scene(
     track_payload_path: str | Path | None = None,
     policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    query_cache = torch.load(
-        Path(query_cache_path), map_location="cpu", weights_only=False
-    )
+    query_cache = _load_query_calibration_payload(query_cache_path)
     track_payload = (
         torch.load(Path(track_payload_path), map_location="cpu", weights_only=False)
         if track_payload_path is not None

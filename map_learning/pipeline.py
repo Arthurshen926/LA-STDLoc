@@ -17,7 +17,52 @@ import time
 from common.calibration import calibrate_scene
 from common.config import load_mainline_config, resolve_keypoint_count
 from data.datasets import ColmapDataset
-from map_learning.trainer import train
+from map_learning.trainer import full_refresh_interval, train
+
+
+def _read_exact_scene_calibration(
+    *,
+    query_cache: str | Path,
+    track_payload: str | Path,
+    policy: dict,
+    cached_path: str | Path | None,
+) -> dict | None:
+    query_cache = Path(query_cache).expanduser().resolve()
+    track_payload = Path(track_payload).expanduser().resolve()
+    if cached_path is not None:
+        cached_path = Path(cached_path).expanduser().resolve()
+        if cached_path.is_file():
+            cached = json.loads(cached_path.read_text())
+            sources = cached.get("sources", {})
+            if (
+                cached.get("schema") == "lafgs_mapping_only_scene_calibration"
+                and int(cached.get("version", 0)) >= 2
+                and cached.get("policy") == dict(policy)
+                and sources.get("query_cache") == str(query_cache)
+                and sources.get("track_payload") == str(track_payload)
+                and sources.get("uses_test_queries") is False
+            ):
+                return cached
+    return None
+
+
+def _load_or_compute_scene_calibration(
+    *,
+    query_cache: str | Path,
+    track_payload: str | Path,
+    policy: dict,
+    cached_path: str | Path | None = None,
+) -> dict:
+    """Reuse an exact mapping-only calibration instead of reloading a large cache."""
+    cached = _read_exact_scene_calibration(
+        query_cache=query_cache,
+        track_payload=track_payload,
+        policy=policy,
+        cached_path=cached_path,
+    )
+    if cached is not None:
+        return cached
+    return calibrate_scene(query_cache, track_payload, policy=policy)
 
 
 def _run(module: str, *arguments: object) -> None:
@@ -621,6 +666,31 @@ def build_bootstrap_and_tracks(
             "--steps", 0,
             "--save_steps", 0,
         ]
+        geometry_policy = cfg.get("geometry", {})
+        if bool(geometry_policy.get("surface_supported_tracks", False)):
+            depth_sigma = float(
+                geometry_policy.get(
+                    "surface_covariance_sigma_m",
+                    resolved_parameters["depth_residual_m"]
+                    if resolved_parameters is not None else 0.02,
+                )
+            )
+            correction_scale = float(
+                geometry_policy.get("surface_max_correction_depth_sigmas", 4.0)
+            )
+            track_args += [
+                "--geometry_teacher_surface_support",
+                "--geometry_teacher_surface_huber_m", depth_sigma,
+                "--geometry_teacher_surface_covariance_sigma_m", depth_sigma,
+                "--geometry_teacher_surface_max_correction_m",
+                depth_sigma * correction_scale,
+                "--geometry_teacher_surface_max_weak_information_ratio",
+                geometry_policy.get("surface_max_weak_information_ratio", 0.25),
+                "--geometry_teacher_surface_min_depth_improvement_fraction",
+                geometry_policy.get("surface_min_depth_improvement_fraction", 0.10),
+                "--geometry_teacher_surface_max_reprojection_increase_px",
+                geometry_policy.get("surface_max_reprojection_increase_px", 0.05),
+            ]
         if gaussian_type == "2dgs":
             track_args += [
                 "--geometry_teacher_provenance_topk", 4,
@@ -635,42 +705,65 @@ def build_bootstrap_and_tracks(
 
     track_payload = build_track_payload(track_dir, parameters)
     if adaptive and query_cache.is_file() and track_payload.is_file():
-        full_calibration = calibrate_scene(
-            query_cache, track_payload, policy=adaptive
-        )
-        preliminary_scale = float(parameters["metric_scale"])
-        full_scale = float(full_calibration["parameters"]["metric_scale"])
-        scale_ratio = full_scale / max(preliminary_scale, 1e-12)
-        relative_drift = max(scale_ratio, 1.0 / max(scale_ratio, 1e-12)) - 1.0
-        threshold = float(
-            adaptive.get("calibration_rebuild_relative_drift", 0.25)
-        )
-        rebuilt = relative_drift > threshold
-        if rebuilt:
-            track_payload = build_track_payload(
-                run / "tracks_refined", full_calibration["parameters"]
+        cached_calibration_path = run / "scene_calibration.json"
+        cached_track_payload = None
+        if cached_calibration_path.is_file():
+            cached_sources = json.loads(
+                cached_calibration_path.read_text()
+            ).get("sources", {})
+            cached_track_value = cached_sources.get("track_payload")
+            if cached_track_value:
+                candidate = Path(cached_track_value).expanduser().resolve()
+                if candidate.is_file():
+                    cached_track_payload = candidate
+        if cached_track_payload is not None:
+            full_calibration = _read_exact_scene_calibration(
+                query_cache=query_cache,
+                track_payload=cached_track_payload,
+                policy=adaptive,
+                cached_path=cached_calibration_path,
             )
-            refined = calibrate_scene(query_cache, track_payload, policy=adaptive)
-            refined["refinement"] = {
-                "preliminary_to_full_scale_ratio": scale_ratio,
-                "relative_drift": relative_drift,
-                "rebuild_threshold": threshold,
-                "track_evidence_rebuilt": True,
-                "first_pass_track_payload": str(
-                    (track_dir / "track_micro_anchor_payload.pt").resolve()
-                ),
-            }
-            full_calibration = refined
         else:
-            full_calibration["refinement"] = {
-                "preliminary_to_full_scale_ratio": scale_ratio,
-                "relative_drift": relative_drift,
-                "rebuild_threshold": threshold,
-                "track_evidence_rebuilt": False,
-            }
-        (run / "scene_calibration.json").write_text(
-            json.dumps(full_calibration, indent=2, sort_keys=True) + "\n"
-        )
+            full_calibration = None
+        if full_calibration is not None:
+            track_payload = cached_track_payload
+        else:
+            full_calibration = calibrate_scene(
+                query_cache, track_payload, policy=adaptive
+            )
+            preliminary_scale = float(parameters["metric_scale"])
+            full_scale = float(full_calibration["parameters"]["metric_scale"])
+            scale_ratio = full_scale / max(preliminary_scale, 1e-12)
+            relative_drift = max(scale_ratio, 1.0 / max(scale_ratio, 1e-12)) - 1.0
+            threshold = float(
+                adaptive.get("calibration_rebuild_relative_drift", 0.25)
+            )
+            rebuilt = relative_drift > threshold
+            if rebuilt:
+                track_payload = build_track_payload(
+                    run / "tracks_refined", full_calibration["parameters"]
+                )
+                refined = calibrate_scene(query_cache, track_payload, policy=adaptive)
+                refined["refinement"] = {
+                    "preliminary_to_full_scale_ratio": scale_ratio,
+                    "relative_drift": relative_drift,
+                    "rebuild_threshold": threshold,
+                    "track_evidence_rebuilt": True,
+                    "first_pass_track_payload": str(
+                        (track_dir / "track_micro_anchor_payload.pt").resolve()
+                    ),
+                }
+                full_calibration = refined
+            else:
+                full_calibration["refinement"] = {
+                    "preliminary_to_full_scale_ratio": scale_ratio,
+                    "relative_drift": relative_drift,
+                    "rebuild_threshold": threshold,
+                    "track_evidence_rebuilt": False,
+                }
+            cached_calibration_path.write_text(
+                json.dumps(full_calibration, indent=2, sort_keys=True) + "\n"
+            )
     artifacts = {
         "base_state": stage_state,
         "track_payload": track_payload,
@@ -701,16 +794,18 @@ def build_evidence(
     function_graph_shards: int = 1,
     provenance_shards: int = 1,
     observation_shards: int = 1,
+    scene_calibration: str | Path | None = None,
 ) -> dict[str, Path]:
     """Build the frozen canonical map and real-image localization evidence."""
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     resolved_config = load_mainline_config(config).values
     calibration = (
-        calibrate_scene(
-            query_cache,
-            track_payload,
+        _load_or_compute_scene_calibration(
+            query_cache=query_cache,
+            track_payload=track_payload,
             policy=resolved_config["adaptive"],
+            cached_path=scene_calibration,
         )
         if int(resolved_config["version"]) >= 2
         else None
@@ -996,16 +1091,22 @@ def train_compact_map(
     valid_masks: str | Path | None = None,
     provenance_shards: int = 1,
     observation_shards: int = 1,
+    scene_calibration: str | Path | None = None,
+    refresh_all_ransac_shards: bool = False,
+    refresh_shards: int = 7,
+    deployment_row_limit: int = 0,
+    soft_pose_weight: float = 0.0,
 ) -> dict[str, Path]:
     """Rebuild compact-map labels, then run frozen A1 reconstruction."""
     output = Path(output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     resolved_config = load_mainline_config(config).values
     calibration = (
-        calibrate_scene(
-            query_cache,
-            track_payload,
+        _load_or_compute_scene_calibration(
+            query_cache=query_cache,
+            track_payload=track_payload,
             policy=resolved_config["adaptive"],
+            cached_path=scene_calibration,
         )
         if int(resolved_config["version"]) >= 2
         else None
@@ -1072,14 +1173,8 @@ def train_compact_map(
         )
     reconstruction = resolved_config["reconstruction"]
     steps = (
-        int(
-            calibrate_scene(
-                query_cache,
-                track_payload,
-                policy=resolved_config["adaptive"],
-            )["parameters"]["metric_steps"]
-        )
-        if int(resolved_config["version"]) >= 2
+        int(parameters["metric_steps"])
+        if parameters is not None
         else int(reconstruction["metric_steps"])
     )
     trained_map = output / f"anchor_map_step_{steps:04d}.pt"
@@ -1101,6 +1196,27 @@ def train_compact_map(
             harmful_weight=float(reconstruction["harmful_weight"]),
             trust_weight=float(reconstruction["trust_weight"]),
             group_dro_eta=float(reconstruction["group_dro_eta"]),
+            group_dro_max_weight_ratio=float(
+                reconstruction["group_dro_max_weight_ratio"]
+            ),
+            refresh_interval=(
+                full_refresh_interval(steps, refresh_shards)
+                if refresh_all_ransac_shards
+                else 0
+            ),
+            refresh_shards=refresh_shards,
+            deployment_row_limit=deployment_row_limit,
+            soft_pose_weight=soft_pose_weight,
+            task_translation_m=(
+                float(parameters["task_translation_m"])
+                if parameters is not None
+                else 0.05
+            ),
+            task_rotation_deg=(
+                float(parameters["task_rotation_deg"])
+                if parameters is not None
+                else 5.0
+            ),
             ransac_reprojection_px=(
                 float(parameters["ransac_reprojection_px"])
                 if parameters is not None

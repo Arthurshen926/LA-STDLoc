@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from common.cli import ModelParams
+from common.calibration import write_query_calibration_sidecar
 from features.extractor import FeatureExtractor
 from priors.rendering import get_render_visible_mask, render_from_pose_gsplat
 from map_learning.stage_a_loss import (
@@ -897,6 +898,7 @@ def _load_or_build_query_cache(
         ]
         if not missing:
             print(f"Loaded detector-free query cache: {path} queries={len(cached)}")
+            write_query_calibration_sidecar(path, {"queries": cached})
             return cached
         if cache_policy == "readonly":
             raise ValueError(
@@ -957,6 +959,7 @@ def _load_or_build_query_cache(
             temporary_path,
         )
         os.replace(temporary_path, path)
+        write_query_calibration_sidecar(path, {"queries": cache})
         print(f"Saved detector-free query cache: {path}")
     return cache
 
@@ -1790,6 +1793,11 @@ def _build_ulf_robust_consensus_landmark_indices(
         "independent_bin_scoring": independent_bin_scoring,
         "distinct_view_bins": int(view_bin_count),
         "minimum_distinct_view_bins": int(args.ulf_consensus_min_distinct_view_bins),
+        # ``distinct_trajectory_bins`` is the realized scene-wide total because
+        # trajectory bins are allocated independently per image sequence.  Keep
+        # the configured per-sequence policy separate so cached scaffolds can
+        # be validated after a resume.
+        "trajectory_bins_per_group": int(args.ulf_consensus_trajectory_bins),
         "distinct_trajectory_bins": int(trajectory_bin_count),
         "minimum_distinct_trajectory_bins": int(
             args.ulf_consensus_min_distinct_trajectory_bins
@@ -2255,7 +2263,6 @@ def _assert_cached_consensus_scaffold(metadata, args):
         "minimum_distinct_view_bins": int(
             args.ulf_consensus_min_distinct_view_bins
         ),
-        "distinct_trajectory_bins": int(args.ulf_consensus_trajectory_bins),
         "minimum_distinct_trajectory_bins": int(
             args.ulf_consensus_min_distinct_trajectory_bins
         ),
@@ -2287,6 +2294,38 @@ def _assert_cached_consensus_scaffold(metadata, args):
                 "cached robust scaffold policy mismatch for "
                 f"{key}: {value!r} != {target!r}; regenerate the scaffold"
             )
+    target_trajectory_bins = int(args.ulf_consensus_trajectory_bins)
+    cached_trajectory_bins = metadata.get("trajectory_bins_per_group")
+    if cached_trajectory_bins is not None:
+        trajectory_policy_matches = int(cached_trajectory_bins) == target_trajectory_bins
+    else:
+        # Legacy diagnostics stored the realized total across all sequences in
+        # ``distinct_trajectory_bins``.  Reconstruct the per-sequence policy
+        # from the persisted view records instead of comparing that total with
+        # the configured bins-per-sequence value.
+        grouped_records = {}
+        for record in metadata.get("views", ()):
+            image_name = str(record.get("image_name", ""))
+            label = record.get("trajectory_bin")
+            if not image_name or label is None:
+                continue
+            parent = str(Path(image_name).parent).replace("\\", "/") or "."
+            grouped_records.setdefault(parent, []).append(int(label))
+        if grouped_records:
+            trajectory_policy_matches = all(
+                len(set(labels)) == min(target_trajectory_bins, len(labels))
+                for labels in grouped_records.values()
+            )
+        else:
+            trajectory_policy_matches = (
+                metadata.get("distinct_trajectory_bins") == target_trajectory_bins
+            )
+    if not trajectory_policy_matches:
+        raise ValueError(
+            "cached robust scaffold policy mismatch for trajectory_bins_per_group: "
+            f"{cached_trajectory_bins!r} != {target_trajectory_bins!r}; "
+            "regenerate the scaffold"
+        )
     if bool(args.ulf_consensus_allow_underfill):
         if metadata.get("capacity_policy") != "consensus_saturation_cap":
             raise ValueError(
@@ -2958,6 +2997,23 @@ def _collect_track_first_geometry_teacher(
         ),
         minimum_rendered_depth_observations=(
             args.geometry_teacher_min_rendered_depth_observations
+        ),
+        surface_support_enabled=args.geometry_teacher_surface_support,
+        surface_support_huber_m=args.geometry_teacher_surface_huber_m,
+        surface_support_maximum_correction_m=(
+            args.geometry_teacher_surface_max_correction_m
+        ),
+        surface_support_maximum_weak_information_ratio=(
+            args.geometry_teacher_surface_max_weak_information_ratio
+        ),
+        surface_support_minimum_depth_improvement_fraction=(
+            args.geometry_teacher_surface_min_depth_improvement_fraction
+        ),
+        surface_support_maximum_reprojection_increase_px=(
+            args.geometry_teacher_surface_max_reprojection_increase_px
+        ),
+        surface_support_covariance_sigma_m=(
+            args.geometry_teacher_surface_covariance_sigma_m
         ),
     )
     track_geometry["track_confidence_level"] = tracks[
@@ -4776,6 +4832,13 @@ def build_parser():
     parser.add_argument('--geometry_teacher_max_covariance_trace_m2', type=float, default=0.01)
     parser.add_argument('--geometry_teacher_max_rendered_depth_residual_m', type=float, default=0.15)
     parser.add_argument('--geometry_teacher_min_rendered_depth_observations', type=int, default=2)
+    parser.add_argument('--geometry_teacher_surface_support', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--geometry_teacher_surface_huber_m', type=float, default=0.02)
+    parser.add_argument('--geometry_teacher_surface_max_correction_m', type=float, default=0.08)
+    parser.add_argument('--geometry_teacher_surface_max_weak_information_ratio', type=float, default=0.25)
+    parser.add_argument('--geometry_teacher_surface_min_depth_improvement_fraction', type=float, default=0.10)
+    parser.add_argument('--geometry_teacher_surface_max_reprojection_increase_px', type=float, default=0.05)
+    parser.add_argument('--geometry_teacher_surface_covariance_sigma_m', type=float, default=0.02)
     parser.add_argument('--geometry_teacher_track_pair_neighbors', type=int, default=6)
     parser.add_argument('--geometry_teacher_track_min_baseline_m', type=float, default=0.03)
     parser.add_argument('--geometry_teacher_track_max_baseline_m', type=float, default=5.0)

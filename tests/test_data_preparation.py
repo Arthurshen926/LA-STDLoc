@@ -1,10 +1,12 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
 
 from data.datasets import ColmapDataset
 from data.preparation import (
+    _camera_rectification,
     prepare_7scenes,
     prepare_12scenes,
     prepare_reference_model_scene,
@@ -160,4 +162,118 @@ def test_prepare_reference_model_discards_points_and_test_prior_images(
     assert not (output / "prior_input/images" / test_name).exists()
     assert "Reference points deliberately excluded" in (
         output / "prior_input/sparse/0/points3D.txt"
+    ).read_text()
+
+
+def test_prepare_reference_model_reindexes_sparse_mapping_ids(tmp_path: Path):
+    source = tmp_path / "source"
+    test_name = "seq-01/frame-000000.color.png"
+    mapping_names = [
+        "seq-02/frame-000000.color.png",
+        "seq-03/frame-000000.color.png",
+    ]
+    for name in [test_name, *mapping_names]:
+        _write_image(source / name)
+
+    reference = tmp_path / "reference" / "sfm_gt"
+    reference.mkdir(parents=True)
+    (reference / "cameras.txt").write_text(
+        "1 SIMPLE_RADIAL 640 480 525 320 240 -0.025\n"
+    )
+    (reference / "images.txt").write_text(
+        "10 1 0 0 0 1 0 0 1 seq-01/frame-000000.color.png\n\n"
+        "501 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
+        "900 1 0 0 0 3 0 0 1 seq-03/frame-000000.color.png\n\n"
+    )
+    (reference / "points3D.txt").write_text("")
+    (reference / "list_test.txt").write_text(test_name + "\n")
+
+    output = tmp_path / "prepared"
+    manifest = prepare_reference_model_scene(
+        source, reference, output, dataset="7Scenes/stairs"
+    )
+    prior_rows = [
+        line.split()
+        for line in (output / "prior_input/sparse/0/images.txt")
+        .read_text()
+        .splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert [int(row[0]) for row in prior_rows] == [1, 2]
+    assert [row[-1] for row in prior_rows] == mapping_names
+    assert manifest["prior_input_image_ids"] == (
+        "contiguous_mapping_only_1_based"
+    )
+
+
+def test_simple_radial_rectification_respects_colmap_pixel_centers():
+    camera = SimpleNamespace(
+        id=1,
+        model="SIMPLE_RADIAL",
+        width=640,
+        height=480,
+        params=np.array([525.0, 320.0, 240.0, -0.025]),
+    )
+    rectification = _camera_rectification(camera)
+    output_x_cv, output_y_cv = 520, 340
+    output_x_colmap = output_x_cv + 0.5
+    output_y_colmap = output_y_cv + 0.5
+    x = (output_x_colmap - 320.0) / 525.0
+    y = (output_y_colmap - 240.0) / 525.0
+    radial = 1.0 - 0.025 * (x * x + y * y)
+    expected_source_x_cv = 525.0 * x * radial + 320.0 - 0.5
+    expected_source_y_cv = 525.0 * y * radial + 240.0 - 0.5
+    assert np.isclose(
+        rectification.remap_x[output_y_cv, output_x_cv],
+        expected_source_x_cv,
+        atol=1e-4,
+    )
+    assert np.isclose(
+        rectification.remap_y[output_y_cv, output_x_cv],
+        expected_source_y_cv,
+        atol=1e-4,
+    )
+
+
+def test_prepare_reference_model_rectifies_simple_radial_images(tmp_path: Path):
+    source = tmp_path / "source"
+    mapping_name = "seq-01/frame-000000.color.png"
+    test_name = "seq-02/frame-000000.color.png"
+    for name in (mapping_name, test_name):
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        x = np.arange(64, dtype=np.uint8)[None].repeat(48, axis=0)
+        Image.fromarray(np.stack((x, x, x), axis=-1)).save(path)
+
+    reference = tmp_path / "reference" / "sfm_gt"
+    reference.mkdir(parents=True)
+    (reference / "cameras.txt").write_text(
+        "1 SIMPLE_RADIAL 64 48 50 32 24 -0.1\n"
+    )
+    (reference / "images.txt").write_text(
+        "1 1 0 0 0 1 0 0 1 seq-01/frame-000000.color.png\n\n"
+        "2 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
+    )
+    (reference / "points3D.txt").write_text("")
+    (reference / "list_test.txt").write_text(test_name + "\n")
+
+    output = tmp_path / "prepared"
+    manifest = prepare_reference_model_scene(
+        source, reference, output, dataset="7Scenes/chess"
+    )
+    processed_mapping = output / "processed" / mapping_name
+    prior_mapping = output / "prior_input/images" / mapping_name
+    assert processed_mapping.is_file() and not processed_mapping.is_symlink()
+    assert prior_mapping.is_symlink()
+    assert prior_mapping.resolve() == processed_mapping.resolve()
+    assert manifest["camera_model_normalization"] == (
+        "calibrated_undistortion_to_pinhole"
+    )
+    assert manifest["undistortion"]["enabled"] is True
+    assert manifest["undistortion"]["camera_models"]["1"][
+        "maximum_remap_displacement_px"
+    ] > 1.0
+    assert (output / "masks.pkl").is_file()
+    assert "PINHOLE 64 48 50 50 32 24" in (
+        output / "sparse/0/cameras.txt"
     ).read_text()

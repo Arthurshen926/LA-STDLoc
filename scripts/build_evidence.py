@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--function-graph-shards", type=int, default=1)
     parser.add_argument("--provenance-shards", type=int, default=1)
     parser.add_argument("--observation-shards", type=int, default=1)
+    parser.add_argument("--scene-calibration", type=Path)
     args = parser.parse_args()
     build_evidence(
         base_state=args.base_state,
@@ -39,6 +40,7 @@ def main() -> None:
         provenance_shards=args.provenance_shards,
         observation_shards=args.observation_shards,
         valid_masks=args.valid_masks or None,
+        scene_calibration=args.scene_calibration,
     )
 
 

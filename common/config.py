@@ -39,6 +39,7 @@ TOP_LEVEL_KEYS = frozenset(
         "deployment",
         "seeds",
         "adaptive",
+        "geometry",
     }
 )
 
@@ -137,6 +138,74 @@ def load_mainline_config(path: str | Path) -> MainlineConfig:
     )
     config.validate()
     return config
+
+
+def materialize_keypoint_factor_config(
+    source: str | Path,
+    output: str | Path,
+    keypoints: int,
+) -> Path:
+    """Freeze one detector-density factor as a complete mainline config."""
+    keypoints = int(keypoints)
+    if keypoints <= 0:
+        raise ValueError("keypoint factor must be positive")
+    values = __import__("copy").deepcopy(load_mainline_config(source).values)
+    deployment = values["deployment"]
+    deployment["keypoints"] = keypoints
+    deployment["keypoint_minimum"] = keypoints
+    deployment["keypoint_maximum"] = keypoints
+    values["initialization"]["kcs_keypoints"] = keypoints
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(yaml.safe_dump(values, sort_keys=False))
+    load_mainline_config(output)
+    return output
+
+
+def materialize_deployment_keypoint_config(
+    source: str | Path,
+    output: str | Path,
+    keypoints: int,
+) -> Path:
+    """Freeze K_deploy while preserving the mapping-evidence configuration."""
+    keypoints = int(keypoints)
+    if keypoints <= 0:
+        raise ValueError("deployment keypoint count must be positive")
+    values = __import__("copy").deepcopy(load_mainline_config(source).values)
+    deployment = values["deployment"]
+    deployment["keypoints"] = keypoints
+    deployment["keypoint_minimum"] = keypoints
+    deployment["keypoint_maximum"] = keypoints
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(yaml.safe_dump(values, sort_keys=False))
+    load_mainline_config(output)
+    return output
+
+
+def materialize_surface_track_config(
+    source: str | Path,
+    output: str | Path,
+    *,
+    enabled: bool = True,
+) -> Path:
+    """Materialize the surface-supported track-geometry factor."""
+    values = __import__("copy").deepcopy(load_mainline_config(source).values)
+    geometry = values.setdefault("geometry", {})
+    geometry.update(
+        {
+            "surface_supported_tracks": bool(enabled),
+            "surface_max_correction_depth_sigmas": 4.0,
+            "surface_max_weak_information_ratio": 0.25,
+            "surface_min_depth_improvement_fraction": 0.10,
+            "surface_max_reprojection_increase_px": 0.05,
+        }
+    )
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(yaml.safe_dump(values, sort_keys=False))
+    load_mainline_config(output)
+    return output
 
 
 def resolve_reprojection_error_px(

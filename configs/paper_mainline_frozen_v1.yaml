@@ -82,6 +82,7 @@ reconstruction:
   harmful_weight: 0.1
   trust_weight: 1.0
   group_dro_eta: 0.03
+  group_dro_max_weight_ratio: 3.0
 
 deployment:
   sparse_frontend: ulfloc_native_metric

@@ -3,7 +3,11 @@ import random
 
 import torch
 
-from topology.adaptive_distillation import _project_world_covariance
+from topology.adaptive_distillation import (
+    _deployment_track_geometry,
+    _image_only_core_eligibility,
+    _project_world_covariance,
+)
 
 from topology.distillation import greedy_query_multicover
 from topology.coverage_reserve import greedy_pose_reserve
@@ -118,6 +122,51 @@ def test_anisotropic_landmark_covariance_is_projected_with_full_jacobian():
     assert projected.shape == (1, 2, 2)
     assert projected[0, 0, 0] != projected[0, 1, 1]
     assert projected[0, 0, 1] > 0
+
+
+def test_surface_fusion_cannot_promote_a_track_directly_into_core():
+    geometry = {
+        "triangulated": torch.tensor([True, True]),
+        "triangulated_xyz": torch.ones((2, 3)),
+        "triangulation_distinct_view_bin_count": torch.tensor([2, 2]),
+        "triangulation_reprojection_median_px": torch.tensor([0.5, 0.5]),
+        "triangulation_reprojection_p90_px": torch.tensor([1.0, 1.0]),
+        "triangulation_covariance_trace": torch.tensor([0.01, 0.01]),
+        "triangulation_image_only_reprojection_median_px": torch.tensor([0.5, 0.5]),
+        "triangulation_image_only_reprojection_p90_px": torch.tensor([1.0, 1.0]),
+        "triangulation_image_only_covariance_trace": torch.tensor([0.01, 1.0]),
+        "triangulation_parallax_deg": torch.tensor([2.0, 2.0]),
+    }
+    eligible = _image_only_core_eligibility(
+        geometry, median_px=1.0, p90_px=2.0, covariance_m2=0.1
+    )
+    assert eligible.tolist() == [True, False]
+
+
+def test_image_stable_core_deploys_image_only_geometry():
+    geometry = {
+        "triangulated_xyz": torch.tensor([[1.1, 0.0, 0.0], [2.1, 0.0, 0.0]]),
+        "triangulation_image_only_xyz": torch.tensor(
+            [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        ),
+        "triangulation_covariance_trace": torch.tensor([0.01, 0.01]),
+        "triangulation_image_only_covariance_trace": torch.tensor([0.1, 0.2]),
+    }
+    deployed = _deployment_track_geometry(
+        geometry, torch.tensor([True, False])
+    )
+    assert torch.allclose(
+        deployed["triangulated_xyz"],
+        torch.tensor([[1.0, 0.0, 0.0], [2.1, 0.0, 0.0]]),
+    )
+    assert torch.allclose(
+        deployed["triangulation_covariance_trace"],
+        torch.tensor([0.1, 0.01]),
+    )
+    assert torch.equal(
+        geometry["triangulated_xyz"],
+        torch.tensor([[1.1, 0.0, 0.0], [2.1, 0.0, 0.0]]),
+    )
 
 
 def test_dynamic_pose_reserve_updates_full_information_and_stops_naturally():

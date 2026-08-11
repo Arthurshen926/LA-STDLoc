@@ -4,11 +4,17 @@ import pytest
 from localization.matcher import (
     Top1Matches,
     global_cosine_top1,
+    global_cosine_top2,
     suppress_duplicate_anchor_matches,
 )
 from localization.localizer import load_shared_metric
 from map_learning.metric import SharedLowRankMetric
-from map_learning.trainer import _update_group_dro_weights, full_refresh_interval
+from map_learning.trainer import (
+    _update_group_dro_weights,
+    full_refresh_interval,
+    limit_training_records,
+)
+from common.config import load_mainline_config
 
 
 def test_shared_metric_starts_as_identity_and_is_bounded():
@@ -20,11 +26,19 @@ def test_shared_metric_starts_as_identity_and_is_bounded():
 
 
 def test_global_matcher_has_no_landmark_cap():
-    query = torch.tensor([[1., 0.], [1., 0.], [0., 1.]])
-    bank = torch.tensor([[1., 0.], [0., 1.]])
+    query = torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    bank = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     matches = global_cosine_top1(query, bank)
     assert matches.anchor_indices.tolist() == [0, 0, 1]
     assert matches.keypoint_indices.tolist() == [0, 1, 2]
+
+
+def test_global_top2_returns_exact_margin_candidates():
+    query = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    bank = torch.tensor([[1.0, 0.0], [0.8, 0.2], [0.0, 1.0]])
+    matches = global_cosine_top2(query, bank, chunk_size=2)
+    assert matches.anchor_indices.tolist() == [[0, 1], [2, 1]]
+    assert torch.all(matches.scores[:, 0] >= matches.scores[:, 1])
 
 
 def test_duplicate_anchor_suppression_keeps_best_and_query_order():
@@ -72,6 +86,28 @@ def test_full_refresh_interval_covers_every_rotating_shard():
     assert refreshes >= 7
 
 
+def test_deployment_row_limit_keeps_nested_detector_prefix():
+    records = [
+        {
+            "deployment_rows": torch.tensor([2, 7, 12]),
+            "cache_rows": torch.tensor([2, 7, 12]),
+            "positives": torch.tensor([[0], [1], [2]]),
+            "ignored_anchors": torch.tensor([[-1], [-1], [-1]]),
+            "matchable": torch.tensor([True, False, True]),
+            "group": 3,
+        }
+    ]
+    limited, report = limit_training_records(records, 8)
+    assert limited[0]["cache_rows"].tolist() == [2, 7]
+    assert limited[0]["positives"].tolist() == [[0], [1]]
+    assert limited[0]["group"] == 3
+    assert report == {
+        "deployment_row_limit": 8,
+        "deployment_rows_before": 3,
+        "deployment_rows_after": 2,
+    }
+
+
 def test_group_dro_update_cannot_collapse_to_one_trajectory_group():
     weights = torch.ones(8) / 8
     risk = torch.tensor([1000.0, 0, 0, 0, 0, 0, 0, 0])
@@ -81,6 +117,11 @@ def test_group_dro_update_cannot_collapse_to_one_trajectory_group():
     assert updated.sum() == pytest.approx(1.0)
     assert float(updated.max()) <= 3.0 / 8.0 + 1e-6
     assert torch.all(updated > 0)
+
+
+def test_paper_mainline_enables_capped_group_dro():
+    config = load_mainline_config("configs/paper_mainline.yaml").values
+    assert config["reconstruction"]["group_dro_max_weight_ratio"] == 3.0
 
 
 def test_uncapped_group_dro_update_preserves_frozen_behavior():

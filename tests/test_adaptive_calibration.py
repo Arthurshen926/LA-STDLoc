@@ -5,8 +5,10 @@ import pytest
 
 from common.calibration import (
     REFERENCE_EFFECTIVE_BASELINE_M,
+    calibrate_scene,
     derive_adaptive_parameters,
     derive_mapping_statistics,
+    write_query_calibration_sidecar,
 )
 
 
@@ -135,6 +137,20 @@ def test_training_steps_are_query_exposure_epochs():
     )
     assert parameters.stage_a_steps == 6
     assert parameters.metric_steps == 2
+
+
+def test_scene_calibration_uses_lightweight_query_sidecar(tmp_path):
+    query, payload = _synthetic_scene()
+    query_path = tmp_path / "query_cache.pt"
+    track_path = tmp_path / "tracks.pt"
+    # The full cache intentionally lacks query records. Calibration can only
+    # succeed if the validated sidecar is used.
+    torch.save({"not_queries": True}, query_path)
+    torch.save(payload, track_path)
+    write_query_calibration_sidecar(query_path, query)
+    calibration = calibrate_scene(query_path, track_path)
+    assert calibration["statistics"]["query_count"] == 3
+    assert calibration["statistics"]["track_count"] == 2
 
 
 def test_pose_bins_grow_with_mapping_sequence_but_remain_bounded():

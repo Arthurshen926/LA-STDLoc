@@ -82,6 +82,81 @@ def _adaptive_track_eligibility(
     )
 
 
+def _image_only_core_eligibility(
+    geometry: dict,
+    *,
+    median_px: float,
+    p90_px: float,
+    covariance_m2: float,
+) -> torch.Tensor:
+    """Keep surface-promoted tracks out of the immutable Track Core."""
+    if "triangulation_image_only_covariance_trace" not in geometry:
+        return _adaptive_track_eligibility(
+            geometry,
+            median_px=median_px,
+            p90_px=p90_px,
+            covariance_m2=covariance_m2,
+            broad=False,
+        )
+    image_geometry = dict(geometry)
+    image_geometry["triangulation_covariance_trace"] = geometry[
+        "triangulation_image_only_covariance_trace"
+    ]
+    image_geometry["triangulation_reprojection_median_px"] = geometry[
+        "triangulation_image_only_reprojection_median_px"
+    ]
+    image_geometry["triangulation_reprojection_p90_px"] = geometry[
+        "triangulation_image_only_reprojection_p90_px"
+    ]
+    return _adaptive_track_eligibility(
+        image_geometry,
+        median_px=median_px,
+        p90_px=p90_px,
+        covariance_m2=covariance_m2,
+        broad=False,
+    )
+
+
+def _deployment_track_geometry(
+    geometry: dict,
+    image_only_core: torch.Tensor,
+) -> dict:
+    """Deploy surface fusion only for tracks promoted out of the reserve.
+
+    A track that already passes the image-only core gate does not need prior
+    depth to become a localization landmark.  Retaining its image-only point
+    and uncertainty prevents the frozen RGB prior from perturbing reliable
+    PnP geometry.  Surface-fused geometry remains available to weak tracks and
+    must still pass the matching/pose reserve selection.
+    """
+    if "triangulation_image_only_xyz" not in geometry:
+        return geometry
+    revised = dict(geometry)
+    core = torch.as_tensor(image_only_core).bool()
+    replacements = {
+        "triangulated_xyz": "triangulation_image_only_xyz",
+        "triangulation_covariance_trace": (
+            "triangulation_image_only_covariance_trace"
+        ),
+        "triangulation_covariance_matrix": (
+            "triangulation_image_only_covariance_matrix"
+        ),
+        "triangulation_reprojection_median_px": (
+            "triangulation_image_only_reprojection_median_px"
+        ),
+        "triangulation_reprojection_p90_px": (
+            "triangulation_image_only_reprojection_p90_px"
+        ),
+    }
+    for target, source in replacements.items():
+        if source not in geometry:
+            continue
+        value = torch.as_tensor(geometry[target]).clone()
+        value[core] = torch.as_tensor(geometry[source])[core]
+        revised[target] = value
+    return revised
+
+
 def _select_adaptive_track_core(
     edges,
     quality_order: torch.Tensor,
@@ -426,8 +501,19 @@ def main() -> None:
         covariance_m2=parameters.track_covariance_trace_m2,
         broad=True,
     )
+    image_only_core = _image_only_core_eligibility(
+        geometry,
+        median_px=parameters.track_reprojection_median_px,
+        p90_px=parameters.track_reprojection_p90_px,
+        covariance_m2=parameters.track_covariance_trace_m2,
+    )
+    deployment_geometry = _deployment_track_geometry(geometry, image_only_core)
+    deployment_quality = _track_quality(deployment_geometry)
+    quality = torch.where(image_only_core, deployment_quality, quality)
+    deployment_payload = dict(payload)
+    deployment_payload["track_geometry"] = deployment_geometry
     order = torch.argsort(quality, descending=True, stable=True)
-    medium_order = order[medium[order]]
+    medium_order = order[(medium & image_only_core)[order]]
     core, core_report = _select_adaptive_track_core(
         edges,
         medium_order,
@@ -471,7 +557,9 @@ def main() -> None:
     )
     selected = torch.unique(torch.cat((core, coverage_selected)), sorted=False)
 
-    track_xyz = torch.as_tensor(geometry["triangulated_xyz"]).float()
+    track_xyz = torch.as_tensor(
+        deployment_geometry["triangulated_xyz"]
+    ).float()
     base_xyz = torch.as_tensor(canonical["anchor_xyz"][:base_count]).float()
     xyz = torch.cat((track_xyz, base_xyz))
     finite_tracks = torch.isfinite(track_xyz).all(dim=1)
@@ -480,7 +568,7 @@ def main() -> None:
         finite_tracks, as_tuple=False
     ).reshape(-1)
     track_sources[finite_track_indices] = _track_source_ids(
-        canonical, payload, finite_track_indices
+        canonical, deployment_payload, finite_track_indices
     )
     source_ids = torch.cat(
         (
@@ -490,16 +578,19 @@ def main() -> None:
     )
     voxel_ids = spatial_voxel_ids(xyz, parameters.dependency_voxel_m)
     matchability = _candidate_matchability(
-        payload, graph, base_count, parameters.track_reprojection_median_px
+        deployment_payload,
+        graph,
+        base_count,
+        parameters.track_reprojection_median_px,
     )
-    if "triangulation_covariance_matrix" in geometry:
+    if "triangulation_covariance_matrix" in deployment_geometry:
         track_covariance = torch.as_tensor(
-            geometry["triangulation_covariance_matrix"]
+            deployment_geometry["triangulation_covariance_matrix"]
         ).float()
         covariance_model = "anisotropic_triangulation_covariance_projected_by_Jx"
     else:
         track_covariance = torch.as_tensor(
-            geometry["triangulation_covariance_trace"]
+            deployment_geometry["triangulation_covariance_trace"]
         ).float().clamp_min(0)
         covariance_model = "isotropic_trace_fallback_projected_by_Jx"
     selected_mask = torch.zeros(len(edges), dtype=torch.bool)
@@ -574,9 +665,41 @@ def main() -> None:
     finally:
         torch.set_num_threads(original_threads)
     budget = int(selected_tracks.numel() + selected_base.numel())
+    selection_provenance = {
+        "track_core_universe_ids": core.clone(),
+        "coverage_track_universe_ids": coverage_selected[
+            coverage_selected < track_count
+        ].clone(),
+        "coverage_gaussian_universe_ids": coverage_selected[
+            coverage_selected >= track_count
+        ].clone(),
+        "pose_track_universe_ids": pose_selected[
+            pose_selected < track_count
+        ].clone(),
+        "pose_gaussian_universe_ids": pose_selected[
+            pose_selected >= track_count
+        ].clone(),
+    }
+    surface_supported = torch.as_tensor(
+        geometry.get(
+            "triangulation_surface_supported",
+            torch.zeros(track_count, dtype=torch.bool),
+        )
+    ).bool()
+    surface_promoted = surface_supported & ~image_only_core
+    selection_provenance_path = output_dir / "adaptive_selection_provenance.pt"
+    torch.save(
+        {
+            "schema": "lafgs_adaptive_selection_provenance",
+            "version": 1,
+            "track_universe_count": track_count,
+            **selection_provenance,
+        },
+        selection_provenance_path,
+    )
     state = _materialize(
         canonical,
-        payload,
+        deployment_payload,
         selected_tracks,
         track_features,
         selected_base,
@@ -597,10 +720,18 @@ def main() -> None:
             "track_core_count": int(core.numel()),
             "coverage_reserve_count": int(coverage_selected.numel()),
             "pose_reserve_count": int(pose_selected.numel()),
+            "selection_provenance": selection_provenance,
             "final_track_count": int(selected_tracks.numel()),
             "final_base_count": int(selected_base.numel()),
             "reserve_candidate_pool": "leftover_tracks_plus_gaussian_base",
             "geometry_policy": "hybrid_triangulated_tracks_and_canonical_gaussian_reserve",
+            "track_core_geometry_source": "image_only_triangulation",
+            "surface_geometry_scope": "functionally_selected_promoted_reserve",
+            "surface_supported_candidate_count": int(surface_supported.sum()),
+            "surface_promoted_reserve_candidate_count": int(surface_promoted.sum()),
+            "surface_promoted_selected_count": int(
+                surface_promoted[selected_tracks].sum()
+            ),
         }
     )
     map_path = output_dir / f"adaptive_compact_total{budget:05d}.pt"
@@ -616,6 +747,32 @@ def main() -> None:
         "track_core": core_report,
         "coverage": coverage_report,
         "pose_reserve": pose_report,
+        "selection_provenance": {
+            "path": str(selection_provenance_path),
+            "track_core_count": int(core.numel()),
+            "coverage_track_count": int(
+                selection_provenance["coverage_track_universe_ids"].numel()
+            ),
+            "coverage_gaussian_count": int(
+                selection_provenance["coverage_gaussian_universe_ids"].numel()
+            ),
+            "pose_track_count": int(
+                selection_provenance["pose_track_universe_ids"].numel()
+            ),
+            "pose_gaussian_count": int(
+                selection_provenance["pose_gaussian_universe_ids"].numel()
+            ),
+        },
+        "surface_supported": {
+            "candidate_count": int(surface_supported.sum()),
+            "promoted_reserve_candidate_count": int(surface_promoted.sum()),
+            "promoted_selected_count": int(
+                surface_promoted[selected_tracks].sum()
+            ),
+            "core_requires_image_only_geometry": True,
+            "track_core_geometry_source": "image_only_triangulation",
+            "surface_geometry_scope": "functionally_selected_promoted_reserve",
+        },
     }
     report_path = output_dir / "adaptive_distillation_build.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

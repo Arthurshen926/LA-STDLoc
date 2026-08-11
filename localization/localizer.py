@@ -14,9 +14,14 @@ from localization.frontend import NativeSuperPointFrontend, SparseFeatures
 from localization.matcher import (
     Top1Matches,
     global_cosine_top1,
+    global_cosine_top2,
     suppress_duplicate_anchor_matches,
 )
-from localization.pose_solver import PoseEstimate, camera_intrinsics, solve_absolute_pose
+from localization.pose_solver import (
+    PoseEstimate,
+    camera_intrinsics,
+    solve_absolute_pose,
+)
 from map_learning.metric import SharedLowRankMetric
 
 
@@ -59,6 +64,7 @@ class SparseLocalizer:
         min_iterations: int = 1000,
         seed: int = 2026,
         suppress_duplicate_anchors: bool = False,
+        guided_sampling: bool = False,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -90,6 +96,28 @@ class SparseLocalizer:
         self.min_iterations = int(min_iterations)
         self.seed = int(seed)
         self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
+        self.guided_sampling = bool(guided_sampling)
+        self.anchor_matchability = torch.as_tensor(
+            state.get("anchor_matchability", torch.ones_like(self.anchor_ids)),
+            device=self.device,
+        ).float()
+        covariance = state.get("anchor_position_covariance")
+        if covariance is None:
+            self.anchor_uncertainty = torch.ones_like(
+                self.anchor_matchability, device=self.device
+            )
+        else:
+            trace = (
+                torch.diagonal(
+                    torch.as_tensor(covariance, device=self.device).float(),
+                    dim1=1,
+                    dim2=2,
+                )
+                .sum(dim=1)
+                .clamp_min(1e-12)
+            )
+            median = trace.median().clamp_min(1e-12)
+            self.anchor_uncertainty = trace / median
 
     @torch.inference_mode()
     def localize(
@@ -112,14 +140,37 @@ class SparseLocalizer:
         frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
 
         matching_started = time.perf_counter()
-        raw_matches = global_cosine_top1(
-            sparse.descriptors, self.anchor_features
-        )
+        guidance_quality = None
+        if self.guided_sampling:
+            top2 = global_cosine_top2(sparse.descriptors, self.anchor_features)
+            raw_matches = Top1Matches(
+                keypoint_indices=top2.keypoint_indices,
+                anchor_indices=top2.anchor_indices[:, 0],
+                scores=top2.scores[:, 0],
+            )
+            margin = (top2.scores[:, 0] - top2.scores[:, 1]).clamp_min(0)
+            winner = raw_matches.anchor_indices
+            reliability = self.anchor_matchability[winner].clamp(0.02, 1.0)
+            certainty = (1.0 + self.anchor_uncertainty[winner]).reciprocal()
+            guidance_quality = margin * reliability.sqrt() * certainty
+        else:
+            raw_matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
         matches = (
             suppress_duplicate_anchor_matches(raw_matches)
             if self.suppress_duplicate_anchors
             else raw_matches
         )
+        if self.guided_sampling:
+            if self.suppress_duplicate_anchors:
+                raise ValueError(
+                    "guided sampling and duplicate suppression are separate ablations"
+                )
+            order = torch.argsort(guidance_quality, descending=True, stable=True)
+            matches = Top1Matches(
+                keypoint_indices=matches.keypoint_indices[order],
+                anchor_indices=matches.anchor_indices[order],
+                scores=matches.scores[order],
+            )
         points_2d = sparse.keypoints[matches.keypoint_indices].cpu().numpy()
         points_3d = self.anchor_xyz[matches.anchor_indices].cpu().numpy()
         synchronize()
@@ -137,6 +188,7 @@ class SparseLocalizer:
             max_iterations=self.max_iterations,
             min_iterations=self.min_iterations,
             seed=self.seed,
+            progressive_sampling=self.guided_sampling,
         )
         ransac_ms = (time.perf_counter() - ransac_started) * 1000.0
         return LocalizationResult(
@@ -158,8 +210,8 @@ class SparseLocalizer:
                 ),
                 "duplicate_anchor_fraction": float(
                     1.0
-                    - matches.scores.numel()
-                    / max(int(raw_matches.scores.numel()), 1)
+                    - matches.scores.numel() / max(int(raw_matches.scores.numel()), 1)
                 ),
+                "guided_sampling": int(self.guided_sampling),
             },
         )
