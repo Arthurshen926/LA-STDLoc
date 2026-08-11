@@ -235,7 +235,8 @@ def build_context_score_bank(
     expected_view_counts: torch.Tensor,
     device: torch.device,
     progress_interval: int = 0,
-) -> tuple[torch.Tensor, dict]:
+    return_observation_state: bool = False,
+) -> tuple[torch.Tensor, dict] | tuple[torch.Tensor, dict, dict]:
     """Fuse one unit context code per observing image without renormalizing."""
     names = list(teacher["query_names"])
     cache = query_cache.get("queries", query_cache)
@@ -243,6 +244,7 @@ def build_context_score_bank(
     anchor_count = int(teacher["anchor_count"])
     code_sum = torch.zeros((anchor_count, expert.code_dim), device=device)
     view_counts = torch.zeros(anchor_count, dtype=torch.long, device=device)
+    query_codes = {}
     observation_count = 0
     for completed, query_index in enumerate(support, start=1):
         record = teacher["records"][query_index]
@@ -260,6 +262,12 @@ def build_context_score_bank(
             )
             base, _ = metric(raw)
             codes = expert(base, tokens)
+            if return_observation_state:
+                if expert.input_scope != "shared_global":
+                    raise ValueError(
+                        "LOO observation state requires shared-global context"
+                    )
+                query_codes[query_index] = codes[:1].detach().clone()
             accumulate_view_descriptors(
                 code_sum,
                 view_counts,
@@ -285,7 +293,7 @@ def build_context_score_bank(
     bank = code_sum[selected] / counts[:, None]
     concentration = bank.norm(dim=1).clamp(0.0, 1.0)
     values = concentration.cpu().numpy().astype(np.float64)
-    return bank, {
+    report = {
         "adapted_observation_count": int(observation_count),
         "map_concentration_mean": float(values.mean()) if values.size else 0.0,
         "map_concentration_p10": (
@@ -299,6 +307,149 @@ def build_context_score_bank(
         ),
         "map_concentration_maximum": float(values.max()) if values.size else 0.0,
     }
+    if return_observation_state:
+        return bank, report, {
+            "view_counts": view_counts[selected].detach().clone(),
+            "query_codes": query_codes,
+        }
+    return bank, report
+
+
+def leave_one_query_out_anchor_codes(
+    context_bank: torch.Tensor,
+    view_counts: torch.Tensor,
+    anchor_indices: torch.Tensor,
+    query_code: torch.Tensor,
+) -> torch.Tensor:
+    """Remove one image's exact contribution from selected anchor prototypes."""
+    indices = torch.as_tensor(anchor_indices, device=context_bank.device).long()
+    counts = torch.as_tensor(
+        view_counts, device=context_bank.device, dtype=context_bank.dtype
+    )[indices]
+    if bool((counts <= 1.0).any()):
+        raise ValueError("LOO context supervision requires at least two views")
+    code = torch.as_tensor(
+        query_code, device=context_bank.device, dtype=context_bank.dtype
+    ).reshape(1, -1)
+    return (context_bank[indices] * counts[:, None] - code) / (
+        counts[:, None] - 1.0
+    )
+
+
+def balanced_unique_anchor_prior_loss(
+    query_code: torch.Tensor,
+    positive_codes: torch.Tensor,
+    positive_indices: torch.Tensor,
+    negative_codes: torch.Tensor,
+    negative_indices: torch.Tensor,
+    anchor_type: torch.Tensor,
+    family_ids: torch.Tensor,
+    *,
+    temperature: float = 0.1,
+) -> tuple[torch.Tensor, dict]:
+    """Train one image prior with unique, type- and family-balanced anchors."""
+    if float(temperature) <= 0.0:
+        raise ValueError("anchor-prior temperature must be positive")
+    code = torch.as_tensor(query_code).reshape(1, -1)
+    positive_indices = torch.as_tensor(
+        positive_indices, device=code.device
+    ).long().reshape(-1)
+    negative_indices = torch.as_tensor(
+        negative_indices, device=code.device
+    ).long().reshape(-1)
+    types = torch.as_tensor(anchor_type, device=code.device).long()
+    families = torch.as_tensor(family_ids, device=code.device).long()
+
+    def balanced_mean(
+        values: torch.Tensor, indices: torch.Tensor
+    ) -> tuple[torch.Tensor, int]:
+        category_means = []
+        family_count = 0
+        for is_reserve in (False, True):
+            selected = (types[indices] == 0) == is_reserve
+            if not bool(selected.any()):
+                continue
+            selected_values = values[selected]
+            selected_families = families[indices[selected]]
+            unique, inverse = torch.unique(
+                selected_families, sorted=True, return_inverse=True
+            )
+            sums = selected_values.new_zeros(unique.numel())
+            counts = selected_values.new_zeros(unique.numel())
+            sums.index_add_(0, inverse, selected_values)
+            counts.index_add_(0, inverse, torch.ones_like(selected_values))
+            category_means.append((sums / counts.clamp_min(1.0)).mean())
+            family_count += int(unique.numel())
+        if not category_means:
+            return code.sum() * 0.0, 0
+        return torch.stack(category_means).mean(), family_count
+
+    positive_scores = (code @ positive_codes.T)[0] / float(temperature)
+    negative_scores = (code @ negative_codes.T)[0] / float(temperature)
+    positive_loss, positive_families = balanced_mean(
+        F.softplus(-positive_scores), positive_indices
+    )
+    negative_loss, negative_families = balanced_mean(
+        F.softplus(negative_scores), negative_indices
+    )
+    return positive_loss + negative_loss, {
+        "unique_positive_anchor_count": int(positive_indices.numel()),
+        "unique_negative_anchor_count": int(negative_indices.numel()),
+        "positive_family_count": positive_families,
+        "negative_family_count": negative_families,
+        "positive_loss": positive_loss.detach(),
+        "negative_loss": negative_loss.detach(),
+    }
+
+
+@torch.no_grad()
+def select_incompatible_anchor_negatives(
+    query_code: torch.Tensor,
+    context_bank: torch.Tensor,
+    anchor_xyz: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    intrinsic: torch.Tensor,
+    input_hw: Sequence[int] | torch.Tensor,
+    excluded_indices: torch.Tensor,
+    *,
+    maximum_count: int = 256,
+    minimum_depth: float = 1e-3,
+) -> torch.Tensor:
+    """Select context-hard anchors that are provably outside the query camera."""
+    if int(maximum_count) < 1 or float(minimum_depth) <= 0.0:
+        raise ValueError("incompatible-negative count and depth must be positive")
+    device = context_bank.device
+    xyz = torch.as_tensor(anchor_xyz, device=device, dtype=context_bank.dtype)
+    pose = torch.as_tensor(pose_w2c, device=device, dtype=context_bank.dtype)
+    camera_k = torch.as_tensor(intrinsic, device=device, dtype=context_bank.dtype)
+    height, width = (int(value) for value in torch.as_tensor(input_hw).tolist())
+    if xyz.shape != (context_bank.shape[0], 3):
+        raise ValueError("anchor xyz must align with the context bank")
+    camera = xyz @ pose[:3, :3].T + pose[:3, 3]
+    depth = camera[:, 2]
+    projected = camera @ camera_k.T
+    safe_depth = depth.clamp_min(float(minimum_depth))
+    u = projected[:, 0] / safe_depth
+    v = projected[:, 1] / safe_depth
+    visible = (
+        torch.isfinite(camera).all(dim=1)
+        & (depth > float(minimum_depth))
+        & (u >= 0.0)
+        & (u < float(width))
+        & (v >= 0.0)
+        & (v < float(height))
+    )
+    candidates = ~visible
+    excluded = torch.as_tensor(excluded_indices, device=device).long()
+    candidates[excluded] = False
+    indices = torch.nonzero(candidates, as_tuple=False).reshape(-1)
+    if not indices.numel():
+        return indices
+    scores = torch.as_tensor(query_code, device=device).reshape(1, -1) @ (
+        context_bank[indices].T
+    )
+    count = min(int(maximum_count), int(indices.numel()))
+    return indices[torch.topk(scores[0], k=count).indices]
 
 
 def _legal_top1_log_probability(
@@ -503,6 +654,10 @@ def train_context_score_stage(
     base_reference_bank: torch.Tensor,
     context_task_bank: torch.Tensor,
     anchor_xyz: torch.Tensor | None,
+    context_view_counts: torch.Tensor | None = None,
+    context_query_codes: dict[int, torch.Tensor] | None = None,
+    anchor_type: torch.Tensor | None = None,
+    anchor_family_ids: torch.Tensor | None = None,
     device: torch.device,
     context_weight: float = 0.05,
     epochs: int = 1,
@@ -523,6 +678,10 @@ def train_context_score_stage(
     observability_weight: float = 0.0,
     observability_tail_weight: float = 0.0,
     observability_damping: float = 1e-3,
+    training_objective: str = "rowwise",
+    prior_weight: float = 0.1,
+    prior_temperature: float = 0.1,
+    prior_incompatible_negatives: int = 256,
     seed: int = 2026,
     stage_name: str = "context_score_target",
     progress_interval: int = 100,
@@ -543,6 +702,26 @@ def train_context_score_stage(
         raise ValueError("query-tail alpha must lie in [0, 1)")
     if float(observability_damping) <= 0.0:
         raise ValueError("observability damping must be positive")
+    if training_objective not in ("rowwise", "anchor_prior_loo"):
+        raise ValueError(f"unsupported context training objective: {training_objective}")
+    if min(float(prior_weight), float(prior_temperature)) <= 0.0:
+        raise ValueError("anchor-prior weight and temperature must be positive")
+    if int(prior_incompatible_negatives) < 1:
+        raise ValueError("incompatible-negative count must be positive")
+    prior_enabled = training_objective == "anchor_prior_loo"
+    if prior_enabled and (
+        expert.input_scope != "shared_global"
+        or expert.learned_query_gate
+        or context_view_counts is None
+        or context_query_codes is None
+        or anchor_xyz is None
+        or anchor_type is None
+        or anchor_family_ids is None
+    ):
+        raise ValueError(
+            "LOO anchor-prior training requires ungated shared-global codes, "
+            "observation state, and anchor metadata"
+        )
     observability_enabled = bool(
         float(observability_weight) > 0.0
         or float(observability_tail_weight) > 0.0
@@ -558,6 +737,21 @@ def train_context_score_stage(
         None
         if anchor_xyz is None
         else torch.as_tensor(anchor_xyz, device=device).float().clone()
+    )
+    view_counts = (
+        None
+        if context_view_counts is None
+        else torch.as_tensor(context_view_counts, device=device).float().clone()
+    )
+    type_bank = (
+        None
+        if anchor_type is None
+        else torch.as_tensor(anchor_type, device=device).long().clone()
+    )
+    family_bank = (
+        None
+        if anchor_family_ids is None
+        else torch.as_tensor(anchor_family_ids, device=device).long().clone()
     )
     joint_bank = concatenate_dual_expert_descriptors(
         reference,
@@ -587,6 +781,11 @@ def train_context_score_stage(
             "observability_min_eigenvalue": 0.0,
             "observability_valid_rows": 0,
             "observability_tail_objective": 0.0,
+            "prior_loss": 0.0,
+            "prior_positive_anchors": 0,
+            "prior_negative_anchors": 0,
+            "prior_positive_families": 0,
+            "prior_negative_families": 0,
             "rows": 0,
             "supervised": 0,
             "recoverable_false": 0,
@@ -782,6 +981,54 @@ def train_context_score_stage(
                 topk=int(training_topk),
                 temperature=float(temperature),
             )
+            prior_loss = joint_query.new_zeros(())
+            prior_diagnostics = {
+                "unique_positive_anchor_count": 0,
+                "unique_negative_anchor_count": 0,
+                "positive_family_count": 0,
+                "negative_family_count": 0,
+            }
+            if prior_enabled:
+                all_positive = record["positives"][record["matchable_rows"]]
+                unique_positive = torch.unique(
+                    all_positive[all_positive >= 0].to(device), sorted=True
+                )
+                unique_negative = torch.unique(base_top1[false_top1], sorted=True)
+                cached = cache[names[query_index]]
+                incompatible = select_incompatible_anchor_negatives(
+                    unit_query_codes[0],
+                    context_bank,
+                    geometry_bank,
+                    cached["pose_w2c"],
+                    cached["native_K"],
+                    cached["native_input_hw"],
+                    unique_positive,
+                    maximum_count=int(prior_incompatible_negatives),
+                )
+                unique_negative = torch.unique(
+                    torch.cat((unique_negative, incompatible)), sorted=True
+                )
+                if unique_negative.numel():
+                    unique_negative = unique_negative[
+                        ~torch.isin(unique_negative, unique_positive)
+                    ]
+                snapshot_code = context_query_codes[query_index].to(device)[0]
+                positive_codes = leave_one_query_out_anchor_codes(
+                    context_bank,
+                    view_counts,
+                    unique_positive,
+                    snapshot_code,
+                )
+                prior_loss, prior_diagnostics = balanced_unique_anchor_prior_loss(
+                    unit_query_codes[0],
+                    positive_codes,
+                    unique_positive,
+                    context_bank[unique_negative],
+                    unique_negative,
+                    type_bank,
+                    family_bank,
+                    temperature=float(prior_temperature),
+                )
             observability_loss = joint_query.new_zeros(())
             observability_diagnostics = {
                 "valid_row_count": 0,
@@ -804,8 +1051,11 @@ def train_context_score_stage(
                         damping=float(observability_damping),
                     )
                 )
+            task_loss = (
+                float(prior_weight) * prior_loss if prior_enabled else list_loss
+            )
             loss = (
-                list_loss
+                task_loss
                 + float(clean_weight) * clean_loss
                 + float(gate_supervision_weight) * gate_loss
                 + float(consensus_weight) * consensus_loss
@@ -818,7 +1068,8 @@ def train_context_score_stage(
                     f"clean={float(clean_loss.detach())}, "
                     f"gate={float(gate_loss.detach())}, "
                     f"consensus={float(consensus_loss.detach())}, "
-                    f"observability={float(observability_loss.detach())}"
+                    f"observability={float(observability_loss.detach())}, "
+                    f"prior={float(prior_loss.detach())}"
                 )
             pending_losses.append(loss)
             pending_consensus.append(consensus_loss)
@@ -847,6 +1098,19 @@ def train_context_score_stage(
             )
             totals["observability_valid_rows"] += int(
                 observability_diagnostics["valid_row_count"]
+            )
+            totals["prior_loss"] += float(prior_loss.detach()) * row_count
+            totals["prior_positive_anchors"] += int(
+                prior_diagnostics["unique_positive_anchor_count"]
+            )
+            totals["prior_negative_anchors"] += int(
+                prior_diagnostics["unique_negative_anchor_count"]
+            )
+            totals["prior_positive_families"] += int(
+                prior_diagnostics["positive_family_count"]
+            )
+            totals["prior_negative_families"] += int(
+                prior_diagnostics["negative_family_count"]
             )
             totals["rows"] += row_count
             totals["supervised"] += int((row_weights > 0).sum())
@@ -921,6 +1185,19 @@ def train_context_score_stage(
             "mean_observability_tail_objective": float(
                 totals["observability_tail_objective"] / query_denominator
             ),
+            "mean_prior_loss": float(totals["prior_loss"] / denominator),
+            "mean_unique_positive_anchors_per_query": float(
+                totals["prior_positive_anchors"] / query_denominator
+            ),
+            "mean_unique_negative_anchors_per_query": float(
+                totals["prior_negative_anchors"] / query_denominator
+            ),
+            "mean_positive_families_per_query": float(
+                totals["prior_positive_families"] / query_denominator
+            ),
+            "mean_negative_families_per_query": float(
+                totals["prior_negative_families"] / query_denominator
+            ),
             "mean_query_gate": float(
                 totals["query_gate_sum"] / denominator
             ),
@@ -949,6 +1226,10 @@ def train_context_score_stage(
             "observability_weight": float(observability_weight),
             "observability_tail_weight": float(observability_tail_weight),
             "observability_damping": float(observability_damping),
+            "training_objective": training_objective,
+            "prior_weight": float(prior_weight),
+            "prior_temperature": float(prior_temperature),
+            "prior_incompatible_negatives": int(prior_incompatible_negatives),
             "context_weight": float(context_weight),
             "seed": int(seed),
         },

@@ -466,6 +466,57 @@ actual estimator bottleneck. Any later context objective must model that
 discrete robust-estimation event directly; more log-det, lambda, epoch, gate,
 Reserve, or topology adjustment is unsupported.
 
+## PoseLib policy oracle and leave-one-out prior decision
+
+The shared-global result was next treated explicitly as a choice between two
+unchanged deployment policies: A1 and A1 plus context lambda 0.01. A mapping-
+only oracle replays both policies with PoseLib seeds 2026/2027/2028, averages a
+task-normalized translation, rotation, catastrophe, and solver-work loss per
+query, and chooses the lower-risk policy. Both directions use 128 uniformly
+spaced held-out queries (256 total), with paired query bootstrap intervals.
+
+| Scene | Best fixed risk | Oracle risk | Relative oracle headroom | Absolute headroom 95% CI | Oracle A1/context queries |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stairs | 0.2979 | 0.2891 | 2.94% | [0.00653, 0.01078] | 134 / 122 |
+| Office2/5b | 0.5031 | 0.4996 | 0.71% | [0.00242, 0.00496] | 109 / 147 |
+
+The Stairs oracle is real: relative to fixed context, mean TE falls from 1.153
+to 1.111 cm and P90 from 2.166 to 2.063 cm. Office2/5b has much less selection
+headroom and the oracle leaves all 21 query-seed catastrophes unchanged. A
+scene-independent policy gate therefore has weak protection-scene upside; the
+oracle mainly supports a difficult-scene option, not a universal new module.
+
+The more fundamental training correction was also implemented. The context
+prototype used for a mapping image removes that image's exact per-anchor view
+contribution. Supervision uses unique visible anchors rather than detector
+rows, averages Track and Reserve separately, balances dependency families, and
+uses both current A1 false winners and 256 context-hard anchors that mapping GT
+geometry proves to be outside the camera frustum. The prior term is scaled once
+to match the original full-support row-wise loss magnitude; no performance
+weight search is used.
+
+| Stairs lambda 0.01 | R@1 delta | 2 cm recall delta | Mean TE | P90 TE | CVaR95 | Hypotheses | New false from A1-clean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Existing row-wise shared context | +0.141 pp | +1.042 pp | -21.97% | -4.93% | -63.41% | -1.74% | 0.833% |
+| LOO unique-anchor prior, false negatives only | -0.015 pp | 0.000 pp | -0.63% | +0.16% | +0.002% | +0.06% | 0.167% |
+| LOO prior plus explicit incompatible negatives | +0.004 pp | 0.000 pp | -0.25% | +0.23% | +0.14% | -0.19% | 0.176% |
+
+The prior is safe but removes the useful context effect. Without explicit
+incompatible negatives, final map-code concentration rises to about 0.97.
+Geometry negatives temporarily lower it to 0.92--0.93 after stage one, but it
+returns to about 0.96 after refresh. This is not a numerical failure: nearby
+indoor images genuinely share most visible anchors, so an image-level binary
+compatibility objective is dominated by a common direction and supplies
+almost no discriminative top-1 bias. More negative counts, centering, loss
+weights, or epochs would only tune the same mismatch.
+
+The preregistered stop condition is met: leave-one-out prior training
+eliminates the cross-scene context gain. It is retained as a negative ablation
+and is not expanded to sentinel scenes or followed by a generic learned gate.
+The original row-wise expert remains evidence that context can help repeated
+structure, and its Stairs policy oracle quantifies an upper bound, but the
+current context family is frozen rather than forced into the final method.
+
 ## Adaptive V2 smoke validation
 
 The mapping-only adaptive topology was isolated on ShopFacade by reusing the

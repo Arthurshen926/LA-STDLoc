@@ -3,11 +3,14 @@ import torch.nn.functional as F
 
 from map_learning.context_score_expert import (
     ContextScoreExpert,
+    balanced_unique_anchor_prior_loss,
     build_context_score_bank,
     concatenate_dual_expert_descriptors,
     expected_clean_inlier_loss,
     expected_clean_pose_information_loss,
+    leave_one_query_out_anchor_codes,
     protocol_name,
+    select_incompatible_anchor_negatives,
 )
 from map_learning.metric import SharedLowRankMetric
 
@@ -203,6 +206,89 @@ def test_pose_information_loss_rewards_geometrically_complete_clean_matches():
     )
     assert complete.grad is not None
     assert bool(torch.isfinite(complete.grad).all())
+
+
+def test_leave_one_out_anchor_code_removes_the_training_image():
+    query_code = F.normalize(torch.tensor([1.0, 1.0]), dim=0)
+    other_code = F.normalize(torch.tensor([1.0, -1.0]), dim=0)
+    bank = torch.stack(((query_code + other_code) / 2, other_code))
+
+    loo = leave_one_query_out_anchor_codes(
+        bank,
+        torch.tensor([2, 3]),
+        torch.tensor([0]),
+        query_code,
+    )
+
+    torch.testing.assert_close(loo[0], other_code)
+
+
+def test_unique_anchor_prior_balances_types_and_rewards_compatibility():
+    query = F.normalize(torch.tensor([1.0, 0.2]), dim=0).requires_grad_()
+    positive = torch.tensor([[1.0, 0.0], [0.8, 0.2]])
+    negative = torch.tensor([[-1.0, 0.0], [-0.8, -0.2]])
+    anchor_type = torch.tensor([1, 0, 1, 0])
+    family = torch.tensor([10, 20, 30, 40])
+
+    good, diagnostics = balanced_unique_anchor_prior_loss(
+        query,
+        positive,
+        torch.tensor([0, 1]),
+        negative,
+        torch.tensor([2, 3]),
+        anchor_type,
+        family,
+        temperature=0.1,
+    )
+    bad, _ = balanced_unique_anchor_prior_loss(
+        query,
+        negative,
+        torch.tensor([0, 1]),
+        positive,
+        torch.tensor([2, 3]),
+        anchor_type,
+        family,
+        temperature=0.1,
+    )
+    good.backward()
+
+    assert good < bad
+    assert diagnostics["positive_family_count"] == 2
+    assert diagnostics["negative_family_count"] == 2
+    assert query.grad is not None and bool(torch.isfinite(query.grad).all())
+
+
+def test_incompatible_negatives_are_outside_camera_and_context_hard():
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 4.0],
+            [10.0, 0.0, 4.0],
+            [-10.0, 0.0, 4.0],
+            [0.0, 0.0, -2.0],
+        ]
+    )
+    bank = F.normalize(
+        torch.tensor(
+            [[1.0, 0.0], [0.8, 0.2], [0.2, 0.8], [0.9, 0.1]]
+        ),
+        dim=1,
+    )
+    intrinsic = torch.tensor(
+        [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+    )
+
+    selected = select_incompatible_anchor_negatives(
+        torch.tensor([1.0, 0.0]),
+        bank,
+        xyz,
+        torch.eye(4),
+        intrinsic,
+        (100, 100),
+        torch.tensor([2]),
+        maximum_count=2,
+    )
+
+    assert selected.tolist() == [3, 1]
 
 
 def test_context_bank_norm_is_cross_view_concentration():

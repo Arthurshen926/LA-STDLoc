@@ -213,6 +213,14 @@ def main() -> None:
     parser.add_argument("--observability-weight", type=float, default=0.0)
     parser.add_argument("--observability-tail-weight", type=float, default=0.0)
     parser.add_argument("--observability-damping", type=float, default=1e-3)
+    parser.add_argument(
+        "--training-objective",
+        choices=("rowwise", "anchor_prior_loo"),
+        default="rowwise",
+    )
+    parser.add_argument("--prior-weight", type=float, default=0.1)
+    parser.add_argument("--prior-temperature", type=float, default=0.1)
+    parser.add_argument("--prior-incompatible-negatives", type=int, default=256)
     parser.add_argument("--maximum-positives", type=int, default=8)
     parser.add_argument("--maximum-ignored", type=int, default=16)
     parser.add_argument("--topks", type=_parse_topks, default=DEFAULT_TOPKS)
@@ -348,7 +356,7 @@ def main() -> None:
             input_scope=args.expert_input_scope,
             learned_query_gate=bool(args.learned_query_gate),
         ).to(device)
-        initial_bank, initial_report = build_context_score_bank(
+        initial_build = build_context_score_bank(
             expert=expert,
             metric=metric,
             teacher=teacher,
@@ -358,7 +366,13 @@ def main() -> None:
             expected_view_counts=support_banks["view_counts"],
             device=device,
             progress_interval=int(args.progress_interval),
+            return_observation_state=args.training_objective == "anchor_prior_loo",
         )
+        if args.training_objective == "anchor_prior_loo":
+            initial_bank, initial_report, initial_observations = initial_build
+        else:
+            initial_bank, initial_report = initial_build
+            initial_observations = None
         common_training = {
             "expert": expert,
             "metric": metric,
@@ -368,6 +382,10 @@ def main() -> None:
             "records": records,
             "base_reference_bank": base_bank,
             "anchor_xyz": anchor_xyz,
+            "anchor_type": supported_types,
+            "anchor_family_ids": torch.as_tensor(
+                state["dependency_group_ids"]
+            ).long()[anchor_indices.cpu()],
             "device": device,
             "context_weight": training_weight,
             "batch_size": int(args.batch_size),
@@ -387,18 +405,34 @@ def main() -> None:
             "observability_weight": float(args.observability_weight),
             "observability_tail_weight": float(args.observability_tail_weight),
             "observability_damping": float(args.observability_damping),
+            "training_objective": str(args.training_objective),
+            "prior_weight": float(args.prior_weight),
+            "prior_temperature": float(args.prior_temperature),
+            "prior_incompatible_negatives": int(
+                args.prior_incompatible_negatives
+            ),
             "progress_interval": int(args.progress_interval),
         }
         training_reports = [
             train_context_score_stage(
                 **common_training,
                 context_task_bank=initial_bank,
+                context_view_counts=(
+                    None
+                    if initial_observations is None
+                    else initial_observations["view_counts"]
+                ),
+                context_query_codes=(
+                    None
+                    if initial_observations is None
+                    else initial_observations["query_codes"]
+                ),
                 epochs=int(args.stage_one_epochs),
                 seed=int(args.seed) + 100 * direction_index,
                 stage_name="initial_context_bank_target",
             )
         ]
-        interim_bank, interim_report = build_context_score_bank(
+        interim_build = build_context_score_bank(
             expert=expert,
             metric=metric,
             teacher=teacher,
@@ -408,12 +442,28 @@ def main() -> None:
             expected_view_counts=support_banks["view_counts"],
             device=device,
             progress_interval=int(args.progress_interval),
+            return_observation_state=args.training_objective == "anchor_prior_loo",
         )
+        if args.training_objective == "anchor_prior_loo":
+            interim_bank, interim_report, interim_observations = interim_build
+        else:
+            interim_bank, interim_report = interim_build
+            interim_observations = None
         if int(args.stage_two_epochs) > 0:
             training_reports.append(
                 train_context_score_stage(
                     **common_training,
                     context_task_bank=interim_bank,
+                    context_view_counts=(
+                        None
+                        if interim_observations is None
+                        else interim_observations["view_counts"]
+                    ),
+                    context_query_codes=(
+                        None
+                        if interim_observations is None
+                        else interim_observations["query_codes"]
+                    ),
                     epochs=int(args.stage_two_epochs),
                     seed=int(args.seed) + 100 * direction_index + 1,
                     stage_name="refreshed_context_bank_target",
@@ -601,6 +651,12 @@ def main() -> None:
             "observability_weight": float(args.observability_weight),
             "observability_tail_weight": float(args.observability_tail_weight),
             "observability_damping": float(args.observability_damping),
+            "training_objective": str(args.training_objective),
+            "prior_weight": float(args.prior_weight),
+            "prior_temperature": float(args.prior_temperature),
+            "prior_incompatible_negatives": int(
+                args.prior_incompatible_negatives
+            ),
             "topks": list(args.topks),
             "ransac_reprojection_px": float(threshold),
             "ransac_threshold_source": threshold_source,
