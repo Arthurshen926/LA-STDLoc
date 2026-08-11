@@ -26,6 +26,11 @@ def main() -> None:
     parser.add_argument("--map", type=Path)
     parser.add_argument("--metric-state", type=Path)
     parser.add_argument(
+        "--context-state",
+        type=Path,
+        help="Mapping-only MCCD artifact; mutually exclusive with --metric-state.",
+    )
+    parser.add_argument(
         "--scene-calibration",
         type=Path,
         help=(
@@ -61,14 +66,21 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.stage_state:
-        if args.map or args.metric_state:
-            parser.error("--stage-state cannot be combined with --map/--metric-state")
+        if args.map or args.metric_state or args.context_state:
+            parser.error(
+                "--stage-state cannot be combined with descriptor map options"
+            )
         map_path, metric_path = materialize_a0(
             args.stage_state, args.output / "materialized_a0", args.config
         )
     else:
-        if args.map is None or args.metric_state is None:
-            parser.error("A1 evaluation requires both --map and --metric-state")
+        if args.map is None:
+            parser.error("A1 evaluation requires --map")
+        if (args.metric_state is None) == (args.context_state is None):
+            parser.error(
+                "select exactly one descriptor protocol: --metric-state or "
+                "--context-state"
+            )
         map_path, metric_path = args.map, args.metric_state
     deployment = load_mainline_config(args.config).values["deployment"]
     dataset = ColmapDataset(args.dataset, images=args.images)
@@ -96,6 +108,7 @@ def main() -> None:
     localizer = SparseLocalizer(
         map_path,
         metric_path,
+        context_state_path=args.context_state,
         device=args.device,
         keypoint_count=keypoint_count,
         reprojection_error_px=reprojection_error_px,
@@ -129,6 +142,14 @@ def main() -> None:
                 "pose_solves": 1,
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
+                "descriptor_protocol": (
+                    "mccd" if args.context_state is not None else "shared_metric"
+                ),
+                "context_state": (
+                    str(args.context_state.resolve())
+                    if args.context_state is not None
+                    else None
+                ),
             },
             indent=2,
             sort_keys=True,

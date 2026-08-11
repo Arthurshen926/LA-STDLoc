@@ -12,6 +12,237 @@ topology/A1 schedule, and one-shot PoseLib protocol remain fixed.
 Historical ablations and no-go branches are not shipped in this branch. Their
 complete source remains in Git tag `archive-full-research-20260803`.
 
+## Repeated-assignment ceiling audit
+
+Before changing the frozen frontend or adding a contextual descriptor, run the
+mapping-only ambiguity audit on the trained compact map:
+
+```bash
+python scripts/audit_repeated_assignments.py \
+  --map /data/run/map_learning/anchor_map_step_0175.pt \
+  --metric-state /data/run/map_learning/metric_state_step_0175.pt \
+  --complete-positive-teacher /data/run/map_learning/complete_positive_teacher.pt \
+  --query-cache /data/run/bootstrap/query_cache.pt \
+  --scene-calibration /data/run/map_learning/scene_calibration.json \
+  --dataset /data/scene \
+  --output /data/run/repeated_assignment_audit.json
+```
+
+The report evaluates exact shared-metric global ranking at top-1/2/4/8/16/32.
+It records positive recall with both all-row and positive-eligible denominators,
+Track Core versus Gaussian Reserve recall and winner breakdowns, exact
+positive-to-wrong score margins, repeated false-attractor multiplicity, an
+optional image-sharpness stratification, and mapping-only oracle-top-K PoseLib
+headroom. The oracle changes only rows whose retrieved top-K contains a legal
+positive and retains deployed top-1 for all other rows. It is a diagnostic
+ceiling, not a deployable matcher and not a source of test-set model selection.
+
+The first P0 audit used deterministic uniform mapping-view samples from the
+indoor detector-density study. Stairs used 256 of 2,000 mapping views with 96
+of them replayed through the oracle; Fire used 128 of 2,000 and 32 oracle
+views. The denominator below is restricted to rows for which the active-map
+teacher exposes at least one legal positive; the JSON report also retains the
+all-detector-row denominator.
+
+| Scene | R@1 | R@8 | R@16 | R@32 | Track R@1 / R@16 | Reserve R@1 / R@16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stairs | 48.02% | 72.21% | 78.46% | 83.22% | 70.05% / 90.15% | 17.52% / 63.66% |
+| Fire | 53.47% | 82.33% | 87.47% | 90.89% | 58.28% / 86.28% | 17.60% / 86.60% |
+
+On Stairs the exact best-positive minus best-wrong cosine margin has mean
+`-0.0201` and median `0.0010`: many legal positives are present but nearly tied
+with a wrong identity. Of the 21,795 labeled false top-1 rows, 54.5% already
+contain a legal positive in top-16 and 64.2% in top-32. Gaussian Reserve
+anchors form 73.2% of the map and win
+43.7% of mapping rows, while their labeled-winner precision is only 41.0%.
+Track Core positives rank much better, although the largest individual false
+attractors are themselves tracks. This supports a shared query/map context
+encoder plus reserve consistency control, rather than another reserve-only
+descriptor patch.
+
+| Stairs mapping oracle | Median TE | Mean TE | P90 TE | CVaR95 | Hypotheses |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Deployed top-1 | 0.796 cm | 1.035 cm | 2.160 cm | 3.330 cm | 3,171.7 |
+| Corrected top-32 | 0.665 cm | 0.889 cm | 1.877 cm | 2.842 cm | 2,879.1 |
+
+The oracle improves all Stairs pose-risk statistics and reduces hypotheses,
+so this sample is inconsistent with a solver-only failure. It is a direction
+audit, not the context method gate: the current metric has seen all mapping
+views. Any learned context baseline must therefore use disjoint alternating
+trajectory blocks for descriptor construction/training and pose gating before
+test is consulted.
+
+As a cross-dataset sentinel, the same audit was run on 256 mapping views from
+the legacy 12Scenes Office2/5b artifact, with 64 views used for oracle PnP and
+its registered fixed 12-pixel gate. Positive-eligible R@1/R@16/R@32 is
+62.56%/89.48%/91.72%; Track Core is 63.82%/90.41% at R@1/R@16, while Gaussian
+Reserve is 28.33%/67.63%. The latter has only 34.0% labeled-winner precision.
+
+| Office2/5b mapping oracle | Median TE | Mean TE | P90 TE | CVaR95 | Hypotheses | >100 cm |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Deployed top-1 | 0.451 cm | 15.782 cm | 1.008 cm | 244.648 cm | 20,145.4 | 3 |
+| Corrected top-32 | 0.378 cm | 10.895 cm | 0.959 cm | 167.984 cm | 15,556.0 | 2 |
+
+The large mean/CVaR gap comes from a small catastrophic tail, and the top-32
+oracle reduces both by about 31% while cutting hypotheses by 22.8%. Although
+this older artifact is not an Adaptive V3 non-inferiority gate, it independently
+shows that indoor tail risk contains descriptor-ranking headroom rather than
+being explained only by PoseLib.
+
+## Cross-fitted FeatureBooster direction oracle
+
+The official `SuperPoint+Boost-F.pth` was then evaluated as a mapping-only
+direction oracle. Each scene was split into alternating contiguous trajectory
+blocks and run in both directions. A direction fused map descriptors only from
+legal positive observations in its support fold and evaluated only the
+disjoint gate fold. Raw SuperPoint and Boost-F used exactly the same observation
+edges, view-balanced fusion, minimum two-view anchor support, global cosine
+top-1, and one standard PoseLib call. Filtering anchors without support-fold
+observations is a diagnostic necessity and is shared by both protocols; these
+numbers are therefore a controlled context delta, not a comparison with the
+complete deployed map.
+
+```bash
+python scripts/evaluate_context_booster_crossfit.py \
+  --map /data/run/map_learning/anchor_map_step_1520.pt \
+  --complete-positive-teacher /data/run/map_learning/complete_positive_teacher.pt \
+  --query-cache /data/run/bootstrap/query_cache.pt \
+  --featurebooster-weights ~/.cache/lafgs/SuperPoint+Boost-F.pth \
+  --scene-calibration /data/run/map_learning/scene_calibration.json \
+  --minimum-support-views 2 \
+  --gate-query-count 256 \
+  --pose-query-count 96 \
+  --output /data/run/map_learning/context_booster_crossfit.json
+```
+
+All scenes replayed 256 gate images. Stairs and Fire used 96 PoseLib images;
+the legacy Office2/5b artifact used 64 and its registered explicit 12-pixel
+fallback. The table reports Boost-F minus its support-matched raw-SuperPoint
+control. Negative pose and hypotheses deltas are improvements.
+
+| Scene | R@1 raw -> boost | R@16 raw -> boost | Mean TE delta | P90 TE delta | CVaR95 delta | Hypotheses delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stairs | 32.00% -> 33.23% | 66.38% -> 68.21% | +5.2% | +7.5% | +3.8% | -15.8% |
+| Fire | 34.78% -> 35.75% | 82.14% -> 83.59% | -3.3% | -7.5% | -8.8% | -0.6% |
+| Office2/5b | 57.55% -> 61.18% | 87.24% -> 89.46% | +43.5% | -4.8% | +45.8% | -14.8% |
+
+The ranking result is stable: Boost-F raises R@1 in all six directed folds,
+including Track Core and Gaussian Reserve aggregates in every scene. It also
+raises pooled R@16 by 1.83, 1.45, and 2.22 percentage points on Stairs, Fire,
+and Office2/5b. This is sufficient evidence that single-image context contains
+useful repeated-structure information and promotes the context representation
+line over further geometry, topology, or solver patching.
+
+The unbounded official embedding does not pass the pose-risk gate. On the 96
+Stairs pose images it improves 42 and worsens 54; one previously 0.78 cm pose
+moves to 27.25 cm. On Office2/5b, a 3.37 cm raw pose becomes 399.23 cm, raising
+catastrophic failures from three to four and dominating mean/CVaR despite a
+better P90. Fire improves in aggregate, but one of its two directions is
+slightly pose-regressive. Therefore FeatureBooster itself is not promoted to
+deployment and test images remain uninspected.
+
+The next context model must be map-consistent and identity-preserving: a small
+dense multi-scale/global-context head with an identity-initialized bounded
+residual, trained with repeated-collision negatives, clean-win preservation,
+cross-view consistency, and an explicit tail-risk gate. The current topology,
+geometry, and one-shot PoseLib path remain frozen. This converts the result
+into a precise method constraint: context is useful, while unrestricted
+descriptor replacement is unsafe.
+
+## Map-consistent contextual descriptor gate
+
+The first MCCD implementation uses the frozen SuperPoint dense map from the
+same detector forward as the sparse keypoints. It samples 3x3, 7x7, and 15x15
+masked local averages plus one image-global token, then applies one
+identity-initialized two-layer residual head. Query observations and every
+mapping observation use the same head; landmark descriptors are fused only
+after observation-space adaptation, with equal weight per observing image.
+The deployed descriptor remains 256D and localization remains exact global
+top-1 followed by one standard PoseLib call.
+
+Training uses only mapping queries and has two stages: a collision/clean-win
+list loss against a fixed support-only raw bank, followed by the same loss
+against the rebuilt contextual bank. Both temporal-block directions use
+identical support observations for raw and contextual maps. The full fit saves
+the adapter state hash, base-map anchor IDs, supported anchor rows, context
+configuration, and a `uses_test_queries=false` contract.
+
+```bash
+python scripts/train_evaluate_context_metric_crossfit.py \
+  --map /data/run/map_learning/anchor_map_step_1520.pt \
+  --complete-positive-teacher /data/run/map_learning/complete_positive_teacher.pt \
+  --query-cache /data/run/bootstrap/query_cache.pt \
+  --scene-calibration /data/run/map_learning/scene_calibration.json \
+  --minimum-support-views 2 \
+  --gate-query-count 256 \
+  --pose-query-count 96 \
+  --output /data/run/map_learning/mccd_crossfit.json
+```
+
+The original hard-clipped bounded residual passes the mapping-only context
+gate on all three available indoor sentinels. Values below compare MCCD with
+its observation-identical raw-SuperPoint control; negative pose deltas are
+improvements.
+
+| Scene | R@1 raw -> MCCD | R@16 raw -> MCCD | Mean TE delta | P90 TE delta | CVaR95 delta | Hypotheses delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stairs | 32.00% -> 33.49% | 66.38% -> 69.17% | -22.8% | -12.1% | -34.3% | -5.4% |
+| Fire | 34.78% -> 35.89% | 82.14% -> 84.40% | -1.2% | +1.2% | -1.6% | -0.6% |
+| Office2/5b | 57.55% -> 59.76% | 87.24% -> 88.87% | +0.3% | +2.3% | +0.0% | -11.7% |
+
+Stairs ablations keep the same folds, support edges, gate rows, and pose rows.
+The full local-plus-global context has the strongest tail interaction even
+though local-only has a slightly higher R@1. A 0.05 residual is too
+conservative.
+
+| Stairs mapping variant | R@1 delta | Mean TE delta | P90 TE delta | CVaR95 delta |
+| --- | ---: | ---: | ---: | ---: |
+| Pointwise / zero context | +1.063 pp | -10.9% | -6.5% | -16.1% |
+| Local only | +1.525 pp | -11.7% | -7.8% | -16.5% |
+| Global only | +1.296 pp | -12.6% | -0.4% | -16.2% |
+| Local + global | +1.490 pp | -22.8% | -12.1% | -34.3% |
+| Local + global, residual 0.05 | +0.792 pp | -4.2% | -3.0% | -3.1% |
+
+An implementation audit found that the first hard clamp made the residual
+trust loss constant after the 0.10 boundary was reached. The retained adapter
+therefore uses a smooth radial rational bound. It preserves unit derivative at
+the identity, remains strictly below 0.10, and keeps a radial trust gradient.
+On Stairs cross-fit its mean/max final residual is 0.0848/0.0992 instead of
+0.1000/0.1000. It raises R@1 by 1.294 points and reduces mean/P90/CVaR95 by
+13.3%/2.5%/17.8%; 52 of 96 paired poses improve. Legacy hard-clipped artifacts
+carry an explicit compatibility path and are not silently reinterpreted.
+
+After the mapping gate, the locked 2048-keypoint protocol was evaluated on all
+1,000 Stairs test images. The first attempted run resolved the current adaptive
+default to 1024 rows and is excluded; all rows below use the scene's materialized
+`factor_config_k2048.yaml`, 12 pixels, seed 2026, global top-1, and one PoseLib
+solve. CVaR95 is recomputed from the worst 5% paired test errors.
+
+| Stairs test descriptor protocol | Median TE | Mean TE | P90 TE | CVaR95 | Raw P@2 | 2 cm recall | 5 cm recall | Hypotheses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Existing learned shared metric | 1.750 cm | 3.795 cm | 6.997 cm | 29.515 cm | 3.274% | 56.0% | 82.3% | 21,845 |
+| Raw observation map, identity control | 2.183 cm | 3.919 cm | 6.229 cm | 27.783 cm | 2.769% | 42.4% | 85.7% | 24,852 |
+| Raw-map MCCD, hard clip | 2.065 cm | 3.807 cm | 6.512 cm | 26.940 cm | 3.037% | 47.3% | 85.6% | 21,162 |
+| Raw-map MCCD, smooth radial bound | 2.099 cm | 3.836 cm | 6.442 cm | 27.026 cm | 2.956% | 45.6% | 85.3% | 21,637 |
+
+This isolates the remaining problem. Context is genuinely useful relative to
+the raw observation map: it recovers 3.2--4.9 points of 2 cm recall, improves
+raw precision, and reduces the catastrophic tail or RANSAC work. However, the
+raw observation map itself discards 13.6 points of tight recall relative to the
+existing learned shared-metric map. The current raw-map MCCD is therefore a
+tail-robust Pareto branch, not the new default.
+
+The next and only promoted descriptor line is a **metric-preserving contextual
+residual uplift**. Query descriptors first pass through the frozen shared
+metric. Mapping observations use the same frozen metric and context head, but
+their robustly fused contextual residual is added to the existing learned
+anchor descriptor. Thus zero initialization exactly reproduces the current A1
+query and map descriptors, unsupported anchors remain unchanged, and the
+context head can only supply a bounded observation-consistent correction. Its
+artifact must pin both the metric state hash and context state hash. The
+one-pass Track-First rebuild remains blocked until this stricter P2 variant
+passes Stairs plus non-regression sentinels.
+
 ## Adaptive V2 smoke validation
 
 The mapping-only adaptive topology was isolated on ShopFacade by reusing the

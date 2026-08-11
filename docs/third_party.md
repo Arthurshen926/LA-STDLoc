@@ -11,6 +11,14 @@
   accept its terms, and set `LAFGS_SUPERPOINT_WEIGHTS` or place it at
   `~/.cache/lafgs/superpoint_v1.pth`. LaFGS requires SHA256
   `52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e`.
+- **FeatureBooster:** an inference-only, parameter-name-compatible adaptation of
+  the official Apache-2.0 implementation is included for mapping-only
+  diagnostics. The official `SuperPoint+Boost-F.pth` is not redistributed.
+  Obtain it from the
+  [FeatureBooster repository](https://github.com/SJTU-ViSYS/FeatureBooster),
+  set `LAFGS_FEATUREBOOSTER_WEIGHTS` or place it at
+  `~/.cache/lafgs/SuperPoint+Boost-F.pth`. LaFGS requires SHA256
+  `5334d9aa861e877a2b99baff0d682e1ac8a749cdd65eb1d4b8bd0a8bb8bf0359`.
 - **PyTorch/OpenCV/Pillow:** tensor, image, and geometry runtime dependencies.
 
 External reconstruction systems (GraphDeco 3DGS, official 2DGS, AnySplat, and

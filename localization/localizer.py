@@ -22,6 +22,7 @@ from localization.pose_solver import (
     camera_intrinsics,
     solve_absolute_pose,
 )
+from map_learning.context_metric import MapConsistentContextAdapter
 from map_learning.metric import SharedLowRankMetric
 
 
@@ -50,12 +51,62 @@ def load_shared_metric(
     return metric.eval()
 
 
+def load_context_descriptor_artifact(
+    path: str | Path,
+    *,
+    base_anchor_ids: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, MapConsistentContextAdapter]:
+    """Load a map-consistent context bank and strictly align it to a base map."""
+    artifact = torch.load(path, map_location="cpu", weights_only=False)
+    if artifact.get("schema") != "lafgs_map_consistent_context_descriptor":
+        raise ValueError("unsupported context descriptor artifact schema")
+    if bool(artifact.get("uses_test_queries", True)):
+        raise ValueError("context descriptor artifact must be mapping-only")
+    indices = torch.as_tensor(artifact["anchor_indices"]).long().reshape(-1)
+    anchor_ids = torch.as_tensor(artifact["anchor_ids"]).long().reshape(-1)
+    base_anchor_ids = torch.as_tensor(base_anchor_ids).long().reshape(-1)
+    if indices.numel() and (
+        int(indices.min()) < 0 or int(indices.max()) >= base_anchor_ids.numel()
+    ):
+        raise ValueError("context descriptor anchor index is outside the base map")
+    if not torch.equal(base_anchor_ids[indices], anchor_ids):
+        raise ValueError("context descriptor anchor IDs do not align with the base map")
+    features = F.normalize(
+        torch.as_tensor(artifact["anchor_features"]).float(), dim=1
+    )
+    if features.shape != (indices.numel(), 256):
+        raise ValueError("context descriptor bank must have shape [N, 256]")
+    exported = dict(artifact["adapter_config"])
+    config = {
+        key: exported[key]
+        for key in (
+            "descriptor_dim",
+            "hidden_dim",
+            "context_kernels",
+            "maximum_residual_norm",
+        )
+    }
+    config["context_mode"] = exported.get(
+        "context_mode", "multi_scale_global"
+    )
+    # Artifacts produced before smooth radial trust regions used the original
+    # hard clip. Preserve their exact runtime instead of silently changing it.
+    config["residual_parameterization"] = exported.get(
+        "residual_parameterization", "hard_clip_v1"
+    )
+    adapter = MapConsistentContextAdapter(**config).to(device)
+    adapter.load_state_dict(artifact["adapter_state_dict"], strict=True)
+    return indices, anchor_ids, features.to(device), adapter.eval()
+
+
 class SparseLocalizer:
     def __init__(
         self,
         map_path: str | Path,
-        metric_state_path: str | Path,
+        metric_state_path: str | Path | None = None,
         *,
+        context_state_path: str | Path | None = None,
         device: torch.device | str = "cuda",
         keypoint_count: int = 2048,
         reprojection_error_px: float = 12.0,
@@ -70,25 +121,55 @@ class SparseLocalizer:
         state = torch.load(map_path, map_location="cpu", weights_only=False)
         if state.get("schema") != "lafgs_materialized_anchor_map":
             raise ValueError("unsupported localization map schema")
-        self.anchor_ids = torch.as_tensor(state["anchor_ids"]).long()
-        self.anchor_xyz = torch.as_tensor(
-            state["anchor_xyz"], device=self.device
-        ).float()
-        self.anchor_features = F.normalize(
-            torch.as_tensor(state["anchor_features"], device=self.device).float(),
-            dim=1,
-        )
+        if (metric_state_path is None) == (context_state_path is None):
+            raise ValueError(
+                "select exactly one descriptor protocol: shared metric or context"
+            )
+        base_anchor_ids = torch.as_tensor(state["anchor_ids"]).long()
+        if context_state_path is not None:
+            (
+                context_indices,
+                self.anchor_ids,
+                self.anchor_features,
+                context_adapter,
+            ) = load_context_descriptor_artifact(
+                context_state_path,
+                base_anchor_ids=base_anchor_ids,
+                device=self.device,
+            )
+            self.anchor_xyz = torch.as_tensor(
+                state["anchor_xyz"], device=self.device
+            ).float()[context_indices.to(self.device)]
+            metric = None
+        else:
+            context_indices = torch.arange(base_anchor_ids.numel())
+            self.anchor_ids = base_anchor_ids
+            self.anchor_xyz = torch.as_tensor(
+                state["anchor_xyz"], device=self.device
+            ).float()
+            self.anchor_features = F.normalize(
+                torch.as_tensor(
+                    state["anchor_features"], device=self.device
+                ).float(),
+                dim=1,
+            )
+            metric = load_shared_metric(
+                metric_state_path,
+                anchor_ids=self.anchor_ids,
+                device=self.device,
+            )
+            context_adapter = None
         if not (
             self.anchor_ids.numel()
             == self.anchor_xyz.shape[0]
             == self.anchor_features.shape[0]
         ):
             raise ValueError("compact map rows do not align")
-        metric = load_shared_metric(
-            metric_state_path, anchor_ids=self.anchor_ids, device=self.device
-        )
         self.frontend = NativeSuperPointFrontend(
-            device=self.device, keypoint_count=keypoint_count, metric=metric
+            device=self.device,
+            keypoint_count=keypoint_count,
+            metric=metric,
+            context_adapter=context_adapter,
         )
         self.reprojection_error_px = float(reprojection_error_px)
         self.confidence = float(confidence)
@@ -98,9 +179,9 @@ class SparseLocalizer:
         self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
         self.guided_sampling = bool(guided_sampling)
         self.anchor_matchability = torch.as_tensor(
-            state.get("anchor_matchability", torch.ones_like(self.anchor_ids)),
+            state.get("anchor_matchability", torch.ones_like(base_anchor_ids)),
             device=self.device,
-        ).float()
+        ).float()[context_indices.to(self.device)]
         covariance = state.get("anchor_position_covariance")
         if covariance is None:
             self.anchor_uncertainty = torch.ones_like(
@@ -118,6 +199,9 @@ class SparseLocalizer:
             )
             median = trace.median().clamp_min(1e-12)
             self.anchor_uncertainty = trace / median
+            self.anchor_uncertainty = self.anchor_uncertainty[
+                context_indices.to(self.device)
+            ]
 
     @torch.inference_mode()
     def localize(
@@ -213,5 +297,6 @@ class SparseLocalizer:
                     - matches.scores.numel() / max(int(raw_matches.scores.numel()), 1)
                 ),
                 "guided_sampling": int(self.guided_sampling),
+                "context_adapter": int(self.frontend.context_adapter is not None),
             },
         )
