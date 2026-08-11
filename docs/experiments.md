@@ -243,6 +243,229 @@ artifact must pin both the metric state hash and context state hash. The
 one-pass Track-First rebuild remains blocked until this stricter P2 variant
 passes Stairs plus non-regression sentinels.
 
+## Metric-preserving contextual uplift decision
+
+The decisive follow-up removes the raw-map confound. It freezes the deployed
+`SharedLowRankMetric` for every query observation and retains the learned A1
+anchor descriptor as the map-side local expert. A context head predicts only a
+unit-sphere tangent angle update. Mapping images run the same head, but only
+their per-observation tangent updates are view-balanced and fused onto the
+learned anchor. Cross-view residual-direction coherence is the map-side gate;
+the query head supplies a sigmoid confidence gate. At zero initialization both
+query and map descriptors reproduce A1 bitwise.
+
+Training is also restricted by the first-principles failure decomposition. A1
+clean winners receive margin preservation. A1 false winners receive collision
+supervision only when a legal positive is already in A1 top-32. False rows
+without a top-32 positive receive no ranking pressure, preventing the model
+from inventing unsupported identities. The metric file hash, context state
+hash, support rows, and learned anchor IDs are pinned in every fold artifact.
+
+```bash
+python scripts/train_evaluate_metric_context_uplift_crossfit.py \
+  --map /data/run/map_learning/anchor_map_step_1520.pt \
+  --metric-state /data/run/map_learning/metric_state_step_1520.pt \
+  --complete-positive-teacher /data/run/map_learning/complete_positive_teacher.pt \
+  --query-cache /data/run/bootstrap/query_cache.pt \
+  --scene-calibration /data/run/map_learning/scene_calibration.json \
+  --repair-topk 32 \
+  --maximum-angle-rad 0.05 \
+  --output /data/run/map_learning/metric_context_uplift_crossfit.json
+```
+
+On the two Stairs support directions, the training sets contain 51,665/49,821
+recoverable false winners and 30,717/26,326 false winners outside top-32. The
+latter are excluded from collision supervision. The table below uses the same
+256 gate images and 96 PoseLib images for every row. Pose changes are relative
+to the support-matched frozen A1 control; negative values are improvements.
+
+| A1 uplift variant | R@1 delta | 2 cm recall delta | Mean TE | P90 TE | CVaR95 | Hypotheses | New false from A1-clean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pointwise, context zero | +0.706 pp | -2.083 pp | -22.35% | +0.04% | -64.69% | -0.85% | 0.750% |
+| Local dense context | +0.805 pp | 0.000 pp | -0.85% | -3.15% | +1.14% | -3.32% | 0.708% |
+| Local + global context | +0.880 pp | -1.042 pp | -0.76% | +2.39% | -2.66% | -5.82% | 0.768% |
+| Local + global, 0.025 rad | +0.506 pp | -1.042 pp | -0.19% | +2.23% | +1.17% | -2.22% | 0.379% |
+
+This is stronger evidence than either the raw-map or FeatureBooster result:
+context still adds information after preserving A1. Full context gains 0.174
+R@1 points beyond pointwise training and cuts substantially more hypotheses;
+local context is the best pose-balanced variant, improving 56 and worsening 40
+of the paired poses while preserving 2 cm recall. Pointwise training alone
+repairs one large tail failure, proving that the recoverable-collision objective
+also has an independent effect.
+
+However, no tangent-uplift variant passes the predeclared complete gate. The
+local-only variant is closest, but its pooled CVaR95 rises 1.14% and 153 of
+21,614 A1-clean rows become new false attractors. Adding the global token helps
+retrieval and solver efficiency but harms P90 and one tight-recall query.
+Halving the angular cap reduces held-out clean-margin violations from 2.32% to
+0.22%, yet does not restore tail non-regression. Therefore this is not merely a
+residual-strength tuning problem: a single modified 256D descriptor still
+couples local invariance and contextual identifiability too tightly.
+
+The metric-preserving tangent uplift is retained as a reproducible diagnostic,
+not promoted to deployment. Test queries, protection scenes, Reserve identity
+revision, and Track-First/topology rebuild are deliberately not run because the
+Stairs mapping gate failed. The next minimal relaxation is the explicit
+dual-expert score proposed by the analysis: preserve the A1 cosine term exactly
+and add a separately normalized 16--32D context compatibility term through one
+concatenated descriptor bank. It must first show that context corrections can
+improve recoverable repeated collisions without changing the local A1 score;
+only then should Reserve identity or topology be revisited.
+
+## Explicit dual-expert context score decision
+
+The next experiment implements that relaxation exactly. The frozen 256D A1
+term and a separate 32D context term are scored as
+`a1_dot + lambda * context_dot`. Mapping context codes are view-balanced but
+not renormalized, so their norm is the cross-view concentration gate. Two
+orthogonal compensation coordinates make both query and map concatenations
+unit norm without contributing to their dot product. Consequently this is
+still one normalized descriptor bank, one global top-1, and one PoseLib call;
+the A1 score is algebraically unchanged. Unit tests verify both constant norm
+and exact score equivalence.
+
+```bash
+PYTHONPATH=. python scripts/train_evaluate_context_score_crossfit.py \
+  --map /data/run/map_learning/anchor_map_step_1520.pt \
+  --metric-state /data/run/map_learning/metric_state_step_1520.pt \
+  --complete-positive-teacher /data/run/map_learning/complete_positive_teacher.pt \
+  --query-cache /data/run/bootstrap/query_cache.pt \
+  --scene-calibration /data/run/map_learning/scene_calibration.json \
+  --context-mode global_only \
+  --expert-input-scope shared_global \
+  --context-kernels 3 \
+  --code-dim 32 \
+  --context-weights 0.01 \
+  --training-context-weight 0.05 \
+  --output /data/run/map_learning/context_score_shared_global_crossfit.json
+```
+
+The first form retained local per-keypoint context. It improves Stairs R@1 by
+0.262/0.440/0.389 points for lambda 0.01/0.02/0.05, but every weight fails the
+pose gate. At lambda 0.01, 2 cm recall falls 1.042 points and mean/CVaR95 rise
+1.0%/4.4%. This proves that merely separating the score channels does not fix
+the consensus problem: independently moving individual keypoint winners can
+raise retrieval while damaging the spatially coherent correspondence set.
+
+The decisive correction makes the context code genuinely image-shared. The
+head consumes only the global dense SuperPoint token; every keypoint in one
+image receives exactly the same code, while A1 remains responsible for local
+identity. Lambda 0.01 was retained by the safety-first Stairs gate. The table
+uses the same 256 mapping-only gate images and 96 PoseLib images per scene.
+Negative relative pose values are improvements.
+
+| Scene | R@1 delta | 2 cm recall delta | Mean TE | P90 TE | CVaR95 | Hypotheses | Strict gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Stairs | +0.141 pp | +1.042 pp | -21.97% | -4.93% | -63.41% | -1.74% | pass |
+| Fire | +0.106 pp | +1.042 pp | -0.51% | +2.08% | -1.62% | -0.05% | fail P90 |
+| Heads | +0.117 pp | 0.000 pp | -2.76% | +1.34% | -2.81% | -0.52% | fail P90 |
+| Office2/5b | +0.430 pp | 0.000 pp | -2.05% | +4.97% | -2.25% | -3.63% | fail P90 |
+| ShopFacade | +0.105 pp | +1.042 pp | -2.40% | +2.21% | -5.22% | -0.63% | fail P90 |
+
+This is the first context form whose main effect transfers across all five
+mapping scenes: R@1, mean, CVaR95, and solver work improve everywhere; tight
+recall improves in three scenes and is unchanged in two. It also removes the
+catastrophic Stairs outlier. However, it is not promoted: the pooled P90 rises
+on every protection scene. Fire and ShopFacade improve P90 inside both
+directions yet regress after pooling, demonstrating some 96-query quantile
+instability, but Office2/5b also regresses in both directions. The formal
+non-regression condition therefore remains unmet.
+
+A final image-shared learned gate tested exact A1 fallback. Its mapping label
+was deliberately strict: enable context at training lambda 0.05 only when the
+image repairs at least one recoverable A1 error and creates no new false winner
+on any A1-clean row. The gate reduced Stairs new false attractors from 180 to 2
+and clean-margin violations from 12 to zero, but collapsed toward zero. Held-out
+R@1 changes by -0.002 points and pose is effectively identical to A1. This is a
+safe fallback but not an accuracy method, so class weighting or gate-threshold
+tuning is not promoted post hoc.
+
+The first-principles conclusion is now narrower. A shared image context code
+contains real, cross-scene identity information and should remain in the final
+method family. The unresolved problem is query-level risk calibration: the
+training objective rewards row-wise collision repair but cannot distinguish an
+image whose small set of changed winners helps geometric consensus from one
+whose changes raise the P90 pose error. The next valid experiment is therefore
+a mapping-only query-level expected-clean-inlier/consensus objective (with a
+tail term), applied to this shared-global dual score. It is not another lambda,
+descriptor-cap, training-step, Reserve, or topology sweep. Test sets, Reserve
+revision, and Track-First rebuild remain blocked until that objective preserves
+the transferred mean/CVaR gains without the protection-scene P90 regressions.
+
+## Query-level clean-consensus objective decision
+
+That objective was implemented without changing A1, the shared-global context
+head, lambda, map topology, or PoseLib. The complete-positive teacher supplies
+the edges already certified by mapping GT pose, depth, and visibility. For each
+query, the model estimates clean top-1 probability against the hardest legal
+negative and averages it into expected clean-inlier mass. Four mapping queries
+form one optimization batch; the worst quartile supplies a query-level CVaR
+term. The preregistered weights are 0.1 for both mean consensus and tail CVaR.
+
+| Stairs shared-global lambda 0.01 | R@1 delta | 2 cm recall delta | Mean TE | P90 TE | CVaR95 | Hypotheses | New false from A1-clean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Row-wise collision objective | +0.141 pp | +1.042 pp | -21.97% | -4.93% | -63.41% | -1.74% | 0.833% |
+| + expected clean mass and query CVaR | +0.128 pp | +1.042 pp | -21.98% | -4.48% | -61.81% | -0.22% | 0.796% |
+
+The query-level variant passes the absolute Stairs gate but fails the
+incremental gate against the simpler shared-global expert. It slightly reduces
+new false attractors and clean-margin violations, yet loses retrieval gain and
+most of the solver-work reduction while weakening P90/CVaR. It is therefore
+retained as a negative ablation and is not expanded to the protection scenes.
+
+This result distinguishes clean ratio from geometric consensus. PnP does not
+only need a high expected number of legal winners; it needs those winners to
+span informative image locations and 3D directions. A scalar clean-mass CVaR
+cannot distinguish clustered, nearly degenerate correspondences from a
+well-conditioned set. If context work continues, the only justified extension
+is an expected clean information matrix built from fixed mapping geometry,
+with a small `-logdet`/conditioning term at query level. Further lambda, gate,
+epoch, descriptor-cap, Reserve, or topology sweeps remain unsupported.
+
+## Expected clean pose-information decision
+
+The final justified extension replaced scalar clean mass with a mapping-only
+six-DoF observability target. For each legal query row, the fixed mapping pose,
+native camera intrinsics, and candidate anchor xyz define the pixel
+reprojection Jacobian with respect to SE(3). Its outer product is weighted by
+the model's legal top-1 probability. The resulting 6x6 Fisher matrix is
+diagonally whitened by the all-legal reference matrix, and the per-query loss
+is the mean log-determinant gap. A worst-quartile CVaR term uses the same
+four-query batches. This adds no online branch: deployment remains one
+normalized descriptor bank, exact cosine top-1, and one PoseLib call.
+
+The unit gate distinguishes equal-count geometrically complete and degenerate
+correspondence sets and has finite gradients. The real Stairs smoke also has
+positive whitened minimum eigenvalues and non-saturated information retention,
+so the experiment was allowed to run. The preregistered single setting uses
+mean and tail weights 0.1, damping 0.001, training lambda 0.05, and deployment
+lambda 0.01.
+
+| Stairs shared-global lambda 0.01 | R@1 delta | 2 cm recall delta | Mean TE | P90 TE | CVaR95 | Hypotheses | New false from A1-clean | Margin violations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Row-wise collision objective | +0.141 pp | +1.042 pp | -21.97% | -4.93% | -63.41% | -1.74% | 0.833% | 0.056% |
+| + expected clean Fisher log-det/CVaR | +0.145 pp | +1.042 pp | -21.48% | -4.89% | -61.92% | -0.07% | 0.787% | 0.019% |
+
+The absolute mapping gate passes, but the incremental gate against the simpler
+shared-global expert fails. R@1 changes by only +0.0044 points and tight recall
+is identical, while mean, P90, CVaR95, and solver-work gains all weaken. The
+paired pose result is 47 better / 49 worse, versus 48 / 48 for the simpler
+objective; paired P90 translation delta also worsens from 0.0886 to 0.1101 cm.
+The cleaner false-attractor and margin counts therefore do not represent a
+pose improvement. This variant remains a negative ablation and is not run on
+sentinel scenes.
+
+The route stops here rather than substituting minimum eigenvalue or sweeping
+weights. Classical Fisher information assumes known inliers, small Gaussian
+residuals, and local least squares. Deployment instead makes a discrete hard
+winner choice and uses outlier-contaminated RANSAC minimal sets. The loss sees
+the conditioning of legal correspondences but not false-winner leverage or the
+probability of drawing an all-inlier, non-degenerate minimal set, which is the
+actual estimator bottleneck. Any later context objective must model that
+discrete robust-estimation event directly; more log-det, lambda, epoch, gate,
+Reserve, or topology adjustment is unsupported.
+
 ## Adaptive V2 smoke validation
 
 The mapping-only adaptive topology was isolated on ShopFacade by reusing the
