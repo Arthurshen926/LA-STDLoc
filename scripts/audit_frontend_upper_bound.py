@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import subprocess
+from typing import Sequence
 
 import torch
 
@@ -59,6 +61,33 @@ def _write_json(path: str | Path, report: dict) -> None:
     destination.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+
+def _detector_geometry_overrides(args: argparse.Namespace) -> dict:
+    """Require explicit geometry tolerances for every detector evaluation."""
+    if args.arm not in ("detector", "both"):
+        return {}
+    raw = {
+        "depth_abs_tolerance_m": args.depth_abs_tolerance_m,
+        "depth_rel_tolerance": args.depth_rel_tolerance,
+        "alpha_minimum": args.alpha_minimum,
+    }
+    missing = [name for name, value in raw.items() if value is None]
+    if missing:
+        raise ValueError(
+            "detector evaluation requires explicit geometry tolerances: "
+            + ", ".join(missing)
+        )
+    values = {name: float(value) for name, value in raw.items()}
+    if not all(math.isfinite(value) for value in values.values()):
+        raise ValueError("detector geometry tolerances must be finite")
+    if values["depth_abs_tolerance_m"] < 0.0:
+        raise ValueError("detector absolute depth tolerance must be nonnegative")
+    if values["depth_rel_tolerance"] < 0.0:
+        raise ValueError("detector relative depth tolerance must be nonnegative")
+    if not 0.0 <= values["alpha_minimum"] <= 1.0:
+        raise ValueError("detector alpha minimum must lie in [0, 1]")
+    return values
 
 
 def _inspect_artifact(path: str | Path, expected_sha256: str | None = None) -> dict:
@@ -354,11 +383,26 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument(
         "--reachability-radii-px", type=float, nargs="+", default=[2, 4, 8]
     )
+    evaluate_parser.add_argument(
+        "--depth-abs-tolerance-m",
+        type=float,
+        help="explicit detector target-universe absolute depth tolerance",
+    )
+    evaluate_parser.add_argument(
+        "--depth-rel-tolerance",
+        type=float,
+        help="explicit detector target-universe relative depth tolerance",
+    )
+    evaluate_parser.add_argument(
+        "--alpha-minimum",
+        type=float,
+        help="explicit detector target-universe minimum rendered alpha",
+    )
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     if args.command == "preflight":
         report = preflight(args)
     elif args.command == "contract":
@@ -370,6 +414,7 @@ def main() -> None:
             "teacher": _inspect_artifact(args.teacher),
         }
     else:
+        detector_geometry = _detector_geometry_overrides(args)
         evaluation_code = (
             frontend_detector_evaluation_code_identity(require_clean=True)
             if args.arm == "detector"
@@ -401,6 +446,7 @@ def main() -> None:
                 teacher=teacher,
                 probe=probe,
                 radii_px=args.reachability_radii_px,
+                **detector_geometry,
                 query_cache_path=args.query_cache,
                 teacher_path=args.teacher,
             )

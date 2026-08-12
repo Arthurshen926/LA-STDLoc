@@ -187,6 +187,108 @@ def test_detector_repeatability_is_same_k_and_descriptor_free(tmp_path):
     )
 
 
+def test_detector_runner_requires_and_forwards_explicit_geometry_tolerances(
+    tmp_path, monkeypatch
+):
+    paths = {}
+    for name in ("state", "query_cache", "teacher", "probe_cache"):
+        path = tmp_path / f"{name}.pt"
+        path.write_bytes(f"synthetic-{name}".encode())
+        paths[name] = path
+    captured = {}
+    monkeypatch.setattr(
+        frontend_runner,
+        "frontend_detector_evaluation_code_identity",
+        lambda **_: {"schema": "synthetic-detector-code"},
+    )
+    monkeypatch.setattr(frontend_runner, "_torch_load", lambda _: {})
+
+    def fake_detector_audit(**kwargs):
+        captured.update(kwargs)
+        return {"schema": "synthetic-detector-report"}
+
+    monkeypatch.setattr(
+        frontend_runner, "audit_detector_repeatability", fake_detector_audit
+    )
+    base = [
+        "evaluate",
+        "--state",
+        str(paths["state"]),
+        "--query-cache",
+        str(paths["query_cache"]),
+        "--teacher",
+        str(paths["teacher"]),
+        "--probe-cache",
+        str(paths["probe_cache"]),
+        "--arm",
+        "detector",
+        "--reachability-radii-px",
+        "2",
+        "4",
+        "8",
+        "--output",
+        str(tmp_path / "report.json"),
+    ]
+    with pytest.raises(ValueError, match="requires explicit geometry tolerances"):
+        frontend_runner.main(base)
+
+    frontend_runner.main(
+        base
+        + [
+            "--depth-abs-tolerance-m",
+            "0.05",
+            "--depth-rel-tolerance",
+            "0.02",
+            "--alpha-minimum",
+            "0.01",
+        ]
+    )
+    assert captured["radii_px"] == [2.0, 4.0, 8.0]
+    assert captured["depth_abs_tolerance_m"] == 0.05
+    assert captured["depth_rel_tolerance"] == 0.02
+    assert captured["alpha_minimum"] == 0.01
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    (
+        ("--depth-abs-tolerance-m", "-0.01", "absolute depth tolerance"),
+        ("--depth-rel-tolerance", "-0.01", "relative depth tolerance"),
+        ("--alpha-minimum", "1.01", "alpha minimum"),
+    ),
+)
+def test_detector_runner_rejects_invalid_explicit_geometry_tolerance(
+    flag, value, message
+):
+    args = frontend_runner.build_parser().parse_args(
+        [
+            "evaluate",
+            "--state",
+            "state.pt",
+            "--query-cache",
+            "cache.pt",
+            "--teacher",
+            "teacher.pt",
+            "--probe-cache",
+            "probe.pt",
+            "--arm",
+            "detector",
+            "--output",
+            "report.json",
+            "--depth-abs-tolerance-m",
+            "0.05",
+            "--depth-rel-tolerance",
+            "0.02",
+            "--alpha-minimum",
+            "0.01",
+            flag,
+            value,
+        ]
+    )
+    with pytest.raises(ValueError, match=message):
+        frontend_runner._detector_geometry_overrides(args)
+
+
 def test_descriptor_identity_is_paired_and_bidirectional(tmp_path):
     state, query_cache, teacher, probe = _synthetic_inputs(tmp_path)
     report = audit_descriptor_identity_crossfit(

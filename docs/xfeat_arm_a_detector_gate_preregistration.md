@@ -144,8 +144,18 @@ CUDA_VISIBLE_DEVICES='' PYTHONPATH=/root/STDLoc \
   --probe-cache /mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/xfeat64_detector.pt \
   --arm detector \
   --reachability-radii-px 2 4 8 \
+  --depth-abs-tolerance-m 0.05 \
+  --depth-rel-tolerance 0.02 \
+  --alpha-minimum 0.01 \
   --output /mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/xfeat64_detector_report.json
 ```
+
+These three target-universe values must be passed explicitly. Omitting any of
+them is invalid and fails before evaluation; the evaluator must not inherit a
+different scene-teacher tolerance for this preregistered Arm-A report.
+The earlier report that inherited the Stairs teacher value
+`depth_abs_tolerance_m=0.0020965913212974` is therefore invalid for this gate
+and must be replaced, not accepted by changing the preregistered threshold.
 
 Freeze the printed/artifact SHA256 values and copy only the exact lineage
 counts from the valid report into the following command:
