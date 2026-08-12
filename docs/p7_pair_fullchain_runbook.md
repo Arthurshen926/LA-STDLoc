@@ -297,21 +297,95 @@ for SEED in 2026 2027 2028; do
     --output "$RUN/mapping_pose_q256/seed${SEED}"
 done
 
+# Replay the frozen V3 control with the identical query-index rule and seeds.
+V3=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs
+CONTROL_MAP=$V3/map_learning/anchor_map_step_1520.pt
+CONTROL_METRIC=$V3/map_learning/metric_state_step_1520.pt
+CONTROL_TEACHER=$V3/map_learning/complete_positive_teacher.pt
+CONTROL_CALIBRATION=$V3/evidence/scene_calibration.json
+
+for SEED in 2026 2027 2028; do
+  CUDA_VISIBLE_DEVICES=2 python -m scripts.evaluate_mapping_cache \
+    --map "$CONTROL_MAP" \
+    --metric-state "$CONTROL_METRIC" \
+    --complete-positive-teacher "$CONTROL_TEACHER" \
+    --query-cache "$QUERY" \
+    --scene-calibration "$CONTROL_CALIBRATION" \
+    --query-count 256 --seed "$SEED" --device cuda \
+    --output "$RUN/mapping_pose_q256_control/seed${SEED}"
+done
+
+python -m scripts.compare_mapping_pose_gate \
+  --baseline-seed 2026="$RUN/mapping_pose_q256_control/seed2026/mapping_cache_summary.json" \
+  --baseline-seed 2027="$RUN/mapping_pose_q256_control/seed2027/mapping_cache_summary.json" \
+  --baseline-seed 2028="$RUN/mapping_pose_q256_control/seed2028/mapping_cache_summary.json" \
+  --variant-seed 2026="$RUN/mapping_pose_q256/seed2026/mapping_cache_summary.json" \
+  --variant-seed 2027="$RUN/mapping_pose_q256/seed2027/mapping_cache_summary.json" \
+  --variant-seed 2028="$RUN/mapping_pose_q256/seed2028/mapping_cache_summary.json" \
+  --baseline-map "$CONTROL_MAP" \
+  --baseline-metric "$CONTROL_METRIC" \
+  --baseline-teacher "$CONTROL_TEACHER" \
+  --baseline-query-cache "$QUERY" \
+  --baseline-calibration "$CONTROL_CALIBRATION" \
+  --variant-map "$RUN/map_learning/anchor_map_step_1520.pt" \
+  --variant-metric "$RUN/map_learning/metric_state_step_1520.pt" \
+  --variant-teacher "$RUN/map_learning/complete_positive_teacher.pt" \
+  --variant-query-cache "$QUERY" \
+  --variant-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+  --expected-sha256 baseline.query_cache="$QUERY_SHA" \
+  --expected-sha256 variant.query_cache="$QUERY_SHA" \
+  --output "$CONTRACT/mapping_pose_gate.json"
+
 python -m scripts.pair_fullchain_workspace manifest \
   --root "$RUN" --stage mapping_pose_q256x3 \
   --artifact seed2026="$RUN/mapping_pose_q256/seed2026/mapping_cache_summary.json" \
   --artifact seed2027="$RUN/mapping_pose_q256/seed2027/mapping_cache_summary.json" \
   --artifact seed2028="$RUN/mapping_pose_q256/seed2028/mapping_cache_summary.json" \
+  --artifact control_seed2026="$RUN/mapping_pose_q256_control/seed2026/mapping_cache_summary.json" \
+  --artifact control_seed2027="$RUN/mapping_pose_q256_control/seed2027/mapping_cache_summary.json" \
+  --artifact control_seed2028="$RUN/mapping_pose_q256_control/seed2028/mapping_cache_summary.json" \
+  --artifact mapping_pose_gate="$CONTRACT/mapping_pose_gate.json" \
   --parent-manifest "$CONTRACT/metric.json" \
   --output "$CONTRACT/pose.json"
 ```
 
-This q256 gate is mapping-only and does not establish test accuracy. Compare it
-against a V3 control evaluated with the same q256 index rule and the same three
-seeds. Only a stable no-regression/positive pose result authorizes an all-mapping
-refresh and then a separately preregistered test evaluation. If the proxy gains
-do not survive pose, stop this pair-policy route despite the strong Track
-mechanism result.
+`compare_mapping_pose_gate` is CPU-only. It does not load the multi-GB query
+cache with Torch: it computes a streaming SHA-256, memoized when both arms name
+the same resolved path. It loads the two maps, metrics, and teachers on CPU to
+require exact Map/metric anchor-ID alignment, exact teacher query-name order,
+and equal hashes for both the uniform q256 indices and the selected query names.
+It also requires both teacher and calibration contracts to bind the same frozen
+query-cache path/SHA, and requires the calibration statistics, parameters, and
+policy to be numerically identical. The six summaries must be distinct files;
+their seed labels come from the explicit `SEED=PATH` CLI bindings rather than
+directory names. Every input path and actual SHA-256 is recorded. Optional
+`--expected-sha256 ARM.ROLE=SHA256` arguments fail closed on known-digest
+mismatches; roles include `map`, `metric`, `teacher`, `query_cache`,
+`calibration`, and `seed2026_summary` (similarly for the other seeds).
+
+The default structured threshold contract is preregistered as follows:
+
+| scope | metric | required variant result |
+|---|---|---|
+| each seed | raw GT precision | baseline minus at most 0.005 percentage points |
+| each seed | median/mean/p90/CVaR95 translation error | baseline plus at most `max(0.02 cm, 1%)` |
+| each seed | 5 cm / 5 deg recall | baseline minus at most 0.1 percentage points |
+| each seed | >=100 cm catastrophes | no increase |
+| three-seed mean, at least one | median or mean translation error | improve by at least 0.03 cm |
+| three-seed mean, at least one | p90 or CVaR95 translation error | improve by at least 0.05 cm |
+| three-seed mean, at least one | 5 cm / 5 deg recall | improve by at least 0.2 percentage points |
+| three-seed mean, at least one | raw GT precision | improve by at least 0.01 percentage points |
+
+A gate `PASS` requires every per-seed non-regression check and at least one
+three-seed-mean substantive improvement. Safe-but-neutral is `STOP`, as is one
+bad seed even when the overall mean improves. A custom complete threshold JSON
+may be supplied with `--thresholds-json`, and the exact effective contract is
+always embedded in the result; publication decisions use the defaults above.
+
+This q256 gate is mapping-only and does not establish test accuracy. Only a
+`PASS` authorizes an all-mapping refresh and then a separately preregistered
+test evaluation. If the mechanism gains do not survive pose, stop this
+pair-policy route despite the strong Track mechanism result.
 
 ## Fail-closed checklist
 
