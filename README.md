@@ -1,9 +1,12 @@
 # LaFGS
 
-LaFGS reconstructs a compact sparse localization map from an off-the-shelf RGB
-Gaussian scene prior and posed mapping images. Rendering primitives are treated
-as surface support, not as localization identities. The identities and PnP
-geometry are reconstructed from cross-view SuperPoint tracks.
+LaFGS reconstructs a compact **Evidence-Grounded Anchor Registry** from an
+off-the-shelf RGB Gaussian scene prior and posed mapping images. A deployed
+Anchor has one observation identity, one materialized 3D position and
+uncertainty, one descriptor, orthogonal surface/visibility/lineage evidence,
+and one selection reason. Feature tracks propose observation-grounded
+identities and rendering primitives contribute surface evidence; neither is a
+separate deployment map.
 
 The adaptive paper pipeline is:
 
@@ -11,11 +14,14 @@ The adaptive paper pipeline is:
 RGB Gaussian prior (frozen)
   -> native SuperPoint mapping observations
   -> KCS/GWFF initialization
-  -> Track-First matching and robust triangulation
-  -> Gaussian raster provenance
-  -> Track core + Gaussian coverage reserve
-  -> self-localization-guided descriptor reconstruction
-  -> compact single-descriptor localization map
+  -> wide-scaffold self-localization (A0)
+  -> cross-view associations + robust triangulation
+  -> Gaussian surface, visibility, and raster-lineage evidence
+  -> unified geometry materialization + Anchor candidate registry
+  -> one sufficiency selector
+       [Precision Core -> matching/observability completion]
+  -> bounded shared-metric refresh (A1)
+  -> compact single-descriptor Anchor Registry
 ```
 
 Online localization deliberately remains minimal:
@@ -84,15 +90,23 @@ fixed protocol remains available as `configs/paper_mainline_frozen_v1.yaml`.
 ## Evaluate
 
 ```bash
+METRIC_STEPS=$(python -c \
+  'import json,sys; print(json.load(open(sys.argv[1]))["parameters"]["metric_steps"])' \
+  /data/runs/OldHospital/map_learning/scene_calibration.json)
+METRIC_TAG=$(printf '%04d' "$METRIC_STEPS")
 python scripts/evaluate.py \
   --dataset /data/Cambridge/OldHospital \
-  --map /data/runs/OldHospital/map_learning/anchor_map_step_0175.pt \
-  --metric-state /data/runs/OldHospital/map_learning/metric_state_step_0175.pt \
+  --map /data/runs/OldHospital/map_learning/anchor_map_step_${METRIC_TAG}.pt \
+  --metric-state /data/runs/OldHospital/map_learning/metric_state_step_${METRIC_TAG}.pt \
   --output /data/runs/OldHospital/evaluation
 ```
 
 The release parity fixture and frozen ShopFacade/OldHospital metrics live in
 `paper_baseline/`; large maps and checkpoints are intentionally excluded.
+
+Adaptive runs name the final map and metric with the mapping-only calibrated
+`metric_steps` recorded in `scene_calibration.json`; the suffix is not a fixed
+cross-scene constant.
 
 ## Documentation
 

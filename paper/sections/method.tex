@@ -1,37 +1,51 @@
 \section{Method}
 
-\subsection{Problem Formulation}
+\subsection{Evidence-Grounded Anchor Registry}
 
 Let a frozen RGB Gaussian prior be
 $\Gprior=\{(\boldsymbol\mu_j,\boldsymbol\Sigma_j,
 \alpha_j,\mathbf{c}_j)\}_{j=1}^{N_G}$ and let the mapping set
-$\Queries=\{(I_q,K_q,T_q)\}$ contain RGB images with calibrated poses. We
-reconstruct a localization map
+$\Queries_m=\{(I_q,K_q,T_q)\}$ contain RGB images with calibrated poses. We
+reconstruct a single Evidence-Grounded Anchor Registry
 \begin{equation}
-  \Anchors=\{(\mathbf{x}_i,\mathbf{d}_i,\ell_i)\}_{i=1}^{N_A},
+  \Anchors=\{a_i\}_{i=1}^{N_A},\qquad
+  a_i=(\iota_i,\mathcal O_i,\mathbf{x}_i,\mathbf\Sigma_i,
+  \mathbf d_i,E_i^{\rm surf},E_i^{\rm vis},L_i,r_i).
 \end{equation}
-where $\mathbf{x}_i\in\R^3$ is PnP geometry, $\mathbf{d}_i$ is one deployment
-descriptor, and $\ell_i$ stores Gaussian support lineage. In general,
+Here $\iota_i$ is an observation-grounded identity,
+$\mathcal O_i=\{(q,k)\}$ indexes its real mapping observations,
+$(\mathbf{x}_i,\mathbf\Sigma_i)$ is its one PnP point and uncertainty,
+$\mathbf d_i$ is its one deployment descriptor, $E_i^{\rm surf}$ and
+$E_i^{\rm vis}$ are surface and raster-visibility evidence, $L_i$ is Gaussian
+source lineage, and $r_i$ records why the selector admitted the row. These
+fields are orthogonal: one primitive may support multiple Anchors and one
+Anchor may retain multiple primitive sources. Thus
 \begin{equation}
-  \text{Gaussian ID}\neq\text{track ID}\neq\text{anchor ID}.
+  \text{Gaussian ID}\neq\text{observation-track ID}\neq\text{Anchor ID}.
 \end{equation}
-The prior remains frozen throughout localization-map reconstruction.
+In particular, Gaussian support does not create a second localization identity.
+The legacy \texttt{anchor\_type} field is serialized for artifact compatibility
+only; it is construction provenance rather than our representation.
 
-\subsection{KCS/GWFF Bootstrap}
+\subsection{Mapping Evidence and Wide Bootstrap}
 
-Native SuperPoint observations are extracted from every mapping image. We
-select a broad Gaussian-supported scaffold with keypoint-consensus sampling
-(KCS): a primitive must receive support from multiple views, viewpoint bins,
-and trajectory bins. Geometry-weighted feature fusion (GWFF) initializes each
-selected descriptor from visible observations, weighting incidence and view
-geometry and trimming low-consensus descriptor observations. This bootstrap is
-an initialization, not the final landmark identity.
+Native SuperPoint observations are extracted from each mapping image. Detector
+sampling, NMS, processed resolution, and the cross-view pair graph form a
+mapping-evidence contract. A change to this contract regenerates all descendant
+tracks, geometry, graphs, teachers, topology, and metric state; it is not a new
+deployed Anchor class. Detector-density and pair-policy variants are controlled
+acquisition factors, not accuracy contributions claimed by this formulation.
 
-\subsection{Wide-Scaffold Self-Localization}
+Keypoint-consensus sampling (KCS) selects a broad Gaussian-supported scaffold:
+a primitive must receive support from multiple views, viewpoint bins, and
+trajectory bins. Geometry-weighted feature fusion (GWFF) initializes each
+selected descriptor from visible observations with robust cosine trimming. The
+48K setting is a safety cap, not a required map size; adaptive construction
+stops at consensus saturation.
 
-The wide 48K scaffold localizes every mapping view with the same global
-retrieval used at deployment. At iteration $s$, known mapping poses label the
-current candidates. Its Stage-A reconstruction objective separates:
+The wide scaffold then localizes every mapping view with the same global
+retrieval rule used at deployment. Known mapping poses label keep, swap, miss,
+and false-attractor outcomes. Stage-A reconstruction uses
 \begin{equation}
   \mathcal{L}_{\mathrm{wide}} =
   \lambda_k\mathcal{L}_{\mathrm{keep}}+
@@ -41,53 +55,97 @@ current candidates. Its Stage-A reconstruction objective separates:
   \lambda_l\mathcal{L}_{\mathrm{local}}+
   \lambda_t\mathcal{L}_{\mathrm{trust}}.
 \end{equation}
-The keep term protects correct high-margin assignments; swap and miss rank a
-geometrically valid positive above the selected wrong candidate or retrieve a
-positive absent from the current top ranks. Global-attractor suppression,
-local peak preservation, and a protected pose-critical set prevent ordinary
-match gains from damaging precise correspondences. This 1K-step state is our
-A0 baseline and supplies descriptors for the subsequent Track-First stage.
+Protected precise correspondences and local peaks bound the update. Its length
+is calibrated from mapping-query epochs,
+$S_A=\lceil E_A|\Queries_m|\rceil$, rather than fixed across datasets. This A0
+state supplies the descriptors used to construct observation evidence.
 
-\subsection{Track-First Evidence and Geometry}
+\subsection{Observation Identity and Geometry Materialization}
 
-We build reciprocal, cycle-consistent cross-view associations from the native
-observations. A track $t\in\Tracks$ is accepted only when its observations span
-sufficient views and viewpoint bins. Its 3D position is estimated independently
-of Gaussian centers by robust multi-view triangulation:
+We form reciprocal, cycle-consistent cross-view associations before assigning
+Gaussian lineage. A track $t\in\Tracks$ is accepted only when its observations
+span sufficient views and viewpoint bins. Its image-space estimate is
 \begin{equation}
-  \mathbf{x}_t^*=
+  \mathbf{x}_{t}^{\rm img}=
   \arg\min_{\mathbf{x}}\sum_{(q,\mathbf{u})\in t}
-  \rho\!\left(\left\|\pi(K_q,T_q,\mathbf{x})-\mathbf{u}\right\|_2\right),
+  \rho\!\left(\left\|\pi(K_q,T_q,\mathbf{x})-
+  \mathbf{u}\right\|_2\right),
 \end{equation}
-subject to parallax, reprojection, and covariance gates. Gaussian rasterization
-then returns visible primitive IDs and composition mass at each observation.
-Aggregating this provenance gives surface support $\ell_t$ without replacing
-$\mathbf{x}_t^*$ by a primitive center.
+subject to parallax, reprojection, and covariance gates. Gaussian
+rasterization then contributes surface support, visibility, composition mass,
+and primitive lineage without replacing this identity.
 
-\subsection{Localization Topology Distillation}
+Heterogeneous geometry evidence crosses one materialization boundary,
+\begin{equation}
+ (\mathbf{x}_i,\mathbf\Sigma_i,g_i,s_i)=
+ \operatorname{MaterializeGeometry}(e_i^{\rm img},e_i^{\rm surf}),
+\end{equation}
+where $g_i$ records image-triangulated, surface-regularized, or
+surface-initialized provenance and $s_i$ records actual surface dependence.
+An image-stable track keeps $\mathbf{x}_{t}^{\rm img}$; a weak track may use a
+surface-regularized estimate only after an upstream mapping gate accepts it;
+and a surface-initialized fallback retains its existing surface point. Surface
+evidence availability is stored separately from surface dependence. In the
+validated Heads, Stairs, and ShopFacade artifacts, no deployed Track uses the
+accepted surface-regularized mode. We therefore claim image-triangulated rows
+plus selected surface-initialized fallback rows, not a demonstrated adaptive
+geometry-fusion gain.
 
-The candidate universe contains track-centric anchors and Gaussian-supported
-coverage candidates. We first select a reliable track core using cross-view and
-geometric evidence. A coverage reserve then adds candidates only where mapping
-queries lack enough usable rows, with pose-information scoring preventing a
-purely appearance-driven map. The resulting topology has a scene-dependent
-size determined by the frozen selection rule rather than a manually chosen
-per-scene target.
+\subsection{Precision Core and Sufficiency Completion}
 
-\subsection{Compact Self-Localization Refresh}
+All eligible identities enter one candidate registry and one incremental
+selected state. The selector has two conceptual phases. First, the
+\emph{Precision Core} accepts quality-ranked cross-view candidates until the
+mapping-query p10 matching-rank target is reached or an eligibility cap is
+exhausted. Second, \emph{Sufficiency Completion} draws from the unified
+leftover registry to improve two sufficiency criteria: bipartite matching rank
+and pose observability. The organizing objective is a smallest sufficient map,
+\begin{equation}
+ \min_{S\subseteq\Anchors}|S|\quad\text{s.t.}\quad
+ R_q(S)\ge m_q,\qquad H_q(S)\succeq h_q I,
+ \quad q\in\Queries_m,
+\end{equation}
+under frozen eligibility, reliability, diversity, and resource constraints.
+Our compatibility implementation does not claim to solve or certify these
+per-query constraints exactly. It first uses a mapping-query p10 rank target,
+then feasible per-query matching completion, and finally a budgeted greedy
+full-SE(3) objective with marginal-gain stopping. Thus the equation states the
+design goal, whereas the serialized selection trace records the constraints
+actually enforced.
 
-On the fixed compact topology, a 175-step bounded low-rank metric update uses
-complete-positive retrieval, current-map hard outcomes, and trajectory-group
-robust weighting. Because candidates are regenerated from current descriptors,
-both Stage-A and this compact refresh are online matching loops during offline
-reconstruction rather than static post-processing. The deployed map retains a
-single vector per anchor; no family prototypes, learned sampler, dense stage,
-or test-time rendering is required.
+Matching completion maintains a query-row/Anchor bipartite state with unit
+query-row capacity and augmenting-path reassignment. Observability completion
+uses dynamic full-SE(3) D-optimal gain together with image, depth, and spatial
+diversity; its information matrix is updated after every addition, while
+source lineage and spatial voxel capacities remain separate. Every selected
+row receives exactly one primary reason: \texttt{precision},
+\texttt{matching\_completion}, or \texttt{observability\_completion}. These are
+reasons in one map, not Track/Gaussian or Core/Reserve deployment branches. The
+standard monotone-submodular guarantee applies only to the
+cardinality-constrained D-optimal term, not the complete constrained selector.
+
+\subsection{Bounded Shared-Metric Refresh}
+
+On the fixed compact Registry, the A1 stage learns one bounded low-rank metric
+shared by query and Anchor descriptors. Complete-positive retrieval,
+current-map hard outcomes, protected correspondences, and trajectory-group DRO
+train the update. Its mapping-only duration is
+\begin{equation}
+  S_C=\left\lceil E_C|\Queries_m|\right\rceil,
+\end{equation}
+so checkpoint steps are scene-calibrated rather than a universal constant.
+Geometry, RGB appearance, identity, and topology remain frozen. The deployed
+map retains one vector per Anchor; no prototype family, dense refinement, or
+test-time context branch is required.
 
 \subsection{Sparse Deployment}
 
-For a query image, native SuperPoint produces keypoints and descriptors. A
-shared metric transforms query and map descriptors, cosine top-1 matching
-produces one correspondence per keypoint, and one standard PoseLib PnP/RANSAC
-call estimates the pose. All correspondences are passed to the solver without a
-landmark-side match cap or a learned test-time selector.
+For a test image, native SuperPoint runs once. The shared metric transforms
+query and map descriptors, global cosine top-1 gives one Anchor correspondence
+per query descriptor, and all correspondences enter one standard PoseLib
+PnP/RANSAC call. There is no landmark-side match cap, learned test-time
+selector, rendering stage, or second pose solve. Grid-index keypoints receive a
+fixed $+0.5$ pixel-center offset before PnP. Detector density follows processed
+image area, while focal/angular and metric-space thresholds are resolved only
+from mapping data. Test queries never enter evidence construction, selection,
+metric learning, or calibration.

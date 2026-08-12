@@ -1,93 +1,195 @@
 # Method
 
-## Representation
+## Evidence-Grounded Anchor Registry
 
-An RGB Gaussian reconstruction supplies a frozen surface scaffold, camera-space
-visibility, and raster contribution lineage. A Gaussian primitive is not
-assumed to be a localization landmark. LaFGS instead constructs track-centric
-anchors with three distinct identities:
+LaFGS reconstructs one sparse localization representation, the
+**Evidence-Grounded Anchor Registry**. An Anchor is not a Track row plus a
+Gaussian row. It is one deployable observation identity with orthogonal
+geometry, descriptor, evidence, and selection fields:
 
-- **Track identity:** a reciprocal, cycle-consistent set of real-image
-  SuperPoint observations.
-- **Anchor geometry:** a robust triangulation in the mapping coordinate frame.
-- **Gaussian lineage:** the source primitives that support the track in raster
-  space.
+\[
+a_i = (\iota_i,\mathcal O_i,\mathbf x_i,\Sigma_i,\mathbf d_i,
+E_i^{\mathrm{surf}},E_i^{\mathrm{vis}},L_i,r_i).
+\]
 
-One rendering primitive can support multiple localization anchors, and one
-anchor can retain lineage to multiple contributing primitives.
+- `identity` \(\iota_i\) is the stable Anchor identity and its evidence mode.
+- `observations` \(\mathcal O_i=\{(q,k)\}\) are real mapping-image/keypoint
+  references, stored as CSR.
+- `geometry` \((\mathbf x_i,\Sigma_i)\) is the single 3D point and uncertainty
+  consumed by PnP.
+- `descriptor` \(\mathbf d_i\) is the single vector used by global retrieval.
+- `surface` and `visibility` evidence record whether the frozen RGB Gaussian
+  prior supports the point and where it is raster-visible.
+- `lineage` \(L_i\) records the contributing Gaussian primitive sources; it
+  does not become the Anchor identity.
+- `selection reason` \(r_i\) is `precision`, `matching_completion`, or
+  `observability_completion`. Old artifacts without exact row provenance are
+  explicitly `legacy_unresolved`.
 
-## Initialization
+Reliability, matchability, alias-risk, and dependency-group annotations can be
+attached without changing any of these identities. This separation gives four
+important invariants: one Gaussian may support multiple Anchors; one Anchor may
+retain multiple Gaussian sources; surface evidence does not imply that the
+deployed geometry depends on the surface; and geometry provenance does not
+define a second landmark class.
 
-KCS selects primitives repeatedly supported by native keypoints across distinct
-mapping views and trajectory bins. GWFF initializes each selected descriptor by
-geometry-weighted fusion with robust cosine trimming. These steps initialize the
-field; they are not the final learning objective.
+The serialized `anchor_type` field is retained because historical artifacts
+and deployment code consume it. It is a compatibility tag for the row's
+construction provenance, not the method's semantic representation.
 
-The resulting wide scaffold uses 48K only as a safety cap. If the KCS gates
-produce fewer eligible primitives, adaptive V2 stops at that consensus
-saturation count and never fills the gap with non-consensus primitives. It
-then runs a mapping-query-epoch-calibrated schedule of self-localization-guided
-descriptor reconstruction. Current global candidates produce keep, swap, miss,
-and false-attractor outcomes; bounded trust and protected local-peak terms keep
-already precise correspondences stable. This Stage-A state is the A0 baseline
-and the descriptor source used to construct Track-First evidence.
+## Mapping evidence acquisition and initialization
 
-## Evidence and topology
+Mapping images are processed by native SuperPoint. The processed resolution,
+keypoint budget, NMS radius, and cross-view pair graph form an evidence-
+acquisition contract: they determine which observation identities can exist,
+but do not create a new deployed Anchor type. Any detector-density or pair-
+policy change must be frozen from mapping data and must rebuild all downstream
+tracks, geometry, graphs, teachers, topology, and metric state. Alternative
+density or pair policies are interfaces for controlled factors; no accuracy
+gain is assumed by the representation.
 
-Track-First matching builds cross-view tracks before assigning Gaussian
-lineage. Robust triangulation rejects low-parallax and high-reprojection tracks.
-The canonical candidate universe combines these independent track anchors with
-Gaussian-supported coverage candidates.
+The frozen RGB Gaussian prior supplies the initial surface scaffold. KCS keeps
+primitives repeatedly supported by native keypoints across mapping views and
+trajectory bins. GWFF initializes their descriptors by geometry-weighted,
+robustly trimmed fusion. The 48K value is only a safety cap: adaptive runs stop
+at the mapping-supported consensus count rather than filling the scaffold with
+ineligible primitives.
 
-Topology distillation retains quality-ranked tracks until the p10 per-query
-anchor-keypoint bipartite matching rank reaches a mapping-derived target. A
-mixed pool of leftover tracks and Gaussian anchors then closes feasible query
-coverage. The final reserve is selected by dynamic, task-scaled full-SE(3)
-D-optimal gain plus additive image/depth/spatial diversity. Query rows have
-unit capacity with augmenting-path reassignment, the Hessian is updated after
-every addition, source lineage and spatial voxel capacity are separate, and all
-fixed counts are safety caps. Fisher weights combine candidate reliability with
-query-specific detector repeatability. New track payloads propagate the full
-triangulation covariance through the image Jacobian; old payloads use an
-explicit isotropic trace fallback. Pose-reserve selection stops on normalized
-objective gain and records logdet and translation-uncertainty curves.
+This wide scaffold localizes the mapping views with the same global retrieval
+rule used online. Keep, swap, miss, false-attractor, bounded-trust, and local-
+peak outcomes reconstruct the Stage-A descriptors while the prior geometry and
+RGB appearance remain frozen. Its duration is calibrated in mapping-query
+epochs,
 
-The standard monotone-submodular guarantee applies to the cardinality-only
-D-opt objective. Source and spatial capacities are practical anti-redundancy
-safeguards; no `1-1/e` claim is made for their constrained implementation.
+\[
+S_A=\left\lceil E_A\,|\mathcal Q_m|\right\rceil,
+\]
 
-## Compact metric refresh
+not fixed to one cross-scene step count. The resulting A0 state is the baseline
+and descriptor source for observation evidence.
 
-After topology distillation, a bounded low-rank metric is shared by mapping
-queries and map descriptors. Complete-positive retrieval, current-map hard
-outcomes, and trajectory-group DRO train this final A1 stage for a fixed number
-of mapping-query epochs rather than a dataset-dependent fixed step count.
-This short refresh preserves the single-descriptor compact map and uses the
-same self-localization evidence as deployment. Geometry and RGB appearance
-remain frozen in both descriptor-reconstruction stages.
+## Observation evidence and unified geometry
 
-## Deployment
+Reciprocal, cycle-consistent associations are built from real mapping
+observations before Gaussian lineage is assigned. Robust multi-view
+triangulation estimates image geometry and rejects insufficient parallax,
+large reprojection residuals, and excessive uncertainty. Raster provenance
+then contributes surface support, visibility, composition mass, and primitive
+lineage without replacing the observation identity.
 
-The query image is processed once by native SuperPoint. Every descriptor takes
-its global cosine top-1 anchor without landmark or keypoint caps. All resulting
-2D-3D correspondences enter one standard PoseLib absolute-pose RANSAC solve.
-The fixed pixel convention adds `0.5` to grid-index keypoints before PnP.
+All candidate geometry crosses one boundary:
 
-PnP uses one mapping-only scene calibration shared with self-localization
-training. Its threshold is the larger of the focal-normalized angular gate and
-the 97.5th percentile of per-track p90 reprojection residuals among stable
-triangulated tracks. The residual term is capped at 12 pixels so a heavy-tailed
-track set cannot silently relax the solver; test queries never enter this
-calibration.
+```text
+image triangulation + accepted surface evidence + surface fallback
+                              |
+                              v
+              materialize_geometry(anchor_evidence)
+                              |
+                              v
+       xyz + covariance + geometry_mode + surface_dependence
+```
+
+The compatibility policy has three geometry outcomes:
+
+1. an image-stable observation Track keeps its image-only triangulation;
+2. a weak Track may use a surface-regularized estimate only if an upstream
+   mapping gate accepted that estimate;
+3. a surface-initialized fallback row retains its materialized surface point.
+
+`surface_evidence` says that surface support exists;
+`surface_dependence` says the deployed coordinate actually uses it. They must
+not be conflated. In the audited Heads, Stairs, and ShopFacade deployment
+artifacts, accepted surface-regularized Track rows are zero: the validated
+behavior is image-triangulated rows plus surface-initialized fallback rows.
+The regularization interface is therefore not claimed as an accuracy
+contribution.
+
+## One sufficiency selector
+
+Candidate construction may begin with observation-Track evidence or a
+surface-initialized fallback, but every candidate enters one registry and one
+selected state. The selector has two conceptual phases and three row-level
+reasons:
+
+```text
+eligible Anchor candidates
+          |
+          v
+   Precision Core                     reason: precision
+          |
+          v
+   Sufficiency Completion
+      |-- matching constraint          reason: matching_completion
+      `-- pose-observability constraint reason: observability_completion
+          |
+          v
+   one compact Anchor Registry
+```
+
+The Precision Core accepts quality-ranked, cross-view observation candidates
+until the mapping-query p10 matching-rank target is reached or an eligibility
+safety cap is exhausted. Sufficiency Completion operates on the same selected
+set and the unified leftover candidate registry. Its matching step uses an
+incremental query-row/Anchor bipartite state with unit query-row capacity. Its
+observability step adds candidates by full-SE(3) D-optimal gain, reliability,
+and image/depth/spatial diversity while enforcing source and voxel capacities.
+After every addition, matching or information state is updated and the row is
+given exactly one primary reason.
+
+The intended design goal is a smallest sufficient registry,
+
+\[
+\min_{S\subseteq\mathcal A}|S|
+\quad\text{s.t.}\quad
+\operatorname{matchingRank}_q(S)\ge m_q,\qquad
+\operatorname{poseInfo}_q(S)\ge h_q,
+\]
+
+but the current compatibility implementation does not solve or certify these
+per-query constraints exactly. It uses the mapping-query p10 matching target,
+then feasible per-query matching completion, followed by a budgeted greedy
+full-SE(3) objective with marginal-gain stopping. This distinction matters:
+the equation states the organizing objective, while the recorded selector
+trace states what was actually enforced. The standard monotone-submodular
+guarantee applies only to the cardinality-constrained D-optimal term, not to the
+full practical selector.
+Historical code and reports may retain `Track core`, `coverage reserve`, or
+`pose reserve` names for artifact parity; these are selection stages or reasons,
+not separate deployed maps.
+
+## Bounded shared-metric refresh
+
+Once topology is fixed, the compact A1 stage learns one bounded low-rank metric
+shared by mapping/query descriptors and Anchor descriptors. Complete-positive
+retrieval, current-map hard outcomes, protected correspondences, and
+trajectory-group DRO train this metric. The duration is again calibrated only
+from mapping-query epochs,
+
+\[
+S_C=\left\lceil E_C\,|\mathcal Q_m|\right\rceil,
+\]
+
+so a checkpoint suffix is not a universal protocol (for example, a 2,000-view
+mapping split resolves to 1,520 steps under the current policy).
+The resolved value is written to `scene_calibration.json` and used in the
+artifact filenames. Geometry, RGB appearance, candidate identities, and
+topology remain frozen during this refresh. Deployment still stores one
+descriptor per Anchor; there is no prototype family or test-time context
+branch in the main method.
+
+## Sparse deployment
+
+The query image is processed once by native SuperPoint. The shared metric is
+applied to query and map descriptors, every query descriptor takes its global
+cosine top-1 Anchor, and all resulting 2D-3D correspondences enter one standard
+PoseLib absolute-pose RANSAC solve. There is no landmark-side match cap, learned
+test-time selector, rendering refinement, or second pose pass. Grid-index
+keypoints receive the fixed `+0.5` pixel-center offset before PnP.
+
 Detector density follows processed image area. Reprojection, epipolar, teacher,
-and PnP thresholds follow focal/angular scale, while metric geometry thresholds
-use the mapping track-graph baseline. The same resolved threshold contract is
-asserted by function graph, raster provenance, positive teacher, compact
-trainer, and deployment. A preliminary-to-track scale drift above the global
-policy threshold triggers one Track-First evidence rebuild. The
-5 cm/5 degree pose task scale remains fixed across datasets.
-
-Resolved configuration separates focal/baseline and mapping-density dependent
-scene parameters, globally shared method-policy constants, and
-hardware/resource safety caps. Caps may terminate computation; they do not
-define a required map size or add otherwise ineligible landmarks.
+and PnP thresholds follow focal/angular scale; metric-space geometry thresholds
+follow the mapping track-graph baseline. The PnP threshold is the larger of the
+focal-normalized angular gate and the mapping-only stable-track residual term;
+the latter is capped at 12 pixels so a heavy tail cannot silently relax the
+solver. Test queries never enter calibration, evidence construction,
+descriptor learning, selection, or threshold resolution.
