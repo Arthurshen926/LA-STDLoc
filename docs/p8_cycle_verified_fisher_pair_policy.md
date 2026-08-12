@@ -201,8 +201,9 @@ a GreatCourt failure stops P8 before any fullchain or pose run.
 Accordingly, the per-scene Stage-B report can only emit
 `scene_specific_mechanism_pass` plus `requires_other_scene=true`; it never
 contains a fullchain authorization.  A separate cross-scene aggregator is
-required and is intentionally not implemented before both frozen scene reports
-exist.
+required.  The CPU-only aggregator is implemented independently of either
+scene run; it accepts only the two explicit Stage-B gate paths and their expected
+SHA-256 values, and cannot turn one scene into a two-domain authorization.
 
 ### Stage C: fullchain and mapping pose
 
@@ -418,6 +419,29 @@ Input, hash, schema, scope, or lineage failures exit 1 without producing a valid
 gate.  A valid comparison that fails any preregistered scientific gate persists
 the STOP JSON and exits 2.  A valid per-scene pass exits 0 but only emits
 `SCENE_PASS_REQUIRES_OTHER_SCENE`; it cannot authorize fullchain by itself.
+
+After both independently produced Stage-B files exist, aggregate them without
+loading a GPU or supplying any additional scientific axes:
+
+```bash
+PYTHONPATH=. python -m scripts.aggregate_cycle_verified_fisher_cross_scene \
+  --stairs-stage-b-gate "$P8_ROOT/stairs/stage_b_gate.json" \
+  --expected-stairs-stage-b-gate-sha256 "$STAIRS_STAGE_B_SHA" \
+  --greatcourt-stage-b-gate "$P8_ROOT/greatcourt/stage_b_gate.json" \
+  --expected-greatcourt-stage-b-gate-sha256 "$GREATCOURT_STAGE_B_SHA" \
+  --output "$P8_ROOT/cross_scene_stage_b_gate.json"
+```
+
+The aggregator recursively rehashes each gate's Stage-A, proposal/probe/
+selection, Track factor/report, manifest, frozen Track and mapping-scope inputs.
+It requires the exact Stairs and GreatCourt scene contracts, a 9/9 Stage-A pass,
+internally consistent Stage-B booleans, same-probe reuse lineage, and one shared
+compiled policy identity after removing only the preregistered scene-specific
+K/budget/calibration fields.  Two copies of one scene, a test-tainted input, a
+hash/lineage mismatch, or a policy-identity mismatch exit 1 without output.  A
+valid scientific failure in either scene writes `STOP_BEFORE_FULLCHAIN` and exits
+2.  Only two valid scene passes write `GO_TO_FULLCHAIN_MAPPING_POSE`; even that
+mapping-only Go records `authorizes_test=false`.
 
 ## Current Stairs result and next executable step
 
