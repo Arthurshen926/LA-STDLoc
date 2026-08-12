@@ -1,0 +1,116 @@
+{
+  "schema": "lafgs_greatcourt_pair_policy_mechanism_stop",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "scene": "Cambridge/GreatCourt",
+  "valid": true,
+  "uses_test_queries": false,
+  "single_factor": "camera_pair_policy",
+  "decision": "STOP_BEFORE_VARIANT_PROVENANCE_AND_PIPELINE",
+  "factor_contract": {
+    "mapping_keypoints": 2048,
+    "mapping_nms_radius": 4,
+    "query_count": 1531,
+    "query_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+    "exact_pair_budget": 5254,
+    "control_policy": "nearest",
+    "variant_policy": "parallax_diverse"
+  },
+  "artifacts": {
+    "mechanism_gate": {
+      "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/contracts/mechanism_gate.json",
+      "sha256": "201362cde50296eac4abc0e7813ee618f970fdae4c248c854aaa81eb14b72f35",
+      "mechanism_gate_passed": false
+    },
+    "inputs": {
+      "fresh_cache_manifest_sha256": "078d6e8b9600be57023cede08c837af45bb44e3b09a50d54e6e5ea77bc95febe",
+      "fresh_query_cache_sha256": "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92",
+      "frozen_track_payload_sha256": "f0fec708e00ab0f19160485059574eccdb8f6aba0484a257627f9b56a4cc90af",
+      "sparse_refresh_equivalence_sha256": "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2",
+      "nearest_control_parity_sha256": "2114c403b21c352ec2d345e8c6a99476a88fe72dcf5320fb8da20484e2a015f9"
+    },
+    "control": {
+      "report_sha256": "c46b360b465c5cff02719dc1ead05b77ff247b9ce1eaad3b4860406e84bbe8f9",
+      "factor_sha256": "78cd1d04ee14f1b954ace0bf225c9ad6169a5c729cb756af612e2272d4a35084"
+    },
+    "variant": {
+      "report_sha256": "48e5ef86cd7594d62786231113dffa979442baf30c09b53460d2d5b4248f040b",
+      "factor_sha256": "a6dbcf51b17290e41ab804e1f12353552cb519948d82393545d0cb2846c83027"
+    }
+  },
+  "gates": {
+    "exact_global_pair_budget": {
+      "threshold": "variant == control == 5254",
+      "control": 5254,
+      "variant": 5254,
+      "passed": true
+    },
+    "low_parallax_fraction_reduced_by_10pp": {
+      "threshold": "control - variant >= 0.10",
+      "control": 0.6417445540428162,
+      "variant": 0.023220403119921684,
+      "reduction": 0.6185241509228945,
+      "passed": true
+    },
+    "triangulated_tracks_retained_95pct": {
+      "threshold": "variant / control >= 0.95",
+      "control": 34150,
+      "variant": 32293,
+      "retained_fraction": 0.9456222547584187,
+      "passed": false
+    },
+    "broad_tracks_retained_98pct": {
+      "threshold": "variant / control >= 0.98",
+      "control": 16985,
+      "variant": 19473,
+      "retained_fraction": 1.146482190167795,
+      "passed": true
+    },
+    "triangulated_covariance_p90_not_worse_5pct": {
+      "threshold": "variant / control <= 1.05",
+      "control_m2": 28.149654579162632,
+      "variant_m2": 47.28497085571284,
+      "ratio": 1.6797709088307906,
+      "passed": false
+    },
+    "broad_query_support_p10_retained_95pct": {
+      "threshold": "variant >= 0.95 * control",
+      "control": 0.0,
+      "variant": 3.0,
+      "passed": true,
+      "limitation": "The zero-valued control makes this retention check mechanically true; it is not independent evidence of robust tail coverage."
+    }
+  },
+  "diagnostics": {
+    "pair_parallax_median_deg": {
+      "control": 0.7829248252067342,
+      "variant": 2.5915086931803577
+    },
+    "track_count": {
+      "control": 206755,
+      "variant": 129268
+    },
+    "strict_eligible_track_count": {
+      "control": 4382,
+      "variant": 7145
+    },
+    "high_confidence_track_count": {
+      "control": 1933,
+      "variant": 3667
+    }
+  },
+  "downstream_execution": {
+    "nearest_control_provenance_replay_for_exact_parity": true,
+    "variant_provenance_replay": false,
+    "variant_payload_lineage_audit": false,
+    "fullchain_rebuild": false,
+    "mapping_pose": false,
+    "formal_test": false
+  },
+  "method_decision": {
+    "stairs": "SCENE_SPECIFIC_MAPPING_POSE_GO",
+    "greatcourt": "MECHANISM_STOP",
+    "cross_domain_default": "NO_GO_KEEP_NEAREST",
+    "reason": "The same fixed-budget policy that passed Stairs does not retain enough triangulated Tracks and worsens the GreatCourt triangulated covariance p90 by 67.98%; parallax alone is not a sufficient cross-scene utility objective."
+  }
+}

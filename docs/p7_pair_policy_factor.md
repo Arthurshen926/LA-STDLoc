@@ -106,12 +106,45 @@ assignment producer.  The archived factors used for this gate do not contain
 an assignment field.  Any historical factor that does is invalid and must
 never be consumed.
 
+## GreatCourt cross-domain mechanism result
+
+The same fixed-budget factor was independently run on GreatCourt with K=2048,
+NMS=4, 1,531 mapping queries and exactly 5,254 pairs.  It consumed mapping data
+only (`uses_test_queries=false`).  The V2 mechanism gate is valid but failed:
+
+| GreatCourt preregistered gate | nearest | parallax-diverse | result |
+|---|---:|---:|---|
+| exact pair budget | 5,254 | 5,254 | Pass |
+| pair parallax below 1 degree | 64.1745% | 2.3220% | Pass (-61.8524 pp) |
+| triangulated Tracks, retain at least 95% | 34,150 | 32,293 | **Fail (94.5622%)** |
+| broad Tracks, retain at least 98% | 16,985 | 19,473 | Pass (114.6482%) |
+| triangulated covariance p90, at most 1.05x | 28.1497 m2 | 47.2850 m2 | **Fail (1.6798x)** |
+| broad support/query p10, retain at least 95% | 0 | 3 | Pass; zero-control limitation |
+
+The gate SHA-256 is
+`201362cde50296eac4abc0e7813ee618f970fdae4c248c854aaa81eb14b72f35`.
+It binds manifest/cache/frozen-Track SHA-256
+`078d6e8b...` / `0550b59e...` / `f0fec708...`, control report/factor
+`c46b360b...` / `78cd1d04...`, and variant report/factor
+`48e5ef86...` / `a6dbcf51...`.  Full hashes and exact values are recorded in
+`docs/p7_greatcourt_pair_policy_stop.md` and
+`docs/evidence/p7_greatcourt_pair_policy_mechanism_stop.json`.
+
+Nearest provenance replay was required to prove exact fresh-cache control
+parity.  After the mechanism failure, variant provenance replay/lineage audit,
+fullchain rebuild, mapping pose and formal test were not run.
+
 ## Current decision
 
-The pair-policy mechanism is **GO** on Stairs.  The method-level conclusion is
-still pending.  A valid next experiment must rebuild the canonical map,
-canonical function graph, raster provenance, evidence graph, complete positive
-teacher, compact map, compact graph/provenance/teacher, metric, and mapping pose
-from the variant payload.  It may reuse only Track-independent frozen inputs.
-Selector and evidence thresholds must be numerically frozen to V3 through a
-variant-bound calibration contract; silent recalibration is a factor leak.
+The pair-policy mechanism and the rebuilt q256x3 mapping-pose gate are **GO on
+Stairs**.  The Stairs pose gate SHA-256 is
+`e1366dd367b1be8b2ec9797c64da6f9bfde4b370aae7a1acfbf02133fd921a73`;
+it establishes a mapping-only, scene-specific result, not formal test accuracy.
+
+GreatCourt is a preregistered **STOP_BEFORE_PIPELINE**: four mechanism gates
+pass, but triangulated-Track retention and covariance-tail conditioning fail.
+Therefore the cross-domain decision is **No-Go** for making
+`parallax_diverse` the method default.  `nearest` remains the shared default,
+and the Stairs gain is reported as scene-specific evidence.  Parallax is useful
+diagnostic evidence, but this experiment proves that maximizing it under an
+overlap constraint is not a sufficient cross-scene localization utility.

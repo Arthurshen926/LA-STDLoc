@@ -99,7 +99,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 3 统一 geometry materializer | 未实施 | 已统一 Registry 中的 geometry/covariance 语义 | adaptive surface 求解与 mapping gate 尚未通过 |
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
-| Stage 6 室内身份自适应 | density-only No-Go；pair 因子待验 | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置与 1024/2048 严格 Track 因子 | K=2048 不进入默认或完整 pose；尚未改变 pair policy |
+| Stage 6 室内身份自适应 | density-only No-Go；pair 在 Stairs mapping Go、GreatCourt 机制 Stop | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置、Stairs fullchain/mapping pose 与 GreatCourt 跨域反证 | K=2048 不进入默认；`parallax_diverse` 不升为跨域默认 |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -604,6 +604,39 @@ K=2048 将 raw edge、Track、triangulated、broad 和 strict Track 分别提高
 解耦与审计契约，K=2048 仅作为显式因子配置。完整命令、哈希、环境失败记录和 JSON 见
 `docs/v4_p7_mapping_density_factor.md`。
 
+#### P7.3 fixed-budget pair policy：Stairs scene-specific Go，GreatCourt cross-domain Stop
+
+Stairs 的 `parallax_diverse` factor 已通过 mechanism、exact splat-provenance lineage、完整
+compact/fullchain rebuild 和 q256x3 mapping-pose gate。mapping pose 三种 seed 均无回退，
+三 seed 平均 raw precision +0.5470 pp、median/mean/p90/CVaR95 translation error 分别
+-0.0582/-0.1712/-0.2382/-1.6858 cm，5cm/5deg recall 从 98.4375% 增至 100%，
+catastrophe 保持 0。该 Go 的代价是 Anchor 从 7,275 增至 9,559；gate SHA-256 为
+`e1366dd367b1be8b2ec9797c64da6f9bfde4b370aae7a1acfbf02133fd921a73`，且仍只是
+mapping-only 结论。
+
+为检验它能否成为共享方法默认，GreatCourt 在 K=2048/NMS=4、1,531 个 mapping query、
+相同精确 5,254 pair budget 下运行独立单因素机制 gate。fresh manifest/cache/frozen Track
+SHA-256 分别为 `078d6e8b...`、`0550b59e...`、`f0fec708...`；control report/factor 为
+`c46b360b...` / `78cd1d04...`，variant report/factor 为 `48e5ef86...` /
+`a6dbcf51...`。最终 gate SHA-256 为
+`201362cde50296eac4abc0e7813ee618f970fdae4c248c854aaa81eb14b72f35`，并记录
+`uses_test_queries=false`。
+
+六项预注册检查为：精确 pair budget Pass；低视差比例 64.1745% -> 2.3220%（下降
+61.8524 pp）Pass；triangulated Track 34,150 -> 32,293、保留率 94.5622% **Fail**；
+broad Track 16,985 -> 19,473、保留率 114.6482% Pass；triangulated covariance p90
+28.1497 -> 47.2850 m2、比例 1.6798x **Fail**；broad support/query p10 0 -> 3 Pass，
+但 control=0 使最后一项只有弱证据力。故 `mechanism_gate_passed=false`，在 variant
+provenance replay 前停止；没有运行 variant lineage audit、fullchain、mapping pose 或
+formal test。nearest control provenance replay 只用于证明 fresh-cache exact parity。
+
+第一性原理结论是：camera-pair policy 应最大化固定成本下条件良好、可三角化、可定位的
+独立身份，而不是最大化 parallax 代理本身。GreatCourt 同时出现更高 parallax、较少
+triangulated Tracks 和显著更差 covariance tail，证明当前 objective 不具备跨场景充分性。
+因此 Stairs 保留为 scene-specific Go，跨域默认 **No-Go**，共享方法继续使用 `nearest`。
+完整结论见 `docs/p7_greatcourt_pair_policy_stop.md`，机器可读摘要见
+`docs/evidence/p7_greatcourt_pair_policy_mechanism_stop.json`。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
@@ -633,7 +666,12 @@ P6.1 trajectory-block cross-fit 已证明 raw observation 的单 medoid material
 Stairs 所有独立 trajectory 划分上大幅损失 held-out 全局身份判别性，因此该分支正式停止，
 不进入 compact refresh。P7 density-only 两臂随后证明 K=2048 虽扩大 Track 漏斗，却恶化
 broad Track 的典型几何条件且不增加 high-confidence Track，因此同样停止，不进入完整
-pose。下一条单变量主线只比较固定 K、固定 pair budget 的 nearest-6 与
-overlap-constrained parallax-aware graph，并补齐逐 pair raw/accepted/rejected sidecar。
-descriptor、density 与 pair-policy 三个变量不得混入同一个因果实验；只有 density/pair
-均不足时，才运行两 prototype upper bound 或考虑更强 frontend。
+pose。
+
+固定 K、固定 pair budget 的 `parallax_diverse` 单因素已完成：Stairs 通过 fullchain
+mapping-pose gate，但 GreatCourt 在进入 pipeline 前因 triangulated Track retention 和
+covariance p90 两项失败而 Stop。故 **不得把 Stairs Go 外推成跨域默认**；当前共享主线保留
+`nearest`，也不再围绕当前 parallax objective 做场景后验阈值修补。descriptor、density 与
+pair-policy 三个变量仍不得混入同一个因果实验。后续若继续提高室内外共同精度，应先回到
+可定位证据效用/前端 correspondence failure 的统一测量，而不是继续堆 parallax、地图点、
+Pose Reserve 或训练步数。
