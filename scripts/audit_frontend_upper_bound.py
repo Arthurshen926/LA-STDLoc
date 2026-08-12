@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight or run paired mapping-only local-frontend upper bounds.
+"""Preflight or run paired mapping-only local-frontend ceiling probes.
 
 No model is downloaded or instantiated by this runner.  ``evaluate`` consumes
 an already materialized, provenance-locked probe cache and never consults test
@@ -165,9 +165,9 @@ def _candidate_preflight(args: argparse.Namespace) -> dict:
         detector_reasons.append("candidate implementation/version is not locked")
     detector_eligible = not detector_reasons
     descriptor_reasons = list(detector_reasons)
-    if int(args.candidate_descriptor_dim) != 256:
+    if int(args.candidate_descriptor_dim) <= 0:
         descriptor_reasons.append(
-            "descriptor identity arm requires the frozen 256D map interface"
+            "descriptor identity arm requires a positive candidate dimension"
         )
     descriptor_eligible = not descriptor_reasons
     status = (
@@ -219,7 +219,7 @@ def preflight(args: argparse.Namespace) -> dict:
     detector_ready = bool(candidate.get("detector_arm_eligible", False))
     baseline_verified = superpoint["status"] == "verified"
     return {
-        "schema": "lafgs_frontend_upper_bound_environment_preflight",
+        "schema": "lafgs_frontend_ceiling_probe_environment_preflight",
         "version": 1,
         "mapping_only": True,
         "uses_test_queries": False,
@@ -239,7 +239,7 @@ def preflight(args: argparse.Namespace) -> dict:
         },
         "kornia": _inspect_kornia(args.kornia_python),
         "candidate": candidate,
-        "upper_bound_arms": {
+        "ceiling_probe_arms": {
             "A_detector_repeatability": {
                 "status": (
                     "READY_FOR_PROBE_MATERIALIZATION"
@@ -263,17 +263,20 @@ def preflight(args: argparse.Namespace) -> dict:
                 ),
                 "fixed_variables": [
                     "exact SuperPoint keypoint rows",
-                    "256D interface",
                     "complete-positive teacher",
                     "support observations and view-balanced fusion",
                     "bidirectional temporal crossfit",
                     "global cosine R@K",
                 ],
                 "candidate_detector_used": False,
+                "descriptor_dimension_policy": (
+                    "candidate dimension may differ; map bytes, MACs, and "
+                    "ranking wall time must be reported"
+                ),
             },
         },
         "conclusion": (
-            "No admissible locked independent 256D stronger-local-frontend "
+            "No admissible locked independent stronger-local-frontend "
             "artifact is present, so the SuperPoint representation ceiling "
             "cannot yet be accepted or rejected. The audit must remain "
             "BLOCKED_BY_ARTIFACT; code availability alone is not a result."
@@ -371,7 +374,7 @@ def main() -> None:
         teacher = _torch_load(args.teacher)
         probe = _torch_load(args.probe_cache)
         report = {
-            "schema": "lafgs_frontend_upper_bound_audit_bundle",
+            "schema": "lafgs_frontend_ceiling_probe_audit_bundle",
             "version": 1,
             "mapping_only": True,
             "uses_test_queries": False,

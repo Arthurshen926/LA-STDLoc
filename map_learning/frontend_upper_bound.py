@@ -1,4 +1,4 @@
-"""Paired, mapping-only upper bounds for a stronger local frontend.
+"""Paired, mapping-only ceiling probes for a stronger local frontend.
 
 This module deliberately does not instantiate a feature network.  An extractor
 must first materialize a provenance-locked probe cache.  The audit then keeps
@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import hashlib
 from pathlib import Path
+import time
 
 import torch
 import torch.nn.functional as F
@@ -31,7 +32,7 @@ from map_learning.repeated_assignment_audit import _selected_csr_edges
 from topology.crossfit_swap_revision import temporal_crossfit_split
 
 
-PROBE_SCHEMA = "lafgs_frontend_upper_bound_probe_cache"
+PROBE_SCHEMA = "lafgs_frontend_ceiling_probe_cache"
 PROBE_VERSION = 1
 DEFAULT_TOPKS = (1, 2, 4, 8, 16, 32)
 DEFAULT_REACHABILITY_RADII_PX = (2.0, 4.0, 8.0)
@@ -147,7 +148,8 @@ def probe_contract(query_cache: Mapping, teacher: Mapping) -> dict:
                     "descriptor_at_reference_keypoints",
                 ],
                 "same_rows": True,
-                "same_descriptor_dim": True,
+                "dimension_may_differ": True,
+                "candidate_dimension_must_be_positive": True,
                 "candidate_detector_used": False,
             },
         },
@@ -185,7 +187,7 @@ def validate_probe(
 ) -> dict:
     """Fail closed when a candidate is not exactly paired to the reference."""
     if probe.get("schema") != PROBE_SCHEMA or int(probe.get("version", -1)) != 1:
-        raise ValueError("unsupported frontend upper-bound probe schema")
+        raise ValueError("unsupported frontend ceiling-probe schema")
     if probe.get("mapping_only") is not True:
         raise ValueError("probe must attest mapping_only=true")
     if probe.get("uses_test_queries") is not False:
@@ -243,8 +245,9 @@ def validate_probe(
     if len(reference_dims) != 1:
         raise ValueError("reference descriptor dimension is inconsistent")
     reference_dim = reference_dims.pop()
-    if require_descriptor and int(frontend.get("descriptor_dim", -1)) != reference_dim:
-        raise ValueError("descriptor identity arm requires the same dimension")
+    candidate_dim = int(frontend.get("descriptor_dim", -1))
+    if require_descriptor and candidate_dim <= 0:
+        raise ValueError("candidate descriptor dimension must be positive")
 
     validated_rows = 0
     validated_keypoints = 0
@@ -261,7 +264,7 @@ def validate_probe(
             descriptor = torch.as_tensor(
                 candidate["descriptor_at_reference_keypoints"]
             ).float()
-            expected_shape = (reference_keypoints.shape[0], reference_dim)
+            expected_shape = (reference_keypoints.shape[0], candidate_dim)
             if tuple(descriptor.shape) != expected_shape:
                 raise ValueError(
                     f"descriptor replay shape mismatch for {name}: "
@@ -295,6 +298,7 @@ def validate_probe(
         "query_count": len(names),
         "requested_keypoint_count": requested_k,
         "reference_descriptor_dim": reference_dim,
+        "candidate_descriptor_dim": candidate_dim if require_descriptor else None,
         "validated_descriptor_rows": validated_rows,
         "validated_detector_keypoints": validated_keypoints,
     }
@@ -541,7 +545,7 @@ def audit_detector_repeatability(
             ]
         }
     return {
-        "schema": "lafgs_mapping_detector_repeatability_upper_bound",
+        "schema": "lafgs_mapping_detector_repeatability_ceiling_probe",
         "version": 1,
         "mapping_only": True,
         "uses_test_queries": False,
@@ -573,9 +577,13 @@ def _build_descriptor_banks(
     records = teacher_records(teacher)
     queries = query_cache_queries(query_cache)
     anchor_count = int(teacher["anchor_count"])
-    descriptor_dim = int(probe["frontend"]["descriptor_dim"])
-    raw_sum = torch.zeros((anchor_count, descriptor_dim))
-    candidate_sum = torch.zeros_like(raw_sum)
+    candidate_dim = int(probe["frontend"]["descriptor_dim"])
+    first_query = names[int(support_query_indices[0])]
+    reference_dim = int(
+        torch.as_tensor(queries[first_query]["native_descriptors"]).shape[1]
+    )
+    raw_sum = torch.zeros((anchor_count, reference_dim))
+    candidate_sum = torch.zeros((anchor_count, candidate_dim))
     view_counts = torch.zeros(anchor_count, dtype=torch.long)
     positive_edges = 0
     for query_index in support_query_indices:
@@ -616,6 +624,8 @@ def _build_descriptor_banks(
     if not bool(supported.any()):
         raise ValueError("support fold has no anchor meeting the view threshold")
     anchor_indices = torch.nonzero(supported, as_tuple=False).reshape(-1)
+    reference_bytes = int(anchor_indices.numel() * reference_dim * 4)
+    candidate_bytes = int(anchor_indices.numel() * candidate_dim * 4)
     return {
         "anchor_indices": anchor_indices,
         "frozen_superpoint": F.normalize(raw_sum[anchor_indices], dim=1),
@@ -625,6 +635,17 @@ def _build_descriptor_banks(
         "positive_edge_count": positive_edges,
         "minimum_support_views": int(minimum_support_views),
         "supported_anchor_count": int(anchor_indices.numel()),
+        "map_descriptor_memory_float32": {
+            "formula": "supported_anchor_count * descriptor_dim * 4",
+            "bytes_per_scalar": 4,
+            "frozen_superpoint_dim": reference_dim,
+            "candidate_dim": candidate_dim,
+            "frozen_superpoint_bytes": reference_bytes,
+            "candidate_bytes": candidate_bytes,
+            "candidate_to_superpoint_ratio": float(
+                candidate_bytes / max(reference_bytes, 1)
+            ),
+        },
     }
 
 
@@ -637,7 +658,7 @@ def _evaluate_descriptor_banks(
     gate_query_indices: Sequence[int],
     banks: Mapping[str, torch.Tensor],
     topks: Sequence[int],
-) -> dict:
+) -> tuple[dict, dict]:
     names = list(teacher["query_names"])
     records = teacher_records(teacher)
     queries = query_cache_queries(query_cache)
@@ -648,6 +669,16 @@ def _evaluate_descriptor_banks(
     maximum_k = min(max(topks), int(anchor_indices.numel()))
     counts = {
         name: _empty_retrieval(topks)
+        for name in ("frozen_superpoint", "candidate")
+    }
+    resources = {
+        name: {
+            "descriptor_dim": int(banks[name].shape[1]),
+            "ranking_wall_seconds": 0.0,
+            "query_rows": 0,
+            "score_elements": 0,
+            "dot_product_multiply_accumulates": 0,
+        }
         for name in ("frozen_superpoint", "candidate")
     }
     for query_index in gate_query_indices:
@@ -683,8 +714,22 @@ def _evaluate_descriptor_banks(
             ),
         }
         for descriptor_name, query_descriptor in descriptors.items():
+            started = time.perf_counter()
             scores = query_descriptor @ banks[descriptor_name].T
             local_ranked = torch.topk(scores, k=maximum_k, dim=1).indices
+            resources[descriptor_name]["ranking_wall_seconds"] += float(
+                time.perf_counter() - started
+            )
+            query_rows = int(query_descriptor.shape[0])
+            anchor_count = int(banks[descriptor_name].shape[0])
+            descriptor_dim = int(query_descriptor.shape[1])
+            resources[descriptor_name]["query_rows"] += query_rows
+            resources[descriptor_name]["score_elements"] += (
+                query_rows * anchor_count
+            )
+            resources[descriptor_name]["dot_product_multiply_accumulates"] += (
+                query_rows * anchor_count * descriptor_dim
+            )
             ranked = anchor_indices[local_ranked]
             _update_descriptor_counts(
                 counts[descriptor_name],
@@ -696,7 +741,27 @@ def _evaluate_descriptor_banks(
                 anchor_type=anchor_type,
                 topks=topks,
             )
-    return counts
+    reference_seconds = float(
+        resources["frozen_superpoint"]["ranking_wall_seconds"]
+    )
+    reference_macs = int(
+        resources["frozen_superpoint"]["dot_product_multiply_accumulates"]
+    )
+    resources["candidate_to_superpoint_ratio"] = {
+        "ranking_wall_seconds": float(
+            resources["candidate"]["ranking_wall_seconds"]
+            / max(reference_seconds, 1e-12)
+        ),
+        "dot_product_multiply_accumulates": float(
+            resources["candidate"]["dot_product_multiply_accumulates"]
+            / max(reference_macs, 1)
+        ),
+    }
+    resources["latency_note"] = (
+        "CPU wall time covers cosine matrix multiplication plus top-K only; "
+        "report it as cost, never as an accuracy gate."
+    )
+    return counts, resources
 
 
 def _recall_delta(candidate: Mapping, baseline: Mapping) -> dict:
@@ -759,7 +824,7 @@ def audit_descriptor_identity_crossfit(
             support_query_indices=support,
             minimum_support_views=minimum_support_views,
         )
-        counts = _evaluate_descriptor_banks(
+        counts, ranking_resources = _evaluate_descriptor_banks(
             state=state,
             query_cache=query_cache,
             teacher=teacher,
@@ -778,6 +843,7 @@ def audit_descriptor_identity_crossfit(
             {
                 "direction": direction,
                 "support": bank_report,
+                "ranking_resources": ranking_resources,
                 "heldout_query_count": len(heldout),
                 **summaries,
                 "delta_candidate_minus_superpoint": _recall_delta(
@@ -792,7 +858,7 @@ def audit_descriptor_identity_crossfit(
         for name, values in pooled_counts.items()
     }
     return {
-        "schema": "lafgs_mapping_descriptor_identity_upper_bound",
+        "schema": "lafgs_mapping_descriptor_identity_ceiling_probe",
         "version": 1,
         "mapping_only": True,
         "uses_test_queries": False,
@@ -807,6 +873,9 @@ def audit_descriptor_identity_crossfit(
             "minimum_support_views": int(minimum_support_views),
             "topks": list(topks),
             "candidate_detector_used": False,
+            "descriptor_dimension_policy": (
+                "native_dimensions_may_differ; rows_edges_folds_K_are_paired"
+            ),
         },
         "split": split,
         "directions": directions,

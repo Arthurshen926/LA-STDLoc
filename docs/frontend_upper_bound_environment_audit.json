@@ -9,12 +9,12 @@
       "map_learning/context_booster_crossfit.py": "c03c19c27aea2b232c01f011dff2433ef5ef8cd80a76d63a30af4a18528b76d1",
       "map_learning/context_metric.py": "d710f8171f7c1c3d2cbae031ec1480e93a13f94ec9455d6572fdc13f69439817",
       "map_learning/context_metric_crossfit.py": "2dab8922635072182687db46f5fd20ea52dcf1125ea17a3e463c2d8ed78c6805",
-      "map_learning/frontend_upper_bound.py": "a5bdc78eb994c732169592f29e9b232b6a00c100c3cd3f92479b413d4147ed6a",
+      "map_learning/frontend_upper_bound.py": "7864a575ba8f4acfca266c3e86704a07af8440c9e6ebfd8c7b05b4a26429d090",
       "map_learning/metric_context_uplift.py": "a14397dbded80cf1d7a676fa8f8f128f6ffa753f645b3234bbca6708af12422d",
       "map_learning/observations.py": "c4484a5d90f92f49f7949271694d1c992566be64a1beaafafef00210c3cdac32",
-      "scripts/audit_frontend_upper_bound.py": "27aff53ea7dd4bbf2651b6c6581f25e578472a21461e374b2df3c1b44bdc6e43"
+      "scripts/audit_frontend_upper_bound.py": "c91f6c96616e071fc30d1f0c5a7d22a4ef0e5fe755361d86efcf5d27aca39604"
     },
-    "git_commit_at_audit": "28de85b528a7f26861464db815a0084003c8c75e",
+    "git_commit_at_audit": "731422e70fdc86b697b3b38c728130437476112a",
     "root": "/tmp/stdloc-wt-cross-domain"
   },
   "available_but_not_admissible_as_stronger_frontend": {
@@ -53,7 +53,32 @@
     "reason": "no candidate weight path was supplied",
     "status": "BLOCKED_BY_ARTIFACT"
   },
-  "conclusion": "No admissible locked independent 256D stronger-local-frontend artifact is present, so the SuperPoint representation ceiling cannot yet be accepted or rejected. The audit must remain BLOCKED_BY_ARTIFACT; code availability alone is not a result.",
+  "ceiling_probe_arms": {
+    "A_detector_repeatability": {
+      "candidate_descriptors_used": false,
+      "fixed_variables": [
+        "mapping queries",
+        "frozen map xyz and anchor types",
+        "requested K",
+        "image preprocessing and valid mask",
+        "GT pose/intrinsics/depth/alpha legality"
+      ],
+      "status": "BLOCKED_BY_ARTIFACT"
+    },
+    "B_descriptor_identity": {
+      "candidate_detector_used": false,
+      "descriptor_dimension_policy": "candidate dimension may differ; map bytes, MACs, and ranking wall time must be reported",
+      "fixed_variables": [
+        "exact SuperPoint keypoint rows",
+        "complete-positive teacher",
+        "support observations and view-balanced fusion",
+        "bidirectional temporal crossfit",
+        "global cosine R@K"
+      ],
+      "status": "BLOCKED_BY_ARTIFACT"
+    }
+  },
+  "conclusion": "No admissible locked independent stronger-local-frontend artifact is present, so the SuperPoint representation ceiling cannot yet be accepted or rejected. The audit must remain BLOCKED_BY_ARTIFACT; code availability alone is not a result.",
   "deployment_modified": false,
   "kornia": {
     "available_feature_symbols": [
@@ -71,33 +96,8 @@
   },
   "mapping_only": true,
   "network_access_used": false,
-  "probe_schema": "lafgs_frontend_upper_bound_probe_cache",
-  "schema": "lafgs_frontend_upper_bound_environment_preflight",
-  "upper_bound_arms": {
-    "A_detector_repeatability": {
-      "candidate_descriptors_used": false,
-      "fixed_variables": [
-        "mapping queries",
-        "frozen map xyz and anchor types",
-        "requested K",
-        "image preprocessing and valid mask",
-        "GT pose/intrinsics/depth/alpha legality"
-      ],
-      "status": "BLOCKED_BY_ARTIFACT"
-    },
-    "B_descriptor_identity": {
-      "candidate_detector_used": false,
-      "fixed_variables": [
-        "exact SuperPoint keypoint rows",
-        "256D interface",
-        "complete-positive teacher",
-        "support observations and view-balanced fusion",
-        "bidirectional temporal crossfit",
-        "global cosine R@K"
-      ],
-      "status": "BLOCKED_BY_ARTIFACT"
-    }
-  },
+  "probe_schema": "lafgs_frontend_ceiling_probe_cache",
+  "schema": "lafgs_frontend_ceiling_probe_environment_preflight",
   "uses_test_queries": false,
   "version": 1
 }

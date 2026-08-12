@@ -12,6 +12,7 @@ from map_learning.frontend_upper_bound import (
     tensor_sha256,
     validate_probe,
 )
+import scripts.audit_frontend_upper_bound as frontend_runner
 from scripts.audit_frontend_upper_bound import preflight
 
 
@@ -73,7 +74,9 @@ def _synthetic_inputs(tmp_path):
         "anchor_xyz": torch.tensor([[1.0, 1.0, 1.0], [5.0, 5.0, 1.0]]),
         "anchor_type": torch.tensor([1, 0]),
     }
-    candidate_descriptors = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    candidate_descriptors = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    )
     probe = {
         "schema": PROBE_SCHEMA,
         "version": 1,
@@ -90,7 +93,7 @@ def _synthetic_inputs(tmp_path):
             "coordinate_convention": (
                 "reference_grid_index_then_cached_pixel_center_offset"
             ),
-            "descriptor_dim": 2,
+            "descriptor_dim": 3,
             "requested_keypoint_count": 2,
             "weights": {
                 "path": str(weight),
@@ -129,6 +132,9 @@ def test_probe_contract_and_validation_fail_closed(tmp_path):
     assert contract["required_capabilities"]["detector_repeatability"][
         "same_requested_k"
     ]
+    assert contract["required_capabilities"]["descriptor_identity"][
+        "dimension_may_differ"
+    ]
     result = validate_probe(
         probe,
         query_cache,
@@ -137,6 +143,8 @@ def test_probe_contract_and_validation_fail_closed(tmp_path):
         require_descriptor=True,
     )
     assert result["validated_descriptor_rows"] == 4
+    assert result["reference_descriptor_dim"] == 2
+    assert result["candidate_descriptor_dim"] == 3
     assert result["validated_detector_keypoints"] == 4
 
     invalid_hash = dict(probe)
@@ -204,6 +212,17 @@ def test_descriptor_identity_is_paired_and_bidirectional(tmp_path):
     ] == pytest.approx(1.0)
     assert report["delta_candidate_minus_superpoint"]["1"] == pytest.approx(1.0)
     assert report["protocol"]["candidate_detector_used"] is False
+    for direction in report["directions"]:
+        memory = direction["support"]["map_descriptor_memory_float32"]
+        assert memory["frozen_superpoint_dim"] == 2
+        assert memory["candidate_dim"] == 3
+        assert memory["candidate_to_superpoint_ratio"] == pytest.approx(1.5)
+        resources = direction["ranking_resources"]
+        assert resources["frozen_superpoint"]["descriptor_dim"] == 2
+        assert resources["candidate"]["descriptor_dim"] == 3
+        assert resources["candidate_to_superpoint_ratio"][
+            "dot_product_multiply_accumulates"
+        ] == pytest.approx(1.5)
 
 
 def test_preflight_blocks_when_only_code_or_pair_matcher_exists(tmp_path):
@@ -224,12 +243,41 @@ def test_preflight_blocks_when_only_code_or_pair_matcher_exists(tmp_path):
         candidate_descriptor_dim=256,
     )
     report = preflight(args)
-    assert report["upper_bound_arms"]["A_detector_repeatability"][
+    assert report["ceiling_probe_arms"]["A_detector_repeatability"][
         "status"
     ] == "BLOCKED_BY_ARTIFACT"
-    assert report["upper_bound_arms"]["B_descriptor_identity"][
+    assert report["ceiling_probe_arms"]["B_descriptor_identity"][
         "status"
     ] == "BLOCKED_BY_ARTIFACT"
     assert report["available_but_not_admissible_as_stronger_frontend"]["loftr"][
         "classification"
     ] == "pair_matcher"
+
+
+def test_preflight_allows_a_locked_non_256d_descriptor_candidate(
+    tmp_path, monkeypatch
+):
+    superpoint = tmp_path / "superpoint.pth"
+    superpoint.write_bytes(b"synthetic frozen baseline")
+    candidate = tmp_path / "candidate.pth"
+    candidate.write_bytes(b"synthetic locked 64D frontend")
+    monkeypatch.setattr(
+        frontend_runner, "SUPERPOINT_SHA256", file_sha256(superpoint)
+    )
+    args = Namespace(
+        superpoint_weights=str(superpoint),
+        featurebooster_weights=str(tmp_path / "missing-boost.pth"),
+        loftr_weights=str(tmp_path / "missing-loftr.ckpt"),
+        kornia_python=str(tmp_path / "missing-python"),
+        candidate_name="synthetic-64d",
+        candidate_family="independent_local_frontend",
+        candidate_code_id="locked-implementation-commit",
+        candidate_weights=str(candidate),
+        candidate_weights_sha256=file_sha256(candidate),
+        candidate_descriptor_dim=64,
+    )
+    report = preflight(args)
+    assert report["candidate"]["descriptor_arm_eligible"] is True
+    assert report["ceiling_probe_arms"]["B_descriptor_identity"][
+        "status"
+    ] == "READY_FOR_PROBE_MATERIALIZATION"

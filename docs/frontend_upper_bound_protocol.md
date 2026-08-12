@@ -1,18 +1,19 @@
-# Stronger local frontend upper-bound protocol
+# Stronger local frontend candidate comparison and ceiling probe
 
 ## Decision
 
 The project is **not yet entitled to conclude that frozen SuperPoint has reached
 its representation ceiling**.  The repository now has an executable,
 mapping-only protocol that can answer that question, but the current machine
-does not contain a provenance-locked, independent 256D local frontend that is
+does not contain a provenance-locked, independent local frontend that is
 admissible for the descriptor arm.  The correct current state is therefore
 `BLOCKED_BY_ARTIFACT`, not a negative result and not permission to download or
 randomly initialize a model.
 
-This protocol is an upper-bound diagnostic only.  It does not change the
-default frontend, map topology, anchor composition, metric, matcher, PoseLib,
-or any deployment artifact.  It never consumes test queries.
+This is a candidate comparison / ceiling probe, not a mathematical upper bound
+unless a future candidate has a separately justified oracle property.  It does
+not change the default frontend, map topology, anchor composition, metric,
+matcher, PoseLib, or any deployment artifact.  It never consumes test queries.
 
 ## First-principles decomposition
 
@@ -51,7 +52,7 @@ in [`frontend_upper_bound_environment_audit.json`](frontend_upper_bound_environm
 
 The runner never constructs or downloads a model.  A separately reviewed
 producer must materialize a Torch probe with schema
-`lafgs_frontend_upper_bound_probe_cache`, version 1, containing:
+`lafgs_frontend_ceiling_probe_cache`, version 1, containing:
 
 - `mapping_only=true` and `uses_test_queries=false`;
 - a `reference` block carrying the exact query-cache signature and teacher
@@ -67,17 +68,19 @@ producer must materialize a Torch probe with schema
 
 The consumer fails closed on a query-name mismatch, keypoint-registry hash
 mismatch, K mismatch, invalid/masked-out keypoint, descriptor-row mismatch,
-descriptor-dimension mismatch, missing or wrong weight hash, any test-query
-claim, or a `pair_matcher` frontend family.  For arm B the real project cache
-requires 256D output.  A lower-dimensional candidate may still be used for
-arm A because descriptors are ignored, but it cannot be reported as a strict
-descriptor replacement in arm B.
+non-positive candidate dimension, missing or wrong weight hash, any test-query
+claim, or a `pair_matcher` frontend family.  Candidate dimension may differ
+from SuperPoint's 256D: each protocol builds and scores its bank in its native
+space.  Fairness comes from identical keypoint rows, legal edges, support
+folds, anchor registry, and top-K ranking—not from an arbitrary equal-dimension
+constraint.  Reports therefore include float32 map-bank bytes, dot-product
+MACs, and measured ranking wall time for both spaces.
 
 The materializer still needs the frozen mapping image source and preprocessing
 lineage referenced by the query-cache signature.  A query cache alone is not a
 license to approximate the original RGB transform.
 
-## Arm A: detector repeatability upper bound
+## Arm A: detector repeatability ceiling probe
 
 **Question:** with the same requested K, can a stronger detector place legal
 keypoints close to more frozen-map identities than SuperPoint?
@@ -104,10 +107,10 @@ A useful mechanism result must improve the strong-radius pooled reachability
 on Stairs while not reducing ambiguous-radius reachability for either Track
 Core or Reserve.  Otherwise a full frontend/Pose experiment is not justified.
 
-## Arm B: descriptor identity upper bound
+## Arm B: descriptor identity ceiling probe
 
 **Question:** at exactly the SuperPoint locations already available, does a
-stronger independently pretrained 256D representation rank the legal anchor
+stronger independently pretrained representation rank the legal anchor
 identity better?
 
 The candidate must sample its descriptor field at the reference SuperPoint
@@ -122,6 +125,14 @@ coordinates; its own detector is disabled.  Each temporal-block direction:
    and
 5. reports legal-positive R@1/2/4/8/16/32, including Track Core and Reserve
    composition, in both directions and pooled.
+
+Raw SuperPoint uses its native 256D bank and the candidate uses its own positive
+dimension.  Both see the same query rows and supported anchors and retrieve the
+same number of identities.  Per-direction reports include map-bank memory,
+cosine-ranking MAC count, and CPU matrix-multiply-plus-top-K wall time.  These
+are deployment costs, not accuracy gates.  If a higher-dimensional candidate
+passes, a later projected-to-256 experiment is a separate single factor rather
+than something silently folded into this comparison.
 
 No pair-conditioned feature, candidate detector, topology revision, oracle
 assignment, learned selector, PnP, or test query enters this arm.  The minimum
@@ -151,7 +162,8 @@ No network access or broad filesystem scan is part of preflight.  Code presence
 without a locked checkpoint is not an experiment.  The executable arms remain
 blocked until an approved candidate supplies: local immutable weights and
 SHA256, locked implementation lineage, offline preprocessing/materialization,
-and (for arm B) a 256D dense field sampleable at the reference keypoints.
+and (for arm B) a positive-dimensional dense field sampleable at the reference
+keypoints.
 
 ## Minimal progression and pose gate
 
@@ -160,7 +172,7 @@ The shortest defensible sequence is:
 1. Finish the two existing P7 Stairs single-factor gates.  Enter this frontend
    line only if neither resolves the failure domain.
 2. Provision one reviewed candidate artifact; materialize its mapping-only
-   probe without changing deployment.
+   probe without changing deployment.  Do not project it to 256D at this stage.
 3. Run arm A and arm B separately on Stairs.  Stop the failing arm; do not
    combine the detector and descriptor just to obtain a favorable aggregate.
 4. Only for an arm that passes its mechanism gate, rebuild the corresponding
@@ -224,8 +236,8 @@ signal path plus fail-closed hash, family, row, K, and pairing constraints:
 The implementation now cleanly answers two different questions without
 inventing another selector.  What remains unknown is empirical: no legal
 stronger independent frontend artifact is currently available, so neither
-detector headroom nor descriptor headroom has been measured.  If both upper
-bounds later fail with a credible locked candidate, the evidence will support
-moving the bottleneck downstream from frozen SuperPoint representation; until
-then, claiming either “the method is wrong” or “SuperPoint is already optimal”
-would exceed the evidence.
+detector headroom nor descriptor headroom has been measured.  If both candidate
+ceiling probes later fail with a credible locked candidate, the evidence will
+support moving the bottleneck downstream from frozen SuperPoint
+representation; until then, claiming either “the method is wrong” or
+“SuperPoint is already optimal” would exceed the evidence.
