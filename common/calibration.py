@@ -119,16 +119,24 @@ def validate_frozen_numeric_scene_calibration(
         )
         or lineage.get("payload_lineage_audit_sha256")
         != expected_audit_sha256
+        or Path(str(sources.get("payload_lineage_audit", ""))).resolve()
+        != audit_path
+        or sources.get("payload_lineage_audit_sha256")
+        != expected_audit_sha256
         or sha256_file(audit_path) != expected_audit_sha256
     ):
         raise ValueError("Frozen calibration payload-lineage audit differs")
     audit = json.loads(audit_path.read_text())
+    expected_pair_budget = int(lineage.get("expected_pair_budget", 0))
     if (
         audit.get("schema") != "lafgs_pair_policy_payload_lineage_audit"
         or audit.get("version") != 1
         or audit.get("uses_test_queries") is not False
         or audit.get("valid") is not True
         or audit.get("pair_policy") != "parallax_diverse"
+        or expected_pair_budget <= 0
+        or audit.get("expected_pair_budget") != expected_pair_budget
+        or audit.get("exact_pair_budget") != expected_pair_budget
         or not audit.get("checks")
         or not all(audit["checks"].values())
     ):
@@ -136,6 +144,8 @@ def validate_frozen_numeric_scene_calibration(
     if (
         Path(str(audit.get("payload", ""))).resolve() != track_payload_path
         or audit.get("payload_sha256") != sha256_file(track_payload_path)
+        or Path(str(audit.get("query_cache", ""))).resolve()
+        != query_cache_path
         or audit.get("query_cache_sha256") != sha256_file(query_cache_path)
     ):
         raise ValueError("Frozen calibration audit input binding differs")
@@ -144,13 +154,37 @@ def validate_frozen_numeric_scene_calibration(
         track_payload_path, map_location="cpu", weights_only=False
     )
     provenance = dict(track_payload.get("provenance", {}))
+    factor_path = Path(str(audit.get("factor", ""))).resolve()
+    base_state_path = Path(str(audit.get("base_state", ""))).resolve()
+    bootstrap_path = Path(
+        str(audit.get("frozen_bootstrap_manifest", ""))
+    ).resolve()
     if (
         track_payload.get("schema") != "lafgs_track_first_payload"
         or track_payload.get("version") != 1
         or provenance.get("uses_test_queries") is not False
         or provenance.get("source_factor_sha256") != audit.get("factor_sha256")
+        or Path(str(provenance.get("source_factor", ""))).resolve()
+        != factor_path
+        or not factor_path.is_file()
+        or sha256_file(factor_path) != audit.get("factor_sha256")
         or provenance.get("base_state_sha256") != audit.get("base_state_sha256")
+        or Path(str(provenance.get("base_state", ""))).resolve()
+        != base_state_path
+        or not base_state_path.is_file()
+        or sha256_file(base_state_path) != audit.get("base_state_sha256")
         or provenance.get("query_cache_sha256") != audit.get("query_cache_sha256")
+        or Path(str(provenance.get("query_cache", ""))).resolve()
+        != query_cache_path
+        or provenance.get("assignment_algorithm")
+        != "frozen_2dgs_splat_provenance_exact_replay"
+        or Path(str(provenance.get("frozen_bootstrap_manifest", ""))).resolve()
+        != bootstrap_path
+        or not bootstrap_path.is_file()
+        or provenance.get("frozen_bootstrap_manifest_sha256")
+        != audit.get("frozen_bootstrap_manifest_sha256")
+        or sha256_file(bootstrap_path)
+        != audit.get("frozen_bootstrap_manifest_sha256")
     ):
         raise ValueError("Frozen calibration Track provenance differs from audit")
 

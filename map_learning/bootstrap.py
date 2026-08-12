@@ -9,7 +9,6 @@ import pickle
 import random
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -44,15 +43,18 @@ from map_learning.trust import (
 from priors.geometry import (
     GaussianPriorGeometry,
 )
+from evidence.camera_pair_policy import (
+    mapping_scene_points_from_depth_samples,
+)
 from evidence.triangulation import (
+    attach_pair_triangulation_statistics,
     assign_triangulated_tracks_to_landmarks,
     build_cycle_consistent_tracks,
     camera_pose_bins,
     robust_triangulate_associations,
-    transfer_triangulated_track_groups_to_landmarks,
 )
-from priors.rasterizer import (
-    bank_splat_provenance_2dgs,
+from evidence.track_provenance_assignment import (
+    assign_tracks_by_splat_provenance,
 )
 from features.multiview_fusion import (
     PIXEL_CENTER_OFFSET,
@@ -2631,239 +2633,39 @@ def _assign_tracks_by_splat_provenance(
     background,
     args,
 ):
-    """Assign independent tracks using frozen 2DGS composition provenance."""
-    track_count = int(track_geometry["triangulated_xyz"].shape[0])
-    high_confidence = torch.as_tensor(
-        track_geometry["triangulation_high_confidence"], dtype=torch.bool
-    )
-    track_candidates = [defaultdict(float) for _ in range(track_count)]
-    track_candidate_views = [defaultdict(set) for _ in range(track_count)]
-    observations_by_query = defaultdict(list)
-    for observation, (track, query) in enumerate(
-        zip(tracks["track_index"].tolist(), tracks["query_index"].tolist())
-    ):
-        if bool(high_confidence[track]):
-            observations_by_query[query].append(observation)
-    valid_observations = 0
-    for query, observations in tqdm(
-        sorted(observations_by_query.items()),
-        desc="G3 frozen 2DGS provenance assignment",
-    ):
-        name = query_names[query]
-        camera = cameras_by_name[name]
-        cached = cache[name]
-        height, width = map(int, cached["native_input_hw"])
-        render_pkg = render_from_pose_gsplat(
-            gaussians,
-            cached["pose_w2c"].cuda().float(),
-            camera.FoVx,
-            camera.FoVy,
-            width,
-            height,
-            bg_color=background,
-            render_mode="RGB+ED",
-            rgb_only=True,
-            return_rgb_meta=True,
-            rasterize_mode="antialiased",
-        )
-        observation_tensor = torch.as_tensor(
-            observations, dtype=torch.long
-        )
-        local_keypoint_indices = tracks["keypoint_index"][observation_tensor]
-        query_keypoints = (
-            keypoints[query][local_keypoint_indices]
-            - float(PIXEL_CENTER_OFFSET)
-        ).cuda()
-        local_ids, weights, valid = bank_splat_provenance_2dgs(
-            query_keypoints,
-            landmark_global_indices,
-            render_pkg["rgb_meta"],
-            rendered_depth=render_pkg.get("depth"),
-            topk=args.geometry_teacher_provenance_topk,
-            candidate_topk=max(
-                int(args.geometry_teacher_provenance_topk) * 8, 32
-            ),
-            depth_abs_tolerance=(
-                args.geometry_teacher_provenance_depth_abs_tolerance_m
-            ),
-            depth_rel_tolerance=(
-                args.geometry_teacher_provenance_depth_rel_tolerance
-            ),
-        )
-        for row, observation in enumerate(observations):
-            if not bool(valid[row]):
-                continue
-            track = int(tracks["track_index"][observation])
-            valid_observations += 1
-            for landmark, weight in zip(
-                local_ids[row].tolist(), weights[row].tolist()
-            ):
-                if weight <= 0.0:
-                    continue
-                track_candidates[track][landmark] += float(weight)
-                track_candidate_views[track][landmark].add(query)
-        del render_pkg, local_ids, weights, valid
-
-    track_landmark = torch.full((track_count,), -1, dtype=torch.long)
-    assignment_cost = torch.full(
-        (track_count,), float("inf"), dtype=torch.float32
-    )
-    consensus_rate = torch.zeros(track_count, dtype=torch.float32)
-    support_views = torch.zeros(track_count, dtype=torch.long)
-    group_offsets = [0]
-    group_landmarks = []
-    group_costs = []
-    group_rates = []
-    group_support_views = []
-    assigned = 0
-    group_assigned_tracks = 0
-    track_observation_counts = torch.bincount(
-        torch.as_tensor(tracks["track_index"], dtype=torch.long),
-        minlength=track_count,
-    )
-    for track in range(track_count):
-        if not bool(high_confidence[track]):
-            group_offsets.append(group_offsets[-1])
-            continue
-        candidates = track_candidates[track]
-        if not candidates:
-            group_offsets.append(group_offsets[-1])
-            continue
-        ordered_candidates = sorted(
-            candidates.items(), key=lambda item: (-item[1], item[0])
-        )
-        landmark, mass = ordered_candidates[0]
-        track_observations = int(track_observation_counts[track])
-        rate = float(mass) / max(track_observations, 1)
-        views = len(track_candidate_views[track][landmark])
-        if (
-            rate < float(args.geometry_teacher_provenance_min_consensus_rate)
-            or views < int(args.geometry_teacher_provenance_min_views)
-        ):
-            group_offsets.append(group_offsets[-1])
-            continue
-        track_landmark[track] = int(landmark)
-        consensus_rate[track] = rate
-        support_views[track] = views
-        assignment_cost[track] = 1.0 - min(rate, 1.0)
-        assigned += 1
-
-        accepted = []
-        maximum_group = max(
-            int(args.geometry_teacher_provenance_group_max_landmarks), 1
-        )
-        for candidate_landmark, candidate_mass in ordered_candidates:
-            candidate_rate = float(candidate_mass) / max(
-                track_observations, 1
-            )
-            candidate_views = len(
-                track_candidate_views[track][candidate_landmark]
-            )
-            if (
-                candidate_rate
-                < float(
-                    args.geometry_teacher_provenance_group_min_consensus_rate
-                )
-                or candidate_mass
-                < float(
-                    args.geometry_teacher_provenance_group_min_relative_mass
-                )
-                * float(mass)
-                or candidate_views
-                < int(args.geometry_teacher_provenance_min_views)
-            ):
-                continue
-            accepted.append(
-                (
-                    int(candidate_landmark),
-                    1.0 - min(candidate_rate, 1.0),
-                    candidate_rate,
-                    candidate_views,
-                )
-            )
-            if len(accepted) >= maximum_group:
-                break
-        if not accepted:
-            accepted.append((int(landmark), 1.0 - min(rate, 1.0), rate, views))
-        group_landmarks.extend(item[0] for item in accepted)
-        group_costs.extend(item[1] for item in accepted)
-        group_rates.extend(item[2] for item in accepted)
-        group_support_views.extend(item[3] for item in accepted)
-        group_offsets.append(group_offsets[-1] + len(accepted))
-        group_assigned_tracks += 1
-
-    group_offsets = torch.as_tensor(group_offsets, dtype=torch.long)
-    group_landmarks = torch.as_tensor(group_landmarks, dtype=torch.long)
-    group_costs = torch.as_tensor(group_costs, dtype=torch.float32)
-    group_rates = torch.as_tensor(group_rates, dtype=torch.float32)
-    group_support_views = torch.as_tensor(
-        group_support_views, dtype=torch.long
-    )
-    edge_tracks = torch.repeat_interleave(
-        torch.arange(track_count, dtype=torch.long),
-        group_offsets[1:] - group_offsets[:-1],
-    )
-    geometry, group_assignment = (
-        transfer_triangulated_track_groups_to_landmarks(
-            track_geometry,
-            edge_track_index=edge_tracks,
-            edge_landmark_index=group_landmarks,
-            landmark_count=int(bank_xyz.shape[0]),
-            edge_assignment_cost=group_costs,
-        )
-    )
-    best_edge_all = group_assignment["landmark_best_edge_index"]
-    selected = best_edge_all >= 0
-    best_edge = best_edge_all[selected]
-    best_track = edge_tracks[best_edge]
-    assignment_distance = torch.full(
-        (bank_xyz.shape[0],), float("inf"), dtype=torch.float32
-    )
-    assignment_distance[selected] = torch.linalg.norm(
-        track_geometry["triangulated_xyz"][best_track]
-        - bank_xyz.detach().cpu()[selected],
-        dim=1,
-    )
-    geometry["track_assignment_distance_m"] = assignment_distance
-    geometry["track_provenance_consensus_rate"] = torch.zeros(
-        bank_xyz.shape[0], dtype=torch.float32
-    )
-    geometry["track_provenance_support_views"] = torch.zeros(
-        bank_xyz.shape[0], dtype=torch.long
-    )
-    geometry["track_provenance_consensus_rate"][selected] = (
-        group_rates[best_edge]
-    )
-    geometry["track_provenance_support_views"][selected] = (
-        group_support_views[best_edge]
-    )
-    assignment = {
-        "track_landmark_index": track_landmark,
-        "track_assignment_cost": assignment_cost,
-        "landmark_best_track_index": (
-            group_assignment["landmark_best_track_index"]
+    """Compatibility bridge to the replayable provenance API."""
+    return assign_tracks_by_splat_provenance(
+        tracks=tracks,
+        track_geometry=track_geometry,
+        keypoints=keypoints,
+        query_names=query_names,
+        cache=cache,
+        bank_xyz=bank_xyz,
+        gaussians=gaussians,
+        cameras_by_name=cameras_by_name,
+        landmark_global_indices=landmark_global_indices,
+        background=background,
+        topk=args.geometry_teacher_provenance_topk,
+        minimum_consensus_rate=(
+            args.geometry_teacher_provenance_min_consensus_rate
         ),
-        "track_landmark_offsets": group_offsets,
-        "track_landmark_indices": group_landmarks,
-        "track_landmark_costs": group_costs,
-    }
-    diagnostics = {
-        "geometry_teacher_provenance_valid_observation_count": valid_observations,
-        "geometry_teacher_provenance_assigned_track_count": assigned,
-        "geometry_teacher_provenance_assigned_landmark_count": int(
-            selected.sum().item()
+        minimum_views=args.geometry_teacher_provenance_min_views,
+        group_maximum_landmarks=(
+            args.geometry_teacher_provenance_group_max_landmarks
         ),
-        "geometry_teacher_provenance_group_assigned_track_count": (
-            group_assigned_tracks
+        group_minimum_relative_mass=(
+            args.geometry_teacher_provenance_group_min_relative_mass
         ),
-        "geometry_teacher_provenance_group_edge_count": int(
-            group_landmarks.numel()
+        group_minimum_consensus_rate=(
+            args.geometry_teacher_provenance_group_min_consensus_rate
         ),
-        "geometry_teacher_provenance_group_size_mean": (
-            float(group_landmarks.numel()) / max(group_assigned_tracks, 1)
+        depth_absolute_tolerance_m=(
+            args.geometry_teacher_provenance_depth_abs_tolerance_m
         ),
-    }
-    return geometry, assignment, diagnostics
+        depth_relative_tolerance=(
+            args.geometry_teacher_provenance_depth_rel_tolerance
+        ),
+    )
 
 
 @torch.no_grad()
@@ -2883,6 +2685,7 @@ def _collect_track_first_geometry_teacher(
     camera_intrinsics = []
     camera_poses = []
     depth_sources = []
+    image_hw = []
     for name in query_names:
         cached = cache[name]
         descriptors.append(cached["native_descriptors"].float())
@@ -2902,15 +2705,81 @@ def _collect_track_first_geometry_teacher(
             raise ValueError(
                 f"Geometry teacher cache lacks native depth for {name}"
             )
+        native_hw = cached.get("native_input_hw")
+        if native_hw is None:
+            depth = cached.get("native_depth")
+            if depth is None or torch.as_tensor(depth).ndim < 2:
+                raise ValueError(
+                    f"Geometry teacher cache lacks native_input_hw for {name}"
+                )
+            native_hw = torch.as_tensor(depth).shape[-2:]
+        image_hw.append(torch.as_tensor(native_hw, dtype=torch.long))
     camera_intrinsics = torch.stack(camera_intrinsics)
     camera_poses = torch.stack(camera_poses)
-    tracks, track_diagnostics = build_cycle_consistent_tracks(
+
+    def sample_depth(depth_source, query_keypoints, rows=None):
+        source = torch.as_tensor(depth_source)
+        selected = (
+            torch.arange(query_keypoints.shape[0], dtype=torch.long)
+            if rows is None
+            else torch.as_tensor(rows, dtype=torch.long)
+        )
+        if source.ndim == 1:
+            return source[selected]
+        physical = query_keypoints[selected] - float(PIXEL_CENTER_OFFSET)
+        x = physical[:, 0].round().long().clamp(0, int(source.shape[1]) - 1)
+        y = physical[:, 1].round().long().clamp(0, int(source.shape[0]) - 1)
+        return source[y, x]
+
+    depth_at_keypoints = [
+        sample_depth(depth, query_keypoints).float()
+        for depth, query_keypoints in zip(depth_sources, keypoints)
+    ]
+    pair_sidecar_requested = bool(args.save_track_pair_sidecar) or (
+        str(args.geometry_teacher_track_pair_policy) != "nearest"
+    )
+    pair_scene_points = None
+    if pair_sidecar_requested:
+        pair_scene_points = mapping_scene_points_from_depth_samples(
+            keypoints,
+            depth_at_keypoints,
+            camera_intrinsics,
+            camera_poses,
+            points_per_camera=(
+                args.geometry_teacher_track_pair_scene_points_per_camera
+            ),
+            maximum_points=(
+                args.geometry_teacher_track_pair_maximum_scene_points
+            ),
+            voxel_size_m=(
+                args.geometry_teacher_track_pair_scene_point_voxel_size_m
+            ),
+        )
+    track_result = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
         detector_scores=detector_scores,
         camera_K=camera_intrinsics,
         pose_w2c=camera_poses,
         pair_neighbors=args.geometry_teacher_track_pair_neighbors,
+        pair_policy=args.geometry_teacher_track_pair_policy,
+        pair_image_hw=(torch.stack(image_hw) if pair_sidecar_requested else None),
+        pair_scene_points_xyz=pair_scene_points,
+        pair_minimum_overlap_jaccard=(
+            args.geometry_teacher_track_pair_min_overlap_jaccard
+        ),
+        pair_minimum_joint_visibility_points=(
+            args.geometry_teacher_track_pair_min_joint_visibility_points
+        ),
+        pair_parallax_saturation_deg=(
+            args.geometry_teacher_track_pair_parallax_saturation_deg
+        ),
+        pair_diversity_weight=(
+            args.geometry_teacher_track_pair_diversity_weight
+        ),
+        pair_candidate_pool_per_camera=(
+            args.geometry_teacher_track_pair_candidate_pool_per_camera
+        ),
         minimum_baseline_m=args.geometry_teacher_track_min_baseline_m,
         maximum_baseline_m=args.geometry_teacher_track_max_baseline_m,
         maximum_axis_angle_deg=args.geometry_teacher_track_max_axis_angle_deg,
@@ -2933,8 +2802,14 @@ def _collect_track_first_geometry_teacher(
         allow_chain_tracks=(
             args.geometry_teacher_track_allow_chain_tracks
         ),
+        return_pair_sidecar=pair_sidecar_requested,
         device="cuda",
     )
+    if pair_sidecar_requested:
+        tracks, track_diagnostics, track_pair_sidecar = track_result
+    else:
+        tracks, track_diagnostics = track_result
+        track_pair_sidecar = None
     if int(track_diagnostics["track_count"]) == 0:
         raise RuntimeError("Track-first geometry teacher produced no tracks")
     observation_query = tracks["query_index"]
@@ -2947,28 +2822,23 @@ def _collect_track_first_geometry_teacher(
             )
         ]
     )
-    rendered_depth_samples = []
-    for query, keypoint in zip(
-        observation_query.tolist(), observation_keypoint.tolist()
-    ):
-        depth_source = depth_sources[int(query)]
-        if depth_source.ndim == 1:
-            rendered_depth_samples.append(depth_source[int(keypoint)])
-        else:
-            keypoint_xy = (
-                keypoints[int(query)][int(keypoint)]
-                - float(PIXEL_CENTER_OFFSET)
-            )
-            x = min(
-                max(int(round(float(keypoint_xy[0]))), 0),
-                int(depth_source.shape[1]) - 1,
-            )
-            y = min(
-                max(int(round(float(keypoint_xy[1]))), 0),
-                int(depth_source.shape[0]) - 1,
-            )
-            rendered_depth_samples.append(depth_source[y, x])
-    rendered_depth = torch.stack(rendered_depth_samples).float()
+    rendered_depth = torch.empty(observation_query.numel(), dtype=torch.float32)
+    observation_order = torch.argsort(observation_query, stable=True)
+    observation_counts = torch.bincount(
+        observation_query, minlength=len(keypoints)
+    )
+    observation_offsets = torch.cat(
+        (torch.zeros(1, dtype=torch.long), observation_counts.cumsum(0))
+    )
+    for query in range(len(keypoints)):
+        begin = int(observation_offsets[query])
+        end = int(observation_offsets[query + 1])
+        if begin == end:
+            continue
+        rows = observation_order[begin:end]
+        rendered_depth[rows] = depth_at_keypoints[query][
+            observation_keypoint[rows]
+        ]
     query_bins = camera_pose_bins(
         camera_poses,
         int(args.geometry_teacher_view_bins),
@@ -3025,6 +2895,10 @@ def _collect_track_first_geometry_teacher(
     track_geometry["track_confidence_level"] = tracks[
         "track_level"
     ].clone()
+    if track_pair_sidecar is not None:
+        track_pair_sidecar = attach_pair_triangulation_statistics(
+            track_pair_sidecar, tracks, track_geometry, camera_poses
+        )
     provenance_diagnostics = {}
     if str(args.geometry_teacher_identity_mode) == "track_first_provenance":
         if provenance_context is None:
@@ -3181,6 +3055,8 @@ def _collect_track_first_geometry_teacher(
         "query_bins": query_bins.detach().cpu(),
         "diagnostics": dict(diagnostics),
     }
+    if track_pair_sidecar is not None:
+        track_payload["pair_sidecar"] = track_pair_sidecar
     return statistics, geometry, diagnostics, track_payload
 
 
@@ -4827,6 +4703,7 @@ def build_parser():
     parser.add_argument('--native_global_attractor_max_score', type=float, default=4.0)
     parser.add_argument('--save_independent_geometry_teacher', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--save_track_micro_anchor_payload', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--save_track_pair_sidecar', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--geometry_teacher_max_observations_per_landmark', type=int, default=32)
     parser.add_argument('--geometry_teacher_min_views', type=int, default=3)
     parser.add_argument('--geometry_teacher_view_bins', type=int, default=8)
@@ -4850,6 +4727,15 @@ def build_parser():
     parser.add_argument('--geometry_teacher_surface_max_reprojection_increase_px', type=float, default=0.05)
     parser.add_argument('--geometry_teacher_surface_covariance_sigma_m', type=float, default=0.02)
     parser.add_argument('--geometry_teacher_track_pair_neighbors', type=int, default=6)
+    parser.add_argument('--geometry_teacher_track_pair_policy', choices=['nearest', 'parallax_diverse'], default='nearest')
+    parser.add_argument('--geometry_teacher_track_pair_min_overlap_jaccard', type=float, default=0.15)
+    parser.add_argument('--geometry_teacher_track_pair_min_joint_visibility_points', type=int, default=8)
+    parser.add_argument('--geometry_teacher_track_pair_parallax_saturation_deg', type=float, default=2.0)
+    parser.add_argument('--geometry_teacher_track_pair_diversity_weight', type=float, default=0.20)
+    parser.add_argument('--geometry_teacher_track_pair_candidate_pool_per_camera', type=int, default=48)
+    parser.add_argument('--geometry_teacher_track_pair_scene_points_per_camera', type=int, default=8)
+    parser.add_argument('--geometry_teacher_track_pair_maximum_scene_points', type=int, default=4096)
+    parser.add_argument('--geometry_teacher_track_pair_scene_point_voxel_size_m', type=float, default=0.02)
     parser.add_argument('--geometry_teacher_track_min_baseline_m', type=float, default=0.03)
     parser.add_argument('--geometry_teacher_track_max_baseline_m', type=float, default=5.0)
     parser.add_argument('--geometry_teacher_track_max_axis_angle_deg', type=float, default=75.0)

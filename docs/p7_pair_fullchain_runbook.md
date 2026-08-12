@@ -36,7 +36,7 @@ VIS=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/boots
 PLY=/mnt/pool/sqy/indoor_priors_pgt_v1/7Scenes/stairs/lafgs_prior_v1/point_cloud/iteration_30000/point_cloud.ply
 PARENT_CAL=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/scene_calibration.json
 PAYLOAD=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/provenance_replay/parallax_diverse_track_micro_anchor_payload.pt
-PAYLOAD_AUDIT=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/provenance_replay/parallax_diverse_payload_lineage_audit.json
+PAYLOAD_AUDIT=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/provenance_replay/parallax_diverse_payload_lineage_audit_v2.json
 FACTOR=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/parallax_diverse_track_factor.pt
 MECHANISM=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/mechanism_gate.json
 BOOTSTRAP_MANIFEST=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/tracks_refined/reproducibility_manifest.json
@@ -48,7 +48,7 @@ VIS_SHA=63b228b445e72ef3bcfe69fd56ec57e8b533e4d384ad343ae3ad37d571e3433b
 PLY_SHA=c1d71e3d1984fd8c18436ea0c447a3e75350217bfbb5c70ae03ea63e838f5699
 PARENT_CAL_SHA=d3bc0839d73310055d93b895aa5c96fd633bef0fbab276604bffb782335120b2
 PAYLOAD_SHA=f1ab21fae713c37ac9725de8bf7eeacf8dcfa02ba91d45883dd789f04cb5a059
-PAYLOAD_AUDIT_SHA=46056d8c19c90c273720569a6ca424a7f436441b1afa4a0c141d40d96d810688
+PAYLOAD_AUDIT_SHA=55ecc5f23ab1e7064c16fa1db3f76a3129e6606d66e4138def15c9f9fd23cfe7
 FACTOR_SHA=5eb12e6936b0783b1e500d785d6165f1bf21b42bdc5f5b71a018b5d7c2bd5811
 MECHANISM_SHA=d32e51396392a76910f119b6f78dcb3a1dde00657af1bfda3c33ff690eaa7c52
 BOOTSTRAP_MANIFEST_SHA=cb0241f694f6bdd5f4d663bd88273f94217d0a42502a5be97107b5c35a64b8aa
@@ -109,6 +109,7 @@ python -m scripts.materialize_pair_factor_calibration \
   --track-payload "$PAYLOAD" \
   --payload-lineage-audit "$INPUT/payload_lineage_audit.json" \
   --expected-payload-lineage-audit-sha256 "$PAYLOAD_AUDIT_SHA" \
+  --expected-pair-budget 7450 \
   --output "$INPUT/frozen_pair_scene_calibration.json"
 
 python -m scripts.pair_fullchain_workspace lock-inputs \
@@ -279,6 +280,7 @@ Verify the complete chain immediately before pose evaluation; this detects any
 artifact change after manifest creation.
 
 ```bash
+python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/locked_inputs.json"
 python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/inputs.json"
 python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/canonical.json"
 python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/topology.json"

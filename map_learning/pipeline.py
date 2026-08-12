@@ -904,6 +904,43 @@ def build_bootstrap_and_tracks(
             0,
         ]
         geometry_policy = cfg.get("geometry", {})
+        track_args += [
+            "--save_track_pair_sidecar",
+            "--geometry_teacher_track_pair_policy",
+            str(geometry_policy.get("track_pair_policy", "nearest")),
+            "--geometry_teacher_track_pair_min_overlap_jaccard",
+            float(geometry_policy.get("track_pair_min_overlap_jaccard", 0.15)),
+            "--geometry_teacher_track_pair_min_joint_visibility_points",
+            int(
+                geometry_policy.get(
+                    "track_pair_min_joint_visibility_points", 8
+                )
+            ),
+            "--geometry_teacher_track_pair_parallax_saturation_deg",
+            float(
+                geometry_policy.get("track_pair_parallax_saturation_deg", 2.0)
+            ),
+            "--geometry_teacher_track_pair_diversity_weight",
+            float(geometry_policy.get("track_pair_diversity_weight", 0.20)),
+            "--geometry_teacher_track_pair_candidate_pool_per_camera",
+            int(
+                geometry_policy.get(
+                    "track_pair_candidate_pool_per_camera", 48
+                )
+            ),
+            "--geometry_teacher_track_pair_scene_points_per_camera",
+            int(
+                geometry_policy.get("track_pair_scene_points_per_camera", 8)
+            ),
+            "--geometry_teacher_track_pair_maximum_scene_points",
+            int(geometry_policy.get("track_pair_maximum_scene_points", 4096)),
+            "--geometry_teacher_track_pair_scene_point_voxel_size_m",
+            float(
+                geometry_policy.get(
+                    "track_pair_scene_point_voxel_size_m", 0.02
+                )
+            ),
+        ]
         if bool(geometry_policy.get("surface_supported_tracks", False)):
             depth_sigma = float(
                 geometry_policy.get(

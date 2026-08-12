@@ -32,16 +32,29 @@ def _frozen_contract(tmp_path):
     query = tmp_path / "query_cache.pt"
     payload = tmp_path / "variant_tracks.pt"
     query.write_bytes(b"frozen query")
-    factor_sha = "a" * 64
-    base_sha = "b" * 64
+    factor = tmp_path / "factor.pt"
+    base = tmp_path / "base.pt"
+    bootstrap = tmp_path / "bootstrap.json"
+    factor.write_bytes(b"factor")
+    base.write_bytes(b"base")
+    bootstrap.write_text("{}")
+    factor_sha = sha256_file(factor)
+    base_sha = sha256_file(base)
+    bootstrap_sha = sha256_file(bootstrap)
     torch_payload = {
         "schema": "lafgs_track_first_payload",
         "version": 1,
         "provenance": {
             "uses_test_queries": False,
+            "source_factor": str(factor.resolve()),
             "source_factor_sha256": factor_sha,
+            "base_state": str(base.resolve()),
             "base_state_sha256": base_sha,
+            "query_cache": str(query.resolve()),
             "query_cache_sha256": sha256_file(query),
+            "assignment_algorithm": "frozen_2dgs_splat_provenance_exact_replay",
+            "frozen_bootstrap_manifest": str(bootstrap.resolve()),
+            "frozen_bootstrap_manifest_sha256": bootstrap_sha,
         },
     }
     import torch
@@ -71,9 +84,16 @@ def _frozen_contract(tmp_path):
         "checks": {"all_inputs_bound": True},
         "payload": str(payload.resolve()),
         "payload_sha256": sha256_file(payload),
+        "factor": str(factor.resolve()),
         "factor_sha256": factor_sha,
+        "base_state": str(base.resolve()),
         "base_state_sha256": base_sha,
+        "query_cache": str(query.resolve()),
         "query_cache_sha256": sha256_file(query),
+        "frozen_bootstrap_manifest": str(bootstrap.resolve()),
+        "frozen_bootstrap_manifest_sha256": bootstrap_sha,
+        "expected_pair_budget": 7450,
+        "exact_pair_budget": 7450,
     }
     audit_path = tmp_path / "payload_lineage_audit.json"
     audit_path.write_text(json.dumps(audit))
@@ -85,6 +105,8 @@ def _frozen_contract(tmp_path):
             "query_cache_sha256": sha256_file(query),
             "track_payload": str(payload.resolve()),
             "track_payload_sha256": sha256_file(payload),
+            "payload_lineage_audit": str(audit_path.resolve()),
+            "payload_lineage_audit_sha256": sha256_file(audit_path),
             "uses_test_queries": False,
         },
         "lineage": {
@@ -99,6 +121,7 @@ def _frozen_contract(tmp_path):
             "payload_lineage_audit": str(audit_path.resolve()),
             "payload_lineage_audit_sha256": sha256_file(audit_path),
             "expected_payload_lineage_audit_sha256": sha256_file(audit_path),
+            "expected_pair_budget": 7450,
             "uses_test_queries": False,
         },
     }

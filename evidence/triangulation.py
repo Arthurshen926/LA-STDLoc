@@ -5,20 +5,11 @@ from collections import defaultdict
 import torch
 import torch.nn.functional as F
 
-
-def _camera_centers_and_axes(
-    pose_w2c: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    pose_w2c = torch.as_tensor(pose_w2c, dtype=torch.float64)
-    camera_centers = -torch.einsum(
-        "qji,qj->qi", pose_w2c[:, :3, :3], pose_w2c[:, :3, 3]
-    )
-    optical_axis = torch.einsum(
-        "qji,j->qi",
-        pose_w2c[:, :3, :3],
-        pose_w2c.new_tensor([0.0, 0.0, 1.0]),
-    )
-    return camera_centers, F.normalize(optical_axis, dim=1)
+from evidence.camera_pair_policy import (
+    _camera_centers_and_axes,
+    _camera_pair_geometry_table,
+    candidate_camera_pairs,
+)
 
 
 def camera_pose_bins(
@@ -64,47 +55,6 @@ def camera_pose_bins(
 def camera_center_bins(pose_w2c: torch.Tensor, bin_count: int) -> torch.Tensor:
     """Legacy center-only camera bins retained for reproducibility."""
     return camera_pose_bins(pose_w2c, bin_count, direction_weight=0.0)
-
-
-def candidate_camera_pairs(
-    pose_w2c: torch.Tensor,
-    *,
-    neighbors: int = 6,
-    minimum_baseline_m: float = 0.03,
-    maximum_baseline_m: float = 5.0,
-    maximum_axis_angle_deg: float = 75.0,
-) -> list[tuple[int, int]]:
-    """Build a deterministic local view graph without descriptor/map IDs."""
-    centers, axes = _camera_centers_and_axes(pose_w2c)
-    count = int(centers.shape[0])
-    if count < 2:
-        return []
-    distance = torch.cdist(centers, centers)
-    axis_cosine = (axes @ axes.T).clamp(-1.0, 1.0)
-    minimum_cosine = float(
-        torch.cos(torch.deg2rad(torch.tensor(maximum_axis_angle_deg))).item()
-    )
-    valid = (
-        (distance >= float(minimum_baseline_m))
-        & (distance <= float(maximum_baseline_m))
-        & (axis_cosine >= minimum_cosine)
-    )
-    valid.fill_diagonal_(False)
-    positive = distance[valid]
-    distance_scale = positive.median().clamp_min(1e-6) if positive.numel() else 1.0
-    cost = distance / distance_scale + 0.5 * (1.0 - axis_cosine)
-    cost = cost.masked_fill(~valid, torch.inf)
-    pairs = set()
-    width = min(max(int(neighbors), 1), max(count - 1, 1))
-    for query in range(count):
-        candidates = torch.topk(
-            cost[query], width, largest=False, sorted=True
-        ).indices
-        for other in candidates.tolist():
-            if not bool(torch.isfinite(cost[query, other])):
-                continue
-            pairs.add((min(query, other), max(query, other)))
-    return sorted(pairs)
 
 
 def _skew(vector: torch.Tensor) -> torch.Tensor:
@@ -185,11 +135,35 @@ def reciprocal_epipolar_matches(
     epipolar_candidate_topk: int = 1,
     recovered_minimum_similarity: float = -1.0,
     recovered_minimum_margin: float = -1.0,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    return_diagnostics: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[
+    torch.Tensor, torch.Tensor, torch.Tensor, dict[str, int]
+]:
     """Match descriptors with optional epipolar-first top-K reciprocity."""
+    def returned(source, target, confidence, diagnostics=None):
+        base = (source, target, confidence)
+        if not bool(return_diagnostics):
+            return base
+        return (*base, dict(diagnostics or {}))
+
     if descriptors_a.numel() == 0 or descriptors_b.numel() == 0:
         empty = torch.empty(0, dtype=torch.long)
-        return empty, empty, torch.empty(0)
+        return returned(
+            empty,
+            empty,
+            torch.empty(0),
+            {
+                "source_keypoint_count": int(descriptors_a.shape[0]),
+                "target_keypoint_count": int(descriptors_b.shape[0]),
+                "raw_top1_reciprocal_count": 0,
+                "descriptor_accepted_before_epipolar_count": 0,
+                "epipolar_accepted_top1_count": 0,
+                "epipolar_rejected_after_descriptor_count": 0,
+                "ambiguity_rejected_count": 0,
+                "final_reciprocal_epipolar_count": 0,
+                "epipolar_recovered_final_count": 0,
+            },
+        )
     descriptors_a = F.normalize(descriptors_a.float(), dim=1)
     descriptors_b = F.normalize(descriptors_b.float(), dim=1)
     similarity = descriptors_a @ descriptors_b.T
@@ -295,9 +269,85 @@ def reciprocal_epipolar_matches(
         selected = torch.nonzero(
             descriptor_valid, as_tuple=False
         ).reshape(-1)
+        diagnostics = None
+        if bool(return_diagnostics):
+            raw_target = indices_ab[:, 0]
+            raw_reciprocal = indices_ba[raw_target, 0] == source
+            raw_margin_ab = values_ab[:, 0] - values_ab[:, 1]
+            raw_margin_ba = (
+                values_ba[raw_target, 0] - values_ba[raw_target, 1]
+            )
+            raw_descriptor_valid = (
+                raw_reciprocal
+                & (values_ab[:, 0] >= float(minimum_similarity))
+                & (raw_margin_ab >= float(minimum_margin))
+                & (raw_margin_ba >= float(minimum_margin))
+            )
+            raw_selected = torch.nonzero(
+                raw_descriptor_valid, as_tuple=False
+            ).reshape(-1)
+            if raw_selected.numel():
+                raw_epipolar = symmetric_epipolar_distance(
+                    torch.as_tensor(
+                        uv_a, device=similarity.device, dtype=torch.float64
+                    )[raw_selected],
+                    torch.as_tensor(
+                        uv_b, device=similarity.device, dtype=torch.float64
+                    )[raw_target[raw_selected]],
+                    fundamental,
+                )
+                raw_epipolar_accepted_tensor = (
+                    raw_epipolar <= float(maximum_epipolar_error_px)
+                ).sum()
+            else:
+                raw_epipolar_accepted_tensor = source.new_zeros(())
+            finite_reciprocal = reciprocal & torch.isfinite(best_ab[:, 0]) & torch.isfinite(
+                best_ba[target, 0]
+            )
+            counts = torch.stack(
+                (
+                    raw_reciprocal.sum(),
+                    raw_descriptor_valid.sum(),
+                    raw_epipolar_accepted_tensor.to(source.device),
+                    finite_reciprocal.sum(),
+                    descriptor_valid.sum(),
+                    recovered[selected].sum() if selected.numel() else source.new_zeros(()),
+                    (~valid_ab).sum(),
+                    (~valid_ba).sum(),
+                    (~valid_ab.any(dim=1)).sum(),
+                )
+            ).detach().cpu().tolist()
+            (
+                raw_reciprocal_count,
+                raw_descriptor_count,
+                raw_epipolar_accepted,
+                finite_reciprocal_count,
+                descriptor_valid_count,
+                recovered_selected_count,
+                rejected_ab_count,
+                rejected_ba_count,
+                missing_source_count,
+            ) = (int(value) for value in counts)
+            diagnostics = {
+                "source_keypoint_count": int(descriptors_a.shape[0]),
+                "target_keypoint_count": int(descriptors_b.shape[0]),
+                "raw_top1_reciprocal_count": raw_reciprocal_count,
+                "descriptor_accepted_before_epipolar_count": raw_descriptor_count,
+                "epipolar_accepted_top1_count": raw_epipolar_accepted,
+                "epipolar_rejected_after_descriptor_count": raw_descriptor_count
+                - raw_epipolar_accepted,
+                "ambiguity_rejected_count": finite_reciprocal_count
+                - descriptor_valid_count,
+                "final_reciprocal_epipolar_count": int(selected.numel()),
+                "epipolar_recovered_final_count": recovered_selected_count,
+                "epipolar_topk_rejected_directed_candidate_count": (
+                    rejected_ab_count + rejected_ba_count
+                ),
+                "source_without_epipolar_candidate_count": missing_source_count,
+            }
         if selected.numel() == 0:
             empty = torch.empty(0, dtype=torch.long)
-            return empty, empty, torch.empty(0)
+            return returned(empty, empty, torch.empty(0), diagnostics)
         selected_target = target[selected]
         selected_epipolar = chosen_epipolar[selected].float()
         confidence = best_ab[selected, 0].detach().float() * torch.exp(
@@ -307,10 +357,11 @@ def reciprocal_epipolar_matches(
                 / max(float(maximum_epipolar_error_px), 1e-6)
             ).square()
         )
-        return (
+        return returned(
             selected.detach().cpu().long(),
             selected_target.detach().cpu().long(),
             confidence.detach().cpu(),
+            diagnostics,
         )
 
     values_ab, indices_ab = torch.topk(similarity, k=2, dim=1)
@@ -331,7 +382,18 @@ def reciprocal_epipolar_matches(
     selected = torch.nonzero(descriptor_valid, as_tuple=False).reshape(-1)
     if selected.numel() == 0:
         empty = torch.empty(0, dtype=torch.long)
-        return empty, empty, torch.empty(0)
+        diagnostics = {
+            "source_keypoint_count": int(descriptors_a.shape[0]),
+            "target_keypoint_count": int(descriptors_b.shape[0]),
+            "raw_top1_reciprocal_count": int(reciprocal.sum()),
+            "descriptor_accepted_before_epipolar_count": 0,
+            "epipolar_accepted_top1_count": 0,
+            "epipolar_rejected_after_descriptor_count": 0,
+            "ambiguity_rejected_count": int(reciprocal.sum()),
+            "final_reciprocal_epipolar_count": 0,
+            "epipolar_recovered_final_count": 0,
+        }
+        return returned(empty, empty, torch.empty(0), diagnostics)
     selected_target = target[selected]
     selected_cpu = selected.detach().cpu()
     selected_target_cpu = selected_target.detach().cpu()
@@ -356,7 +418,25 @@ def reciprocal_epipolar_matches(
             ).square()
         )
     )
-    return selected.long(), selected_target.long(), confidence
+    accepted = int(epipolar_valid.sum())
+    diagnostics = {
+        "source_keypoint_count": int(descriptors_a.shape[0]),
+        "target_keypoint_count": int(descriptors_b.shape[0]),
+        "raw_top1_reciprocal_count": int(reciprocal.sum()),
+        "descriptor_accepted_before_epipolar_count": int(
+            descriptor_valid.sum()
+        ),
+        "epipolar_accepted_top1_count": accepted,
+        "epipolar_rejected_after_descriptor_count": int(
+            descriptor_valid.sum()
+        )
+        - accepted,
+        "ambiguity_rejected_count": int(reciprocal.sum())
+        - int(descriptor_valid.sum()),
+        "final_reciprocal_epipolar_count": accepted,
+        "epipolar_recovered_final_count": 0,
+    }
+    return returned(selected.long(), selected_target.long(), confidence, diagnostics)
 
 
 def _cycle_supported_pair_edges(
@@ -499,6 +579,15 @@ def _graded_track_components(
     edge_cycle = []
     edge_source = []
     edge_target = []
+    edge_pair_position = []
+    edge_accepted = {
+        pair: torch.zeros(match[0].numel(), dtype=torch.bool)
+        for pair, match in pair_matches.items()
+    }
+    edge_conflict_rejected = {
+        pair: torch.zeros(match[0].numel(), dtype=torch.bool)
+        for pair, match in pair_matches.items()
+    }
     for pair, (source, target, confidence) in pair_matches.items():
         left, right = pair
         count = int(source.numel())
@@ -510,6 +599,7 @@ def _graded_track_components(
         edge_target.append(target.long())
         edge_confidence.append(confidence.float())
         edge_cycle.append(cycle_support[pair].bool())
+        edge_pair_position.append(torch.arange(count, dtype=torch.long))
     if not edge_source:
         return (
             {},
@@ -520,11 +610,13 @@ def _graded_track_components(
                 "track_graded_chain_edge_count": 0,
                 "track_graded_conflict_rejected_edge_count": 0,
             },
+            {"accepted": edge_accepted, "conflict_rejected": edge_conflict_rejected},
         )
     edge_source = torch.cat(edge_source)
     edge_target = torch.cat(edge_target)
     edge_confidence = torch.cat(edge_confidence)
     edge_cycle = torch.cat(edge_cycle)
+    edge_pair_position = torch.cat(edge_pair_position)
     edge_left = torch.as_tensor(edge_left, dtype=torch.long)
     edge_right = torch.as_tensor(edge_right, dtype=torch.long)
     cycle_indices = torch.nonzero(edge_cycle, as_tuple=False).reshape(-1)
@@ -563,11 +655,15 @@ def _graded_track_components(
         disjoint.add(source_node, left_query)
         disjoint.add(target_node, right_query)
         is_cycle = bool(edge_cycle[edge])
+        pair = (left_query, right_query)
+        pair_position = int(edge_pair_position[edge])
         if not disjoint.union(
             source_node, target_node, cycle_supported=is_cycle
         ):
             rejected_conflict += 1
+            edge_conflict_rejected[pair][pair_position] = True
             continue
+        edge_accepted[pair][pair_position] = True
         confidence = float(edge_confidence[edge])
         node_confidence[source_node] = max(
             node_confidence[source_node], confidence
@@ -591,7 +687,13 @@ def _graded_track_components(
         "track_graded_chain_edge_count": accepted_chain,
         "track_graded_conflict_rejected_edge_count": rejected_conflict,
     }
-    return components, node_confidence, component_cycle_seeded, diagnostics
+    return (
+        components,
+        node_confidence,
+        component_cycle_seeded,
+        diagnostics,
+        {"accepted": edge_accepted, "conflict_rejected": edge_conflict_rejected},
+    )
 
 
 @torch.no_grad()
@@ -603,6 +705,15 @@ def build_cycle_consistent_tracks(
     pose_w2c: torch.Tensor,
     detector_scores: list[torch.Tensor] | None = None,
     pair_neighbors: int = 6,
+    pair_policy: str = "nearest",
+    pair_budget: int | None = None,
+    pair_image_hw: torch.Tensor | None = None,
+    pair_scene_points_xyz: torch.Tensor | None = None,
+    pair_minimum_overlap_jaccard: float = 0.15,
+    pair_minimum_joint_visibility_points: int = 8,
+    pair_parallax_saturation_deg: float = 2.0,
+    pair_diversity_weight: float = 0.20,
+    pair_candidate_pool_per_camera: int = 48,
     minimum_baseline_m: float = 0.03,
     maximum_baseline_m: float = 5.0,
     maximum_axis_angle_deg: float = 75.0,
@@ -615,8 +726,11 @@ def build_cycle_consistent_tracks(
     minimum_track_views: int = 3,
     require_cycle: bool = True,
     allow_chain_tracks: bool = False,
+    return_pair_sidecar: bool = False,
     device: str | torch.device = "cuda",
-) -> tuple[dict[str, torch.Tensor], dict[str, float | int]]:
+) -> tuple[dict[str, torch.Tensor], dict[str, float | int]] | tuple[
+    dict[str, torch.Tensor], dict[str, float | int], dict
+]:
     """Build map-independent native 2D tracks from a local camera graph."""
     query_count = len(descriptors)
     if len(keypoints) != query_count:
@@ -629,12 +743,23 @@ def build_cycle_consistent_tracks(
         minimum_baseline_m=minimum_baseline_m,
         maximum_baseline_m=maximum_baseline_m,
         maximum_axis_angle_deg=maximum_axis_angle_deg,
+        policy=pair_policy,
+        pair_budget=pair_budget,
+        camera_K=camera_K,
+        image_hw=pair_image_hw,
+        scene_points_xyz=pair_scene_points_xyz,
+        minimum_overlap_jaccard=pair_minimum_overlap_jaccard,
+        minimum_joint_visibility_points=pair_minimum_joint_visibility_points,
+        parallax_saturation_deg=pair_parallax_saturation_deg,
+        diversity_weight=pair_diversity_weight,
+        candidate_pool_per_camera=pair_candidate_pool_per_camera,
     )
     pair_matches = {}
+    pair_match_diagnostics = {}
     raw_match_count = 0
     device = torch.device(device)
     for left, right in pairs:
-        source, target, confidence = reciprocal_epipolar_matches(
+        match_result = reciprocal_epipolar_matches(
             descriptors[left].to(device),
             descriptors[right].to(device),
             keypoints[left],
@@ -651,7 +776,13 @@ def build_cycle_consistent_tracks(
                 epipolar_recovered_minimum_similarity
             ),
             recovered_minimum_margin=epipolar_recovered_minimum_margin,
+            return_diagnostics=return_pair_sidecar,
         )
+        if bool(return_pair_sidecar):
+            source, target, confidence, match_diagnostics = match_result
+            pair_match_diagnostics[(left, right)] = match_diagnostics
+        else:
+            source, target, confidence = match_result
         if source.numel() == 0:
             continue
         raw_match_count += int(source.numel())
@@ -681,6 +812,15 @@ def build_cycle_consistent_tracks(
         "track_graded_conflict_rejected_edge_count": 0,
     }
     component_cycle_seeded = {}
+    pair_edge_status = {
+        "accepted": {
+            pair: cycle_support[pair].clone() for pair in pair_matches
+        },
+        "conflict_rejected": {
+            pair: torch.zeros(match[0].numel(), dtype=torch.bool)
+            for pair, match in pair_matches.items()
+        },
+    }
     if allow_chain_tracks:
         if not require_cycle:
             raise ValueError(
@@ -691,6 +831,7 @@ def build_cycle_consistent_tracks(
             node_confidence,
             component_cycle_seeded,
             graded_diagnostics,
+            pair_edge_status,
         ) = _graded_track_components(
             pair_matches, cycle_support, keypoint_offsets
         )
@@ -746,6 +887,7 @@ def build_cycle_consistent_tracks(
     level_a_track_count = 0
     level_b_track_count = 0
     rejected_duplicate_query = 0
+    node_to_track = {}
     for root, nodes in components.items():
         observations = [node_query[node] for node in nodes]
         queries = [item[0] for item in observations]
@@ -759,6 +901,7 @@ def build_cycle_consistent_tracks(
             query_indices.append(query)
             keypoint_indices.append(keypoint)
             confidences.append(node_confidence[node])
+            node_to_track[node] = track_count
         level = 2 if component_cycle_seeded.get(root, False) else 1
         track_levels.append(level)
         if level == 2:
@@ -789,13 +932,230 @@ def build_cycle_consistent_tracks(
         "track_level_a_count": level_a_track_count,
         "track_level_b_count": level_b_track_count,
         "track_allow_chain_tracks": int(bool(allow_chain_tracks)),
+        "track_camera_pair_policy": str(pair_policy),
+        "track_camera_pair_budget": int(len(pairs)),
         "track_observation_count": len(track_indices),
         "track_rejected_duplicate_query_component_count": (
             rejected_duplicate_query
         ),
         **graded_diagnostics,
     }
-    return tracks, diagnostics
+    if not bool(return_pair_sidecar):
+        return tracks, diagnostics
+
+    geometry_table = _camera_pair_geometry_table(
+        pairs,
+        pose_w2c,
+        camera_K=camera_K,
+        image_hw=pair_image_hw,
+        scene_points_xyz=pair_scene_points_xyz,
+    )
+    diagnostic_names = sorted(
+        {
+            name
+            for diagnostic in pair_match_diagnostics.values()
+            for name in diagnostic
+        }
+    )
+    match_columns = {
+        name: torch.zeros(len(pairs), dtype=torch.long)
+        for name in diagnostic_names
+    }
+    cycle_supported_count = torch.zeros(len(pairs), dtype=torch.long)
+    graph_accepted_count = torch.zeros(len(pairs), dtype=torch.long)
+    conflict_rejected_count = torch.zeros(len(pairs), dtype=torch.long)
+    final_component_edge_count = torch.zeros(len(pairs), dtype=torch.long)
+    final_track_offsets = [0]
+    final_track_indices = []
+    for pair_index, pair in enumerate(pairs):
+        for name, value in pair_match_diagnostics.get(pair, {}).items():
+            match_columns[name][pair_index] = int(value)
+        if pair not in pair_matches:
+            final_track_offsets.append(final_track_offsets[-1])
+            continue
+        source, target, _ = pair_matches[pair]
+        cycle_supported_count[pair_index] = int(cycle_support[pair].sum())
+        accepted = pair_edge_status["accepted"][pair]
+        conflict_rejected_count[pair_index] = int(
+            pair_edge_status["conflict_rejected"][pair].sum()
+        )
+        graph_accepted_count[pair_index] = int(accepted.sum())
+        left, right = pair
+        contributed_tracks = []
+        for local_edge in torch.nonzero(accepted, as_tuple=False).reshape(-1).tolist():
+            source_node = keypoint_offsets[left] + int(source[local_edge])
+            target_node = keypoint_offsets[right] + int(target[local_edge])
+            source_track = node_to_track.get(source_node, -1)
+            target_track = node_to_track.get(target_node, -1)
+            if source_track < 0 or source_track != target_track:
+                continue
+            final_component_edge_count[pair_index] += 1
+            contributed_tracks.append(source_track)
+        unique_tracks = sorted(set(contributed_tracks))
+        final_track_indices.extend(unique_tracks)
+        final_track_offsets.append(final_track_offsets[-1] + len(unique_tracks))
+    pair_sidecar = {
+        "schema": "lafgs_mapping_track_pair_sidecar",
+        "version": 1,
+        "policy": {
+            "name": str(pair_policy),
+            "neighbors": int(pair_neighbors),
+            "exact_pair_budget": int(len(pairs)),
+            "minimum_baseline_m": float(minimum_baseline_m),
+            "maximum_baseline_m": float(maximum_baseline_m),
+            "maximum_axis_angle_deg": float(maximum_axis_angle_deg),
+            "minimum_overlap_jaccard": float(pair_minimum_overlap_jaccard),
+            "minimum_joint_visibility_points": int(
+                pair_minimum_joint_visibility_points
+            ),
+            "parallax_saturation_deg": float(pair_parallax_saturation_deg),
+            "diversity_weight": float(pair_diversity_weight),
+            "candidate_pool_per_camera": int(pair_candidate_pool_per_camera),
+            "uses_descriptors_for_selection": False,
+            "uses_test_queries": False,
+            "overlap_constraint_applied": str(pair_policy)
+            == "parallax_diverse",
+        },
+        "pair": {
+            **geometry_table,
+            **match_columns,
+            "raw_match_count": match_columns.get(
+                "raw_top1_reciprocal_count",
+                torch.zeros(len(pairs), dtype=torch.long),
+            ),
+            "accepted_match_count": match_columns.get(
+                "final_reciprocal_epipolar_count",
+                torch.zeros(len(pairs), dtype=torch.long),
+            ),
+            "rejected_ambiguity_count": match_columns.get(
+                "ambiguity_rejected_count",
+                torch.zeros(len(pairs), dtype=torch.long),
+            ),
+            "rejected_epipolar_count": match_columns.get(
+                "epipolar_rejected_after_descriptor_count",
+                torch.zeros(len(pairs), dtype=torch.long),
+            ),
+            "cycle_supported_edge_count": cycle_supported_count,
+            "cycle_supported_match_count": cycle_supported_count,
+            "graph_accepted_edge_count": graph_accepted_count,
+            "conflict_rejected_edge_count": conflict_rejected_count,
+            "final_component_edge_count": final_component_edge_count,
+            "final_track_offsets": torch.as_tensor(
+                final_track_offsets, dtype=torch.long
+            ),
+            "final_track_indices": torch.as_tensor(
+                final_track_indices, dtype=torch.long
+            ),
+            "triangulated_track_count": torch.full(
+                (len(pairs),), -1, dtype=torch.long
+            ),
+            "actual_triangulation_parallax_median_deg": torch.full(
+                (len(pairs),), float("nan"), dtype=torch.float64
+            ),
+        },
+        "count_semantics": {
+            "raw_top1_reciprocal_count": (
+                "Ungated descriptor Top-1 mutual-nearest-neighbour edges."
+            ),
+            "raw_match_count": "Alias of raw_top1_reciprocal_count.",
+            "descriptor_accepted_before_epipolar_count": (
+                "Raw Top-1 reciprocal edges passing similarity and both margins."
+            ),
+            "epipolar_accepted_top1_count": (
+                "Those descriptor-accepted raw Top-1 edges passing the known-pose "
+                "epipolar threshold."
+            ),
+            "final_reciprocal_epipolar_count": (
+                "Edges emitted by the configured matcher; with top-K>1 this may "
+                "include explicitly counted epipolar recoveries."
+            ),
+            "accepted_match_count": (
+                "Alias of final_reciprocal_epipolar_count."
+            ),
+            "rejected_ambiguity_count": "Alias of ambiguity_rejected_count.",
+            "rejected_epipolar_count": (
+                "Alias of epipolar_rejected_after_descriptor_count."
+            ),
+            "cycle_supported_edge_count": (
+                "Emitted edges participating in an exact three-camera keypoint cycle."
+            ),
+            "cycle_supported_match_count": (
+                "Alias of cycle_supported_edge_count."
+            ),
+            "conflict_rejected_edge_count": (
+                "Emitted edges rejected because union would duplicate a camera in "
+                "one Track component."
+            ),
+            "final_component_edge_count": (
+                "Accepted direct pair edges retained in a minimum-view final Track."
+            ),
+        },
+    }
+    return tracks, diagnostics, pair_sidecar
+
+
+def attach_pair_triangulation_statistics(
+    pair_sidecar: dict,
+    tracks: dict[str, torch.Tensor],
+    track_geometry: dict[str, torch.Tensor],
+    pose_w2c: torch.Tensor,
+) -> dict:
+    """Attach exact per-pair statistics from the completed triangulation.
+
+    Only final Tracks that contain an accepted direct edge from the pair are
+    considered.  The reported angle is recomputed from the final 3D point and
+    the two camera centers; it is not copied from a pose-only proxy.
+    """
+    if pair_sidecar.get("schema") != "lafgs_mapping_track_pair_sidecar":
+        raise ValueError("Unexpected Track pair sidecar schema")
+    pair = pair_sidecar["pair"]
+    left = torch.as_tensor(pair["left_query_index"], dtype=torch.long)
+    right = torch.as_tensor(pair["right_query_index"], dtype=torch.long)
+    offsets = torch.as_tensor(pair["final_track_offsets"], dtype=torch.long)
+    indices = torch.as_tensor(pair["final_track_indices"], dtype=torch.long)
+    if offsets.numel() != left.numel() + 1 or int(offsets[-1]) != indices.numel():
+        raise ValueError("Malformed pair-to-final-Track CSR")
+    geometry_xyz = torch.as_tensor(
+        track_geometry["triangulated_xyz"], dtype=torch.float64
+    )
+    triangulated = torch.as_tensor(
+        track_geometry["triangulated"], dtype=torch.bool
+    )
+    track_count = int(torch.as_tensor(tracks["track_level"]).numel())
+    if geometry_xyz.shape[0] != track_count or triangulated.numel() != track_count:
+        raise ValueError("Track table and triangulation table do not align")
+    centers, _ = _camera_centers_and_axes(pose_w2c)
+    triangulated_count = torch.zeros(left.numel(), dtype=torch.long)
+    actual_parallax = torch.full(
+        (left.numel(),), float("nan"), dtype=torch.float64
+    )
+    for pair_index in range(int(left.numel())):
+        begin = int(offsets[pair_index])
+        end = int(offsets[pair_index + 1])
+        pair_tracks = indices[begin:end]
+        if pair_tracks.numel() == 0:
+            continue
+        pair_tracks = pair_tracks[triangulated[pair_tracks]]
+        if pair_tracks.numel() == 0:
+            continue
+        xyz = geometry_xyz[pair_tracks]
+        finite = torch.isfinite(xyz).all(dim=1)
+        xyz = xyz[finite]
+        if xyz.numel() == 0:
+            continue
+        triangulated_count[pair_index] = int(xyz.shape[0])
+        ray_left = F.normalize(xyz - centers[left[pair_index]], dim=1)
+        ray_right = F.normalize(xyz - centers[right[pair_index]], dim=1)
+        cosine = (ray_left * ray_right).sum(dim=1).clamp(-1.0, 1.0)
+        actual_parallax[pair_index] = torch.rad2deg(torch.acos(cosine)).median()
+    pair["triangulated_track_count"] = triangulated_count
+    pair["actual_triangulation_parallax_median_deg"] = actual_parallax
+    pair_sidecar["triangulation_attached"] = True
+    pair_sidecar["actual_triangulation_parallax_semantics"] = (
+        "Median exact ray angle over triangulated final Tracks containing an "
+        "accepted direct edge from this camera pair."
+    )
+    return pair_sidecar
 
 
 def _deduplicate_landmark_query(
