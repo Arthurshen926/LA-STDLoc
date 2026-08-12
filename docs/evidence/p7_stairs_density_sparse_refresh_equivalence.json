@@ -1,0 +1,19 @@
+{
+  "audit": {
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "native_alpha_exact_query_count": 2000,
+    "query_count": 2000,
+    "refreshed_metadata_pass_count": 2000,
+    "target_k_mapping": 1024,
+    "target_nms_radius": 4,
+    "track_input_exact_query_count": 2000
+  },
+  "schema": "lafgs_mapping_sparse_refresh_equivalence",
+  "sources": {
+    "refreshed_cache": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+    "source_cache": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/query_cache.pt",
+    "source_track_payload": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/tracks_refined/track_micro_anchor_payload.pt"
+  },
+  "uses_test_queries": false,
+  "version": 1
+}

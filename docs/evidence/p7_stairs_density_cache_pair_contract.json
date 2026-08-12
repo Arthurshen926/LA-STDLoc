@@ -1,0 +1,22 @@
+{
+  "audit": {
+    "control_k_mapping": 1024,
+    "control_nms_radius": 4,
+    "high_k_mapping": 2048,
+    "high_nms_radius": 4,
+    "immutable_geometry_exact_query_count": 2000,
+    "per_query_metadata_pass_count": 2000,
+    "query_count": 2000,
+    "signature_payload_equal_except_k": true,
+    "sparse_prefix_allclose_query_count": 2000,
+    "sparse_prefix_exact_query_count": 2000,
+    "strict_single_factor_contract_passed": true
+  },
+  "schema": "lafgs_mapping_density_cache_pair_contract",
+  "sources": {
+    "control_cache": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+    "high_cache": "/mnt/pool/sqy/lafgs_7scenes_track_repair_20260812/stairs/mapping_k2048_nms4/query_cache.pt"
+  },
+  "uses_test_queries": false,
+  "version": 1
+}

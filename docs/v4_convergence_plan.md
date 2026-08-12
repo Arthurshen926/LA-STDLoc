@@ -99,7 +99,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 3 统一 geometry materializer | 未实施 | 已统一 Registry 中的 geometry/covariance 语义 | adaptive surface 求解与 mapping gate 尚未通过 |
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
-| Stage 6 室内身份自适应 | 诊断层已落实 | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、mapping-density audit | 尚未重建 K_mapping=2048/NMS=4 cache；尚未改变 pair policy 或完成成对 pose 因子 |
+| Stage 6 室内身份自适应 | density-only No-Go；pair 因子待验 | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置与 1024/2048 严格 Track 因子 | K=2048 不进入默认或完整 pose；尚未改变 pair policy |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -464,7 +464,7 @@ cross-fit。Stairs 的四条 mapping trajectories 则穷举了全部三种平衡
 
 1. Track pair 建图加入 baseline/parallax awareness，分别报告短基线重复纹理边与有效几何边。
 2. alias risk 覆盖全部候选和全部 selection reason，检查楼梯、走廊、重复门框等混淆区域。
-3. mapping evidence 默认固定 `K_map=2048`；deployment K 单独做 1024/2048 因子，禁止 mapping 与 deployment 密度一起变化。
+3. mapping evidence 与 deployment K 是两个独立因子；室内默认保持 V3 等效 `K_map=1024`，`K_map=2048` 只有通过完整单因素 gate 后才可升为默认，禁止两个密度一起变化。
 4. 误差分桶到：无匹配、重复身份、几何退化、PnP outlier、召回足够但排序错误。只有最大的桶才进入下一轮方法修改。
 
 核心哨兵：Heads、Fire、Stairs、Office2/Office5b；外部 precision 哨兵：ShopFacade、OldHospital。每次只使用 mapping split 做选择，冻结后再执行 test。
@@ -583,8 +583,26 @@ python -m scripts.audit_mapping_density \
 `/tmp/lafgs_mapping_density_audit/{heads,stairs,shopfacade}.json` 与同目录的
 `*.paired_factor_manifest.json`。下一步解锁条件不是立即混合改动 deployment，而是先为
 Heads/Stairs 各物化一次固定 `K_mapping=2048 / NMS=4` 且 metadata 可证明的新 mapping
-cache/graph；随后两个 deployment K variant 必须复用该唯一 graph。该重建不属于本轮
-audit-only 工作。
+cache/graph；随后两个 deployment K variant 必须复用该唯一 graph。该段记录的是审计阶段
+当时的解锁条件；Stairs 的后续 density-only Track 因子已在 P7.2 执行并触发 Stop。
+
+#### P7.2 Stairs mapping-density Track 因子：Stop
+
+Stairs 已在相同源码、nearest-6 pair、pair budget、阈值和 seed 2026 下重跑严格的
+`K_mapping=1024/2048, NMS=4` 两臂。cache signature 除 K 完全一致；2,000 个 query 的
+逐帧 K/NMS metadata、pose/intrinsics/depth/alpha 和 K=2048 的前 1,024 个 sparse rows
+全部通过严格配对审计。新提取的 K=1024 control 与冻结 V3 的完整 Track 漏斗逐项完全
+一致。
+
+K=2048 将 raw edge、Track、triangulated、broad 和 strict Track 分别提高到 1.830x、
+2.151x、2.064x、1.542x 和 1.273x；但 broad covariance median 恶化到 1.229x，超过
+预注册上限 1.10x，同时 frozen high-confidence Track 保持 **70 -> 70**。机制门七项中
+六项通过、一项失败，因此按协议停止，不重建 function graph/Map，不执行 metric 或 pose。
+
+第一性原理结论是：更多检测点确实扩大了证据覆盖，但新增量主要进入条件较差的组件，
+没有扩大最可靠身份集合；室内瓶颈不是单纯的点数不足。保留通用 K_mapping/K_deployment
+解耦与审计契约，K=2048 仅作为显式因子配置。完整命令、哈希、环境失败记录和 JSON 见
+`docs/v4_p7_mapping_density_factor.md`。
 
 ## 最小实验矩阵
 
@@ -613,8 +631,9 @@ Pose Reserve 或训练步数的局部修补**。alias risk 仅保留为 failure 
 
 P6.1 trajectory-block cross-fit 已证明 raw observation 的单 medoid materialization 会在
 Stairs 所有独立 trajectory 划分上大幅损失 held-out 全局身份判别性，因此该分支正式停止，
-不进入 compact refresh。下一条单变量主线切换到 P7 mapping evidence：先分别重建可证明的
-`K_mapping=1024/2048, NMS=4` density arms，再在固定 pair budget 下比较 nearest-6 与
+不进入 compact refresh。P7 density-only 两臂随后证明 K=2048 虽扩大 Track 漏斗，却恶化
+broad Track 的典型几何条件且不增加 high-confidence Track，因此同样停止，不进入完整
+pose。下一条单变量主线只比较固定 K、固定 pair budget 的 nearest-6 与
 overlap-constrained parallax-aware graph，并补齐逐 pair raw/accepted/rejected sidecar。
 descriptor、density 与 pair-policy 三个变量不得混入同一个因果实验；只有 density/pair
 均不足时，才运行两 prototype upper bound 或考虑更强 frontend。
