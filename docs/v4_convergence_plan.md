@@ -287,6 +287,66 @@ Heads 首轮真实 selector 重放的机制 gate 已通过：
 
 现有单图上下文结果仍可作为 query-conditioned matchability/alias 校准证据，但不再承担“生成一个新身份表示”的任务。若 dispersion/alias risk 不能在 mapping split 上区分 useful 与 harmful match，则停止学习复杂上下文头，保留鲁棒观测聚合。
 
+#### P6.0 observation descriptor compatibility/audit 已落实
+
+`topology/observation_descriptor.py` 和
+`scripts/audit_observation_descriptors.py` 已把统一 Anchor Registry 的真实
+observation CSR 与 frozen mapping query cache 接通。每个 Anchor 先在同一图像内按
+SuperPoint confidence 聚合，再对 `(trajectory, view-bin)` joint strata 等权，最后做
+cosine medoid + 20% trimming。产物并列保存 observation descriptor、有效 observation /
+query / view group / trajectory 支撑、cosine dispersion、单描述子 representability 和
+与现部署 descriptor 的 cosine。契约固定为 `uses_test_queries=false`、`audit_only=true`、
+`deployment_descriptor_mutated=false`；零观测行输出无效 mask，不用旧 descriptor 冒充
+真实 observation identity。
+
+Heads 的 8119 个部署 Anchor 在当前完整 registry 中均有有效真实 observation，零观测和
+单观测均为 0。Track 与 surface 的分布差异明显：
+
+| Heads mapping-only 指标 | Track（7126） | Surface（993） |
+|---|---:|---:|
+| observation 数 median / p90 | 6 / 55 | 14 / 34 |
+| distinct view-bin median / p90 | 2 / 2 | 3 / 6 |
+| representability median / p90 | 0.0425 / 0.1052 | 0.1422 / 0.2333 |
+| balanced cosine dispersion median / p90 | 0.0218 / 0.0722 | 0.1484 / 0.2744 |
+| fused-vs-deployment cosine median / p10 | 0.9998 / 0.9964 | 0.9313 / 0.7960 |
+
+Stairs 独立实跑复现同一趋势，而且暴露出 weak fallback 的实际边界：7275 个 Anchor
+均至少有一个有效 observation，但 70 个单观测行全部来自 surface；它们必须显式保持低
+支撑标记，不能当作 multi-view identity。其余关键分布如下：
+
+| Stairs mapping-only 指标 | Track（2480） | Surface（4795） |
+|---|---:|---:|
+| observation 数 median / p90 | 45 / 125 | 12 / 32 |
+| trajectory 数 median / p90 | 1 / 1 | 2 / 3 |
+| representability median / p90 | 0.0683 / 0.1592 | 0.1546 / 0.2884 |
+| balanced cosine dispersion median / p90 | 0.0265 / 0.0808 | 0.1816 / 0.3238 |
+| fused-vs-deployment cosine median / p10 | 0.9998 / 0.9964 | 0.9280 / 0.7617 |
+
+这说明 surface observation 多并不等于可由单 descriptor 良好表示；其多视角不一致性约为
+Track 的数倍，而且 observation-fused identity 与现部署 descriptor 存在实质差异。因此
+Stage 5 不是纯粹改名，但 P6.0 仍只建立机制审计：在相同 compact teacher/function graph、
+bounded metric refresh 和 mapping-pose gate 完成前，不替换 `anchor_features`，也不申报精度
+收益。
+
+可复现实跑命令和当前 artifact（均为 mapping-only audit，不进入部署）如下：
+
+```bash
+python -m scripts.audit_observation_descriptors \
+  --registry /tmp/lafgs_heads_anchor_registry_cov_v1.pt \
+  --query-cache /mnt/pool/sqy/lafgs_adaptive_v3_validation_20260806/7Scenes/heads_clean_ref2p067/bootstrap/query_cache.pt \
+  --output /tmp/lafgs_heads_observation_descriptor_audit_v1.pt
+
+python -m scripts.audit_observation_descriptors \
+  --registry /tmp/lafgs_stairs_anchor_registry_cov_v4_compat.pt \
+  --query-cache /mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/query_cache.pt \
+  --output /tmp/lafgs_stairs_observation_descriptor_audit_v1.pt
+```
+
+二进制结果分别位于 `/tmp/lafgs_heads_observation_descriptor_audit_v1.pt` 和
+`/tmp/lafgs_stairs_observation_descriptor_audit_v1.pt`，同名 `.json` 是无需加载 Tensor 的
+完整汇总。P6.0 的决策为 **Stage 5 mechanism GO**：进入独立 descriptor
+materialization + bounded refresh + mapping-pose 对照；不是直接替换当前部署 descriptor。
+
 ### P7：7Scenes/12Scenes 室内专项
 
 室内问题优先看身份混淆和短基线，而不是继续堆地图元素：
