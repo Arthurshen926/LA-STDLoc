@@ -676,6 +676,9 @@ def compare_mapping_pose_gate(
             "anchor_registry_bitwise_equal": descriptor_factor[
                 "anchor_registry_bitwise_equal"
             ],
+            "teacher_anchor_map_registry_bitwise_equal": descriptor_factor[
+                "teacher_anchor_map_registry_bitwise_equal"
+            ],
         }
     lineage_checks = {
         "ordered_teacher_query_names_equal": (
@@ -709,6 +712,12 @@ def compare_mapping_pose_gate(
                 "descriptor_factor_contract_valid": True,
                 "anchor_registry_bitwise_equal": (
                     descriptor_factor["anchor_registry_bitwise_equal"] is True
+                ),
+                "teacher_anchor_map_registry_bitwise_equal": (
+                    descriptor_factor[
+                        "teacher_anchor_map_registry_bitwise_equal"
+                    ]
+                    is True
                 ),
                 "strict_320d_identity_metric": (
                     descriptor_factor["strict_identity_metric"] is True

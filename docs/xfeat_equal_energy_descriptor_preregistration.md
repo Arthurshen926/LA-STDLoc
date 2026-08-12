@@ -105,10 +105,15 @@ them would change the topology and the scientific factor. Therefore the
 versioned preregistration at
 `docs/evidence/xfeat_equal_energy_deployment_extension_preregistration.json`
 (SHA-256
-`ee44fedbbe80227ccb0b741e7a585776d2ffe2019fe11e88e8922e2965741075`)
+`3db5001057173589f500adf4f05323993347bd4706832168270d181cb3e3f8f3`)
 locks one uniform all-available-view estimator for every anchor with at least
 one mapping view. It locks the exact 70-anchor row/ID hashes and type
 histogram, and forbids fallback, routing, removal, or topology mutation.
+The same manifest separately locks the teacher's topology anchor map
+(`a39961d1...d614dc`) and the final trained V3 map. Materialization and the
+live pair audit require every anchor ID, XYZ, type, primitive/cluster identity,
+and dependency-group field to be bitwise equal; descriptor and training-only
+fields may differ.
 
 It also records the deliberate proxy transfer: the mechanism GO used the raw
 normalized SuperPoint cross-fit branch, while deployment preserves the frozen

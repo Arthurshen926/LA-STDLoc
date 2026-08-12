@@ -264,6 +264,39 @@ def _registry_hashes(state: Mapping) -> dict[str, str]:
     return hashes
 
 
+def _strict_teacher_anchor_map_audit(
+    teacher_anchor_map: Mapping, source_map: Mapping
+) -> dict:
+    """Prove teacher CSR indices and the trained map share one frozen registry."""
+    if (
+        teacher_anchor_map.get("schema") != "lafgs_materialized_anchor_map"
+        or source_map.get("schema") != "lafgs_materialized_anchor_map"
+    ):
+        raise ValueError("teacher/source anchor map schema differs")
+    teacher_hashes = _registry_hashes(teacher_anchor_map)
+    source_hashes = _registry_hashes(source_map)
+    if teacher_hashes != source_hashes:
+        raise ValueError("teacher anchor map registry differs from final source map")
+    for field in REGISTRY_FIELDS:
+        teacher_value = torch.as_tensor(teacher_anchor_map[field])
+        source_value = torch.as_tensor(source_map[field])
+        if (
+            teacher_value.dtype != source_value.dtype
+            or teacher_value.shape != source_value.shape
+            or not torch.equal(teacher_value, source_value)
+        ):
+            raise ValueError(
+                f"teacher anchor map registry differs from final source map at {field}"
+            )
+    return {
+        "anchor_count": int(torch.as_tensor(source_map["anchor_ids"]).numel()),
+        "registry_fields": list(REGISTRY_FIELDS),
+        "registry_field_sha256": source_hashes,
+        "anchor_ids_geometry_type_and_topology_bitwise_equal": True,
+        "descriptor_and_training_fields_may_differ": True,
+    }
+
+
 def _metric_is_strict_identity(metric_state: Mapping, *, anchor_ids: torch.Tensor) -> bool:
     if metric_state.get("schema") != "lafgs_shared_metric_state":
         return False
@@ -503,6 +536,7 @@ def _validate_deployment_extension_preregistration(
     preregistration_record: Mapping[str, str],
     source_map_record: Mapping[str, str],
     source_metric_record: Mapping[str, str],
+    teacher_anchor_map_record: Mapping[str, str],
     teacher_record: Mapping[str, str],
     mechanism_report_record: Mapping[str, str],
     mechanism_gate_record: Mapping[str, str],
@@ -520,9 +554,19 @@ def _validate_deployment_extension_preregistration(
     ):
         raise ValueError("descriptor deployment extension preregistration is invalid")
     sources = preregistration.get("source_artifacts", {})
+    if set(sources) != {
+        "source_map",
+        "source_metric",
+        "teacher_anchor_map",
+        "teacher",
+        "mechanism_report",
+        "mechanism_gate",
+    }:
+        raise ValueError("descriptor deployment-extension sources differ")
     for name, expected in (
         ("source_map", source_map_record),
         ("source_metric", source_metric_record),
+        ("teacher_anchor_map", teacher_anchor_map_record),
         ("teacher", teacher_record),
         ("mechanism_report", mechanism_report_record),
         ("mechanism_gate", mechanism_gate_record),
@@ -1164,6 +1208,8 @@ def materialize_equal_energy_descriptor_factor(
     source_map_sha256: str,
     source_metric_path: str | Path,
     source_metric_sha256: str,
+    teacher_anchor_map_path: str | Path,
+    teacher_anchor_map_sha256: str,
     source_query_cache_path: str | Path,
     source_query_cache_sha256: str,
     refreshed_query_cache_path: str | Path,
@@ -1194,6 +1240,11 @@ def materialize_equal_energy_descriptor_factor(
     for name, path, digest in (
         ("source_map", source_map_path, source_map_sha256),
         ("source_metric", source_metric_path, source_metric_sha256),
+        (
+            "teacher_anchor_map",
+            teacher_anchor_map_path,
+            teacher_anchor_map_sha256,
+        ),
         ("source_query_cache", source_query_cache_path, source_query_cache_sha256),
         (
             "refreshed_query_cache",
@@ -1233,9 +1284,11 @@ def materialize_equal_energy_descriptor_factor(
     )
     if any(path.exists() for path in targets):
         raise ValueError("refusing to overwrite an equal-energy factor artifact")
-    output.mkdir(parents=True, exist_ok=True)
 
     source_map = torch.load(paths["source_map"], map_location="cpu", weights_only=False)
+    teacher_anchor_map = torch.load(
+        paths["teacher_anchor_map"], map_location="cpu", weights_only=False
+    )
     source_metric_state = torch.load(
         paths["source_metric"], map_location="cpu", weights_only=False
     )
@@ -1254,8 +1307,13 @@ def materialize_equal_energy_descriptor_factor(
         "source_query_cache"
     ]:
         raise ValueError("teacher does not bind the frozen source query cache")
-    if Path(str(teacher.get("anchor_map", ""))).resolve() != paths["source_map"]:
-        raise ValueError("teacher does not bind the frozen source map")
+    if Path(str(teacher.get("anchor_map", ""))).resolve() != paths[
+        "teacher_anchor_map"
+    ]:
+        raise ValueError("teacher does not bind the frozen teacher anchor map")
+    teacher_anchor_map_audit = _strict_teacher_anchor_map_audit(
+        teacher_anchor_map, source_map
+    )
     calibration_sources = dict(calibration.get("sources", {}))
     if (
         calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
@@ -1318,10 +1376,6 @@ def materialize_equal_energy_descriptor_factor(
         refreshed_record=locked["refreshed_query_cache"],
         observed=observed_equivalence,
     )
-    equivalence_output.write_text(
-        json.dumps(equivalence_v2, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
     probe_audit = validate_probe(
         probe,
         refreshed_cache,
@@ -1366,6 +1420,7 @@ def materialize_equal_energy_descriptor_factor(
         preregistration_record=locked["deployment_extension"],
         source_map_record=locked["source_map"],
         source_metric_record=locked["source_metric"],
+        teacher_anchor_map_record=locked["teacher_anchor_map"],
         teacher_record=locked["teacher"],
         mechanism_report_record=locked["mechanism_report"],
         mechanism_gate_record=locked["mechanism_gate"],
@@ -1476,6 +1531,11 @@ def materialize_equal_energy_descriptor_factor(
         label="producer independent map replay",
     )
 
+    output.mkdir(parents=True, exist_ok=True)
+    equivalence_output.write_text(
+        json.dumps(equivalence_v2, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     torch.save(candidate_map, map_output)
     torch.save(candidate_metric, metric_output)
     torch.save(candidate_cache, cache_output)
@@ -1586,6 +1646,7 @@ def materialize_equal_energy_descriptor_factor(
             "calibration_sources": ["query_cache", "query_cache_sha256"],
         },
         "map_audit": map_audit,
+        "teacher_anchor_map_audit": teacher_anchor_map_audit,
         "teacher_audit": teacher_audit,
         "calibration_audit": calibration_audit,
         "query_audit": query_audit,
@@ -1720,6 +1781,7 @@ def validate_descriptor_factor_contract(
     required_sources = {
         "source_map",
         "source_metric",
+        "teacher_anchor_map",
         "source_query_cache",
         "refreshed_query_cache",
         "mechanism_report",
@@ -1795,6 +1857,7 @@ def validate_descriptor_factor_contract(
         preregistration_record=sources["deployment_extension"],
         source_map_record=sources["source_map"],
         source_metric_record=sources["source_metric"],
+        teacher_anchor_map_record=sources["teacher_anchor_map"],
         teacher_record=sources["teacher"],
         mechanism_report_record=sources["mechanism_report"],
         mechanism_gate_record=sources["mechanism_gate"],
@@ -1892,6 +1955,19 @@ def audit_descriptor_factor_pair(
         variant_calibration_path=variant_calibration_path,
     )
     source_map = torch.load(source_map_path, map_location="cpu", weights_only=False)
+    teacher_anchor_map_path = Path(
+        validated["contract"]["sources"]["teacher_anchor_map"]["path"]
+    ).expanduser().resolve()
+    teacher_anchor_map = torch.load(
+        teacher_anchor_map_path, map_location="cpu", weights_only=False
+    )
+    teacher_anchor_map_audit = _strict_teacher_anchor_map_audit(
+        teacher_anchor_map, source_map
+    )
+    if teacher_anchor_map_audit != validated["contract"].get(
+        "teacher_anchor_map_audit"
+    ):
+        raise ValueError("live teacher/source anchor-map audit differs from contract")
     variant_map = torch.load(variant_map_path, map_location="cpu", weights_only=False)
     source_metric = torch.load(
         source_metric_path, map_location="cpu", weights_only=False
@@ -2021,10 +2097,12 @@ def audit_descriptor_factor_pair(
         "map_audit": map_audit,
         "query_formula_audit": query_audit,
         "map_formula_audit": map_formula_audit,
+        "teacher_anchor_map_audit": teacher_anchor_map_audit,
         "source_metric_descriptor_dim": SOURCE_DESCRIPTOR_DIM,
         "variant_metric_descriptor_dim": EFFECTIVE_DESCRIPTOR_DIM,
         "strict_identity_metric": True,
         "anchor_registry_bitwise_equal": True,
+        "teacher_anchor_map_registry_bitwise_equal": True,
         "teacher_rebind_only": True,
         "calibration_rebind_only": True,
     }

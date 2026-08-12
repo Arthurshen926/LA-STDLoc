@@ -17,6 +17,7 @@ def main() -> None:
     for name in (
         "source-map",
         "source-metric",
+        "teacher-anchor-map",
         "source-query-cache",
         "refreshed-query-cache",
         "mechanism-report",
@@ -35,6 +36,7 @@ def main() -> None:
     for name in (
         "source_map",
         "source_metric",
+        "teacher_anchor_map",
         "source_query_cache",
         "refreshed_query_cache",
         "mechanism_report",

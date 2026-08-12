@@ -69,6 +69,7 @@ def _bundle(tmp_path: Path, *, query_count: int = 4, anchor_count: int = 2) -> d
     paths = {
         "source_map": tmp_path / "source_map.pt",
         "source_metric": tmp_path / "source_metric.pt",
+        "teacher_anchor_map": tmp_path / "teacher_anchor_map.pt",
         "source_query_cache": tmp_path / "source_query_cache.pt",
         "refreshed_query_cache": tmp_path / "refreshed_query_cache.pt",
         "teacher": tmp_path / "teacher.pt",
@@ -180,6 +181,22 @@ def _bundle(tmp_path: Path, *, query_count: int = 4, anchor_count: int = 2) -> d
         "immutable_payload": {"geometry": "frozen"},
     }
     torch.save(source_map, paths["source_map"])
+    teacher_anchor_map = {
+        key: value
+        for key, value in source_map.items()
+        if key
+        not in {
+            "v7_metric_raw_features",
+            "v7_anchor_residual_parameter",
+            "v7_anchor_residual",
+            "v7_online_metric",
+        }
+    }
+    teacher_anchor_map["anchor_features"] = F.normalize(
+        torch.flip(anchor_features, dims=(1,)), dim=1
+    )
+    teacher_anchor_map["teacher_topology_only"] = True
+    torch.save(teacher_anchor_map, paths["teacher_anchor_map"])
     metric = SharedLowRankMetric(descriptor_dim=256, rank=2, max_residual_norm=0.1)
     with torch.no_grad():
         metric.down.weight.fill_(0.01)
@@ -204,7 +221,7 @@ def _bundle(tmp_path: Path, *, query_count: int = 4, anchor_count: int = 2) -> d
         "anchor_count": anchor_count,
         "query_names": names,
         "records": teacher_records,
-        "anchor_map": str(paths["source_map"].resolve()),
+        "anchor_map": str(paths["teacher_anchor_map"].resolve()),
         "query_cache": str(paths["source_query_cache"].resolve()),
         "config": {"radius": 2.0},
         "diagnostics": {"positive_rows": query_count},
@@ -392,6 +409,10 @@ def _bundle(tmp_path: Path, *, query_count: int = 4, anchor_count: int = 2) -> d
                 "path": str(paths["source_metric"].resolve()),
                 "sha256": sha256_file(paths["source_metric"]),
             },
+            "teacher_anchor_map": {
+                "path": str(paths["teacher_anchor_map"].resolve()),
+                "sha256": sha256_file(paths["teacher_anchor_map"]),
+            },
             "teacher": mechanism_sources["teacher"],
             "mechanism_report": {
                 "path": str(paths["mechanism_report"].resolve()),
@@ -493,6 +514,10 @@ def test_materializer_preserves_every_non_descriptor_factor_and_exact_score(tmp_
     )
     assert validated["factor_id"] == contract["factor_id"]
     assert contract["support_audit"]["unsupported_anchor_count"] == 0
+    assert bundle["paths"]["teacher_anchor_map"] != bundle["paths"]["source_map"]
+    assert contract["teacher_anchor_map_audit"][
+        "anchor_ids_geometry_type_and_topology_bitwise_equal"
+    ]
 
     candidate_map = torch.load(outputs["map"], weights_only=False)
     candidate_cache = torch.load(outputs["descriptor_cache"], weights_only=False)
@@ -555,6 +580,30 @@ def test_materializer_fails_closed_instead_of_falling_back_for_unseen_anchor(tmp
     bundle = _bundle(tmp_path / "inputs", anchor_count=3, query_count=2)
     with pytest.raises(ValueError, match="forbids unsupported-anchor fallback"):
         _materialize(bundle, tmp_path / "factor")
+
+
+def test_materializer_rejects_teacher_anchor_map_registry_tamper_before_write(
+    tmp_path,
+):
+    bundle = _bundle(tmp_path / "inputs")
+    teacher_anchor_map_path = bundle["paths"]["teacher_anchor_map"]
+    teacher_anchor_map = torch.load(teacher_anchor_map_path, weights_only=False)
+    teacher_anchor_map["anchor_xyz"][0, 0] += 1
+    torch.save(teacher_anchor_map, teacher_anchor_map_path)
+    teacher_anchor_map_sha256 = sha256_file(teacher_anchor_map_path)
+    bundle["kwargs"]["teacher_anchor_map_sha256"] = teacher_anchor_map_sha256
+
+    extension_path = bundle["paths"]["deployment_extension"]
+    extension = json.loads(extension_path.read_text())
+    extension["source_artifacts"]["teacher_anchor_map"][
+        "sha256"
+    ] = teacher_anchor_map_sha256
+    extension_path.write_text(json.dumps(extension))
+    bundle["kwargs"]["deployment_extension_sha256"] = sha256_file(extension_path)
+    output = tmp_path / "factor"
+    with pytest.raises(ValueError, match="teacher anchor map registry differs"):
+        _materialize(bundle, output)
+    assert not output.exists()
 
 
 def test_live_pair_audit_rejects_candidate_geometry_mutation(tmp_path):

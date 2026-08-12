@@ -75,6 +75,10 @@
       "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/metric_state_step_1520.pt",
       "sha256": "c55818b3ab27e6d1b4ca929d21d235eed5e80238913113ed596a5ea9b436f903"
     },
+    "teacher_anchor_map": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/topology/adaptive_compact_total07275.pt",
+      "sha256": "a39961d1828499e24ea6da428374ca0ac8d65c69f3357737496ea82120d614dc"
+    },
     "teacher": {
       "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/complete_positive_teacher.pt",
       "sha256": "3f733debc51aafb7d166ebfb64010de237e3e7542851e647a7a2966f7c609a81"
