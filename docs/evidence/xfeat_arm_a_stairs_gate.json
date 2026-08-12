@@ -1,0 +1,139 @@
+{
+  "schema": "lafgs_xfeat_arm_a_stairs_result_evidence",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "scene": "7Scenes/stairs",
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "same_K_single_image_detector_repeatability_only",
+  "decision": "STOP_BEFORE_MAPPING_ONLY_DETECTOR_REBUILD",
+  "mechanism_gate_passed": false,
+  "advance_to_mapping_only_detector_rebuild": false,
+  "protocol": {
+    "mapping_query_count": 2000,
+    "requested_keypoints_per_query": 1024,
+    "validated_detector_keypoints": 2048000,
+    "validated_descriptor_rows": 0,
+    "reference_superpoint_nms_radius": 4,
+    "candidate_xfeat_nms_kernel_size": 5,
+    "candidate_xfeat_strict_probability_threshold": 0.05,
+    "target_universe": "frozen_map_gt_projection_depth_alpha_mask_legal",
+    "depth_abs_tolerance_m": 0.05,
+    "depth_rel_tolerance": 0.02,
+    "alpha_minimum": 0.01,
+    "radii_px": [2.0, 4.0, 8.0],
+    "exact_target_counts": {
+      "all": 3896031,
+      "track_core": 931876,
+      "gaussian_reserve": 2964155
+    }
+  },
+  "artifacts": {
+    "state": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/anchor_map_step_1520.pt",
+      "sha256": "5f754ace648336d9f1fca381f29cd7f6164a217ca05b506644f21929e4a9e620"
+    },
+    "query_cache": {
+      "path": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+      "sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+    },
+    "teacher": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/complete_positive_teacher.pt",
+      "sha256": "3f733debc51aafb7d166ebfb64010de237e3e7542851e647a7a2966f7c609a81"
+    },
+    "candidate_weights": {
+      "path": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat.pt",
+      "sha256": "0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b"
+    },
+    "probe": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/xfeat64_detector.pt",
+      "sha256": "a30bfe4974c2583bb66820b3b8394bfc83203767a575917f4a1dcdf94692601e",
+      "size_bytes": 28858119
+    },
+    "report": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/xfeat64_detector_report.json",
+      "sha256": "0a52382f11a9de547ade5d67bf574c14ad36afab6b5104678e13bf9e317b2f37",
+      "size_bytes": 3745921
+    },
+    "gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/detector_arm_a_gate.json",
+      "sha256": "5790a1229938ac62a23beac9e705677b2d93ebb952f8ff93b23b225d2aaabc55",
+      "size_bytes": 5634,
+      "valid": true,
+      "decision": "STOP"
+    }
+  },
+  "evaluation_code": {
+    "git_commit": "e4e5125dabe72ecd0ce3140254fc2f7069e04094",
+    "git_worktree_clean": true,
+    "entrypoints": {
+      "map_learning/frontend_upper_bound.py": "d59b47a88fbf5f4cc85e0d0b9a0b5760334698a709b9fb46ca9e0bec69c05fa9",
+      "scripts/audit_frontend_upper_bound.py": "b941b1cfe0fe549186ede4a21e42f3a6c1d0353d1f862ce8395fefbf7a0de52c",
+      "scripts/compare_frontend_detector_arm_a.py": "203b27f23ea278be465951bb5e17351919b2e6e1a4481ef99f556965750d925e"
+    }
+  },
+  "comparisons": {
+    "all_at_2px": {
+      "target_count": 3896031,
+      "superpoint_hit_count": 886555,
+      "candidate_hit_count": 437997,
+      "superpoint_reachable_fraction": 0.22755337419029778,
+      "candidate_reachable_fraction": 0.11242133340314797,
+      "delta_reachable_fraction": -0.1151320407871498
+    },
+    "all_at_4px": {
+      "target_count": 3896031,
+      "superpoint_hit_count": 1998873,
+      "candidate_hit_count": 1342298,
+      "superpoint_reachable_fraction": 0.5130536692341514,
+      "candidate_reachable_fraction": 0.3445295994821396,
+      "delta_reachable_fraction": -0.16852406975201173
+    },
+    "all_at_8px": {
+      "target_count": 3896031,
+      "superpoint_hit_count": 3030531,
+      "candidate_hit_count": 2445775,
+      "superpoint_reachable_fraction": 0.7778508435892836,
+      "candidate_reachable_fraction": 0.627760662068654,
+      "delta_reachable_fraction": -0.15009018152062958
+    },
+    "track_core_at_4px": {
+      "target_count": 931876,
+      "superpoint_hit_count": 596456,
+      "candidate_hit_count": 336737,
+      "superpoint_reachable_fraction": 0.6400594070455726,
+      "candidate_reachable_fraction": 0.36135387111589956,
+      "delta_reachable_fraction": -0.27870553592967306
+    },
+    "gaussian_reserve_at_4px": {
+      "target_count": 2964155,
+      "superpoint_hit_count": 1402417,
+      "candidate_hit_count": 1005561,
+      "superpoint_reachable_fraction": 0.47312539324023206,
+      "candidate_reachable_fraction": 0.33924035686392917,
+      "delta_reachable_fraction": -0.13388503637630286
+    }
+  },
+  "gates": {
+    "all_at_4px_strict_positive": false,
+    "all_at_2px_non_regression": false,
+    "all_at_8px_non_regression": false,
+    "track_core_at_4px_non_regression": false,
+    "gaussian_reserve_at_4px_non_regression": false
+  },
+  "invalid_execution_evidence": {
+    "path": "/mnt/pool/sqy/lafgs_xfeat_arm_a_20260813/stairs/invalid_default_teacher_tolerance/xfeat64_detector_report_depth_abs_0.0020965913212974.json",
+    "sha256": "8574cba2db8c0606a6daaf398157b1a621b6624ef1d15400e3b04fa349a5c8a9",
+    "inherited_depth_abs_tolerance_m": 0.0020965913212974,
+    "reason_invalid": "Did not use the explicitly preregistered depth_abs_tolerance_m=0.05; retained only as execution evidence and excluded from the scientific gate."
+  },
+  "downstream_execution": {
+    "detector_map_rebuild": false,
+    "function_graph_rebuild": false,
+    "metric_refresh": false,
+    "mapping_pose": false,
+    "formal_test": false
+  },
+  "method_conclusion": "The locked same-K XFeat detector loses repeatable frozen-map coverage on every preregistered Stairs measure; keep the SuperPoint detector and do not combine this failed sampling factor with the independently successful equal-energy descriptor factor."
+}

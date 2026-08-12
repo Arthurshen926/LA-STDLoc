@@ -656,6 +656,29 @@ descriptor map/function graph、metric refresh、mapping pose 或 formal test。
 pair policy、更多训练步数或 Pose Reserve。完整报告见 `docs/xfeat_arm_b_stairs_result.md`，
 机器摘要见 `docs/evidence/xfeat_arm_b_stairs_gate.json`。
 
+#### P7.5 Stairs XFeat Arm A：same-K detector repeatability 全项 Stop
+
+锁定的 XFeat detector 已在 2,000 张 Stairs mapping 图上按与 SuperPoint 相同的
+K=1024 预算完成 detector-only Arm A；共验证 2,048,000 个 post-mask XFeat keypoints，
+不物化 candidate descriptor、不读取 test。正式报告显式固定绝对/相对深度容差
+0.05 m/0.02 与 alpha minimum 0.01，并绑定 clean evaluator commit
+`e4e5125dabe72ecd0ce3140254fc2f7069e04094`。
+
+五项预注册 reachability 检查全部失败：all@2/4/8 px 分别从
+22.7553/51.3054/77.7851% 降至 11.2421/34.4530/62.7761%，Track Core@4 px 从
+64.0059% 降至 36.1354%（-27.8706 pp），Gaussian Reserve@4 px 从 47.3125%
+降至 33.9240%（-13.3885 pp）。正式 gate 为 `valid=true`、`decision=STOP`、
+`mechanism_gate_passed=false`，因此不重建 detector Map/function graph、不执行 metric、
+mapping pose 或 formal test。
+
+一份更早的报告误继承 teacher 的 0.00209659 m 绝对深度容差，已隔离为 invalid
+execution evidence；它不进入科学 gate，也没有通过事后修改预注册阈值来接受。第一性原理
+结论是：这个 XFeat artifact 的有效增益来自 descriptor identity，而不是当前 same-K
+detector sampling。故保留 SuperPoint detector，只推进已独立通过 gate 的 320D 等能量单描述子，
+不把失败 detector 与成功 descriptor 混合以制造聚合结果。完整结论见
+`docs/xfeat_arm_a_stairs_result.md`，机器摘要见
+`docs/evidence/xfeat_arm_a_stairs_gate.json`。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
@@ -699,6 +722,11 @@ XFeat Arm B 进一步收紧了这个结论：identity descriptor 不是完全饱
 Track Core，Reserve 的严格非退化未通过。因此当前默认 frontend 仍保留 SuperPoint，且不跑
 XFeat map/pose/test；下一主线必须解释并保护 evidence-conditioned identity，而不是把一个
 pooled retrieval 增益直接当作完整定位方法增益。
+
+独立的 XFeat Arm A 已把 sampling 变量闭环：在相同 K=1024 下，all@2/4/8 px、Track@4 px
+与 Reserve@4 px 五项 reachability 全部回退，尤以 Track@4 px 的 -27.8706 pp 最明显。
+因此该 detector 单因素正式 Stop；这与 XFeat descriptor 的 headroom 不矛盾，而是要求共享
+主线保留 SuperPoint keypoint rows，只在同一单向量内吸收互补 identity evidence。
 
 已在任何融合结果生成前预注册唯一的后续 descriptor 因子：将逐行归一化的 256D
 SuperPoint 与 64D XFeat 等能量拼接为一个 320D 单描述子。它仍只有一个 bank、一次全局

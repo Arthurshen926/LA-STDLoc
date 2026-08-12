@@ -8,6 +8,13 @@ frozen SuperPoint has measurable descriptor headroom. The strict gate is still
 `STOP_BEFORE_MAPPING_ONLY_DESCRIPTOR_REBUILD`: pooled Gaussian Reserve R@1
 regresses by 0.02518 pp and fails the preregistered exact non-regression rule.
 
+The independent Stairs detector arm has also produced a real mapping-only
+result. Under the same requested K=1024, locked XFeat reaches fewer frozen
+legal map identities than SuperPoint at all five preregistered measures; the
+largest loss is Track Core @4 px at -27.87055 pp. Its valid decision is
+`STOP_BEFORE_MAPPING_ONLY_DETECTOR_REBUILD`. Neither failed single-factor arm
+changes the default detector or authorizes pose.
+
 This is a candidate comparison / ceiling probe, not a mathematical upper bound
 unless a future candidate has a separately justified oracle property.  It does
 not change the default frontend, map topology, anchor composition, metric,
@@ -176,6 +183,14 @@ matcher. The real XFeat Arm B result is now recorded in
 consumed 2,000 mapping images and 2,048,000 fixed rows, used no test query, and
 stopped before map/metric/pose.
 
+The real detector-only Arm A result is recorded in
+[`xfeat_arm_a_stairs_result.md`](xfeat_arm_a_stairs_result.md) and
+[`xfeat_arm_a_stairs_gate.json`](evidence/xfeat_arm_a_stairs_gate.json). Its
+formal report explicitly uses depth tolerances 0.05 m/0.02 and alpha minimum
+0.01. All five reachability gates fail, so it stops before detector rebuild;
+an earlier inherited-tolerance report is isolated as invalid execution
+evidence and is not a scientific result.
+
 The read-only preflight on 2026-08-12 found:
 
 - frozen SuperPoint checkpoint: 5,206,086 bytes, verified SHA256
@@ -269,6 +284,11 @@ The implementation now cleanly answers two different questions without
 inventing another selector. Descriptor headroom is no longer unknown: locked
 XFeat raises pooled R@1 by 4.40225 pp and pooled R@8 by 7.92901 pp at the exact
 SuperPoint rows. It is not a deployable win because Reserve R@1 fails the
-strict non-regression gate, so no downstream rebuild ran. Detector headroom
-remains unmeasured. The actionable boundary is representation-by-evidence
-type, not a blanket claim that either the method or SuperPoint is optimal.
+strict non-regression gate, so no downstream rebuild ran. Detector headroom is
+also no longer unmeasured for this locked candidate: same-K XFeat regresses
+all five repeatability measures, including Track Core @4 px by 27.87055 pp,
+and stops before rebuild. Together with the separately preregistered
+equal-energy descriptor GO, the actionable boundary is now precise: keep the
+repeatable SuperPoint sampling rows and improve their identity representation,
+rather than replacing detector and descriptor together or claiming either the
+broader method or SuperPoint representation is optimal.
