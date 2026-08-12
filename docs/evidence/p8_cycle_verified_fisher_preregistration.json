@@ -1,0 +1,184 @@
+{
+  "candidate_universe": {
+    "construction": "union_of_frozen_nearest_and_equal_budget_mapping_geometry_proposal",
+    "maximum_probe_to_budget_ratio": 2.0,
+    "proposal_scores_used_by_selector": false,
+    "scenes": {
+      "greatcourt": {
+        "component_count": 1,
+        "exact_pair_count": 9875,
+        "frozen_selected_budget": 5254,
+        "isolated_camera_count": 0,
+        "mapping_keypoints": 2048,
+        "mapping_nms_radius": 4,
+        "minimum_degree": 5,
+        "query_count": 1531
+      },
+      "stairs": {
+        "component_count": 2,
+        "exact_pair_count": 14835,
+        "frozen_selected_budget": 7450,
+        "isolated_camera_count": 0,
+        "mapping_keypoints": 1024,
+        "mapping_nms_radius": 4,
+        "minimum_degree": 9,
+        "query_count": 2000
+      }
+    }
+  },
+  "current_status": {
+    "cli_orchestration_complete": false,
+    "formal_test_run": false,
+    "fullchain_run": false,
+    "mapping_pose_run": false,
+    "real_gpu_probe_run": false,
+    "selector_and_probe_contract_implemented": true,
+    "synthetic_cpu_tests_present": true,
+    "track_matcher_reuse_path_implemented": true
+  },
+  "decision_rule": {
+    "greatcourt_failure": "STOP_BEFORE_FULLCHAIN",
+    "requires_both_scene_mechanism_pass": true,
+    "stairs_only_pass": "SCENE_SPECIFIC_ONLY_NOT_METHOD_DEFAULT"
+  },
+  "mechanism_gates": {
+    "contract_and_selector": {
+      "completed_verified_keypoint_triangle_retention": 0.98,
+      "exact_selected_budget": true,
+      "fisher_utility_gain_ratio": 1.05,
+      "minimum_selected_camera_degree": 1,
+      "selected_component_count_equals_candidate_universe": true,
+      "selected_verified_triangle_camera_fraction_no_regression": true,
+      "selected_zero_isolated_cameras": true
+    },
+    "track": {
+      "broad_eligible_track_retention": 0.98,
+      "high_confidence_track_retention": 0.98,
+      "mapping_query_with_broad_track_fraction_no_regression": true,
+      "probe_matches_reused_exactly": true,
+      "triangulated_covariance_p90_maximum_ratio": 1.05,
+      "triangulated_track_retention": 0.98
+    }
+  },
+  "objective": {
+    "camera_graph_connectivity_is_hard": true,
+    "exact_descriptor_triangle_closure_required": true,
+    "formula": "confidence_geomean * logdet(I + median_candidate_baseline_m^2 * bearing_fisher)",
+    "global_pair_budget_is_exact": true,
+    "isolated_camera_constraint_is_hard": true,
+    "name": "cycle_verified_fisher",
+    "not_an_overlap_parallax_weight_sweep": true,
+    "scale_invariant": true
+  },
+  "policy_parameters": {
+    "candidate_union_maximum_budget_multiple": 2.0,
+    "maximum_cycle_reprojection_error_px": 2.0,
+    "minimum_camera_degree": 1,
+    "selector_tie_break": "lexicographic_pair_index"
+  },
+  "postmortem": {
+    "source_artifacts": {
+      "greatcourt_nearest_factor_sha256": "78cd1d04ee14f1b954ace0bf225c9ad6169a5c729cb756af612e2272d4a35084",
+      "greatcourt_nearest_report_sha256": "c46b360b465c5cff02719dc1ead05b77ff247b9ce1eaad3b4860406e84bbe8f9",
+      "greatcourt_parallax_factor_sha256": "a6dbcf51b17290e41ab804e1f12353552cb519948d82393545d0cb2846c83027",
+      "greatcourt_parallax_report_sha256": "48e5ef86cd7594d62786231113dffa979442baf30c09b53460d2d5b4248f040b",
+      "stairs_nearest_factor_sha256": "9e9bd407be5f3c7f6f7f6c5d5969af95b0709b8fb39040cb4f4e34e4884a15cb",
+      "stairs_nearest_report_sha256": "afb954ce3905004d9ad40f451bc6b3e53294dd927bbc4d2cfd8d8a222b3700f4",
+      "stairs_parallax_factor_sha256": "5eb12e6936b0783b1e500d785d6165f1bf21b42bdc5f5b71a018b5d7c2bd5811",
+      "stairs_parallax_report_sha256": "f28d0610694a288a16adac7f725a5c2431295cde96599ac9d6d6040038086544"
+    },
+    "greatcourt": {
+      "camera_graph_component_count": {
+        "nearest": 1,
+        "parallax_diverse": 4
+      },
+      "camera_graph_isolated_count": {
+        "nearest": 0,
+        "parallax_diverse": 2
+      },
+      "camera_triangle_count": {
+        "nearest": 5952,
+        "parallax_diverse": 969
+      },
+      "cycle_positive_camera_graph_component_count": {
+        "nearest": 6,
+        "parallax_diverse": 773
+      },
+      "cycle_positive_camera_graph_isolated_count": {
+        "nearest": 4,
+        "parallax_diverse": 688
+      },
+      "cycle_positive_pair_count": {
+        "nearest": 5044,
+        "parallax_diverse": 1653
+      },
+      "cycle_supported_correspondence_count": {
+        "nearest": 1938336,
+        "parallax_diverse": 338293
+      },
+      "triangulated_covariance_p90_m2": {
+        "nearest": 28.149654579162632,
+        "parallax_diverse": 47.28497085571284
+      },
+      "triangulated_track_count": {
+        "nearest": 34150,
+        "parallax_diverse": 32293
+      }
+    },
+    "stairs": {
+      "camera_graph_component_count": {
+        "nearest": 4,
+        "parallax_diverse": 2
+      },
+      "camera_graph_isolated_count": {
+        "nearest": 0,
+        "parallax_diverse": 0
+      },
+      "camera_triangle_count": {
+        "nearest": 578,
+        "parallax_diverse": 709
+      },
+      "cycle_positive_camera_graph_component_count": {
+        "nearest": 1527,
+        "parallax_diverse": 1034
+      },
+      "cycle_positive_camera_graph_isolated_count": {
+        "nearest": 1468,
+        "parallax_diverse": 929
+      },
+      "cycle_positive_pair_count": {
+        "nearest": 1068,
+        "parallax_diverse": 1728
+      },
+      "cycle_supported_correspondence_count": {
+        "nearest": 76786,
+        "parallax_diverse": 49832
+      },
+      "triangulated_covariance_p90_m2": {
+        "nearest": 0.06863792091608054,
+        "parallax_diverse": 0.03523846678435803
+      },
+      "triangulated_track_count": {
+        "nearest": 17798,
+        "parallax_diverse": 31660
+      }
+    }
+  },
+  "probe_contract": {
+    "aggregate_post_track_sidecar_is_valid_input": false,
+    "binds_candidate_pairs_and_keypoint_counts": true,
+    "binds_exact_matcher_parameters": true,
+    "binds_mapping_query_cache_sha256": true,
+    "binds_mapping_query_order_sha256": true,
+    "content_sha256_required": true,
+    "detector_score_weighting_required": true,
+    "schema": "lafgs_cycle_verified_pair_match_probe",
+    "selection_content_sha256_required": true,
+    "selected_matches_must_be_reused_without_rematching": true
+  },
+  "schema": "lafgs_cycle_verified_fisher_preregistration",
+  "single_factor": "mapping_camera_pair_policy",
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 1
+}

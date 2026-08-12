@@ -727,6 +727,16 @@ def build_cycle_consistent_tracks(
     require_cycle: bool = True,
     allow_chain_tracks: bool = False,
     return_pair_sidecar: bool = False,
+    precomputed_pairs: list[tuple[int, int]] | None = None,
+    precomputed_pair_matches: dict[
+        tuple[int, int], tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ]
+    | None = None,
+    precomputed_pair_match_diagnostics: dict[
+        tuple[int, int], dict[str, int]
+    ]
+    | None = None,
+    precomputed_confidence_includes_detector_scores: bool = False,
     device: str | torch.device = "cuda",
 ) -> tuple[dict[str, torch.Tensor], dict[str, float | int]] | tuple[
     dict[str, torch.Tensor], dict[str, float | int], dict
@@ -737,58 +747,131 @@ def build_cycle_consistent_tracks(
         raise ValueError("Descriptor and keypoint camera tables must align")
     camera_K = torch.as_tensor(camera_K, dtype=torch.float64).cpu()
     pose_w2c = torch.as_tensor(pose_w2c, dtype=torch.float64).cpu()
-    pairs = candidate_camera_pairs(
-        pose_w2c,
-        neighbors=pair_neighbors,
-        minimum_baseline_m=minimum_baseline_m,
-        maximum_baseline_m=maximum_baseline_m,
-        maximum_axis_angle_deg=maximum_axis_angle_deg,
-        policy=pair_policy,
-        pair_budget=pair_budget,
-        camera_K=camera_K,
-        image_hw=pair_image_hw,
-        scene_points_xyz=pair_scene_points_xyz,
-        minimum_overlap_jaccard=pair_minimum_overlap_jaccard,
-        minimum_joint_visibility_points=pair_minimum_joint_visibility_points,
-        parallax_saturation_deg=pair_parallax_saturation_deg,
-        diversity_weight=pair_diversity_weight,
-        candidate_pool_per_camera=pair_candidate_pool_per_camera,
-    )
+    uses_precomputed_pair_matches = precomputed_pairs is not None
+    if uses_precomputed_pair_matches:
+        pairs = [tuple(map(int, pair)) for pair in precomputed_pairs]
+        if pairs != sorted(set(pairs)) or any(
+            left < 0
+            or left >= right
+            or right >= query_count
+            for left, right in pairs
+        ):
+            raise ValueError(
+                "Precomputed pairs must be unique, sorted and canonical"
+            )
+        if pair_budget is not None and int(pair_budget) != len(pairs):
+            raise ValueError("Precomputed pair count differs from the exact budget")
+        if precomputed_pair_matches is None:
+            raise ValueError("Precomputed pair selection lacks exact matches")
+        if set(precomputed_pair_matches) != set(pairs):
+            raise ValueError(
+                "Precomputed matches must contain every selected pair exactly once"
+            )
+        if precomputed_pair_match_diagnostics is not None and set(
+            precomputed_pair_match_diagnostics
+        ) != set(pairs):
+            raise ValueError(
+                "Precomputed diagnostics must contain every selected pair exactly once"
+            )
+        if detector_scores is not None and not bool(
+            precomputed_confidence_includes_detector_scores
+        ):
+            raise ValueError(
+                "Precomputed match confidence must attest detector-score weighting"
+            )
+    else:
+        if (
+            precomputed_pair_matches is not None
+            or precomputed_pair_match_diagnostics is not None
+            or precomputed_confidence_includes_detector_scores
+        ):
+            raise ValueError(
+                "Precomputed match fields require explicit precomputed pairs"
+            )
+        pairs = candidate_camera_pairs(
+            pose_w2c,
+            neighbors=pair_neighbors,
+            minimum_baseline_m=minimum_baseline_m,
+            maximum_baseline_m=maximum_baseline_m,
+            maximum_axis_angle_deg=maximum_axis_angle_deg,
+            policy=pair_policy,
+            pair_budget=pair_budget,
+            camera_K=camera_K,
+            image_hw=pair_image_hw,
+            scene_points_xyz=pair_scene_points_xyz,
+            minimum_overlap_jaccard=pair_minimum_overlap_jaccard,
+            minimum_joint_visibility_points=pair_minimum_joint_visibility_points,
+            parallax_saturation_deg=pair_parallax_saturation_deg,
+            diversity_weight=pair_diversity_weight,
+            candidate_pool_per_camera=pair_candidate_pool_per_camera,
+        )
     pair_matches = {}
     pair_match_diagnostics = {}
     raw_match_count = 0
     device = torch.device(device)
     for left, right in pairs:
-        match_result = reciprocal_epipolar_matches(
-            descriptors[left].to(device),
-            descriptors[right].to(device),
-            keypoints[left],
-            keypoints[right],
-            camera_K[left],
-            pose_w2c[left],
-            camera_K[right],
-            pose_w2c[right],
-            minimum_similarity=minimum_similarity,
-            minimum_margin=minimum_margin,
-            maximum_epipolar_error_px=maximum_epipolar_error_px,
-            epipolar_candidate_topk=epipolar_candidate_topk,
-            recovered_minimum_similarity=(
-                epipolar_recovered_minimum_similarity
-            ),
-            recovered_minimum_margin=epipolar_recovered_minimum_margin,
-            return_diagnostics=return_pair_sidecar,
-        )
-        if bool(return_pair_sidecar):
-            source, target, confidence, match_diagnostics = match_result
-            pair_match_diagnostics[(left, right)] = match_diagnostics
+        if uses_precomputed_pair_matches:
+            source, target, confidence = precomputed_pair_matches[(left, right)]
+            source = torch.as_tensor(source, dtype=torch.long).cpu().reshape(-1)
+            target = torch.as_tensor(target, dtype=torch.long).cpu().reshape(-1)
+            confidence = (
+                torch.as_tensor(confidence, dtype=torch.float32).cpu().reshape(-1)
+            )
+            if (
+                source.numel() != target.numel()
+                or source.numel() != confidence.numel()
+            ):
+                raise ValueError("Precomputed pair match columns must align")
+            if source.numel() and (
+                int(source.min()) < 0
+                or int(source.max()) >= int(keypoints[left].shape[0])
+                or int(target.min()) < 0
+                or int(target.max()) >= int(keypoints[right].shape[0])
+            ):
+                raise ValueError("Precomputed pair keypoint index is out of range")
+            if (
+                source.unique().numel() != source.numel()
+                or target.unique().numel() != target.numel()
+            ):
+                raise ValueError("Precomputed pair matches are not one-to-one")
+            if not bool(torch.isfinite(confidence).all()) or bool(
+                (confidence < 0).any()
+            ):
+                raise ValueError(
+                    "Precomputed pair confidence must be finite and non-negative"
+                )
+            pair_match_diagnostics[(left, right)] = dict(
+                (precomputed_pair_match_diagnostics or {}).get((left, right), {})
+            )
         else:
-            source, target, confidence = match_result
+            match_result = reciprocal_epipolar_matches(
+                descriptors[left].to(device),
+                descriptors[right].to(device),
+                keypoints[left],
+                keypoints[right],
+                camera_K[left],
+                pose_w2c[left],
+                camera_K[right],
+                pose_w2c[right],
+                minimum_similarity=minimum_similarity,
+                minimum_margin=minimum_margin,
+                maximum_epipolar_error_px=maximum_epipolar_error_px,
+                epipolar_candidate_topk=epipolar_candidate_topk,
+                recovered_minimum_similarity=(
+                    epipolar_recovered_minimum_similarity
+                ),
+                recovered_minimum_margin=epipolar_recovered_minimum_margin,
+                return_diagnostics=return_pair_sidecar,
+            )
+            if bool(return_pair_sidecar):
+                source, target, confidence, match_diagnostics = match_result
+                pair_match_diagnostics[(left, right)] = match_diagnostics
+            else:
+                source, target, confidence = match_result
         if source.numel() == 0:
             continue
         raw_match_count += int(source.numel())
-        if source.numel() == 0:
-            continue
-        if detector_scores is not None:
+        if detector_scores is not None and not uses_precomputed_pair_matches:
             confidence = confidence * torch.sqrt(
                 detector_scores[left][source].float().clamp_min(0.0)
                 * detector_scores[right][target].float().clamp_min(0.0)
@@ -934,6 +1017,7 @@ def build_cycle_consistent_tracks(
         "track_allow_chain_tracks": int(bool(allow_chain_tracks)),
         "track_camera_pair_policy": str(pair_policy),
         "track_camera_pair_budget": int(len(pairs)),
+        "track_pair_matches_reused": int(uses_precomputed_pair_matches),
         "track_observation_count": len(track_indices),
         "track_rejected_duplicate_query_component_count": (
             rejected_duplicate_query
@@ -1012,6 +1096,7 @@ def build_cycle_consistent_tracks(
             "diversity_weight": float(pair_diversity_weight),
             "candidate_pool_per_camera": int(pair_candidate_pool_per_camera),
             "uses_descriptors_for_selection": False,
+            "uses_precomputed_pair_matches": bool(uses_precomputed_pair_matches),
             "uses_test_queries": False,
             "overlap_constraint_applied": str(pair_policy)
             == "parallax_diverse",
