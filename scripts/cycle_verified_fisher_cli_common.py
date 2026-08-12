@@ -15,8 +15,10 @@ import torch
 from common.hashing import sha256_file
 from evidence.cycle_verified_fisher import (
     _verified_cycle_table,
+    proposal_arm_pairs,
     validate_cycle_verified_fisher_selection,
     validate_pair_match_probe,
+    validate_pair_proposal_table,
 )
 from features.multiview_fusion import PIXEL_CENTER_OFFSET
 
@@ -350,6 +352,70 @@ def load_probe(
     }
 
 
+def load_proposals(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    expected_content_sha256: str,
+    cache: dict,
+    expected_mapping_keypoints: int,
+    expected_nms_radius: int,
+    expected_pair_budget: int,
+    expected_candidate_pair_count: int,
+    expected_candidate_components: int,
+) -> dict:
+    path = attest_file(path, expected_file_sha256, label="pair-proposal table")
+    payload = torch_load(path)
+    content_sha = expected_sha256(
+        expected_content_sha256, label="expected proposal content SHA-256"
+    )
+    validate_pair_proposal_table(
+        payload,
+        expected_query_names_sha256=cache["query_names_sha256"],
+        expected_query_cache_path=str(cache["path"]),
+        expected_query_cache_sha256=cache["sha256"],
+        expected_mapping_keypoint_count=int(expected_mapping_keypoints),
+        expected_mapping_nms_radius=int(expected_nms_radius),
+        expected_pair_budget=int(expected_pair_budget),
+        expected_candidate_pair_count=int(expected_candidate_pair_count),
+        expected_candidate_component_count=int(expected_candidate_components),
+        expected_content_sha256=content_sha,
+    )
+    return {
+        "path": path,
+        "sha256": sha256_file(path),
+        "content_sha256": content_sha,
+        "payload": payload,
+        "nearest_pairs": proposal_arm_pairs(payload, "nearest"),
+        "geometry_pairs": proposal_arm_pairs(payload, "mapping_geometry"),
+    }
+
+
+def validate_probe_proposal_lineage(*, probe: dict, proposals: dict) -> None:
+    candidate = probe["payload"]["candidate_pool"]
+    parameters = candidate.get("parameters")
+    if (
+        candidate.get("construction")
+        != "attested_nearest_union_mapping_geometry_v1"
+        or not isinstance(parameters, dict)
+        or parameters.get("proposal_table_sha256") != proposals["sha256"]
+        or parameters.get("proposal_table_content_sha256")
+        != proposals["content_sha256"]
+    ):
+        raise ValueError("Pair-match probe does not bind the proposal table")
+    expected_pairs = sorted(
+        set(proposals["nearest_pairs"]) | set(proposals["geometry_pairs"])
+    )
+    observed_pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    if observed_pairs != expected_pairs:
+        raise ValueError("Pair-match probe candidate table differs from proposals")
+
+
 def load_selection(
     *,
     path: Path,
@@ -376,6 +442,62 @@ def load_selection(
         "content_sha256": content_sha,
         "payload": payload,
     }
+
+
+def load_stage_a_gate(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    cache: dict,
+    proposals: dict,
+    probe: dict,
+    selection: dict,
+    require_go: bool,
+) -> dict:
+    path = attest_file(path, expected_file_sha256, label="P8 Stage-A gate")
+    payload = json.loads(path.read_text())
+    if (
+        payload.get("schema") != "lafgs_cycle_verified_fisher_stage_a_gate"
+        or int(payload.get("version", -1)) != 1
+        or payload.get("uses_test_queries") is not False
+        or payload.get("mapping_only") is not True
+        or payload.get("valid") is not True
+        or not isinstance(payload.get("gates"), dict)
+        or not all(isinstance(value, bool) for value in payload["gates"].values())
+        or bool(payload.get("stage_a_passed")) != all(payload["gates"].values())
+        or bool(payload.get("advance_to_reuse_only_track_build"))
+        != bool(payload.get("stage_a_passed"))
+    ):
+        raise ValueError("P8 Stage-A gate is invalid or internally inconsistent")
+    expected = {
+        "query_cache": cache,
+        "pair_proposals": proposals,
+        "pair_match_probe": probe,
+        "pair_selection": selection,
+    }
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict) or set(inputs) != set(expected):
+        raise ValueError("P8 Stage-A gate has an unexpected input registry")
+    for name, artifact in expected.items():
+        entry = inputs[name]
+        if (
+            not isinstance(entry, dict)
+            or Path(str(entry.get("path", ""))).resolve() != artifact["path"]
+            or entry.get("sha256") != artifact["sha256"]
+            or (
+                "content_sha256" in artifact
+                and entry.get("content_sha256") != artifact["content_sha256"]
+            )
+        ):
+            raise ValueError(f"P8 Stage-A gate {name} lineage differs")
+    passed = payload.get("stage_a_passed") is True
+    if require_go and not passed:
+        raise ValueError("P8 Stage-A STOP does not authorize Track construction")
+    if passed and payload.get("decision") != "GO_TO_TRACK_REUSE":
+        raise ValueError("P8 Stage-A GO decision is inconsistent")
+    if not passed and payload.get("decision") != "STOP_BEFORE_TRACK_REUSE":
+        raise ValueError("P8 Stage-A STOP decision is inconsistent")
+    return {"path": path, "sha256": sha256_file(path), "payload": payload}
 
 
 def selection_pairs(selection: dict) -> list[tuple[int, int]]:

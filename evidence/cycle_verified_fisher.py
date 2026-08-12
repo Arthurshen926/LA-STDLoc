@@ -25,9 +25,11 @@ import torch.nn.functional as F
 from evidence.camera_pair_policy import _camera_centers_and_axes
 
 
+PROPOSAL_SCHEMA = "lafgs_cycle_verified_pair_proposal_table"
 PROBE_SCHEMA = "lafgs_cycle_verified_pair_match_probe"
 SELECTION_SCHEMA = "lafgs_cycle_verified_fisher_selection"
 POLICY_NAME = "cycle_verified_fisher"
+CONTROL_POLICY_NAME = "cycle_verified_fisher_nearest_control"
 
 _MATCHER_PARAMETER_NAMES = (
     "minimum_similarity",
@@ -154,6 +156,276 @@ def _selection_content_sha256(payload: dict) -> str:
             floating=torch.as_tensor(selected[name]).is_floating_point(),
         )
     return hasher.hexdigest()
+
+
+def _proposal_content_sha256(payload: dict) -> str:
+    """Hash the proposal science content without treating old factors as lineage."""
+    hasher = hashlib.sha256()
+    arms = payload.get("arms", {})
+    header = {
+        "schema": payload.get("schema"),
+        "version": payload.get("version"),
+        "uses_test_queries": payload.get("uses_test_queries"),
+        "query_count": payload.get("query_count"),
+        "query_names_sha256": payload.get("query_names_sha256"),
+        "query_cache_sha256": payload.get("query_cache_sha256"),
+        "mapping_keypoint_count": payload.get("mapping_keypoint_count"),
+        "mapping_nms_radius": payload.get("mapping_nms_radius"),
+        "exact_pair_budget": payload.get("exact_pair_budget"),
+        "source_contract": payload.get("source_contract"),
+        "arm_sources": {
+            name: {
+                "source_policy": value.get("source_policy"),
+                "source_artifact_sha256": value.get("source_artifact", {}).get(
+                    "sha256"
+                ),
+                "unavailable_source_lineage": value.get(
+                    "unavailable_source_lineage"
+                ),
+            }
+            for name, value in sorted(arms.items())
+        },
+        "candidate_union": payload.get("candidate_union"),
+    }
+    hasher.update(
+        json.dumps(header, sort_keys=True, separators=(",", ":")).encode()
+    )
+    for name, value in sorted(arms.items()):
+        hasher.update(name.encode())
+        pair = value.get("pair", {})
+        _hash_tensor(hasher, pair.get("left_query_index"))
+        _hash_tensor(hasher, pair.get("right_query_index"))
+    return hasher.hexdigest()
+
+
+def materialize_pair_proposal_table(
+    *,
+    nearest_pairs: list[tuple[int, int]],
+    geometry_pairs: list[tuple[int, int]],
+    query_count: int,
+    query_names_sha256: str,
+    query_cache_path: str,
+    query_cache_sha256: str,
+    mapping_keypoint_count: int,
+    mapping_nms_radius: int,
+    exact_pair_budget: int,
+    nearest_source_path: str,
+    nearest_source_sha256: str,
+    nearest_unavailable_source_lineage: list[str],
+    geometry_source_path: str,
+    geometry_source_sha256: str,
+    geometry_unavailable_source_lineage: list[str],
+) -> dict:
+    """Attest only two archived proposal pair tables against a fresh cache.
+
+    Old Track factors are used solely as immutable sources of ordered camera
+    pairs.  Their Track/geometry values and incomplete factor lineage are not
+    copied or upgraded into a new factor claim.
+    """
+    query_count = int(query_count)
+    pair_budget = int(exact_pair_budget)
+    mapping_k = int(mapping_keypoint_count)
+    mapping_nms = int(mapping_nms_radius)
+    if query_count <= 1 or pair_budget <= 0 or mapping_k <= 0 or mapping_nms <= 0:
+        raise ValueError("Proposal query/K/NMS/budget contracts must be positive")
+    if not _is_sha256(query_names_sha256) or not _is_sha256(query_cache_sha256):
+        raise ValueError("Proposal cache lineage requires exact SHA-256 values")
+    source_values = (nearest_source_sha256, geometry_source_sha256)
+    if not all(_is_sha256(value) for value in source_values):
+        raise ValueError("Proposal source artifacts require exact SHA-256 values")
+    nearest_pairs = _canonical_pairs(nearest_pairs, query_count=query_count)
+    geometry_pairs = _canonical_pairs(geometry_pairs, query_count=query_count)
+    if len(nearest_pairs) != pair_budget or len(geometry_pairs) != pair_budget:
+        raise ValueError("Each proposal arm must preserve the exact pair budget")
+    union, graph = bounded_union_candidate_pool(
+        pair_sets=(nearest_pairs, geometry_pairs),
+        query_count=query_count,
+        maximum_pair_count=2 * pair_budget,
+    )
+
+    def arm(
+        *,
+        policy: str,
+        pairs: list[tuple[int, int]],
+        source_path: str,
+        source_sha256: str,
+        unavailable: list[str],
+    ) -> dict:
+        return {
+            "source_policy": policy,
+            "source_artifact": {
+                "path": str(source_path),
+                "sha256": str(source_sha256),
+            },
+            "unavailable_source_lineage": sorted(set(map(str, unavailable))),
+            "pair": {
+                "left_query_index": torch.as_tensor(
+                    [left for left, _ in pairs], dtype=torch.long
+                ),
+                "right_query_index": torch.as_tensor(
+                    [right for _, right in pairs], dtype=torch.long
+                ),
+            },
+        }
+
+    payload = {
+        "schema": PROPOSAL_SCHEMA,
+        "version": 1,
+        "uses_test_queries": False,
+        "query_count": query_count,
+        "query_names_sha256": str(query_names_sha256),
+        "query_cache_path": str(query_cache_path),
+        "query_cache_sha256": str(query_cache_sha256),
+        "mapping_keypoint_count": mapping_k,
+        "mapping_nms_radius": mapping_nms,
+        "exact_pair_budget": pair_budget,
+        "source_contract": {
+            "scope": "archived_pair_tables_only",
+            "track_factor_lineage_reused": False,
+            "track_or_geometry_measurements_reused": False,
+            "fresh_cache_is_authoritative_for_query_order_k_nms": True,
+        },
+        "arms": {
+            "nearest": arm(
+                policy="nearest",
+                pairs=nearest_pairs,
+                source_path=nearest_source_path,
+                source_sha256=nearest_source_sha256,
+                unavailable=nearest_unavailable_source_lineage,
+            ),
+            "mapping_geometry": arm(
+                policy="parallax_diverse",
+                pairs=geometry_pairs,
+                source_path=geometry_source_path,
+                source_sha256=geometry_source_sha256,
+                unavailable=geometry_unavailable_source_lineage,
+            ),
+        },
+        "candidate_union": {
+            **graph,
+            "sha256": _candidate_pool_sha256(union, []),
+        },
+    }
+    payload["content_sha256"] = _proposal_content_sha256(payload)
+    validate_pair_proposal_table(payload)
+    return payload
+
+
+def proposal_arm_pairs(payload: dict, arm: str) -> list[tuple[int, int]]:
+    """Return one validated proposal arm's canonical pair table."""
+    validate_pair_proposal_table(payload)
+    if arm not in {"nearest", "mapping_geometry"}:
+        raise ValueError("Proposal arm must be nearest or mapping_geometry")
+    pair = payload["arms"][arm]["pair"]
+    return list(
+        zip(
+            torch.as_tensor(pair["left_query_index"]).long().tolist(),
+            torch.as_tensor(pair["right_query_index"]).long().tolist(),
+        )
+    )
+
+
+def validate_pair_proposal_table(
+    payload: dict,
+    *,
+    expected_query_names_sha256: str | None = None,
+    expected_query_cache_path: str | None = None,
+    expected_query_cache_sha256: str | None = None,
+    expected_mapping_keypoint_count: int | None = None,
+    expected_mapping_nms_radius: int | None = None,
+    expected_pair_budget: int | None = None,
+    expected_candidate_pair_count: int | None = None,
+    expected_candidate_component_count: int | None = None,
+    expected_content_sha256: str | None = None,
+) -> None:
+    """Validate a pair-only attestation without inferring missing old lineage."""
+    if (
+        payload.get("schema") != PROPOSAL_SCHEMA
+        or int(payload.get("version", -1)) != 1
+        or payload.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Unexpected pair-proposal table contract")
+    source_contract = payload.get("source_contract")
+    if (
+        not isinstance(source_contract, dict)
+        or source_contract.get("scope") != "archived_pair_tables_only"
+        or source_contract.get("track_factor_lineage_reused") is not False
+        or source_contract.get("track_or_geometry_measurements_reused") is not False
+        or source_contract.get("fresh_cache_is_authoritative_for_query_order_k_nms")
+        is not True
+    ):
+        raise ValueError("Proposal table overclaims its archived source lineage")
+    query_count = int(payload.get("query_count", -1))
+    pair_budget = int(payload.get("exact_pair_budget", -1))
+    if query_count <= 1 or pair_budget <= 0:
+        raise ValueError("Proposal table has invalid query/budget axes")
+    if not _is_sha256(payload.get("query_names_sha256")) or not _is_sha256(
+        payload.get("query_cache_sha256")
+    ):
+        raise ValueError("Proposal table lacks exact cache lineage")
+    expected_values = (
+        ("query_names_sha256", expected_query_names_sha256),
+        ("query_cache_sha256", expected_query_cache_sha256),
+        ("mapping_keypoint_count", expected_mapping_keypoint_count),
+        ("mapping_nms_radius", expected_mapping_nms_radius),
+        ("exact_pair_budget", expected_pair_budget),
+        ("content_sha256", expected_content_sha256),
+    )
+    for name, expected in expected_values:
+        if expected is not None and payload.get(name) != expected:
+            raise ValueError(f"Proposal table {name} differs from expected")
+    if expected_query_cache_path is not None and str(
+        payload.get("query_cache_path", "")
+    ) != str(expected_query_cache_path):
+        raise ValueError("Proposal table names a different query-cache path")
+    arms = payload.get("arms")
+    if not isinstance(arms, dict) or set(arms) != {"nearest", "mapping_geometry"}:
+        raise ValueError("Proposal table must contain exactly two named arms")
+    policies = {"nearest": "nearest", "mapping_geometry": "parallax_diverse"}
+    pair_sets = []
+    for name, expected_policy in policies.items():
+        value = arms[name]
+        source = value.get("source_artifact") if isinstance(value, dict) else None
+        if (
+            not isinstance(source, dict)
+            or value.get("source_policy") != expected_policy
+            or not source.get("path")
+            or not _is_sha256(source.get("sha256"))
+            or not isinstance(value.get("unavailable_source_lineage"), list)
+        ):
+            raise ValueError(f"Proposal arm {name} lacks source-table attestation")
+        pair = value.get("pair", {})
+        left = torch.as_tensor(pair.get("left_query_index"), dtype=torch.long).reshape(-1)
+        right = torch.as_tensor(pair.get("right_query_index"), dtype=torch.long).reshape(-1)
+        if left.numel() != pair_budget or right.numel() != pair_budget:
+            raise ValueError(f"Proposal arm {name} violates the exact pair budget")
+        pair_sets.append(
+            _canonical_pairs(list(zip(left.tolist(), right.tolist())), query_count=query_count)
+        )
+    union, graph = bounded_union_candidate_pool(
+        pair_sets=pair_sets,
+        query_count=query_count,
+        maximum_pair_count=2 * pair_budget,
+    )
+    expected_union = {
+        **graph,
+        "sha256": _candidate_pool_sha256(union, []),
+    }
+    if payload.get("candidate_union") != expected_union:
+        raise ValueError("Proposal candidate-union diagnostics are stale")
+    if expected_candidate_pair_count is not None and len(union) != int(
+        expected_candidate_pair_count
+    ):
+        raise ValueError("Proposal candidate-union count differs from expected")
+    if expected_candidate_component_count is not None and int(
+        graph["component_count"]
+    ) != int(expected_candidate_component_count):
+        raise ValueError("Proposal candidate components differ from expected")
+    actual_content = _proposal_content_sha256(payload)
+    if payload.get("content_sha256") != actual_content:
+        raise ValueError("Proposal table content SHA-256 is stale")
+    if expected_content_sha256 is not None and actual_content != expected_content_sha256:
+        raise ValueError("Proposal table differs from expected content SHA-256")
 
 
 def materialize_pair_match_probe(
@@ -476,6 +748,18 @@ def probe_track_build_inputs(
     ):
         raise ValueError("Selection pair table violates its exact budget")
     pairs = list(zip(left.tolist(), right.tolist()))
+    return probe_pair_subset_track_build_inputs(pair_match_probe, pairs)
+
+
+def probe_pair_subset_track_build_inputs(
+    pair_match_probe: dict,
+    selected_pairs: list[tuple[int, int]],
+) -> dict:
+    """Return reuse-only Track inputs for any exact, attested probe subset."""
+    validate_pair_match_probe(pair_match_probe)
+    pairs = _canonical_pairs(
+        selected_pairs, query_count=int(pair_match_probe["query_count"])
+    )
     matches, diagnostics = pair_matches_from_probe(
         pair_match_probe, selected_pairs=pairs
     )
@@ -1252,15 +1536,21 @@ def select_cycle_verified_fisher_pairs(
 
 
 __all__ = [
+    "CONTROL_POLICY_NAME",
     "POLICY_NAME",
     "PROBE_SCHEMA",
+    "PROPOSAL_SCHEMA",
     "SELECTION_SCHEMA",
     "bounded_union_candidate_pool",
     "build_pair_match_probe",
     "materialize_pair_match_probe",
+    "materialize_pair_proposal_table",
     "pair_matches_from_probe",
+    "probe_pair_subset_track_build_inputs",
     "probe_track_build_inputs",
+    "proposal_arm_pairs",
     "select_cycle_verified_fisher_pairs",
     "validate_cycle_verified_fisher_selection",
     "validate_pair_match_probe",
+    "validate_pair_proposal_table",
 ]

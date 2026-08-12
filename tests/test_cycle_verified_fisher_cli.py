@@ -1,14 +1,17 @@
+import copy
 import hashlib
 import json
-from pathlib import Path
 
 import pytest
 import torch
 
 from common.hashing import sha256_file
-from evidence.cycle_verified_fisher import probe_track_build_inputs
-from scripts import compare_cycle_verified_fisher_mechanism as compare_cli
+from evidence.cycle_verified_fisher import CONTROL_POLICY_NAME, POLICY_NAME
+from scripts import attest_cycle_verified_pair_proposals as proposal_cli
+from scripts import compare_cycle_verified_fisher_mechanism as stage_b_cli
+from scripts import compare_cycle_verified_fisher_stage_a as stage_a_cli
 from scripts import materialize_cycle_verified_pair_probe as probe_cli
+from scripts import materialize_cycle_verified_track_factor as track_cli
 from scripts import select_cycle_verified_fisher_pairs as select_cli
 from scripts.cycle_verified_fisher_cli_common import SCENE_CONTRACTS, torch_load
 
@@ -35,104 +38,70 @@ def _look_at_pose(center, target):
 def _project(points, camera_K, pose):
     camera = torch.einsum("ij,pj->pi", pose[:3, :3], points) + pose[:3, 3]
     pixel = torch.einsum("ij,pj->pi", camera_K, camera)
-    return pixel[:, :2] / pixel[:, 2:]
+    return pixel[:, :2] / pixel[:, 2:], camera[:, 2]
 
 
 def _names_sha256(names):
     return hashlib.sha256(("\n".join(names) + "\n").encode()).hexdigest()
 
 
-def _write_factor(
-    path,
-    *,
-    policy,
-    pairs,
-    names,
-    names_sha256,
-    cache_path,
-    cache_sha256,
-    probe=None,
-    selection=None,
-):
-    precomputed = policy == "cycle_verified_fisher"
-    lineage = {
-        "query_cache": {"path": str(cache_path), "sha256": cache_sha256}
-    }
-    if probe is not None:
-        lineage["pair_match_probe"] = {
-            "path": str(probe["path"]),
-            "sha256": probe["sha256"],
-            "content_sha256": probe["content_sha256"],
-        }
-    if selection is not None:
-        lineage["pair_selection"] = {
-            "path": str(selection["path"]),
-            "sha256": selection["sha256"],
-            "content_sha256": selection["content_sha256"],
-        }
+def _write_archived_pair_source(path, *, policy, pairs, names):
     payload = {
         "schema": "lafgs_pair_policy_track_factor",
         "version": 1,
         "uses_test_queries": False,
         "mapping_keypoint_factor": 3,
-        "mapping_nms_radius": 1,
+        "descriptor_factor_mutated": False,
+        "density_factor_mutated": False,
+        "selector_factor_mutated": False,
         "pair_policy": policy,
         "query_names": names,
-        "query_names_sha256": names_sha256,
-        "input_lineage": lineage,
-        "diagnostics": {"track_pair_matches_reused": int(precomputed)},
+        # Deliberately no mapping_nms_radius, query_names_sha256 or input_lineage.
         "pair_sidecar": {
-            "policy": {
-                "name": policy,
-                "uses_test_queries": False,
-                "uses_precomputed_pair_matches": precomputed,
-            },
+            "policy": {"name": policy, "uses_test_queries": False},
             "pair": {
-                "left_query_index": torch.tensor([pair[0] for pair in pairs]),
-                "right_query_index": torch.tensor([pair[1] for pair in pairs]),
+                "left_query_index": torch.tensor([left for left, _ in pairs]),
+                "right_query_index": torch.tensor([right for _, right in pairs]),
             },
         },
     }
     torch.save(payload, path)
-    return payload
 
 
-def _write_report(
-    path,
-    *,
-    policy,
-    factor_path,
-    cache_path,
-    cache_sha256,
-    names_sha256,
-    track_scale,
-):
-    factor_sha256 = sha256_file(factor_path)
-    payload = {
-        "schema": "lafgs_pair_policy_track_factor",
-        "version": 1,
-        "uses_test_queries": False,
-        "mapping_keypoint_factor": 3,
-        "mapping_nms_radius": 1,
-        "pair_policy": policy,
-        "exact_pair_budget": 5,
-        "mapping_query_count": 5,
-        "query_names_sha256": names_sha256,
-        "artifact": str(factor_path),
-        "artifact_sha256": factor_sha256,
-        "inputs": {
-            "query_cache": {"path": str(cache_path), "sha256": cache_sha256}
-        },
-        "track": {
-            "triangulated_track_count": 100 * track_scale,
-            "broad_eligible_track_count": 100 * track_scale,
-            "high_confidence_track_count": 100 * track_scale,
-            "triangulated_covariance_trace_m2": {"p90": 1.0 / track_scale},
-            "mapping_query_with_broad_track_fraction": 1.0 * track_scale,
-        },
+def _frozen_track_payload(names):
+    track_count = 3
+    track_index = torch.arange(track_count).repeat(5)
+    query_index = torch.arange(5).repeat_interleave(track_count)
+    keypoint_index = torch.arange(track_count).repeat(5)
+    tracks = {
+        "track_index": track_index,
+        "query_index": query_index,
+        "keypoint_index": keypoint_index,
+        "confidence": torch.ones(track_index.numel()),
+        "track_level": torch.full((track_count,), 2, dtype=torch.int8),
     }
-    path.write_text(json.dumps(payload))
-    return payload
+    geometry = {
+        "triangulated": torch.ones(track_count, dtype=torch.bool),
+        "triangulated_xyz": torch.tensor(
+            [[-0.2, 0.0, 4.0], [0.0, 0.15, 4.2], [0.2, -0.1, 3.8]]
+        ),
+        "triangulation_observation_count": torch.full((track_count,), 5),
+        "triangulation_distinct_view_bin_count": torch.full((track_count,), 3),
+        "triangulation_reprojection_median_px": torch.full((track_count,), 0.1),
+        "triangulation_reprojection_p90_px": torch.full((track_count,), 0.2),
+        "triangulation_parallax_deg": torch.full((track_count,), 2.0),
+        "triangulation_covariance_trace": torch.full((track_count,), 0.01),
+        "triangulation_high_confidence": torch.ones(track_count, dtype=torch.bool),
+        "track_confidence_level": torch.full((track_count,), 2, dtype=torch.int8),
+    }
+    return {
+        "schema": "lafgs_track_first_payload",
+        "version": 1,
+        "query_names": names,
+        "tracks": tracks,
+        "track_geometry": geometry,
+        "diagnostics": {"track_camera_pair_candidate_count": 5},
+    }
 
 
 @pytest.fixture
@@ -150,11 +119,11 @@ def p8_cli_artifacts(tmp_path, monkeypatch):
     )
     centers = torch.tensor(
         [
-            [-0.8, 0.0, 0.0],
-            [0.0, 0.15, 0.0],
-            [0.8, 0.0, 0.0],
             [-2.0, 0.0, 0.0],
+            [0.0, 0.15, 0.0],
             [2.0, 0.0, 0.0],
+            [2.2, 0.05, 0.0],
+            [2.4, -0.05, 0.0],
         ],
         dtype=torch.float64,
     )
@@ -168,7 +137,9 @@ def p8_cli_artifacts(tmp_path, monkeypatch):
         [[-0.2, 0.0, 4.0], [0.0, 0.15, 4.2], [0.2, -0.1, 3.8]],
         dtype=torch.float64,
     )
-    keypoints = [_project(points, camera_K[index], poses[index]) for index in range(5)]
+    projected = [_project(points, camera_K[index], poses[index]) for index in range(5)]
+    keypoints = [value[0] for value in projected]
+    depths = [value[1] for value in projected]
     names = [f"mapping/{index}.png" for index in range(5)]
     names_sha256 = _names_sha256(names)
     cache_path = tmp_path / "query_cache.pt"
@@ -186,6 +157,8 @@ def p8_cli_artifacts(tmp_path, monkeypatch):
                 "native_scores": torch.ones(3),
                 "native_K": camera_K[index].float(),
                 "pose_w2c": poses[index].float(),
+                "native_depth_at_keypoints": depths[index].float(),
+                "native_input_hw": torch.tensor([480, 640]),
                 "native_sparse_metadata": {
                     "nms_radius": 1,
                     "requested_keypoint_count": 3,
@@ -196,62 +169,85 @@ def p8_cli_artifacts(tmp_path, monkeypatch):
     }
     torch.save(cache, cache_path)
     cache_sha256 = sha256_file(cache_path)
-    nearest_pairs = [(0, 1), (0, 2), (1, 2), (2, 3), (2, 4)]
-    geometry_pairs = [(0, 1), (0, 2), (1, 2), (2, 4), (3, 4)]
-    nearest_path = tmp_path / "nearest.pt"
-    geometry_path = tmp_path / "geometry.pt"
-    _write_factor(
-        nearest_path,
-        policy="nearest",
-        pairs=nearest_pairs,
-        names=names,
-        names_sha256=names_sha256,
-        cache_path=cache_path,
-        cache_sha256=cache_sha256,
+
+    # Nearest completes the weak 2/3/4 triangle; geometry completes strong 0/1/2.
+    nearest_pairs = [(0, 2), (1, 2), (2, 3), (2, 4), (3, 4)]
+    geometry_pairs = [(0, 1), (0, 2), (1, 2), (2, 3), (2, 4)]
+    nearest_path = tmp_path / "archived_nearest.pt"
+    geometry_path = tmp_path / "archived_geometry.pt"
+    _write_archived_pair_source(
+        nearest_path, policy="nearest", pairs=nearest_pairs, names=names
     )
-    _write_factor(
+    _write_archived_pair_source(
         geometry_path,
         policy="parallax_diverse",
         pairs=geometry_pairs,
         names=names,
-        names_sha256=names_sha256,
-        cache_path=cache_path,
-        cache_sha256=cache_sha256,
     )
+    proposals_path = tmp_path / "proposals.pt"
+    proposal_cli.main(
+        [
+            "--scene", "stairs",
+            "--query-cache", str(cache_path),
+            "--expected-query-cache-sha256", cache_sha256,
+            "--nearest-source", str(nearest_path),
+            "--expected-nearest-source-sha256", sha256_file(nearest_path),
+            "--geometry-source", str(geometry_path),
+            "--expected-geometry-source-sha256", sha256_file(geometry_path),
+            "--expected-query-names-sha256", names_sha256,
+            "--expected-mapping-keypoints", "3",
+            "--expected-nms-radius", "1",
+            "--expected-pair-budget", "5",
+            "--expected-candidate-pair-count", "6",
+            "--expected-candidate-components", "1",
+            "--output", str(proposals_path),
+        ]
+    )
+    proposals = torch_load(proposals_path)
+    proposal_record = {
+        "path": proposals_path,
+        "sha256": sha256_file(proposals_path),
+        "content_sha256": proposals["content_sha256"],
+    }
     probe_path = tmp_path / "probe.pt"
-    probe_args = [
-        "--scene", "stairs",
-        "--query-cache", str(cache_path),
-        "--expected-query-cache-sha256", cache_sha256,
-        "--nearest-factor", str(nearest_path),
-        "--expected-nearest-factor-sha256", sha256_file(nearest_path),
-        "--geometry-factor", str(geometry_path),
-        "--expected-geometry-factor-sha256", sha256_file(geometry_path),
-        "--expected-query-names-sha256", names_sha256,
-        "--expected-mapping-keypoints", "3",
-        "--expected-nms-radius", "1",
-        "--expected-pair-budget", "5",
-        "--expected-candidate-pair-count", "6",
-        "--expected-candidate-components", "1",
-        "--minimum-similarity", "0.65",
-        "--minimum-margin", "0.01",
-        "--maximum-epipolar-error-px", "2.0",
-        "--epipolar-candidate-topk", "1",
-        "--epipolar-recovered-minimum-similarity", "-1.0",
-        "--epipolar-recovered-minimum-margin", "-1.0",
-        "--device", "cpu",
-        "--output", str(probe_path),
-    ]
-    probe_cli.main(probe_args)
+    probe_cli.main(
+        [
+            "--scene", "stairs",
+            "--query-cache", str(cache_path),
+            "--expected-query-cache-sha256", cache_sha256,
+            "--proposals", str(proposals_path),
+            "--expected-proposals-sha256", proposal_record["sha256"],
+            "--expected-proposals-content-sha256", proposal_record["content_sha256"],
+            "--expected-query-names-sha256", names_sha256,
+            "--expected-mapping-keypoints", "3",
+            "--expected-nms-radius", "1",
+            "--expected-pair-budget", "5",
+            "--expected-candidate-pair-count", "6",
+            "--expected-candidate-components", "1",
+            "--minimum-similarity", "0.65",
+            "--minimum-margin", "0.01",
+            "--maximum-epipolar-error-px", "2.0",
+            "--epipolar-candidate-topk", "1",
+            "--epipolar-recovered-minimum-similarity", "-1.0",
+            "--epipolar-recovered-minimum-margin", "-1.0",
+            "--device", "cpu",
+            "--output", str(probe_path),
+        ]
+    )
     probe = torch_load(probe_path)
+    probe_record = {
+        "path": probe_path,
+        "sha256": sha256_file(probe_path),
+        "content_sha256": probe["content_sha256"],
+    }
     selection_path = tmp_path / "selection.pt"
     selection_args = [
         "--scene", "stairs",
         "--query-cache", str(cache_path),
         "--expected-query-cache-sha256", cache_sha256,
         "--probe", str(probe_path),
-        "--expected-probe-sha256", sha256_file(probe_path),
-        "--expected-probe-content-sha256", probe["content_sha256"],
+        "--expected-probe-sha256", probe_record["sha256"],
+        "--expected-probe-content-sha256", probe_record["content_sha256"],
         "--expected-query-names-sha256", names_sha256,
         "--expected-mapping-keypoints", "3",
         "--expected-nms-radius", "1",
@@ -264,135 +260,158 @@ def p8_cli_artifacts(tmp_path, monkeypatch):
     ]
     select_cli.main(selection_args)
     selection = torch_load(selection_path)
+    selection_record = {
+        "path": selection_path,
+        "sha256": sha256_file(selection_path),
+        "content_sha256": selection["content_sha256"],
+    }
+    stage_a_path = tmp_path / "stage_a_gate.json"
+    stage_a_args = [
+        "--scene", "stairs",
+        "--query-cache", str(cache_path),
+        "--expected-query-cache-sha256", cache_sha256,
+        "--proposals", str(proposals_path),
+        "--expected-proposals-sha256", proposal_record["sha256"],
+        "--expected-proposals-content-sha256", proposal_record["content_sha256"],
+        "--probe", str(probe_path),
+        "--expected-probe-sha256", probe_record["sha256"],
+        "--expected-probe-content-sha256", probe_record["content_sha256"],
+        "--selection", str(selection_path),
+        "--expected-selection-sha256", selection_record["sha256"],
+        "--expected-selection-content-sha256", selection_record["content_sha256"],
+        "--expected-query-names-sha256", names_sha256,
+        "--expected-mapping-keypoints", "3",
+        "--expected-nms-radius", "1",
+        "--expected-pair-budget", "5",
+        "--expected-candidate-pair-count", "6",
+        "--expected-candidate-components", "1",
+        "--maximum-cycle-reprojection-error-px", "2.0",
+        "--output", str(stage_a_path),
+    ]
+    stage_a_cli.main(stage_a_args)
+    stage_a = json.loads(stage_a_path.read_text())
+    assert stage_a["stage_a_passed"] is True
+
+    frozen_path = tmp_path / "frozen_track_payload.pt"
+    torch.save(_frozen_track_payload(names), frozen_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = {
+        "version": 1,
+        "arguments": {
+            "query_cache_path": str(cache_path),
+            "native_keypoint_count": 3,
+            "geometry_teacher_track_pair_neighbors": 6,
+            "geometry_teacher_track_min_baseline_m": 0.0,
+            "geometry_teacher_track_max_baseline_m": 10.0,
+            "geometry_teacher_track_max_axis_angle_deg": 180.0,
+            "geometry_teacher_min_views": 3,
+            "geometry_teacher_track_require_cycle": True,
+            "geometry_teacher_track_allow_chain_tracks": True,
+            "geometry_teacher_view_bins": 8,
+            "geometry_teacher_view_direction_weight": 0.5,
+            "geometry_teacher_max_observations_per_landmark": 32,
+            "geometry_teacher_min_view_bins": 1,
+            "geometry_teacher_huber_delta_px": 2.0,
+            "geometry_teacher_iterations": 3,
+            "geometry_teacher_min_parallax_deg": 0.0,
+            "geometry_teacher_parallax_quantile": 0.75,
+            "geometry_teacher_max_reprojection_px": 5.0,
+            "geometry_teacher_max_condition_number": 1e12,
+            "geometry_teacher_max_covariance_trace_m2": 1e9,
+            "geometry_teacher_max_rendered_depth_residual_m": 1e9,
+            "geometry_teacher_min_rendered_depth_observations": 0,
+        },
+        "inputs": {
+            "query_cache_path": {
+                "path": str(cache_path),
+                "sha256": cache_sha256,
+            }
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest))
     return {
         "tmp_path": tmp_path,
         "cache_path": cache_path,
         "cache_sha256": cache_sha256,
-        "cache": cache,
         "names": names,
         "names_sha256": names_sha256,
-        "keypoints": keypoints,
-        "camera_K": camera_K,
-        "poses": poses,
         "nearest_path": nearest_path,
         "nearest_pairs": nearest_pairs,
+        "proposals_path": proposals_path,
+        "proposals": proposals,
+        "proposal_record": proposal_record,
         "probe_path": probe_path,
         "probe": probe,
+        "probe_record": probe_record,
         "selection_path": selection_path,
         "selection": selection,
+        "selection_record": selection_record,
         "selection_args": selection_args,
+        "stage_a_path": stage_a_path,
+        "stage_a_args": stage_a_args,
+        "manifest_path": manifest_path,
+        "frozen_path": frozen_path,
     }
 
 
-def test_cli_probe_selection_reaches_tracks_without_second_matcher(
-    p8_cli_artifacts, monkeypatch
-):
-    from evidence import triangulation
-
-    artifact = p8_cli_artifacts
-
-    def forbidden_matcher(*args, **kwargs):
-        raise AssertionError("Track construction must reuse selected probe rows")
-
-    monkeypatch.setattr(triangulation, "reciprocal_epipolar_matches", forbidden_matcher)
-    tracks, diagnostics, sidecar = triangulation.build_cycle_consistent_tracks(
-        descriptors=[torch.eye(3) for _ in range(5)],
-        keypoints=artifact["keypoints"],
-        detector_scores=[torch.ones(3) for _ in range(5)],
-        camera_K=artifact["camera_K"],
-        pose_w2c=artifact["poses"],
-        pair_policy="cycle_verified_fisher",
-        pair_budget=5,
-        minimum_track_views=3,
-        require_cycle=True,
-        allow_chain_tracks=True,
-        return_pair_sidecar=True,
-        device="cpu",
-        **probe_track_build_inputs(artifact["probe"], artifact["selection"]),
-    )
-    assert diagnostics["track_pair_matches_reused"] == 1
-    assert diagnostics["track_camera_pair_candidate_count"] == 5
-    assert diagnostics["track_count"] == 3
-    assert tracks["query_index"].unique().numel() == 5
-    assert sidecar["policy"]["uses_precomputed_pair_matches"] is True
-
-
-def test_lineage_failure_is_exit_one(p8_cli_artifacts):
-    arguments = list(p8_cli_artifacts["selection_args"])
-    digest_index = arguments.index("--expected-probe-sha256") + 1
-    arguments[digest_index] = "0" * 64
-    arguments.extend(("--overwrite",))
-    with pytest.raises(SystemExit) as error:
-        select_cli.entrypoint(arguments)
-    assert error.value.code == 1
+def _track_args(artifact, *, arm, output_dir):
+    return [
+        "--scene", "stairs",
+        "--arm", arm,
+        "--manifest", str(artifact["manifest_path"]),
+        "--expected-manifest-sha256", sha256_file(artifact["manifest_path"]),
+        "--frozen-track-payload", str(artifact["frozen_path"]),
+        "--expected-frozen-track-payload-sha256", sha256_file(artifact["frozen_path"]),
+        "--query-cache", str(artifact["cache_path"]),
+        "--expected-query-cache-sha256", artifact["cache_sha256"],
+        "--proposals", str(artifact["proposals_path"]),
+        "--expected-proposals-sha256", artifact["proposal_record"]["sha256"],
+        "--expected-proposals-content-sha256", artifact["proposal_record"]["content_sha256"],
+        "--probe", str(artifact["probe_path"]),
+        "--expected-probe-sha256", artifact["probe_record"]["sha256"],
+        "--expected-probe-content-sha256", artifact["probe_record"]["content_sha256"],
+        "--selection", str(artifact["selection_path"]),
+        "--expected-selection-sha256", artifact["selection_record"]["sha256"],
+        "--expected-selection-content-sha256", artifact["selection_record"]["content_sha256"],
+        "--stage-a-gate", str(artifact["stage_a_path"]),
+        "--expected-stage-a-gate-sha256", sha256_file(artifact["stage_a_path"]),
+        "--expected-query-names-sha256", artifact["names_sha256"],
+        "--expected-mapping-keypoints", "3",
+        "--expected-nms-radius", "1",
+        "--expected-pair-budget", "5",
+        "--expected-candidate-pair-count", "6",
+        "--expected-candidate-components", "1",
+        "--device", "cpu",
+        "--output-dir", str(output_dir),
+    ]
 
 
-def test_mechanism_stop_is_persisted_and_exits_two(p8_cli_artifacts):
-    artifact = p8_cli_artifacts
-    tmp_path = artifact["tmp_path"]
-    selected = artifact["selection"]["selected_pair"]
-    selected_pairs = list(
-        zip(selected["left_query_index"].tolist(), selected["right_query_index"].tolist())
-    )
-    probe_record = {
-        "path": artifact["probe_path"],
-        "sha256": sha256_file(artifact["probe_path"]),
-        "content_sha256": artifact["probe"]["content_sha256"],
-    }
-    selection_record = {
-        "path": artifact["selection_path"],
-        "sha256": sha256_file(artifact["selection_path"]),
-        "content_sha256": artifact["selection"]["content_sha256"],
-    }
-    variant_path = tmp_path / "variant.pt"
-    _write_factor(
-        variant_path,
-        policy="cycle_verified_fisher",
-        pairs=selected_pairs,
-        names=artifact["names"],
-        names_sha256=artifact["names_sha256"],
-        cache_path=artifact["cache_path"],
-        cache_sha256=artifact["cache_sha256"],
-        probe=probe_record,
-        selection=selection_record,
-    )
-    control_report = tmp_path / "control.json"
-    variant_report = tmp_path / "variant.json"
-    _write_report(
-        control_report,
-        policy="nearest",
-        factor_path=artifact["nearest_path"],
-        cache_path=artifact["cache_path"],
-        cache_sha256=artifact["cache_sha256"],
-        names_sha256=artifact["names_sha256"],
-        track_scale=1.0,
-    )
-    _write_report(
-        variant_report,
-        policy="cycle_verified_fisher",
-        factor_path=variant_path,
-        cache_path=artifact["cache_path"],
-        cache_sha256=artifact["cache_sha256"],
-        names_sha256=artifact["names_sha256"],
-        track_scale=0.5,
-    )
-    output = tmp_path / "mechanism_gate.json"
-    arguments = [
+def _stage_b_args(artifact, *, control_dir, variant_dir, output):
+    control_factor = control_dir / f"{CONTROL_POLICY_NAME}_track_factor.pt"
+    control_report = control_dir / f"{CONTROL_POLICY_NAME}_track_factor.json"
+    variant_factor = variant_dir / f"{POLICY_NAME}_track_factor.pt"
+    variant_report = variant_dir / f"{POLICY_NAME}_track_factor.json"
+    return [
         "--scene", "stairs",
         "--query-cache", str(artifact["cache_path"]),
         "--expected-query-cache-sha256", artifact["cache_sha256"],
+        "--proposals", str(artifact["proposals_path"]),
+        "--expected-proposals-sha256", artifact["proposal_record"]["sha256"],
+        "--expected-proposals-content-sha256", artifact["proposal_record"]["content_sha256"],
         "--probe", str(artifact["probe_path"]),
-        "--expected-probe-sha256", probe_record["sha256"],
-        "--expected-probe-content-sha256", probe_record["content_sha256"],
+        "--expected-probe-sha256", artifact["probe_record"]["sha256"],
+        "--expected-probe-content-sha256", artifact["probe_record"]["content_sha256"],
         "--selection", str(artifact["selection_path"]),
-        "--expected-selection-sha256", selection_record["sha256"],
-        "--expected-selection-content-sha256", selection_record["content_sha256"],
-        "--control-factor", str(artifact["nearest_path"]),
-        "--expected-control-factor-sha256", sha256_file(artifact["nearest_path"]),
+        "--expected-selection-sha256", artifact["selection_record"]["sha256"],
+        "--expected-selection-content-sha256", artifact["selection_record"]["content_sha256"],
+        "--stage-a-gate", str(artifact["stage_a_path"]),
+        "--expected-stage-a-gate-sha256", sha256_file(artifact["stage_a_path"]),
+        "--control-factor", str(control_factor),
+        "--expected-control-factor-sha256", sha256_file(control_factor),
         "--control-report", str(control_report),
         "--expected-control-report-sha256", sha256_file(control_report),
-        "--variant-factor", str(variant_path),
-        "--expected-variant-factor-sha256", sha256_file(variant_path),
+        "--variant-factor", str(variant_factor),
+        "--expected-variant-factor-sha256", sha256_file(variant_factor),
         "--variant-report", str(variant_report),
         "--expected-variant-report-sha256", sha256_file(variant_report),
         "--expected-query-names-sha256", artifact["names_sha256"],
@@ -401,14 +420,155 @@ def test_mechanism_stop_is_persisted_and_exits_two(p8_cli_artifacts):
         "--expected-pair-budget", "5",
         "--expected-candidate-pair-count", "6",
         "--expected-candidate-components", "1",
-        "--maximum-cycle-reprojection-error-px", "2.0",
         "--output", str(output),
     ]
+
+
+def test_archived_proposal_attestation_is_pair_only(p8_cli_artifacts):
+    proposals = p8_cli_artifacts["proposals"]
+    assert proposals["source_contract"] == {
+        "scope": "archived_pair_tables_only",
+        "track_factor_lineage_reused": False,
+        "track_or_geometry_measurements_reused": False,
+        "fresh_cache_is_authoritative_for_query_order_k_nms": True,
+    }
+    assert proposals["arms"]["nearest"]["unavailable_source_lineage"] == [
+        "input_lineage",
+        "mapping_nms_radius",
+        "query_names_sha256",
+    ]
+    assert proposals["candidate_union"]["pair_count"] == 6
+
+
+def test_stage_a_input_failure_exits_one(p8_cli_artifacts):
+    arguments = list(p8_cli_artifacts["selection_args"])
+    index = arguments.index("--expected-probe-sha256") + 1
+    arguments[index] = "0" * 64
+    arguments.append("--overwrite")
     with pytest.raises(SystemExit) as error:
-        compare_cli.entrypoint(arguments)
+        select_cli.entrypoint(arguments)
+    assert error.value.code == 1
+
+
+def test_stage_a_scientific_stop_persists_and_exits_two(
+    p8_cli_artifacts, monkeypatch
+):
+    original = stage_a_cli._stage_a_gates
+
+    def regression(**kwargs):
+        result = original(**kwargs)
+        result["verified_fisher_utility_improves_5pct"] = False
+        return result
+
+    monkeypatch.setattr(stage_a_cli, "_stage_a_gates", regression)
+    arguments = list(p8_cli_artifacts["stage_a_args"])
+    output = p8_cli_artifacts["tmp_path"] / "stage_a_stop.json"
+    arguments[arguments.index("--output") + 1] = str(output)
+    with pytest.raises(SystemExit) as error:
+        stage_a_cli.entrypoint(arguments)
     assert error.value.code == 2
     gate = json.loads(output.read_text())
     assert gate["valid"] is True
-    assert gate["mechanism_gate_passed"] is False
+    assert gate["stage_a_passed"] is False
+    assert gate["decision"] == "STOP_BEFORE_TRACK_REUSE"
+
+
+def test_reuse_only_track_factors_and_stage_b_end_to_end(p8_cli_artifacts):
+    artifact = p8_cli_artifacts
+    control_dir = artifact["tmp_path"] / "control"
+    variant_dir = artifact["tmp_path"] / "variant"
+    control = track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="nearest_control", output_dir=control_dir)
+        )
+    )
+    variant = track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="variant", output_dir=variant_dir)
+        )
+    )
+    assert control["track_pair_matches_reused"] == 1
+    assert variant["track_pair_matches_reused"] == 1
+    assert control["uses_precomputed_pair_matches"] is True
+    assert variant["uses_precomputed_pair_matches"] is True
+    output = artifact["tmp_path"] / "stage_b_gate.json"
+    arguments = _stage_b_args(
+        artifact, control_dir=control_dir, variant_dir=variant_dir, output=output
+    )
+    try:
+        stage_b_cli.main(arguments)
+    except SystemExit as error:
+        assert error.code == 2
+    gate = json.loads(output.read_text())
+    assert gate["valid"] is True
+    assert gate["version"] == 2
+    assert gate["stage_a"]["passed"] is True
+    assert gate["stage_b"]["gates"]["control_probe_rows_reused"] is True
+    assert gate["stage_b"]["gates"]["variant_probe_rows_reused"] is True
+    assert gate["stage_b"]["gates"]["same_probe_matcher_contract"] is True
+
+
+def test_stage_b_rejects_non_reuse_control_lineage(p8_cli_artifacts):
+    artifact = p8_cli_artifacts
+    control_dir = artifact["tmp_path"] / "control_bad"
+    variant_dir = artifact["tmp_path"] / "variant_bad"
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="nearest_control", output_dir=control_dir)
+        )
+    )
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="variant", output_dir=variant_dir)
+        )
+    )
+    control_factor = control_dir / f"{CONTROL_POLICY_NAME}_track_factor.pt"
+    payload = torch.load(control_factor, map_location="cpu", weights_only=False)
+    payload = copy.deepcopy(payload)
+    payload["diagnostics"]["track_pair_matches_reused"] = 0
+    torch.save(payload, control_factor)
+    output = artifact["tmp_path"] / "invalid_stage_b.json"
+    arguments = _stage_b_args(
+        artifact, control_dir=control_dir, variant_dir=variant_dir, output=output
+    )
+    with pytest.raises(SystemExit) as error:
+        stage_b_cli.entrypoint(arguments)
+    assert error.value.code == 1
+    assert not output.exists()
+
+
+def test_stage_b_scientific_stop_persists_and_exits_two(
+    p8_cli_artifacts, monkeypatch
+):
+    artifact = p8_cli_artifacts
+    control_dir = artifact["tmp_path"] / "control_stop"
+    variant_dir = artifact["tmp_path"] / "variant_stop"
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="nearest_control", output_dir=control_dir)
+        )
+    )
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="variant", output_dir=variant_dir)
+        )
+    )
+    original = stage_b_cli._stage_b_gates
+
+    def regression(**kwargs):
+        result = original(**kwargs)
+        result["triangulated_tracks_retain_98pct"] = False
+        return result
+
+    monkeypatch.setattr(stage_b_cli, "_stage_b_gates", regression)
+    output = artifact["tmp_path"] / "stage_b_stop.json"
+    arguments = _stage_b_args(
+        artifact, control_dir=control_dir, variant_dir=variant_dir, output=output
+    )
+    with pytest.raises(SystemExit) as error:
+        stage_b_cli.entrypoint(arguments)
+    assert error.value.code == 2
+    gate = json.loads(output.read_text())
+    assert gate["valid"] is True
+    assert gate["stage_b"]["passed"] is False
     assert gate["decision"] == "STOP_BEFORE_FULLCHAIN"
-    assert gate["stage_b"]["gates"]["selected_probe_rows_reused"] is True

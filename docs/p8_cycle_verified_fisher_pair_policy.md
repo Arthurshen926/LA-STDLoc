@@ -29,17 +29,18 @@ Implementation status at preregistration:
 - `evidence/triangulation.py` has a fail-closed precomputed-pair path so the
   selected probe rows enter the normal cycle/Track builder without another
   descriptor matcher call.
-- Three thin runners now preserve that boundary end to end:
-  `materialize_cycle_verified_pair_probe.py` constructs and matches the frozen
-  two-arm union once, `select_cycle_verified_fisher_pairs.py` consumes only the
-  SHA-bound probe, and `compare_cycle_verified_fisher_mechanism.py` replays the
-  nearest/P8 subsets on the same probe before checking Track evidence and exact
-  precomputed-match lineage.
+- Six thin runners now preserve that boundary end to end.  The proposal
+  attestor binds only the archived pair tables to the fresh cache; the probe
+  matches their union once; selection and the independent Stage-A comparator
+  consume that same probe; the reuse-only Track runner materializes both the
+  nearest control and P8 variant with a forbidden matcher-call sentinel; and
+  the independent Stage-B comparator checks their exact shared lineage before
+  applying Track gates.
 - Synthetic CPU tests cover hash tampering, aggregate-sidecar rejection,
   exact-budget closure, graph coverage, scale invariance, hard failure, and
-  matcher bypass.  The CLI-level synthetic test additionally carries the two
-  persisted artifacts into the normal Track builder while replacing the
-  descriptor matcher with a forbidden-call sentinel.
+  matcher bypass.  The CLI-level synthetic test additionally carries the
+  proposal, probe, selection and Stage-A gate through both normal Track builds
+  while replacing the descriptor matcher with a forbidden-call sentinel.
 - No real probe, GPU factor, fullchain, mapping pose, or formal test has run.
 
 ## Why this objective follows from the two-scene postmortem
@@ -96,6 +97,13 @@ The already frozen pair indices imply these exact contracts:
 The probe therefore costs less than two normal selected-pair matching passes,
 not the 48-neighbour all-proposal search.  Because selected matches are reused,
 total matching is the union size rather than `union + selected budget`.
+
+The archived Stairs/GreatCourt factors predate the current K/NMS/cache-lineage
+contract.  They are therefore **not** accepted as complete Track factors for
+P8.  `attest_cycle_verified_pair_proposals.py` reads only their sorted pair
+tables, records every unavailable lineage field, and produces a new pair-only
+proposal attestation whose authoritative query order, K and NMS come from the
+fresh cache.  No old match, Track, triangulation or geometry value is promoted.
 
 The probe contract binds:
 
@@ -210,17 +218,38 @@ matching.  The matcher thresholds are also mandatory arguments rather than
 hidden defaults, and V1 rejects values other than
 `0.65/0.01/2.0px/topK1/-1.0/-1.0`.
 
-The Stairs probe is materialized once with:
+First attest the archived inputs as **pair proposals only**.  The printed file
+and content hashes become mandatory downstream inputs:
+
+```bash
+PYTHONPATH=. python -m scripts.attest_cycle_verified_pair_proposals \
+  --scene stairs \
+  --query-cache "$QUERY_CACHE" \
+  --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --nearest-source "$ARCHIVED_NEAREST_FACTOR" \
+  --expected-nearest-source-sha256 "$ARCHIVED_NEAREST_FACTOR_SHA" \
+  --geometry-source "$ARCHIVED_GEOMETRY_FACTOR" \
+  --expected-geometry-source-sha256 "$ARCHIVED_GEOMETRY_FACTOR_SHA" \
+  --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+  --expected-mapping-keypoints 1024 \
+  --expected-nms-radius 4 \
+  --expected-pair-budget 7450 \
+  --expected-candidate-pair-count 14835 \
+  --expected-candidate-components 2 \
+  --output "$P8_ROOT/stairs/pair_proposals.pt"
+```
+
+Then materialize the one bounded probe from that attestation.  The archived
+factors are no longer factor-lineage inputs to this command:
 
 ```bash
 PYTHONPATH=. python -m scripts.materialize_cycle_verified_pair_probe \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
-  --nearest-factor "$NEAREST_FACTOR" \
-  --expected-nearest-factor-sha256 "$NEAREST_FACTOR_SHA" \
-  --geometry-factor "$GEOMETRY_FACTOR" \
-  --expected-geometry-factor-sha256 "$GEOMETRY_FACTOR_SHA" \
+  --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
+  --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
+  --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
   --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
   --expected-mapping-keypoints 1024 \
   --expected-nms-radius 4 \
@@ -258,11 +287,77 @@ PYTHONPATH=. python -m scripts.select_cycle_verified_fisher_pairs \
   --output "$P8_ROOT/stairs/pair_selection.pt"
 ```
 
-After Track construction consumes `probe_track_build_inputs(probe, selection)`,
-the mechanism comparator requires explicit file and content hashes for both
-artifacts plus exact control/variant factor and report hashes.  It rejects a
-variant unless its factor attests both artifact lineages, exactly reproduces the
-selected pair table, and records `track_pair_matches_reused=1` together with
+Before any Track construction, independently compare the nearest proposal arm
+and the selected arm from that exact probe.  A valid scientific STOP is written
+and exits 2; only a valid GO authorizes the reuse-only runner:
+
+```bash
+PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_stage_a \
+  --scene stairs \
+  --query-cache "$QUERY_CACHE" \
+  --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
+  --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
+  --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
+  --probe "$P8_ROOT/stairs/pair_match_probe.pt" \
+  --expected-probe-sha256 "$PROBE_FILE_SHA" \
+  --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
+  --selection "$P8_ROOT/stairs/pair_selection.pt" \
+  --expected-selection-sha256 "$SELECTION_FILE_SHA" \
+  --expected-selection-content-sha256 "$SELECTION_CONTENT_SHA" \
+  --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+  --expected-mapping-keypoints 1024 \
+  --expected-nms-radius 4 \
+  --expected-pair-budget 7450 \
+  --expected-candidate-pair-count 14835 \
+  --expected-candidate-components 2 \
+  --maximum-cycle-reprojection-error-px 2.0 \
+  --output "$P8_ROOT/stairs/stage_a_gate.json"
+```
+
+On Stage-A GO, run the same reuse-only Track materializer twice.  It calls
+`probe_pair_subset_track_build_inputs` for the nearest control and
+`probe_track_build_inputs` for the variant; a sentinel makes any descriptor
+matcher re-entry a hard error.  The manifest and frozen Track payload are the
+same fresh-cache-bound Stage-A inputs used by the existing Track factor runner.
+
+```bash
+for ARM in nearest_control variant; do
+  PYTHONPATH=. python -m scripts.materialize_cycle_verified_track_factor \
+    --scene stairs \
+    --arm "$ARM" \
+    --manifest "$STAGE_A_MANIFEST" \
+    --expected-manifest-sha256 "$STAGE_A_MANIFEST_SHA" \
+    --frozen-track-payload "$FROZEN_TRACK_PAYLOAD" \
+    --expected-frozen-track-payload-sha256 "$FROZEN_TRACK_PAYLOAD_SHA" \
+    --query-cache "$QUERY_CACHE" \
+    --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+    --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
+    --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
+    --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
+    --probe "$P8_ROOT/stairs/pair_match_probe.pt" \
+    --expected-probe-sha256 "$PROBE_FILE_SHA" \
+    --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
+    --selection "$P8_ROOT/stairs/pair_selection.pt" \
+    --expected-selection-sha256 "$SELECTION_FILE_SHA" \
+    --expected-selection-content-sha256 "$SELECTION_CONTENT_SHA" \
+    --stage-a-gate "$P8_ROOT/stairs/stage_a_gate.json" \
+    --expected-stage-a-gate-sha256 "$STAGE_A_GATE_SHA" \
+    --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+    --expected-mapping-keypoints 1024 \
+    --expected-nms-radius 4 \
+    --expected-pair-budget 7450 \
+    --expected-candidate-pair-count 14835 \
+    --expected-candidate-components 2 \
+    --device cuda \
+    --output-dir "$P8_ROOT/stairs/track_$ARM"
+done
+```
+
+Finally, Stage B requires exact control/variant factor and report hashes.  It
+independently rejects either arm unless both bind the same proposal, probe,
+selection, Stage-A gate and matcher; both must reproduce their exact pair subset
+with `track_pair_matches_reused=1` and
 `uses_precomputed_pair_matches=true`.
 
 ```bash
@@ -270,11 +365,17 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
-  --probe "$PROBE" --expected-probe-sha256 "$PROBE_FILE_SHA" \
+  --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
+  --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
+  --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
+  --probe "$P8_ROOT/stairs/pair_match_probe.pt" \
+  --expected-probe-sha256 "$PROBE_FILE_SHA" \
   --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
-  --selection "$SELECTION" \
+  --selection "$P8_ROOT/stairs/pair_selection.pt" \
   --expected-selection-sha256 "$SELECTION_FILE_SHA" \
   --expected-selection-content-sha256 "$SELECTION_CONTENT_SHA" \
+  --stage-a-gate "$P8_ROOT/stairs/stage_a_gate.json" \
+  --expected-stage-a-gate-sha256 "$STAGE_A_GATE_SHA" \
   --control-factor "$CONTROL_FACTOR" \
   --expected-control-factor-sha256 "$CONTROL_FACTOR_SHA" \
   --control-report "$CONTROL_REPORT" \
@@ -287,7 +388,6 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
   --expected-mapping-keypoints 1024 --expected-nms-radius 4 \
   --expected-pair-budget 7450 --expected-candidate-pair-count 14835 \
   --expected-candidate-components 2 \
-  --maximum-cycle-reprojection-error-px 2.0 \
   --output "$P8_ROOT/stairs/mechanism_gate.json"
 ```
 
@@ -298,9 +398,11 @@ STOP JSON and exits 2.  Only a valid GO exits 0.
 ## Current blocker and next executable step
 
 There is no scientific result for P8 yet.  The old selected-pair factors cannot
-be converted into a valid probe because they do not retain candidate keypoint
-correspondences.  The orchestration is now ready; the next executable step is
-the single bounded Stairs probe above, followed by selection and a reuse-aware
-Track build.  Only a Stairs Stage-A/B pass authorizes the identically frozen
-GreatCourt probe.  No real probe, GPU job, or test evaluation was started in
-this implementation task.
+be treated as valid probes or complete factor-lineage inputs because they do not
+retain candidate keypoint correspondences or the current complete cache
+lineage.  The orchestration is now ready; the next executable step is the
+pair-only Stairs proposal attestation, then the single bounded probe, selection,
+independent Stage A, two reuse-only Track factors and independent Stage B.  Only
+a Stairs Stage-A/B pass authorizes the identically frozen GreatCourt sequence.
+No real probe, GPU job, or test evaluation was started in this implementation
+task.
