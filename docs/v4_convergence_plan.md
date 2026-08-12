@@ -98,7 +98,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 2 Dedup/evidence transfer | 审计完成，物理合并 Stop | 等价图、协方差代理、functional audit、union-find component、无删除反事实 | 不实施删点和 evidence transfer；component 仅供风险/selector 使用 |
 | Stage 3 统一 geometry materializer | 未实施 | 已统一 Registry 中的 geometry/covariance 语义 | adaptive surface 求解与 mapping gate 尚未通过 |
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
-| Stage 5 observation descriptor | P6.0 audit 完成，机制 Go | 真实 observation 的分层平衡、medoid/trimming、dispersion、representability 与弱支撑已在 Heads/Stairs 实跑 | 尚未物化为部署 descriptor，也未做其独立 bounded refresh/pose gate |
+| Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
 | Stage 6 室内身份自适应 | 诊断层已落实 | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、mapping-density audit | 尚未重建 K_mapping=2048/NMS=4 cache；尚未改变 pair policy 或完成成对 pose 因子 |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
@@ -431,6 +431,33 @@ python -m scripts.audit_observation_descriptors \
 完整汇总。P6.0 的决策为 **Stage 5 mechanism GO**：进入独立 descriptor
 materialization + bounded refresh + mapping-pose 对照；不是直接替换当前部署 descriptor。
 
+#### P6.1 trajectory-block cross-fit：单 observation descriptor Stop
+
+P6.0 的同观测 representability 不能授权写回 descriptor，因此新增
+`topology/observation_descriptor_crossfit.py`，在同一冻结 V3 metric 空间执行严格的
+support-trajectory→held-out-trajectory exact global Top-1。Track bank 全程不变；variant
+只并行替换满足 support 门槛的 surface descriptor；不读取 test、不改 Map。
+
+Heads 的 1000 张 mapping 图像全部来自 `seq-02`，没有第二条独立 mapping trajectory，
+因此协议正确返回 `requires_at_least_two_mapping_trajectories`，不把相邻帧切片伪装成
+cross-fit。Stairs 的四条 mapping trajectories 则穷举了全部三种平衡划分：
+
+| Stairs fold A / B | 双向 eligible surface | A→B R@1 delta | B→A R@1 delta | 双向不退化 |
+|---|---:|---:|---:|---:|
+| 02+05 / 03+06 | 1826 | -12.94 pp | -14.24 pp | 9 |
+| 02+03 / 05+06 | 1927 | -13.33 pp | -13.08 pp | 12 |
+| 02+06 / 03+05 | 1556 | -13.60 pp | -12.61 pp | 8 |
+
+六个方向均新增 2017–3637 个 false winners。虽然每种划分有 1045–1338 个 Anchor 的
+双 fold descriptor cosine ≥0.65，但只有 8–12 个同时保持 held-out R@1 与 margin，三种
+划分的稳定交集仅 2 个。由此 **Obs-all 与当前 Obs-stable materialization 均 Stop**：
+不执行 compact refresh 或 pose，也不通过训练新 metric 掩盖源 descriptor 已经失去全局
+身份判别性的事实。高 dispersion 更可能反映 surface identity 多模态/污染，或 A1 为抑制
+全局竞争而有意偏离 positive medoid，而不是一个可由简单 medoid 修正的初始化误差。
+
+详细协议与全部结果见 `docs/v4_p61_crossfit_descriptor_gate.md`；真实 artifacts 位于
+`/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/audits/observation_descriptor_crossfit`。
+
 ### P7：7Scenes/12Scenes 室内专项
 
 室内问题优先看身份混淆和短基线，而不是继续堆地图元素：
@@ -584,10 +611,10 @@ P5.1 all-candidate alias risk 已完成完整候选审计、selector replay、co
 Pose Reserve 或训练步数的局部修补**。alias risk 仅保留为 failure attribution 与后续联合
 效用的输入。
 
-下一条单变量主线是 **P6.1 observation descriptor materialization**：以冻结 V3/P5.0 Map
-为对照，只对有充分真实观测支撑的 Anchor 物化分层平衡、medoid/trimming 融合 descriptor，
-保留单观测 weak fallback 的低置信边界；然后执行同一 compact graph/teacher、bounded
-refresh 和 Heads/Stairs mapping pose gate，并以 ShopFacade 做 precision guard。P7 的两项
-协议修复可并行准备，但必须作为独立因子：一是 Heads/Stairs 的
-`K_mapping=2048 / NMS=4` 可证明 cache；二是在固定 pair budget 下提高真实 parallax、同时
-补齐逐 pair raw/accepted/rejected sidecar。两者不得与 descriptor 变量混入同一个因果实验。
+P6.1 trajectory-block cross-fit 已证明 raw observation 的单 medoid materialization 会在
+Stairs 所有独立 trajectory 划分上大幅损失 held-out 全局身份判别性，因此该分支正式停止，
+不进入 compact refresh。下一条单变量主线切换到 P7 mapping evidence：先分别重建可证明的
+`K_mapping=1024/2048, NMS=4` density arms，再在固定 pair budget 下比较 nearest-6 与
+overlap-constrained parallax-aware graph，并补齐逐 pair raw/accepted/rejected sidecar。
+descriptor、density 与 pair-policy 三个变量不得混入同一个因果实验；只有 density/pair
+均不足时，才运行两 prototype upper bound 或考虑更强 frontend。
