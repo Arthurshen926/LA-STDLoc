@@ -2,10 +2,12 @@
 
 ## Decision
 
-The preregistered equal-energy descriptor is a mapping-only mechanism **GO**.
-All five fail-closed gates pass. This authorizes a fresh 320D mapping descriptor
-materialization and the existing three-seed q256 pose gate; it is not yet a
-pose-accuracy or test-set result.
+The preregistered equal-energy descriptor is a mapping-only identity mechanism
+**GO**, but its downstream three-seed q256 mapping-pose gate is a formal
+**STOP**. All five identity gates pass and justified a fresh 320D factor; all
+three pose seeds then fail the preregistered non-regression contract. It is
+therefore not the default representation and does not advance to
+`office2_5b`, an outdoor guard, or formal test.
 
 The representation remains one vector and one index:
 
@@ -55,12 +57,18 @@ SuperPoint and XFeat contain complementary identity evidence, and a fixed
 single-vector composition preserves surface identity while adding Track
 identity. It does not justify type-dependent routing or a tunable mixture.
 
-## Next authorized step
+## Downstream pose adjudication
 
-Materialize a mapping-only 320D bank while keeping anchor IDs, XYZ, types,
-topology, mapping query registry, one global Top-1, and one PoseLib call fixed.
-Any unsupported-anchor fallback must be specified and audited before the map is
-built. Then run the V2 q256 pose gate for seeds 2026/2027/2028. A pose Stop ends
-the line; a pose Go advances first to 12Scenes `office2_5b`, then an outdoor
-guard. Formal test remains frozen.
+The authorized factor was materialized without fallback while preserving all
+7,275 anchor IDs, geometry, types, topology, the 2,000-query mapping registry,
+one global Top-1, and one PoseLib call. Its formal q256x3 pose gate is valid and
+uses no test query, but stops because every seed regresses mean/CVaR95
+translation and 5 cm / 5 deg recall. Three-seed mean raw precision improves by
+`+0.70457 pp` and median rotation by `-0.02652 deg`, while mean translation
+worsens by `+0.38664 cm`, CVaR95 by `+7.59561 cm`, and recall by
+`-0.78125 pp`.
 
+The complete factor lineage, six replay hashes, metrics, and decision are in
+`docs/xfeat_equal_energy_stairs_pose_result.md`; machine evidence is in
+`docs/evidence/xfeat_equal_energy_stairs_pose_gate.json`. This pose Stop ends
+the locked 50/50 deployment line. Formal test remains frozen.

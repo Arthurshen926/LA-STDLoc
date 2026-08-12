@@ -1,0 +1,163 @@
+{
+  "schema": "lafgs_xfeat_equal_energy_stairs_pose_evidence",
+  "version": 1,
+  "scene": "7Scenes/stairs",
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "valid": true,
+  "decision": {
+    "identity_mechanism": "GO",
+    "mapping_pose": "STOP",
+    "reason": "PER_SEED_NON_REGRESSION_FAILED",
+    "all_per_seed_non_regression_checks_pass": false,
+    "has_substantive_three_seed_mean_improvement": true,
+    "authorizes_next_stage": false,
+    "authorizes_deployment": false,
+    "establishes_test_accuracy": false,
+    "authorized_next_stage": null
+  },
+  "factor": {
+    "name": "equal_energy_superpoint_xfeat",
+    "factor_id": "2e45f50ab669fe1298f3002f48585b173b5acbe071a9801e6f0064905036224f",
+    "formula": "concat(l2(v3_metric(superpoint256)),l2(xfeat64))/sqrt(2)",
+    "score_identity": "0.5*cosine_v3_superpoint+0.5*cosine_xfeat",
+    "descriptor_dim": 320,
+    "single_bank": true,
+    "one_global_top1": true,
+    "one_poselib_call_per_query": true,
+    "learned_parameters": false,
+    "source_specific_routing": false,
+    "topology_change": false
+  },
+  "protocol": {
+    "query_selection": "uniform_mapping_gate",
+    "query_count": 256,
+    "seeds": [2026, 2027, 2028],
+    "deployment_row_limit": 0,
+    "anchor_count": 7275,
+    "teacher_query_count": 2000,
+    "formal_test_frozen": true
+  },
+  "lineage": {
+    "evaluation_code_commit": "29797c9bd7df319661d57db1645bef5914245792",
+    "evaluation_worktree_clean": true,
+    "all_15_checks_pass": true,
+    "anchor_registry_bitwise_equal": true,
+    "teacher_anchor_map_registry_bitwise_equal": true,
+    "uniform_q256_indices_equal": true,
+    "uniform_q256_query_names_equal": true,
+    "calibration_rebind_only": true,
+    "teacher_rebind_only": true,
+    "query_caches_descriptor_factor_equivalent": true,
+    "strict_320d_identity_metric": true
+  },
+  "three_seed_mean": {
+    "baseline": {
+      "raw_gt_precision_percent": 6.4655303955078125,
+      "median_te_cm": 0.8593467995524406,
+      "mean_te_cm": 1.1397837361225054,
+      "p90_te_cm": 2.1016708575189114,
+      "cvar95_te_cm": 4.102229613524217,
+      "median_ae_deg": 0.2506196153937,
+      "mean_ae_deg": 0.3175140199721252,
+      "p90_ae_deg": 0.5948301024394357,
+      "p95_ae_deg": 0.7662886479991698,
+      "recall_5cm_5deg_percent": 98.4375,
+      "catastrophic_100cm_count": 0.0
+    },
+    "variant": {
+      "raw_gt_precision_percent": 7.17010498046875,
+      "median_te_cm": 0.8810335925469795,
+      "mean_te_cm": 1.5264195781279948,
+      "p90_te_cm": 2.1655875258147717,
+      "cvar95_te_cm": 11.69783792530115,
+      "median_ae_deg": 0.2240975328325531,
+      "mean_ae_deg": 0.34012593444368117,
+      "p90_ae_deg": 0.6088450903273465,
+      "p95_ae_deg": 0.7318615375017079,
+      "recall_5cm_5deg_percent": 97.65625,
+      "catastrophic_100cm_count": 0.0
+    },
+    "delta_variant_minus_baseline": {
+      "raw_gt_precision_percent": 0.7045745849609375,
+      "median_te_cm": 0.021686792994538906,
+      "mean_te_cm": 0.3866358420054894,
+      "p90_te_cm": 0.06391666829586029,
+      "cvar95_te_cm": 7.595608311776933,
+      "median_ae_deg": -0.02652208256114688,
+      "mean_ae_deg": 0.02261191447155597,
+      "p90_ae_deg": 0.01401498788791078,
+      "p95_ae_deg": -0.034427110497461944,
+      "recall_5cm_5deg_percent": -0.78125,
+      "catastrophic_100cm_count": 0.0
+    }
+  },
+  "per_seed": {
+    "2026": {
+      "passes_non_regression": false,
+      "raw_gt_precision_delta_pp": 0.7045745849609375,
+      "mean_te_delta_cm": 0.38785329124948476,
+      "p90_te_delta_cm": 0.05105920135974884,
+      "cvar95_te_delta_cm": 7.586241828707548,
+      "median_ae_delta_deg": -0.027388091406292503,
+      "recall_5cm_5deg_delta_pp": -0.78125
+    },
+    "2027": {
+      "passes_non_regression": false,
+      "raw_gt_precision_delta_pp": 0.7045745849609375,
+      "mean_te_delta_cm": 0.3940450226309622,
+      "p90_te_delta_cm": 0.12718793004751205,
+      "cvar95_te_delta_cm": 7.6816317553703595,
+      "median_ae_delta_deg": -0.026497618833465297,
+      "recall_5cm_5deg_delta_pp": -0.78125
+    },
+    "2028": {
+      "passes_non_regression": false,
+      "raw_gt_precision_delta_pp": 0.7045745849609375,
+      "mean_te_delta_cm": 0.37800921213602123,
+      "p90_te_delta_cm": 0.013502873480319977,
+      "cvar95_te_delta_cm": 7.518951351252886,
+      "median_ae_delta_deg": -0.025680537443682705,
+      "recall_5cm_5deg_delta_pp": -0.78125
+    }
+  },
+  "artifacts": {
+    "mapping_pose_gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/mapping_pose_gate.json",
+      "sha256": "5ef1a156e9e2ac54fa0e111a246865269510ee4971d685f0dac52a798e03f947"
+    },
+    "descriptor_factor_contract": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/descriptor_factor_contract.json",
+      "sha256": "81992f9f418cc64c1cfecaf61a4886ba7a36e6177aa0162d18a1b072fa7cda4f"
+    },
+    "map": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/anchor_map_equal_energy_320d.pt",
+      "sha256": "9a31e6c48ef0624f20236e61a32e7874d912f1786737308a5508b99be8c8c293"
+    },
+    "metric": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/metric_state_equal_energy_320d.pt",
+      "sha256": "5691305fe1d5ad704cca590f02355480cc19c0f3795efbd69e817e422f4779aa"
+    },
+    "query_cache": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/query_cache_equal_energy_320d.pt",
+      "sha256": "8e025d55e30ebcc8c1be90cc34c47dce7faecba20d405b7339f45f01a37df4e5"
+    },
+    "teacher": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/complete_positive_teacher_equal_energy_320d.pt",
+      "sha256": "439cdbd9f974be4f4831d41188ca9153197c7cc0b347aefe964de438b21ab67b"
+    },
+    "calibration": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/factor/scene_calibration_equal_energy_320d.json",
+      "sha256": "b331921383b166bc18b988f7e65a7edf7cb4ea0c8fd6e9d4baa61895841d8944"
+    },
+    "summaries": {
+      "baseline_seed2026_sha256": "e2102e6bb209295ba3a6887a5e1c3605b295d8d9dcbc26adce46bf72142a1d56",
+      "baseline_seed2027_sha256": "162b33d7d74f3f1887190e5da646bf788863cb849ac218bb00ce383688d49e09",
+      "baseline_seed2028_sha256": "c91d8ac634eae320f0e24eb99963aaaba93d76844922e59b3f50f00f5c28c600",
+      "variant_seed2026_sha256": "8b0ca99856163bbcd58eb1c6604650348da883625c3add24a8a808d96aea34b0",
+      "variant_seed2027_sha256": "8ca36fa5a2f44144ad13d5bf0ee7e5abf0b1a40850d7a27c26afd4755c0c4bac",
+      "variant_seed2028_sha256": "8b2e44bd78221849272ac482d15c170565671efbd218e05d35fed3d7276690da"
+    }
+  },
+  "method_conclusion": "The fixed equal-energy descriptor proves complementary identity headroom but fails pose-tail and recall non-regression in every seed; stop this deployment line before office2_5b, outdoor guards, and formal test, while retaining frozen V3 SuperPoint as the default frontend."
+}

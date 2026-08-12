@@ -292,3 +292,13 @@ equal-energy descriptor GO, the actionable boundary is now precise: keep the
 repeatable SuperPoint sampling rows and improve their identity representation,
 rather than replacing detector and descriptor together or claiming either the
 broader method or SuperPoint representation is optimal.
+
+The downstream equal-energy question is now also closed. A strict 320D
+single-bank factor preserved all 7,275 anchors and passed every lineage check,
+then ran the preregistered uniform-q256 pose gate for seeds 2026/2027/2028.
+Raw GT precision improved by `+0.70457 pp`, but every seed failed pose
+non-regression: three-seed mean translation rose by `+0.38664 cm`, CVaR95 by
+`+7.59561 cm`, and 5 cm / 5 deg recall fell by `-0.78125 pp`. The identity
+mechanism therefore remains informative, while the fixed 50/50 deployment arm
+stops before `office2_5b`, outdoor guards, and formal test. The default
+frontend remains the frozen V3 SuperPoint path.

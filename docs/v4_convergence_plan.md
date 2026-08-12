@@ -739,7 +739,17 @@ Reserve R@1 必须全部非退化，否则 Stop。完整冻结合同见
 R@1 分别 +5.0426/+5.0547 pp，pooled R@1/R@8 分别 +5.0490/+6.7211 pp，Track Core
 R@1 +6.2289 pp；更关键的是 Reserve R@1 也从 22.0532% 提升到 24.0530%
 （+1.9999 pp），消除了 XFeat-only 的失败项。它证明无需类型路由或可调权重，一个等能量
-单向量就能保留互补身份信息。当前授权范围仅到全新 320D mapping descriptor 重建和三种子
-pose gate；尚未产生部署或 test 精度结论。报告见
+单向量就能保留互补身份信息。该机制授权的全新 320D mapping descriptor 重建和三种子
+pose gate 随后均已执行；机制阶段报告见
 `docs/xfeat_equal_energy_stairs_result.md`，机器证据见
 `docs/evidence/xfeat_equal_energy_stairs_gate.json`。
+
+最终 q256x3 mapping-pose gate 为正式 **Stop**，且不是 lineage 或执行错误：15 项
+fail-closed lineage 检查全部通过，`uses_test_queries=false`，三种 seed 均违反 pose
+non-regression。三种子均值的 raw GT precision 提升 +0.7046 pp、median rotation 改善
+0.0265 deg，但 mean translation 增加 0.3866 cm、CVaR95 增加 7.5956 cm、5cm/5deg
+recall 下降 0.78125 pp；每种 seed 的 translation tail 与 recall 方向一致回退。故保留
+“SP 与 XFeat identity 互补”的机制结论，但锁定的 50/50 部署假设在 Stairs 结束，不扩到
+`office2_5b`、室外 guard 或 formal test，也不围绕 alpha、类型路由和场景阈值继续局部搜索。
+完整 pose 结果见 `docs/xfeat_equal_energy_stairs_pose_result.md`，机器证据见
+`docs/evidence/xfeat_equal_energy_stairs_pose_gate.json`。
