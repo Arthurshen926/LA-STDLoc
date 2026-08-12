@@ -12,6 +12,13 @@ from collections.abc import Mapping
 
 import torch
 
+from topology.geometry_materializer import (
+    GEOMETRY_IMAGE_TRIANGULATED,
+    GEOMETRY_SURFACE_INITIALIZED,
+    GEOMETRY_SURFACE_REGULARIZED,
+    materialize_legacy_map_geometry,
+)
+
 
 SCHEMA = "lafgs_evidence_grounded_anchor_registry"
 VERSION = 1
@@ -19,10 +26,6 @@ VERSION = 1
 IDENTITY_TRACK_VERIFIED = 0
 IDENTITY_MULTI_VIEW_SUPPORTED = 1
 IDENTITY_WEAK_FALLBACK = 2
-
-GEOMETRY_IMAGE_TRIANGULATED = 0
-GEOMETRY_SURFACE_REGULARIZED = 1
-GEOMETRY_SURFACE_INITIALIZED = 2
 
 SELECTION_PRECISION = 0
 SELECTION_MATCHING_COMPLETION = 1
@@ -263,55 +266,14 @@ def _query_registry(
 def _geometry_fields(
     state: Mapping,
     track_payload: Mapping | None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    anchor_type = torch.as_tensor(state["anchor_type"]).detach().cpu().long()
-    track_ids = torch.as_tensor(state["track_cluster_ids"]).detach().cpu().long()
-    xyz = torch.as_tensor(state["anchor_xyz"]).detach().cpu().float()
-    count = int(anchor_type.numel())
-    mode = torch.full((count,), GEOMETRY_SURFACE_INITIALIZED, dtype=torch.int8)
-    mode[anchor_type == 1] = GEOMETRY_IMAGE_TRIANGULATED
-    covariance = torch.full((count, 3, 3), float("nan"), dtype=torch.float32)
-    surface_evidence = anchor_type == 0
-    if "anchor_position_covariance" in state:
-        value = torch.as_tensor(state["anchor_position_covariance"]).detach().cpu().float()
-        if value.shape != covariance.shape:
-            raise ValueError("anchor position covariance does not align with map")
-        covariance.copy_(value)
-    if track_payload is None:
-        return mode, covariance, surface_evidence
-    geometry = track_payload["track_geometry"]
-    selected_rows = torch.nonzero(anchor_type == 1, as_tuple=False).reshape(-1)
-    selected_tracks = track_ids[selected_rows]
-    if "triangulation_covariance_matrix" in geometry:
-        covariance[selected_rows] = torch.as_tensor(
-            geometry["triangulation_covariance_matrix"]
-        ).detach().cpu().float()[selected_tracks]
-    elif "triangulation_covariance_trace" in geometry:
-        trace = torch.as_tensor(
-            geometry["triangulation_covariance_trace"]
-        ).detach().cpu().float()[selected_tracks]
-        covariance[selected_rows] = torch.diag_embed(
-            (trace / 3.0)[:, None].expand(-1, 3)
-        )
-    supported = torch.as_tensor(
-        geometry.get(
-            "triangulation_surface_supported",
-            torch.zeros(
-                torch.as_tensor(geometry["triangulated_xyz"]).shape[0],
-                dtype=torch.bool,
-            ),
-        )
-    ).detach().cpu().bool()
-    surface_evidence[selected_rows] = supported[selected_tracks]
-    if "triangulation_image_only_xyz" in geometry:
-        image_xyz = torch.as_tensor(
-            geometry["triangulation_image_only_xyz"]
-        ).detach().cpu().float()[selected_tracks]
-        regularized = supported[selected_tracks] & ~torch.isclose(
-            xyz[selected_rows], image_xyz, rtol=0.0, atol=1e-7
-        ).all(dim=1)
-        mode[selected_rows[regularized]] = GEOMETRY_SURFACE_REGULARIZED
-    return mode, covariance, surface_evidence
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    materialized = materialize_legacy_map_geometry(state, track_payload)
+    return (
+        materialized["geometry_mode"],
+        materialized["covariance"],
+        materialized["surface_evidence"],
+        materialized["surface_dependence"],
+    )
 
 
 def _selection_reasons(
@@ -427,7 +389,12 @@ def build_anchor_registry(
     identity = torch.full((count,), IDENTITY_WEAK_FALLBACK, dtype=torch.int8)
     identity[distinct_queries >= 2] = IDENTITY_MULTI_VIEW_SUPPORTED
     identity[legacy_type == 1] = IDENTITY_TRACK_VERIFIED
-    geometry_mode, covariance, surface_evidence = _geometry_fields(
+    (
+        geometry_mode,
+        covariance,
+        surface_evidence,
+        surface_dependence,
+    ) = _geometry_fields(
         state, track_payload
     )
     selection_reason, exact_selection = _selection_reasons(
@@ -450,6 +417,7 @@ def build_anchor_registry(
         "query_group_semantics": query_group_semantics,
         "identity_mode": identity,
         "geometry_mode": geometry_mode,
+        "surface_dependence": surface_dependence,
         "selection_reason": selection_reason,
         "evidence_mask": evidence_mask,
         "observation_count": observation_count,
@@ -464,6 +432,8 @@ def build_anchor_registry(
             "legacy_anchor_type_retained": True,
             "selection_provenance_exact": exact_selection,
             "missing_scores_are_nan": True,
+            "geometry_materialization_policy": "v3_p5_compatibility",
+            "surface_dependence_changes_localization_tensors": False,
         },
         "enums": {
             "identity_mode": {
@@ -524,6 +494,12 @@ def validate_registry_compatibility(registry: Mapping, state: Mapping) -> None:
 def registry_report(registry: Mapping) -> dict:
     identity = torch.as_tensor(registry["identity_mode"])
     geometry = torch.as_tensor(registry["geometry_mode"])
+    surface_dependence = torch.as_tensor(
+        registry.get(
+            "surface_dependence",
+            geometry != GEOMETRY_IMAGE_TRIANGULATED,
+        )
+    ).bool()
     selection = torch.as_tensor(registry["selection_reason"])
     observations = torch.as_tensor(registry["observation_count"])
     return {
@@ -547,6 +523,7 @@ def registry_report(registry: Mapping) -> dict:
             "surface_initialized": int(
                 (geometry == GEOMETRY_SURFACE_INITIALIZED).sum()
             ),
+            "surface_dependent": int(surface_dependence.sum()),
         },
         "selection": {
             "precision": int((selection == SELECTION_PRECISION).sum()),

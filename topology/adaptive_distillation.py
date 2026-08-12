@@ -19,6 +19,9 @@ from common.config import load_mainline_config
 from evidence.tracks import fuse_track_descriptors
 from map_learning.observations import _query_index_remap
 from topology.dynamic_reserve import PoseEvidence, spatial_voxel_ids
+from topology.geometry_materializer import (
+    materialize_track_geometry_compatibility,
+)
 from topology.matching_coverage import (
     IncrementalBipartiteCoverage,
     base_candidate_edges,
@@ -124,32 +127,9 @@ def _deployment_track_geometry(
     PnP geometry.  Surface-fused geometry remains available to weak tracks and
     must still pass the matching/pose reserve selection.
     """
-    if "triangulation_image_only_xyz" not in geometry:
-        return geometry
-    revised = dict(geometry)
-    core = torch.as_tensor(image_only_core).bool()
-    replacements = {
-        "triangulated_xyz": "triangulation_image_only_xyz",
-        "triangulation_covariance_trace": (
-            "triangulation_image_only_covariance_trace"
-        ),
-        "triangulation_covariance_matrix": (
-            "triangulation_image_only_covariance_matrix"
-        ),
-        "triangulation_reprojection_median_px": (
-            "triangulation_image_only_reprojection_median_px"
-        ),
-        "triangulation_reprojection_p90_px": (
-            "triangulation_image_only_reprojection_p90_px"
-        ),
-    }
-    for target, source in replacements.items():
-        if source not in geometry:
-            continue
-        value = torch.as_tensor(geometry[target]).clone()
-        value[core] = torch.as_tensor(geometry[source])[core]
-        revised[target] = value
-    return revised
+    return materialize_track_geometry_compatibility(
+        geometry, image_only_core
+    )
 
 
 def _mean_track_confidence(payload: dict) -> torch.Tensor:

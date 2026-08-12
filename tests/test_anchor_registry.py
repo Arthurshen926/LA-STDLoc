@@ -87,6 +87,7 @@ def test_registry_preserves_v3_map_and_separates_semantics():
         GEOMETRY_SURFACE_INITIALIZED,
         GEOMETRY_SURFACE_INITIALIZED,
     ]
+    assert registry["surface_dependence"].tolist() == [False, True, True]
     assert registry["selection_reason"].tolist() == [
         SELECTION_PRECISION,
         SELECTION_MATCHING_COMPLETION,
