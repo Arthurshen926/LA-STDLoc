@@ -3,12 +3,10 @@
 ## Decision
 
 The project is **not yet entitled to conclude that frozen SuperPoint has reached
-its representation ceiling**.  The repository now has an executable,
-mapping-only protocol that can answer that question, but the current machine
-does not contain a provenance-locked, independent local frontend that is
-admissible for the descriptor arm.  The correct current state is therefore
-`BLOCKED_BY_ARTIFACT`, not a negative result and not permission to download or
-randomly initialize a model.
+its representation ceiling**. The repository has an executable, mapping-only
+protocol and the bounded follow-up inventory found a provenance-locked XFeat
+candidate. The correct current state is `READY_FOR_PRODUCER_REVIEW`, not an
+accuracy result and not permission to download or randomly initialize a model.
 
 This is a candidate comparison / ceiling probe, not a mathematical upper bound
 unless a future candidate has a separately justified oracle property.  It does
@@ -144,6 +142,29 @@ same ceiling.
 
 ## Local artifact audit and blocker
 
+### 2026-08-12 bounded inventory update
+
+The original preflight below was correct for its restricted paths, but a later
+bounded inventory of named historical external-control encoder directories
+found an admissible local XFeat artifact. The current artifact status is
+therefore no longer `BLOCKED_BY_ARTIFACT`: it is
+`READY_FOR_PRODUCER_REVIEW`. This update does not supply a result and does not
+change the default SuperPoint frontend.
+
+The locked candidate is single-image XFeat with a native 64D dense/sparse
+descriptor, weight SHA256
+`0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b`,
+parent ULF-Loc commit
+`b28d53258ab4461ba1a02eaa60ef504e9b82b9ab`, and XFeat tree
+`4f804566cb1cf72469b7d7174fba9308885c5c5a`. Its checkpoint, code tree,
+Apache-2.0 license, CPU strict-load precheck, producer coordinate contract,
+and descriptor-first/detector-second progression are recorded in
+[`frontend_checkpoint_inventory_20260812.json`](frontend_checkpoint_inventory_20260812.json)
+and
+[`xfeat_frontend_probe_provision_plan.md`](xfeat_frontend_probe_provision_plan.md).
+The adjacent XFeat-LighterGlue checkpoint remains inadmissible as a pair
+matcher. No real image or accuracy gate has yet run.
+
 The read-only preflight on 2026-08-12 found:
 
 - frozen SuperPoint checkpoint: 5,206,086 bytes, verified SHA256
@@ -234,10 +255,9 @@ signal path plus fail-closed hash, family, row, K, and pairing constraints:
 ## Conclusion
 
 The implementation now cleanly answers two different questions without
-inventing another selector.  What remains unknown is empirical: no legal
-stronger independent frontend artifact is currently available, so neither
-detector headroom nor descriptor headroom has been measured.  If both candidate
-ceiling probes later fail with a credible locked candidate, the evidence will
-support moving the bottleneck downstream from frozen SuperPoint
+inventing another selector. What remains unknown is empirical: locked XFeat is
+now available for producer review, but neither detector headroom nor descriptor
+headroom has been measured. If both candidate ceiling probes later fail, the
+evidence will support moving the bottleneck downstream from frozen SuperPoint
 representation; until then, claiming either “the method is wrong” or
 “SuperPoint is already optimal” would exceed the evidence.

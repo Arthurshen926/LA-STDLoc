@@ -1,0 +1,234 @@
+{
+  "admissibility_contract": {
+    "candidate_detector_must_be_single_image": true,
+    "candidate_must_be_independently_pretrained": true,
+    "candidate_must_not_be_a_superpoint_postprocessor": true,
+    "candidate_must_not_be_pair_conditioned": true,
+    "descriptor_must_be_single_image_and_globally_indexable": true,
+    "local_immutable_weights_and_sha256_required": true,
+    "random_initialization_forbidden": true
+  },
+  "admissible_candidates": {
+    "xfeat_sparse_64d": {
+      "admissible_for_descriptor_identity_arm": true,
+      "admissible_for_detector_repeatability_arm": true,
+      "classification": "independent_single_image_detector_descriptor",
+      "code": {
+        "implementation_files": {
+          "hubconf.py": {
+            "sha256": "0ca73346ffb9fd402991a02cb4b55484ded05c719738f15d9bfcb60048963327"
+          },
+          "modules/interpolator.py": {
+            "sha256": "d63a6163eb6fff81e8720231f62537a42a69fccb44dc8851b04de5115daab4da"
+          },
+          "modules/model.py": {
+            "sha256": "d9a665f18fcea5eaf3e278925e1a92103afcba9051e05b2334f3daa29f411964"
+          },
+          "modules/xfeat.py": {
+            "sha256": "f1b0f73c77e34381a46578866bb1531b98180e8d870c0fc61fbfdbd29ac64f31"
+          }
+        },
+        "parent_git_commit": "b28d53258ab4461ba1a02eaa60ef504e9b82b9ab",
+        "parent_git_commit_date": "2026-05-09T20:25:36+08:00",
+        "parent_git_status_for_xfeat": "clean",
+        "parent_git_subject": "release code",
+        "source_root": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat",
+        "tree_git_sha1": "4f804566cb1cf72469b7d7174fba9308885c5c5a"
+      },
+      "descriptor": {
+        "dense_field_available": true,
+        "dimension": 64,
+        "global_indexing": "independent_L2_normalized_descriptor_then_global_cosine",
+        "grid_stride_px": 8,
+        "reference_row_sampling": {
+          "coordinate_domain": "locked_xfeat_floor_multiple_of_32_input_hw",
+          "formula": "xfeat_xy=(native_x/native_to_xfeat_rw,native_y/native_to_xfeat_rh); grid_xy=(2*xfeat_x/(xfeat_w-1)-1,2*xfeat_y/(xfeat_h-1)-1)",
+          "implementation": "locked_InterpolateSparse2d",
+          "mode": "bicubic",
+          "pytorch_align_corners": false
+        },
+        "single_image": true
+      },
+      "detector": {
+        "default_detection_threshold": 0.05,
+        "xfeat_grid_nms_kernel_size": 5,
+        "xfeat_grid_nms_radius_px": 2,
+        "score_semantics": "nearest_sampled_keypoint_probability_times_bilinear_sampled_reliability",
+        "sentinel_origin_excluded": true,
+        "single_image": true,
+        "top_k_order": "descending_final_score"
+      },
+      "license": {
+        "file": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/LICENSE",
+        "file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "spdx": "Apache-2.0",
+        "status": "locally_evidenced_for_code_tree"
+      },
+      "offline_cpu_precheck": {
+        "coordinate_contract": {
+          "all_64d_samples_finite": true,
+          "native_hw": [
+            481,
+            641
+          ],
+          "native_xfeat_native_roundtrip_max_abs_px": 0.0,
+          "sampled_points": 4,
+          "xfeat_hw": [
+            480,
+            640
+          ]
+        },
+        "descriptor_output_channels": 64,
+        "finite_tiny_forward": true,
+        "missing_state_dict_keys": [],
+        "parameter_count": 1551625,
+        "random_initialization_used": false,
+        "state_dict_entries": 122,
+        "strict_state_dict_load": true,
+        "unexpected_state_dict_keys": []
+      },
+      "producer_contract": {
+        "detector_order": [
+          "65_way_softmax_first_64_to_xfeat_heatmap",
+          "threshold_and_one_pass_5x5_maxpool_nms",
+          "score_nearest_probability_times_bilinear_reliability",
+          "descending_score_top_k",
+          "scale_xfeat_grid_coordinates_back_to_cached_native_grid",
+          "frozen_native_valid_mask_filter"
+        ],
+        "detector_pre_mask_count": "positive_score_top_k_count_before_frozen_native_valid_mask",
+        "input": "exact_query_cache_lineage_RGB_resized_bilinear_align_corners_false_then_frozen_nearest_valid_mask_then_zero_masked",
+        "internal_resize": "locked_XFeat_bilinear_align_corners_false_to_floor_native_hw_multiple_of_32",
+        "native_xfeat_mapping": "rh=native_h/xfeat_h,rw=native_w/xfeat_w; detector_native_xy=xfeat_xy*(rw,rh); descriptor_xfeat_xy=native_xy/(rw,rh)",
+        "reference_coordinates": "exact_cached_superpoint_native_grid_indices_without_pixel_center_offset",
+        "required_identity": "checkpoint_file_sha256_plus_parent_commit_plus_xfeat_tree_plus_model_xfeat_interpolator_file_sha256"
+      },
+      "status": "READY_FOR_PRODUCER_REVIEW",
+      "weights": {
+        "path": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat.pt",
+        "sha256": "0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b",
+        "size_bytes": 6247949,
+        "tracked_git_blob_sha1": "9da942e9c7406b8add3746bf98d4b1840233cd92",
+        "verified_duplicate_count": 3,
+        "verified_duplicate_paths": [
+          "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_adapter/encoders/XFeat/weights/xfeat.pt",
+          "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat.pt",
+          "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_gsplat14_shapecompat_v1/encoders/XFeat/weights/xfeat.pt"
+        ]
+      }
+    }
+  },
+  "baseline": {
+    "descriptor_dim": 256,
+    "name": "frozen_superpoint",
+    "weights": {
+      "path": "/root/STDLoc/build/lib/features/weights/superpoint_v1.pth",
+      "sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e",
+      "size_bytes": 5206086
+    }
+  },
+  "candidate_selection": {
+    "preferred_first_candidate": "xfeat_sparse_64d",
+    "reason": "only discovered local independent single-image detector/descriptor with locked weights, locked code tree, dense field, and global-indexable descriptors"
+  },
+  "conclusion": {
+    "descriptor_arm": "UNBLOCKED_PENDING_PRODUCER_MATERIALIZATION",
+    "detector_arm": "ARTIFACT_AVAILABLE_PENDING_PRODUCER__NONDIVISIBLE_HW_REQUIRES_MASK_LOOKUP_REVIEW",
+    "representation_ceiling_measured": false,
+    "status": "ADMISSIBLE_XFEAT_ARTIFACT_FOUND"
+  },
+  "inventory_scope": {
+    "audit_date": "2026-08-12",
+    "cpu_only": true,
+    "external_worktree_modified": false,
+    "gpu_used": false,
+    "network_access_used": false,
+    "search": [
+      "shallow checkpoint-name scan of /root/STDLoc, /root/.cache, and /mnt/pool/sqy",
+      "installed-package metadata and bounded package-cache inspection",
+      "bounded inspection of named historical external-control encoder trees"
+    ]
+  },
+  "not_admissible_or_blocked": {
+    "aliked": {
+      "status": "BLOCKED_BY_ARTIFACT",
+      "reason": "wrapper code exists but third_party/ALIKE and its model files are absent"
+    },
+    "d2_net": {
+      "status": "BLOCKED_BY_ARTIFACT",
+      "reason": "no local code/checkpoint pair found in bounded inventory"
+    },
+    "dedode": {
+      "available_code": "kornia_0.8.2",
+      "status": "BLOCKED_BY_ARTIFACT",
+      "reason": "no local DeDoDe detector and descriptor checkpoint pair"
+    },
+    "dinov2_vits14_reg4": {
+      "path": "/root/.cache/torch/hub/checkpoints/dinov2_vits14_reg4_pretrain.pth",
+      "sha256": "f433177089a681826f849f194ece3bb48f4d63fb38d32fc837e3dc7a4e5641fb",
+      "size_bytes": 88291785,
+      "status": "NOT_A_SPARSE_LOCAL_FRONTEND",
+      "reason": "backbone checkpoint alone does not supply the required independent sparse detector/descriptor contract"
+    },
+    "disk": {
+      "available_code": "kornia_0.8.2",
+      "descriptor_dim": 128,
+      "status": "BLOCKED_BY_ARTIFACT",
+      "reason": "neither depth-save.pth nor epipolar-save.pth is local"
+    },
+    "featurebooster": {
+      "status": "NOT_INDEPENDENT",
+      "reason": "SuperPoint postprocessor and weight remains absent"
+    },
+    "lightglue_family": {
+      "status": "REJECTED_PAIR_MATCHER",
+      "reason": "pair-conditioned matching cannot populate the global descriptor bank"
+    },
+    "loftr_outdoor": {
+      "path": "/root/.cache/torch/hub/checkpoints/loftr_outdoor.ckpt",
+      "sha256": "21f5bec5968178e8bc8b7633441836fe5de4f47d861dd2cd7dc38e271b0479ec",
+      "size_bytes": 46341978,
+      "status": "REJECTED_PAIR_MATCHER"
+    },
+    "r2d2": {
+      "code_sha256": "89d0fc70b89923e6fbac353d368bef40fbf8fffda86ff636d9fa9f54cf939643",
+      "status": "BLOCKED_BY_ARTIFACT",
+      "reason": "local exporter would download r2d2_WASF_N16.pt, but that checkpoint is absent and downloads are forbidden"
+    },
+    "xfeat_lighterglue": {
+      "path": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat-lighterglue.pt",
+      "sha256": "766102df37f11189efe5b0811d1f47c72b22629b79bfabfcfff9d2a2f84654b8",
+      "size_bytes": 10820795,
+      "status": "REJECTED_PAIR_MATCHER_COMPONENT",
+      "reason": "the admissible candidate uses xfeat.pt only"
+    }
+  },
+  "probe_contract_precheck": {
+    "consumer_can_directly_consume_materialized_xfeat_64d_rows": true,
+    "consumer_can_ingest_dense_field_without_producer": false,
+    "consumer_file": {
+      "path": "/root/STDLoc/map_learning/frontend_upper_bound.py",
+      "sha256": "7864a575ba8f4acfca266c3e86704a07af8440c9e6ebfd8c7b05b4a26429d090"
+    },
+    "consumer_normalizes_candidate_descriptors": true,
+    "consumer_requires_exact_reference_keypoint_hash": true,
+    "consumer_requires_one_candidate_descriptor_per_reference_row": true,
+    "consumer_requires_positive_finite_candidate_dimension": true,
+    "detector_mask_lookup_precheck": {
+      "cached_sparse_filter": "round_to_nearest_grid_cell",
+      "current_probe_validator": "floor_to_grid_cell",
+      "impact": "equivalent_for_integer_XFeat_coordinates; may differ after nontrivial native-to-XFeat resize scaling",
+      "required_resolution": "require_all_native_hw_divisible_by_32_or_align_validator_with_shared_frozen_mask_helper_before_arm_A"
+    },
+    "missing_producer_not_consumer": true,
+    "native_preprocessing_file": {
+      "path": "/root/STDLoc/map_learning/bootstrap.py",
+      "sha256": "30e59a1b339ffcb1888504b76dc3164ff1ad223e69808934100c26d7c719adbd"
+    },
+    "required_frontend_family": "independent_local_frontend",
+    "schema": "lafgs_frontend_ceiling_probe_cache",
+    "version": 1
+  },
+  "schema": "lafgs_local_frontend_checkpoint_inventory",
+  "version": 1
+}
