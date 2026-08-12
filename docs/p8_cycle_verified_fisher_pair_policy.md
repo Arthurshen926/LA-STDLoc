@@ -29,9 +29,17 @@ Implementation status at preregistration:
 - `evidence/triangulation.py` has a fail-closed precomputed-pair path so the
   selected probe rows enter the normal cycle/Track builder without another
   descriptor matcher call.
+- Three thin runners now preserve that boundary end to end:
+  `materialize_cycle_verified_pair_probe.py` constructs and matches the frozen
+  two-arm union once, `select_cycle_verified_fisher_pairs.py` consumes only the
+  SHA-bound probe, and `compare_cycle_verified_fisher_mechanism.py` replays the
+  nearest/P8 subsets on the same probe before checking Track evidence and exact
+  precomputed-match lineage.
 - Synthetic CPU tests cover hash tampering, aggregate-sidecar rejection,
   exact-budget closure, graph coverage, scale invariance, hard failure, and
-  matcher bypass.
+  matcher bypass.  The CLI-level synthetic test additionally carries the two
+  persisted artifacts into the normal Track builder while replacing the
+  descriptor matcher with a forbidden-call sentinel.
 - No real probe, GPU factor, fullchain, mapping pose, or formal test has run.
 
 ## Why this objective follows from the two-scene postmortem
@@ -193,12 +201,106 @@ three-seed mean must have a preregistered substantive improvement.  Then run the
 existing `office2_5b` tail no-regression sentinel.  Formal test remains forbidden
 until all mapping-only gates pass and the method/default decision is frozen.
 
+## Thin CLI execution contract
+
+All scientific axes and all serialized inputs are explicit.  `--scene stairs`
+requires K1024/NMS4/budget7450/union14835/components2; `--scene greatcourt`
+requires K2048/NMS4/budget5254/union9875/components1.  A mismatch fails before
+matching.  The matcher thresholds are also mandatory arguments rather than
+hidden defaults, and V1 rejects values other than
+`0.65/0.01/2.0px/topK1/-1.0/-1.0`.
+
+The Stairs probe is materialized once with:
+
+```bash
+PYTHONPATH=. python -m scripts.materialize_cycle_verified_pair_probe \
+  --scene stairs \
+  --query-cache "$QUERY_CACHE" \
+  --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --nearest-factor "$NEAREST_FACTOR" \
+  --expected-nearest-factor-sha256 "$NEAREST_FACTOR_SHA" \
+  --geometry-factor "$GEOMETRY_FACTOR" \
+  --expected-geometry-factor-sha256 "$GEOMETRY_FACTOR_SHA" \
+  --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+  --expected-mapping-keypoints 1024 \
+  --expected-nms-radius 4 \
+  --expected-pair-budget 7450 \
+  --expected-candidate-pair-count 14835 \
+  --expected-candidate-components 2 \
+  --minimum-similarity 0.65 \
+  --minimum-margin 0.01 \
+  --maximum-epipolar-error-px 2.0 \
+  --epipolar-candidate-topk 1 \
+  --epipolar-recovered-minimum-similarity -1.0 \
+  --epipolar-recovered-minimum-margin -1.0 \
+  --device cuda \
+  --output "$P8_ROOT/stairs/pair_match_probe.pt"
+```
+
+Its printed file/content hashes become mandatory selector inputs:
+
+```bash
+PYTHONPATH=. python -m scripts.select_cycle_verified_fisher_pairs \
+  --scene stairs \
+  --query-cache "$QUERY_CACHE" \
+  --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --probe "$P8_ROOT/stairs/pair_match_probe.pt" \
+  --expected-probe-sha256 "$PROBE_FILE_SHA" \
+  --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
+  --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+  --expected-mapping-keypoints 1024 \
+  --expected-nms-radius 4 \
+  --expected-pair-budget 7450 \
+  --expected-candidate-pair-count 14835 \
+  --expected-candidate-components 2 \
+  --minimum-camera-degree 1 \
+  --maximum-cycle-reprojection-error-px 2.0 \
+  --output "$P8_ROOT/stairs/pair_selection.pt"
+```
+
+After Track construction consumes `probe_track_build_inputs(probe, selection)`,
+the mechanism comparator requires explicit file and content hashes for both
+artifacts plus exact control/variant factor and report hashes.  It rejects a
+variant unless its factor attests both artifact lineages, exactly reproduces the
+selected pair table, and records `track_pair_matches_reused=1` together with
+`uses_precomputed_pair_matches=true`.
+
+```bash
+PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
+  --scene stairs \
+  --query-cache "$QUERY_CACHE" \
+  --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --probe "$PROBE" --expected-probe-sha256 "$PROBE_FILE_SHA" \
+  --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
+  --selection "$SELECTION" \
+  --expected-selection-sha256 "$SELECTION_FILE_SHA" \
+  --expected-selection-content-sha256 "$SELECTION_CONTENT_SHA" \
+  --control-factor "$CONTROL_FACTOR" \
+  --expected-control-factor-sha256 "$CONTROL_FACTOR_SHA" \
+  --control-report "$CONTROL_REPORT" \
+  --expected-control-report-sha256 "$CONTROL_REPORT_SHA" \
+  --variant-factor "$VARIANT_FACTOR" \
+  --expected-variant-factor-sha256 "$VARIANT_FACTOR_SHA" \
+  --variant-report "$VARIANT_REPORT" \
+  --expected-variant-report-sha256 "$VARIANT_REPORT_SHA" \
+  --expected-query-names-sha256 "$QUERY_NAMES_SHA" \
+  --expected-mapping-keypoints 1024 --expected-nms-radius 4 \
+  --expected-pair-budget 7450 --expected-candidate-pair-count 14835 \
+  --expected-candidate-components 2 \
+  --maximum-cycle-reprojection-error-px 2.0 \
+  --output "$P8_ROOT/stairs/mechanism_gate.json"
+```
+
+Input, hash, schema, or lineage failures exit 1 without producing a valid gate.
+A valid comparison that fails any preregistered scientific gate persists the
+STOP JSON and exits 2.  Only a valid GO exits 0.
+
 ## Current blocker and next executable step
 
-There is no scientific result for P8 yet.  The old factors cannot be converted
-into a valid probe because they do not retain candidate keypoint correspondences.
-The next executable step is to add thin CLI orchestration around the implemented
-probe/selector APIs, materialize the Stairs candidate-union probe once, verify
-that the selected subset reaches Track construction without matcher re-entry,
-and run Stage A/B.  Only a Stairs mechanism pass authorizes the identically
-frozen GreatCourt probe.  No GPU work was started in this implementation task.
+There is no scientific result for P8 yet.  The old selected-pair factors cannot
+be converted into a valid probe because they do not retain candidate keypoint
+correspondences.  The orchestration is now ready; the next executable step is
+the single bounded Stairs probe above, followed by selection and a reuse-aware
+Track build.  Only a Stairs Stage-A/B pass authorizes the identically frozen
+GreatCourt probe.  No real probe, GPU job, or test evaluation was started in
+this implementation task.

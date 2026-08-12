@@ -27,12 +27,13 @@
     }
   },
   "current_status": {
-    "cli_orchestration_complete": false,
+    "cli_orchestration_complete": true,
     "formal_test_run": false,
     "fullchain_run": false,
     "mapping_pose_run": false,
     "real_gpu_probe_run": false,
     "selector_and_probe_contract_implemented": true,
+    "synthetic_cli_matcher_bypass_test_present": true,
     "synthetic_cpu_tests_present": true,
     "track_matcher_reuse_path_implemented": true
   },
