@@ -43,10 +43,11 @@ folding, or a descriptor-space change.
 
 Large experiment artifacts are not committed:
 
-- candidate universe: `/tmp/lafgs_v4_stairs_p51/selector_candidate_universe.pt`;
-- merged Top-1 graph: `/tmp/lafgs_v4_stairs_p51/all_candidate_alias_top1_graph.pt`;
-- cross-group audit: `/tmp/lafgs_v4_stairs_p51/all_candidate_alias_risk_audit.pt`;
-- selector bundle: `/tmp/lafgs_v4_stairs_p51/selector`.
+- candidate universe: `/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/stairs/selector_candidate_universe.pt`;
+- merged Top-1 graph: `/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/stairs/all_candidate_alias_top1_graph.pt`;
+- cross-group audit: `/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/stairs/all_candidate_alias_risk_audit.pt`;
+- selector and all rebuilt compact evidence:
+  `/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/stairs`.
 
 The selector, compact graph/teacher reconstruction, bounded metric refresh and
 mapping pose gate are recorded below once each preceding contract passes.

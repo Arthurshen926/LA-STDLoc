@@ -97,9 +97,9 @@ Heads V3 真实产物兼容审计结果：
 | Stage 1 统一 Candidate Registry | 已落实兼容层 | 统一 observations、identity/geometry mode、evidence、NaN unknown；定位张量 bitwise equal | 全量 pose replay parity 随真实 selector 重放验收 |
 | Stage 2 Dedup/evidence transfer | 审计完成，物理合并 Stop | 等价图、协方差代理、functional audit、union-find component、无删除反事实 | 不实施删点和 evidence transfer；component 仅供风险/selector 使用 |
 | Stage 3 统一 geometry materializer | 未实施 | 已统一 Registry 中的 geometry/covariance 语义 | adaptive surface 求解与 mapping gate 尚未通过 |
-| Stage 4 统一 Sufficiency Selector | compatibility 已完成 | 单一 selected state、统一 primary reason/trace，Heads 真实重放定位张量 bitwise equal | alias-aware tie-break、最少 Pose=0、relative retention 尚未授权 |
-| Stage 5 observation descriptor | 部分基础已具备 | 所有现有 V3 最终 Anchor 均可追溯真实 observation；Track 已做鲁棒融合 | Gaussian/base 的统一重物化、dispersion/representability 尚未实现 |
-| Stage 6 室内身份自适应 | 部分落实 | NMS=4 契约修复；all-candidate equivalence/harmful 审计扩到 Stairs | baseline-aware pair graph、all-candidate alias cost、高密度因子尚未实施 |
+| Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
+| Stage 5 observation descriptor | P6.0 audit 完成，机制 Go | 真实 observation 的分层平衡、medoid/trimming、dispersion、representability 与弱支撑已在 Heads/Stairs 实跑 | 尚未物化为部署 descriptor，也未做其独立 bounded refresh/pose gate |
+| Stage 6 室内身份自适应 | 诊断层已落实 | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、mapping-density audit | 尚未重建 K_mapping=2048/NMS=4 cache；尚未改变 pair policy 或完成成对 pose 因子 |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -341,6 +341,24 @@ equal-gain alias tie-break 的 selector 机制 gate 通过：Anchor 6357→6361�
 
 Raw precision 是确定性量，三种子均从 14.19271% 降至 14.18478%；median 与 mean TE 均 3/3 种子恶化。P90 与 CVaR95 的三种子均值分别小幅改善 0.01231 cm 和 0.01737 cm，但不足以覆盖 precision sentinel 与中心误差回退。因此 **ShopFacade 对当前 equal-gain alias tie-break 判定为 Stop**：不运行 test split、不将其纳入默认 selector，也不通过场景阈值调参寻找例外。alias graph 继续保留为诊断证据；下一版本必须改变风险与 clean utility 的联合决策形式，而不是把当前 tie-break 扩大成删除或硬惩罚。
 
+#### P5.1 Stairs compact refresh 与 mapping pose：Stop
+
+Stairs 的完整候选池包含 5079 个 Track 与 22184 个 surface candidate。跨 trajectory
+group 的 false/harmful AUC 分别为 0.853/0.904；equal-gain tie-break 在保持 7275 个
+Anchor、118375/118375 matching rank 和零 unmet query/rank 的同时交换 361 对候选，净减少
+14794 次 false wins 与 2427 次 harmful events。该机制信号同样真实，但 translation
+worst-std p90 已轻微恶化 0.20%。
+
+随后为新 Map 重建 2000-query compact Top-64 function graph、raster provenance、
+complete-positive teacher，并从 identity 初始化执行 1520-step bounded metric refresh。
+Map/graph/teacher/metric 的 7275-row anchor-ID 契约全部通过。固定 q96、seeds
+2026/2027/2028 的 alias−V3 结果为：raw precision 3/3 均 -0.02136 pp，inlier precision
+3/3 均下降，mean、median、p90、p95 与 CVaR95 translation error 也全部 3/3 恶化；seed
+2026 的 CVaR95 进一步增加 5.06573 cm。因此 Stairs 判为明确 **Stop**，不运行 test。
+
+完整报告见 `docs/v4_stairs_sentinel.md`，持久化 artifacts 位于
+`/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/stairs`。
+
 ### P6：完全观测驱动的单 Anchor 描述子
 
 描述子只从 `O_i` 的真实 SuperPoint 观测产生：
@@ -559,4 +577,17 @@ audit-only 工作。
 
 P2.5 已完成 Heads、ShopFacade、Stairs 的 mapping-only 多种子 gate。物理去重在两个室内场景稳定伤害 CVaR95，Heads 还出现 recall 回退，因此 **P3 物理 evidence-transfer/dedup 分支正式停止**；不再扩到 Office/OldHospital 来为一个已失败机制寻找例外。等价 component 作为 semantic risk feature 保留，但 matcher 和 Map 均不折叠。
 
-下一主线切换为 **P5.1 all-candidate alias risk**：P5.0 compatibility 已通过；随后只在 mapping split 依次验证 all-candidate alias cost、Coverage 下 Pose tie-break、`pose_minimum_additions=0` 和 relative information retention。Stage 3 geometry revision 与 Stage 5 descriptor 重物化暂不并行开启，避免把 selector 机制与几何/表示变化混淆。
+P5.1 all-candidate alias risk 已完成完整候选审计、selector replay、compact evidence/teacher
+重建、bounded metric refresh 与 mapping pose gate。Heads、ShopFacade、Stairs 虽都显著减少
+历史 false/harmful evidence，却分别触发 precision、中心误差或 tail regression；因此
+**当前 equal-gain alias-risk tie-break 正式停止，不进入默认方法，也不再围绕其做阈值、
+Pose Reserve 或训练步数的局部修补**。alias risk 仅保留为 failure attribution 与后续联合
+效用的输入。
+
+下一条单变量主线是 **P6.1 observation descriptor materialization**：以冻结 V3/P5.0 Map
+为对照，只对有充分真实观测支撑的 Anchor 物化分层平衡、medoid/trimming 融合 descriptor，
+保留单观测 weak fallback 的低置信边界；然后执行同一 compact graph/teacher、bounded
+refresh 和 Heads/Stairs mapping pose gate，并以 ShopFacade 做 precision guard。P7 的两项
+协议修复可并行准备，但必须作为独立因子：一是 Heads/Stairs 的
+`K_mapping=2048 / NMS=4` 可证明 cache；二是在固定 pair budget 下提高真实 parallax、同时
+补齐逐 pair raw/accepted/rejected sidecar。两者不得与 descriptor 变量混入同一个因果实验。
