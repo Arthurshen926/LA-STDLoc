@@ -1,0 +1,174 @@
+{
+  "schema": "lafgs_equal_energy_stairs_postmortem_evidence",
+  "version": 1,
+  "uses_test_queries": false,
+  "scope": "mapping_only_q256_x_3_seed_cpu_replay",
+  "decision": {
+    "fixed_equal_energy_0p5": "REJECT_FOR_DEPLOYMENT",
+    "one_vector_representation": "RETAIN_AS_RESEARCH_CONSTRAINT",
+    "xfeat_complementarity": "MECHANISM_SUPPORTED",
+    "descriptor_pose_failure": "LOCALIZED_COHERENT_FALSE_CONSENSUS",
+    "p8_relation": "SHARED_SET_LEVEL_PRINCIPLE_BUT_DISTINCT_CAUSAL_FACTOR"
+  },
+  "artifacts": {
+    "full_report": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/postmortem_cpu_q256x3/postmortem_report.json",
+      "sha256": "fbc0ea6a3251aca88dc499efe9324ad7a16609c295ee9d873b7f3493dd22998f"
+    },
+    "reconstructed_row_pose_sidecar": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/postmortem_cpu_q256x3/paired_row_pose_sidecar.npz",
+      "sha256": "03338ef1cec6fb45b74d4a6be09f73bd5a5087168e61093ca0779baeb2051711"
+    },
+    "formal_pose_gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_equal_energy_descriptor_fullchain_20260813/stairs/mapping_pose_gate.json",
+      "sha256": "5ef1a156e9e2ac54fa0e111a246865269510ee4971d685f0dac52a798e03f947"
+    }
+  },
+  "reproduction": {
+    "device": "cpu",
+    "query_count": 256,
+    "seeds": [2026, 2027, 2028],
+    "candidate_all_reported_pose_metrics_exact": true,
+    "baseline_max_absolute_gpu_summary_difference": 0.000036692426874651574,
+    "baseline_difference_is_limited_to_mean_float_aggregation": true,
+    "raw_top1_counts_exact": true,
+    "anchor_xyz_bitwise_equal": true,
+    "anchor_type_bitwise_equal": true,
+    "teacher_rows_and_labels_bitwise_equal": true,
+    "query_geometry_bitwise_equal": true
+  },
+  "matching": {
+    "row_count": 262144,
+    "changed_top1_count": 114505,
+    "changed_top1_fraction": 0.4368019104003906,
+    "baseline_correct_count": 16949,
+    "candidate_correct_count": 18796,
+    "wrong_or_ambiguous_to_correct_count": 2404,
+    "correct_to_wrong_or_ambiguous_count": 557,
+    "net_correct_gain": 1847,
+    "raw_precision_delta_pp": 0.7045745849609375,
+    "candidate_winner_shift_track_to_reserve_net": 13053,
+    "candidate_changed_rows": {
+      "reserve": {
+        "count": 68182,
+        "correct_gain": 989,
+        "correct_loss": 348
+      },
+      "track": {
+        "count": 46323,
+        "correct_gain": 1415,
+        "correct_loss": 209
+      }
+    }
+  },
+  "seed2026_inliers": {
+    "baseline": {
+      "solver": 97308,
+      "gt_clean": 19698,
+      "gt_harmful": 77610,
+      "gt_precision_percent": 20.242939943272905
+    },
+    "candidate": {
+      "solver": 113811,
+      "gt_clean": 21857,
+      "gt_harmful": 91954,
+      "gt_precision_percent": 19.204646299566825
+    },
+    "candidate_minus_baseline": {
+      "solver": 16503,
+      "gt_clean": 2159,
+      "gt_harmful": 14344,
+      "reserve_harmful": 9809,
+      "track_harmful": 4535,
+      "reserve_fraction_of_added_harmful": 0.6838399330730619
+    }
+  },
+  "recall_transitions_all_three_seeds": {
+    "recovered_query_indices": [494, 1631, 1999],
+    "lost_query_indices": [1239, 1246, 1254, 1497, 1638],
+    "net_success_delta": -2
+  },
+  "coherent_false_consensus_queries": [
+    {
+      "query_index": 1239,
+      "image_name": "seq-05/frame-000239.color.png",
+      "baseline_te_cm": 1.4744631946086884,
+      "candidate_te_cm": 27.672678232192993,
+      "correct_count_delta": 6,
+      "baseline_clean_inliers": 14,
+      "candidate_clean_inliers": 0,
+      "nearest_mapping_camera_to_false_estimate": {
+        "query_index": 1279,
+        "image_name": "seq-05/frame-000279.color.png",
+        "translation_cm": 7.378,
+        "rotation_deg": 4.793
+      }
+    },
+    {
+      "query_index": 1246,
+      "image_name": "seq-05/frame-000246.color.png",
+      "baseline_te_cm": 1.2879323214292526,
+      "candidate_te_cm": 27.38232910633087,
+      "correct_count_delta": -1,
+      "baseline_clean_inliers": 26,
+      "candidate_clean_inliers": 0,
+      "nearest_mapping_camera_to_false_estimate": {
+        "query_index": 1293,
+        "image_name": "seq-05/frame-000293.color.png",
+        "translation_cm": 8.782,
+        "rotation_deg": 3.675
+      }
+    },
+    {
+      "query_index": 1254,
+      "image_name": "seq-05/frame-000254.color.png",
+      "baseline_te_cm": 0.6963599938899279,
+      "candidate_te_cm": 30.26546537876129,
+      "correct_count_delta": 1,
+      "baseline_clean_inliers": 24,
+      "candidate_clean_inliers": 0,
+      "nearest_mapping_camera_to_false_estimate": {
+        "query_index": 1313,
+        "image_name": "seq-05/frame-000313.color.png",
+        "translation_cm": 2.339,
+        "rotation_deg": 2.685
+      }
+    },
+    {
+      "query_index": 1497,
+      "image_name": "seq-05/frame-000497.color.png",
+      "baseline_te_cm": 1.141961943358183,
+      "candidate_te_cm": 29.42691743373871,
+      "correct_count_delta": -2,
+      "baseline_clean_inliers": 16,
+      "candidate_clean_inliers": 0,
+      "nearest_mapping_camera_to_false_estimate": {
+        "query_index": 1336,
+        "image_name": "seq-05/frame-000336.color.png",
+        "translation_cm": 3.067,
+        "rotation_deg": 6.47
+      }
+    }
+  ],
+  "tail_repeatability": {
+    "baseline_tail_intersection_fraction": 1.0,
+    "candidate_tail_intersection_fraction": 0.9230769230769231,
+    "candidate_tail_union_count": 14,
+    "interpretation": "assignment-driven and seed-stable rather than RANSAC noise"
+  },
+  "causal_interpretation": {
+    "not_supported": [
+      "anchor topology or xyz changed",
+      "globally insufficient correct-correspondence spatial coverage",
+      "Track-only failure",
+      "Reserve-only failure",
+      "RANSAC seed instability"
+    ],
+    "supported": [
+      "fixed 0.5 fusion changes too many unlabeled or ambiguous assignments",
+      "marginal identity gain does not control joint geometric consensus",
+      "localized repeated-scene aliases form a larger but wrong PoseLib consensus",
+      "the descriptor-to-pose interface is the failed factor"
+    ]
+  }
+}
