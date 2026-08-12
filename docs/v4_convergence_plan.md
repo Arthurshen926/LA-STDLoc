@@ -358,6 +358,61 @@ materialization + bounded refresh + mapping-pose 对照；不是直接替换当�
 
 核心哨兵：Heads、Fire、Stairs、Office2/Office5b；外部 precision 哨兵：ShopFacade、OldHospital。每次只使用 mapping split 做选择，冻结后再执行 test。
 
+#### P7.0 baseline-aware Track pair graph 审计已落实
+
+`evidence/track_pair_audit.py` 与 `scripts/audit_track_pair_graph.py` 已把冻结
+Track pair policy、mapping camera pose/intrinsics 和最终 Track observation graph 接通。
+该阶段严格是 `uses_test_queries=false / audit_only=true`：重建现有 candidate camera
+pairs，只报告 baseline、视轴变化、时间间隔、mapping 三角化点的共同视野与视差，不改变
+pair selection、Track、Map 或部署。
+
+“短基线”采用场景内相对标签：连续 mapping 帧 baseline 的 p75 与当前 candidate
+baseline 的 p25 取较大者；因此 `short-baseline=25%` 本身不是方法信号。真正的诊断量是
+其中同时具有小视轴变化、高共同视野的 near-repeat proxy，以及不依赖该相对标签的
+`parallax < 1 degree` 比例。Heads/Stairs 的冻结候选数均与旧 payload 逐个计数一致：
+
+| mapping-only pair 指标 | Heads | Stairs |
+|---|---:|---:|
+| Mapping cameras | 1000 | 2000 |
+| Candidate / 至少一条 match 的 pair | 3423 / 3423 | 7450 / 7450 |
+| Baseline median | 0.0422 m | 0.0409 m |
+| Optical-axis change median | 2.465° | 1.739° |
+| 同序时间间隔 median / 直接相邻占比 | 6 / 0.000% | 7 / 0.134% |
+| Mapping-FoV overlap Jaccard median | 0.928 | 0.932 |
+| Mapping-point parallax median | 2.260° | 1.060° |
+| Parallax < 1° | 3.30% | **42.71%** |
+| 短基线近重复 proxy | 6.51% | 3.06% |
+| 高 overlap 且 parallax < 1° | 0.18% | **11.50%** |
+| 非短基线、parallax ≥ 1°、正 overlap | 73.71% | **49.54%** |
+
+该结果把 Stairs 的问题定位得比“连续帧太多”更准确：现有 3 cm 最小 baseline 已基本
+排除直接相邻帧，但固定 `nearest-6` 仍给 Stairs 分配了大量**高重叠、低视差** pair；其
+绝对 baseline 与 Heads 接近，却因为视轴变化和场景深度结构只产生约一半的有效几何
+pair。P7 的 pair-graph 机制因此通过第一步 **diagnostic GO**：下一因子应在相同 pair
+budget 下，以 overlap 为可行性约束，提高 medium/large-baseline 与实际 mapping-point
+parallax 的覆盖，首要哨兵为 Stairs，同时用 Heads 防回退。此结论不代表 pose gain，尚未
+授权改变正式构图。
+
+冻结 payload 仍存在一个不可伪造的结构 blocker：它只保存候选/匹配 pair 与 edge 的总数
+及最终 Track 连通分量，没有保存每个 pair 的 raw、accepted、cycle-supported、ambiguity
+rejected 和 epipolar-rejected edge 计数。最终 Track 的共同观测不能唯一恢复原始 pair
+edge，因此“短基线重复纹理 matched-edge 的精确占比”当前必须留空。最小后续 sidecar
+接口是每 pair 的 `left/right query id` 加上述六类计数；无需保存描述子或改变部署 payload。
+
+可复现实跑产物：
+
+```bash
+python -m scripts.audit_track_pair_graph \
+  --track-payload <scene>/bootstrap/tracks_refined/track_micro_anchor_payload.pt \
+  --query-cache <scene>/bootstrap/query_cache.pt \
+  --reproducibility-manifest <scene>/bootstrap/tracks_refined/reproducibility_manifest.json \
+  --output /tmp/lafgs_<scene>_track_pair_graph_audit_v1.pt
+```
+
+Heads 与 Stairs 的结果分别位于
+`/tmp/lafgs_heads_track_pair_graph_audit_v1.{pt,json}` 和
+`/tmp/lafgs_stairs_track_pair_graph_audit_v1.{pt,json}`。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
