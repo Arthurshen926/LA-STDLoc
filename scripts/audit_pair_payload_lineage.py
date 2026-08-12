@@ -190,6 +190,17 @@ def _pair_sidecar_contract(
     }
 
 
+def _mapping_keypoint_contract(
+    factor: dict, *, expected_mapping_keypoints: int
+) -> dict[str, bool]:
+    expected_mapping_keypoints = int(expected_mapping_keypoints)
+    return {
+        "mapping_keypoints_expected": expected_mapping_keypoints > 0
+        and factor.get("mapping_keypoint_factor")
+        == expected_mapping_keypoints,
+    }
+
+
 def audit_pair_payload(
     payload: dict,
     factor: dict,
@@ -202,6 +213,7 @@ def audit_pair_payload(
     expected_query_cache_sha256: str,
     frozen_bootstrap_manifest_path: Path,
     expected_frozen_bootstrap_manifest_sha256: str,
+    expected_mapping_keypoints: int,
     expected_pair_budget: int,
 ) -> dict:
     assignment_fields = {
@@ -226,6 +238,12 @@ def audit_pair_payload(
         expected_frozen_bootstrap_manifest_sha256,
         label="Expected frozen-bootstrap-manifest SHA-256",
     )
+    expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_pair_budget = int(expected_pair_budget)
+    if expected_mapping_keypoints <= 0:
+        raise ValueError("Expected mapping keypoints must be positive")
+    if expected_pair_budget <= 0:
+        raise ValueError("Expected pair budget must be positive")
     payload_sha256 = sha256_file(payload_path)
     factor_sha256 = sha256_file(factor_path)
     base_state_sha256 = sha256_file(base_state_path)
@@ -256,7 +274,16 @@ def audit_pair_payload(
         "factor_schema": factor.get("schema") == "lafgs_pair_policy_track_factor",
         "factor_version": factor.get("version") == 1,
         "mapping_only": factor.get("uses_test_queries") is False,
-        "mapping_keypoints_1024": factor.get("mapping_keypoint_factor") == 1024,
+        **_mapping_keypoint_contract(
+            factor,
+            expected_mapping_keypoints=expected_mapping_keypoints,
+        ),
+        "frozen_bootstrap_mapping_keypoints_expected": int(
+            frozen_bootstrap_manifest.get("arguments", {}).get(
+                "native_keypoint_count", -1
+            )
+        )
+        == expected_mapping_keypoints,
         "density_frozen": factor.get("density_factor_mutated") is False,
         "descriptor_frozen": factor.get("descriptor_factor_mutated") is False,
         "selector_frozen": factor.get("selector_factor_mutated") is False,
@@ -383,6 +410,8 @@ def audit_pair_payload(
         "uses_test_queries": False,
         "valid": bool(valid),
         "pair_policy": str(factor.get("pair_policy")),
+        "expected_mapping_keypoints": expected_mapping_keypoints,
+        "mapping_keypoints": int(factor.get("mapping_keypoint_factor", -1)),
         "expected_pair_budget": int(expected_pair_budget),
         "exact_pair_budget": int(
             factor.get("pair_sidecar", {})
@@ -442,6 +471,7 @@ def main() -> None:
     parser.add_argument(
         "--expected-frozen-bootstrap-manifest-sha256", required=True
     )
+    parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
     parser.add_argument("--expected-pair-budget", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -461,6 +491,7 @@ def main() -> None:
         expected_frozen_bootstrap_manifest_sha256=(
             args.expected_frozen_bootstrap_manifest_sha256
         ),
+        expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_pair_budget=args.expected_pair_budget,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

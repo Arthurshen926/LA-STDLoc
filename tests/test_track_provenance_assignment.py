@@ -175,7 +175,11 @@ def test_replay_rejects_factor_owned_assignment():
         "assignment": {},
     }
     try:
-        _validate_factor_contract(factor)
+        _validate_factor_contract(
+            factor,
+            expected_mapping_keypoints=1024,
+            expected_pair_budget=7450,
+        )
     except ValueError as error:
         assert "must never be consumed" in str(error)
     else:

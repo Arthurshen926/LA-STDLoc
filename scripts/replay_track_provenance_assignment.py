@@ -25,7 +25,12 @@ def _load(path: Path) -> dict:
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
-def _validate_factor_contract(factor: dict) -> None:
+def _validate_factor_contract(
+    factor: dict,
+    *,
+    expected_mapping_keypoints: int,
+    expected_pair_budget: int,
+) -> None:
     if factor.get("schema") != "lafgs_pair_policy_track_factor":
         raise ValueError("Unexpected pair factor schema")
     if factor.get("version") != 1:
@@ -46,6 +51,29 @@ def _validate_factor_contract(factor: dict) -> None:
         )
     ):
         raise ValueError("Track factor is not pair-policy-only")
+    expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_pair_budget = int(expected_pair_budget)
+    if expected_mapping_keypoints <= 0:
+        raise ValueError("Expected mapping keypoints must be positive")
+    if expected_pair_budget <= 0:
+        raise ValueError("Expected pair budget must be positive")
+    if int(factor.get("mapping_keypoint_factor", -1)) != (
+        expected_mapping_keypoints
+    ):
+        raise ValueError("Track factor mapping K differs from the replay contract")
+    sidecar = factor.get("pair_sidecar")
+    policy = sidecar.get("policy") if isinstance(sidecar, dict) else None
+    pair = sidecar.get("pair") if isinstance(sidecar, dict) else None
+    if not isinstance(policy, dict) or not isinstance(pair, dict):
+        raise ValueError("Track factor lacks an exact pair-policy sidecar")
+    left = torch.as_tensor(pair.get("left_query_index", [])).reshape(-1)
+    right = torch.as_tensor(pair.get("right_query_index", [])).reshape(-1)
+    if (
+        int(policy.get("exact_pair_budget", -1)) != expected_pair_budget
+        or int(left.numel()) != expected_pair_budget
+        or int(right.numel()) != expected_pair_budget
+    ):
+        raise ValueError("Track factor pair budget differs from the replay contract")
 
 
 def _camera_key(camera) -> str:
@@ -207,6 +235,8 @@ def main() -> None:
     parser.add_argument("--base-state", type=Path, required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
+    parser.add_argument("--expected-pair-budget", type=int, required=True)
     parser.add_argument("--frozen-bootstrap-manifest", type=Path, required=True)
     parser.add_argument(
         "--expected-frozen-bootstrap-manifest-sha256", required=True
@@ -215,7 +245,11 @@ def main() -> None:
     args = parser.parse_args()
 
     factor = _load(args.factor)
-    _validate_factor_contract(factor)
+    _validate_factor_contract(
+        factor,
+        expected_mapping_keypoints=args.expected_mapping_keypoints,
+        expected_pair_budget=args.expected_pair_budget,
+    )
     expected_frozen_bootstrap_manifest_sha256 = str(
         args.expected_frozen_bootstrap_manifest_sha256
     ).strip().lower()
@@ -263,12 +297,15 @@ def main() -> None:
         raise ValueError("Expected query-cache SHA-256 must be 64 lowercase hex digits")
     if sha256_file(args.query_cache) != expected_query_cache_sha256:
         raise ValueError("Query-cache SHA-256 differs from frozen factor contract")
+    expected_mapping_keypoints = int(args.expected_mapping_keypoints)
     if int(factor.get("mapping_keypoint_factor", -1)) != int(
         frozen["native_keypoint_count"]
     ):
         raise ValueError("Factor density differs from the frozen bootstrap contract")
-    if int(frozen["native_keypoint_count"]) != 1024:
-        raise ValueError("This pair-only gate requires the frozen K=1024 cache")
+    if int(frozen["native_keypoint_count"]) != expected_mapping_keypoints:
+        raise ValueError(
+            "Frozen bootstrap mapping K differs from the explicit replay contract"
+        )
     assignment_parameters = {
         "topk": int(frozen["geometry_teacher_provenance_topk"]),
         "minimum_consensus_rate": float(
@@ -337,8 +374,12 @@ def main() -> None:
     for name in ("images", "resolution", "white_background", "load_iteration"):
         if cache_contract.get(name) != frozen.get(name):
             raise ValueError(f"{name} differs from the frozen query-cache contract")
-    if int(cache_contract.get("native_sparse_keypoint_count", -1)) != 1024:
-        raise ValueError("Query cache is not the frozen K=1024 factor")
+    if int(cache_contract.get("native_sparse_keypoint_count", -1)) != (
+        expected_mapping_keypoints
+    ):
+        raise ValueError(
+            "Query-cache mapping K differs from the explicit replay contract"
+        )
     if scene_args.gaussian_type != "2dgs":
         raise ValueError("Exact splat-provenance replay requires frozen 2DGS")
     gaussians = _gaussian_model_for_type(
@@ -438,6 +479,8 @@ def main() -> None:
         "version": 1,
         "uses_test_queries": False,
         "pair_policy": str(factor["pair_policy"]),
+        "expected_mapping_keypoints": int(args.expected_mapping_keypoints),
+        "expected_pair_budget": int(args.expected_pair_budget),
         "assignment_fields": sorted(payload["assignment"]),
         "track_count": int(torch.as_tensor(factor["tracks"]["track_level"]).numel()),
         "high_confidence_track_count": int(

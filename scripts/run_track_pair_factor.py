@@ -175,8 +175,49 @@ def _manifest_arguments(path: Path) -> dict:
     return dict(json.loads(path.read_text()).get("arguments", {}))
 
 
+def _validate_expected_factor_contract(
+    *,
+    expected_mapping_keypoints: int,
+    expected_pair_budget: int,
+    manifest: dict,
+    query_cache_payload: dict,
+    frozen_track_payload: dict,
+) -> tuple[int, int]:
+    """Bind the factor axes to explicit CLI and frozen-input contracts."""
+    expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_pair_budget = int(expected_pair_budget)
+    if expected_mapping_keypoints <= 0:
+        raise ValueError("Expected mapping keypoints must be positive")
+    if expected_pair_budget <= 0:
+        raise ValueError("Expected pair budget must be positive")
+    manifest_keypoints = int(manifest.get("native_keypoint_count", -1))
+    cache_contract = dict(query_cache_payload.get("signature_payload", {}))
+    cache_keypoints = int(
+        cache_contract.get("native_sparse_keypoint_count", -1)
+    )
+    if manifest_keypoints != expected_mapping_keypoints:
+        raise ValueError(
+            "Frozen bootstrap mapping K differs from the explicit factor contract"
+        )
+    if cache_keypoints != expected_mapping_keypoints:
+        raise ValueError(
+            "Query-cache mapping K differs from the explicit factor contract"
+        )
+    frozen_budget = int(
+        frozen_track_payload.get("diagnostics", {}).get(
+            "track_camera_pair_candidate_count", -1
+        )
+    )
+    if frozen_budget != expected_pair_budget:
+        raise ValueError(
+            "Frozen nearest-pair budget differs from the explicit factor contract"
+        )
+    return expected_mapping_keypoints, expected_pair_budget
+
+
 def _factor_payload(
-    *, pair_policy: str, query_names: list[str], query_bins: torch.Tensor,
+    *, mapping_keypoints: int, pair_policy: str, query_names: list[str],
+    query_bins: torch.Tensor,
     tracks: dict, track_geometry: dict, pair_sidecar: dict, diagnostics: dict,
 ) -> dict:
     """Materialize Track evidence only; provenance assignment is a later stage."""
@@ -184,7 +225,7 @@ def _factor_payload(
         "schema": "lafgs_pair_policy_track_factor",
         "version": 1,
         "uses_test_queries": False,
-        "mapping_keypoint_factor": 1024,
+        "mapping_keypoint_factor": int(mapping_keypoints),
         "descriptor_factor_mutated": False,
         "density_factor_mutated": False,
         "selector_factor_mutated": False,
@@ -234,7 +275,7 @@ def _build_report(
         "schema": result["schema"],
         "version": result["version"],
         "uses_test_queries": False,
-        "mapping_keypoint_factor": 1024,
+        "mapping_keypoint_factor": int(result["mapping_keypoint_factor"]),
         "pair_policy": pair_policy,
         "exact_pair_budget": int(pair_budget),
         "scene_point_count": int(scene_point_count),
@@ -266,7 +307,18 @@ def main() -> None:
     parser.add_argument(
         "--pair-policy", choices=["nearest", "parallax_diverse"], required=True
     )
-    parser.add_argument("--pair-budget", type=int)
+    parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
+    parser.add_argument(
+        "--expected-pair-budget",
+        "--pair-budget",
+        dest="expected_pair_budget",
+        type=int,
+        required=True,
+        help=(
+            "Exact frozen nearest-pair cardinality. --pair-budget remains an "
+            "alias for archived Stairs command compatibility."
+        ),
+    )
     parser.add_argument("--minimum-overlap-jaccard", type=float, default=0.15)
     parser.add_argument("--minimum-joint-visibility-points", type=int, default=8)
     parser.add_argument("--parallax-saturation-deg", type=float, default=2.0)
@@ -287,9 +339,16 @@ def main() -> None:
     payload = _load(args.query_cache)
     stage_seconds["load_artifacts"] = time.perf_counter() - started
     cache = payload.get("queries", payload)
-    if any(name not in cache for name in names):
-        raise ValueError("Query cache does not contain the frozen mapping order")
     manifest = _manifest_arguments(args.manifest)
+    mapping_keypoints, pair_budget = _validate_expected_factor_contract(
+        expected_mapping_keypoints=args.expected_mapping_keypoints,
+        expected_pair_budget=args.expected_pair_budget,
+        manifest=manifest,
+        query_cache_payload=payload,
+        frozen_track_payload=frozen,
+    )
+    if names != list(cache):
+        raise ValueError("Query cache does not equal the frozen mapping order")
 
     descriptors = []
     keypoints = []
@@ -326,9 +385,9 @@ def main() -> None:
     keypoint_counts = torch.as_tensor(
         [int(value.shape[0]) for value in keypoints], dtype=torch.long
     )
-    if int(keypoint_counts.max()) > 1024:
+    if int(keypoint_counts.max()) > mapping_keypoints:
         raise ValueError(
-            "P7 pair-only factor requires the frozen K_mapping=1024 cache"
+            "Observed mapping rows exceed the explicit mapping-K contract"
         )
     scene_points = mapping_scene_points_from_depth_samples(
         keypoints,
@@ -342,14 +401,6 @@ def main() -> None:
     stage_seconds["mapping_scene_points"] = (
         time.perf_counter() - started - sum(stage_seconds.values())
     )
-    frozen_budget = int(
-        frozen["diagnostics"]["track_camera_pair_candidate_count"]
-    )
-    pair_budget = frozen_budget if args.pair_budget is None else int(args.pair_budget)
-    if pair_budget != frozen_budget:
-        raise ValueError(
-            "Pair-only factor must preserve the frozen global pair budget"
-        )
     build_result = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
@@ -499,6 +550,7 @@ def main() -> None:
     )
 
     result = _factor_payload(
+        mapping_keypoints=mapping_keypoints,
         pair_policy=args.pair_policy,
         query_names=names,
         query_bins=query_bins,

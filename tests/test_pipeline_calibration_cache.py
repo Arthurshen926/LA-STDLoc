@@ -151,6 +151,7 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         json.dumps(
             {
                 "arguments": {
+                    "native_keypoint_count": 1024,
                     "geometry_teacher_provenance_topk": 4,
                     "geometry_teacher_provenance_min_consensus_rate": 0.35,
                     "geometry_teacher_provenance_min_views": 2,
@@ -212,6 +213,7 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         expected_query_cache_sha256=sha256_file(query_cache),
         frozen_bootstrap_manifest_path=manifest_path,
         expected_frozen_bootstrap_manifest_sha256=sha256_file(manifest_path),
+        expected_mapping_keypoints=1024,
         expected_pair_budget=1,
     )
     assert audit["valid"]
