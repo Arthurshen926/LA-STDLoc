@@ -1,0 +1,49 @@
+{
+  "schema": "lafgs_xfeat_equal_energy_stairs_evidence",
+  "version": 1,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "decision": "GO_TO_MAPPING_DESCRIPTOR_REBUILD",
+  "representation": {
+    "name": "equal_energy_superpoint_xfeat",
+    "formula": "concat(l2(superpoint),l2(xfeat))/sqrt(2)",
+    "score_identity": "0.5*cosine_superpoint+0.5*cosine_xfeat",
+    "descriptor_dim": 320,
+    "learned_parameters": false,
+    "source_specific_routing": false
+  },
+  "metrics": {
+    "selection_to_gate_r1_delta_pp": 5.042563742303402,
+    "gate_to_selection_r1_delta_pp": 5.054742846628024,
+    "pooled_r1_delta_pp": 5.049005771682746,
+    "pooled_r8_delta_pp": 6.72113915303233,
+    "track_core_r1_delta_pp": 6.228949257357402,
+    "gaussian_reserve_r1_delta_pp": 1.999851862824975
+  },
+  "gates": {
+    "selection_to_gate_r1_strictly_positive": true,
+    "gate_to_selection_r1_strictly_positive": true,
+    "pooled_r8_non_regression": true,
+    "pooled_track_core_r1_non_regression": true,
+    "pooled_gaussian_reserve_r1_non_regression": true
+  },
+  "artifacts": {
+    "report": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/sp_xfeat_equal_energy_descriptor_report.json",
+      "sha256": "6dbc8394da5c6a498d5648ddbe474f71b82c2baba91eb0ed05e2193dffc63aaa"
+    },
+    "gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/sp_xfeat_equal_energy_descriptor_gate.json",
+      "sha256": "19e6e5797840943bf7d4a0144f1b4cc1b99e2f895dea6437c9e529cc8cc8a623"
+    },
+    "probe": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor.pt",
+      "sha256": "fc538197bd103cfe9dfc4ef34109218e286d71b814815827a3828d356dc16a3a"
+    }
+  },
+  "evaluation_code_commit": "7c4c40bd5d8dfb08ee4b3d4f54a5e36f8a7edcb3",
+  "limitations": [
+    "No 320D deployment map or metric has been materialized.",
+    "No mapping pose or formal test query has been evaluated."
+  ]
+}

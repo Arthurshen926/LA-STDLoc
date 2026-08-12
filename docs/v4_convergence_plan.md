@@ -706,3 +706,12 @@ Top-1 和一次 cosine，分数严格等于两分支 cosine 的 50/50 平均；�
 双 bank、detector/topology/pose 联动。双向 R@1 必须严格提升，pooled R@8、Track R@1 与
 Reserve R@1 必须全部非退化，否则 Stop。完整冻结合同见
 `docs/xfeat_equal_energy_descriptor_preregistration.md`。
+
+该因子随后已完成真实 Stairs mapping-only gate，并以五项全 Pass 获得机制 **Go**：双向
+R@1 分别 +5.0426/+5.0547 pp，pooled R@1/R@8 分别 +5.0490/+6.7211 pp，Track Core
+R@1 +6.2289 pp；更关键的是 Reserve R@1 也从 22.0532% 提升到 24.0530%
+（+1.9999 pp），消除了 XFeat-only 的失败项。它证明无需类型路由或可调权重，一个等能量
+单向量就能保留互补身份信息。当前授权范围仅到全新 320D mapping descriptor 重建和三种子
+pose gate；尚未产生部署或 test 精度结论。报告见
+`docs/xfeat_equal_energy_stairs_result.md`，机器证据见
+`docs/evidence/xfeat_equal_energy_stairs_gate.json`。
