@@ -6,6 +6,50 @@ import torch
 from map_learning import pipeline
 
 
+def test_canonical_evidence_build_does_not_apply_compact_path_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "evidence"
+    output.mkdir()
+    for name in (
+        "canonical_map.pt",
+        "function_graph_v2.pt",
+        "raster_provenance.pt",
+        "function_graph.pt",
+        "complete_positive_teacher.pt",
+        "evidence_contract.json",
+    ):
+        (output / name).touch()
+
+    monkeypatch.setattr(
+        pipeline,
+        "_load_or_compute_scene_calibration",
+        lambda **_: {"parameters": {}},
+    )
+    monkeypatch.setattr(
+        pipeline, "_assert_adaptive_threshold_contract", lambda **_: None
+    )
+
+    def reject_compact_contract(**_):
+        raise AssertionError("compact-map contract leaked into canonical build")
+
+    monkeypatch.setattr(
+        pipeline, "_assert_compact_evidence_path_contract", reject_compact_contract
+    )
+    result = pipeline.build_evidence(
+        base_state=tmp_path / "base.pt",
+        track_payload=tmp_path / "tracks.pt",
+        query_cache=tmp_path / "queries.pt",
+        prior_ply=tmp_path / "prior.ply",
+        gaussian_type="2dgs",
+        sh_degree=3,
+        visibility_cache="",
+        output=output,
+    )
+
+    assert result["canonical_map"] == output / "canonical_map.pt"
+
+
 def test_compact_refresh_rebuilds_one_aligned_evidence_universe(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -58,8 +102,11 @@ def test_compact_refresh_rebuilds_one_aligned_evidence_universe(
     monkeypatch.setattr(
         pipeline, "_assert_adaptive_threshold_contract", lambda **_: None
     )
+    compact_contract_calls = []
     monkeypatch.setattr(
-        pipeline, "_assert_compact_evidence_path_contract", lambda **_: None
+        pipeline,
+        "_assert_compact_evidence_path_contract",
+        lambda **kwargs: compact_contract_calls.append(kwargs),
     )
     monkeypatch.setattr(
         pipeline, "_assert_compact_training_threshold_contract", lambda *_: None
@@ -109,6 +156,15 @@ def test_compact_refresh_rebuilds_one_aligned_evidence_universe(
         )
     ]
     assert trained["function_graph_path"] == output / "compact_function_graph.pt"
+    assert compact_contract_calls == [
+        {
+            "compact_map": compact_map,
+            "graph_v2": output / "compact_function_graph_v2.pt",
+            "provenance": output / "raster_provenance.pt",
+            "graph": output / "compact_function_graph.pt",
+            "teacher": output / "complete_positive_teacher.pt",
+        }
+    ]
     assert result["compact_function_graph"] == output / "compact_function_graph.pt"
     assert result["compact_function_graph_v2"] == graph_v2
 

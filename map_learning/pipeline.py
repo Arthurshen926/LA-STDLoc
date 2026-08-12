@@ -1144,14 +1144,6 @@ def build_evidence(
             output=teacher,
             shard_count=observation_shards,
         )
-    if rebuild_function_graph:
-        _assert_compact_evidence_path_contract(
-            compact_map=Path(compact_map),
-            graph_v2=compact_graph_v2,
-            provenance=provenance,
-            graph=compact_graph,
-            teacher=teacher,
-        )
     if parameters is not None:
         _assert_adaptive_threshold_contract(
             graph=graph,
@@ -1505,6 +1497,14 @@ def train_compact_map(
             ],
             output=teacher,
             shard_count=observation_shards,
+        )
+    if rebuild_function_graph:
+        _assert_compact_evidence_path_contract(
+            compact_map=Path(compact_map),
+            graph_v2=compact_graph_v2,
+            provenance=provenance,
+            graph=compact_graph,
+            teacher=teacher,
         )
     if parameters is not None:
         _assert_adaptive_threshold_contract(
