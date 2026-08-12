@@ -192,7 +192,17 @@ def audit_mapping_density(
 ) -> dict[str, Any]:
     """Audit one existing mapping cache without invoking any model code."""
     query_cache_path = Path(query_cache_path).expanduser().resolve()
-    payload = torch.load(query_cache_path, map_location="cpu", weights_only=False)
+    try:
+        payload = torch.load(
+            query_cache_path,
+            map_location="cpu",
+            weights_only=False,
+            mmap=True,
+        )
+    except (TypeError, RuntimeError):
+        payload = torch.load(
+            query_cache_path, map_location="cpu", weights_only=False
+        )
     if not isinstance(payload, dict):
         raise ValueError("query cache must be a mapping")
     cache = payload.get("queries", payload)
@@ -226,7 +236,16 @@ def audit_mapping_density(
         # masks are CPU tensors, so NumPy's contiguous scalar reduction is both
         # exact and substantially cheaper here.
         valid_count = int(valid_mask.numpy().sum())
-        request = metadata.get("detect_num")
+        request = metadata.get(
+            "requested_keypoint_count", metadata.get("detect_num")
+        )
+        legacy_request = metadata.get("detect_num")
+        if (
+            request is not None
+            and legacy_request is not None
+            and int(request) != int(legacy_request)
+        ):
+            metadata_row_mismatches.append(name)
         before = metadata.get("keypoint_count_before_mask")
         after = metadata.get("keypoint_count_after_mask")
         requested.append(request)

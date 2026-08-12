@@ -4,7 +4,7 @@ import torch
 
 from data.splits import split_support_query_cameras
 from evidence.evidence_graph import _same_anchor_map
-from map_learning.bootstrap import _cache_payload_compatible
+from map_learning.bootstrap import _build_query_cache, _cache_payload_compatible
 from map_learning.bootstrap import build_parser as build_bootstrap_parser
 from map_learning.pipeline import build_bootstrap_and_tracks
 from priors.rasterizer import anchor_source_csr
@@ -64,6 +64,62 @@ def test_query_cache_contract_rejects_prior_or_resolution_change():
     changed = dict(payload)
     changed["native_sparse_nms_radius"] = 2
     assert not _cache_payload_compatible(payload, changed)
+
+
+def test_query_cache_attests_mapping_k_and_nms_per_query(monkeypatch):
+    camera = SimpleNamespace(
+        image_name="seq/frame.png",
+        FoVx=1.0,
+        FoVy=1.0,
+        world_view_transform=torch.eye(4),
+    )
+
+    class Extractor:
+        nms_radius = 4
+
+        def detectAndCompute(self, image, top_k):
+            assert top_k == 2048
+            return [{
+                "keypoints": torch.tensor([[1.0, 1.0], [2.0, 2.0]]),
+                "descriptors": torch.ones(2, 4),
+                "keypoint_scores": torch.ones(2),
+            }]
+
+    monkeypatch.setattr(
+        "map_learning.bootstrap._query_feature_outputs",
+        lambda *args, **kwargs: (
+            torch.ones(4, 2, 2),
+            None,
+            torch.ones(2, 2, dtype=torch.bool),
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        "map_learning.bootstrap._native_feature_input",
+        lambda *args, **kwargs: (
+            torch.ones(3, 4, 4),
+            torch.ones(4, 4, dtype=torch.bool),
+        ),
+    )
+    monkeypatch.setattr(
+        "map_learning.bootstrap._render_depth_alpha",
+        lambda *args, **kwargs: (torch.ones(4, 4), torch.ones(4, 4)),
+    )
+    cache = _build_query_cache(
+        [camera],
+        object(),
+        Extractor(),
+        None,
+        torch.zeros(3),
+        True,
+        0,
+        include_native_sparse=True,
+        native_keypoint_count=2048,
+    )
+    metadata = cache["seq/frame.png"]["native_sparse_metadata"]
+    assert metadata["detect_num"] == 2048
+    assert metadata["requested_keypoint_count"] == 2048
+    assert metadata["nms_radius"] == 4
 
 
 def test_anchor_source_csr_preserves_one_source_per_base_anchor():

@@ -15,7 +15,12 @@ import sys
 import time
 
 from common.calibration import calibrate_scene
-from common.config import load_mainline_config, resolve_keypoint_count
+from common.config import (
+    load_mainline_config,
+    mapping_keypoint_policy_source,
+    resolve_mapping_keypoint_count,
+    resolve_mapping_nms_radius,
+)
 from common.hashing import sha256_file
 from data.datasets import ColmapDataset
 from map_learning.trainer import full_refresh_interval, train
@@ -461,10 +466,15 @@ def build_bootstrap_and_tracks(
         prebootstrap_angular_scale = 1.0
         pose_bins = int(initialization["kcs_view_bins"])
     native_keypoint_count = (
-        resolve_keypoint_count(cfg["deployment"], mapping_cameras)
+        resolve_mapping_keypoint_count(cfg, mapping_cameras)
         if adaptive and has_camera_model
-        else int(initialization["kcs_keypoints"])
+        else int(
+            cfg.get("mapping", {}).get(
+                "keypoints", initialization["kcs_keypoints"]
+            )
+        )
     )
+    native_nms_radius = resolve_mapping_nms_radius(cfg)
     native_association_radius = max(0.5, 2.0 * prebootstrap_angular_scale)
     kcs_radius = max(
         0.5,
@@ -479,7 +489,7 @@ def build_bootstrap_and_tracks(
         query_cache=query_cache,
         visibility_cache=visibility,
         native_keypoint_count=native_keypoint_count,
-        native_nms_radius=int(cfg["deployment"]["nms"]),
+        native_nms_radius=native_nms_radius,
         native_association_radius_px=native_association_radius,
     )
     bootstrap_state = init_dir / "0_lafgs_map_state.pt"
@@ -975,6 +985,26 @@ def build_bootstrap_and_tracks(
         "visibility_cache": visibility,
         "landmark_ids": landmark_ids,
     }
+    mapping_contract = run / "mapping_frontend_contract.json"
+    mapping_contract.write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_mapping_frontend_contract",
+                "version": 1,
+                "uses_test_queries": False,
+                "sparse_frontend": "ulfloc_native_metric",
+                "keypoint_count": int(native_keypoint_count),
+                "keypoint_source": mapping_keypoint_policy_source(cfg),
+                "nms_radius": int(native_nms_radius),
+                "deployment_keypoint_policy_unchanged": dict(cfg["deployment"]),
+                "query_cache": str(query_cache.resolve()),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    artifacts["mapping_frontend_contract"] = mapping_contract
     if adaptive:
         artifacts["preliminary_scene_calibration"] = (
             run / "preliminary_scene_calibration.json"

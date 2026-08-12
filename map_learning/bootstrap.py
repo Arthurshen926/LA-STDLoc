@@ -822,6 +822,7 @@ def _build_query_cache(
                     "native_sparse_metadata": {
                         "detect_and_compute": True,
                         "detect_num": int(native_keypoint_count),
+                        "requested_keypoint_count": int(native_keypoint_count),
                         "nms_radius": int(feature_extractor.nms_radius),
                         "keypoint_count_before_mask": int(
                             native_sparse["keypoints"].shape[0]

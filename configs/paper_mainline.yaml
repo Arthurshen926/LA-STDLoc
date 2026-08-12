@@ -84,6 +84,14 @@ reconstruction:
   group_dro_eta: 0.03
   group_dro_max_weight_ratio: 3.0
 
+mapping:
+  sparse_frontend: ulfloc_native_metric
+  keypoints: 2048
+  keypoint_reference_area_px: 2073600
+  keypoint_minimum: 1024
+  keypoint_maximum: 2048
+  nms: 4
+
 deployment:
   sparse_frontend: ulfloc_native_metric
   query_feature_contract: native_resized_input

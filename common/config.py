@@ -40,6 +40,7 @@ TOP_LEVEL_KEYS = frozenset(
         "seeds",
         "adaptive",
         "geometry",
+        "mapping",
     }
 )
 
@@ -111,6 +112,16 @@ class MainlineConfig:
         }
         if mismatched:
             raise ValueError(f"deployment contract changed: {mismatched}")
+        mapping = values.get("mapping", {})
+        if mapping:
+            if mapping.get("sparse_frontend") != "ulfloc_native_metric":
+                raise ValueError(
+                    "mapping sparse frontend differs from the frozen contract"
+                )
+            if int(mapping.get("nms", 0)) != 4:
+                raise ValueError("mapping NMS radius differs from the frozen contract")
+            if int(mapping.get("keypoints", 0)) <= 0:
+                raise ValueError("mapping keypoint count must be positive")
 
     def manifest(self) -> dict[str, Any]:
         return {
@@ -120,6 +131,7 @@ class MainlineConfig:
             "config_sha256": self.file_sha256,
             "resolved_config_sha256": self.resolved_sha256,
             "offline_chain": list(OFFLINE_CHAIN),
+            "mapping": dict(self.values.get("mapping", {})),
             "deployment": dict(self.values["deployment"]),
         }
 
@@ -156,6 +168,10 @@ def materialize_keypoint_factor_config(
     deployment["keypoint_minimum"] = keypoints
     deployment["keypoint_maximum"] = keypoints
     values["initialization"]["kcs_keypoints"] = keypoints
+    if "mapping" in values:
+        values["mapping"]["keypoints"] = keypoints
+        values["mapping"]["keypoint_minimum"] = keypoints
+        values["mapping"]["keypoint_maximum"] = keypoints
     output = Path(output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(yaml.safe_dump(values, sort_keys=False))
@@ -182,6 +198,56 @@ def materialize_deployment_keypoint_config(
     output.write_text(yaml.safe_dump(values, sort_keys=False))
     load_mainline_config(output)
     return output
+
+
+def materialize_mapping_keypoint_config(
+    source: str | Path,
+    output: str | Path,
+    keypoints: int,
+) -> Path:
+    """Freeze K_mapping without changing the sparse deployment density."""
+    keypoints = int(keypoints)
+    if keypoints <= 0:
+        raise ValueError("mapping keypoint count must be positive")
+    values = __import__("copy").deepcopy(load_mainline_config(source).values)
+    mapping = values.setdefault(
+        "mapping",
+        {"sparse_frontend": "ulfloc_native_metric", "nms": 4},
+    )
+    mapping["keypoints"] = keypoints
+    mapping["keypoint_minimum"] = keypoints
+    mapping["keypoint_maximum"] = keypoints
+    output = Path(output).expanduser().resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(yaml.safe_dump(values, sort_keys=False))
+    load_mainline_config(output)
+    return output
+
+
+def resolve_mapping_keypoint_count(values: Mapping[str, Any], cameras) -> int:
+    """Resolve K_mapping independently while preserving legacy defaults."""
+    mapping = values.get("mapping")
+    if mapping is None:
+        return resolve_keypoint_count(values["deployment"], cameras)
+    return resolve_keypoint_count(mapping, cameras)
+
+
+def resolve_mapping_nms_radius(values: Mapping[str, Any]) -> int:
+    """Resolve mapping NMS while retaining legacy config compatibility."""
+    mapping = values.get("mapping", {})
+    return int(mapping.get("nms", values["deployment"]["nms"]))
+
+
+def mapping_keypoint_policy_source(values: Mapping[str, Any]) -> str:
+    """Describe the independent mapping-density policy without legacy ambiguity."""
+    mapping = values.get("mapping")
+    if mapping is None:
+        return "independent_legacy_deployment_policy"
+    minimum = mapping.get("keypoint_minimum")
+    maximum = mapping.get("keypoint_maximum")
+    if minimum is not None and maximum is not None and int(minimum) == int(maximum):
+        return "fixed_mapping_config"
+    return "independent_area_adaptive_mapping_config"
 
 
 def materialize_surface_track_config(

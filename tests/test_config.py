@@ -6,9 +6,13 @@ import yaml
 from common.config import (
     OFFLINE_CHAIN,
     load_mainline_config,
+    mapping_keypoint_policy_source,
     materialize_keypoint_factor_config,
     materialize_deployment_keypoint_config,
+    materialize_mapping_keypoint_config,
     resolve_keypoint_count,
+    resolve_mapping_keypoint_count,
+    resolve_mapping_nms_radius,
     resolve_reprojection_error_px,
 )
 from features.superpoint import resolve_superpoint_weights
@@ -53,6 +57,8 @@ def test_keypoint_factor_config_locks_mapping_and_deployment_density(tmp_path):
     assert values["deployment"]["keypoints"] == 2048
     assert values["deployment"]["keypoint_minimum"] == 2048
     assert values["deployment"]["keypoint_maximum"] == 2048
+    assert values["mapping"]["keypoint_minimum"] == 2048
+    assert values["mapping"]["keypoint_maximum"] == 2048
 
 
 def test_deployment_keypoint_config_preserves_evidence_density(tmp_path):
@@ -67,6 +73,45 @@ def test_deployment_keypoint_config_preserves_evidence_density(tmp_path):
     assert values["deployment"]["keypoints"] == 2048
     assert values["deployment"]["keypoint_minimum"] == 2048
     assert values["deployment"]["keypoint_maximum"] == 2048
+    assert values["mapping"] == source["mapping"]
+
+
+def test_mapping_keypoint_config_preserves_deployment_density(tmp_path):
+    source = load_mainline_config("configs/paper_mainline.yaml").values
+    path = materialize_mapping_keypoint_config(
+        "configs/paper_mainline.yaml", tmp_path / "mapping2048.yaml", 2048
+    )
+    values = load_mainline_config(path).values
+    assert values["mapping"]["keypoints"] == 2048
+    assert values["mapping"]["keypoint_minimum"] == 2048
+    assert values["mapping"]["keypoint_maximum"] == 2048
+    assert values["mapping"]["nms"] == 4
+    assert values["deployment"] == source["deployment"]
+    assert resolve_mapping_keypoint_count(values, []) == 2048
+    assert resolve_mapping_nms_radius(values) == 4
+
+
+def test_adaptive_mapping_density_preserves_legacy_resolution():
+    class Camera:
+        width = 640
+        height = 480
+
+    values = load_mainline_config("configs/paper_mainline.yaml").values
+    assert values["mapping"]["keypoints"] == 2048
+    assert resolve_mapping_keypoint_count(values, [Camera()]) == 1024
+    assert (
+        mapping_keypoint_policy_source(values)
+        == "independent_area_adaptive_mapping_config"
+    )
+
+
+def test_legacy_mapping_policy_source_does_not_report_fixed():
+    values = load_mainline_config("configs/paper_mainline.yaml").values
+    values.pop("mapping")
+    assert (
+        mapping_keypoint_policy_source(values)
+        == "independent_legacy_deployment_policy"
+    )
 
 
 def test_deployment_pnp_threshold_follows_focal_scale():

@@ -14,6 +14,7 @@ from common.config import (
     load_scene_calibration,
     load_mainline_config,
     materialize_keypoint_factor_config,
+    materialize_mapping_keypoint_config,
     materialize_surface_track_config,
     resolve_keypoint_count,
     resolve_reprojection_error_px,
@@ -60,6 +61,15 @@ def main() -> None:
         default=False,
         help="Enable the cross-fitted weak-axis surface geometry factor.",
     )
+    parser.add_argument(
+        "--mapping-keypoints",
+        type=int,
+        choices=(1024, 2048),
+        help=(
+            "Lock mapping-observation density only; sparse deployment keeps "
+            "the config's independent density policy."
+        ),
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     config = Path(args.config)
@@ -68,6 +78,14 @@ def main() -> None:
             config,
             args.output / f"factor_config_k{args.keypoints}.yaml",
             args.keypoints,
+        )
+    if args.mapping_keypoints is not None:
+        if args.keypoints is not None:
+            parser.error("--mapping-keypoints cannot be combined with joint --keypoints")
+        config = materialize_mapping_keypoint_config(
+            config,
+            args.output / f"factor_config_mapping_k{args.mapping_keypoints}.yaml",
+            args.mapping_keypoints,
         )
     if args.surface_supported_tracks:
         config = materialize_surface_track_config(
