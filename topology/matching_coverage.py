@@ -164,6 +164,7 @@ def greedy_matching_reserve(
     *,
     requested_rows_per_query: int | Sequence[int],
     maximum_reserve: int,
+    alias_risk: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, IncrementalBipartiteCoverage, dict]:
     """Greedily meet capacity-constrained matching rank, not row union."""
     query_count = int(torch.as_tensor(query_groups).numel())
@@ -184,6 +185,11 @@ def greedy_matching_reserve(
     targets = np.minimum(requested, feasible.counts)
     weights = query_weights_from_groups(query_groups)
     utility = torch.as_tensor(utility).float().reshape(-1)
+    risk = None
+    if alias_risk is not None:
+        risk = torch.as_tensor(alias_risk).float().reshape(-1)
+        if risk.numel() != utility.numel():
+            raise ValueError("alias risk must align with candidate utility")
 
     def gain(anchor: int) -> float:
         counts = state.counts
@@ -193,21 +199,28 @@ def greedy_matching_reserve(
                 value += float(weights[query])
         return value
 
-    heap: list[tuple[float, float, int]] = []
+    heap: list[tuple[float, float, float, int]] = []
     for anchor in candidates:
         candidate_gain = gain(anchor)
         if candidate_gain > 0:
+            candidate_risk = (
+                0.0
+                if risk is None
+                else float(torch.nan_to_num(risk[anchor], nan=1.0))
+            )
             heapq.heappush(
-                heap, (-candidate_gain, -float(utility[anchor]), anchor)
+                heap,
+                (-candidate_gain, candidate_risk, -float(utility[anchor]), anchor),
             )
     selected: list[int] = []
     while heap and len(selected) < int(maximum_reserve):
-        negative_gain, negative_utility, anchor = heapq.heappop(heap)
+        negative_gain, candidate_risk, negative_utility, anchor = heapq.heappop(heap)
         candidate_gain = gain(anchor)
         if not np.isclose(candidate_gain, -negative_gain, atol=1e-9, rtol=0):
             if candidate_gain > 0:
                 heapq.heappush(
-                    heap, (-candidate_gain, negative_utility, anchor)
+                    heap,
+                    (-candidate_gain, candidate_risk, negative_utility, anchor),
                 )
             continue
         if candidate_gain <= 0:
@@ -236,5 +249,9 @@ def greedy_matching_reserve(
         "final_rank_median": float(np.median(final_counts)),
         "normalized_coverage_p10": float(np.percentile(normalized, 10)),
         "feasibility_limited_query_count": int((targets < requested).sum()),
+        "alias_risk_tiebreak_enabled": risk is not None,
+        "alias_risk_unknown_policy": (
+            None if risk is None else "unknown_after_supported_risk"
+        ),
     }
     return torch.as_tensor(selected, dtype=torch.long), state, report

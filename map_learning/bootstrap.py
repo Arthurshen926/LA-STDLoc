@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -640,7 +642,7 @@ def _cache_signature(dataset, args):
             "ply_mtime_ns": int(stat.st_mtime_ns) if stat is not None else -1,
         }
     payload = {
-        "version": 10,
+        "version": 11,
         "query_feature_contract": _QUERY_FEATURE_CONTRACT_NATIVE,
         "feature_resize_mode": "resize_image_then_native_stride8",
         "descriptor_source": "superpoint_native_dense_resized_input",
@@ -661,6 +663,7 @@ def _cache_signature(dataset, args):
         "norm_before_render": bool(dataset.norm_before_render),
         "native_sparse_enabled": True,
         "native_sparse_keypoint_count": int(args.native_keypoint_count),
+        "native_sparse_nms_radius": int(args.native_nms_radius),
         "native_sparse_coordinate_convention": (
             "superpoint_grid_index_then_pnp_plus_half_v1"
         ),
@@ -692,6 +695,7 @@ def _cache_payload_compatible(cached_payload, expected_payload):
         "norm_before_render",
         "native_sparse_enabled",
         "native_sparse_keypoint_count",
+        "native_sparse_nms_radius",
         "native_sparse_coordinate_convention",
     )
     return all(
@@ -818,6 +822,7 @@ def _build_query_cache(
                     "native_sparse_metadata": {
                         "detect_and_compute": True,
                         "detect_num": int(native_keypoint_count),
+                        "nms_radius": int(feature_extractor.nms_radius),
                         "keypoint_count_before_mask": int(
                             native_sparse["keypoints"].shape[0]
                         ),
@@ -3454,6 +3459,7 @@ def _state_config(
         "coordinate_convention": "superpoint_grid_index_plus_half_physical_v1",
         "valid_mask_policy": _VALID_MASK_POLICY,
         "native_sparse_keypoint_count": int(args.native_keypoint_count),
+        "native_sparse_nms_radius": int(args.native_nms_radius),
         "native_association_radius_px": float(args.native_association_radius_px),
         "native_unmatched_fraction": float(args.native_unmatched_fraction),
         "native_sampling_mode": str(args.native_sampling_mode),
@@ -3635,7 +3641,9 @@ def train(dataset, args):
         f"primitives={gaussians.get_xyz.shape[0]}"
     )
 
-    feature_extractor = FeatureExtractor(dataset.feature_type).cuda().eval()
+    feature_extractor = FeatureExtractor(
+        dataset.feature_type, nms_radius=args.native_nms_radius
+    ).cuda().eval()
     for parameter in feature_extractor.parameters():
         parameter.requires_grad_(False)
 
@@ -4737,6 +4745,7 @@ def build_parser():
     parser.add_argument('--visibility_cache_path', default='')
     parser.add_argument('--observation_source', choices=['native'], default='native')
     parser.add_argument('--native_keypoint_count', type=int, default=2048)
+    parser.add_argument('--native_nms_radius', type=int, default=4)
     parser.add_argument('--native_association_radius_px', type=float, default=2.0)
     parser.add_argument('--native_unmatched_fraction', type=float, default=0.25)
     parser.add_argument('--native_sampling_mode', choices=['detector_grid'], default='detector_grid')

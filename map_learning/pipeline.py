@@ -302,6 +302,7 @@ def _common_bootstrap_arguments(
     query_cache: Path,
     visibility_cache: Path,
     native_keypoint_count: int = 2048,
+    native_nms_radius: int = 4,
     native_association_radius_px: float = 2.0,
 ) -> list[object]:
     return [
@@ -325,6 +326,7 @@ def _common_bootstrap_arguments(
         "--objective", "hard",
         "--observation_source", "native",
         "--native_keypoint_count", native_keypoint_count,
+        "--native_nms_radius", native_nms_radius,
         "--max_observations", native_keypoint_count,
         "--validation_observations", native_keypoint_count,
         "--native_sampling_mode", "detector_grid",
@@ -408,6 +410,7 @@ def build_bootstrap_and_tracks(
         query_cache=query_cache,
         visibility_cache=visibility,
         native_keypoint_count=native_keypoint_count,
+        native_nms_radius=int(cfg["deployment"]["nms"]),
         native_association_radius_px=native_association_radius,
     )
     bootstrap_state = init_dir / "0_lafgs_map_state.pt"

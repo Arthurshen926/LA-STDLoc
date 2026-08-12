@@ -93,6 +93,7 @@ class MainlineConfig:
         deployment = values.get("deployment", {})
         required = {
             "sparse_frontend": "ulfloc_native_metric",
+            "nms": 4,
             "global_topk": 1,
             "max_matches_per_keypoint": 0,
             "max_matches_per_landmark": 0,

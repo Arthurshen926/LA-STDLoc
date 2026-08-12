@@ -9,7 +9,6 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from common.calibration import (
@@ -19,15 +18,10 @@ from common.calibration import (
 from common.config import load_mainline_config
 from evidence.tracks import fuse_track_descriptors
 from map_learning.observations import _query_index_remap
-from topology.dynamic_reserve import (
-    PoseEvidence,
-    greedy_dynamic_pose_reserve,
-    spatial_voxel_ids,
-)
+from topology.dynamic_reserve import PoseEvidence, spatial_voxel_ids
 from topology.matching_coverage import (
     IncrementalBipartiteCoverage,
     base_candidate_edges,
-    greedy_matching_reserve,
     query_weights_from_groups,
     track_candidate_edges,
 )
@@ -36,6 +30,7 @@ from topology.pose_information import (
     pose_jacobian_analytic,
     task_scaled_pose_jacobian,
 )
+from topology.sufficiency_selector import CompatibilitySufficiencySelector
 from topology.track_core import (
     _base_utility,
     _graph_counter,
@@ -155,47 +150,6 @@ def _deployment_track_geometry(
         value[core] = torch.as_tensor(geometry[source])[core]
         revised[target] = value
     return revised
-
-
-def _select_adaptive_track_core(
-    edges,
-    quality_order: torch.Tensor,
-    query_count: int,
-    target_rows: int,
-    *,
-    minimum_count: int,
-    maximum_count: int,
-    check_interval: int,
-) -> tuple[torch.Tensor, dict]:
-    state = IncrementalBipartiteCoverage(query_count, edges)
-    selected = []
-    stop_reason = "eligible_track_exhaustion"
-    p10_history = []
-    for rank, track in enumerate(quality_order[:maximum_count].tolist(), start=1):
-        state.add(track)
-        selected.append(track)
-        should_check = rank % int(check_interval) == 0 or rank == len(quality_order)
-        if not should_check:
-            continue
-        counts = state.counts
-        p10 = float(np.percentile(counts, 10))
-        p10_history.append({"track_count": rank, "matching_rank_p10": p10})
-        if rank >= int(minimum_count) and p10 >= int(target_rows):
-            stop_reason = "p10_matching_rank_target"
-            break
-    counts = state.counts
-    report = {
-        "selection": "quality_order_until_matching_feasible_p10_saturation",
-        "target_rows": int(target_rows),
-        "minimum_count": int(minimum_count),
-        "maximum_count": int(maximum_count),
-        "realized_count": len(selected),
-        "matching_rank_p10": float(np.percentile(counts, 10)),
-        "matching_rank_median": float(np.median(counts)),
-        "stop_reason": stop_reason,
-        "history": p10_history,
-    }
-    return torch.as_tensor(selected, dtype=torch.long), report
 
 
 def _mean_track_confidence(payload: dict) -> torch.Tensor:
@@ -428,6 +382,7 @@ def main() -> None:
     parser.add_argument("--complete-positive-teacher", required=True)
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
+    parser.add_argument("--alias-risk-audit")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
     args = parser.parse_args()
@@ -484,6 +439,35 @@ def main() -> None:
     )
     base_edges = base_candidate_edges(teacher, base_count)
     edges = [*track_edges, *base_edges]
+    alias_risk = None
+    alias_risk_contract = None
+    if args.alias_risk_audit:
+        alias_path = Path(args.alias_risk_audit).resolve()
+        alias = torch.load(alias_path, map_location="cpu", weights_only=False)
+        if alias.get("schema") != "lafgs_all_candidate_alias_risk_audit":
+            raise ValueError("unsupported all-candidate alias-risk artifact")
+        if alias.get("uses_test_queries") is not False:
+            raise ValueError("selector alias risk must be mapping-only")
+        universe_ids = torch.as_tensor(alias["candidate_universe_ids"]).long()
+        values = torch.as_tensor(alias["risk"]["alias_risk"]).float()
+        if universe_ids.numel() != values.numel():
+            raise ValueError("alias-risk IDs and values do not align")
+        if universe_ids.numel() and (
+            int(universe_ids.min()) < 0 or int(universe_ids.max()) >= len(edges)
+        ):
+            raise ValueError("alias-risk candidate is outside selector universe")
+        if torch.unique(universe_ids).numel() != universe_ids.numel():
+            raise ValueError("alias-risk candidate IDs are not unique")
+        alias_risk = torch.full((len(edges),), float("nan"))
+        alias_risk[universe_ids] = values
+        alias_risk_contract = {
+            "path": str(alias_path),
+            "risk_definition": alias["risk_definition"],
+            "candidate_count": int(universe_ids.numel()),
+            "supported_candidate_count": int(torch.isfinite(values).sum()),
+            "selection_scope": "matching_completion_equal_gain_tiebreak",
+            "unknown_policy": "after_supported_risk",
+        }
 
     geometry = payload["track_geometry"]
     quality = _track_quality(geometry)
@@ -514,10 +498,13 @@ def main() -> None:
     deployment_payload["track_geometry"] = deployment_geometry
     order = torch.argsort(quality, descending=True, stable=True)
     medium_order = order[(medium & image_only_core)[order]]
-    core, core_report = _select_adaptive_track_core(
+    selector = CompatibilitySufficiencySelector(
         edges,
-        medium_order,
         len(teacher["query_names"]),
+        track_candidate_count=track_count,
+    )
+    core, core_report = selector.select_precision(
+        medium_order,
         parameters.matching_rows_target,
         minimum_count=int(policy["track_core_minimum"]),
         maximum_count=min(int(policy["track_core_maximum"]), int(medium_order.numel())),
@@ -546,16 +533,15 @@ def main() -> None:
     reserve_candidates = torch.cat((reserve_track_ids, reserve_base_ids))
     base_utility = _base_utility(graph, base_count)
     utility = torch.cat((quality, base_utility))
-    coverage_selected, matching, coverage_report = greedy_matching_reserve(
-        edges,
-        core.tolist(),
-        reserve_candidates.tolist(),
+    coverage_selected, matching, coverage_report = selector.complete_matching(
+        reserve_candidates,
         utility,
         query_groups,
         requested_rows_per_query=parameters.matching_rows_target,
         maximum_reserve=int(policy["coverage_reserve_maximum"]),
+        alias_risk=alias_risk,
     )
-    selected = torch.unique(torch.cat((core, coverage_selected)), sorted=False)
+    selected = selector.compatibility_materialization_ids
 
     track_xyz = torch.as_tensor(
         deployment_geometry["triangulated_xyz"]
@@ -623,10 +609,10 @@ def main() -> None:
     initial = _initial_pose_state(
         selected, matching, pose_evidence, len(teacher["query_names"])
     )
-    pose_selected, pose_report = greedy_dynamic_pose_reserve(
+    pose_selected, pose_report = selector.complete_observability(
         pose_evidence,
         *initial[:5],
-        pose_candidates.tolist(),
+        pose_candidates,
         source_ids,
         voxel_ids,
         maximum_additions=int(policy["pose_reserve_maximum"]),
@@ -647,7 +633,7 @@ def main() -> None:
         "query_specific_detector_repeatability_x_candidate_global_reliability"
     )
     pose_report["covariance_model"] = covariance_model
-    selected = torch.unique(torch.cat((selected, pose_selected)), sorted=False)
+    selected = selector.compatibility_materialization_ids
     selected_tracks = selected[selected < track_count]
     selected_base = selected[selected >= track_count] - track_count
     selected_tracks = selected_tracks[torch.argsort(quality[selected_tracks], descending=True)]
@@ -688,6 +674,7 @@ def main() -> None:
     ).bool()
     surface_promoted = surface_supported & ~image_only_core
     selection_provenance_path = output_dir / "adaptive_selection_provenance.pt"
+    unified_selection_path = output_dir / "unified_sufficiency_selection.pt"
     torch.save(
         {
             "schema": "lafgs_adaptive_selection_provenance",
@@ -697,6 +684,7 @@ def main() -> None:
         },
         selection_provenance_path,
     )
+    torch.save(selector.artifact(), unified_selection_path)
     state = _materialize(
         canonical,
         deployment_payload,
@@ -721,6 +709,8 @@ def main() -> None:
             "coverage_reserve_count": int(coverage_selected.numel()),
             "pose_reserve_count": int(pose_selected.numel()),
             "selection_provenance": selection_provenance,
+            "unified_sufficiency_selection": selector.artifact(),
+            "all_candidate_alias_risk": alias_risk_contract,
             "final_track_count": int(selected_tracks.numel()),
             "final_base_count": int(selected_base.numel()),
             "reserve_candidate_pool": "leftover_tracks_plus_gaussian_base",
@@ -763,6 +753,13 @@ def main() -> None:
                 selection_provenance["pose_gaussian_universe_ids"].numel()
             ),
         },
+        "unified_sufficiency_selection": {
+            "path": str(unified_selection_path),
+            "policy": "v3_compatibility",
+            "selected_count": int(selector.selected_ids.numel()),
+            "behavior_change_authorized": False,
+        },
+        "all_candidate_alias_risk": alias_risk_contract,
         "surface_supported": {
             "candidate_count": int(surface_supported.sum()),
             "promoted_reserve_candidate_count": int(surface_promoted.sum()),

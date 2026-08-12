@@ -91,7 +91,7 @@ deployment:
   keypoint_reference_area_px: 2073600
   keypoint_minimum: 1024
   keypoint_maximum: 2048
-  nms: 2
+  nms: 4
   global_topk: 1
   max_matches_per_keypoint: 0
   max_matches_per_landmark: 0

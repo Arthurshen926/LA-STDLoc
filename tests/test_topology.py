@@ -61,6 +61,22 @@ def test_matching_coverage_uses_augmenting_reassignment():
     assert state.counts.tolist() == [2]
 
 
+def test_matching_coverage_uses_alias_risk_before_utility_on_equal_gain():
+    edges = [{0: (0,)}, {0: (1,)}]
+    selected, _, report = greedy_matching_reserve(
+        edges,
+        initial=[],
+        candidates=[0, 1],
+        utility=torch.tensor([10.0, 1.0]),
+        query_groups=torch.tensor([0]),
+        requested_rows_per_query=1,
+        maximum_reserve=1,
+        alias_risk=torch.tensor([0.9, 0.1]),
+    )
+    assert selected.tolist() == [1]
+    assert report["alias_risk_tiebreak_enabled"]
+
+
 def test_incremental_matching_matches_bruteforce_on_random_small_graphs():
     generator = random.Random(2026)
     for _ in range(25):

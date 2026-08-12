@@ -11,12 +11,18 @@ from features.superpoint import SuperPoint
 class FeatureExtractor(nn.Module):
     feature_dim = 256
 
-    def __init__(self, feature_type: str = "sp") -> None:
+    def __init__(self, feature_type: str = "sp", *, nms_radius: int = 4) -> None:
         super().__init__()
         if str(feature_type).lower() not in {"sp", "superpoint"}:
             raise ValueError("The LaFGS release supports only native SuperPoint")
+        if int(nms_radius) < 0:
+            raise ValueError("SuperPoint NMS radius must be non-negative")
         self.feature_type = "sp"
+        self.nms_radius = int(nms_radius)
         self.model = SuperPoint().eval()
+        # SuperPoint historically defaulted to four pixels internally.  Make
+        # that effective mapping contract explicit without changing weights.
+        self.model.nms_radius = self.nms_radius
 
     @torch.no_grad()
     def forward(self, image):

@@ -6,6 +6,7 @@ from localization.matcher import (
     global_cosine_top1,
     global_cosine_top2,
     suppress_duplicate_anchor_matches,
+    suppress_duplicate_entity_matches,
 )
 from localization.localizer import load_shared_metric
 from map_learning.metric import SharedLowRankMetric
@@ -61,6 +62,30 @@ def test_duplicate_anchor_suppression_breaks_score_ties_stably():
     )
     retained = suppress_duplicate_anchor_matches(matches)
     assert retained.keypoint_indices.tolist() == [3, 8]
+
+
+def test_duplicate_entity_suppression_keeps_isolated_anchors_distinct():
+    matches = Top1Matches(
+        keypoint_indices=torch.tensor([0, 1, 2, 3, 4]),
+        anchor_indices=torch.tensor([0, 1, 2, 2, 3]),
+        scores=torch.tensor([0.8, 0.9, 0.7, 0.6, 0.5]),
+    )
+    retained = suppress_duplicate_entity_matches(
+        matches, torch.tensor([4, 4, -1, -1])
+    )
+    assert retained.keypoint_indices.tolist() == [1, 2, 4]
+    assert retained.anchor_indices.tolist() == [1, 2, 3]
+
+
+def test_duplicate_entity_suppression_breaks_ties_stably():
+    matches = Top1Matches(
+        keypoint_indices=torch.tensor([5, 8]),
+        anchor_indices=torch.tensor([0, 1]),
+        scores=torch.tensor([0.5, 0.5]),
+    )
+    retained = suppress_duplicate_entity_matches(matches, torch.tensor([0, 0]))
+    assert retained.keypoint_indices.tolist() == [5]
+    assert retained.anchor_indices.tolist() == [0]
 
 
 def test_metric_state_must_match_anchor_registry(tmp_path):

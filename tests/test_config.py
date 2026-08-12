@@ -19,6 +19,7 @@ def test_frozen_config_contract():
     assert tuple(config.values["method"]["offline_chain"]) == OFFLINE_CHAIN
     assert config.values["prior"]["frozen"] is True
     assert config.values["deployment"]["global_topk"] == 1
+    assert config.values["deployment"]["nms"] == 4
     assert config.values["deployment"]["pose_solves"] == 1
     assert config.values["version"] == 2
     assert config.values["adaptive"]["calibration_split"] == "all_mapping_train"

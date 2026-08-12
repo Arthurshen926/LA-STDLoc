@@ -45,12 +45,17 @@ class NativeSuperPointFrontend:
         *,
         device: torch.device | str = "cuda",
         keypoint_count: int = 2048,
+        nms_radius: int = 4,
         metric: SharedLowRankMetric | None = None,
         context_adapter: MapConsistentContextAdapter | None = None,
     ) -> None:
         self.device = torch.device(device)
         self.keypoint_count = int(keypoint_count)
+        if int(nms_radius) < 0:
+            raise ValueError("SuperPoint NMS radius must be non-negative")
+        self.nms_radius = int(nms_radius)
         self.model = SuperPoint().to(self.device).eval()
+        self.model.nms_radius = self.nms_radius
         self.metric = metric.to(self.device).eval() if metric is not None else None
         self.context_adapter = (
             context_adapter.to(self.device).eval()

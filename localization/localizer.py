@@ -109,6 +109,7 @@ class SparseLocalizer:
         context_state_path: str | Path | None = None,
         device: torch.device | str = "cuda",
         keypoint_count: int = 2048,
+        nms_radius: int = 4,
         reprojection_error_px: float = 12.0,
         confidence: float = 0.99999,
         max_iterations: int = 100000,
@@ -168,6 +169,7 @@ class SparseLocalizer:
         self.frontend = NativeSuperPointFrontend(
             device=self.device,
             keypoint_count=keypoint_count,
+            nms_radius=nms_radius,
             metric=metric,
             context_adapter=context_adapter,
         )

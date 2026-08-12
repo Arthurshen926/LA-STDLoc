@@ -30,7 +30,7 @@ def test_mapping_support_query_split_is_disjoint_and_complete():
 
 def test_query_cache_contract_rejects_prior_or_resolution_change():
     payload = {
-        "version": 10,
+        "version": 11,
         "query_feature_contract": "native_resized_input",
         "feature_resize_mode": "resize_image_then_native_stride8",
         "descriptor_source": "superpoint_native_dense_resized_input",
@@ -49,6 +49,7 @@ def test_query_cache_contract_rejects_prior_or_resolution_change():
         "norm_before_render": True,
         "native_sparse_enabled": True,
         "native_sparse_keypoint_count": 2048,
+        "native_sparse_nms_radius": 4,
         "native_sparse_coordinate_convention": (
             "superpoint_grid_index_then_pnp_plus_half_v1"
         ),
@@ -59,6 +60,9 @@ def test_query_cache_contract_rejects_prior_or_resolution_change():
     assert not _cache_payload_compatible(payload, changed)
     changed = dict(payload)
     changed["longest_edge"] = 1024
+    assert not _cache_payload_compatible(payload, changed)
+    changed = dict(payload)
+    changed["native_sparse_nms_radius"] = 2
     assert not _cache_payload_compatible(payload, changed)
 
 

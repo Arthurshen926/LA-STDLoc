@@ -88,7 +88,7 @@ deployment:
   sparse_frontend: ulfloc_native_metric
   query_feature_contract: native_resized_input
   keypoints: 2048
-  nms: 2
+  nms: 4
   global_topk: 1
   max_matches_per_keypoint: 0
   max_matches_per_landmark: 0

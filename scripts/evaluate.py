@@ -111,6 +111,7 @@ def main() -> None:
         context_state_path=args.context_state,
         device=args.device,
         keypoint_count=keypoint_count,
+        nms_radius=int(deployment["nms"]),
         reprojection_error_px=reprojection_error_px,
         confidence=deployment["confidence"],
         max_iterations=deployment["maximum_iterations"],
@@ -131,6 +132,7 @@ def main() -> None:
                 "schema": "lafgs_sparse_deployment_contract",
                 "version": 1,
                 "keypoint_count": int(keypoint_count),
+                "nms_radius": int(deployment["nms"]),
                 "ransac_reprojection_px": float(reprojection_error_px),
                 "scene_calibration": (
                     str(calibration_path.resolve())

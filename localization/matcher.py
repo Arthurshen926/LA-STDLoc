@@ -51,6 +51,59 @@ def suppress_duplicate_anchor_matches(matches: Top1Matches) -> Top1Matches:
 
 
 @torch.inference_mode()
+def suppress_duplicate_entity_matches(
+    matches: Top1Matches,
+    anchor_component_ids: torch.Tensor,
+) -> Top1Matches:
+    """Keep one best correspondence per audited identity component.
+
+    ``-1`` denotes an isolated anchor and is treated as its own entity.  This
+    post-top-1 operation changes neither the map nor the winning Anchor of any
+    query keypoint, making it suitable for a no-delete counterfactual audit.
+    """
+    count = int(matches.scores.numel())
+    if not (
+        matches.keypoint_indices.numel() == matches.anchor_indices.numel() == count
+    ):
+        raise ValueError("top-1 match rows do not align")
+    components = torch.as_tensor(
+        anchor_component_ids, device=matches.anchor_indices.device
+    ).long().reshape(-1)
+    if components.numel() == 0:
+        raise ValueError("anchor component registry is empty")
+    if bool((components < -1).any()):
+        raise ValueError("anchor component IDs must be -1 or non-negative")
+    if matches.anchor_indices.numel() and (
+        int(matches.anchor_indices.min()) < 0
+        or int(matches.anchor_indices.max()) >= components.numel()
+    ):
+        raise ValueError("match references an anchor outside the component registry")
+    if count < 2:
+        return matches
+    component_count = (
+        int(components.max()) + 1 if bool((components >= 0).any()) else 0
+    )
+    matched_components = components[matches.anchor_indices]
+    entity_ids = torch.where(
+        matched_components >= 0,
+        matched_components,
+        component_count + matches.anchor_indices,
+    )
+    score_order = torch.argsort(matches.scores, descending=True, stable=True)
+    entity_order = torch.argsort(entity_ids[score_order], stable=True)
+    grouped = score_order[entity_order]
+    grouped_entities = entity_ids[grouped]
+    first = torch.ones(count, dtype=torch.bool, device=grouped.device)
+    first[1:] = grouped_entities[1:] != grouped_entities[:-1]
+    retained = torch.sort(grouped[first]).values
+    return Top1Matches(
+        keypoint_indices=matches.keypoint_indices[retained],
+        anchor_indices=matches.anchor_indices[retained],
+        scores=matches.scores[retained],
+    )
+
+
+@torch.inference_mode()
 def global_cosine_top1(
     query_descriptors: torch.Tensor,
     anchor_descriptors: torch.Tensor,

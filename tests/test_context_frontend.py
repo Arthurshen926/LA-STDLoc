@@ -46,8 +46,9 @@ def test_context_frontend_reuses_one_sparse_dense_forward(monkeypatch):
         adapter.context_head[-1].bias.normal_()
 
     frontend = NativeSuperPointFrontend(
-        device="cpu", keypoint_count=2, context_adapter=adapter
+        device="cpu", keypoint_count=2, nms_radius=4, context_adapter=adapter
     )
+    assert fake.nms_radius == 4
     output = frontend(torch.randn(3, 16, 16))
 
     tokens = dense_context_tokens(
