@@ -795,6 +795,98 @@ def build_add_only_materialized_anchor_map(
     return output, diagnostics
 
 
+def build_canonical_base_anchor_map(
+    *,
+    base_state: dict,
+    minimum_coverage_gain: int = 1,
+    minimum_distinct_view_bins: int = 2,
+    minimum_separation_m: float = 0.005,
+    descriptor_trim_fraction: float = 0.2,
+    radius_px: float = 2.0,
+) -> tuple[dict, dict]:
+    """Materialize the canonical base prefix without evaluating Track coverage.
+
+    A zero micro-anchor budget cannot select a Track row.  The canonical map is
+    therefore a pure function of ``base_state`` and the recorded configuration;
+    loading the query cache and projecting every base point only computes the
+    otherwise-unused ``eligible_track_count`` diagnostic.  This constructor
+    makes that contract explicit.  It reports eligibility as unevaluated rather
+    than incorrectly treating it as zero.
+    """
+    base_features = F.normalize(
+        torch.as_tensor(base_state["landmark_features"]).float(), dim=1
+    )
+    base_xyz = torch.as_tensor(base_state["landmark_xyz"]).float()
+    base_source_ids = torch.as_tensor(
+        base_state["landmark_indices"], dtype=torch.long
+    ).reshape(-1)
+    if not (
+        base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()
+    ):
+        raise ValueError("base state tensors are not row-aligned")
+
+    base_count = int(base_source_ids.numel())
+    empty_long = torch.empty(0, dtype=torch.long)
+    empty_float = torch.empty(0, dtype=torch.float32)
+    feature_extension = base_features.new_zeros((0, base_features.shape[1]))
+    xyz_extension = base_xyz.new_zeros((0, 3))
+    source_extension = base_source_ids.new_zeros((0,))
+    output = {
+        "version": 1,
+        "schema": "lafgs_materialized_anchor_map",
+        "anchor_ids": torch.arange(base_count, dtype=torch.long),
+        "source_primitive_ids": torch.cat(
+            (base_source_ids, source_extension)
+        ),
+        "track_cluster_ids": torch.cat(
+            (
+                torch.full((base_count,), -1, dtype=torch.long),
+                empty_long,
+            )
+        ),
+        "anchor_xyz": torch.cat((base_xyz, xyz_extension)),
+        "anchor_features": torch.cat((base_features, feature_extension)),
+        "anchor_type": torch.cat(
+            (
+                torch.zeros(base_count, dtype=torch.int8),
+                torch.empty(0, dtype=torch.int8),
+            )
+        ),
+        "base_anchor_count": base_count,
+        "requested_micro_anchor_budget": 0,
+        "micro_anchor_count": 0,
+        "config": {
+            "level_a_only": True,
+            "add_only": True,
+            "old_anchor_descriptors_frozen": True,
+            "old_anchor_geometry_frozen": True,
+            "minimum_coverage_gain": int(minimum_coverage_gain),
+            "minimum_distinct_view_bins": int(minimum_distinct_view_bins),
+            "minimum_separation_m": float(minimum_separation_m),
+            "descriptor_trim_fraction": float(descriptor_trim_fraction),
+            "coverage_radius_px": float(radius_px),
+        },
+        "micro_anchor_quality": {
+            "coverage_gain": empty_long.clone(),
+            "valid_observations": empty_long.clone(),
+            "view_bin_count": empty_long.clone(),
+            "reprojection_median_px": empty_float.clone(),
+            "covariance_trace_m2": empty_float.clone(),
+        },
+    }
+    diagnostics = {
+        "base_anchor_count": base_count,
+        "eligible_track_count": None,
+        "eligibility_evaluated": False,
+        "selected_micro_anchor_count": 0,
+        "selected_source_primitive_count": 0,
+        "selected_multi_anchor_source_count": 0,
+        "coverage_gain_sum": 0,
+        "coverage_gain_mean": 0.0,
+    }
+    return output, diagnostics
+
+
 def build_v2_materialized_anchor_map(
     *,
     base_state: dict,
