@@ -43,6 +43,17 @@ def _read_exact_scene_calibration(
         if cached_path.is_file():
             cached = json.loads(cached_path.read_text())
             sources = cached.get("sources", {})
+            frozen_pair_factor = cached.get("lineage", {}).get("mode") == (
+                "frozen_numeric_pair_factor"
+            )
+            if frozen_pair_factor:
+                validate_frozen_numeric_scene_calibration(
+                    cached,
+                    calibration_path=cached_path,
+                    query_cache_path=query_cache,
+                    track_payload_path=track_payload,
+                    policy=policy,
+                )
             if (
                 cached.get("schema") == "lafgs_mapping_only_scene_calibration"
                 and int(cached.get("version", 0)) >= 2
@@ -51,9 +62,14 @@ def _read_exact_scene_calibration(
                 and sources.get("track_payload") == str(track_payload)
                 and sources.get("uses_test_queries") is False
             ):
-                if cached.get("lineage") or any(
-                    name in sources
-                    for name in ("query_cache_sha256", "track_payload_sha256")
+                if not frozen_pair_factor and (
+                    cached.get("lineage") or any(
+                        name in sources
+                        for name in (
+                            "query_cache_sha256",
+                            "track_payload_sha256",
+                        )
+                    )
                 ):
                     validate_frozen_numeric_scene_calibration(
                         cached,
@@ -1246,6 +1262,29 @@ def distill_compact_map(
     if int(resolved_config["version"]) >= 2:
         output.mkdir(parents=True, exist_ok=True)
         report_path = output / "adaptive_distillation_build.json"
+        calibration_path = (
+            Path(scene_calibration).expanduser().resolve()
+            if scene_calibration is not None
+            else None
+        )
+        calibration_sha256 = (
+            sha256_file(calibration_path)
+            if calibration_path is not None
+            else None
+        )
+        if report_path.is_file() and calibration_path is not None:
+            existing = json.loads(report_path.read_text())
+            contract = dict(existing.get("calibration_contract", {}))
+            if (
+                contract.get("mode") != "frozen_numeric_pair_factor"
+                or Path(str(contract.get("input", ""))).resolve()
+                != calibration_path
+                or contract.get("input_sha256") != calibration_sha256
+            ):
+                raise RuntimeError(
+                    "Existing adaptive distillation report does not match the "
+                    "explicit frozen calibration; start from an empty output"
+                )
         if not report_path.is_file():
             arguments: list[object] = [
                 "topology.adaptive_distillation",
@@ -1264,13 +1303,12 @@ def distill_compact_map(
                 "--config",
                 config,
             ]
-            if scene_calibration is not None:
-                calibration_path = Path(scene_calibration).expanduser().resolve()
+            if calibration_path is not None:
                 arguments += [
                     "--frozen-scene-calibration",
                     calibration_path,
                     "--expected-frozen-scene-calibration-sha256",
-                    sha256_file(calibration_path),
+                    calibration_sha256,
                 ]
             _run(*arguments)
         report = json.loads(report_path.read_text())

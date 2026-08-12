@@ -69,6 +69,33 @@ def test_adaptive_distillation_default_does_not_freeze_calibration(
     assert "--frozen-scene-calibration" not in calls[0]
 
 
+def test_frozen_distillation_rejects_stale_resumed_report(tmp_path: Path) -> None:
+    calibration = tmp_path / "variant_calibration.json"
+    calibration.write_text("{}")
+    output = tmp_path / "topology"
+    output.mkdir()
+    stale_map = output / "old.pt"
+    stale_map.touch()
+    (output / "adaptive_distillation_build.json").write_text(
+        '{"map": "'
+        + str(stale_map)
+        + '", "calibration_contract": {'
+        + '"mode": "derived_from_current_track_payload", '
+        + '"input": null, "input_sha256": null}}'
+    )
+    with pytest.raises(RuntimeError, match="start from an empty output"):
+        pipeline.distill_compact_map(
+            canonical_map=tmp_path / "canonical.pt",
+            function_graph=tmp_path / "function_graph.pt",
+            positive_teacher=tmp_path / "teacher.pt",
+            track_payload=tmp_path / "variant_tracks.pt",
+            query_cache=tmp_path / "query.pt",
+            output=output,
+            config="configs/paper_mainline.yaml",
+            scene_calibration=calibration,
+        )
+
+
 def test_canonical_evidence_build_does_not_apply_compact_path_contract(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -150,6 +150,44 @@ def test_evidence_and_metric_consumers_accept_only_exact_variant_binding(tmp_pat
         )
 
 
+def test_frozen_sidecar_source_mismatch_cannot_fall_back_to_recalibration(
+    tmp_path, monkeypatch
+):
+    query, payload, policy, _, frozen_path, frozen = _frozen_contract(tmp_path)
+    frozen["sources"]["track_payload"] = str((tmp_path / "wrong.pt").resolve())
+    frozen_path.write_text(json.dumps(frozen))
+
+    def reject_recalibration(*args, **kwargs):
+        raise AssertionError("frozen pair sidecar must fail before recalibration")
+
+    monkeypatch.setattr(pipeline, "calibrate_scene", reject_recalibration)
+    with pytest.raises(ValueError, match="different Track payload"):
+        pipeline._load_or_compute_scene_calibration(
+            query_cache=query,
+            track_payload=payload,
+            policy=policy,
+            cached_path=frozen_path,
+        )
+
+
+def test_frozen_sidecar_policy_mismatch_cannot_fall_back_to_recalibration(
+    tmp_path, monkeypatch
+):
+    query, payload, _, _, frozen_path, _ = _frozen_contract(tmp_path)
+
+    def reject_recalibration(*args, **kwargs):
+        raise AssertionError("frozen pair sidecar must fail before recalibration")
+
+    monkeypatch.setattr(pipeline, "calibrate_scene", reject_recalibration)
+    with pytest.raises(ValueError, match="policy differs"):
+        pipeline._load_or_compute_scene_calibration(
+            query_cache=query,
+            track_payload=payload,
+            policy={"matching_rows_fraction": 0.5},
+            cached_path=frozen_path,
+        )
+
+
 def test_selector_requires_explicit_frozen_calibration_sha(tmp_path):
     query, payload, policy, _, frozen_path, _ = _frozen_contract(tmp_path)
     with pytest.raises(ValueError, match="requires its expected SHA"):
