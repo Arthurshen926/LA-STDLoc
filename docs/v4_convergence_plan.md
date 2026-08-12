@@ -303,7 +303,7 @@ equal-gain alias tie-break 的 selector 机制 gate 通过：Anchor 6357→6361�
 | CVaR95 TE | -0.01737 cm |
 | Catastrophic >100cm | 0 |
 
-Raw precision 是确定性量，三种子均从 14.19271% 降至 14.18478%；median 与 mean TE 均 3/3 种子恶化。P90 的小幅改善不足以覆盖 precision sentinel 回退，CVaR95 也不构成稳定的逐种子改善。因此 **ShopFacade 对当前 equal-gain alias tie-break 判定为 Stop**：不运行 test split、不将其纳入默认 selector，也不通过场景阈值调参寻找例外。alias graph 继续保留为诊断证据；下一版本必须改变风险与 clean utility 的联合决策形式，而不是把当前 tie-break 扩大成删除或硬惩罚。
+Raw precision 是确定性量，三种子均从 14.19271% 降至 14.18478%；median 与 mean TE 均 3/3 种子恶化。P90 与 CVaR95 的三种子均值分别小幅改善 0.01231 cm 和 0.01737 cm，但不足以覆盖 precision sentinel 与中心误差回退。因此 **ShopFacade 对当前 equal-gain alias tie-break 判定为 Stop**：不运行 test split、不将其纳入默认 selector，也不通过场景阈值调参寻找例外。alias graph 继续保留为诊断证据；下一版本必须改变风险与 clean utility 的联合决策形式，而不是把当前 tie-break 扩大成删除或硬惩罚。
 
 ### P6：完全观测驱动的单 Anchor 描述子
 
