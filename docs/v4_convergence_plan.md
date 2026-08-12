@@ -275,6 +275,36 @@ Heads 首轮真实 selector 重放的机制 gate 已通过：
 
 因此 P5.1 通过 **机制/充分性 gate**，但尚未通过 pose-accuracy gate。因为最终 Anchor 集合发生变化，V3 的 8119-row metric state 不允许复用；必须先为 8117-row Map 重建 compact teacher/function graph 并执行相同 bounded metric refresh，之后才能比较 mapping pose。当前不申报精度提升。
 
+#### P5.1 ShopFacade precision sentinel：Stop
+
+ShopFacade 使用冻结 V3 的精确 canonical、Track payload、231 个 mapping query 和 `ref2p067_stop1e3` calibration 重放。完整合法候选池包含 7300 个 Track 与 7837 个 surface candidate。global Top-1 alias graph 仅使用 mapping split，并以 rendered depth/alpha 与 GT reprojection 判定合法性：
+
+| Evidence | 候选 | False wins | Harmful events | Recurrent alias | Risk p50 |
+|---|---:|---:|---:|---:|---:|
+| Track | 7300 | 279018 | 24345 | 7275 | 0.620 |
+| Surface | 7837 | 104718 | 6996 | 6699 | 0.552 |
+
+跨 trajectory group 的 `false vs clean AUC=0.710`、`harmful vs clean AUC=0.741`；7 个可评估 held-out group 均高于随机，第 3 组因标签单类而 AUC 不可定义。alias risk 因而具有真实可分性，但可分性本身不授权部署。
+
+equal-gain alias tie-break 的 selector 机制 gate 通过：Anchor 6357→6361，matching rank 保持 26904/26904，unmet query/rank 保持 0/0；最终 logdet 中位数 42.883→42.919，logdet p10 与 translation worst-std p90 不退。换出 35、换入 39 个候选，平均 risk 0.719→0.424，并净减少 392 次 false wins、55 次 harmful events，同时减少 8 次 clean events。
+
+由于 Anchor registry 已变化，本轮没有复用旧 6357-row teacher 或 metric。为 6361-row Map 重新构建了 compact Top-64 function graph、Gaussian raster provenance、complete-positive teacher，并从 identity 初始化执行与冻结 V3 相同的 176-step bounded metric refresh。Map/graph/teacher/metric 均为 6361 行，metric IDs 与 Map IDs bitwise equal，teacher rows 与 function graph rows bitwise equal，`initial_metric_state=null`。
+
+随后在全部 231 个 mapping queries 上以 seeds 2026/2027/2028 对比冻结 V3：
+
+| 指标（alias - V3，三种子均值） | Delta |
+|---|---:|
+| Raw precision | **-0.00792 pp** |
+| Inlier precision | +0.00740 pp |
+| Median TE | **+0.03936 cm** |
+| Mean TE | **+0.00463 cm** |
+| P90 TE | -0.01231 cm |
+| P95 TE | +0.02916 cm |
+| CVaR95 TE | -0.01737 cm |
+| Catastrophic >100cm | 0 |
+
+Raw precision 是确定性量，三种子均从 14.19271% 降至 14.18478%；median 与 mean TE 均 3/3 种子恶化。P90 的小幅改善不足以覆盖 precision sentinel 回退，CVaR95 也不构成稳定的逐种子改善。因此 **ShopFacade 对当前 equal-gain alias tie-break 判定为 Stop**：不运行 test split、不将其纳入默认 selector，也不通过场景阈值调参寻找例外。alias graph 继续保留为诊断证据；下一版本必须改变风险与 clean utility 的联合决策形式，而不是把当前 tie-break 扩大成删除或硬惩罚。
+
 ### P6：完全观测驱动的单 Anchor 描述子
 
 描述子只从 `O_i` 的真实 SuperPoint 观测产生：
