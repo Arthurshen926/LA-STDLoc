@@ -738,6 +738,25 @@ def test_producer_identity_compares_source_bytes_to_head_not_git_status(
     assert identity["required_source_paths_clean"] is False
 
 
+def test_producer_identity_binds_claimed_commit_to_its_source_blobs():
+    identity = cycle_fisher._verified_cycle_producer_identity()
+    parent = cycle_fisher.subprocess.run(
+        ["git", "rev-parse", "HEAD^"],
+        cwd=cycle_fisher.Path(cycle_fisher.__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    forged = copy.deepcopy(identity)
+    forged["git_commit"] = parent
+    with pytest.raises(
+        ValueError, match="lacks required source identity|commit/source identity"
+    ):
+        cycle_fisher._validate_verified_cycle_producer_identity(
+            forged, require_clean=True
+        )
+
+
 def test_resigned_half_budget_scaffold_mask_cannot_bypass_exact_replay():
     probe, keypoints, camera_K, poses = _synthetic_probe_and_geometry()
     candidate = probe["candidate_pool"]

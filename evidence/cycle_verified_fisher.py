@@ -203,6 +203,24 @@ def _validate_verified_cycle_producer_identity(
     )
     if ancestor.returncode != 0:
         raise ValueError("Verified-cycle producer commit is not in current history")
+    try:
+        committed_source_files = {
+            relative: hashlib.sha256(
+                subprocess.run(
+                    ["git", "show", f"{producer_commit}:{relative}"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+            ).hexdigest()
+            for relative in _VERIFIED_TABLE_PRODUCER_SOURCES
+        }
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(
+            "Verified-cycle producer commit lacks required source identity"
+        ) from error
+    if identity.get("source_file_sha256") != committed_source_files:
+        raise ValueError("Verified-cycle producer commit/source identity differs")
     if not isinstance(identity.get("required_source_paths_clean"), bool):
         raise ValueError("Verified-cycle producer cleanliness claim is invalid")
     if require_clean and (

@@ -87,7 +87,8 @@ provenance，table 还绑定 clean producer Git commit、物化 entrypoint、完
 geometry/CLI/prereg source SHA 与 Python/Torch runtime。materializer、selector、comparator
 都要求这些 source paths 在当前 worktree clean、hash 完全一致，且 producer commit 是当前
 提交的祖先；clean 不是依赖可被 `assume-unchanged` 隐藏的 status，而是逐文件比较当前
-bytes 与 `HEAD:path` blob。producer identity 不是独立真值：即使攻击者保留合法 identity、同步篡改
+bytes 与 `HEAD:path` blob；声明的 producer commit 也必须逐文件重读其 Git blob，并与
+identity source SHA 完全相等。producer identity 不是独立真值：即使攻击者保留合法 identity、同步篡改
 Fisher/utility 并重签 content hash，也会被 comparator 的完整几何重物化拒绝。
 
 ## 失败封闭与冻结 gate
@@ -147,7 +148,7 @@ geometry、重放 Stage-1/2 selection、subset metrics 与所有 gates。只有�
   hash tamper、verified-table reuse、CLI scientific Stop persistence；现有 V1 tests 保持不变。
   另覆盖 tampered geometry/Fisher + resigned content 且保留合法 producer identity 的拒绝路径。
 
-提交前 CPU suite 为 `404 passed, 1 skipped`，修改范围的 Ruff 与 `git diff --check` 通过；
+提交前 CPU suite 为 `405 passed, 1 skipped`，修改范围的 Ruff 与 `git diff --check` 通过；
 跳过项仍是需要显式环境开关的既有 CUDA renderer smoke，不是 V2 测试。
 
 当前仍未运行任何真实 V2 selector/GPU/Track/pose/test，V3 `nearest` 继续作为共享默认。

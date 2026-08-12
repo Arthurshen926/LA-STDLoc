@@ -160,7 +160,7 @@
   "current_status": {
     "implementation_complete": true,
     "cpu_tests_passed": true,
-    "cpu_test_result": "404 passed, 1 skipped",
+    "cpu_test_result": "405 passed, 1 skipped",
     "scoped_ruff_passed": true,
     "cross_scene_stage_a_aggregator_implemented": true,
     "real_v2_selector_run": false,
