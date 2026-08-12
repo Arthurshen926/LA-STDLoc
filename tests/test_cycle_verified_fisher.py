@@ -1,8 +1,10 @@
 import copy
+import random
 
 import pytest
 import torch
 
+from evidence import cycle_verified_fisher as cycle_fisher
 from evidence.cycle_verified_fisher import (
     POLICY_NAME,
     PROBE_SCHEMA,
@@ -14,6 +16,145 @@ from evidence.cycle_verified_fisher import (
     validate_cycle_verified_fisher_selection,
     validate_pair_match_probe,
 )
+
+
+def _closure_pair(triangle_edges, triangle_utility, selected, pair_budget, edge_count):
+    expected = cycle_fisher._complete_verified_triangles_bruteforce(
+        triangle_edges=triangle_edges,
+        triangle_utility=triangle_utility,
+        selected=selected,
+        pair_budget=pair_budget,
+    )
+    actual = cycle_fisher._complete_verified_triangles_incremental(
+        triangle_edges=triangle_edges,
+        triangle_utility=triangle_utility,
+        selected=selected,
+        pair_budget=pair_budget,
+        edge_count=edge_count,
+    )
+    return expected, actual
+
+
+def test_incremental_closure_matches_bruteforce_for_random_tied_utilities():
+    generator = random.Random(20260813)
+    for trial in range(2000):
+        edge_count = generator.randint(3, 36)
+        triangle_count = generator.randint(0, 80)
+        rows = [generator.sample(range(edge_count), 3) for _ in range(triangle_count)]
+        triangle_edges = (
+            torch.tensor(rows, dtype=torch.long)
+            if rows
+            else torch.zeros((0, 3), dtype=torch.long)
+        )
+        # A small discrete set deliberately creates exact priority and tuple ties.
+        triangle_utility = torch.tensor(
+            [generator.choice((0.125, 0.25, 0.5, 1.0, 2.0, 4.0)) for _ in rows],
+            dtype=torch.float64,
+        )
+        initial_count = generator.randint(0, min(edge_count, 10))
+        selected = set(generator.sample(range(edge_count), initial_count))
+        pair_budget = generator.randint(initial_count, edge_count)
+        expected, actual = _closure_pair(
+            triangle_edges,
+            triangle_utility,
+            selected,
+            pair_budget,
+            edge_count,
+        )
+        assert actual == expected, f"random closure parity failed at trial {trial}"
+
+
+@pytest.mark.parametrize("remaining", [1, 2, 3])
+def test_incremental_closure_preserves_final_slot_bundle_eligibility(remaining):
+    triangle_edges = torch.tensor(
+        [[0, 1, 2], [0, 3, 4], [1, 3, 5], [2, 4, 5]], dtype=torch.long
+    )
+    triangle_utility = torch.tensor([9.0, 8.0, 7.0, 6.0], dtype=torch.float64)
+    selected = {0, 1, 3}
+    pair_budget = len(selected) + remaining
+    expected, actual = _closure_pair(
+        triangle_edges,
+        triangle_utility,
+        selected,
+        pair_budget,
+        edge_count=6,
+    )
+    assert actual == expected
+    assert len(actual) <= pair_budget
+
+
+def test_incremental_closure_preserves_first_triangle_exact_tie_break():
+    # Duplicate rows and utilities have identical registered priority.  The
+    # original scan keeps the first triangle; the lazy heap must do likewise.
+    triangle_edges = torch.tensor([[0, 2, 4], [0, 2, 4], [1, 3, 5]], dtype=torch.long)
+    triangle_utility = torch.tensor([3.0, 3.0, 3.0], dtype=torch.float64)
+    expected, actual = _closure_pair(
+        triangle_edges,
+        triangle_utility,
+        selected={0},
+        pair_budget=3,
+        edge_count=6,
+    )
+    assert actual == expected == {0, 2, 4}
+
+
+def test_incremental_closure_rejects_out_of_range_edges():
+    edges = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    utility = torch.tensor([1.0], dtype=torch.float64)
+    with pytest.raises(ValueError, match="verified triangle"):
+        cycle_fisher._complete_verified_triangles_incremental(
+            triangle_edges=edges + 3,
+            triangle_utility=utility,
+            selected=set(),
+            pair_budget=1,
+            edge_count=3,
+        )
+    for selected in ({-1}, {3}):
+        with pytest.raises(ValueError, match="preselected edge"):
+            cycle_fisher._complete_verified_triangles_incremental(
+                triangle_edges=edges,
+                triangle_utility=utility,
+                selected=selected,
+                pair_budget=1,
+                edge_count=3,
+            )
+
+
+def test_full_selector_content_matches_bruteforce_closure(monkeypatch):
+    probe, keypoints, K, poses = _synthetic_probe_and_geometry()
+    incremental_pairs, incremental_sidecar = select_cycle_verified_fisher_pairs(
+        pair_match_probe=probe,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=poses,
+        pair_budget=5,
+        maximum_cycle_reprojection_error_px=0.01,
+    )
+
+    def brute_adapter(
+        *, triangle_edges, triangle_utility, selected, pair_budget, edge_count
+    ):
+        del edge_count
+        return cycle_fisher._complete_verified_triangles_bruteforce(
+            triangle_edges=triangle_edges,
+            triangle_utility=triangle_utility,
+            selected=selected,
+            pair_budget=pair_budget,
+        )
+
+    monkeypatch.setattr(
+        cycle_fisher, "_complete_verified_triangles_incremental", brute_adapter
+    )
+    brute_pairs, brute_sidecar = select_cycle_verified_fisher_pairs(
+        pair_match_probe=probe,
+        keypoints=keypoints,
+        camera_K=K,
+        pose_w2c=poses,
+        pair_budget=5,
+        maximum_cycle_reprojection_error_px=0.01,
+    )
+    assert incremental_pairs == brute_pairs
+    assert incremental_sidecar["content_sha256"] == brute_sidecar["content_sha256"]
 
 
 def _look_at_pose(center, target):

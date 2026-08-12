@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections import defaultdict
 from copy import deepcopy
 import hashlib
+import heapq
 import json
 import math
 import re
@@ -1253,6 +1254,190 @@ def _graph_diagnostics(
     }
 
 
+def _complete_verified_triangles_bruteforce(
+    *,
+    triangle_edges: torch.Tensor,
+    triangle_utility: torch.Tensor,
+    selected: set[int],
+    pair_budget: int,
+) -> set[int]:
+    """Reference implementation of the registered V1 closure objective.
+
+    This intentionally mirrors the original full-scan loop.  Production uses
+    the incremental implementation below; retaining this small oracle makes the
+    exact selection semantics and tie-break executable in randomized tests.
+    """
+    selected = set(selected)
+    while len(selected) < int(pair_budget) and triangle_edges.numel():
+        remaining = int(pair_budget) - len(selected)
+        best = None
+        best_key = None
+        for triangle_index, edge_tensor in enumerate(triangle_edges):
+            edge_tuple = tuple(int(value) for value in edge_tensor.tolist())
+            missing = tuple(edge for edge in edge_tuple if edge not in selected)
+            if not missing or len(missing) > remaining:
+                continue
+            utility = float(triangle_utility[triangle_index])
+            key = (
+                utility / len(missing),
+                utility,
+                -len(missing),
+                tuple(-value for value in missing),
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best = missing
+        if best is None:
+            break
+        selected.update(best)
+    return selected
+
+
+def _edge_triangle_csr(
+    triangle_edges: torch.Tensor, *, edge_count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build a deterministic edge-to-triangle CSR incidence table."""
+    edges = torch.as_tensor(triangle_edges).long().cpu().reshape(-1, 3)
+    edge_count = int(edge_count)
+    if edge_count < 0:
+        raise ValueError("edge count must be non-negative")
+    flat_edges = edges.reshape(-1)
+    if flat_edges.numel() and (
+        int(flat_edges.min()) < 0 or int(flat_edges.max()) >= edge_count
+    ):
+        raise ValueError("verified triangle references an out-of-range pair")
+    counts = torch.bincount(flat_edges, minlength=edge_count)
+    offsets = torch.cat((torch.zeros(1, dtype=torch.long), torch.cumsum(counts, dim=0)))
+    if not flat_edges.numel():
+        return offsets, torch.zeros(0, dtype=torch.long)
+    triangle_indices = torch.arange(edges.shape[0], dtype=torch.long).repeat_interleave(
+        3
+    )
+    order = torch.argsort(flat_edges, stable=True)
+    return offsets, triangle_indices[order]
+
+
+def _closure_heap_entry(
+    *, triangle_index: int, missing: tuple[int, ...], utility: float, version: int
+) -> tuple:
+    """Invert the registered max-key into an exactly ordered min-heap key."""
+    return (
+        -(utility / len(missing)),
+        -utility,
+        len(missing),
+        missing,
+        int(triangle_index),
+        int(version),
+    )
+
+
+def _complete_verified_triangles_incremental(
+    *,
+    triangle_edges: torch.Tensor,
+    triangle_utility: torch.Tensor,
+    selected: set[int],
+    pair_budget: int,
+    edge_count: int,
+) -> set[int]:
+    """Apply the registered closure objective with incremental incidence updates.
+
+    The original implementation rescanned every verified triangle after every
+    one-to-three-edge bundle.  Here each triangle is inserted into a heap for
+    its current missing-edge count, and is reconsidered only when one of its
+    three incident edges is selected.  Version tags discard stale heap entries.
+
+    Heap ordering is the exact inverse of the original max-key, including the
+    missing-edge tuple and first-triangle-on-exact-tie behavior.  Separate
+    buckets for one, two, and three missing edges preserve the final-slot
+    eligibility rule as ``remaining`` falls below three.
+    """
+    edges = torch.as_tensor(triangle_edges).long().cpu().reshape(-1, 3)
+    utilities = torch.as_tensor(triangle_utility).double().cpu().reshape(-1)
+    if utilities.numel() != edges.shape[0]:
+        raise ValueError("verified triangle edges and utilities do not align")
+    selected = set(int(edge) for edge in selected)
+    pair_budget = int(pair_budget)
+    edge_count = int(edge_count)
+    if selected and (min(selected) < 0 or max(selected) >= edge_count):
+        raise ValueError("preselected edge is outside the candidate pair registry")
+    if pair_budget < len(selected):
+        raise ValueError("pair budget is smaller than the preselected edge set")
+    if not edges.numel() or len(selected) >= pair_budget:
+        return selected
+
+    offsets, incident_triangles = _edge_triangle_csr(edges, edge_count=edge_count)
+    edge_rows = [tuple(int(value) for value in row) for row in edges.tolist()]
+    utility_values = [float(value) for value in utilities.tolist()]
+    versions = [0] * len(edge_rows)
+    missing_by_triangle = [
+        tuple(edge for edge in row if edge not in selected) for row in edge_rows
+    ]
+    heaps: list[list[tuple]] = [[], [], [], []]
+    for triangle_index, missing in enumerate(missing_by_triangle):
+        if missing:
+            heapq.heappush(
+                heaps[len(missing)],
+                _closure_heap_entry(
+                    triangle_index=triangle_index,
+                    missing=missing,
+                    utility=utility_values[triangle_index],
+                    version=versions[triangle_index],
+                ),
+            )
+
+    def valid_head(missing_count: int) -> tuple | None:
+        heap = heaps[missing_count]
+        while heap:
+            entry = heap[0]
+            triangle_index = int(entry[-2])
+            version = int(entry[-1])
+            if (
+                version == versions[triangle_index]
+                and len(missing_by_triangle[triangle_index]) == missing_count
+            ):
+                return entry
+            heapq.heappop(heap)
+        return None
+
+    while len(selected) < pair_budget:
+        remaining = pair_budget - len(selected)
+        best_entry = None
+        for missing_count in range(1, min(remaining, 3) + 1):
+            entry = valid_head(missing_count)
+            if entry is not None and (best_entry is None or entry < best_entry):
+                best_entry = entry
+        if best_entry is None:
+            break
+
+        triangle_index = int(best_entry[-2])
+        new_edges = missing_by_triangle[triangle_index]
+        selected.update(new_edges)
+        impacted: set[int] = set()
+        for edge in new_edges:
+            begin, end = int(offsets[edge]), int(offsets[edge + 1])
+            impacted.update(
+                int(value) for value in incident_triangles[begin:end].tolist()
+            )
+        for impacted_triangle in impacted:
+            previous = missing_by_triangle[impacted_triangle]
+            missing = tuple(edge for edge in previous if edge not in selected)
+            if missing == previous:
+                continue
+            versions[impacted_triangle] += 1
+            missing_by_triangle[impacted_triangle] = missing
+            if missing:
+                heapq.heappush(
+                    heaps[len(missing)],
+                    _closure_heap_entry(
+                        triangle_index=impacted_triangle,
+                        missing=missing,
+                        utility=utility_values[impacted_triangle],
+                        version=versions[impacted_triangle],
+                    ),
+                )
+    return selected
+
+
 def bounded_union_candidate_pool(
     *,
     pair_sets: Iterable[Iterable[tuple[int, int]]],
@@ -1426,29 +1611,15 @@ def select_cycle_verified_fisher_pairs(
         degree[right] += 1
 
     # Complete whole verified triangles whenever their missing-edge bundle fits.
-    # This directly optimizes closure utility; independent edge scores would not.
-    while len(selected) < pair_budget and triangle_edges.numel():
-        remaining = pair_budget - len(selected)
-        best = None
-        best_key = None
-        for triangle_index, edge_tensor in enumerate(triangle_edges):
-            edge_tuple = tuple(int(value) for value in edge_tensor.tolist())
-            missing = tuple(edge for edge in edge_tuple if edge not in selected)
-            if not missing or len(missing) > remaining:
-                continue
-            utility = float(triangle_utility[triangle_index])
-            key = (
-                utility / len(missing),
-                utility,
-                -len(missing),
-                tuple(-value for value in missing),
-            )
-            if best_key is None or key > best_key:
-                best_key = key
-                best = missing
-        if best is None:
-            break
-        selected.update(best)
+    # This is exactly the registered closure objective and tie-break, evaluated
+    # through edge-to-triangle incidence updates instead of O(T * budget) scans.
+    selected = _complete_verified_triangles_incremental(
+        triangle_edges=triangle_edges,
+        triangle_utility=triangle_utility,
+        selected=selected,
+        pair_budget=pair_budget,
+        edge_count=len(pairs),
+    )
 
     # Exact budget is a scientific contract.  Remaining slots use only verified
     # cycle/Fisher evidence for ranking; no overlap/parallax surrogate re-enters.
