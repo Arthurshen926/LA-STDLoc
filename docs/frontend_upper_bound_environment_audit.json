@@ -1,0 +1,103 @@
+{
+  "audited_repository": {
+    "code_sha256": {
+      "features/extractor.py": "23d8a38ced2aa5b74f835345feea776ac21aff36873ff35dc0376a37300eebad",
+      "features/superpoint.py": "ee88d6fa99fd052f498989be94aa8ee5e2568a4cba8db57a51ff9ffc233071fc",
+      "localization/frontend.py": "847f6326fdb3d9e1dd6fe95398c4a2088c02c53358d385f0fc70d95e67c70d05",
+      "map_learning/bootstrap.py": "412308cf8f77d288ecdf329314bad377026415d40598744d1f71f340fd111467",
+      "map_learning/context_booster.py": "0cb53c226b1d37ceb52679d40a441a6581372fc94d831e79b977341800cbb092",
+      "map_learning/context_booster_crossfit.py": "c03c19c27aea2b232c01f011dff2433ef5ef8cd80a76d63a30af4a18528b76d1",
+      "map_learning/context_metric.py": "d710f8171f7c1c3d2cbae031ec1480e93a13f94ec9455d6572fdc13f69439817",
+      "map_learning/context_metric_crossfit.py": "2dab8922635072182687db46f5fd20ea52dcf1125ea17a3e463c2d8ed78c6805",
+      "map_learning/frontend_upper_bound.py": "a5bdc78eb994c732169592f29e9b232b6a00c100c3cd3f92479b413d4147ed6a",
+      "map_learning/metric_context_uplift.py": "a14397dbded80cf1d7a676fa8f8f128f6ffa753f645b3234bbca6708af12422d",
+      "map_learning/observations.py": "c4484a5d90f92f49f7949271694d1c992566be64a1beaafafef00210c3cdac32",
+      "scripts/audit_frontend_upper_bound.py": "27aff53ea7dd4bbf2651b6c6581f25e578472a21461e374b2df3c1b44bdc6e43"
+    },
+    "git_commit_at_audit": "28de85b528a7f26861464db815a0084003c8c75e",
+    "root": "/tmp/stdloc-wt-cross-domain"
+  },
+  "available_but_not_admissible_as_stronger_frontend": {
+    "featurebooster": {
+      "classification": "same_dim_superpoint_postprocessor_control",
+      "expected_sha256": "5334d9aa861e877a2b99baff0d682e1ac8a749cdd65eb1d4b8bd0a8bb8bf0359",
+      "historical_status": "already_crossfit_evaluated_not_deployed",
+      "independent_local_frontend": false,
+      "path": "/root/.cache/lafgs/SuperPoint+Boost-F.pth",
+      "status": "missing"
+    },
+    "loftr": {
+      "admissible": false,
+      "classification": "pair_matcher",
+      "expected_sha256": null,
+      "path": "/root/.cache/torch/hub/checkpoints/loftr_outdoor.ckpt",
+      "reason": "pair-conditioned matches cannot replace the current global descriptor bank in a one-factor paired experiment",
+      "sha256": "21f5bec5968178e8bc8b7633441836fe5de4f47d861dd2cd7dc38e271b0479ec",
+      "size_bytes": 46341978,
+      "status": "present_unverified"
+    }
+  },
+  "baseline": {
+    "descriptor_dim": 256,
+    "name": "frozen_superpoint",
+    "status": "READY",
+    "weights": {
+      "expected_sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e",
+      "path": "/root/STDLoc/build/lib/features/weights/superpoint_v1.pth",
+      "sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e",
+      "size_bytes": 5206086,
+      "status": "verified"
+    }
+  },
+  "candidate": {
+    "reason": "no candidate weight path was supplied",
+    "status": "BLOCKED_BY_ARTIFACT"
+  },
+  "conclusion": "No admissible locked independent 256D stronger-local-frontend artifact is present, so the SuperPoint representation ceiling cannot yet be accepted or rejected. The audit must remain BLOCKED_BY_ARTIFACT; code availability alone is not a result.",
+  "deployment_modified": false,
+  "kornia": {
+    "available_feature_symbols": [
+      "DISK",
+      "DeDoDe",
+      "LoFTR",
+      "HardNet",
+      "SOSNet"
+    ],
+    "network_access_used": false,
+    "python": "/root/miniconda3/envs/g4splat/bin/python3.9",
+    "status": "code_available",
+    "version": "0.8.2",
+    "weight_status": "no_locked_compatible_weight_attested"
+  },
+  "mapping_only": true,
+  "network_access_used": false,
+  "probe_schema": "lafgs_frontend_upper_bound_probe_cache",
+  "schema": "lafgs_frontend_upper_bound_environment_preflight",
+  "upper_bound_arms": {
+    "A_detector_repeatability": {
+      "candidate_descriptors_used": false,
+      "fixed_variables": [
+        "mapping queries",
+        "frozen map xyz and anchor types",
+        "requested K",
+        "image preprocessing and valid mask",
+        "GT pose/intrinsics/depth/alpha legality"
+      ],
+      "status": "BLOCKED_BY_ARTIFACT"
+    },
+    "B_descriptor_identity": {
+      "candidate_detector_used": false,
+      "fixed_variables": [
+        "exact SuperPoint keypoint rows",
+        "256D interface",
+        "complete-positive teacher",
+        "support observations and view-balanced fusion",
+        "bidirectional temporal crossfit",
+        "global cosine R@K"
+      ],
+      "status": "BLOCKED_BY_ARTIFACT"
+    }
+  },
+  "uses_test_queries": false,
+  "version": 1
+}
