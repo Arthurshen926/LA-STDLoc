@@ -10,9 +10,12 @@ from evidence.cycle_verified_fisher import CONTROL_POLICY_NAME, POLICY_NAME
 from scripts import attest_cycle_verified_pair_proposals as proposal_cli
 from scripts import compare_cycle_verified_fisher_mechanism as stage_b_cli
 from scripts import compare_cycle_verified_fisher_stage_a as stage_a_cli
+from scripts import compare_cycle_verified_fisher_coverage_stage_a as coverage_stage_a_cli
+from scripts import materialize_cycle_verified_triangle_table as verified_table_cli
 from scripts import materialize_cycle_verified_pair_probe as probe_cli
 from scripts import materialize_cycle_verified_track_factor as track_cli
 from scripts import select_cycle_verified_fisher_pairs as select_cli
+from scripts import select_cycle_verified_fisher_coverage_pairs as coverage_select_cli
 from scripts.cycle_verified_fisher_cli_common import (
     SCENE_CONTRACTS,
     load_mapping_cache,
@@ -531,6 +534,86 @@ def test_stage_a_scientific_stop_persists_and_exits_two(
     gate = json.loads(output.read_text())
     assert gate["valid"] is True
     assert gate["stage_a_passed"] is False
+    assert gate["decision"] == "STOP_BEFORE_TRACK_REUSE"
+
+
+def test_v2_coverage_cli_hard_constraint_and_scientific_stop_persist(
+    p8_cli_artifacts,
+    monkeypatch,
+):
+    artifact = p8_cli_artifacts
+    monkeypatch.setattr(
+        coverage_stage_a_cli,
+        "STAIRS_V1_SELECTION_CONTRACT",
+        {
+            "sha256": artifact["selection_record"]["sha256"],
+            "content_sha256": artifact["selection_record"]["content_sha256"],
+        },
+    )
+    common = [
+        "--scene", "stairs",
+        "--query-cache", str(artifact["cache_path"]),
+        "--expected-query-cache-sha256", artifact["cache_sha256"],
+        "--probe", str(artifact["probe_path"]),
+        "--expected-probe-sha256", artifact["probe_record"]["sha256"],
+        "--expected-probe-content-sha256", artifact["probe_record"]["content_sha256"],
+        "--expected-query-names-sha256", artifact["names_sha256"],
+        "--expected-mapping-keypoints", "3",
+        "--expected-nms-radius", "1",
+        "--expected-pair-budget", "5",
+        "--expected-candidate-pair-count", "6",
+        "--expected-candidate-components", "1",
+        "--maximum-cycle-reprojection-error-px", "2.0",
+    ]
+    verified_path = artifact["tmp_path"] / "verified_table.pt"
+    verified_table_cli.main([*common, "--output", str(verified_path)])
+    verified = torch_load(verified_path)
+
+    selection_path = artifact["tmp_path"] / "coverage_selection.pt"
+    proposal_args = [
+        "--proposals", str(artifact["proposals_path"]),
+        "--expected-proposals-sha256", artifact["proposal_record"]["sha256"],
+        "--expected-proposals-content-sha256", artifact["proposal_record"]["content_sha256"],
+    ]
+    table_args = [
+        "--verified-cycle-table", str(verified_path),
+        "--expected-verified-cycle-table-sha256", sha256_file(verified_path),
+        "--expected-verified-cycle-table-content-sha256", verified["content_sha256"],
+    ]
+    coverage_select_cli.main(
+        [
+            *common,
+            *proposal_args,
+            *table_args,
+            "--minimum-camera-degree", "1",
+            "--output", str(selection_path),
+        ]
+    )
+    selection = torch_load(selection_path)
+    assert selection["coverage_certificate"]["target_camera_index"] == [2, 3, 4]
+    assert selection["coverage_certificate"]["all_target_cameras_covered"] is True
+
+    gate_path = artifact["tmp_path"] / "coverage_stage_a_stop.json"
+    arguments = [
+        *common,
+        *proposal_args,
+        *table_args,
+        "--selection", str(selection_path),
+        "--expected-selection-sha256", sha256_file(selection_path),
+        "--expected-selection-content-sha256", selection["content_sha256"],
+        "--stairs-v1-selection", str(artifact["selection_path"]),
+        "--expected-stairs-v1-selection-sha256", artifact["selection_record"]["sha256"],
+        "--expected-stairs-v1-selection-content-sha256", artifact["selection_record"]["content_sha256"],
+        "--output", str(gate_path),
+    ]
+    with pytest.raises(SystemExit) as error:
+        coverage_stage_a_cli.entrypoint(arguments)
+    assert error.value.code == 2
+    gate = json.loads(gate_path.read_text())
+    assert gate["valid"] is True
+    assert gate["gates"]["control_target_membership_exact"] is True
+    assert gate["gates"]["all_control_target_cameras_hard_covered"] is True
+    assert gate["gates"]["verified_fisher_utility_improves_5pct"] is False
     assert gate["decision"] == "STOP_BEFORE_TRACK_REUSE"
 
 

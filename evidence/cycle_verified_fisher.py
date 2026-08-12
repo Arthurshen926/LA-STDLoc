@@ -31,6 +31,9 @@ PROBE_SCHEMA = "lafgs_cycle_verified_pair_match_probe"
 SELECTION_SCHEMA = "lafgs_cycle_verified_fisher_selection"
 POLICY_NAME = "cycle_verified_fisher"
 CONTROL_POLICY_NAME = "cycle_verified_fisher_nearest_control"
+VERIFIED_TABLE_SCHEMA = "lafgs_cycle_verified_triangle_table"
+COVERAGE_SELECTION_SCHEMA = "lafgs_cycle_verified_fisher_coverage_selection"
+COVERAGE_POLICY_NAME = "cycle_verified_fisher_coverage"
 
 _MATCHER_PARAMETER_NAMES = (
     "minimum_similarity",
@@ -83,6 +86,19 @@ def _candidate_pool_sha256(
         "pairs": [[int(left), int(right)] for left, right in pairs],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _pair_table_sha256(pairs: Iterable[tuple[int, int]]) -> str:
+    encoded = json.dumps(
+        [[int(left), int(right)] for left, right in pairs],
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _integer_set_sha256(values: Iterable[int]) -> str:
+    encoded = json.dumps(sorted(set(map(int, values))), separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -158,6 +174,33 @@ def _selection_content_sha256(payload: dict) -> str:
             floating=torch.as_tensor(selected[name]).is_floating_point(),
         )
     return hasher.hexdigest()
+
+
+def _verified_table_content_sha256(payload: dict) -> str:
+    """Hash a reusable verified-cycle table independently of its file path."""
+    hasher = hashlib.sha256()
+    header = {
+        name: value
+        for name, value in payload.items()
+        if name not in {"content_sha256", "verified_triangle"}
+    }
+    hasher.update(
+        json.dumps(header, sort_keys=True, separators=(",", ":")).encode()
+    )
+    triangle = payload.get("verified_triangle", {})
+    for name in sorted(triangle):
+        hasher.update(name.encode())
+        value = triangle[name]
+        if isinstance(value, torch.Tensor):
+            _hash_tensor(hasher, value, floating=value.is_floating_point())
+        else:
+            hasher.update(struct.pack("<d", float(value)))
+    return hasher.hexdigest()
+
+
+def verified_cycle_table_content_sha256(payload: dict) -> str:
+    """Public content-hash helper for immutable artifact writers/auditors."""
+    return _verified_table_content_sha256(payload)
 
 
 def _proposal_content_sha256(payload: dict) -> str:
@@ -1213,6 +1256,246 @@ def _verified_cycle_table(
     }
 
 
+def materialize_verified_cycle_table(
+    *,
+    pair_match_probe: dict,
+    keypoints: list[torch.Tensor],
+    camera_K: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    maximum_reprojection_error_px: float,
+) -> dict:
+    """Build one hash-bound verified-cycle table for selector and gate reuse."""
+    validate_pair_match_probe(pair_match_probe)
+    query_count = int(pair_match_probe["query_count"])
+    if (
+        len(keypoints) != query_count
+        or torch.as_tensor(camera_K).shape[0] != query_count
+        or torch.as_tensor(pose_w2c).shape[0] != query_count
+    ):
+        raise ValueError("Verified-table camera inputs do not align with the probe")
+    expected_counts = torch.as_tensor(
+        [int(value.shape[0]) for value in keypoints], dtype=torch.long
+    )
+    if not torch.equal(expected_counts, pair_match_probe["keypoint_counts"].long()):
+        raise ValueError("Verified-table keypoints differ from the probe")
+    maximum_error = float(maximum_reprojection_error_px)
+    if not math.isfinite(maximum_error) or maximum_error <= 0:
+        raise ValueError("Verified-table reprojection threshold must be positive")
+    candidate = pair_match_probe["candidate_pool"]
+    pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    pair_matches, _ = pair_matches_from_probe(pair_match_probe)
+    triangle = _verified_cycle_table(
+        pairs=pairs,
+        pair_matches=pair_matches,
+        keypoints=keypoints,
+        camera_K=torch.as_tensor(camera_K),
+        pose_w2c=torch.as_tensor(pose_w2c),
+        maximum_reprojection_error_px=maximum_error,
+    )
+    candidate_verified_cameras = sorted(
+        map(
+            int,
+            torch.unique(
+                torch.as_tensor(triangle["camera_index"]).long().reshape(-1)
+            ).tolist(),
+        )
+    )
+    payload = {
+        "schema": VERIFIED_TABLE_SCHEMA,
+        "version": 1,
+        "uses_test_queries": False,
+        "query_count": query_count,
+        "query_names_sha256": pair_match_probe["query_names_sha256"],
+        "query_cache_sha256": pair_match_probe["query_cache_sha256"],
+        "probe_content_sha256": pair_match_probe["content_sha256"],
+        "candidate_pool_sha256": candidate["sha256"],
+        "candidate_pair_count": len(pairs),
+        "parameters": {
+            "maximum_cycle_reprojection_error_px": maximum_error,
+            "information_model": "bearing_fisher_logdet_v1",
+            "scene_scale_semantics": "median_positive_candidate_baseline_m",
+        },
+        "candidate_verified_camera": {
+            "camera_index": candidate_verified_cameras,
+            "camera_index_sha256": _integer_set_sha256(candidate_verified_cameras),
+            "camera_count": len(candidate_verified_cameras),
+            "camera_fraction": len(candidate_verified_cameras) / query_count,
+        },
+        "verified_triangle": triangle,
+    }
+    payload["content_sha256"] = _verified_table_content_sha256(payload)
+    validate_verified_cycle_table(payload, pair_match_probe=pair_match_probe)
+    return payload
+
+
+def validate_verified_cycle_table(
+    payload: dict,
+    *,
+    pair_match_probe: dict | None = None,
+    expected_content_sha256: str | None = None,
+) -> None:
+    """Validate reusable verified cycles, their geometry, and exact lineage."""
+    if (
+        payload.get("schema") != VERIFIED_TABLE_SCHEMA
+        or int(payload.get("version", -1)) != 1
+        or payload.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Unexpected verified-cycle table contract")
+    query_count = int(payload.get("query_count", -1))
+    pair_count = int(payload.get("candidate_pair_count", -1))
+    parameters = payload.get("parameters", {})
+    maximum_error = float(
+        parameters.get("maximum_cycle_reprojection_error_px", math.nan)
+    )
+    if (
+        query_count <= 1
+        or pair_count <= 0
+        or not math.isfinite(maximum_error)
+        or maximum_error <= 0
+        or parameters.get("information_model") != "bearing_fisher_logdet_v1"
+        or parameters.get("scene_scale_semantics")
+        != "median_positive_candidate_baseline_m"
+    ):
+        raise ValueError("Verified-cycle table parameters are invalid")
+    for name in (
+        "query_names_sha256",
+        "query_cache_sha256",
+        "probe_content_sha256",
+        "candidate_pool_sha256",
+    ):
+        if not _is_sha256(payload.get(name)):
+            raise ValueError(f"Verified-cycle table lacks exact {name} lineage")
+
+    registry = payload.get("candidate_verified_camera", {})
+    registry_index = registry.get("camera_index")
+    if (
+        not isinstance(registry_index, list)
+        or registry_index != sorted(set(map(int, registry_index)))
+        or any(index < 0 or index >= query_count for index in registry_index)
+        or registry.get("camera_index_sha256") != _integer_set_sha256(registry_index)
+        or int(registry.get("camera_count", -1)) != len(registry_index)
+        or not math.isclose(
+            float(registry.get("camera_fraction", math.nan)),
+            len(registry_index) / query_count,
+            rel_tol=0.0,
+            abs_tol=0.0,
+        )
+    ):
+        raise ValueError("Verified-cycle candidate camera registry is invalid")
+
+    triangle = payload.get("verified_triangle", {})
+    if set(triangle) != {
+        "scene_scale_m",
+        "camera_index",
+        "keypoint_index",
+        "pair_index",
+        "fisher_logdet_gain",
+        "confidence",
+        "utility",
+        "reprojection_max_px",
+    }:
+        raise ValueError("Verified-cycle table columns are incomplete")
+    camera_index = torch.as_tensor(triangle["camera_index"]).long().reshape(-1, 3)
+    keypoint_index = torch.as_tensor(triangle["keypoint_index"]).long().reshape(-1, 3)
+    pair_index = torch.as_tensor(triangle["pair_index"]).long().reshape(-1, 3)
+    row_count = int(camera_index.shape[0])
+    if keypoint_index.shape[0] != row_count or pair_index.shape[0] != row_count:
+        raise ValueError("Verified-cycle table index columns do not align")
+    floating = {
+        name: torch.as_tensor(triangle[name]).double().reshape(-1)
+        for name in (
+            "fisher_logdet_gain",
+            "confidence",
+            "utility",
+            "reprojection_max_px",
+        )
+    }
+    if any(value.numel() != row_count for value in floating.values()):
+        raise ValueError("Verified-cycle table floating columns do not align")
+    scene_scale = float(triangle["scene_scale_m"])
+    if not math.isfinite(scene_scale) or scene_scale <= 0:
+        raise ValueError("Verified-cycle table scene scale is invalid")
+    if row_count:
+        if (
+            int(camera_index.min()) < 0
+            or int(camera_index.max()) >= query_count
+            or int(pair_index.min()) < 0
+            or int(pair_index.max()) >= pair_count
+            or int(keypoint_index.min()) < 0
+            or not bool(
+                (camera_index[:, :-1] < camera_index[:, 1:]).all()
+            )
+        ):
+            raise ValueError("Verified-cycle table indices are invalid")
+        if (
+            any(not bool(torch.isfinite(value).all()) for value in floating.values())
+            or bool((floating["fisher_logdet_gain"] <= 0).any())
+            or bool((floating["confidence"] < 0).any())
+            or bool((floating["utility"] <= 0).any())
+            or bool((floating["reprojection_max_px"] > maximum_error).any())
+            or not torch.allclose(
+                floating["utility"],
+                floating["fisher_logdet_gain"] * floating["confidence"],
+                rtol=1e-10,
+                atol=1e-12,
+            )
+        ):
+            raise ValueError("Verified-cycle table metric columns are invalid")
+    observed_registry = sorted(map(int, torch.unique(camera_index).tolist()))
+    if registry_index != observed_registry:
+        raise ValueError("Verified-cycle candidate camera registry is stale")
+
+    if pair_match_probe is not None:
+        validate_pair_match_probe(pair_match_probe)
+        candidate = pair_match_probe["candidate_pool"]
+        expected = {
+            "query_count": int(pair_match_probe["query_count"]),
+            "query_names_sha256": pair_match_probe["query_names_sha256"],
+            "query_cache_sha256": pair_match_probe["query_cache_sha256"],
+            "probe_content_sha256": pair_match_probe["content_sha256"],
+            "candidate_pool_sha256": candidate["sha256"],
+            "candidate_pair_count": int(candidate["left_query_index"].numel()),
+        }
+        if any(payload.get(name) != value for name, value in expected.items()):
+            raise ValueError("Verified-cycle table differs from the probe lineage")
+        pairs = list(
+            zip(
+                candidate["left_query_index"].long().tolist(),
+                candidate["right_query_index"].long().tolist(),
+            )
+        )
+        if row_count:
+            pair_lookup = {pair: index for index, pair in enumerate(pairs)}
+            expected_edges = torch.as_tensor(
+                [
+                    [
+                        pair_lookup[(int(left), int(middle))],
+                        pair_lookup[(int(left), int(right))],
+                        pair_lookup[(int(middle), int(right))],
+                    ]
+                    for left, middle, right in camera_index.tolist()
+                ],
+                dtype=torch.long,
+            )
+            if not torch.equal(pair_index, expected_edges):
+                raise ValueError("Verified-cycle table edge/camera incidence is stale")
+            counts = pair_match_probe["keypoint_counts"].long()
+            limits = counts[camera_index]
+            if bool((keypoint_index >= limits).any()):
+                raise ValueError("Verified-cycle table keypoint index is out of range")
+
+    actual_sha = _verified_table_content_sha256(payload)
+    if payload.get("content_sha256") != actual_sha:
+        raise ValueError("Verified-cycle table content SHA-256 is stale")
+    if expected_content_sha256 is not None and actual_sha != expected_content_sha256:
+        raise ValueError("Verified-cycle table differs from expected SHA-256")
+
+
 class _DisjointSet:
     def __init__(self, count: int):
         self.parent = list(range(count))
@@ -1728,22 +2011,823 @@ def select_cycle_verified_fisher_pairs(
     return selected_pairs, sidecar
 
 
+def _completed_triangle_mask(
+    triangle_edges: torch.Tensor, selected: set[int]
+) -> torch.Tensor:
+    edges = torch.as_tensor(triangle_edges).long().reshape(-1, 3)
+    if not edges.numel():
+        return torch.zeros(0, dtype=torch.bool)
+    largest = max(int(edges.max()), max(selected, default=-1))
+    selected_mask = torch.zeros(largest + 1, dtype=torch.bool)
+    if selected:
+        selected_mask[torch.as_tensor(sorted(selected), dtype=torch.long)] = True
+    return selected_mask[edges].all(dim=1)
+
+
+def _edge_evidence(
+    triangle_edges: torch.Tensor,
+    triangle_utility: torch.Tensor,
+    *,
+    edge_count: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    edge_utility = torch.zeros(int(edge_count), dtype=torch.float64)
+    edge_cycle_count = torch.zeros(int(edge_count), dtype=torch.long)
+    edges = torch.as_tensor(triangle_edges).long().reshape(-1, 3)
+    utility = torch.as_tensor(triangle_utility).double().reshape(-1)
+    if edges.numel():
+        repeated = utility[:, None].expand_as(edges)
+        edge_utility.scatter_add_(0, edges.reshape(-1), repeated.reshape(-1))
+        edge_cycle_count.scatter_add_(
+            0,
+            edges.reshape(-1),
+            torch.ones(edges.numel(), dtype=torch.long),
+        )
+    return edge_utility, edge_cycle_count
+
+
+def _coverage_scaffold_indices(
+    *,
+    pairs: list[tuple[int, int]],
+    triangle_camera: torch.Tensor,
+    triangle_edges: torch.Tensor,
+    triangle_utility: torch.Tensor,
+    coverage_reference_indices: set[int],
+    query_count: int,
+    pair_budget: int,
+    minimum_camera_degree: int,
+    edge_order: list[int],
+) -> tuple[set[int], set[int], set[int], list[int], torch.Tensor]:
+    """Construct V1 graph scaffold, then a strict-control coverage scaffold.
+
+    The exact-budget nearest-control set witnesses that coverage is feasible,
+    while the V1 all-candidate spanning forest preserves the registered graph
+    semantics and leaves more shared edges for Fisher closure.  The marginal
+    cover is deterministic but deliberately not claimed globally optimal.
+    """
+    candidate_graph = _graph_diagnostics(
+        pairs, set(range(len(pairs))), int(query_count)
+    )
+    if len(coverage_reference_indices) != int(pair_budget):
+        raise ValueError("Coverage reference must preserve the exact pair budget")
+
+    cameras = torch.as_tensor(triangle_camera).long().reshape(-1, 3)
+    edges = torch.as_tensor(triangle_edges).long().reshape(-1, 3)
+    utilities = torch.as_tensor(triangle_utility).double().reshape(-1)
+    if cameras.shape[0] != edges.shape[0] or utilities.numel() != edges.shape[0]:
+        raise ValueError("Coverage triangle table columns do not align")
+
+    # Collapse repeated keypoint cycles onto their shared camera/edge triangle.
+    # Coverage is a camera-set property; Fisher utility remains the sum of all
+    # verified keypoint cycles carried by that edge bundle.
+    if edges.numel():
+        group_edges, inverse, group_count = torch.unique_consecutive(
+            edges, dim=0, return_inverse=True, return_counts=True
+        )
+        if torch.unique(group_edges, dim=0).shape[0] != group_edges.shape[0]:
+            raise ValueError("Verified camera-triangle groups are not contiguous")
+        group_utility = torch.zeros(group_edges.shape[0], dtype=torch.float64)
+        group_utility.scatter_add_(0, inverse, utilities)
+        first_row = torch.cat(
+            (
+                torch.zeros(1, dtype=torch.long),
+                torch.cumsum(group_count, dim=0)[:-1],
+            )
+        )
+        group_cameras = cameras[first_row]
+    else:
+        group_edges = torch.zeros((0, 3), dtype=torch.long)
+        group_cameras = torch.zeros((0, 3), dtype=torch.long)
+        group_utility = torch.zeros(0, dtype=torch.float64)
+        group_count = torch.zeros(0, dtype=torch.long)
+    reference_mask = torch.as_tensor(
+        [
+            all(int(edge) in coverage_reference_indices for edge in row)
+            for row in group_edges.tolist()
+        ],
+        dtype=torch.bool,
+    )
+    reference_groups = torch.nonzero(reference_mask, as_tuple=False).reshape(-1)
+    if not reference_groups.numel():
+        raise RuntimeError(
+            "Coverage reference completes no verified triangle; V2 is undefined"
+        )
+    target = sorted(
+        set(int(value) for value in group_cameras[reference_groups].reshape(-1).tolist())
+    )
+
+    # Preserve the exact V1 graph stage: maximum-utility spanning forest over
+    # all candidate edges, then its general degree-floor completion.
+    edge_rank = {edge: rank for rank, edge in enumerate(edge_order)}
+    selected: set[int] = set()
+    backbone: set[int] = set()
+    disjoint = _DisjointSet(int(query_count))
+    component_count = int(query_count)
+    degree = torch.zeros(int(query_count), dtype=torch.long)
+    minimum_backbone_size = int(query_count) - int(candidate_graph["component_count"])
+    for edge in edge_order:
+        left, right = pairs[edge]
+        if not disjoint.union(left, right):
+            continue
+        component_count -= 1
+        selected.add(edge)
+        backbone.add(edge)
+        degree[left] += 1
+        degree[right] += 1
+        if len(selected) == minimum_backbone_size:
+            break
+    if len(selected) != minimum_backbone_size:
+        raise RuntimeError("Failed to span every candidate-graph component")
+
+    while bool((degree < int(minimum_camera_degree)).any()):
+        deficient = degree < int(minimum_camera_degree)
+        candidates = []
+        for edge in edge_order:
+            if edge in selected:
+                continue
+            left, right = pairs[edge]
+            gained = int(deficient[left]) + int(deficient[right])
+            if gained:
+                candidates.append((gained, edge))
+        if not candidates:
+            raise RuntimeError("Coverage witness cannot satisfy the degree floor")
+        _, edge = max(
+            candidates,
+            key=lambda item: (
+                item[0],
+                -edge_rank[item[1]],
+                -pairs[item[1]][0],
+                -pairs[item[1]][1],
+            ),
+        )
+        selected.add(edge)
+        backbone.add(edge)
+        left, right = pairs[edge]
+        degree[left] += 1
+        degree[right] += 1
+        disjoint.union(left, right)
+
+    # Repeated keypoint triangles sharing an edge/camera triple count once for
+    # coverage.  Absorb every already-completed eligible triple after each
+    # bundle so a covered camera is never rewarded repeatedly.
+    reference_group_list = [int(value) for value in reference_groups.tolist()]
+    group_max_utility = torch.full(
+        (group_edges.shape[0],), -math.inf, dtype=torch.float64
+    )
+    group_max_utility.scatter_reduce_(
+        0, inverse, utilities, reduce="amax", include_self=True
+    )
+    target_set = set(target)
+    covered: set[int] = set()
+
+    def absorb_completed() -> None:
+        for group in reference_group_list:
+            if all(int(edge) in selected for edge in group_edges[group].tolist()):
+                covered.update(
+                    int(value) for value in group_cameras[group].tolist()
+                )
+
+    def better(candidate_group: int, incumbent_group: int | None) -> bool:
+        if incumbent_group is None:
+            return True
+        candidate_missing = tuple(
+            int(edge)
+            for edge in group_edges[candidate_group].tolist()
+            if int(edge) not in selected
+        )
+        incumbent_missing = tuple(
+            int(edge)
+            for edge in group_edges[incumbent_group].tolist()
+            if int(edge) not in selected
+        )
+        uncovered = target_set - covered
+        candidate_new = len(
+            set(map(int, group_cameras[candidate_group].tolist())) & uncovered
+        )
+        incumbent_new = len(
+            set(map(int, group_cameras[incumbent_group].tolist())) & uncovered
+        )
+        # Exact rational comparison for new/missing avoids platform-dependent
+        # floating point coverage-efficiency ties.
+        cross_left = candidate_new * len(incumbent_missing)
+        cross_right = incumbent_new * len(candidate_missing)
+        if cross_left != cross_right:
+            return cross_left > cross_right
+        candidate_key = (
+            candidate_new,
+            -len(candidate_missing),
+            float(group_utility[candidate_group]) / len(candidate_missing),
+            int(group_count[candidate_group]),
+            float(group_max_utility[candidate_group]),
+            tuple(-edge for edge in candidate_missing),
+            -candidate_group,
+        )
+        incumbent_key = (
+            incumbent_new,
+            -len(incumbent_missing),
+            float(group_utility[incumbent_group]) / len(incumbent_missing),
+            int(group_count[incumbent_group]),
+            float(group_max_utility[incumbent_group]),
+            tuple(-edge for edge in incumbent_missing),
+            -incumbent_group,
+        )
+        return candidate_key > incumbent_key
+
+    absorb_completed()
+    while not target_set.issubset(covered):
+        best_group = None
+        for group in reference_group_list:
+            missing = tuple(
+                int(edge)
+                for edge in group_edges[group].tolist()
+                if int(edge) not in selected
+            )
+            if not missing:
+                continue
+            new = set(map(int, group_cameras[group].tolist())) & (
+                target_set - covered
+            )
+            if new and better(group, best_group):
+                best_group = group
+        if best_group is None:
+            raise RuntimeError("Coverage reference cannot witness a target camera")
+        selected.update(int(edge) for edge in group_edges[best_group].tolist())
+        absorb_completed()
+    coverage_edges = selected - backbone
+    if len(selected) > int(pair_budget):
+        raise RuntimeError("Coverage scaffold exceeds the exact pair budget")
+    graph = _graph_diagnostics(pairs, selected, int(query_count))
+    if (
+        graph["component_count"] != candidate_graph["component_count"]
+        or graph["isolated_camera_count"] != 0
+        or graph["minimum_degree"] < int(minimum_camera_degree)
+    ):
+        raise AssertionError("Coverage scaffold graph invariant failed")
+    return selected, coverage_edges, backbone, target, reference_mask
+
+
+def validate_cycle_verified_fisher_coverage_selection(
+    payload: dict,
+    *,
+    pair_match_probe: dict | None = None,
+    coverage_reference_pairs: list[tuple[int, int]] | None = None,
+    verified_cycle_table: dict | None = None,
+    expected_content_sha256: str | None = None,
+) -> None:
+    """Validate P8 V2 without accepting V1 policy/schema as an alias."""
+    if (
+        payload.get("schema") != COVERAGE_SELECTION_SCHEMA
+        or int(payload.get("version", -1)) != 1
+        or payload.get("policy") != COVERAGE_POLICY_NAME
+        or payload.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Unexpected cycle-verified Fisher coverage contract")
+    actual_sha = _selection_content_sha256(payload)
+    if payload.get("content_sha256") != actual_sha:
+        raise ValueError("Coverage selection content SHA-256 is stale")
+    if expected_content_sha256 is not None and actual_sha != expected_content_sha256:
+        raise ValueError("Coverage selection differs from expected SHA-256")
+    budget = int(payload.get("exact_pair_budget", -1))
+    selected = payload.get("selected_pair", {})
+    required = {
+        "left_query_index",
+        "right_query_index",
+        "connectivity_backbone",
+        "coverage_scaffold",
+        "candidate_verified_triangle_count",
+        "candidate_fisher_utility_sum",
+        "selected_completed_triangle_count",
+    }
+    if budget <= 0 or set(selected) != required or any(
+        torch.as_tensor(value).numel() != budget for value in selected.values()
+    ):
+        raise ValueError("Coverage selection pair columns are invalid")
+    left = torch.as_tensor(selected["left_query_index"]).long().reshape(-1)
+    right = torch.as_tensor(selected["right_query_index"]).long().reshape(-1)
+    pairs = list(zip(left.tolist(), right.tolist()))
+    query_count = max(max(left.tolist(), default=-1), max(right.tolist(), default=-1)) + 1
+    _canonical_pairs(pairs, query_count=max(query_count, 2))
+    certificate = payload.get("coverage_certificate", {})
+    target = certificate.get("target_camera_index")
+    if (
+        certificate.get("target_definition")
+        != "nearest_control_completed_verified_triangle_cameras_same_probe"
+        or certificate.get("coverage_feasibility_witness")
+        != "exact_budget_nearest_control_pair_set"
+        or certificate.get("optimality_claim") != "none_deterministic_greedy"
+        or certificate.get("stage1_algorithm")
+        != "v1_candidate_forest_then_strict_control_marginal_cover_v1"
+        or not isinstance(target, list)
+        or not target
+        or target != sorted(set(map(int, target)))
+        or certificate.get("target_camera_index_sha256")
+        != _integer_set_sha256(target)
+        or certificate.get("all_target_cameras_covered") is not True
+        or int(certificate.get("target_camera_count", -1)) != len(target)
+        or not _is_sha256(certificate.get("reference_pair_table_sha256"))
+        or not _is_sha256(certificate.get("stage1_scaffold_pair_table_sha256"))
+        or not _is_sha256(certificate.get("selected_covered_camera_index_sha256"))
+        or not isinstance(certificate.get("selected_covered_camera_index"), list)
+        or certificate.get("selected_covered_camera_index")
+        != sorted(set(map(int, certificate["selected_covered_camera_index"])))
+        or int(certificate.get("lost_control_camera_count", -1)) != 0
+        or certificate.get("lost_control_camera_index") != []
+        or int(certificate.get("added_camera_count", -1)) < 0
+        or not isinstance(certificate.get("added_camera_index"), list)
+        or certificate.get("added_camera_index")
+        != sorted(set(map(int, certificate["added_camera_index"])))
+        or int(certificate.get("added_camera_count", -1))
+        != len(certificate["added_camera_index"])
+        or int(certificate.get("reference_completed_unique_camera_triangle_count", -1))
+        < 1
+        or int(certificate.get("coverage_bundle_added_edge_count", -1)) < 0
+        or int(
+            certificate.get(
+                "stage1_completed_control_witness_keypoint_triangle_count", -1
+            )
+        )
+        < 1
+        or int(
+            certificate.get(
+                "stage1_completed_control_witness_camera_triangle_count", -1
+            )
+        )
+        < 1
+        or int(certificate.get("remaining_budget_after_stage1", -1)) < 0
+        or bool(certificate.get("stage1_scaffold_at_most_half_budget"))
+        != (
+            int(certificate.get("stage1_scaffold_pair_count", -1))
+            <= budget // 2
+        )
+    ):
+        raise ValueError("Coverage selection feasibility certificate is invalid")
+
+    if pair_match_probe is None:
+        return
+    validate_pair_match_probe(pair_match_probe)
+    candidate = pair_match_probe["candidate_pool"]
+    candidate_pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    authoritative_count = int(pair_match_probe["query_count"])
+    _canonical_pairs(pairs, query_count=authoritative_count)
+    candidate_index = {pair: index for index, pair in enumerate(candidate_pairs)}
+    if any(pair not in candidate_index for pair in pairs):
+        raise ValueError("Coverage selection is outside the candidate pool")
+    selected_indices = {candidate_index[pair] for pair in pairs}
+    candidate_graph = _graph_diagnostics(
+        candidate_pairs, set(range(len(candidate_pairs))), authoritative_count
+    )
+    graph = _graph_diagnostics(candidate_pairs, selected_indices, authoritative_count)
+    if (
+        payload.get("probe_content_sha256") != pair_match_probe["content_sha256"]
+        or payload.get("candidate_pool_sha256") != candidate["sha256"]
+        or payload.get("candidate_graph") != candidate_graph
+        or payload.get("graph") != graph
+        or graph["component_count"] != candidate_graph["component_count"]
+        or graph["isolated_camera_count"] != 0
+        or graph["minimum_degree"]
+        < int(payload.get("parameters", {}).get("minimum_camera_degree", -1))
+    ):
+        raise ValueError("Coverage selection graph/probe lineage is invalid")
+
+    if coverage_reference_pairs is not None:
+        reference = _canonical_pairs(
+            coverage_reference_pairs, query_count=authoritative_count
+        )
+        if len(reference) != budget:
+            raise ValueError("Coverage reference violates the exact budget")
+        if any(pair not in candidate_index for pair in reference):
+            raise ValueError("Coverage reference is outside the probe")
+        if certificate["reference_pair_table_sha256"] != _pair_table_sha256(reference):
+            raise ValueError("Coverage selection binds a different reference table")
+
+    if verified_cycle_table is None:
+        return
+    validate_verified_cycle_table(
+        verified_cycle_table, pair_match_probe=pair_match_probe
+    )
+    if (
+        payload.get("verified_cycle_table_content_sha256")
+        != verified_cycle_table["content_sha256"]
+        or payload.get("candidate_verified_camera")
+        != verified_cycle_table["candidate_verified_camera"]
+    ):
+        raise ValueError("Coverage selection binds a different verified-cycle table")
+    triangle = verified_cycle_table["verified_triangle"]
+    triangle_edges = torch.as_tensor(triangle["pair_index"]).long().reshape(-1, 3)
+    if coverage_reference_pairs is not None:
+        reference_indices = {
+            candidate_index[pair] for pair in coverage_reference_pairs
+        }
+        reference_completed = _completed_triangle_mask(
+            triangle_edges, reference_indices
+        )
+        reference_target = sorted(
+            set(
+                int(value)
+                for value in torch.as_tensor(triangle["camera_index"])
+                .long()[reference_completed]
+                .reshape(-1)
+                .tolist()
+            )
+        )
+        if (
+            target != reference_target
+            or int(certificate.get("reference_completed_triangle_count", -1))
+            != int(reference_completed.sum())
+            or int(
+                certificate.get(
+                    "reference_completed_unique_camera_triangle_count", -1
+                )
+            )
+            != int(
+                torch.unique(
+                    torch.as_tensor(triangle["camera_index"])[reference_completed],
+                    dim=0,
+                ).shape[0]
+            )
+        ):
+            raise ValueError("Coverage target differs from the same-probe control")
+    completed = _completed_triangle_mask(triangle_edges, selected_indices)
+    covered = sorted(
+        set(
+            int(value)
+            for value in torch.as_tensor(triangle["camera_index"])
+            .long()[completed]
+            .reshape(-1)
+            .tolist()
+        )
+    )
+    if (
+        not set(target).issubset(covered)
+        or certificate["selected_covered_camera_index_sha256"]
+        != _integer_set_sha256(covered)
+        or certificate.get("selected_covered_camera_index") != covered
+        or int(certificate.get("selected_covered_camera_count", -1)) != len(covered)
+        or certificate.get("lost_control_camera_index")
+        != sorted(set(target) - set(covered))
+        or certificate.get("added_camera_index")
+        != sorted(set(covered) - set(target))
+    ):
+        raise ValueError("Coverage selection does not cover its target cameras")
+    scaffold_pairs = [
+        pair
+        for pair, flag in zip(
+            pairs,
+            torch.as_tensor(selected["coverage_scaffold"]).bool().tolist(),
+        )
+        if flag
+    ]
+    scaffold_indices = {candidate_index[pair] for pair in scaffold_pairs}
+    backbone_pairs = [
+        pair
+        for pair, flag in zip(
+            pairs,
+            torch.as_tensor(selected["connectivity_backbone"]).bool().tolist(),
+        )
+        if flag
+    ]
+    backbone_indices = {candidate_index[pair] for pair in backbone_pairs}
+    if (
+        certificate["stage1_scaffold_pair_table_sha256"]
+        != _pair_table_sha256(scaffold_pairs)
+        or int(certificate.get("stage1_scaffold_pair_count", -1))
+        != len(scaffold_pairs)
+        or int(certificate.get("remaining_budget_after_stage1", -1))
+        != budget - len(scaffold_pairs)
+        or int(certificate.get("coverage_bundle_added_edge_count", -1))
+        != len(scaffold_indices - backbone_indices)
+        or int(certificate.get("coverage_triangle_edge_count", -1))
+        != len(scaffold_indices - backbone_indices)
+    ):
+        raise ValueError("Coverage scaffold certificate differs from selected columns")
+    if coverage_reference_pairs is not None:
+        stage1_completed = _completed_triangle_mask(
+            triangle_edges, scaffold_indices
+        )
+        control_stage1 = stage1_completed & reference_completed
+        if int(
+            certificate.get(
+                "stage1_completed_control_witness_keypoint_triangle_count", -1
+            )
+        ) != int(control_stage1.sum()) or int(
+            certificate.get(
+                "stage1_completed_control_witness_camera_triangle_count", -1
+            )
+        ) != int(
+            torch.unique(
+                torch.as_tensor(triangle["camera_index"])[control_stage1], dim=0
+            ).shape[0]
+        ):
+            raise ValueError("Coverage witness counts differ from Stage-1 replay")
+
+
+def select_cycle_verified_fisher_coverage_pairs(
+    *,
+    pair_match_probe: dict,
+    coverage_reference_pairs: list[tuple[int, int]],
+    keypoints: list[torch.Tensor],
+    camera_K: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    pair_budget: int,
+    minimum_camera_degree: int = 1,
+    maximum_cycle_reprojection_error_px: float = 2.0,
+    verified_cycle_table: dict | None = None,
+) -> tuple[list[tuple[int, int]], dict]:
+    """P8 V2: hard control-camera triangle coverage, then V1 Fisher fill."""
+    validate_pair_match_probe(pair_match_probe)
+    query_count = int(pair_match_probe["query_count"])
+    if (
+        len(keypoints) != query_count
+        or torch.as_tensor(camera_K).shape[0] != query_count
+        or torch.as_tensor(pose_w2c).shape[0] != query_count
+    ):
+        raise ValueError("Coverage selector camera tables do not align")
+    expected_counts = torch.as_tensor(
+        [int(value.shape[0]) for value in keypoints], dtype=torch.long
+    )
+    if not torch.equal(expected_counts, pair_match_probe["keypoint_counts"].long()):
+        raise ValueError("Coverage selector keypoints differ from the probe")
+    pair_budget = int(pair_budget)
+    minimum_camera_degree = int(minimum_camera_degree)
+    if minimum_camera_degree < 1:
+        raise ValueError("Coverage selector requires a positive degree floor")
+    candidate = pair_match_probe["candidate_pool"]
+    pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    if pair_budget > len(pairs):
+        raise ValueError("Exact pair budget exceeds the candidate pool")
+    reference_pairs = _canonical_pairs(
+        coverage_reference_pairs, query_count=query_count
+    )
+    candidate_index = {pair: index for index, pair in enumerate(pairs)}
+    if any(pair not in candidate_index for pair in reference_pairs):
+        raise ValueError("Coverage reference is outside the candidate pool")
+    reference_indices = {candidate_index[pair] for pair in reference_pairs}
+
+    if verified_cycle_table is None:
+        verified_cycle_table = materialize_verified_cycle_table(
+            pair_match_probe=pair_match_probe,
+            keypoints=keypoints,
+            camera_K=camera_K,
+            pose_w2c=pose_w2c,
+            maximum_reprojection_error_px=maximum_cycle_reprojection_error_px,
+        )
+    else:
+        validate_verified_cycle_table(
+            verified_cycle_table, pair_match_probe=pair_match_probe
+        )
+        actual_error = float(
+            verified_cycle_table["parameters"][
+                "maximum_cycle_reprojection_error_px"
+            ]
+        )
+        if actual_error != float(maximum_cycle_reprojection_error_px):
+            raise ValueError("Verified-cycle table uses a different threshold")
+    triangle = verified_cycle_table["verified_triangle"]
+    triangle_edges = torch.as_tensor(triangle["pair_index"]).long().reshape(-1, 3)
+    triangle_camera = torch.as_tensor(triangle["camera_index"]).long().reshape(-1, 3)
+    triangle_utility = torch.as_tensor(triangle["utility"]).double().reshape(-1)
+    edge_utility, edge_cycle_count = _edge_evidence(
+        triangle_edges, triangle_utility, edge_count=len(pairs)
+    )
+    edge_order = sorted(
+        range(len(pairs)),
+        key=lambda edge: (
+            -float(edge_utility[edge]),
+            -int(edge_cycle_count[edge]),
+            pairs[edge][0],
+            pairs[edge][1],
+        ),
+    )
+    selected, coverage_edges, backbone, target, _ = _coverage_scaffold_indices(
+        pairs=pairs,
+        triangle_camera=triangle_camera,
+        triangle_edges=triangle_edges,
+        triangle_utility=triangle_utility,
+        coverage_reference_indices=reference_indices,
+        query_count=query_count,
+        pair_budget=pair_budget,
+        minimum_camera_degree=minimum_camera_degree,
+        edge_order=edge_order,
+    )
+    stage1_indices = set(selected)
+    selected = _complete_verified_triangles_incremental(
+        triangle_edges=triangle_edges,
+        triangle_utility=triangle_utility,
+        selected=selected,
+        pair_budget=pair_budget,
+        edge_count=len(pairs),
+    )
+    for edge in edge_order:
+        if len(selected) >= pair_budget:
+            break
+        selected.add(edge)
+    if len(selected) != pair_budget:
+        raise AssertionError("Coverage selector exact-budget contract failed")
+
+    candidate_graph = _graph_diagnostics(
+        pairs, set(range(len(pairs))), query_count
+    )
+    graph = _graph_diagnostics(pairs, selected, query_count)
+    if (
+        graph["component_count"] != candidate_graph["component_count"]
+        or graph["isolated_camera_count"] != 0
+        or graph["minimum_degree"] < minimum_camera_degree
+    ):
+        raise AssertionError("Coverage selector graph invariant failed")
+    completed = _completed_triangle_mask(triangle_edges, selected)
+    completed_camera_mask = torch.zeros(query_count, dtype=torch.bool)
+    if bool(completed.any()):
+        completed_camera_mask[triangle_camera[completed].reshape(-1)] = True
+    if not bool(completed_camera_mask[torch.as_tensor(target)].all()):
+        raise AssertionError("Coverage selector lost a hard target camera")
+    selected_indices = sorted(selected)
+    selected_pairs = [pairs[index] for index in selected_indices]
+    selected_index_tensor = torch.as_tensor(selected_indices, dtype=torch.long)
+    selected_completed_edge = torch.zeros(len(pairs), dtype=torch.long)
+    if bool(completed.any()):
+        selected_completed_edge.scatter_add_(
+            0,
+            triangle_edges[completed].reshape(-1),
+            torch.ones(triangle_edges[completed].numel(), dtype=torch.long),
+        )
+    covered = torch.nonzero(completed_camera_mask, as_tuple=False).reshape(-1).tolist()
+    target_set = set(target)
+    covered_set = set(covered)
+    lost_control_cameras = sorted(target_set - covered_set)
+    added_cameras = sorted(covered_set - target_set)
+    reference_completed = _completed_triangle_mask(
+        triangle_edges, reference_indices
+    )
+    stage1_completed = _completed_triangle_mask(triangle_edges, stage1_indices)
+    stage1_control_completed = stage1_completed & reference_completed
+    scaffold_pairs = [pairs[index] for index in sorted(stage1_indices)]
+    sidecar = {
+        "schema": COVERAGE_SELECTION_SCHEMA,
+        "version": 1,
+        "uses_test_queries": False,
+        "policy": COVERAGE_POLICY_NAME,
+        "probe_content_sha256": pair_match_probe["content_sha256"],
+        "candidate_pool_sha256": candidate["sha256"],
+        "verified_cycle_table_content_sha256": verified_cycle_table[
+            "content_sha256"
+        ],
+        "candidate_verified_camera": deepcopy(
+            verified_cycle_table["candidate_verified_camera"]
+        ),
+        "candidate_pair_count": len(pairs),
+        "exact_pair_budget": pair_budget,
+        "parameters": {
+            "minimum_camera_degree": minimum_camera_degree,
+            "maximum_cycle_reprojection_error_px": float(
+                maximum_cycle_reprojection_error_px
+            ),
+            "information_model": "bearing_fisher_logdet_v1",
+            "information_formula": "confidence_geomean*logdet(I+s^2*F_bearing)",
+            "stage_order": [
+                "nearest_control_completed_triangle_camera_coverage",
+                "candidate_component_and_degree_scaffold",
+                "verified_triangle_fisher_fill",
+                "exact_budget_edge_fill",
+            ],
+        },
+        "coverage_certificate": {
+            "target_definition": (
+                "nearest_control_completed_verified_triangle_cameras_same_probe"
+            ),
+            "coverage_feasibility_witness": (
+                "exact_budget_nearest_control_pair_set"
+            ),
+            "reference_pair_table_sha256": _pair_table_sha256(reference_pairs),
+            "reference_completed_triangle_count": int(
+                reference_completed.sum()
+            ),
+            "reference_completed_unique_camera_triangle_count": int(
+                torch.unique(triangle_camera[reference_completed], dim=0).shape[0]
+            ),
+            "target_camera_index": target,
+            "target_camera_index_sha256": _integer_set_sha256(target),
+            "target_camera_count": len(target),
+            "stage1_algorithm": (
+                "v1_candidate_forest_then_strict_control_marginal_cover_v1"
+            ),
+            "optimality_claim": "none_deterministic_greedy",
+            "stage1_scaffold_pair_count": len(scaffold_pairs),
+            "stage1_scaffold_pair_table_sha256": _pair_table_sha256(scaffold_pairs),
+            "stage1_scaffold_at_most_half_budget": len(scaffold_pairs)
+            <= pair_budget // 2,
+            "coverage_triangle_edge_count": len(coverage_edges),
+            "coverage_bundle_added_edge_count": len(coverage_edges),
+            "stage1_completed_control_witness_keypoint_triangle_count": int(
+                stage1_control_completed.sum()
+            ),
+            "stage1_completed_control_witness_camera_triangle_count": int(
+                torch.unique(
+                    triangle_camera[stage1_control_completed], dim=0
+                ).shape[0]
+            ),
+            "remaining_budget_after_stage1": pair_budget - len(scaffold_pairs),
+            "selected_covered_camera_count": len(covered),
+            "selected_covered_camera_index": covered,
+            "selected_covered_camera_index_sha256": _integer_set_sha256(covered),
+            "lost_control_camera_count": len(lost_control_cameras),
+            "lost_control_camera_index": lost_control_cameras,
+            "added_camera_count": len(added_cameras),
+            "added_camera_index": added_cameras,
+            "all_target_cameras_covered": True,
+        },
+        "candidate_graph": candidate_graph,
+        "graph": graph,
+        "verified_triangle": {
+            "candidate_count": int(triangle_edges.shape[0]),
+            "selected_completed_count": int(completed.sum()),
+            "selected_camera_count": int(completed_camera_mask.sum()),
+            "selected_camera_fraction": float(completed_camera_mask.double().mean()),
+            "selected_cycle_verified_edge_count": int(
+                (selected_completed_edge[selected_index_tensor] > 0).sum()
+            ),
+            "selected_fisher_logdet_gain_sum": float(
+                torch.as_tensor(triangle["fisher_logdet_gain"])[completed].sum()
+            ),
+            "selected_confidence_weighted_utility_sum": float(
+                triangle_utility[completed].sum()
+            ),
+            "scene_scale_m": float(triangle["scene_scale_m"]),
+            "reprojection_p90_px": (
+                float(
+                    torch.quantile(
+                        torch.as_tensor(triangle["reprojection_max_px"])[completed],
+                        0.9,
+                    )
+                )
+                if bool(completed.any())
+                else math.nan
+            ),
+        },
+        "selected_pair": {
+            "left_query_index": torch.as_tensor(
+                [pair[0] for pair in selected_pairs], dtype=torch.long
+            ),
+            "right_query_index": torch.as_tensor(
+                [pair[1] for pair in selected_pairs], dtype=torch.long
+            ),
+            "connectivity_backbone": torch.as_tensor(
+                [index in backbone for index in selected_indices], dtype=torch.bool
+            ),
+            "coverage_scaffold": torch.as_tensor(
+                [index in stage1_indices for index in selected_indices], dtype=torch.bool
+            ),
+            "candidate_verified_triangle_count": edge_cycle_count[
+                selected_index_tensor
+            ],
+            "candidate_fisher_utility_sum": edge_utility[selected_index_tensor],
+            "selected_completed_triangle_count": selected_completed_edge[
+                selected_index_tensor
+            ],
+        },
+    }
+    sidecar["content_sha256"] = _selection_content_sha256(sidecar)
+    validate_cycle_verified_fisher_coverage_selection(
+        sidecar,
+        pair_match_probe=pair_match_probe,
+        coverage_reference_pairs=reference_pairs,
+        verified_cycle_table=verified_cycle_table,
+    )
+    return selected_pairs, sidecar
+
+
 __all__ = [
+    "COVERAGE_POLICY_NAME",
+    "COVERAGE_SELECTION_SCHEMA",
     "CONTROL_POLICY_NAME",
     "POLICY_NAME",
     "PROBE_SCHEMA",
     "PROPOSAL_SCHEMA",
     "SELECTION_SCHEMA",
+    "VERIFIED_TABLE_SCHEMA",
     "bounded_union_candidate_pool",
     "build_pair_match_probe",
     "materialize_pair_match_probe",
     "materialize_pair_proposal_table",
+    "materialize_verified_cycle_table",
     "pair_matches_from_probe",
     "probe_pair_subset_track_build_inputs",
     "probe_track_build_inputs",
     "proposal_arm_pairs",
     "select_cycle_verified_fisher_pairs",
+    "select_cycle_verified_fisher_coverage_pairs",
     "validate_cycle_verified_fisher_selection",
+    "validate_cycle_verified_fisher_coverage_selection",
     "validate_pair_match_probe",
     "validate_pair_proposal_table",
+    "validate_verified_cycle_table",
+    "verified_cycle_table_content_sha256",
 ]

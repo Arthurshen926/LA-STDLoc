@@ -2,6 +2,13 @@
 
 ## Decision and causal boundary
 
+> **Post-result status.** P8 V1 is now frozen as a cross-domain Stop: GreatCourt
+> passed 8/9 Stage-A gates but lost 294 verified-triangle cameras.  V1 is not
+> being repaired or reinterpreted.  A separately named/schema-bound P8 V2
+> preregistration is in
+> `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md`; no real V2
+> selector or downstream experiment has run at the time of that preregistration.
+
 The next pair-policy objective is **verified triangle closure × dimensionless
 bearing-Fisher information**, under an exact global pair budget and hard camera
 graph coverage constraints.  It is not another overlap/parallax weight sweep.

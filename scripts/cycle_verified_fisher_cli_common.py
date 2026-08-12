@@ -16,9 +16,11 @@ from common.hashing import sha256_file
 from evidence.cycle_verified_fisher import (
     _verified_cycle_table,
     proposal_arm_pairs,
+    validate_cycle_verified_fisher_coverage_selection,
     validate_cycle_verified_fisher_selection,
     validate_pair_match_probe,
     validate_pair_proposal_table,
+    validate_verified_cycle_table,
 )
 from features.multiview_fusion import PIXEL_CENTER_OFFSET
 
@@ -564,6 +566,69 @@ def load_selection(
     }
 
 
+def load_verified_cycle_table(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    expected_content_sha256: str,
+    probe: dict,
+    expected_maximum_reprojection_error_px: float,
+) -> dict:
+    path = attest_file(path, expected_file_sha256, label="verified-cycle table")
+    payload = torch_load(path)
+    content_sha = expected_sha256(
+        expected_content_sha256, label="expected verified-table content SHA-256"
+    )
+    validate_verified_cycle_table(
+        payload,
+        pair_match_probe=probe["payload"],
+        expected_content_sha256=content_sha,
+    )
+    actual_error = float(
+        payload["parameters"]["maximum_cycle_reprojection_error_px"]
+    )
+    if actual_error != float(expected_maximum_reprojection_error_px):
+        raise ValueError("Verified-cycle table uses a different reprojection threshold")
+    return {
+        "path": path,
+        "sha256": sha256_file(path),
+        "content_sha256": content_sha,
+        "payload": payload,
+    }
+
+
+def load_coverage_selection(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    expected_content_sha256: str,
+    probe: dict,
+    coverage_reference_pairs: list[tuple[int, int]],
+    verified_cycle_table: dict,
+    expected_pair_budget: int,
+) -> dict:
+    path = attest_file(path, expected_file_sha256, label="coverage pair selection")
+    payload = torch_load(path)
+    content_sha = expected_sha256(
+        expected_content_sha256, label="expected coverage-selection content SHA-256"
+    )
+    validate_cycle_verified_fisher_coverage_selection(
+        payload,
+        pair_match_probe=probe["payload"],
+        coverage_reference_pairs=coverage_reference_pairs,
+        verified_cycle_table=verified_cycle_table["payload"],
+        expected_content_sha256=content_sha,
+    )
+    if int(payload.get("exact_pair_budget", -1)) != int(expected_pair_budget):
+        raise ValueError("Coverage selection differs from the exact pair budget")
+    return {
+        "path": path,
+        "sha256": sha256_file(path),
+        "content_sha256": content_sha,
+        "payload": payload,
+    }
+
+
 def load_stage_a_gate(
     *,
     path: Path,
@@ -691,6 +756,67 @@ def evaluate_pair_subsets(
             ),
             "candidate_verified_keypoint_triangle_count": int(
                 triangle["pair_index"].shape[0]
+            ),
+        }
+    return result
+
+
+def evaluate_pair_subsets_from_verified_table(
+    *,
+    probe: dict,
+    verified_cycle_table: dict,
+    subsets: dict[str, list[tuple[int, int]]],
+) -> dict[str, dict]:
+    """Evaluate subsets from one attested table without repeating geometry."""
+    validate_pair_match_probe(probe)
+    validate_verified_cycle_table(
+        verified_cycle_table, pair_match_probe=probe
+    )
+    candidate = probe["candidate_pool"]
+    candidate_pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    candidate_index = {pair: index for index, pair in enumerate(candidate_pairs)}
+    triangle = verified_cycle_table["verified_triangle"]
+    triangle_edges = torch.as_tensor(triangle["pair_index"]).long().reshape(-1, 3)
+    triangle_cameras = torch.as_tensor(triangle["camera_index"]).long().reshape(-1, 3)
+    result = {}
+    for name, pairs in subsets.items():
+        if pairs != sorted(set(pairs)) or any(
+            pair not in candidate_index for pair in pairs
+        ):
+            raise ValueError("Evaluated pair subset is not an exact probe subset")
+        selected = torch.zeros(len(candidate_pairs), dtype=torch.bool)
+        if pairs:
+            selected[
+                torch.as_tensor([candidate_index[pair] for pair in pairs]).long()
+            ] = True
+        completed = selected[triangle_edges].all(dim=1)
+        camera_mask = torch.zeros(int(probe["query_count"]), dtype=torch.bool)
+        if bool(completed.any()):
+            camera_mask[triangle_cameras[completed].reshape(-1)] = True
+        result[name] = {
+            "completed_verified_keypoint_triangle_count": int(completed.sum()),
+            "completed_verified_triangle_camera_count": int(camera_mask.sum()),
+            "completed_verified_triangle_camera_fraction": float(
+                camera_mask.double().mean()
+            ),
+            "completed_verified_triangle_camera_index": torch.nonzero(
+                camera_mask, as_tuple=False
+            )
+            .reshape(-1)
+            .tolist(),
+            "confidence_weighted_fisher_utility_sum": float(
+                torch.as_tensor(triangle["utility"])[completed].sum()
+            ),
+            "fisher_logdet_gain_sum": float(
+                torch.as_tensor(triangle["fisher_logdet_gain"])[completed].sum()
+            ),
+            "candidate_verified_keypoint_triangle_count": int(
+                triangle_edges.shape[0]
             ),
         }
     return result

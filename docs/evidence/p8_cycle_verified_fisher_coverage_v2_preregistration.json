@@ -1,0 +1,163 @@
+{
+  "schema": "lafgs_cycle_verified_fisher_coverage_preregistration",
+  "version": 1,
+  "policy": "cycle_verified_fisher_coverage",
+  "uses_test_queries": false,
+  "valid": true,
+  "causal_trigger": {
+    "p8_v1_greatcourt_stage_a_decision": "STOP_BEFORE_TRACK_REUSE",
+    "p8_v1_only_failed_gate": "verified_triangle_camera_fraction_not_lower",
+    "control_completed_triangle_camera_count": 1524,
+    "v1_completed_triangle_camera_count": 1230,
+    "v1_lost_control_camera_count": 295,
+    "v1_added_camera_count": 1,
+    "v1_fisher_utility_ratio": 2.104886111958244,
+    "interpretation": "aggregate closure utility concentrated on fewer cameras despite a connected pair graph"
+  },
+  "stairs_set_diagnostic": {
+    "control_completed_triangle_camera_count": 532,
+    "v1_completed_triangle_camera_count": 1733,
+    "v1_lost_control_camera_count": 54,
+    "v1_added_camera_count": 1255,
+    "reason_for_exact_subset_gate": "aggregate camera count masks loss of previously covered cameras"
+  },
+  "target": {
+    "definition": "nearest_control_completed_verified_triangle_cameras_same_probe",
+    "formula": "union C(t) for verified t whose three edges are in the frozen exact-budget nearest control",
+    "candidate_universe_target_rejected": true,
+    "reason": "nearest is the exact no-regression baseline and an exact-budget constructive feasibility witness; candidate-universe coverage has no frozen same-budget witness"
+  },
+  "lexicographic_stages": [
+    "hard_candidate_component_zero_isolate_minimum_degree_v1_scaffold",
+    "hard_target_camera_completed_verified_triangle_coverage_from_control_witnesses",
+    "v1_verified_triangle_fisher_bundle_fill_without_deletion",
+    "v1_exact_budget_edge_fill_without_deletion"
+  ],
+  "algorithm": {
+    "stage1": "v1_candidate_spanning_forest_then_strict_control_triangle_marginal_cover_v1",
+    "deterministic": true,
+    "global_optimality_claim": false,
+    "complexity_with_precomputed_verified_table": "O(T log T + E alpha(Q) + abs(Q_target)*G + (T+E) log T)",
+    "hard_invariants_monotone_after_stage1": true
+  },
+  "feasibility_certificate": {
+    "coverage_witness": "frozen_exact_budget_nearest_control_pair_set",
+    "coverage_bundle_edges_restricted_to_witness": true,
+    "graph_scaffold_edges_may_use_candidate_union": true,
+    "joint_scaffold_budget_checked_fail_closed": true,
+    "required_content_hashes": [
+      "probe_content_sha256",
+      "candidate_pool_sha256",
+      "verified_cycle_table_content_sha256",
+      "reference_pair_table_sha256",
+      "target_camera_index_sha256",
+      "stage1_scaffold_pair_table_sha256",
+      "selected_covered_camera_index_sha256"
+    ],
+    "validator_replays_exact_target_membership": true,
+    "camera_degree_may_substitute_for_triangle_coverage": false
+  },
+  "preimplementation_feasibility_diagnostics": {
+    "scientific_result": false,
+    "greatcourt": {
+      "stage1_scaffold_pair_count": 2347,
+      "exact_pair_budget": 5254,
+      "remaining_budget": 2907,
+      "diagnostic_final_fisher_utility_approx": 4248.919,
+      "diagnostic_final_completed_keypoint_triangles": 1717438,
+      "diagnostic_final_covered_camera_count": 1525
+    },
+    "stairs": {
+      "stage1_scaffold_pair_count": 2457,
+      "exact_pair_budget": 7450,
+      "remaining_budget": 4993,
+      "diagnostic_final_fisher_utility_approx": 629.409,
+      "diagnostic_final_completed_keypoint_triangles": 812232,
+      "diagnostic_final_covered_camera_count": 1764
+    }
+  },
+  "fixed_scene_contracts": {
+    "stairs": {
+      "mapping_keypoints": 1024,
+      "mapping_nms_radius": 4,
+      "exact_pair_budget": 7450,
+      "candidate_pair_count": 14835,
+      "candidate_component_count": 2
+    },
+    "greatcourt": {
+      "mapping_keypoints": 2048,
+      "mapping_nms_radius": 4,
+      "exact_pair_budget": 5254,
+      "candidate_pair_count": 9875,
+      "candidate_component_count": 1
+    }
+  },
+  "fixed_parameters": {
+    "maximum_cycle_reprojection_error_px": 2.0,
+    "minimum_camera_degree": 1,
+    "fisher_information_model": "bearing_fisher_logdet_v1",
+    "matcher": {
+      "minimum_similarity": 0.65,
+      "minimum_margin": 0.01,
+      "maximum_epipolar_error_px": 2.0,
+      "epipolar_candidate_topk": 1,
+      "epipolar_recovered_minimum_similarity": -1.0,
+      "epipolar_recovered_minimum_margin": -1.0
+    }
+  },
+  "stage_a_gates": {
+    "candidate_union_exact_and_bounded": true,
+    "selected_exact_pair_budget": true,
+    "candidate_components_exact": true,
+    "selected_components_preserved": true,
+    "selected_zero_isolates": true,
+    "selected_minimum_degree_at_least_one": true,
+    "stage1_scaffold_maximum_budget_fraction": 0.5,
+    "control_target_membership_exact": true,
+    "all_control_target_cameras_hard_covered": true,
+    "fisher_utility_gain_ratio": 1.05,
+    "completed_verified_keypoint_triangle_retention": 0.98
+  },
+  "stairs_v1_no_regression_guard": {
+    "selection_sha256": "7d08bed0ead859ae917724beebe22af844b87bbd7e0f9579b834f5915a13c16f",
+    "selection_content_sha256": "721617c2e084e1c8fe75e29cec6d818a0374d7522977c241880033489f9cf93f",
+    "fisher_utility_retention": 0.98,
+    "completed_verified_keypoint_triangle_retention": 0.98,
+    "covered_camera_count_not_lower": true,
+    "nearest_target_exact_subset_still_required": true
+  },
+  "stairs_stage_b_v1_guard_if_authorized_later": {
+    "v1_track_factor_sha256": "ec569adce9d272f01aa9550f2b5558143ea740d31668121ba948706f9e5373dc",
+    "v1_track_report_sha256": "8b80257bcc3ae3f06da9ca58d5f6fed42c14232f81e8cb3294239a20244ce543",
+    "triangulated_track_retention": 0.98,
+    "broad_eligible_track_retention": 0.98,
+    "high_confidence_track_retention": 0.98,
+    "covariance_p90_maximum_ratio": 1.05,
+    "broad_query_coverage_not_lower": true
+  },
+  "execution_order": [
+    "greatcourt_stage_a",
+    "stairs_stage_a",
+    "implement_v2_aware_track_lineage_only_if_both_pass",
+    "both_scene_stage_b_only_after_new_lineage_tests"
+  ],
+  "current_status": {
+    "implementation_complete": true,
+    "cpu_tests_passed": true,
+    "cpu_test_result": "395 passed, 1 skipped",
+    "scoped_ruff_passed": true,
+    "real_v2_selector_run": false,
+    "gpu_run": false,
+    "track_run": false,
+    "fullchain_run": false,
+    "mapping_pose_run": false,
+    "formal_test_run": false,
+    "method_default_changed": false
+  },
+  "decision_boundary": {
+    "any_stage_a_failure": "STOP_BEFORE_TRACK_REUSE",
+    "single_scene_pass": "SCENE_SPECIFIC_ONLY",
+    "both_scene_stage_a_pass_authorizes_existing_v1_track_runner": false,
+    "shared_default_until_all_downstream_gates": "nearest"
+  }
+}

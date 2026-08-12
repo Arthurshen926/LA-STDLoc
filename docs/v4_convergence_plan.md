@@ -715,6 +715,23 @@ GreatCourt 结果后调参。第一次旧 selector 在 1,592.086 秒后无产物
 `docs/p8_cycle_verified_fisher_greatcourt_result.md` 与
 `docs/evidence/p8_cycle_verified_fisher_greatcourt_result.json`。
 
+#### P8 V2 `cycle_verified_fisher_coverage`：CPU 实现与新预注册
+
+GreatCourt 的唯一失败项现已被转成 selector 内部的字典序硬约束，而不是放宽 gate：V2
+先覆盖 same-probe nearest control 中所有 completed verified-triangle cameras，再保持
+candidate components/zero-isolate/min-degree，最后才沿用 V1 Fisher/closure objective
+填满精确预算。nearest exact-budget set 是构造性可行性 witness；candidate-universe
+potential coverage 因没有同预算 witness 而不作为 target。实现使用独立 policy/schema
+和 hash-bound verified-cycle table，V1 语义与结论不变。
+
+随机小图 exhaustive oracle 只验证可行性与 hard invariant；联合 set-cover/graph 问题一般
+NP-hard，因此不声称 deterministic greedy 是全局最优。新冻结合同见
+`docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md` 与
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_preregistration.json`。当前只完成 CPU
+实现/测试，尚未运行真实 V2 selector/GPU/Track/pose/test。下一步顺序冻结为 GreatCourt
+Stage-A -> Stairs Stage-A；两者都通过后仍须新增 V2-aware Track lineage，不能让 V1
+runner 把 V2 selection 冒充既有授权。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
@@ -727,6 +744,7 @@ GreatCourt 结果后调参。第一次旧 selector 在 1,592.086 秒后无产物
 | P6 | current fusion | robust observation fusion + risk | indoor harmful/alias 降低 | 无可分性则停复杂头 |
 | P7 | V4 frozen | baseline-aware + K factors | 7/12Scenes 成对改善 | test 只做最终确认 |
 | P8 | nearest same-probe | exact closure x bearing-Fisher pair utility | Stairs/GreatCourt 均过 Stage-A/B；camera coverage 不可补偿 | V1 Stop；Stairs 只保留 scene-specific signal，默认 nearest |
+| P8 V2 | nearest same-probe | hard completed-triangle camera coverage -> closure/Fisher | exact target membership、预算/图约束、utility/triangle no-regression | 新预注册；尚未运行真实 selector，默认 nearest |
 
 所有实验报告必须同时给出：Anchor 数、真实观测覆盖、每 query 匹配行 p10、唯一 landmark match 数、inlier 数、harmful rate、平移/旋转中位数及标准成功率。仅报告最终 pose 中位数不足以判断机制是否成立。
 
@@ -806,7 +824,8 @@ graph 连通并显著增加总 Fisher utility/triangle count，却让 verified-t
 coverage 回退 19.2031 pp，触发预注册 Stage-A Stop。故 **Stairs 只保留 scene-specific
 mechanism signal，P8 V1 不进入共享默认**；冻结 V3 `nearest` 继续作为当前方法。
 
-P8 V1 没有获授权的后续 Track/fullchain/pose/test。若重新立项 P8 V2，必须先冻结全新
-preregistration，把 triangle-camera coverage 从事后 gate 提升为 selector 内部的
-lexicographic hard constraint，再讨论 aggregate closure/Fisher utility；不得通过放宽
-GreatCourt 失败门或场景后验调参延续同一 V1。
+P8 V1 没有获授权的后续 Track/fullchain/pose/test。P8 V2 已用全新 policy/schema 和
+preregistration 把 triangle-camera coverage 从事后 gate 提升为 selector 内部的
+lexicographic hard constraint，并完成 CPU 实现/测试；尚未运行任何真实 V2 selector。
+不得通过放宽 GreatCourt 失败门或场景后验调参延续 V1，V2 也必须严格按冻结的
+GreatCourt -> Stairs Stage-A 顺序推进。
