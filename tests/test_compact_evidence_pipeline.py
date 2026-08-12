@@ -6,6 +6,69 @@ import torch
 from map_learning import pipeline
 
 
+def test_adaptive_distillation_forwards_explicit_frozen_calibration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calibration = tmp_path / "variant_calibration.json"
+    calibration.touch()
+    calls = []
+    output = tmp_path / "topology"
+
+    def capture(*args):
+        calls.append(args)
+        produced = output / "compact.pt"
+        produced.touch()
+        (output / "adaptive_distillation_build.json").write_text(
+            '{"map": "' + str(produced) + '"}'
+        )
+
+    monkeypatch.setattr(pipeline, "_run", capture)
+
+    pipeline.distill_compact_map(
+        canonical_map=tmp_path / "canonical.pt",
+        function_graph=tmp_path / "function_graph.pt",
+        positive_teacher=tmp_path / "teacher.pt",
+        track_payload=tmp_path / "variant_tracks.pt",
+        query_cache=tmp_path / "query.pt",
+        output=output,
+        config="configs/paper_mainline.yaml",
+        scene_calibration=calibration,
+    )
+
+    command = calls[0]
+    index = command.index("--frozen-scene-calibration")
+    assert command[index + 1] == calibration.resolve()
+
+
+def test_adaptive_distillation_default_does_not_freeze_calibration(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+    output = tmp_path / "topology"
+
+    def capture(*args):
+        calls.append(args)
+        produced = output / "compact.pt"
+        produced.touch()
+        (output / "adaptive_distillation_build.json").write_text(
+            '{"map": "' + str(produced) + '"}'
+        )
+
+    monkeypatch.setattr(pipeline, "_run", capture)
+
+    pipeline.distill_compact_map(
+        canonical_map=tmp_path / "canonical.pt",
+        function_graph=tmp_path / "function_graph.pt",
+        positive_teacher=tmp_path / "teacher.pt",
+        track_payload=tmp_path / "tracks.pt",
+        query_cache=tmp_path / "query.pt",
+        output=output,
+        config="configs/paper_mainline.yaml",
+    )
+
+    assert "--frozen-scene-calibration" not in calls[0]
+
+
 def test_canonical_evidence_build_does_not_apply_compact_path_contract(
     tmp_path: Path, monkeypatch
 ) -> None:

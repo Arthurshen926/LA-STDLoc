@@ -12,8 +12,10 @@ from pathlib import Path
 import torch
 
 from common.calibration import (
+    AdaptiveParameters,
     derive_adaptive_parameters,
     derive_mapping_statistics,
+    validate_frozen_numeric_scene_calibration,
 )
 from common.config import load_mainline_config
 from evidence.tracks import fuse_track_descriptors
@@ -355,6 +357,59 @@ def _initial_pose_state(
     return information, rows, cells, depths, voxels, assignments
 
 
+def _resolve_selector_calibration(
+    *,
+    query_path: Path,
+    payload_path: Path,
+    query_payload: dict,
+    payload: dict,
+    policy: dict,
+    frozen_path: Path | None,
+    expected_frozen_sha256: str | None = None,
+) -> tuple[AdaptiveParameters, dict]:
+    """Resolve selector thresholds; freeze them only through exact lineage."""
+    if frozen_path is None:
+        if expected_frozen_sha256 is not None:
+            raise ValueError("Frozen selector SHA requires a calibration path")
+        statistics = derive_mapping_statistics(
+            query_payload,
+            payload,
+            track_residual_quantile=float(
+                policy.get("ransac_track_residual_quantile", 0.975)
+            ),
+        )
+        parameters = derive_adaptive_parameters(statistics, policy)
+        return parameters, {
+            "schema": "lafgs_mapping_only_scene_calibration",
+            "version": 2,
+            "statistics": asdict(statistics),
+            "parameters": asdict(parameters),
+            "policy": dict(policy),
+            "sources": {
+                "query_cache": str(query_path),
+                "track_payload": str(payload_path),
+                "uses_test_queries": False,
+            },
+        }
+
+    frozen_path = Path(frozen_path).expanduser().resolve()
+    calibration = json.loads(frozen_path.read_text())
+    if expected_frozen_sha256 is None:
+        raise ValueError("Frozen selector calibration requires its expected SHA")
+    validate_frozen_numeric_scene_calibration(
+        calibration,
+        calibration_path=frozen_path,
+        query_cache_path=query_path,
+        track_payload_path=payload_path,
+        policy=policy,
+        expected_calibration_sha256=expected_frozen_sha256,
+    )
+    parameter_values = dict(calibration.get("parameters", {}))
+    if set(parameter_values) != set(AdaptiveParameters.__dataclass_fields__):
+        raise ValueError("Frozen selector parameter schema is incomplete")
+    return AdaptiveParameters(**parameter_values), calibration
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--canonical-map", required=True)
@@ -363,6 +418,14 @@ def main() -> None:
     parser.add_argument("--track-payload", required=True)
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--alias-risk-audit")
+    parser.add_argument(
+        "--frozen-scene-calibration",
+        help=(
+            "Exact variant-bound calibration sidecar for a pre-registered "
+            "single-factor run. Omit to preserve normal adaptive calibration."
+        ),
+    )
+    parser.add_argument("--expected-frozen-scene-calibration-sha256")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
     args = parser.parse_args()
@@ -385,20 +448,37 @@ def main() -> None:
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     query_payload = torch.load(query_path, map_location="cpu", weights_only=False)
     query_cache = query_payload.get("queries", query_payload)
-    statistics = derive_mapping_statistics(
-        query_payload,
-        payload,
-        track_residual_quantile=float(
-            policy.get("ransac_track_residual_quantile", 0.975)
+    parameters, calibration = _resolve_selector_calibration(
+        query_path=query_path,
+        payload_path=payload_path,
+        query_payload=query_payload,
+        payload=payload,
+        policy=policy,
+        frozen_path=(
+            Path(args.frozen_scene_calibration)
+            if args.frozen_scene_calibration
+            else None
         ),
+        expected_frozen_sha256=args.expected_frozen_scene_calibration_sha256,
     )
-    parameters = derive_adaptive_parameters(statistics, policy)
-    calibration = {
-        "schema": "lafgs_mapping_only_scene_calibration",
-        "version": 2,
-        "statistics": asdict(statistics),
-        "parameters": asdict(parameters),
-        "policy": dict(policy),
+    calibration_contract = {
+        "mode": (
+            "frozen_numeric_pair_factor"
+            if args.frozen_scene_calibration
+            else "derived_from_current_track_payload"
+        ),
+        "input": (
+            str(Path(args.frozen_scene_calibration).resolve())
+            if args.frozen_scene_calibration
+            else None
+        ),
+        "input_sha256": (
+            args.expected_frozen_scene_calibration_sha256
+            if args.frozen_scene_calibration
+            else None
+        ),
+        "query_cache": str(query_path),
+        "track_payload": str(payload_path),
         "uses_test_queries": False,
     }
     (output_dir / "scene_calibration.json").write_text(
@@ -682,6 +762,7 @@ def main() -> None:
         {
             "schema": "lafgs_v2_adaptive_topology",
             "calibration": calibration,
+            "calibration_contract": calibration_contract,
             "track_core": core_report,
             "matching_feasible_coverage": coverage_report,
             "dynamic_pose_reserve": pose_report,
@@ -714,6 +795,7 @@ def main() -> None:
         "track_count": int(selected_tracks.numel()),
         "base_count": int(selected_base.numel()),
         "calibration": calibration,
+        "calibration_contract": calibration_contract,
         "track_core": core_report,
         "coverage": coverage_report,
         "pose_reserve": pose_report,

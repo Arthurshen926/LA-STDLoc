@@ -14,7 +14,10 @@ import subprocess
 import sys
 import time
 
-from common.calibration import calibrate_scene
+from common.calibration import (
+    calibrate_scene,
+    validate_frozen_numeric_scene_calibration,
+)
 from common.config import (
     load_mainline_config,
     mapping_keypoint_policy_source,
@@ -48,6 +51,17 @@ def _read_exact_scene_calibration(
                 and sources.get("track_payload") == str(track_payload)
                 and sources.get("uses_test_queries") is False
             ):
+                if cached.get("lineage") or any(
+                    name in sources
+                    for name in ("query_cache_sha256", "track_payload_sha256")
+                ):
+                    validate_frozen_numeric_scene_calibration(
+                        cached,
+                        calibration_path=cached_path,
+                        query_cache_path=query_cache,
+                        track_payload_path=track_payload,
+                        policy=policy,
+                    )
                 return cached
     return None
 
@@ -1223,6 +1237,7 @@ def distill_compact_map(
     output: str | Path,
     config: str | Path,
     pose_scoring_shards: int = 1,
+    scene_calibration: str | Path | None = None,
 ) -> Path:
     """Materialize the Track core plus Gaussian-supported coverage reserve."""
     resolved_config = load_mainline_config(config).values
@@ -1232,7 +1247,7 @@ def distill_compact_map(
         output.mkdir(parents=True, exist_ok=True)
         report_path = output / "adaptive_distillation_build.json"
         if not report_path.is_file():
-            _run(
+            arguments: list[object] = [
                 "topology.adaptive_distillation",
                 "--canonical-map",
                 canonical_map,
@@ -1248,7 +1263,16 @@ def distill_compact_map(
                 output,
                 "--config",
                 config,
-            )
+            ]
+            if scene_calibration is not None:
+                calibration_path = Path(scene_calibration).expanduser().resolve()
+                arguments += [
+                    "--frozen-scene-calibration",
+                    calibration_path,
+                    "--expected-frozen-scene-calibration-sha256",
+                    sha256_file(calibration_path),
+                ]
+            _run(*arguments)
         report = json.loads(report_path.read_text())
         final = Path(report["map"])
         if not final.is_file():

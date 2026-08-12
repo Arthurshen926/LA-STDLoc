@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -10,10 +12,99 @@ from typing import Any, Mapping
 
 import torch
 
+from common.hashing import canonical_json, sha256_file
+
 
 REFERENCE_IMAGE_DIAGONAL_PX = math.hypot(1920.0, 1080.0)
 REFERENCE_FOCAL_PX = 1672.028076171875
 REFERENCE_EFFECTIVE_BASELINE_M = 2.06756077
+
+
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(value).encode("ascii")).hexdigest()
+
+
+def validate_frozen_numeric_scene_calibration(
+    calibration: Mapping[str, Any],
+    *,
+    calibration_path: str | Path,
+    query_cache_path: str | Path,
+    track_payload_path: str | Path,
+    policy: Mapping[str, Any],
+    expected_calibration_sha256: str | None = None,
+) -> None:
+    """Fail closed on a variant-bound calibration used as a causal control."""
+    calibration_path = Path(calibration_path).expanduser().resolve()
+    query_cache_path = Path(query_cache_path).expanduser().resolve()
+    track_payload_path = Path(track_payload_path).expanduser().resolve()
+    sources = dict(calibration.get("sources", {}))
+    lineage = dict(calibration.get("lineage", {}))
+    if (
+        calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
+        or int(calibration.get("version", 0)) < 2
+        or calibration.get("uses_test_queries") is not False
+        or sources.get("uses_test_queries") is not False
+        or lineage.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Frozen calibration is not mapping-only V2")
+    if lineage.get("mode") != "frozen_numeric_pair_factor":
+        raise ValueError("Frozen calibration has no pair-factor lineage")
+    if calibration.get("policy") != dict(policy):
+        raise ValueError("Frozen calibration policy differs from config")
+    if Path(str(sources.get("query_cache", ""))).resolve() != query_cache_path:
+        raise ValueError("Frozen calibration names a different query cache")
+    if Path(str(sources.get("track_payload", ""))).resolve() != track_payload_path:
+        raise ValueError("Frozen calibration names a different Track payload")
+    if sources.get("query_cache_sha256") != sha256_file(query_cache_path):
+        raise ValueError("Frozen calibration query-cache SHA differs")
+    if sources.get("track_payload_sha256") != sha256_file(track_payload_path):
+        raise ValueError("Frozen calibration Track-payload SHA differs")
+    if expected_calibration_sha256 is not None:
+        expected = str(expected_calibration_sha256).strip().lower()
+        if (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+            or sha256_file(calibration_path) != expected
+        ):
+            raise ValueError("Frozen calibration file SHA differs")
+
+    parent_path = Path(str(lineage.get("parent_calibration", ""))).resolve()
+    expected_parent_sha256 = str(
+        lineage.get("expected_parent_calibration_sha256", "")
+    )
+    if (
+        not parent_path.is_file()
+        or len(expected_parent_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_parent_sha256
+        )
+        or lineage.get("parent_calibration_sha256") != expected_parent_sha256
+        or sha256_file(parent_path) != expected_parent_sha256
+    ):
+        raise ValueError("Frozen calibration parent lineage differs")
+    parent = json.loads(parent_path.read_text())
+    parent_sources = dict(parent.get("sources", {}))
+    if (
+        parent.get("schema") != "lafgs_mapping_only_scene_calibration"
+        or int(parent.get("version", 0)) < 2
+        or parent_sources.get("uses_test_queries") is not False
+        or Path(str(parent_sources.get("query_cache", ""))).resolve()
+        != query_cache_path
+    ):
+        raise ValueError("Frozen calibration parent is not the mapping control")
+    for name in ("statistics", "parameters", "policy"):
+        if calibration.get(name) != parent.get(name):
+            raise ValueError(f"Frozen calibration {name} differ from parent")
+    if (
+        lineage.get("statistics_reused_from_parent") is not True
+        or lineage.get("parameters_reused_from_parent") is not True
+        or lineage.get("parameters_sha256")
+        != _canonical_sha256(dict(parent["parameters"]))
+        or lineage.get("policy_sha256")
+        != _canonical_sha256(dict(parent["policy"]))
+    ):
+        raise ValueError("Frozen calibration numeric lineage is incomplete")
 
 
 def query_calibration_sidecar_path(query_cache_path: str | Path) -> Path:

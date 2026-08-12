@@ -18,6 +18,11 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
+    parser.add_argument(
+        "--scene-calibration",
+        type=Path,
+        help="Exact variant-bound calibration for a frozen single-factor run.",
+    )
     args = parser.parse_args()
     print(
         distill_compact_map(
@@ -28,6 +33,7 @@ def main() -> None:
             query_cache=args.query_cache,
             output=args.output,
             config=args.config,
+            scene_calibration=args.scene_calibration,
         )
     )
 
