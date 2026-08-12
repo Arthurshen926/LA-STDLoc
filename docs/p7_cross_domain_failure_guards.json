@@ -1,0 +1,368 @@
+{
+  "schema": "lafgs.p7_cross_domain_failure_guard_audit",
+  "version": 1,
+  "audit_date": "2026-08-12",
+  "audit_only": true,
+  "deployment_mutated": false,
+  "test_executed_by_this_audit": false,
+  "selection_uses_test_queries": false,
+  "historical_formal_test_summaries_read_for_guard_selection": true,
+  "git_base_commit": "5a2faccb81d307ba15e87c2944fe1e4faff5d60b",
+  "decisions": {
+    "primary_12scenes_guard": "office2_5b",
+    "primary_cambridge_pair_policy_extension": "GreatCourt",
+    "density_extension_outside_stairs": "not_applicable",
+    "reason": "office2_5b and Cambridge already use K_mapping=2048; GreatCourt, unlike office2_5b, has a large low-parallax and high-covariance Track-geometry funnel",
+    "fallback_if_both_p7_factors_fail": "do_not_repeat_current_two_prototype_branch; measure frontend correspondence upper bounds next"
+  },
+  "office2_5b": {
+    "role": "independent_12scenes_correspondence_and_pose_tail_no_regression_guard",
+    "mapping_density": {
+      "source_kind": "read_only_audit_generated_earlier_in_the_parent_turn",
+      "audit_path": "/tmp/lafgs_mapping_density_audit/office2_5b.json",
+      "audit_sha256": "6d280e21e3d907abb10893c0a444c534010485a6f2194a0370b446dda69cb8ee",
+      "query_cache": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/bootstrap/query_cache.pt",
+      "query_cache_signature": "b54c04a71c881f0616f82d9a0393b1227b1459ff1387e5d404ac559e7a778964",
+      "query_cache_signature_version": 10,
+      "mapping_graph": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/evidence/function_graph.pt",
+      "mapping_graph_sha256": "1bd4a48639b7df671a4cd7e394f32dff6706a0edf8ffbbd4ae1a2b18bb4fb5d4",
+      "mapping_query_count": 1391,
+      "configured_k_mapping": 2048,
+      "observed_requested_k_values": [2048],
+      "minimum_rows": 2048,
+      "median_rows": 2048,
+      "maximum_rows": 2048,
+      "detector_reached_requested_count_rate": 1.0,
+      "nms_radius_target": 4,
+      "nms_attestation": "unattested_in_legacy_v10_cache",
+      "mechanism_gap": "mapping_nms_contract_unattested",
+      "factor_transfer": "do_not_run_as_density_gain_extension; K_mapping is already 2048"
+    },
+    "pair_graph": {
+      "source_kind": "read_only_audit_generated_earlier_in_the_parent_turn",
+      "json_path": "/tmp/lafgs_office2_5b_track_pair_graph_audit_v1.json",
+      "json_sha256": "75c69d76db4c9d75ace07f87ba0c0da7ce4d5c1ae6b5083743debbf1f683029c",
+      "tensor_path": "/tmp/lafgs_office2_5b_track_pair_graph_audit_v1.pt",
+      "tensor_sha256": "8d24342b8a7b1055870cd8bfbbef537dbe5120f6262369ade0f3f63beac0b1dd",
+      "candidate_pair_count": 4882,
+      "matched_pair_count": 4882,
+      "baseline_m": {
+        "p10": 0.036148575924002425,
+        "median": 0.061775887567247875,
+        "p90": 0.10238158692626172
+      },
+      "mapping_fov_overlap_jaccard_median": 0.8590451776981354,
+      "mapping_point_parallax_deg": {
+        "p10": 0.8711344834685845,
+        "median": 1.8087381910485396,
+        "p90": 3.445932015082371
+      },
+      "insufficient_parallax_pair_fraction": 0.13908234330192545,
+      "high_overlap_low_parallax_pair_fraction": 0.05018435067595248,
+      "effective_geometry_proxy_fraction": 0.6984842277755019,
+      "short_baseline_near_repeat_proxy_fraction": 0.08992216304793117,
+      "per_pair_match_edge_provenance_available": false,
+      "limitation": "the legacy payload stores aggregate pair counts and final Track connectivity, not raw/accepted/rejected edge counts per camera pair"
+    },
+    "track_funnel": {
+      "track_payload": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/bootstrap/tracks/track_micro_anchor_payload.pt",
+      "track_payload_sha256": "39cd196bf61774e75c227cb7f7b77d23eeb14b234c60c00ebea88cecceac3aba",
+      "track_count": 179165,
+      "track_observation_count": 1849795,
+      "triangulated_track_count": 23389,
+      "triangulated_fraction": 0.13054446876049042,
+      "high_confidence_track_count": 6830,
+      "high_confidence_fraction_of_triangulated": 0.2920176088809967,
+      "triangulated_parallax_deg": {
+        "p10": 2.515409469604492,
+        "median": 6.334130764007568,
+        "p90": 13.618010139465332,
+        "below_1deg_fraction": 0.004703065380454063
+      },
+      "triangulation_covariance_trace": {
+        "p10": 0.000006250286241993308,
+        "median": 0.00008289360266644508,
+        "p90": 0.0017566836206242456
+      },
+      "triangulation_reprojection_median_px": {
+        "p10": 0.7319520950317383,
+        "median": 1.5051835775375366,
+        "p90": 3.0371946811676027
+      }
+    },
+    "deployed_map_composition": {
+      "map": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/topology/coverage_reserve/pose_sufficient_add0256.pt",
+      "map_sha256": "0c9ec7ab0a21d755caf009b9545a6d50d12130abe9d06fd4ec7e71a09954080d",
+      "anchor_count": 10113,
+      "track_count": 8000,
+      "surface_or_gaussian_base_count": 2113,
+      "base_matching_reserve_count": 1857,
+      "pose_reserve_count": 256
+    },
+    "existing_mapping_only_repeated_assignment": {
+      "source_kind": "pre_existing_2026_08_11_artifact_not_rerun_by_this_audit",
+      "path": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/repeated_assignment_audit.json",
+      "sha256": "054cdba0e605ab794694ba2bd51527d2b6d18732a2569380236357c4c5e2d232",
+      "uses_test_queries": false,
+      "map": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/map_learning/anchor_map_step_0175.pt",
+      "metric_state": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/map_learning/metric_state_step_0175.pt",
+      "complete_positive_teacher": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/map_learning/complete_positive_teacher.pt",
+      "query_cache": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/bootstrap/query_cache.pt",
+      "query_selection": "uniform_mapping",
+      "query_count": 256,
+      "oracle_query_selection": "uniform_audited",
+      "oracle_query_count": 64,
+      "ransac_reprojection_px": 12.0,
+      "replayed_row_count": 524288,
+      "positive_eligible_row_count": 68245,
+      "no_positive_row_count": 456043,
+      "positive_eligible_recall_at_1": 0.6256282511539307,
+      "positive_eligible_recall_at_2": 0.7446259799252692,
+      "positive_eligible_recall_at_16": 0.8947615209905487,
+      "positive_eligible_recall_at_32": 0.9172100520184628,
+      "track_positive_recall_at_1": 0.6382370476816535,
+      "surface_or_gaussian_positive_recall_at_1": 0.2832784923721208,
+      "current_pose_q64": {
+        "median_te_cm": 0.4511086270213127,
+        "mean_te_cm": 15.781704988967249,
+        "p90_te_cm": 1.00796964019537,
+        "cvar95_te_cm": 244.648477435112,
+        "recall_5cm_5deg_percent": 93.75,
+        "catastrophic_100cm_count": 3
+      },
+      "oracle_top2_pose_q64": {
+        "median_te_cm": 0.3993281628936529,
+        "mean_te_cm": 10.932996844439913,
+        "p90_te_cm": 0.9703911002725364,
+        "cvar95_te_cm": 168.1358175817877,
+        "recall_5cm_5deg_percent": 96.875,
+        "catastrophic_100cm_count": 2
+      },
+      "interpretation": "there is correspondence-ranking headroom, but the oracle is not a deployable policy and removes only one of three catastrophes"
+    },
+    "historical_formal_pose": {
+      "uses_test_queries": true,
+      "use": "guard_selection_and_frozen_baseline_only_not_factor_tuning",
+      "seed2026": {
+        "summary": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/evaluation/summary.json",
+        "summary_sha256": "2ebe3dc2f955d20091895b0daaa6ddd9897e0a60a0c6d9b2835124b8d51153f0",
+        "query_count": 405,
+        "median_te_cm": 0.46632043085992336,
+        "mean_te_cm": 8.136370981293213,
+        "p90_te_cm": 1.2950519099831588,
+        "recall_2cm_2deg_percent": 93.82716049382715,
+        "recall_5cm_5deg_percent": 95.80246913580247,
+        "raw_gt_precision_2px_percent": 5.515407986111111,
+        "inlier_gt_precision_2px_percent": 24.071220500696583,
+        "catastrophic_100cm_count": 10
+      },
+      "seed2027": {
+        "summary": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/evaluation_a1_seed2027/summary.json",
+        "summary_sha256": "7979b6ef2606ad73bf5e26eda1efbd96edaf548c1ef4547a7e02edcd1b52389a",
+        "query_count": 405,
+        "median_te_cm": 0.46632043085992336,
+        "mean_te_cm": 11.738330730521637,
+        "p90_te_cm": 1.2640760838985443,
+        "recall_2cm_2deg_percent": 94.5679012345679,
+        "recall_5cm_5deg_percent": 96.04938271604938,
+        "raw_gt_precision_2px_percent": 5.515407986111111,
+        "inlier_gt_precision_2px_percent": 24.065663359233646,
+        "catastrophic_100cm_count": 11
+      },
+      "seed2028": {
+        "summary": "/mnt/pool/sqy/lafgs_indoor_pgt_runs_20260804/12Scenes/office2_5b/evaluation_a1_seed2028/summary.json",
+        "summary_sha256": "1c707d9218f065ada00fc35b85abd2dc25f7d71825f2cdd57c597fd88203fa50",
+        "query_count": 405,
+        "median_te_cm": 0.46632043085992336,
+        "mean_te_cm": 10.037704719701942,
+        "p90_te_cm": 1.2565496005117898,
+        "recall_2cm_2deg_percent": 94.07407407407408,
+        "recall_5cm_5deg_percent": 95.55555555555556,
+        "raw_gt_precision_2px_percent": 5.515407986111111,
+        "inlier_gt_precision_2px_percent": 24.07062461413442,
+        "catastrophic_100cm_count": 11
+      }
+    }
+  },
+  "greatcourt": {
+    "role": "primary_cambridge_pair_policy_extension_after_stairs_passes",
+    "mapping_frontend": {
+      "configured_k_mapping": 2048,
+      "valid_keypoints_median": 2018.0,
+      "valid_keypoints_p10": 2004.0,
+      "nms_attestation": "unattested_in_legacy_artifacts",
+      "density_factor_transfer": "not_applicable",
+      "scene_calibration": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/scene_calibration.json",
+      "scene_calibration_sha256": "b939fe0de7bc69245e025bcc41867986c477f11f8de984c7d4ffba949f04f38f"
+    },
+    "pair_graph": {
+      "status": "deferred",
+      "reason": "loading the 50 GiB legacy pickle cache consumed about 15 GiB RAM and prolonged shared NFS I/O; the read-only process was stopped without an output artifact",
+      "candidate_pair_count_from_frozen_training_summary": 5254,
+      "matched_pair_count_from_frozen_training_summary": 5178,
+      "claims_not_authorized_without_pair_sidecar": [
+        "exact_pair_level_parallax_distribution",
+        "exact_pair_level_overlap_distribution",
+        "exact_pair_level_raw_accepted_rejected_match_counts"
+      ]
+    },
+    "track_funnel": {
+      "track_payload": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/tracks_refined/track_micro_anchor_payload.pt",
+      "track_payload_sha256": "f0fec708e00ab0f19160485059574eccdb8f6aba0484a257627f9b56a4cc90af",
+      "track_count": 206755,
+      "track_observation_count": 1611863,
+      "triangulated_track_count": 34150,
+      "triangulated_fraction": 0.16517134010791779,
+      "high_confidence_track_count": 1933,
+      "high_confidence_fraction_of_triangulated": 0.056603219360113144,
+      "triangulated_parallax_deg": {
+        "p10": 0.8142627716064453,
+        "median": 2.270395278930664,
+        "p90": 7.105696344375611,
+        "below_1deg_fraction": 0.1593557894229889
+      },
+      "triangulation_covariance_trace": {
+        "p10": 0.02690079975873232,
+        "median": 0.8806635141372681,
+        "p90": 28.149654579162632
+      },
+      "triangulation_reprojection_median_px": {
+        "p10": 0.6900532186031342,
+        "median": 1.3359448909759521,
+        "p90": 3.8837608098983805
+      }
+    },
+    "deployed_map_composition": {
+      "map": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/topology/adaptive_compact_total18925.pt",
+      "anchor_count": 18925,
+      "track_count": 11892,
+      "surface_or_gaussian_base_count": 7033
+    },
+    "historical_formal_pose": {
+      "uses_test_queries": true,
+      "use": "guard_selection_and_frozen_baseline_only_not_factor_tuning",
+      "seed2026": {
+        "summary": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/evaluation_seed2026/summary.json",
+        "summary_sha256": "cb71975607dbdffda01fe4679ac65da12ad48903d2039f4958831991a7ca4333",
+        "query_count": 760,
+        "median_te_cm": 9.793021529912949,
+        "mean_te_cm": 24.91100125921596,
+        "p90_te_cm": 47.368581295013435,
+        "recall_5cm_5deg_percent": 23.55263157894737,
+        "raw_gt_precision_2px_percent": 7.325630447978791,
+        "inlier_gt_precision_2px_percent": 34.708792618069786,
+        "catastrophic_100cm_count": 31
+      },
+      "seed2027": {
+        "summary": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/evaluation_seed2027/summary.json",
+        "summary_sha256": "586a499a94c3bed20041d25b8bac2b9100ed33022ec9ba28f900f1ff1fd1ee37",
+        "query_count": 760,
+        "median_te_cm": 9.934454411268234,
+        "mean_te_cm": 53.42964092379828,
+        "p90_te_cm": 46.072926223278046,
+        "recall_5cm_5deg_percent": 23.42105263157895,
+        "raw_gt_precision_2px_percent": 7.325630447978791,
+        "inlier_gt_precision_2px_percent": 34.708496344229566,
+        "catastrophic_100cm_count": 33
+      },
+      "seed2028": {
+        "summary": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/evaluation_seed2028/summary.json",
+        "summary_sha256": "37d8dc4acc3ecebe2b69b6ce9d474f6d63e2906de634ada2d7019227153f0954",
+        "query_count": 760,
+        "median_te_cm": 9.848291426897049,
+        "mean_te_cm": 24.15047655065887,
+        "p90_te_cm": 46.04468256235123,
+        "recall_5cm_5deg_percent": 23.55263157894737,
+        "raw_gt_precision_2px_percent": 7.325630447978791,
+        "inlier_gt_precision_2px_percent": 34.710968547395225,
+        "catastrophic_100cm_count": 27
+      }
+    }
+  },
+  "healthy_outdoor_comparator": {
+    "scene": "StMarysChurch",
+    "use": "secondary_comparator_only_if_greatcourt_is_ambiguous",
+    "configured_k_mapping": 2048,
+    "valid_keypoints_median": 2020.0,
+    "valid_keypoints_p10": 1998.0,
+    "track_count": 186503,
+    "triangulated_track_count": 25529,
+    "high_confidence_track_count": 8269,
+    "high_confidence_fraction_of_triangulated": 0.32390615344047546,
+    "triangulated_parallax_median_deg": 8.470722198486328,
+    "triangulated_parallax_below_1deg_fraction": 0.018292922526597977,
+    "triangulation_covariance_trace_median": 0.0032606448512524366,
+    "deployed_track_count": 16364,
+    "deployed_surface_or_gaussian_base_count": 3627
+  },
+  "prior_two_prototype_upper_bound": {
+    "status": "implemented_and_stopped_before_this_audit",
+    "stairs": {
+      "path": "/mnt/pool/sqy/lafgs_identity_mode_revision_20260810/stairs_v2_inner_interleaved/identity_mode_report.json",
+      "sha256": "720da4855bc001c067ca3c1a28b1288053204df50a13ad7654d5299fedada83f",
+      "selected_secondary_modes": 18,
+      "accepted": false,
+      "mean_te_cm_before": 1.327634841339703,
+      "mean_te_cm_after": 1.3348986457458523,
+      "cvar95_te_cm_before": 8.816317427903414,
+      "cvar95_te_cm_after": 8.937687836587429,
+      "stop_reason": "heldout_pose_gate_failed"
+    },
+    "shopfacade": {
+      "path": "/mnt/pool/sqy/lafgs_identity_mode_revision_20260810/shopfacade_v2_inner_interleaved/identity_mode_report.json",
+      "sha256": "7017099e921e702cb219fb8004cf9a13058fb718ef04bf3aeeac856f874b8762",
+      "selected_secondary_modes": 11,
+      "accepted": false,
+      "meaningful_improvement": false,
+      "stop_reason": "heldout_pose_gate_failed"
+    }
+  },
+  "minimal_validation_matrix": [
+    {
+      "factor": "mapping_density_K1024_vs_K2048_at_NMS4",
+      "mechanism_scene": "7Scenes/Stairs",
+      "cross_domain_extension": "none",
+      "office2_5b_role": "code_path_and_tail_no_regression_guard_at_its_existing_K2048_only",
+      "greatcourt_role": "not_run",
+      "promotion_rule": "only rebuild compact graph/teacher/metric and run mapping pose after the Stairs Track funnel passes"
+    },
+    {
+      "factor": "camera_pair_policy_at_fixed_K_and_pair_budget",
+      "mechanism_scene": "7Scenes/Stairs",
+      "cross_domain_extension": "Cambridge/GreatCourt",
+      "office2_5b_role": "independent_no_regression_guard_not_a_tuning_scene",
+      "greatcourt_role": "geometry_failure_extension_after_stairs_passes",
+      "promotion_rule": "both arms must use the identical attested query cache, K, NMS, pair count, candidate universe, selector budget, compact refresh and mapping queries"
+    }
+  ],
+  "minimum_pose_gate": {
+    "mapping_first": {
+      "query_selection": "fixed_uniform_mapping_q256",
+      "ransac_seeds": [2026, 2027, 2028],
+      "required": [
+        "raw_gt_precision_2px_three_seed_mean_non_degraded",
+        "median_te_cm_three_seed_mean_non_degraded",
+        "p90_te_cm_three_seed_mean_non_degraded",
+        "cvar95_te_cm_three_seed_mean_non_degraded",
+        "catastrophic_100cm_total_non_increasing",
+        "recall_5cm_5deg_three_seed_mean_non_degraded"
+      ],
+      "override_forbidden": "a central metric gain cannot compensate for a precision or catastrophe regression"
+    },
+    "formal_test_after_freeze": {
+      "office2_5b": "run the frozen 405-query three-seed sentinel once and require the same no-regression gate",
+      "greatcourt": "run the frozen 760-query three-seed sentinel once; additionally require a strict improvement in either average p90 translation error or total catastrophe count",
+      "test_must_not_be_used_for": [
+        "pair-policy threshold selection",
+        "K selection",
+        "NMS selection",
+        "selector or metric fitting"
+      ]
+    }
+  },
+  "deferred": [
+    "GreatCourt exact pair-level audit with an efficient metadata/sidecar reader",
+    "GreatCourt mapping-only repeated-assignment oracle",
+    "all paired compact refresh and pose gates until a Stairs factor passes its mechanism gate"
+  ]
+}
