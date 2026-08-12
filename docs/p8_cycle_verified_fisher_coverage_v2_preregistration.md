@@ -77,8 +77,18 @@ utility/triangles 的 98.558%/98.396%，并恢复其丢失的全部 54 个 neare
 
 复杂度（已拥有 verified table 时）为：triangle triple 聚合 `O(T log T)`，graph scaffold
 `O(E alpha(Q))`，确定性 marginal cover 最坏 `O(|Q_target| G)`（`G` 为 eligible camera
-triples），增量 closure `O((T+E) log T)`。`materialize_cycle_verified_triangle_table` 允许
-selector 和独立 Stage-A comparator 复用同一已 hash-bound table，避免重算三视图几何。
+triples），增量 closure `O((T+E) log T)`。`materialize_cycle_verified_triangle_table` 让
+selector 直接复用已 hash-bound table；正式 Stage-A comparator 则有意再次从冻结输入
+完整重算三视图几何，作为科学 gate 的独立真实性检查。
+这里的“独立”包含两层：comparator 在同一冻结 verified table 上独立重放
+control/variant subset、camera IDs、证书和 gate；同时从 hash-bound cache/probe 在内存中
+完整重物化三视图几何，并要求所有科学字段和 tensors 与输入 table exact 相等。为记录
+provenance，table 还绑定 clean producer Git commit、物化 entrypoint、完整
+geometry/CLI/prereg source SHA 与 Python/Torch runtime。materializer、selector、comparator
+都要求这些 source paths 在当前 worktree clean、hash 完全一致，且 producer commit 是当前
+提交的祖先；clean 不是依赖可被 `assume-unchanged` 隐藏的 status，而是逐文件比较当前
+bytes 与 `HEAD:path` blob。producer identity 不是独立真值：即使攻击者保留合法 identity、同步篡改
+Fisher/utility 并重签 content hash，也会被 comparator 的完整几何重物化拒绝。
 
 ## 失败封闭与冻结 gate
 
@@ -100,6 +110,11 @@ failure 是否被构造性消除，再在 Stairs 做 no-regression；两场景 S
 任何 V2 Track。此顺序不是调参：算法、tie-break 和 gate 已在任何 V2 真实 selector 执行前
 冻结。
 
+“同一 probe”也不是调用方运行时自选：合同逐场景冻结 query count/name hash、query-cache
+SHA、mapping-scope equivalence SHA、proposal file/content SHA 与 probe file/content SHA。
+三个 V2 CLI 都将实际加载产物与这些编译合同逐字段比较；同尺寸的替代 cache/probe 也会
+在产物生成前失败。精确 hashes 见机器预注册的 `fixed_scene_contracts`。
+
 Stairs 还必须防止 V2 用 coverage 修复破坏已经成功的 V1 信号：同一 frozen V1 selection
 （file SHA `7d08bed0ead859ae917724beebe22af844b87bbd7e0f9579b834f5915a13c16f`，
 content SHA `721617c2e084e1c8fe75e29cec6d818a0374d7522977c241880033489f9cf93f`）
@@ -112,6 +127,13 @@ V2-aware reuse runner/gate lineage 后才能执行。Stairs 除相对 nearest co
 `ec569adce9d272f01aa9550f2b5558143ea740d31668121ba948706f9e5373dc`）保留至少 98%
 triangulated/broad/high-confidence Track，covariance p90 不超过 V1 的 1.05 倍，broad-query
 coverage 不低于 V1。现有 V1 Stage-B runner 不得把 V2 schema 冒充 V1 selection。
+单场景 Stage-A pass 永远只输出
+`SCENE_STAGE_A_PASS_REQUIRES_OTHER_SCENE`、`advance=false`。唯一 Track 权限来自
+`aggregate_cycle_verified_fisher_coverage_stage_a`：它递归重哈希并加载两场景的
+cache/proposal/probe/table/selection（及 Stairs V1 guard），再次 rematerialize verified
+geometry、重放 Stage-1/2 selection、subset metrics 与所有 gates。只有两域均 exact pass
+才输出 `GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`，并明确不授权既有 V1 runner；任一有效
+科学 failure 持久化 cross-scene Stop，伪造 all-true/self-signed gate 形成 input error。
 
 ## 实现与 CPU 验证范围
 
@@ -120,10 +142,12 @@ coverage 不低于 V1。现有 V1 Stage-B runner 不得把 V2 schema 冒充 V1 s
 - `scripts/materialize_cycle_verified_triangle_table.py`：一次几何表物化；
 - `scripts/select_cycle_verified_fisher_coverage_pairs.py`：V2 selector；
 - `scripts/compare_cycle_verified_fisher_coverage_stage_a.py`：独立重放和科学 Stop；
+- `scripts/aggregate_cycle_verified_fisher_coverage_stage_a.py`：两域递归授权 gate；
 - tests：随机小图 exhaustive feasibility oracle、hard coverage/graph/exact-budget invariant、
   hash tamper、verified-table reuse、CLI scientific Stop persistence；现有 V1 tests 保持不变。
+  另覆盖 tampered geometry/Fisher + resigned content 且保留合法 producer identity 的拒绝路径。
 
-提交前 CPU suite 为 `395 passed, 1 skipped`，修改范围的 Ruff 与 `git diff --check` 通过；
+提交前 CPU suite 为 `404 passed, 1 skipped`，修改范围的 Ruff 与 `git diff --check` 通过；
 跳过项仍是需要显式环境开关的既有 CUDA renderer smoke，不是 V2 测试。
 
 当前仍未运行任何真实 V2 selector/GPU/Track/pose/test，V3 `nearest` 继续作为共享默认。

@@ -10,7 +10,10 @@ import sys
 from typing import Sequence
 
 from common.hashing import sha256_file
-from evidence.cycle_verified_fisher import materialize_verified_cycle_table
+from evidence.cycle_verified_fisher import (
+    materialize_verified_cycle_table,
+    validate_verified_cycle_table,
+)
 from scripts.cycle_verified_fisher_cli_common import (
     add_mapping_scope_arguments,
     atomic_torch_save,
@@ -19,6 +22,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     mapping_scope_kwargs,
     validate_output_target,
     validate_scene_contract,
+    validate_v2_frozen_source_contract,
 )
 
 
@@ -73,6 +77,9 @@ def run(args: argparse.Namespace) -> dict:
         expected_nms_radius=args.expected_nms_radius,
         expected_candidate_pair_count=args.expected_candidate_pair_count,
     )
+    frozen_sources = validate_v2_frozen_source_contract(
+        scene=args.scene, cache=cache, probe=probe
+    )
     output_target = validate_output_target(
         args.output, protected_paths=[cache["path"], probe["path"]]
     )
@@ -82,6 +89,11 @@ def run(args: argparse.Namespace) -> dict:
         camera_K=cache["camera_K"],
         pose_w2c=cache["pose_w2c"],
         maximum_reprojection_error_px=args.maximum_cycle_reprojection_error_px,
+    )
+    validate_verified_cycle_table(
+        table,
+        pair_match_probe=probe["payload"],
+        require_clean_producer=True,
     )
     if sha256_file(cache["path"]) != cache["sha256"]:
         raise RuntimeError("Query cache changed while materializing verified cycles")
@@ -93,10 +105,12 @@ def run(args: argparse.Namespace) -> dict:
         "version": table["version"],
         "uses_test_queries": table["uses_test_queries"],
         "scene_contract": contract,
+        "frozen_source_contract": frozen_sources,
         "verified_triangle_count": int(
             table["verified_triangle"]["pair_index"].shape[0]
         ),
         "content_sha256": table["content_sha256"],
+        "producer": table["producer"],
         "output": str(output),
         "output_sha256": sha256_file(output),
         "inputs": {

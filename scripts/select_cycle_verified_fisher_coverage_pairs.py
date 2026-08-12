@@ -24,6 +24,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     validate_output_target,
     validate_probe_proposal_lineage,
     validate_scene_contract,
+    validate_v2_frozen_source_contract,
 )
 
 
@@ -101,6 +102,9 @@ def run(args: argparse.Namespace) -> dict:
         expected_candidate_pair_count=args.expected_candidate_pair_count,
     )
     validate_probe_proposal_lineage(probe=probe, proposals=proposals)
+    frozen_sources = validate_v2_frozen_source_contract(
+        scene=args.scene, cache=cache, probe=probe, proposals=proposals
+    )
     verified = load_verified_cycle_table(
         path=args.verified_cycle_table,
         expected_file_sha256=args.expected_verified_cycle_table_sha256,
@@ -152,6 +156,7 @@ def run(args: argparse.Namespace) -> dict:
         "version": selection["version"],
         "policy": selection["policy"],
         "scene_contract": contract,
+        "frozen_source_contract": frozen_sources,
         "uses_test_queries": selection["uses_test_queries"],
         "candidate_graph": selection["candidate_graph"],
         "selected_graph": selection["graph"],

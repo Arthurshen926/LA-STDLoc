@@ -3,7 +3,8 @@
 ## Decision and causal boundary
 
 > **Post-result status.** P8 V1 is now frozen as a cross-domain Stop: GreatCourt
-> passed 8/9 Stage-A gates but lost 294 verified-triangle cameras.  V1 is not
+> passed 8/9 Stage-A gates but had a net count loss of 294 verified-triangle
+> cameras (295 control cameras lost, 1 added).  V1 is not
 > being repaired or reinterpreted.  A separately named/schema-bound P8 V2
 > preregistration is in
 > `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md`; no real V2

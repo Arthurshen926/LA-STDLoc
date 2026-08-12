@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from common.hashing import sha256_file
+from evidence import cycle_verified_fisher as cycle_fisher
 from evidence.cycle_verified_fisher import CONTROL_POLICY_NAME, POLICY_NAME
 from scripts import attest_cycle_verified_pair_proposals as proposal_cli
 from scripts import compare_cycle_verified_fisher_mechanism as stage_b_cli
@@ -18,6 +19,7 @@ from scripts import select_cycle_verified_fisher_pairs as select_cli
 from scripts import select_cycle_verified_fisher_coverage_pairs as coverage_select_cli
 from scripts.cycle_verified_fisher_cli_common import (
     SCENE_CONTRACTS,
+    V2_FROZEN_SOURCE_CONTRACTS,
     load_mapping_cache,
     torch_load,
 )
@@ -550,6 +552,30 @@ def test_v2_coverage_cli_hard_constraint_and_scientific_stop_persist(
             "content_sha256": artifact["selection_record"]["content_sha256"],
         },
     )
+    producer_identity = cycle_fisher._verified_cycle_producer_identity()
+    producer_identity["required_source_paths_clean"] = True
+    monkeypatch.setattr(
+        cycle_fisher,
+        "_verified_cycle_producer_identity",
+        lambda: copy.deepcopy(producer_identity),
+    )
+    monkeypatch.setitem(
+        V2_FROZEN_SOURCE_CONTRACTS,
+        "stairs",
+        {
+            "query_count": len(artifact["names"]),
+            "query_names_sha256": artifact["names_sha256"],
+            "query_cache_sha256": artifact["cache_sha256"],
+            "mapping_scope_mode": "query_cache_explicit_mapping_only",
+            "mapping_scope_equivalence_sha256": None,
+            "proposals_sha256": artifact["proposal_record"]["sha256"],
+            "proposals_content_sha256": artifact["proposal_record"][
+                "content_sha256"
+            ],
+            "probe_sha256": artifact["probe_record"]["sha256"],
+            "probe_content_sha256": artifact["probe_record"]["content_sha256"],
+        },
+    )
     common = [
         "--scene", "stairs",
         "--query-cache", str(artifact["cache_path"]),
@@ -615,6 +641,60 @@ def test_v2_coverage_cli_hard_constraint_and_scientific_stop_persist(
     assert gate["gates"]["all_control_target_cameras_hard_covered"] is True
     assert gate["gates"]["verified_fisher_utility_improves_5pct"] is False
     assert gate["decision"] == "STOP_BEFORE_TRACK_REUSE"
+
+    original_gates = coverage_stage_a_cli._gates
+
+    def passing_gates(**kwargs):
+        return {name: True for name in original_gates(**kwargs)}
+
+    monkeypatch.setattr(coverage_stage_a_cli, "_gates", passing_gates)
+    pass_path = artifact["tmp_path"] / "coverage_stage_a_scene_pass.json"
+    pass_arguments = list(arguments)
+    pass_arguments[pass_arguments.index("--output") + 1] = str(pass_path)
+    coverage_stage_a_cli.main(pass_arguments)
+    scene_pass = json.loads(pass_path.read_text())
+    assert scene_pass["stage_a_passed"] is True
+    assert scene_pass["advance_to_reuse_only_track_build"] is False
+    assert scene_pass["requires_other_scene"] is True
+    assert scene_pass["requires_v2_aware_track_lineage_implementation"] is True
+    assert scene_pass["decision"] == "SCENE_STAGE_A_PASS_REQUIRES_OTHER_SCENE"
+
+    forged = copy.deepcopy(verified)
+    forged["verified_triangle"]["fisher_logdet_gain"] *= 1000.0
+    forged["verified_triangle"]["utility"] *= 1000.0
+    forged["content_sha256"] = (
+        cycle_fisher.verified_cycle_table_content_sha256(forged)
+    )
+    forged_path = artifact["tmp_path"] / "forged_verified_table.pt"
+    torch.save(forged, forged_path)
+    forged_arguments = list(arguments)
+    forged_arguments[
+        forged_arguments.index("--verified-cycle-table") + 1
+    ] = str(forged_path)
+    forged_arguments[
+        forged_arguments.index("--expected-verified-cycle-table-sha256") + 1
+    ] = sha256_file(forged_path)
+    forged_arguments[
+        forged_arguments.index(
+            "--expected-verified-cycle-table-content-sha256"
+        )
+        + 1
+    ] = forged["content_sha256"]
+    forged_arguments.append("--verify-only")
+    with pytest.raises(SystemExit) as error:
+        coverage_stage_a_cli.entrypoint(forged_arguments)
+    assert error.value.code == 1
+
+    alternate_contract = copy.deepcopy(V2_FROZEN_SOURCE_CONTRACTS["stairs"])
+    alternate_contract["query_cache_sha256"] = "0" * 64
+    monkeypatch.setitem(V2_FROZEN_SOURCE_CONTRACTS, "stairs", alternate_contract)
+    rejected_path = artifact["tmp_path"] / "alternate_source_table.pt"
+    with pytest.raises(SystemExit) as error:
+        verified_table_cli.entrypoint(
+            [*common, "--output", str(rejected_path)]
+        )
+    assert error.value.code == 1
+    assert not rejected_path.exists()
 
 
 def test_reuse_only_track_factors_and_stage_b_end_to_end(p8_cli_artifacts):

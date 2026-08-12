@@ -508,6 +508,13 @@ def test_cycle_verified_fisher_has_exact_budget_closure_and_connectivity():
     assert sidecar["candidate_graph"]["component_count"] == 1
     assert sidecar["verified_triangle"]["candidate_count"] == 3
     assert sidecar["verified_triangle"]["selected_completed_count"] == 3
+    assert sidecar["verified_triangle"]["selected_camera_count"] == 3
+    assert sidecar["verified_triangle"]["selected_camera_fraction"] == 0.6
+    assert sidecar["verified_triangle"]["selected_fisher_logdet_gain_sum"] > 0
+    assert (
+        sidecar["verified_triangle"]["selected_confidence_weighted_utility_sum"]
+        > 0
+    )
 
 
 def test_coverage_selector_hard_covers_control_and_reuses_verified_table():
@@ -548,6 +555,40 @@ def test_coverage_selector_hard_covers_control_and_reuses_verified_table():
         verified_cycle_table=verified,
     )
 
+    for field, value, message in (
+        ("minimum_camera_degree", 2, "parameters"),
+        ("candidate_pair_count", 5, "candidate-pair count"),
+    ):
+        forged = copy.deepcopy(sidecar)
+        if field == "minimum_camera_degree":
+            forged["parameters"][field] = value
+        else:
+            forged[field] = value
+        forged["content_sha256"] = cycle_fisher._selection_content_sha256(forged)
+        with pytest.raises(ValueError, match=message):
+            validate_cycle_verified_fisher_coverage_selection(
+                forged,
+                pair_match_probe=probe,
+                coverage_reference_pairs=control,
+                verified_cycle_table=verified,
+            )
+
+    fractional = copy.deepcopy(sidecar)
+    fractional["selected_pair"]["left_query_index"] = fractional[
+        "selected_pair"
+    ]["left_query_index"].double()
+    fractional["selected_pair"]["left_query_index"][0] += 0.25
+    fractional["content_sha256"] = cycle_fisher._selection_content_sha256(
+        fractional
+    )
+    with pytest.raises(ValueError, match="must be integer"):
+        validate_cycle_verified_fisher_coverage_selection(
+            fractional,
+            pair_match_probe=probe,
+            coverage_reference_pairs=control,
+            verified_cycle_table=verified,
+        )
+
     tampered = copy.deepcopy(verified)
     tampered["verified_triangle"]["utility"][0] += 0.25
     with pytest.raises(ValueError, match="metric columns|content SHA-256"):
@@ -583,7 +624,7 @@ def test_coverage_validator_rejects_target_derived_from_camera_degree():
         cycle_fisher._integer_set_sha256(range(5))
     )
     tampered["content_sha256"] = cycle_fisher._selection_content_sha256(tampered)
-    with pytest.raises(ValueError, match="same-probe control"):
+    with pytest.raises(ValueError, match="feasibility certificate|same-probe control"):
         validate_cycle_verified_fisher_coverage_selection(
             tampered,
             pair_match_probe=probe,
@@ -621,6 +662,140 @@ def test_coverage_selector_rejects_precomputed_table_from_different_threshold():
             pair_budget=5,
             maximum_cycle_reprojection_error_px=0.01,
             verified_cycle_table=modified,
+        )
+
+
+def test_resigned_tampered_verified_table_without_producer_identity_is_rejected():
+    probe, keypoints, camera_K, poses = _synthetic_probe_and_geometry()
+    verified = materialize_verified_cycle_table(
+        pair_match_probe=probe,
+        keypoints=keypoints,
+        camera_K=camera_K,
+        pose_w2c=poses,
+        maximum_reprojection_error_px=0.01,
+    )
+    tampered = copy.deepcopy(verified)
+    tampered["verified_triangle"]["reprojection_max_px"][0] *= 0.5
+    tampered.pop("producer")
+    tampered["content_sha256"] = verified_cycle_table_content_sha256(tampered)
+    with pytest.raises(ValueError, match="producer identity"):
+        validate_verified_cycle_table(tampered, pair_match_probe=probe)
+
+
+def test_verified_table_structural_contract_rejects_resigned_malformed_rows():
+    probe, keypoints, camera_K, poses = _synthetic_probe_and_geometry()
+    verified = materialize_verified_cycle_table(
+        pair_match_probe=probe,
+        keypoints=keypoints,
+        camera_K=camera_K,
+        pose_w2c=poses,
+        maximum_reprojection_error_px=0.01,
+    )
+
+    fractional = copy.deepcopy(verified)
+    fractional["verified_triangle"]["camera_index"] = fractional[
+        "verified_triangle"
+    ]["camera_index"].double()
+    fractional["content_sha256"] = verified_cycle_table_content_sha256(fractional)
+    with pytest.raises(ValueError, match="integer dtype"):
+        validate_verified_cycle_table(fractional, pair_match_probe=probe)
+
+    negative = copy.deepcopy(verified)
+    negative["verified_triangle"]["reprojection_max_px"][0] = -0.1
+    negative["content_sha256"] = verified_cycle_table_content_sha256(negative)
+    with pytest.raises(ValueError, match="metric columns"):
+        validate_verified_cycle_table(negative, pair_match_probe=probe)
+
+    duplicate = copy.deepcopy(verified)
+    for name, value in duplicate["verified_triangle"].items():
+        if isinstance(value, torch.Tensor):
+            duplicate["verified_triangle"][name] = torch.cat((value, value[:1]))
+    duplicate["content_sha256"] = verified_cycle_table_content_sha256(duplicate)
+    with pytest.raises(ValueError, match="duplicate keypoint cycles|not canonical"):
+        validate_verified_cycle_table(duplicate, pair_match_probe=probe)
+
+
+def test_producer_identity_compares_source_bytes_to_head_not_git_status(
+    monkeypatch,
+):
+    real_run = cycle_fisher.subprocess.run
+
+    def hidden_dirty_source(command, **kwargs):
+        result = real_run(command, **kwargs)
+        if command[:2] == ["git", "show"] and command[-1].endswith(
+            ":evidence/cycle_verified_fisher.py"
+        ):
+            return cycle_fisher.subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=result.stdout + b"# hidden assume-unchanged edit\n",
+                stderr=result.stderr,
+            )
+        return result
+
+    monkeypatch.setattr(cycle_fisher.subprocess, "run", hidden_dirty_source)
+    identity = cycle_fisher._verified_cycle_producer_identity()
+    assert identity["required_source_paths_clean"] is False
+
+
+def test_resigned_half_budget_scaffold_mask_cannot_bypass_exact_replay():
+    probe, keypoints, camera_K, poses = _synthetic_probe_and_geometry()
+    candidate = probe["candidate_pool"]
+    candidate_pairs = list(
+        zip(
+            candidate["left_query_index"].long().tolist(),
+            candidate["right_query_index"].long().tolist(),
+        )
+    )
+    verified = materialize_verified_cycle_table(
+        pair_match_probe=probe,
+        keypoints=keypoints,
+        camera_K=camera_K,
+        pose_w2c=poses,
+        maximum_reprojection_error_px=0.01,
+    )
+    _, sidecar = select_cycle_verified_fisher_coverage_pairs(
+        pair_match_probe=probe,
+        coverage_reference_pairs=candidate_pairs,
+        keypoints=keypoints,
+        camera_K=camera_K,
+        pose_w2c=poses,
+        pair_budget=6,
+        maximum_cycle_reprojection_error_px=0.01,
+        verified_cycle_table=verified,
+    )
+    assert sidecar["coverage_certificate"]["stage1_scaffold_pair_count"] > 3
+
+    forged = copy.deepcopy(sidecar)
+    triangle_pairs = [(0, 1), (0, 2), (1, 2)]
+    selected_pairs = list(
+        zip(
+            forged["selected_pair"]["left_query_index"].tolist(),
+            forged["selected_pair"]["right_query_index"].tolist(),
+        )
+    )
+    forged["selected_pair"]["coverage_scaffold"] = torch.tensor(
+        [pair in triangle_pairs for pair in selected_pairs]
+    )
+    forged["selected_pair"]["connectivity_backbone"] = torch.zeros(
+        6, dtype=torch.bool
+    )
+    certificate = forged["coverage_certificate"]
+    certificate["stage1_scaffold_pair_count"] = 3
+    certificate["stage1_scaffold_pair_table_sha256"] = (
+        cycle_fisher._pair_table_sha256(triangle_pairs)
+    )
+    certificate["stage1_scaffold_at_most_half_budget"] = True
+    certificate["coverage_triangle_edge_count"] = 3
+    certificate["coverage_bundle_added_edge_count"] = 3
+    certificate["remaining_budget_after_stage1"] = 3
+    forged["content_sha256"] = cycle_fisher._selection_content_sha256(forged)
+    with pytest.raises(ValueError, match="reproduce Stage 1"):
+        validate_cycle_verified_fisher_coverage_selection(
+            forged,
+            pair_match_probe=probe,
+            coverage_reference_pairs=candidate_pairs,
+            verified_cycle_table=verified,
         )
 
 

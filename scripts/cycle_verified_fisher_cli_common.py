@@ -42,6 +42,58 @@ SCENE_CONTRACTS = {
         "candidate_component_count": 1,
     },
 }
+V2_FROZEN_SOURCE_CONTRACTS = {
+    "stairs": {
+        "query_count": 2000,
+        "query_names_sha256": (
+            "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e"
+        ),
+        "query_cache_sha256": (
+            "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+        ),
+        "mapping_scope_mode": "mapping_sparse_refresh_equivalence_v2",
+        "mapping_scope_equivalence_sha256": (
+            "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee"
+        ),
+        "proposals_sha256": (
+            "31f458410cdad5f2ab0aef846532a2ae324f08cd7b07bae47e18de5b7897ab20"
+        ),
+        "proposals_content_sha256": (
+            "d0d028a4dc8736d3d74a94090f6575da5a742353760a088dcd26c6c77f56c47a"
+        ),
+        "probe_sha256": (
+            "6fe4a0581335e7e535effbf44611e88709ed517bc10341efc1ce9e71f42a20e6"
+        ),
+        "probe_content_sha256": (
+            "53d94010d8e8d7d5e28540aef6a6345090d0191e2ab593c48252e18c0d817a58"
+        ),
+    },
+    "greatcourt": {
+        "query_count": 1531,
+        "query_names_sha256": (
+            "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b"
+        ),
+        "query_cache_sha256": (
+            "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92"
+        ),
+        "mapping_scope_mode": "mapping_sparse_refresh_equivalence_v2",
+        "mapping_scope_equivalence_sha256": (
+            "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2"
+        ),
+        "proposals_sha256": (
+            "de9cc32ca29a932f95c839143ccb7a8c034c9e861c0c9ce9f5bd192a6467abf6"
+        ),
+        "proposals_content_sha256": (
+            "53b03061bfcfa9da0a7db166731d1d51f9144c168d2d32b5c6cb708a381f18e8"
+        ),
+        "probe_sha256": (
+            "3064b56497f253955a26e34ddae38fba4d63dda953d82e7f52b68e99de01d392"
+        ),
+        "probe_content_sha256": (
+            "f55bc491fb1080dde4593b4d3a7c21df33ff2e46af7023c0569be253e1eb7538"
+        ),
+    },
+}
 MATCHER_CONTRACT = {
     "minimum_similarity": 0.65,
     "minimum_margin": 0.01,
@@ -150,6 +202,62 @@ def validate_scene_contract(
     if observed != SCENE_CONTRACTS[normalized]:
         raise ValueError(f"{normalized} axes differ from the P8 V1 preregistration")
     return {"scene": normalized, **observed}
+
+
+def validate_v2_frozen_source_contract(
+    *,
+    scene: str,
+    cache: dict,
+    probe: dict,
+    proposals: dict | None = None,
+) -> dict:
+    """Reject same-shape alternate inputs not frozen before P8 V2 execution."""
+    normalized = str(scene).lower()
+    contract = V2_FROZEN_SOURCE_CONTRACTS.get(normalized)
+    if not isinstance(contract, dict):
+        raise ValueError("P8 V2 lacks a frozen source contract for this scene")
+    scope = cache.get("mapping_scope")
+    equivalence = (
+        scope.get("equivalence_report") if isinstance(scope, dict) else None
+    )
+    equivalence_sha = (
+        equivalence.get("sha256") if isinstance(equivalence, dict) else None
+    )
+    observed = {
+        "query_count": len(cache.get("names", [])),
+        "query_names_sha256": cache.get("query_names_sha256"),
+        "query_cache_sha256": cache.get("sha256"),
+        "mapping_scope_mode": scope.get("mode") if isinstance(scope, dict) else None,
+        "mapping_scope_equivalence_sha256": equivalence_sha,
+        "probe_sha256": probe.get("sha256"),
+        "probe_content_sha256": probe.get("content_sha256"),
+    }
+    expected = {
+        name: contract[name]
+        for name in (
+            "query_count",
+            "query_names_sha256",
+            "query_cache_sha256",
+            "mapping_scope_mode",
+            "mapping_scope_equivalence_sha256",
+            "probe_sha256",
+            "probe_content_sha256",
+        )
+    }
+    if observed != expected:
+        raise ValueError("P8 V2 cache/probe differs from its frozen source contract")
+    if proposals is not None:
+        proposal_observed = {
+            "proposals_sha256": proposals.get("sha256"),
+            "proposals_content_sha256": proposals.get("content_sha256"),
+        }
+        proposal_expected = {
+            name: contract[name]
+            for name in ("proposals_sha256", "proposals_content_sha256")
+        }
+        if proposal_observed != proposal_expected:
+            raise ValueError("P8 V2 proposals differ from the frozen source contract")
+    return {"scene": normalized, **contract}
 
 
 def validate_matcher_contract(parameters: dict) -> dict:
@@ -583,6 +691,7 @@ def load_verified_cycle_table(
         payload,
         pair_match_probe=probe["payload"],
         expected_content_sha256=content_sha,
+        require_clean_producer=True,
     )
     actual_error = float(
         payload["parameters"]["maximum_cycle_reprojection_error_px"]

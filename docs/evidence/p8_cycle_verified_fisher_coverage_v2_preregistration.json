@@ -78,18 +78,34 @@
   },
   "fixed_scene_contracts": {
     "stairs": {
+      "query_count": 2000,
+      "query_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
       "mapping_keypoints": 1024,
       "mapping_nms_radius": 4,
       "exact_pair_budget": 7450,
       "candidate_pair_count": 14835,
-      "candidate_component_count": 2
+      "candidate_component_count": 2,
+      "query_cache_sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9",
+      "mapping_scope_equivalence_sha256": "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee",
+      "pair_proposals_sha256": "31f458410cdad5f2ab0aef846532a2ae324f08cd7b07bae47e18de5b7897ab20",
+      "pair_proposals_content_sha256": "d0d028a4dc8736d3d74a94090f6575da5a742353760a088dcd26c6c77f56c47a",
+      "pair_probe_sha256": "6fe4a0581335e7e535effbf44611e88709ed517bc10341efc1ce9e71f42a20e6",
+      "pair_probe_content_sha256": "53d94010d8e8d7d5e28540aef6a6345090d0191e2ab593c48252e18c0d817a58"
     },
     "greatcourt": {
+      "query_count": 1531,
+      "query_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
       "mapping_keypoints": 2048,
       "mapping_nms_radius": 4,
       "exact_pair_budget": 5254,
       "candidate_pair_count": 9875,
-      "candidate_component_count": 1
+      "candidate_component_count": 1,
+      "query_cache_sha256": "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92",
+      "mapping_scope_equivalence_sha256": "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2",
+      "pair_proposals_sha256": "de9cc32ca29a932f95c839143ccb7a8c034c9e861c0c9ce9f5bd192a6467abf6",
+      "pair_proposals_content_sha256": "53b03061bfcfa9da0a7db166731d1d51f9144c168d2d32b5c6cb708a381f18e8",
+      "pair_probe_sha256": "3064b56497f253955a26e34ddae38fba4d63dda953d82e7f52b68e99de01d392",
+      "pair_probe_content_sha256": "f55bc491fb1080dde4593b4d3a7c21df33ff2e46af7023c0569be253e1eb7538"
     }
   },
   "fixed_parameters": {
@@ -144,8 +160,9 @@
   "current_status": {
     "implementation_complete": true,
     "cpu_tests_passed": true,
-    "cpu_test_result": "395 passed, 1 skipped",
+    "cpu_test_result": "404 passed, 1 skipped",
     "scoped_ruff_passed": true,
+    "cross_scene_stage_a_aggregator_implemented": true,
     "real_v2_selector_run": false,
     "gpu_run": false,
     "track_run": false,
@@ -156,7 +173,9 @@
   },
   "decision_boundary": {
     "any_stage_a_failure": "STOP_BEFORE_TRACK_REUSE",
-    "single_scene_pass": "SCENE_SPECIFIC_ONLY",
+    "single_scene_pass": "SCENE_STAGE_A_PASS_REQUIRES_OTHER_SCENE_AND_ADVANCE_FALSE",
+    "both_scene_stage_a_pass": "ONLY_CROSS_SCENE_AGGREGATOR_MAY_AUTHORIZE_V2_AWARE_TRACK_BUILD",
+    "cross_scene_aggregator_recursively_replays_inputs_geometry_selection_metrics_and_gates": true,
     "both_scene_stage_a_pass_authorizes_existing_v1_track_runner": false,
     "shared_default_until_all_downstream_gates": "nearest"
   }

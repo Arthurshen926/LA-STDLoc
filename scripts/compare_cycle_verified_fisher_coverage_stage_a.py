@@ -10,6 +10,10 @@ import sys
 from typing import Sequence
 
 from common.hashing import sha256_file
+from evidence.cycle_verified_fisher import (
+    assert_verified_cycle_table_exact,
+    materialize_verified_cycle_table,
+)
 from scripts.cycle_verified_fisher_cli_common import (
     add_mapping_scope_arguments,
     assert_selection_metrics,
@@ -26,6 +30,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     validate_output_target,
     validate_probe_proposal_lineage,
     validate_scene_contract,
+    validate_v2_frozen_source_contract,
 )
 
 
@@ -70,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--maximum-cycle-reprojection-error-px", type=float, required=True
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Validate lineage and rematerialize geometry without writing a gate.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -192,6 +202,9 @@ def run(args: argparse.Namespace) -> dict:
         expected_candidate_pair_count=args.expected_candidate_pair_count,
     )
     validate_probe_proposal_lineage(probe=probe, proposals=proposals)
+    frozen_sources = validate_v2_frozen_source_contract(
+        scene=args.scene, cache=cache, probe=probe, proposals=proposals
+    )
     verified = load_verified_cycle_table(
         path=args.verified_cycle_table,
         expected_file_sha256=args.expected_verified_cycle_table_sha256,
@@ -203,6 +216,29 @@ def run(args: argparse.Namespace) -> dict:
             args.maximum_cycle_reprojection_error_px
         ),
     )
+    rematerialized = materialize_verified_cycle_table(
+        pair_match_probe=probe["payload"],
+        keypoints=cache["keypoints"],
+        camera_K=cache["camera_K"],
+        pose_w2c=cache["pose_w2c"],
+        maximum_reprojection_error_px=args.maximum_cycle_reprojection_error_px,
+    )
+    assert_verified_cycle_table_exact(verified["payload"], rematerialized)
+    if sha256_file(cache["path"]) != cache["sha256"]:
+        raise RuntimeError("Query cache changed during verified geometry replay")
+    if sha256_file(probe["path"]) != probe["sha256"]:
+        raise RuntimeError("Pair probe changed during verified geometry replay")
+    if bool(args.verify_only):
+        return {
+            "schema": "lafgs_cycle_verified_fisher_coverage_stage_a_verification",
+            "version": 1,
+            "valid": True,
+            "uses_test_queries": False,
+            "scene_contract": contract,
+            "frozen_source_contract": frozen_sources,
+            "verified_geometry_independently_rematerialized_exact": True,
+            "stage_a_gate_written": False,
+        }
     selection = load_coverage_selection(
         path=args.selection,
         expected_file_sha256=args.expected_selection_sha256,
@@ -297,10 +333,12 @@ def run(args: argparse.Namespace) -> dict:
         "valid": True,
         "policy": "cycle_verified_fisher_coverage",
         "scene_contract": contract,
+        "frozen_source_contract": frozen_sources,
         "control_subset": "attested_nearest_pairs_from_same_probe",
         "coverage_semantics": (
             "lexicographic_hard_membership_before_fisher_objective"
         ),
+        "verified_geometry_independently_rematerialized_exact": True,
         "candidate_universe_verified_camera": verified["payload"][
             "candidate_verified_camera"
         ],
@@ -310,8 +348,14 @@ def run(args: argparse.Namespace) -> dict:
         "comparisons": comparisons,
         "gates": gates,
         "stage_a_passed": passed,
-        "advance_to_reuse_only_track_build": passed,
-        "decision": "GO_TO_TRACK_REUSE" if passed else "STOP_BEFORE_TRACK_REUSE",
+        "requires_other_scene": True,
+        "requires_v2_aware_track_lineage_implementation": True,
+        "advance_to_reuse_only_track_build": False,
+        "decision": (
+            "SCENE_STAGE_A_PASS_REQUIRES_OTHER_SCENE"
+            if passed
+            else "STOP_BEFORE_TRACK_REUSE"
+        ),
         "inputs": {
             name: {
                 "path": str(value["path"]),
@@ -339,7 +383,7 @@ def run(args: argparse.Namespace) -> dict:
 def main(argv: Sequence[str] | None = None) -> None:
     report = run(build_parser().parse_args(argv))
     print(json.dumps(report, indent=2, sort_keys=True))
-    if not report["stage_a_passed"]:
+    if report.get("stage_a_passed") is False:
         raise SystemExit(2)
 
 
