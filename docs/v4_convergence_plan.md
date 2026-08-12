@@ -96,7 +96,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 0 冻结 V3 | 已落实 | manifest、文件/tensor hash、配置与工作树登记 | 各新场景仍需各自生成 manifest |
 | Stage 1 统一 Candidate Registry | 已落实兼容层 | 统一 observations、identity/geometry mode、evidence、NaN unknown；定位张量 bitwise equal | 全量 pose replay parity 随真实 selector 重放验收 |
 | Stage 2 Dedup/evidence transfer | 审计完成，物理合并 Stop | 等价图、协方差代理、functional audit、union-find component、无删除反事实 | 不实施删点和 evidence transfer；component 仅供风险/selector 使用 |
-| Stage 3 统一 geometry materializer | 未实施 | 已统一 Registry 中的 geometry/covariance 语义 | adaptive surface 求解与 mapping gate 尚未通过 |
+| Stage 3 统一 geometry materializer | 已落实兼容层 | `materialize_geometry(anchor_evidence)` 已接入 deployment Track geometry 与 Anchor Registry；Heads/Stairs/ShopFacade 的旧几何字段、最终 Map xyz 和定位张量均 bitwise equal | 真实 payload 中 accepted surface-regularized Track 为 0；因此该层只完成结构/API 收敛，不申报精度机制，也不据此启动 adaptive surface 求解 |
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
 | Stage 6 室内身份自适应 | density-only No-Go；pair 在 Stairs mapping Go、GreatCourt 机制 Stop | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置、Stairs fullchain/mapping pose 与 GreatCourt 跨域反证 | K=2048 不进入默认；`parallax_diverse` 不升为跨域默认 |
