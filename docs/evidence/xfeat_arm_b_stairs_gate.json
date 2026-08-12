@@ -1,0 +1,93 @@
+{
+  "schema": "lafgs_xfeat_arm_b_stairs_result_evidence",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "scene": "7Scenes/stairs",
+  "valid": true,
+  "uses_test_queries": false,
+  "mapping_only": true,
+  "single_factor": "descriptor_identity_at_exact_superpoint_rows",
+  "decision": "STOP_BEFORE_MAPPING_ONLY_DESCRIPTOR_REBUILD",
+  "artifacts": {
+    "fresh_cache_equivalence_v2": {
+      "path": "/mnt/pool/sqy/lafgs_frontend_ceiling_probe_20260813/stairs/contracts/fresh_cache_equivalence_v2.json",
+      "sha256": "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee",
+      "valid": true,
+      "content_equivalent_track_payload_reuse_authorized": true,
+      "source_cache": {
+        "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/query_cache.pt",
+        "sha256": "8f65f9ad067f40dd9bd7dda99f3b7674a3b9016b4679d29c0df8a54637d863d2"
+      },
+      "fresh_cache": {
+        "path": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+        "sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+      },
+      "source_track_payload": {
+        "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/tracks_refined/track_micro_anchor_payload.pt",
+        "sha256": "4e3a9c453b3602c066ca82b06694f3b27a690705cdf2ac9bd6cdce707c479a10"
+      }
+    },
+    "probe": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor.pt",
+      "sha256": "fc538197bd103cfe9dfc4ef34109218e286d71b814815827a3828d356dc16a3a",
+      "size_bytes": 544004619
+    },
+    "report": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor_report.json",
+      "sha256": "77d793e3cc68d820ec5c4d7d78b7684f75a0c5814c977b8307e7511458c80472"
+    },
+    "gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/descriptor_arm_b_gate.json",
+      "sha256": "b1058d2594e6f7a2faab2e5f2e6f59a925feaee9dd1b1c546c9f0aefc7bf09fa",
+      "decision": "STOP",
+      "mechanism_gate_passed": false
+    }
+  },
+  "protocol": {
+    "mapping_query_count": 2000,
+    "requested_keypoints_per_query": 1024,
+    "validated_descriptor_rows": 2048000,
+    "candidate_detector_keypoints": 0,
+    "candidate_descriptor_dim": 64,
+    "reference_descriptor_dim": 256,
+    "crossfit": "bidirectional_temporal_block",
+    "crossfit_blocks": 8,
+    "minimum_support_views": 2
+  },
+  "comparisons": {
+    "selection_to_gate_r1": {"superpoint": 0.43537956113889004, "xfeat": 0.47606306045704366, "delta": 0.040683499318153626},
+    "gate_to_selection_r1": {"superpoint": 0.40283374735486244, "xfeat": 0.44982979114913973, "delta": 0.0469960437942773},
+    "pooled_r1": {"superpoint": 0.41816474115024865, "xfeat": 0.462187204967735, "delta": 0.04402246381748637},
+    "pooled_r8": {"superpoint": 0.704252357824864, "xfeat": 0.7835424311145285, "delta": 0.07929007328966453},
+    "pooled_track_core_r1": {"superpoint": 0.49030975650157366, "xfeat": 0.5528615206228259, "delta": 0.06255176412125224},
+    "pooled_gaussian_reserve_r1": {"superpoint": 0.22053181245833642, "xfeat": 0.22027997926079548, "delta": -0.0002518331975409349}
+  },
+  "gates": {
+    "selection_to_gate_candidate_r1_strictly_positive": true,
+    "gate_to_selection_candidate_r1_strictly_positive": true,
+    "pooled_r8_non_regression": true,
+    "pooled_track_core_r1_non_regression": true,
+    "pooled_gaussian_reserve_r1_non_regression": false,
+    "non_regression_absolute_tolerance": 1e-12
+  },
+  "resource_cost": {
+    "candidate_to_superpoint_bank_memory_ratio": 0.25,
+    "candidate_to_superpoint_dot_product_mac_ratio": 0.25,
+    "candidate_ranking_wall_seconds": [7.701070023700595, 7.864324862137437],
+    "superpoint_ranking_wall_seconds": [12.714938099496067, 13.538957341574132],
+    "timing_scope": "CPU cosine matrix multiplication plus top-K only"
+  },
+  "downstream_execution": {
+    "descriptor_map_rebuild": false,
+    "function_graph_rebuild": false,
+    "metric_refresh": false,
+    "mapping_pose": false,
+    "formal_test": false
+  },
+  "verification": {
+    "gate_reexecuted_with_exact_path_and_sha_bindings": true,
+    "gate_reexecution_exit_code": 2,
+    "gate_reexecution_byte_exact_to_persisted_gate": true
+  },
+  "method_conclusion": "XFeat demonstrates real descriptor headroom at frozen rows, especially for Track Core, but a uniform replacement fails the preregistered Reserve R@1 non-regression contract and is not authorized for downstream execution."
+}

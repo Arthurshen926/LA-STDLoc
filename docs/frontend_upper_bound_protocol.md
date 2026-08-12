@@ -2,11 +2,11 @@
 
 ## Decision
 
-The project is **not yet entitled to conclude that frozen SuperPoint has reached
-its representation ceiling**. The repository has an executable, mapping-only
-protocol and the bounded follow-up inventory found a provenance-locked XFeat
-candidate. The correct current state is `READY_FOR_PRODUCER_REVIEW`, not an
-accuracy result and not permission to download or randomly initialize a model.
+The Stairs descriptor arm has now produced a real mapping-only result. Locked
+XFeat improves both temporal directions, pooled R@8, and Track Core R@1, so
+frozen SuperPoint has measurable descriptor headroom. The strict gate is still
+`STOP_BEFORE_MAPPING_ONLY_DESCRIPTOR_REBUILD`: pooled Gaussian Reserve R@1
+regresses by 0.02518 pp and fails the preregistered exact non-regression rule.
 
 This is a candidate comparison / ceiling probe, not a mathematical upper bound
 unless a future candidate has a separately justified oracle property.  It does
@@ -170,7 +170,11 @@ and descriptor-first/detector-second progression are recorded in
 and
 [`xfeat_frontend_probe_provision_plan.md`](xfeat_frontend_probe_provision_plan.md).
 The adjacent XFeat-LighterGlue checkpoint remains inadmissible as a pair
-matcher. No real image or accuracy gate has yet run.
+matcher. The real XFeat Arm B result is now recorded in
+[`xfeat_arm_b_stairs_result.md`](xfeat_arm_b_stairs_result.md) and
+[`xfeat_arm_b_stairs_gate.json`](evidence/xfeat_arm_b_stairs_gate.json). It
+consumed 2,000 mapping images and 2,048,000 fixed rows, used no test query, and
+stopped before map/metric/pose.
 
 The read-only preflight on 2026-08-12 found:
 
@@ -262,9 +266,9 @@ signal path plus fail-closed hash, family, row, K, and pairing constraints:
 ## Conclusion
 
 The implementation now cleanly answers two different questions without
-inventing another selector. What remains unknown is empirical: locked XFeat is
-now available for producer review, but neither detector headroom nor descriptor
-headroom has been measured. If both candidate ceiling probes later fail, the
-evidence will support moving the bottleneck downstream from frozen SuperPoint
-representation; until then, claiming either “the method is wrong” or
-“SuperPoint is already optimal” would exceed the evidence.
+inventing another selector. Descriptor headroom is no longer unknown: locked
+XFeat raises pooled R@1 by 4.40225 pp and pooled R@8 by 7.92901 pp at the exact
+SuperPoint rows. It is not a deployable win because Reserve R@1 fails the
+strict non-regression gate, so no downstream rebuild ran. Detector headroom
+remains unmeasured. The actionable boundary is representation-by-evidence
+type, not a blanket claim that either the method or SuperPoint is optimal.

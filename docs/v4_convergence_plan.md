@@ -637,6 +637,25 @@ triangulated Tracks 和显著更差 covariance tail，证明当前 objective 不
 完整结论见 `docs/p7_greatcourt_pair_policy_stop.md`，机器可读摘要见
 `docs/evidence/p7_greatcourt_pair_policy_mechanism_stop.json`。
 
+#### P7.4 Stairs XFeat Arm B：存在 descriptor headroom，但严格 Stop
+
+锁定的 XFeat 64D descriptor 已在完全相同的 2,000 张 mapping 图、每图 1,024 个
+SuperPoint 行上完成 Arm B，共验证 2,048,000 行；不启用 XFeat detector，不读取 test。
+fresh cache equivalence V2 对 query 顺序、Track 输入、effective sparse depth、native alpha
+均为 2,000/2,000 exact，并授权复用冻结 Track payload。
+
+XFeat 在两个 temporal-block 方向的 R@1 分别提升 +4.0683 / +4.6996 pp，pooled R@8
+提升 +7.9290 pp，Track Core pooled R@1 提升 +6.2552 pp。这证明前端 descriptor quality
+确实存在真实 headroom，不能再把 frozen SuperPoint 当作已达 representation ceiling。
+但 Gaussian Reserve pooled R@1 从 22.0532% 降至 22.0280%（-0.02518 pp），违反预先
+固定的 exact non-regression gate，因此 `mechanism_gate_passed=false`。按协议没有执行
+descriptor map/function graph、metric refresh、mapping pose 或 formal test。
+
+这不是“XFeat 无效”，而是“统一替换无法同时保护两类 evidence identity”。共享方法的下一步
+应显式研究 evidence-aware descriptor representation/utility，而不是绕过 gate 混入 detector、
+pair policy、更多训练步数或 Pose Reserve。完整报告见 `docs/xfeat_arm_b_stairs_result.md`，
+机器摘要见 `docs/evidence/xfeat_arm_b_stairs_gate.json`。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
@@ -675,3 +694,8 @@ covariance p90 两项失败而 Stop。故 **不得把 Stairs Go 外推成跨域�
 pair-policy 三个变量仍不得混入同一个因果实验。后续若继续提高室内外共同精度，应先回到
 可定位证据效用/前端 correspondence failure 的统一测量，而不是继续堆 parallax、地图点、
 Pose Reserve 或训练步数。
+
+XFeat Arm B 进一步收紧了这个结论：identity descriptor 不是完全饱和变量，但增益高度集中于
+Track Core，Reserve 的严格非退化未通过。因此当前默认 frontend 仍保留 SuperPoint，且不跑
+XFeat map/pose/test；下一主线必须解释并保护 evidence-conditioned identity，而不是把一个
+pooled retrieval 增益直接当作完整定位方法增益。
