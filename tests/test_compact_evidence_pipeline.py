@@ -162,3 +162,45 @@ def test_compact_evidence_path_contract_rejects_stale_provenance(
     )
     with pytest.raises(RuntimeError, match="do not share one anchor universe"):
         pipeline._assert_compact_evidence_path_contract(**arguments)
+
+
+def test_compact_evidence_path_contract_accepts_identical_map_copy(
+    tmp_path: Path,
+) -> None:
+    compact_map = tmp_path / "compact.pt"
+    original_map = tmp_path / "original_compact.pt"
+    graph_v2 = tmp_path / "compact_function_graph_v2.pt"
+    provenance = tmp_path / "raster_provenance.pt"
+    graph = tmp_path / "compact_function_graph.pt"
+    teacher = tmp_path / "complete_positive_teacher.pt"
+    compact_map.write_bytes(b"identical compact map")
+    original_map.write_bytes(compact_map.read_bytes())
+    torch.save({"anchor_map": str(original_map)}, graph_v2)
+    torch.save(
+        {
+            "anchor_map": str(original_map),
+            "config": {"function_graph": str(graph_v2)},
+        },
+        provenance,
+    )
+    torch.save(
+        {
+            "anchor_map": str(original_map),
+            "raster_provenance": str(provenance),
+        },
+        graph,
+    )
+    torch.save(
+        {
+            "anchor_map": str(original_map),
+            "raster_provenance": str(provenance),
+        },
+        teacher,
+    )
+    pipeline._assert_compact_evidence_path_contract(
+        compact_map=compact_map,
+        graph_v2=graph_v2,
+        provenance=provenance,
+        graph=graph,
+        teacher=teacher,
+    )

@@ -16,6 +16,7 @@ import time
 
 from common.calibration import calibrate_scene
 from common.config import load_mainline_config, resolve_keypoint_count
+from common.hashing import sha256_file
 from data.datasets import ColmapDataset
 from map_learning.trainer import full_refresh_interval, train
 
@@ -250,22 +251,31 @@ def _assert_compact_evidence_path_contract(
     expected_graph_v2 = graph_v2.expanduser().resolve()
     expected_provenance = provenance.expanduser().resolve()
     checks = [
-        (graph_v2, "anchor_map", expected_map),
-        (provenance, "anchor_map", expected_map),
-        (provenance, "config.function_graph", expected_graph_v2),
-        (graph, "anchor_map", expected_map),
-        (graph, "raster_provenance", expected_provenance),
-        (teacher, "anchor_map", expected_map),
-        (teacher, "raster_provenance", expected_provenance),
+        (graph_v2, "anchor_map", expected_map, True),
+        (provenance, "anchor_map", expected_map, True),
+        (provenance, "config.function_graph", expected_graph_v2, False),
+        (graph, "anchor_map", expected_map, True),
+        (graph, "raster_provenance", expected_provenance, False),
+        (teacher, "anchor_map", expected_map, True),
+        (teacher, "raster_provenance", expected_provenance, False),
     ]
     mismatches = []
-    for artifact, key, expected in checks:
+    for artifact, key, expected, allow_content_equivalence in checks:
         payload = torch.load(artifact, map_location="cpu", weights_only=False)
         value = payload
         for component in key.split("."):
             value = value.get(component, "") if isinstance(value, dict) else ""
         actual = Path(value).expanduser().resolve() if value else None
-        if actual != expected:
+        equivalent = actual == expected
+        if (
+            not equivalent
+            and allow_content_equivalence
+            and actual is not None
+            and actual.is_file()
+            and expected.is_file()
+        ):
+            equivalent = sha256_file(actual) == sha256_file(expected)
+        if not equivalent:
             mismatches.append(f"{artifact.name}:{key}={actual!s} expected {expected}")
         del payload
     if mismatches:
