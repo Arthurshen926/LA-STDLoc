@@ -41,7 +41,9 @@ def main() -> None:
     parser.add_argument("--provenance-shards", type=int, default=1)
     parser.add_argument("--observation-shards", type=int, default=1)
     parser.add_argument("--pose-scoring-shards", type=int, default=1)
-    parser.add_argument("--evaluate", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--evaluate", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--keypoints",
@@ -118,6 +120,8 @@ def main() -> None:
         output=args.output / "map_learning",
         config=config,
         valid_masks=args.valid_masks or None,
+        rebuild_function_graph=True,
+        function_graph_shards=args.function_graph_shards,
         provenance_shards=args.provenance_shards,
         observation_shards=args.observation_shards,
         scene_calibration=artifacts.get("scene_calibration"),
@@ -134,7 +138,9 @@ def main() -> None:
         dataset = ColmapDataset(args.dataset, images="processed")
         test_cameras = dataset.split("test")
         mapping_cameras = dataset.split("mapping")
-        calibration_path = Path(trained["trained_map"]).parent / "scene_calibration.json"
+        calibration_path = (
+            Path(trained["trained_map"]).parent / "scene_calibration.json"
+        )
         scene_calibration = load_scene_calibration(calibration_path)
         keypoint_count = resolve_keypoint_count(deployment, mapping_cameras)
         reprojection_error_px = resolve_reprojection_error_px(
