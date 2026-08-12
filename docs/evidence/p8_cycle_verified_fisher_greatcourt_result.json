@@ -1,0 +1,198 @@
+{
+  "schema": "lafgs_cycle_verified_fisher_greatcourt_result_evidence",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "scene": "Cambridge/GreatCourt",
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "mapping_camera_pair_policy",
+  "policy": "cycle_verified_fisher",
+  "policy_version": "P8_V1",
+  "producer": {
+    "selector_commit": "199c187acd8a6df018e3630fe0babda3739e68c1",
+    "selector_commit_subject": "Optimize cycle-verified Fisher closure"
+  },
+  "decision": {
+    "stage_a": "STOP_8_OF_9",
+    "stage_a_gate_decision": "STOP_BEFORE_TRACK_REUSE",
+    "stage_a_exit_status": 2,
+    "p8_v1_cross_domain": "STOP",
+    "stairs_result_retained_as": "SCENE_SPECIFIC_MECHANISM_SIGNAL_ONLY",
+    "shared_default_pair_policy": "nearest",
+    "advance_to_reuse_only_track_build": false,
+    "authorizes_greatcourt_stage_b": false,
+    "authorizes_cross_scene_aggregator": false,
+    "authorizes_fullchain": false,
+    "authorizes_function_graph_or_map_rebuild": false,
+    "authorizes_mapping_pose": false,
+    "authorizes_formal_test": false,
+    "authorizes_method_default_change": false
+  },
+  "scene_contract": {
+    "query_count": 1531,
+    "query_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+    "mapping_keypoints": 2048,
+    "mapping_nms_radius": 4,
+    "exact_pair_budget": 5254,
+    "candidate_pair_count": 9875,
+    "candidate_component_count": 1,
+    "candidate_isolated_camera_count": 0,
+    "candidate_minimum_degree": 5,
+    "matcher": {
+      "minimum_similarity": 0.65,
+      "minimum_margin": 0.01,
+      "maximum_epipolar_error_px": 2.0,
+      "epipolar_candidate_topk": 1,
+      "epipolar_recovered_minimum_similarity": -1.0,
+      "epipolar_recovered_minimum_margin": -1.0
+    }
+  },
+  "artifacts": {
+    "preregistration_contract": {
+      "path": "docs/evidence/p8_cycle_verified_fisher_preregistration.json",
+      "sha256": "39264e748adc735a85f141ac307aad6cba8b6a1d825880ce500ef3d86d6bc728"
+    },
+    "query_cache": {
+      "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/cache/query_cache.pt",
+      "sha256": "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92"
+    },
+    "mapping_scope_equivalence": {
+      "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/contracts/sparse_refresh_equivalence.json",
+      "sha256": "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2",
+      "mode": "mapping_sparse_refresh_equivalence_v2",
+      "uses_test_queries": false
+    },
+    "pair_proposals": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_proposals.pt",
+      "sha256": "de9cc32ca29a932f95c839143ccb7a8c034c9e861c0c9ce9f5bd192a6467abf6",
+      "content_sha256": "53b03061bfcfa9da0a7db166731d1d51f9144c168d2d32b5c6cb708a381f18e8",
+      "invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_proposals_invocation.json",
+      "invocation_sha256": "6395eb3dc066c08da3640df45e88713be8c6add99cdb40c5b0bb10e6a3428b35"
+    },
+    "pair_match_probe": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_match_probe.pt",
+      "sha256": "3064b56497f253955a26e34ddae38fba4d63dda953d82e7f52b68e99de01d392",
+      "content_sha256": "f55bc491fb1080dde4593b4d3a7c21df33ff2e46af7023c0569be253e1eb7538",
+      "match_count": 4038756,
+      "invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_match_probe_invocation.json",
+      "invocation_sha256": "4d2ab9b32cb3bc8ea8e24ae2fb3335d86360c6cbf9195fcc654a648c66523d95"
+    },
+    "pair_selection": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_selection.pt",
+      "sha256": "e0e297597937b96af50cba2c0b95b055e523733e2601127218f93ad8994e9661",
+      "content_sha256": "f1e2194a890983aad889ad08194d5d12003ab2f4d295e485b72bf5781e8e3d0d",
+      "invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_selection_invocation.json",
+      "invocation_sha256": "49b1f20d13227fff4bc90239cb274b3215899a3e2d1b2d24a705838e26bcaa14"
+    },
+    "stage_a_gate": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_a_gate.json",
+      "sha256": "1f1f9c6665009b897f93f6dce0121e13e2ce74e8997962acf16674491c8d64f5",
+      "invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_a_gate_invocation.json",
+      "invocation_sha256": "1e0737beb8e401a66263859637f686f04793360d9ce9406cbb6f55a61ee766ff",
+      "exit_status_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_a_gate_exit_status.txt",
+      "exit_status_sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    }
+  },
+  "stage_a": {
+    "valid": true,
+    "passed": false,
+    "passed_gate_count": 8,
+    "gate_count": 9,
+    "decision": "STOP_BEFORE_TRACK_REUSE",
+    "only_failed_gate": "verified_triangle_camera_fraction_not_lower",
+    "gates": {
+      "candidate_components_exact": true,
+      "candidate_union_exact_and_bounded": true,
+      "selected_components_preserved": true,
+      "selected_exact_pair_budget": true,
+      "selected_minimum_degree_at_least_one": true,
+      "selected_zero_isolates": true,
+      "verified_fisher_utility_improves_5pct": true,
+      "verified_triangle_camera_fraction_not_lower": false,
+      "verified_triangles_retain_98pct": true
+    },
+    "control_graph": {
+      "pair_count": 5254,
+      "component_count": 1,
+      "isolated_camera_count": 0,
+      "minimum_degree": 5,
+      "maximum_degree": 11
+    },
+    "selected_graph": {
+      "pair_count": 5254,
+      "component_count": 1,
+      "isolated_camera_count": 0,
+      "minimum_degree": 1,
+      "maximum_degree": 19
+    },
+    "candidate_verified_keypoint_triangle_count": 3136243,
+    "comparisons": {
+      "confidence_weighted_fisher_utility_sum": {
+        "control": 2132.815232865185,
+        "variant": 4489.333163030916,
+        "delta": 2356.517930165731,
+        "ratio": 2.104886111958244
+      },
+      "completed_verified_keypoint_triangle_count": {
+        "control": 1028346,
+        "variant": 1874006,
+        "delta": 845660,
+        "ratio": 1.8223496760817857
+      },
+      "completed_verified_triangle_camera_count": {
+        "control": 1524,
+        "variant": 1230,
+        "delta": -294
+      },
+      "completed_verified_triangle_camera_fraction": {
+        "control": 0.9954278249510125,
+        "variant": 0.8033964728935337,
+        "delta": -0.1920313520574788,
+        "delta_percentage_points": -19.20313520574788,
+        "ratio": 0.8070866141732284
+      }
+    }
+  },
+  "causal_interpretation": {
+    "candidate_graph_disconnected": false,
+    "selected_graph_disconnected": false,
+    "failure_mode": "aggregate verified-triangle and Fisher utility concentrated on fewer mapping cameras despite a connected pair graph",
+    "hard_gate_is_compensable_by_higher_total_utility": false,
+    "p8_v1_cross_scene_sufficiency_established": false
+  },
+  "v2_boundary": {
+    "v2_started": false,
+    "requires_new_preregistration": true,
+    "required_selector_change": "verified-triangle camera coverage must be a lexicographic hard constraint satisfied before aggregate closure/Fisher utility optimization",
+    "may_relax_failed_v1_gate": false,
+    "may_tune_after_greatcourt_result": false,
+    "required_refreeze": [
+      "coverage feasibility contract",
+      "deterministic selector and tie-breaks",
+      "complexity bound",
+      "Stairs and GreatCourt gates"
+    ]
+  },
+  "cross_checks": {
+    "direct_file_sha256_rehash_passed": true,
+    "json_parse_passed": true,
+    "pt_schema_and_content_field_load_passed": true,
+    "invocation_sidecar_cross_check_passed": true,
+    "mapping_scope_cross_check_passed": true,
+    "stage_gate_field_cross_check_passed": true,
+    "stage_a_exit_status_cross_check_passed": true
+  },
+  "downstream_execution": {
+    "greatcourt_track_control": false,
+    "greatcourt_track_variant": false,
+    "greatcourt_stage_b": false,
+    "cross_scene_aggregator": false,
+    "fullchain_rebuild": false,
+    "function_graph_or_map_rebuild": false,
+    "mapping_pose": false,
+    "formal_test": false,
+    "method_default_changed": false
+  },
+  "method_conclusion": "GreatCourt falsifies P8 V1 as a shared cross-domain pair policy at the preregistered Stage-A camera-coverage gate. Aggregate Fisher utility and verified-triangle count improve, but verified-triangle camera coverage falls by 19.2031 percentage points. Stairs remains a scene-specific positive mechanism result; frozen V3 nearest remains the shared default. Any P8 V2 requires a new preregistration with verified-triangle camera coverage enforced lexicographically before aggregate utility."
+}

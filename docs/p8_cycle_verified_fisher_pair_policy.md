@@ -443,7 +443,7 @@ valid scientific failure in either scene writes `STOP_BEFORE_FULLCHAIN` and exit
 2.  Only two valid scene passes write `GO_TO_FULLCHAIN_MAPPING_POSE`; even that
 mapping-only Go records `authorizes_test=false`.
 
-## Current Stairs result and next executable step
+## Final P8 V1 cross-domain result
 
 The real Stairs mapping-only sequence is now complete.  Its proposal, bounded
 probe, exact-budget selection, independent Stage A, two reuse-only Track factors,
@@ -456,9 +456,35 @@ triangulated/broad/high-confidence Tracks increase 15,053/14,276/41 ->
 0.05501186 -> 0.03653227 m2 and broad-query coverage stays 1.0.
 
 The hash-bound Stage-B decision is `SCENE_PASS_REQUIRES_OTHER_SCENE`, not a
-fullchain authorization.  The only authorized next execution is the identically
-frozen GreatCourt Stage-A/B sequence.  GreatCourt has not run; neither scene has
-run a P8 fullchain, mapping pose, formal test, or default-method switch.
+fullchain authorization.  GreatCourt was therefore run next under the
+identically frozen P8 V1 Stage-A contract.
+
+GreatCourt produced a valid mapping-only scientific Stop at Stage A.  Eight of
+nine gates passed.  Under the same exact 5,254-pair budget, P8 increased
+confidence-weighted Fisher utility 2,132.8152 -> 4,489.3332 (2.1049x) and
+completed verified triangles 1,028,346 -> 1,874,006 (1.8223x), but reduced the
+number of mapping cameras participating in a verified triangle 1,524 -> 1,230.
+The corresponding fraction fell 0.995428 -> 0.803396 (-19.2031 percentage
+points), so the preregistered
+`verified_triangle_camera_fraction_not_lower` hard gate failed.  The formal gate
+SHA-256 is
+`1f1f9c6665009b897f93f6dce0121e13e2ce74e8997962acf16674491c8d64f5`;
+it records `valid=true`, `uses_test_queries=false`,
+`STOP_BEFORE_TRACK_REUSE`, and exit status 2.
+
+This closes P8 V1 as a cross-domain **Stop**.  The connected, zero-isolate
+selected pair graph shows why ordinary graph coverage is insufficient: total
+closure/Fisher utility can concentrate on fewer cameras.  Higher aggregate
+utility cannot compensate for the separately preregistered triangle-camera
+coverage gate.  No GreatCourt Track/Stage-B, cross-scene aggregator, fullchain,
+mapping pose, formal test, or default-method switch is authorized; frozen V3
+`nearest` remains the shared default.
+
+Any future P8 V2 is a new hypothesis and requires a new preregistration before
+real execution.  It must make verified-triangle camera coverage a lexicographic
+selector constraint, satisfied no lower than the same-probe nearest control
+before aggregate closure/Fisher optimization.  The failed V1 gate may not be
+relaxed or tuned after this result.
 
 The first real selector execution was separately recorded as invalid after
 1,592.086 seconds without an output; it exposed an engineering complexity
@@ -467,4 +493,7 @@ blocker, not a scientific Stop.  The exact incremental selector at commit
 in about 188 seconds.  Runtime is not a scientific gate.  The complete result,
 artifact hashes, gate values, and control/variant lineage diff are in
 `docs/p8_cycle_verified_fisher_stairs_result.md` and
-`docs/evidence/p8_cycle_verified_fisher_stairs_result.json`.
+`docs/evidence/p8_cycle_verified_fisher_stairs_result.json`.  The GreatCourt
+Stop, exact artifacts, and field-level audit are in
+`docs/p8_cycle_verified_fisher_greatcourt_result.md` and
+`docs/evidence/p8_cycle_verified_fisher_greatcourt_result.json`.
