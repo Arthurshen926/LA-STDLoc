@@ -13,7 +13,11 @@ from scripts import compare_cycle_verified_fisher_stage_a as stage_a_cli
 from scripts import materialize_cycle_verified_pair_probe as probe_cli
 from scripts import materialize_cycle_verified_track_factor as track_cli
 from scripts import select_cycle_verified_fisher_pairs as select_cli
-from scripts.cycle_verified_fisher_cli_common import SCENE_CONTRACTS, torch_load
+from scripts.cycle_verified_fisher_cli_common import (
+    SCENE_CONTRACTS,
+    load_mapping_cache,
+    torch_load,
+)
 
 
 def _look_at_pose(center, target):
@@ -440,6 +444,63 @@ def test_archived_proposal_attestation_is_pair_only(p8_cli_artifacts):
     assert proposals["candidate_union"]["pair_count"] == 6
 
 
+def test_cache_without_scope_requires_hash_bound_v2_equivalence(p8_cli_artifacts):
+    artifact = p8_cli_artifacts
+    cache = torch_load(artifact["cache_path"])
+    cache.pop("uses_test_queries")
+    cache_path = artifact["tmp_path"] / "scope_missing_cache.pt"
+    torch.save(cache, cache_path)
+    cache_sha256 = sha256_file(cache_path)
+    common = {
+        "path": cache_path,
+        "expected_file_sha256": cache_sha256,
+        "expected_query_names_sha256": artifact["names_sha256"],
+        "expected_mapping_keypoints": 3,
+        "expected_nms_radius": 1,
+    }
+    with pytest.raises(ValueError, match="requires a mapping-scope equivalence"):
+        load_mapping_cache(**common)
+    equivalence_path = artifact["tmp_path"] / "mapping_scope_equivalence.json"
+    query_count = len(artifact["names"])
+    equivalence = {
+        "schema": "lafgs_mapping_sparse_refresh_equivalence",
+        "version": 2,
+        "uses_test_queries": False,
+        "valid": True,
+        "checks": {"all_exact": True},
+        "expected": {"mapping_keypoints": 3, "nms_radius": 1},
+        "audit": {
+            "content_equivalent_track_payload_reuse_authorized": True,
+            "query_order_exact": True,
+            "query_count": query_count,
+            "effective_sparse_depth_exact_query_count": query_count,
+            "native_alpha_exact_query_count": query_count,
+            "refreshed_metadata_pass_count": query_count,
+            "track_input_exact_query_count": query_count,
+            "target_k_mapping": 3,
+            "target_nms_radius": 1,
+        },
+        "sources": {
+            "refreshed_cache": {
+                "path": str(cache_path),
+                "sha256": cache_sha256,
+            }
+        },
+    }
+    equivalence_path.write_text(json.dumps(equivalence))
+    loaded = load_mapping_cache(
+        **common,
+        mapping_scope_equivalence=equivalence_path,
+        expected_mapping_scope_equivalence_sha256=sha256_file(equivalence_path),
+    )
+    assert loaded["mapping_scope"]["mode"] == (
+        "mapping_sparse_refresh_equivalence_v2"
+    )
+    assert loaded["mapping_scope"]["equivalence_report"]["sha256"] == (
+        sha256_file(equivalence_path)
+    )
+
+
 def test_stage_a_input_failure_exits_one(p8_cli_artifacts):
     arguments = list(p8_cli_artifacts["selection_args"])
     index = arguments.index("--expected-probe-sha256") + 1
@@ -506,6 +567,10 @@ def test_reuse_only_track_factors_and_stage_b_end_to_end(p8_cli_artifacts):
     assert gate["stage_b"]["gates"]["control_probe_rows_reused"] is True
     assert gate["stage_b"]["gates"]["variant_probe_rows_reused"] is True
     assert gate["stage_b"]["gates"]["same_probe_matcher_contract"] is True
+    assert gate["requires_other_scene"] is True
+    assert "advance_to_fullchain_mapping_pose" not in gate
+    if gate["scene_specific_mechanism_pass"]:
+        assert gate["decision"] == "SCENE_PASS_REQUIRES_OTHER_SCENE"
 
 
 def test_stage_b_rejects_non_reuse_control_lineage(p8_cli_artifacts):
@@ -528,6 +593,35 @@ def test_stage_b_rejects_non_reuse_control_lineage(p8_cli_artifacts):
     payload["diagnostics"]["track_pair_matches_reused"] = 0
     torch.save(payload, control_factor)
     output = artifact["tmp_path"] / "invalid_stage_b.json"
+    arguments = _stage_b_args(
+        artifact, control_dir=control_dir, variant_dir=variant_dir, output=output
+    )
+    with pytest.raises(SystemExit) as error:
+        stage_b_cli.entrypoint(arguments)
+    assert error.value.code == 1
+    assert not output.exists()
+
+
+def test_stage_b_rejects_different_manifest_and_science_contract(
+    p8_cli_artifacts,
+):
+    artifact = p8_cli_artifacts
+    control_dir = artifact["tmp_path"] / "control_manifest"
+    variant_dir = artifact["tmp_path"] / "variant_manifest"
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="nearest_control", output_dir=control_dir)
+        )
+    )
+    manifest = json.loads(artifact["manifest_path"].read_text())
+    manifest["arguments"]["geometry_teacher_max_condition_number"] = 5e11
+    artifact["manifest_path"].write_text(json.dumps(manifest))
+    track_cli.run(
+        track_cli.build_parser().parse_args(
+            _track_args(artifact, arm="variant", output_dir=variant_dir)
+        )
+    )
+    output = artifact["tmp_path"] / "different_manifest_stage_b.json"
     arguments = _stage_b_args(
         artifact, control_dir=control_dir, variant_dir=variant_dir, output=output
     )
@@ -571,4 +665,6 @@ def test_stage_b_scientific_stop_persists_and_exits_two(
     gate = json.loads(output.read_text())
     assert gate["valid"] is True
     assert gate["stage_b"]["passed"] is False
-    assert gate["decision"] == "STOP_BEFORE_FULLCHAIN"
+    assert gate["decision"] == "STOP_SCENE_MECHANISM"
+    assert gate["scene_specific_mechanism_pass"] is False
+    assert gate["requires_other_scene"] is True

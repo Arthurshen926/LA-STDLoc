@@ -15,10 +15,12 @@ from evidence.cycle_verified_fisher import (
     build_pair_match_probe,
 )
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     atomic_torch_save,
     load_mapping_cache,
     load_proposals,
     load_track_factor,
+    mapping_scope_kwargs,
     validate_matcher_contract,
     validate_output_target,
     validate_scene_contract,
@@ -30,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene", choices=("stairs", "greatcourt"), required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--proposals", type=Path)
     parser.add_argument("--expected-proposals-sha256")
     parser.add_argument("--expected-proposals-content-sha256")
@@ -74,6 +77,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     proposal_mode = args.proposals is not None
     factor_values = (
@@ -213,7 +217,11 @@ def run(args: argparse.Namespace) -> dict:
         "output": str(output),
         "output_sha256": sha256_file(output),
         "inputs": {
-            "query_cache": {"path": str(cache["path"]), "sha256": cache["sha256"]},
+            "query_cache": {
+                "path": str(cache["path"]),
+                "sha256": cache["sha256"],
+                "mapping_scope": cache["mapping_scope"],
+            },
             **(
                 {
                     "proposals": {

@@ -22,6 +22,7 @@ from evidence.cycle_verified_fisher import (
 )
 from evidence import triangulation
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     atomic_json_save,
     atomic_torch_save,
     load_mapping_cache,
@@ -29,6 +30,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     load_proposals,
     load_selection,
     load_stage_a_gate,
+    mapping_scope_kwargs,
     validate_output_target,
     validate_probe_proposal_lineage,
     validate_scene_contract,
@@ -54,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-frozen-track-payload-sha256", required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--proposals", type=Path, required=True)
     parser.add_argument("--expected-proposals-sha256", required=True)
     parser.add_argument("--expected-proposals-content-sha256", required=True)
@@ -87,6 +90,79 @@ def _required(manifest: dict, name: str, cast):
     return cast(value)
 
 
+def _track_science_contract(
+    *, manifest: dict, matcher: dict, mapping_keypoints: int, nms_radius: int,
+    pair_budget: int,
+) -> dict:
+    """Materialize every shared scientific axis used by both Track arms."""
+    return {
+        "mapping_keypoints": int(mapping_keypoints),
+        "mapping_nms_radius": int(nms_radius),
+        "exact_pair_budget": int(pair_budget),
+        "pair_neighbors": _required(
+            manifest, "geometry_teacher_track_pair_neighbors", int
+        ),
+        "minimum_baseline_m": _required(
+            manifest, "geometry_teacher_track_min_baseline_m", float
+        ),
+        "maximum_baseline_m": _required(
+            manifest, "geometry_teacher_track_max_baseline_m", float
+        ),
+        "maximum_axis_angle_deg": _required(
+            manifest, "geometry_teacher_track_max_axis_angle_deg", float
+        ),
+        "matcher": deepcopy(matcher),
+        "minimum_track_views": _required(
+            manifest, "geometry_teacher_min_views", int
+        ),
+        "require_cycle": _required(
+            manifest, "geometry_teacher_track_require_cycle", bool
+        ),
+        "allow_chain_tracks": _required(
+            manifest, "geometry_teacher_track_allow_chain_tracks", bool
+        ),
+        "view_bins": _required(manifest, "geometry_teacher_view_bins", int),
+        "view_direction_weight": _required(
+            manifest, "geometry_teacher_view_direction_weight", float
+        ),
+        "maximum_observations_per_landmark": _required(
+            manifest, "geometry_teacher_max_observations_per_landmark", int
+        ),
+        "minimum_view_bins": _required(
+            manifest, "geometry_teacher_min_view_bins", int
+        ),
+        "huber_delta_px": _required(
+            manifest, "geometry_teacher_huber_delta_px", float
+        ),
+        "triangulation_iterations": _required(
+            manifest, "geometry_teacher_iterations", int
+        ),
+        "minimum_parallax_deg": _required(
+            manifest, "geometry_teacher_min_parallax_deg", float
+        ),
+        "parallax_quantile": _required(
+            manifest, "geometry_teacher_parallax_quantile", float
+        ),
+        "maximum_reprojection_px": _required(
+            manifest, "geometry_teacher_max_reprojection_px", float
+        ),
+        "maximum_condition_number": _required(
+            manifest, "geometry_teacher_max_condition_number", float
+        ),
+        "maximum_covariance_trace_m2": _required(
+            manifest, "geometry_teacher_max_covariance_trace_m2", float
+        ),
+        "maximum_rendered_depth_residual_m": _required(
+            manifest, "geometry_teacher_max_rendered_depth_residual_m", float
+        ),
+        "minimum_rendered_depth_observations": _required(
+            manifest, "geometry_teacher_min_rendered_depth_observations", int
+        ),
+        "surface_support_enabled": False,
+        "depth_sampling": "native_depth_at_sparse_keypoints_or_nearest_pixel_v1",
+    }
+
+
 def run(args: argparse.Namespace) -> dict:
     started = time.perf_counter()
     contract = validate_scene_contract(
@@ -103,6 +179,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     proposals = load_proposals(
         path=args.proposals,
@@ -208,6 +285,13 @@ def run(args: argparse.Namespace) -> dict:
         raise ValueError("P8 Track subset violates the exact pair budget")
 
     matcher = probe["payload"]["matcher"]
+    science_contract = _track_science_contract(
+        manifest=manifest,
+        matcher=matcher,
+        mapping_keypoints=mapping_k,
+        nms_radius=nms_radius,
+        pair_budget=pair_budget,
+    )
 
     def forbidden_matcher(*_args, **_kwargs):
         raise RuntimeError("P8 reuse-only Track runner forbids matcher re-entry")
@@ -360,6 +444,9 @@ def run(args: argparse.Namespace) -> dict:
             "pair_subset_role": subset_role,
         }
     )
+    input_lineage["query_cache"]["mapping_scope"] = deepcopy(
+        cache["mapping_scope"]
+    )
     factor = _factor_payload(
         mapping_keypoints=mapping_k,
         nms_radius=nms_radius,
@@ -368,6 +455,7 @@ def run(args: argparse.Namespace) -> dict:
             "reuse_only": True,
             "pair_subset_role": subset_role,
             "probe_matcher": deepcopy(matcher),
+            "track_science_contract": deepcopy(science_contract),
         },
         query_names=cache["names"],
         query_bins=query_bins,

@@ -12,9 +12,11 @@ from typing import Sequence
 from common.hashing import sha256_file
 from evidence.cycle_verified_fisher import select_cycle_verified_fisher_pairs
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     atomic_torch_save,
     load_mapping_cache,
     load_probe,
+    mapping_scope_kwargs,
     validate_output_target,
     validate_scene_contract,
 )
@@ -25,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene", choices=("stairs", "greatcourt"), required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--probe", type=Path, required=True)
     parser.add_argument("--expected-probe-sha256", required=True)
     parser.add_argument("--expected-probe-content-sha256", required=True)
@@ -62,6 +65,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     probe = load_probe(
         path=args.probe,
@@ -113,7 +117,11 @@ def run(args: argparse.Namespace) -> dict:
         "output": str(output),
         "output_sha256": sha256_file(output),
         "inputs": {
-            "query_cache": {"path": str(cache["path"]), "sha256": cache["sha256"]},
+            "query_cache": {
+                "path": str(cache["path"]),
+                "sha256": cache["sha256"],
+                "mapping_scope": cache["mapping_scope"],
+            },
             "probe": {
                 "path": str(probe["path"]),
                 "sha256": probe["sha256"],

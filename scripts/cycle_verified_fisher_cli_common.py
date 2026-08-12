@@ -50,6 +50,82 @@ MATCHER_CONTRACT = {
 }
 
 
+def add_mapping_scope_arguments(parser) -> None:
+    """Add the optional proof required when a cache lacks a scope flag."""
+    parser.add_argument("--mapping-scope-equivalence", type=Path)
+    parser.add_argument("--expected-mapping-scope-equivalence-sha256")
+
+
+def mapping_scope_kwargs(args) -> dict:
+    return {
+        "mapping_scope_equivalence": args.mapping_scope_equivalence,
+        "expected_mapping_scope_equivalence_sha256": (
+            args.expected_mapping_scope_equivalence_sha256
+        ),
+    }
+
+
+def _mapping_scope_equivalence(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    cache_path: Path,
+    cache_sha256: str,
+    query_count: int,
+    mapping_keypoints: int,
+    nms_radius: int,
+) -> dict:
+    path = attest_file(
+        path,
+        expected_file_sha256,
+        label="mapping-scope equivalence",
+    )
+    payload = json.loads(path.read_text())
+    checks = payload.get("checks")
+    audit = payload.get("audit")
+    sources = payload.get("sources")
+    refreshed = sources.get("refreshed_cache") if isinstance(sources, dict) else None
+    expected = payload.get("expected")
+    if (
+        payload.get("schema") != "lafgs_mapping_sparse_refresh_equivalence"
+        or int(payload.get("version", -1)) != 2
+        or payload.get("uses_test_queries") is not False
+        or payload.get("valid") is not True
+        or not isinstance(checks, dict)
+        or not checks
+        or not all(value is True for value in checks.values())
+        or not isinstance(audit, dict)
+        or audit.get("content_equivalent_track_payload_reuse_authorized") is not True
+        or audit.get("query_order_exact") is not True
+        or not isinstance(refreshed, dict)
+        or Path(str(refreshed.get("path", ""))).resolve() != cache_path.resolve()
+        or refreshed.get("sha256") != cache_sha256
+        or not isinstance(expected, dict)
+        or int(expected.get("mapping_keypoints", -1)) != int(mapping_keypoints)
+        or int(expected.get("nms_radius", -1)) != int(nms_radius)
+        or int(audit.get("target_k_mapping", -1)) != int(mapping_keypoints)
+        or int(audit.get("target_nms_radius", -1)) != int(nms_radius)
+    ):
+        raise ValueError("Mapping-scope equivalence is not a valid mapping-only V2 proof")
+    count_fields = (
+        "query_count",
+        "effective_sparse_depth_exact_query_count",
+        "native_alpha_exact_query_count",
+        "refreshed_metadata_pass_count",
+        "track_input_exact_query_count",
+    )
+    if any(int(audit.get(name, -1)) != int(query_count) for name in count_fields):
+        raise ValueError("Mapping-scope equivalence does not cover the exact query registry")
+    return {
+        "mode": "mapping_sparse_refresh_equivalence_v2",
+        "uses_test_queries": False,
+        "equivalence_report": {
+            "path": str(path),
+            "sha256": sha256_file(path),
+        },
+    }
+
+
 def validate_scene_contract(
     *,
     scene: str,
@@ -149,6 +225,8 @@ def load_mapping_cache(
     expected_query_names_sha256: str,
     expected_mapping_keypoints: int,
     expected_nms_radius: int,
+    mapping_scope_equivalence: Path | None = None,
+    expected_mapping_scope_equivalence_sha256: str | None = None,
 ) -> dict:
     path = attest_file(
         path, expected_file_sha256, label="mapping query cache"
@@ -169,6 +247,46 @@ def load_mapping_cache(
     nms_radius = int(expected_nms_radius)
     if mapping_k <= 0 or nms_radius <= 0:
         raise ValueError("Expected mapping K/NMS must be positive")
+    proof_values = (
+        mapping_scope_equivalence,
+        expected_mapping_scope_equivalence_sha256,
+    )
+    if any(value is not None for value in proof_values) and not all(
+        value is not None for value in proof_values
+    ):
+        raise ValueError("Mapping-scope equivalence path and SHA-256 are a required pair")
+    if payload.get("uses_test_queries") is False:
+        mapping_scope = {
+            "mode": "query_cache_explicit_mapping_only",
+            "uses_test_queries": False,
+        }
+        if mapping_scope_equivalence is not None:
+            mapping_scope = _mapping_scope_equivalence(
+                path=mapping_scope_equivalence,
+                expected_file_sha256=expected_mapping_scope_equivalence_sha256,
+                cache_path=path,
+                cache_sha256=sha256_file(path),
+                query_count=len(names),
+                mapping_keypoints=mapping_k,
+                nms_radius=nms_radius,
+            )
+    elif "uses_test_queries" in payload:
+        raise ValueError("Query cache does not explicitly attest mapping-only use")
+    else:
+        if mapping_scope_equivalence is None:
+            raise ValueError(
+                "Query cache lacks an explicit mapping-only flag and requires a "
+                "mapping-scope equivalence proof"
+            )
+        mapping_scope = _mapping_scope_equivalence(
+            path=mapping_scope_equivalence,
+            expected_file_sha256=expected_mapping_scope_equivalence_sha256,
+            cache_path=path,
+            cache_sha256=sha256_file(path),
+            query_count=len(names),
+            mapping_keypoints=mapping_k,
+            nms_radius=nms_radius,
+        )
     signature = payload.get("signature_payload")
     if not isinstance(signature, dict):
         raise ValueError("Query cache lacks a signed sparse-frontend contract")
@@ -235,6 +353,7 @@ def load_mapping_cache(
         "scores": scores,
         "camera_K": torch.stack(intrinsics),
         "pose_w2c": torch.stack(poses),
+        "mapping_scope": mapping_scope,
     }
 
 
@@ -376,6 +495,7 @@ def load_proposals(
         expected_query_cache_sha256=cache["sha256"],
         expected_mapping_keypoint_count=int(expected_mapping_keypoints),
         expected_mapping_nms_radius=int(expected_nms_radius),
+        expected_mapping_scope=cache["mapping_scope"],
         expected_pair_budget=int(expected_pair_budget),
         expected_candidate_pair_count=int(expected_candidate_pair_count),
         expected_candidate_component_count=int(expected_candidate_components),
@@ -484,6 +604,10 @@ def load_stage_a_gate(
             not isinstance(entry, dict)
             or Path(str(entry.get("path", ""))).resolve() != artifact["path"]
             or entry.get("sha256") != artifact["sha256"]
+            or (
+                "mapping_scope" in artifact
+                and entry.get("mapping_scope") != artifact["mapping_scope"]
+            )
             or (
                 "content_sha256" in artifact
                 and entry.get("content_sha256") != artifact["content_sha256"]

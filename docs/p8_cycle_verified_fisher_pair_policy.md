@@ -198,6 +198,11 @@ not compensate for a disconnected graph or lost closure coverage.
 
 Both Stairs and GreatCourt must pass.  A Stairs-only Go remains scene-specific;
 a GreatCourt failure stops P8 before any fullchain or pose run.
+Accordingly, the per-scene Stage-B report can only emit
+`scene_specific_mechanism_pass` plus `requires_other_scene=true`; it never
+contains a fullchain authorization.  A separate cross-scene aggregator is
+required and is intentionally not implemented before both frozen scene reports
+exist.
 
 ### Stage C: fullchain and mapping pose
 
@@ -226,6 +231,8 @@ PYTHONPATH=. python -m scripts.attest_cycle_verified_pair_proposals \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+  --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
   --nearest-source "$ARCHIVED_NEAREST_FACTOR" \
   --expected-nearest-source-sha256 "$ARCHIVED_NEAREST_FACTOR_SHA" \
   --geometry-source "$ARCHIVED_GEOMETRY_FACTOR" \
@@ -247,6 +254,8 @@ PYTHONPATH=. python -m scripts.materialize_cycle_verified_pair_probe \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+  --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
   --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
   --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
   --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
@@ -273,6 +282,8 @@ PYTHONPATH=. python -m scripts.select_cycle_verified_fisher_pairs \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+  --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
   --probe "$P8_ROOT/stairs/pair_match_probe.pt" \
   --expected-probe-sha256 "$PROBE_FILE_SHA" \
   --expected-probe-content-sha256 "$PROBE_CONTENT_SHA" \
@@ -296,6 +307,8 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_stage_a \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+  --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
   --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
   --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
   --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
@@ -332,6 +345,8 @@ for ARM in nearest_control variant; do
     --expected-frozen-track-payload-sha256 "$FROZEN_TRACK_PAYLOAD_SHA" \
     --query-cache "$QUERY_CACHE" \
     --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+    --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+    --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
     --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
     --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
     --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
@@ -365,6 +380,8 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
   --scene stairs \
   --query-cache "$QUERY_CACHE" \
   --expected-query-cache-sha256 "$QUERY_CACHE_SHA" \
+  --mapping-scope-equivalence "$MAPPING_SCOPE_EQUIVALENCE" \
+  --expected-mapping-scope-equivalence-sha256 "$MAPPING_SCOPE_EQUIVALENCE_SHA" \
   --proposals "$P8_ROOT/stairs/pair_proposals.pt" \
   --expected-proposals-sha256 "$PROPOSALS_FILE_SHA" \
   --expected-proposals-content-sha256 "$PROPOSALS_CONTENT_SHA" \
@@ -391,9 +408,16 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
   --output "$P8_ROOT/stairs/mechanism_gate.json"
 ```
 
-Input, hash, schema, or lineage failures exit 1 without producing a valid gate.
-A valid comparison that fails any preregistered scientific gate persists the
-STOP JSON and exits 2.  Only a valid GO exits 0.
+Every P8 entry point requires the cache itself to contain
+`uses_test_queries=false`, or the caller must provide the same explicit SHA-bound
+mapping-only V2 sparse-refresh equivalence shown above.  A missing cache flag is
+never interpreted as `false`, and the proof is propagated into proposal, gate,
+and Track lineage.
+
+Input, hash, schema, scope, or lineage failures exit 1 without producing a valid
+gate.  A valid comparison that fails any preregistered scientific gate persists
+the STOP JSON and exits 2.  A valid per-scene pass exits 0 but only emits
+`SCENE_PASS_REQUIRES_OTHER_SCENE`; it cannot authorize fullchain by itself.
 
 ## Current blocker and next executable step
 

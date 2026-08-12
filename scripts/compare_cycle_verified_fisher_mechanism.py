@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Sequence
 from common.hashing import sha256_file
 from evidence.cycle_verified_fisher import CONTROL_POLICY_NAME, POLICY_NAME
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     atomic_json_save,
     attest_file,
     load_mapping_cache,
@@ -21,6 +23,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     load_selection,
     load_stage_a_gate,
     load_track_factor,
+    mapping_scope_kwargs,
     selection_pairs,
     validate_output_target,
     validate_probe_proposal_lineage,
@@ -34,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene", choices=("stairs", "greatcourt"), required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--proposals", type=Path, required=True)
     parser.add_argument("--expected-proposals-sha256", required=True)
     parser.add_argument("--expected-proposals-content-sha256", required=True)
@@ -214,6 +218,7 @@ def _validate_reuse_lineage(
     proposals: dict,
     selection: dict,
     stage_a: dict,
+    cache: dict,
 ) -> None:
     diagnostics = factor.get("diagnostics")
     sidecar_policy = factor.get("pair_sidecar", {}).get("policy", {})
@@ -226,7 +231,13 @@ def _validate_reuse_lineage(
         or not isinstance(lineage, dict)
         or factor.get("pair_policy_parameters", {}).get("reuse_only") is not True
         or factor.get("pair_policy_parameters", {}).get("probe_matcher") != matcher
+        or not isinstance(
+            factor.get("pair_policy_parameters", {}).get("track_science_contract"),
+            dict,
+        )
         or lineage.get("probe_matcher") != matcher
+        or lineage.get("query_cache", {}).get("mapping_scope")
+        != cache["mapping_scope"]
     ):
         raise ValueError(f"{role} factor does not attest same-probe matcher reuse")
     expected = {
@@ -273,6 +284,38 @@ def _validate_reuse_lineage(
         raise ValueError(f"{role} factor pair subset differs from its attestation")
 
 
+def _validate_shared_track_contract(control: dict, variant: dict) -> None:
+    control_lineage = deepcopy(control.get("input_lineage"))
+    variant_lineage = deepcopy(variant.get("input_lineage"))
+    if not isinstance(control_lineage, dict) or not isinstance(variant_lineage, dict):
+        raise ValueError("Track factors lack complete input lineage")
+    control_lineage.pop("pair_subset_role", None)
+    variant_lineage.pop("pair_subset_role", None)
+    if control_lineage != variant_lineage:
+        raise ValueError(
+            "Control and variant do not share exact manifest/Track input lineage"
+        )
+    for name in ("manifest", "frozen_track_payload", "query_cache"):
+        entry = control_lineage.get(name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"Shared Track lineage lacks {name}")
+        attest_file(
+            Path(str(entry.get("path", ""))),
+            str(entry.get("sha256", "")),
+            label=f"shared Track {name}",
+        )
+    control_parameters = deepcopy(control.get("pair_policy_parameters"))
+    variant_parameters = deepcopy(variant.get("pair_policy_parameters"))
+    if not isinstance(control_parameters, dict) or not isinstance(
+        variant_parameters, dict
+    ):
+        raise ValueError("Track factors lack shared scientific parameters")
+    control_parameters.pop("pair_subset_role", None)
+    variant_parameters.pop("pair_subset_role", None)
+    if control_parameters != variant_parameters:
+        raise ValueError("Control and variant Track scientific parameters differ")
+
+
 def run(args: argparse.Namespace) -> dict:
     contract = validate_scene_contract(
         scene=args.scene,
@@ -288,6 +331,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     proposals = load_proposals(
         path=args.proposals,
@@ -354,6 +398,7 @@ def run(args: argparse.Namespace) -> dict:
         proposals=proposals,
         selection=selection,
         stage_a=stage_a,
+        cache=cache,
     )
     _validate_reuse_lineage(
         factor=variant_factor["payload"],
@@ -362,6 +407,10 @@ def run(args: argparse.Namespace) -> dict:
         proposals=proposals,
         selection=selection,
         stage_a=stage_a,
+        cache=cache,
+    )
+    _validate_shared_track_contract(
+        control_factor["payload"], variant_factor["payload"]
     )
     if control_factor["payload"]["pair_policy_parameters"]["probe_matcher"] != (
         variant_factor["payload"]["pair_policy_parameters"]["probe_matcher"]
@@ -438,9 +487,13 @@ def run(args: argparse.Namespace) -> dict:
             "gates": gates,
             "passed": passed,
         },
-        "mechanism_gate_passed": passed,
-        "advance_to_fullchain_mapping_pose": passed,
-        "decision": "GO_TO_FULLCHAIN" if passed else "STOP_BEFORE_FULLCHAIN",
+        "scene_specific_mechanism_pass": passed,
+        "requires_other_scene": True,
+        "decision": (
+            "SCENE_PASS_REQUIRES_OTHER_SCENE"
+            if passed
+            else "STOP_SCENE_MECHANISM"
+        ),
         "inputs": {
             name: {
                 "path": str(value["path"]),
@@ -450,12 +503,17 @@ def run(args: argparse.Namespace) -> dict:
                     if "content_sha256" in value
                     else {}
                 ),
+                **(
+                    {"mapping_scope": value["mapping_scope"]}
+                    if "mapping_scope" in value
+                    else {}
+                ),
             }
             for name, value in artifacts.items()
         },
         "limitations": [
-            "A two-scene mechanism pass authorizes fullchain/mapping-pose "
-            "validation; it is not a pose claim."
+            "This report is scene-specific and can never authorize fullchain; "
+            "an independent cross-scene aggregator is required."
         ],
     }
     output = atomic_json_save(report, output_target, overwrite=bool(args.overwrite))
@@ -468,7 +526,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     report = run(args)
     print(json.dumps(report, indent=2, sort_keys=True))
-    if not report["mechanism_gate_passed"]:
+    if not report["scene_specific_mechanism_pass"]:
         raise SystemExit(2)
 
 

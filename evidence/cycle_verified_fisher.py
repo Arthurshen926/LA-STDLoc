@@ -108,6 +108,7 @@ def _probe_content_sha256(payload: dict) -> str:
         "query_cache_sha256": payload.get("query_cache_sha256"),
         "mapping_keypoint_count": payload.get("mapping_keypoint_count"),
         "mapping_nms_radius": payload.get("mapping_nms_radius"),
+        "mapping_scope": payload.get("mapping_scope"),
         "candidate_pool_construction": payload.get("candidate_pool", {}).get(
             "construction"
         ),
@@ -208,6 +209,7 @@ def materialize_pair_proposal_table(
     query_cache_sha256: str,
     mapping_keypoint_count: int,
     mapping_nms_radius: int,
+    mapping_scope: dict,
     exact_pair_budget: int,
     nearest_source_path: str,
     nearest_source_sha256: str,
@@ -230,6 +232,11 @@ def materialize_pair_proposal_table(
         raise ValueError("Proposal query/K/NMS/budget contracts must be positive")
     if not _is_sha256(query_names_sha256) or not _is_sha256(query_cache_sha256):
         raise ValueError("Proposal cache lineage requires exact SHA-256 values")
+    if (
+        not isinstance(mapping_scope, dict)
+        or mapping_scope.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Proposal requires an explicit mapping-scope proof")
     source_values = (nearest_source_sha256, geometry_source_sha256)
     if not all(_is_sha256(value) for value in source_values):
         raise ValueError("Proposal source artifacts require exact SHA-256 values")
@@ -278,6 +285,7 @@ def materialize_pair_proposal_table(
         "query_cache_sha256": str(query_cache_sha256),
         "mapping_keypoint_count": mapping_k,
         "mapping_nms_radius": mapping_nms,
+        "mapping_scope": deepcopy(mapping_scope),
         "exact_pair_budget": pair_budget,
         "source_contract": {
             "scope": "archived_pair_tables_only",
@@ -333,6 +341,7 @@ def validate_pair_proposal_table(
     expected_query_cache_sha256: str | None = None,
     expected_mapping_keypoint_count: int | None = None,
     expected_mapping_nms_radius: int | None = None,
+    expected_mapping_scope: dict | None = None,
     expected_pair_budget: int | None = None,
     expected_candidate_pair_count: int | None = None,
     expected_candidate_component_count: int | None = None,
@@ -363,6 +372,19 @@ def validate_pair_proposal_table(
         payload.get("query_cache_sha256")
     ):
         raise ValueError("Proposal table lacks exact cache lineage")
+    mapping_scope = payload.get("mapping_scope")
+    if (
+        not isinstance(mapping_scope, dict)
+        or mapping_scope.get("uses_test_queries") is not False
+        or mapping_scope.get("mode")
+        not in {
+            "query_cache_explicit_mapping_only",
+            "mapping_sparse_refresh_equivalence_v2",
+        }
+    ):
+        raise ValueError("Proposal table lacks a valid mapping-scope proof")
+    if expected_mapping_scope is not None and mapping_scope != expected_mapping_scope:
+        raise ValueError("Proposal table mapping scope differs from expected")
     expected_values = (
         ("query_names_sha256", expected_query_names_sha256),
         ("query_cache_sha256", expected_query_cache_sha256),

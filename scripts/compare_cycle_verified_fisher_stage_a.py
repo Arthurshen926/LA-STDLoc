@@ -11,6 +11,7 @@ from typing import Sequence
 
 from common.hashing import sha256_file
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     assert_selection_metrics,
     atomic_json_save,
     evaluate_pair_subsets,
@@ -18,6 +19,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     load_probe,
     load_proposals,
     load_selection,
+    mapping_scope_kwargs,
     selection_pairs,
     validate_output_target,
     validate_probe_proposal_lineage,
@@ -30,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene", choices=("stairs", "greatcourt"), required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--proposals", type=Path, required=True)
     parser.add_argument("--expected-proposals-sha256", required=True)
     parser.add_argument("--expected-proposals-content-sha256", required=True)
@@ -120,6 +123,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     proposals = load_proposals(
         path=args.proposals,
@@ -213,6 +217,11 @@ def run(args: argparse.Namespace) -> dict:
                 **(
                     {"content_sha256": value["content_sha256"]}
                     if "content_sha256" in value
+                    else {}
+                ),
+                **(
+                    {"mapping_scope": value["mapping_scope"]}
+                    if "mapping_scope" in value
                     else {}
                 ),
             }

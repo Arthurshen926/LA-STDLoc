@@ -14,9 +14,11 @@ import torch
 from common.hashing import sha256_file
 from evidence.cycle_verified_fisher import materialize_pair_proposal_table
 from scripts.cycle_verified_fisher_cli_common import (
+    add_mapping_scope_arguments,
     atomic_torch_save,
     attest_file,
     load_mapping_cache,
+    mapping_scope_kwargs,
     validate_output_target,
     validate_scene_contract,
 )
@@ -27,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene", choices=("stairs", "greatcourt"), required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
+    add_mapping_scope_arguments(parser)
     parser.add_argument("--nearest-source", type=Path, required=True)
     parser.add_argument("--expected-nearest-source-sha256", required=True)
     parser.add_argument("--geometry-source", type=Path, required=True)
@@ -131,6 +134,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_query_names_sha256=args.expected_query_names_sha256,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
         expected_nms_radius=args.expected_nms_radius,
+        **mapping_scope_kwargs(args),
     )
     common = {
         "cache": cache,
@@ -163,6 +167,7 @@ def run(args: argparse.Namespace) -> dict:
         query_cache_sha256=cache["sha256"],
         mapping_keypoint_count=args.expected_mapping_keypoints,
         mapping_nms_radius=args.expected_nms_radius,
+        mapping_scope=cache["mapping_scope"],
         exact_pair_budget=args.expected_pair_budget,
         nearest_source_path=str(nearest["path"]),
         nearest_source_sha256=nearest["sha256"],
@@ -190,6 +195,7 @@ def run(args: argparse.Namespace) -> dict:
         "scene_contract": contract,
         "mapping_only": True,
         "uses_test_queries": False,
+        "mapping_scope": cache["mapping_scope"],
         "source_contract": proposals["source_contract"],
         "candidate_union": union,
         "proposal_content_sha256": proposals["content_sha256"],
