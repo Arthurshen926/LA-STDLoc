@@ -106,6 +106,54 @@ def validate_frozen_numeric_scene_calibration(
     ):
         raise ValueError("Frozen calibration numeric lineage is incomplete")
 
+    audit_path = Path(str(lineage.get("payload_lineage_audit", ""))).resolve()
+    expected_audit_sha256 = str(
+        lineage.get("expected_payload_lineage_audit_sha256", "")
+    )
+    if (
+        not audit_path.is_file()
+        or len(expected_audit_sha256) != 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in expected_audit_sha256
+        )
+        or lineage.get("payload_lineage_audit_sha256")
+        != expected_audit_sha256
+        or sha256_file(audit_path) != expected_audit_sha256
+    ):
+        raise ValueError("Frozen calibration payload-lineage audit differs")
+    audit = json.loads(audit_path.read_text())
+    if (
+        audit.get("schema") != "lafgs_pair_policy_payload_lineage_audit"
+        or audit.get("version") != 1
+        or audit.get("uses_test_queries") is not False
+        or audit.get("valid") is not True
+        or audit.get("pair_policy") != "parallax_diverse"
+        or not audit.get("checks")
+        or not all(audit["checks"].values())
+    ):
+        raise ValueError("Frozen calibration payload-lineage audit is invalid")
+    if (
+        Path(str(audit.get("payload", ""))).resolve() != track_payload_path
+        or audit.get("payload_sha256") != sha256_file(track_payload_path)
+        or audit.get("query_cache_sha256") != sha256_file(query_cache_path)
+    ):
+        raise ValueError("Frozen calibration audit input binding differs")
+
+    track_payload = torch.load(
+        track_payload_path, map_location="cpu", weights_only=False
+    )
+    provenance = dict(track_payload.get("provenance", {}))
+    if (
+        track_payload.get("schema") != "lafgs_track_first_payload"
+        or track_payload.get("version") != 1
+        or provenance.get("uses_test_queries") is not False
+        or provenance.get("source_factor_sha256") != audit.get("factor_sha256")
+        or provenance.get("base_state_sha256") != audit.get("base_state_sha256")
+        or provenance.get("query_cache_sha256") != audit.get("query_cache_sha256")
+    ):
+        raise ValueError("Frozen calibration Track provenance differs from audit")
+
 
 def query_calibration_sidecar_path(query_cache_path: str | Path) -> Path:
     path = Path(query_cache_path)

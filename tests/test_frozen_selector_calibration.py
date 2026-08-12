@@ -32,7 +32,21 @@ def _frozen_contract(tmp_path):
     query = tmp_path / "query_cache.pt"
     payload = tmp_path / "variant_tracks.pt"
     query.write_bytes(b"frozen query")
-    payload.write_bytes(b"variant tracks")
+    factor_sha = "a" * 64
+    base_sha = "b" * 64
+    torch_payload = {
+        "schema": "lafgs_track_first_payload",
+        "version": 1,
+        "provenance": {
+            "uses_test_queries": False,
+            "source_factor_sha256": factor_sha,
+            "base_state_sha256": base_sha,
+            "query_cache_sha256": sha256_file(query),
+        },
+    }
+    import torch
+
+    torch.save(torch_payload, payload)
     policy = {"matching_rows_fraction": 0.06}
     parent = {
         "schema": "lafgs_mapping_only_scene_calibration",
@@ -48,6 +62,21 @@ def _frozen_contract(tmp_path):
     }
     parent_path = tmp_path / "parent.json"
     parent_path.write_text(json.dumps(parent))
+    audit = {
+        "schema": "lafgs_pair_policy_payload_lineage_audit",
+        "version": 1,
+        "uses_test_queries": False,
+        "valid": True,
+        "pair_policy": "parallax_diverse",
+        "checks": {"all_inputs_bound": True},
+        "payload": str(payload.resolve()),
+        "payload_sha256": sha256_file(payload),
+        "factor_sha256": factor_sha,
+        "base_state_sha256": base_sha,
+        "query_cache_sha256": sha256_file(query),
+    }
+    audit_path = tmp_path / "payload_lineage_audit.json"
+    audit_path.write_text(json.dumps(audit))
     frozen = {
         **parent,
         "uses_test_queries": False,
@@ -67,6 +96,9 @@ def _frozen_contract(tmp_path):
             "parameters_reused_from_parent": True,
             "parameters_sha256": _canonical_sha256(parent["parameters"]),
             "policy_sha256": _canonical_sha256(parent["policy"]),
+            "payload_lineage_audit": str(audit_path.resolve()),
+            "payload_lineage_audit_sha256": sha256_file(audit_path),
+            "expected_payload_lineage_audit_sha256": sha256_file(audit_path),
             "uses_test_queries": False,
         },
     }
@@ -153,6 +185,12 @@ def test_selector_requires_explicit_frozen_calibration_sha(tmp_path):
         (
             lambda value: value["statistics"].__setitem__("track_count", 1),
             "statistics differ",
+        ),
+        (
+            lambda value: value["lineage"].__setitem__(
+                "payload_lineage_audit_sha256", "0" * 64
+            ),
+            "payload-lineage audit differs",
         ),
     ],
 )
