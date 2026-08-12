@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay one trained map on mapping descriptors without rerunning the frontend."""
+"""Replay one map on mapping descriptors and report translation/rotation pose error."""
 
 from __future__ import annotations
 
@@ -69,6 +69,7 @@ def main() -> None:
         "map": str(args.map.resolve()),
         "metric_state": str(args.metric_state.resolve()),
         "deployment_row_limit": int(args.deployment_row_limit),
+        "pose_error_units": {"translation": "cm", "rotation": "deg"},
         "query_count": int(
             total_queries if query_indices is None else query_indices.numel()
         ),

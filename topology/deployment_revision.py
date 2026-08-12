@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from localization.localizer import load_shared_metric
-from localization.pose_solver import solve_absolute_pose
+from localization.pose_solver import pose_error, solve_absolute_pose
 from map_learning.trainer import _pose_error_cm, _project_errors
 from topology.matching_coverage import (
     IncrementalBipartiteCoverage,
@@ -66,23 +66,40 @@ def _safe_percent(numerator: int, denominator: int) -> float:
 
 
 def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
-    errors = np.asarray([row["te_cm"] for row in query_rows], dtype=np.float64)
+    translation_errors = np.asarray(
+        [row["te_cm"] for row in query_rows], dtype=np.float64
+    )
+    rotation_errors = np.asarray(
+        [row["ae_deg"] for row in query_rows], dtype=np.float64
+    )
     raw = int(counters["winner_count"].sum())
     correct = int(counters["correct_winner_count"].sum())
     inliers = int(counters["clean_inlier_count"].sum()) + int(
         counters["harmful_inlier_count"].sum()
     )
     clean = int(counters["clean_inlier_count"].sum())
-    tail_count = max(int(math.ceil(0.05 * errors.size)), 1)
+    tail_count = max(int(math.ceil(0.05 * translation_errors.size)), 1)
     return {
-        "query_count": int(errors.size),
-        "median_te_cm": float(np.median(errors)),
-        "mean_te_cm": float(np.mean(errors)),
-        "p90_te_cm": float(np.percentile(errors, 90)),
-        "p95_te_cm": float(np.percentile(errors, 95)),
-        "p99_te_cm": float(np.percentile(errors, 99)),
-        "cvar95_te_cm": float(np.sort(errors)[-tail_count:].mean()),
-        "catastrophic_100cm_count": int(np.count_nonzero(errors >= 100.0)),
+        "query_count": int(translation_errors.size),
+        "median_te_cm": float(np.median(translation_errors)),
+        "mean_te_cm": float(np.mean(translation_errors)),
+        "p90_te_cm": float(np.percentile(translation_errors, 90)),
+        "p95_te_cm": float(np.percentile(translation_errors, 95)),
+        "p99_te_cm": float(np.percentile(translation_errors, 99)),
+        "cvar95_te_cm": float(
+            np.sort(translation_errors)[-tail_count:].mean()
+        ),
+        "median_ae_deg": float(np.median(rotation_errors)),
+        "mean_ae_deg": float(np.mean(rotation_errors)),
+        "p90_ae_deg": float(np.percentile(rotation_errors, 90)),
+        "p95_ae_deg": float(np.percentile(rotation_errors, 95)),
+        "recall_5cm_5deg_percent": float(
+            100.0
+            * np.mean((translation_errors < 5.0) & (rotation_errors < 5.0))
+        ),
+        "catastrophic_100cm_count": int(
+            np.count_nonzero(translation_errors >= 100.0)
+        ),
         "raw_gt_precision_percent": _safe_percent(correct, raw),
         "inlier_gt_precision_percent": _safe_percent(clean, inliers),
         "solver_inlier_ratio_percent": _safe_percent(inliers, raw),
@@ -276,13 +293,19 @@ def collect_deployment_statistics(
                     counters["information_deletion_loss"][anchor] += float(
                         loss.clamp_min(0)
                     )
+        ae_deg, _ = pose_error(
+            estimate.pose_w2c,
+            torch.as_tensor(cached["pose_w2c"]).cpu().numpy(),
+        )
+        te_cm = _pose_error_cm(
+            estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"])
+        )
         query_rows.append(
             {
                 "query_index": query_index,
                 "image_name": names[query_index],
-                "te_cm": _pose_error_cm(
-                    estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"])
-                ),
+                "te_cm": float(te_cm),
+                "ae_deg": float(ae_deg),
                 "inliers": int(inliers.numel()),
                 "clean_inliers": int(clean_mask.sum()),
                 "hypotheses": int(estimate.diagnostics.get("iterations", 0)),
