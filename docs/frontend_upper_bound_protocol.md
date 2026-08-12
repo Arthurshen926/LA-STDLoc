@@ -78,6 +78,13 @@ The materializer still needs the frozen mapping image source and preprocessing
 lineage referenced by the query-cache signature.  A query cache alone is not a
 license to approximate the original RGB transform.
 
+The evaluate CLI additionally requires the exact serialized query-cache and
+teacher paths recorded by the producer and verifies both SHA256 values before
+scoring. A different teacher with the same schema, an edited cache that retains
+the old signature, or an identical byte copy supplied from another artifact
+path is rejected. Direct Python callers retain an optional path-free mode for
+synthetic/unit use, while all CLI evaluation is source-bound.
+
 ## Arm A: detector repeatability ceiling probe
 
 **Question:** with the same requested K, can a stronger detector place legal

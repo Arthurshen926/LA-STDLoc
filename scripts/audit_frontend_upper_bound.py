@@ -394,6 +394,8 @@ def main() -> None:
                 teacher=teacher,
                 probe=probe,
                 radii_px=args.reachability_radii_px,
+                query_cache_path=args.query_cache,
+                teacher_path=args.teacher,
             )
         if args.arm in ("descriptor", "both"):
             report["descriptor_identity"] = audit_descriptor_identity_crossfit(
@@ -404,6 +406,8 @@ def main() -> None:
                 crossfit_blocks=args.crossfit_blocks,
                 minimum_support_views=args.minimum_support_views,
                 topks=args.topks,
+                query_cache_path=args.query_cache,
+                teacher_path=args.teacher,
             )
     _write_json(args.output, report)
     print(json.dumps({"output": str(Path(args.output).resolve())}, indent=2))

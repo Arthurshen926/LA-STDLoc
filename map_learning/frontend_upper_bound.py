@@ -176,6 +176,41 @@ def _validate_local_artifact(frontend: Mapping) -> dict:
     return {"path": str(path), "sha256": actual, "verified": True}
 
 
+def _validate_reference_artifact(
+    reference: Mapping,
+    *,
+    label: str,
+    path: str | Path,
+) -> dict:
+    """Bind an in-use serialized source to the producer's exact artifact."""
+    path_text = str(path)
+    if "://" in path_text:
+        raise ValueError(f"{label} must be a local artifact")
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"{label} not found: {resolved}")
+    reference_path_text = str(reference.get(f"{label}_path", ""))
+    expected_sha256 = str(reference.get(f"{label}_sha256", "")).lower()
+    if not reference_path_text or len(expected_sha256) != 64:
+        raise ValueError(f"probe does not bind the exact {label} artifact")
+    reference_path = Path(reference_path_text).expanduser().resolve()
+    if resolved != reference_path:
+        raise ValueError(
+            f"probe {label} path mismatch: {resolved} != {reference_path}"
+        )
+    actual_sha256 = file_sha256(resolved)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"probe {label} SHA256 mismatch: "
+            f"{actual_sha256} != {expected_sha256}"
+        )
+    return {
+        "path": str(resolved),
+        "sha256": actual_sha256,
+        "verified": True,
+    }
+
+
 def validate_probe(
     probe: Mapping,
     query_cache: Mapping,
@@ -184,6 +219,8 @@ def validate_probe(
     require_detector: bool = False,
     require_descriptor: bool = False,
     verify_weight_artifact: bool = True,
+    query_cache_path: str | Path | None = None,
+    teacher_path: str | Path | None = None,
 ) -> dict:
     """Fail closed when a candidate is not exactly paired to the reference."""
     if probe.get("schema") != PROBE_SCHEMA or int(probe.get("version", -1)) != 1:
@@ -193,6 +230,24 @@ def validate_probe(
     if probe.get("uses_test_queries") is not False:
         raise ValueError("probe must attest uses_test_queries=false")
     reference = probe.get("reference", {})
+    if (query_cache_path is None) != (teacher_path is None):
+        raise ValueError(
+            "query-cache and teacher artifact paths must be supplied together"
+        )
+    reference_artifacts = None
+    if query_cache_path is not None and teacher_path is not None:
+        reference_artifacts = {
+            "query_cache": _validate_reference_artifact(
+                reference,
+                label="query_cache",
+                path=query_cache_path,
+            ),
+            "teacher": _validate_reference_artifact(
+                reference,
+                label="teacher",
+                path=teacher_path,
+            ),
+        }
     cache_signature = query_cache.get("signature")
     if cache_signature is not None and reference.get(
         "query_cache_signature"
@@ -295,6 +350,7 @@ def validate_probe(
             validated_keypoints += int(keypoints.shape[0])
     return {
         "artifact": artifact,
+        "reference_artifacts": reference_artifacts,
         "query_count": len(names),
         "requested_keypoint_count": requested_k,
         "reference_descriptor_dim": reference_dim,
@@ -455,6 +511,8 @@ def audit_detector_repeatability(
     depth_rel_tolerance: float | None = None,
     alpha_minimum: float | None = None,
     verify_weight_artifact: bool = True,
+    query_cache_path: str | Path | None = None,
+    teacher_path: str | Path | None = None,
 ) -> dict:
     """Measure same-K detector reachability of GT/depth-legal map anchors."""
     attestation = validate_probe(
@@ -463,6 +521,8 @@ def audit_detector_repeatability(
         teacher,
         require_detector=True,
         verify_weight_artifact=verify_weight_artifact,
+        query_cache_path=query_cache_path,
+        teacher_path=teacher_path,
     )
     config = teacher.get("config", {})
     depth_abs = float(
@@ -794,6 +854,8 @@ def audit_descriptor_identity_crossfit(
     minimum_support_views: int = 2,
     topks: Sequence[int] = DEFAULT_TOPKS,
     verify_weight_artifact: bool = True,
+    query_cache_path: str | Path | None = None,
+    teacher_path: str | Path | None = None,
 ) -> dict:
     """Run bidirectional support/gate identity recall at fixed SP keypoints."""
     attestation = validate_probe(
@@ -802,6 +864,8 @@ def audit_descriptor_identity_crossfit(
         teacher,
         require_descriptor=True,
         verify_weight_artifact=verify_weight_artifact,
+        query_cache_path=query_cache_path,
+        teacher_path=teacher_path,
     )
     topks = tuple(sorted(set(int(value) for value in topks)))
     if not topks or topks[0] < 1:
