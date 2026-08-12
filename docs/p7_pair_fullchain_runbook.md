@@ -294,7 +294,7 @@ for SEED in 2026 2027 2028; do
     --query-cache "$QUERY" \
     --scene-calibration "$INPUT/frozen_pair_scene_calibration.json" \
     --query-count 256 --seed "$SEED" --device cuda \
-    --output "$RUN/mapping_pose_q256/seed${SEED}"
+    --output "$RUN/mapping_pose_q256_v2/seed${SEED}"
 done
 
 # Replay the frozen V3 control with the identical query-index rule and seeds.
@@ -303,6 +303,10 @@ CONTROL_MAP=$V3/map_learning/anchor_map_step_1520.pt
 CONTROL_METRIC=$V3/map_learning/metric_state_step_1520.pt
 CONTROL_TEACHER=$V3/map_learning/complete_positive_teacher.pt
 CONTROL_CALIBRATION=$V3/evidence/scene_calibration.json
+CONTROL_MAP_SHA=5f754ace648336d9f1fca381f29cd7f6164a217ca05b506644f21929e4a9e620
+CONTROL_METRIC_SHA=c55818b3ab27e6d1b4ca929d21d235eed5e80238913113ed596a5ea9b436f903
+CONTROL_TEACHER_SHA=3f733debc51aafb7d166ebfb64010de237e3e7542851e647a7a2966f7c609a81
+CONTROL_CALIBRATION_SHA=d3bc0839d73310055d93b895aa5c96fd633bef0fbab276604bffb782335120b2
 
 for SEED in 2026 2027 2028; do
   CUDA_VISIBLE_DEVICES=2 python -m scripts.evaluate_mapping_cache \
@@ -312,16 +316,16 @@ for SEED in 2026 2027 2028; do
     --query-cache "$QUERY" \
     --scene-calibration "$CONTROL_CALIBRATION" \
     --query-count 256 --seed "$SEED" --device cuda \
-    --output "$RUN/mapping_pose_q256_control/seed${SEED}"
+    --output "$RUN/baseline_mapping_pose_q256_v2/seed${SEED}"
 done
 
 python -m scripts.compare_mapping_pose_gate \
-  --baseline-seed 2026="$RUN/mapping_pose_q256_control/seed2026/mapping_cache_summary.json" \
-  --baseline-seed 2027="$RUN/mapping_pose_q256_control/seed2027/mapping_cache_summary.json" \
-  --baseline-seed 2028="$RUN/mapping_pose_q256_control/seed2028/mapping_cache_summary.json" \
-  --variant-seed 2026="$RUN/mapping_pose_q256/seed2026/mapping_cache_summary.json" \
-  --variant-seed 2027="$RUN/mapping_pose_q256/seed2027/mapping_cache_summary.json" \
-  --variant-seed 2028="$RUN/mapping_pose_q256/seed2028/mapping_cache_summary.json" \
+  --baseline-seed 2026="$RUN/baseline_mapping_pose_q256_v2/seed2026/mapping_cache_summary.json" \
+  --baseline-seed 2027="$RUN/baseline_mapping_pose_q256_v2/seed2027/mapping_cache_summary.json" \
+  --baseline-seed 2028="$RUN/baseline_mapping_pose_q256_v2/seed2028/mapping_cache_summary.json" \
+  --variant-seed 2026="$RUN/mapping_pose_q256_v2/seed2026/mapping_cache_summary.json" \
+  --variant-seed 2027="$RUN/mapping_pose_q256_v2/seed2027/mapping_cache_summary.json" \
+  --variant-seed 2028="$RUN/mapping_pose_q256_v2/seed2028/mapping_cache_summary.json" \
   --baseline-map "$CONTROL_MAP" \
   --baseline-metric "$CONTROL_METRIC" \
   --baseline-teacher "$CONTROL_TEACHER" \
@@ -332,21 +336,25 @@ python -m scripts.compare_mapping_pose_gate \
   --variant-teacher "$RUN/map_learning/complete_positive_teacher.pt" \
   --variant-query-cache "$QUERY" \
   --variant-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+  --expected-sha256 baseline.map="$CONTROL_MAP_SHA" \
+  --expected-sha256 baseline.metric="$CONTROL_METRIC_SHA" \
+  --expected-sha256 baseline.teacher="$CONTROL_TEACHER_SHA" \
+  --expected-sha256 baseline.calibration="$CONTROL_CALIBRATION_SHA" \
   --expected-sha256 baseline.query_cache="$QUERY_SHA" \
   --expected-sha256 variant.query_cache="$QUERY_SHA" \
-  --output "$CONTRACT/mapping_pose_gate.json"
+  --output "$CONTRACT/mapping_pose_gate_v2.json"
 
 python -m scripts.pair_fullchain_workspace manifest \
-  --root "$RUN" --stage mapping_pose_q256x3 \
-  --artifact seed2026="$RUN/mapping_pose_q256/seed2026/mapping_cache_summary.json" \
-  --artifact seed2027="$RUN/mapping_pose_q256/seed2027/mapping_cache_summary.json" \
-  --artifact seed2028="$RUN/mapping_pose_q256/seed2028/mapping_cache_summary.json" \
-  --artifact control_seed2026="$RUN/mapping_pose_q256_control/seed2026/mapping_cache_summary.json" \
-  --artifact control_seed2027="$RUN/mapping_pose_q256_control/seed2027/mapping_cache_summary.json" \
-  --artifact control_seed2028="$RUN/mapping_pose_q256_control/seed2028/mapping_cache_summary.json" \
-  --artifact mapping_pose_gate="$CONTRACT/mapping_pose_gate.json" \
+  --root "$RUN" --stage mapping_pose_q256x3_v2 \
+  --artifact seed2026="$RUN/mapping_pose_q256_v2/seed2026/mapping_cache_summary.json" \
+  --artifact seed2027="$RUN/mapping_pose_q256_v2/seed2027/mapping_cache_summary.json" \
+  --artifact seed2028="$RUN/mapping_pose_q256_v2/seed2028/mapping_cache_summary.json" \
+  --artifact control_seed2026="$RUN/baseline_mapping_pose_q256_v2/seed2026/mapping_cache_summary.json" \
+  --artifact control_seed2027="$RUN/baseline_mapping_pose_q256_v2/seed2027/mapping_cache_summary.json" \
+  --artifact control_seed2028="$RUN/baseline_mapping_pose_q256_v2/seed2028/mapping_cache_summary.json" \
+  --artifact mapping_pose_gate="$CONTRACT/mapping_pose_gate_v2.json" \
   --parent-manifest "$CONTRACT/metric.json" \
-  --output "$CONTRACT/pose.json"
+  --output "$CONTRACT/pose_v2.json"
 ```
 
 `compare_mapping_pose_gate` is CPU-only. It does not load the multi-GB query
@@ -356,12 +364,26 @@ require exact Map/metric anchor-ID alignment, exact teacher query-name order,
 and equal hashes for both the uniform q256 indices and the selected query names.
 It also requires both teacher and calibration contracts to bind the same frozen
 query-cache path/SHA, and requires the calibration statistics, parameters, and
-policy to be numerically identical. The six summaries must be distinct files;
-their seed labels come from the explicit `SEED=PATH` CLI bindings rather than
-directory names. Every input path and actual SHA-256 is recorded. Optional
+policy to be numerically identical. Each version-2 evaluation summary embeds
+the actual solver seed; all five input paths and SHA-256 digests; the ordered
+teacher registry hash; and the actual selected query indices, index hash, and
+name hash. The comparator requires every embedded binding to equal the live
+artifact and the recomputed q256 subset. Consequently, old version-1 summaries
+must be replayed and cannot authorize this gate. The six summaries must be
+distinct files, and their embedded seeds must agree with the explicit
+`SEED=PATH` CLI bindings rather than directory names. Every input path and
+actual SHA-256 is recorded. They also embed the clean evaluation Git commit and
+the SHA-256 of both the evaluator and comparator entrypoints. The comparator
+recomputes and requires this identity, so the upstream training commit locked by
+`contracts/code.json` (currently `3400516...`) remains explicitly distinct from
+the later evaluation-code commit. Run all six V2 replays and the comparator from
+that same clean evaluation commit. Optional
 `--expected-sha256 ARM.ROLE=SHA256` arguments fail closed on known-digest
 mismatches; roles include `map`, `metric`, `teacher`, `query_cache`,
 `calibration`, and `seed2026_summary` (similarly for the other seeds).
+
+The `_v2` directories are mandatory. Keep the existing version-1 unattested
+summaries untouched; neither overwrite nor promote them into the V2 manifest.
 
 The default structured threshold contract is preregistered as follows:
 
@@ -369,10 +391,12 @@ The default structured threshold contract is preregistered as follows:
 |---|---|---|
 | each seed | raw GT precision | baseline minus at most 0.005 percentage points |
 | each seed | median/mean/p90/CVaR95 translation error | baseline plus at most `max(0.02 cm, 1%)` |
+| each seed | median/mean/p90/p95 rotation error | baseline plus at most `max(0.02 deg, 1%)` |
 | each seed | 5 cm / 5 deg recall | baseline minus at most 0.1 percentage points |
 | each seed | >=100 cm catastrophes | no increase |
 | three-seed mean, at least one | median or mean translation error | improve by at least 0.03 cm |
 | three-seed mean, at least one | p90 or CVaR95 translation error | improve by at least 0.05 cm |
+| three-seed mean, at least one | median/mean/p90/p95 rotation error | improve by at least 0.02 deg |
 | three-seed mean, at least one | 5 cm / 5 deg recall | improve by at least 0.2 percentage points |
 | three-seed mean, at least one | raw GT precision | improve by at least 0.01 percentage points |
 

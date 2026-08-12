@@ -12,6 +12,7 @@ from typing import Mapping
 
 import torch
 
+from common.evaluation_code import mapping_pose_evaluation_code_identity
 from common.hashing import sha256_file
 
 
@@ -23,6 +24,10 @@ SUMMARY_METRICS = (
     "mean_te_cm",
     "p90_te_cm",
     "cvar95_te_cm",
+    "median_ae_deg",
+    "mean_ae_deg",
+    "p90_ae_deg",
+    "p95_ae_deg",
     "recall_5cm_5deg_percent",
     "catastrophic_100cm_count",
 )
@@ -31,6 +36,12 @@ TRANSLATION_METRICS = (
     "mean_te_cm",
     "p90_te_cm",
     "cvar95_te_cm",
+)
+ROTATION_METRICS = (
+    "median_ae_deg",
+    "mean_ae_deg",
+    "p90_ae_deg",
+    "p95_ae_deg",
 )
 
 
@@ -41,12 +52,15 @@ def default_thresholds() -> dict:
             "raw_precision_tolerance_pp": 0.005,
             "translation_absolute_tolerance_cm": 0.02,
             "translation_relative_tolerance": 0.01,
+            "rotation_absolute_tolerance_deg": 0.02,
+            "rotation_relative_tolerance": 0.01,
             "recall_5cm_5deg_tolerance_pp": 0.1,
             "catastrophic_count_tolerance": 0,
         },
         "three_seed_mean_substantive_improvement": {
             "central_translation_cm": 0.03,
             "tail_translation_cm": 0.05,
+            "rotation_deg": 0.02,
             "recall_5cm_5deg_pp": 0.2,
             "raw_precision_pp": 0.01,
         },
@@ -72,7 +86,9 @@ def _require_file(path: str | Path, *, label: str) -> Path:
     return resolved
 
 
-def _resolve_artifacts(values: Mapping[str, str | Path], *, arm: str) -> dict[str, Path]:
+def _resolve_artifacts(
+    values: Mapping[str, str | Path], *, arm: str
+) -> dict[str, Path]:
     if set(values) != set(ARTIFACT_ROLES):
         raise ValueError(
             f"{arm} artifacts must be exactly {list(ARTIFACT_ROLES)}, got {sorted(values)}"
@@ -98,7 +114,9 @@ def _resolve_summaries(
 
 
 def _normalize_thresholds(value: dict | None) -> dict:
-    thresholds = default_thresholds() if value is None else json.loads(json.dumps(value))
+    thresholds = (
+        default_thresholds() if value is None else json.loads(json.dumps(value))
+    )
     if set(thresholds) != {
         "per_seed_non_regression",
         "three_seed_mean_substantive_improvement",
@@ -110,17 +128,22 @@ def _normalize_thresholds(value: dict | None) -> dict:
         "raw_precision_tolerance_pp",
         "translation_absolute_tolerance_cm",
         "translation_relative_tolerance",
+        "rotation_absolute_tolerance_deg",
+        "rotation_relative_tolerance",
         "recall_5cm_5deg_tolerance_pp",
         "catastrophic_count_tolerance",
     }
     expected_substantive = {
         "central_translation_cm",
         "tail_translation_cm",
+        "rotation_deg",
         "recall_5cm_5deg_pp",
         "raw_precision_pp",
     }
     if set(per_seed) != expected_per_seed or set(substantive) != expected_substantive:
-        raise ValueError("threshold contract fields differ from the preregistered schema")
+        raise ValueError(
+            "threshold contract fields differ from the preregistered schema"
+        )
     for section in (per_seed, substantive):
         for name, raw in section.items():
             if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -157,18 +180,14 @@ def _hash_inputs(
 ) -> tuple[dict[str, dict], dict[str, str]]:
     paths: dict[str, Path] = {}
     for arm in ("baseline", "variant"):
-        paths.update(
-            {f"{arm}.{role}": artifacts[arm][role] for role in ARTIFACT_ROLES}
-        )
+        paths.update({f"{arm}.{role}": artifacts[arm][role] for role in ARTIFACT_ROLES})
         paths.update(
             {
                 f"{arm}.seed{seed}_summary": summaries[arm][seed]
                 for seed in REQUIRED_SEEDS
             }
         )
-    expected = _normalize_expected_sha256(
-        expected_sha256, allowed_keys=set(paths)
-    )
+    expected = _normalize_expected_sha256(expected_sha256, allowed_keys=set(paths))
     digest_cache: dict[Path, str] = {}
     records = {}
     actual = {}
@@ -188,9 +207,7 @@ def _hash_inputs(
             "path": str(path),
             "sha256": digest,
             "expected_sha256": expected_digest,
-            "expected_sha256_matches": (
-                None if expected_digest is None else True
-            ),
+            "expected_sha256_matches": (None if expected_digest is None else True),
         }
     return records, actual
 
@@ -215,7 +232,9 @@ def _audit_arm_artifacts(*, arm: str, paths: dict[str, Path]) -> dict:
     names = list(teacher["query_names"])
     records = list(teacher["records"])
     if not names or len(names) != len(set(names)) or len(records) != len(names):
-        raise ValueError(f"{arm} teacher query registry is empty, duplicated, or incomplete")
+        raise ValueError(
+            f"{arm} teacher query registry is empty, duplicated, or incomplete"
+        )
     if int(teacher["anchor_count"]) != int(anchor_ids.numel()):
         raise ValueError(f"{arm} teacher and map anchor counts differ")
     for index, (name, record) in enumerate(zip(names, records)):
@@ -227,6 +246,39 @@ def _audit_arm_artifacts(*, arm: str, paths: dict[str, Path]) -> dict:
         raise ValueError(f"{arm} teacher does not bind query_cache")
     if Path(str(teacher["query_cache"])).resolve() != paths["query_cache"]:
         raise ValueError(f"{arm} teacher names a different query cache")
+    if "anchor_map" not in teacher:
+        raise ValueError(f"{arm} teacher does not bind anchor_map")
+    teacher_map_path = Path(str(teacher["anchor_map"])).expanduser().resolve()
+    if not teacher_map_path.is_file():
+        raise ValueError(f"{arm} teacher anchor_map is not a file")
+    teacher_map = (
+        state
+        if teacher_map_path == paths["map"]
+        else torch.load(teacher_map_path, map_location="cpu", weights_only=False)
+    )
+    registry_fields = (
+        "anchor_ids",
+        "source_primitive_ids",
+        "track_cluster_ids",
+        "anchor_xyz",
+        "anchor_type",
+        "dependency_group_ids",
+        "coarse_dependency_group_ids",
+        "fine_identity_ids",
+        "source_dependency_group_ids",
+    )
+    if teacher_map_path != paths["map"]:
+        for field in registry_fields:
+            if (
+                field not in state
+                or field not in teacher_map
+                or not torch.equal(
+                    torch.as_tensor(state[field]), torch.as_tensor(teacher_map[field])
+                )
+            ):
+                raise ValueError(
+                    f"{arm} teacher anchor-map registry differs for {field}"
+                )
 
     sources = dict(calibration.get("sources", {}))
     if (
@@ -240,10 +292,7 @@ def _audit_arm_artifacts(*, arm: str, paths: dict[str, Path]) -> dict:
         raise ValueError(f"{arm} calibration names a different query cache")
 
     selected = (
-        torch.linspace(0, len(names) - 1, steps=256)
-        .round()
-        .long()
-        .unique(sorted=True)
+        torch.linspace(0, len(names) - 1, steps=256).round().long().unique(sorted=True)
     )
     if selected.numel() != 256:
         raise ValueError(f"{arm} teacher cannot define the preregistered q256 gate")
@@ -254,17 +303,20 @@ def _audit_arm_artifacts(*, arm: str, paths: dict[str, Path]) -> dict:
         "anchor_ids_sha256": _tensor_sha256(anchor_ids),
         "metric_anchor_ids_bitwise_equal_map": True,
         "teacher_anchor_count_equal_map": True,
+        "teacher_anchor_map": str(teacher_map_path),
+        "teacher_anchor_map_sha256": sha256_file(teacher_map_path),
+        "teacher_anchor_registry_equal_map": True,
         "teacher_query_count": len(names),
         "ordered_teacher_query_names_sha256": _json_sha256(names),
         "uniform_q256_indices_sha256": _json_sha256(indices),
         "uniform_q256_query_names_sha256": _json_sha256(selected_names),
+        "uniform_q256_indices": indices,
         "uniform_q256_first_index": int(indices[0]),
         "uniform_q256_last_index": int(indices[-1]),
         "query_cache_path_bound_by_teacher": True,
         "query_cache_path_bound_by_calibration": True,
         "calibration_numeric_contract": {
-            name: calibration[name]
-            for name in ("statistics", "parameters", "policy")
+            name: calibration[name] for name in ("statistics", "parameters", "policy")
         },
         "calibration_uses_test_queries": False,
         "query_names": names,
@@ -289,40 +341,103 @@ def _numeric_metric(summary: dict, name: str, *, seed: int, arm: str) -> float |
     return value
 
 
+def _is_exact_int(value, expected: int) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value == expected
+
+
 def _load_summary(
-    *, arm: str, seed: int, path: Path, artifacts: dict[str, Path]
+    *,
+    arm: str,
+    seed: int,
+    path: Path,
+    artifacts: dict[str, Path],
+    artifact_sha256: dict[str, str],
+    arm_audit: dict,
+    expected_evaluation_code: dict,
 ) -> dict:
     report = json.loads(path.read_text())
     if (
         report.get("schema") != "lafgs_mapping_cache_evaluation"
-        or report.get("version") != 1
+        or report.get("version") != 2
         or report.get("uses_test_queries") is not False
     ):
         raise ValueError(f"{arm} seed {seed} is not a mapping-only evaluation report")
-    if int(report.get("deployment_row_limit", -1)) != 0:
+    if not _is_exact_int(report.get("deployment_row_limit"), 0):
         raise ValueError(f"{arm} seed {seed} changes deployment row count")
     if report.get("query_selection") != "uniform_mapping_gate":
         raise ValueError(f"{arm} seed {seed} does not use uniform_mapping_gate")
-    if int(report.get("query_count", -1)) != 256:
+    if not _is_exact_int(report.get("query_count"), 256):
         raise ValueError(f"{arm} seed {seed} does not contain exactly q256")
     if report.get("pose_error_units") != {"translation": "cm", "rotation": "deg"}:
         raise ValueError(f"{arm} seed {seed} has absent or unexpected pose-error units")
-    if Path(str(report.get("map", ""))).resolve() != artifacts["map"]:
-        raise ValueError(f"{arm} seed {seed} summary names a different map")
-    if Path(str(report.get("metric_state", ""))).resolve() != artifacts["metric"]:
-        raise ValueError(f"{arm} seed {seed} summary names a different metric")
-    if "seed" in report and int(report["seed"]) != seed:
+    if not _is_exact_int(report.get("seed"), seed):
         raise ValueError(f"{arm} seed {seed} summary embeds a different seed")
-    optional_paths = {
+    if report.get("evaluation_code") != expected_evaluation_code:
+        raise ValueError(f"{arm} seed {seed} evaluation-code identity differs")
+    required_paths = {
+        "map": "map",
+        "metric_state": "metric",
         "complete_positive_teacher": "teacher",
         "query_cache": "query_cache",
         "scene_calibration": "calibration",
     }
-    for field, role in optional_paths.items():
-        if field in report and Path(str(report[field])).resolve() != artifacts[role]:
+    for field, role in required_paths.items():
+        if Path(str(report.get(field, ""))).resolve() != artifacts[role]:
             raise ValueError(f"{arm} seed {seed} summary {field} path differs")
+    embedded_artifacts = report.get("artifacts")
+    if not isinstance(embedded_artifacts, dict) or set(embedded_artifacts) != set(
+        ARTIFACT_ROLES
+    ):
+        raise ValueError(f"{arm} seed {seed} summary artifact bindings are incomplete")
+    for role in ARTIFACT_ROLES:
+        record = embedded_artifacts[role]
+        if not isinstance(record, dict):
+            raise ValueError(f"{arm} seed {seed} summary {role} binding is invalid")
+        if Path(str(record.get("path", ""))).resolve() != artifacts[role]:
+            raise ValueError(f"{arm} seed {seed} summary {role} artifact path differs")
+        if str(record.get("sha256", "")).lower() != artifact_sha256[role]:
+            raise ValueError(
+                f"{arm} seed {seed} summary {role} artifact SHA-256 differs"
+            )
+
+    protocol = report.get("evaluation_protocol")
+    if not isinstance(protocol, dict):
+        raise ValueError(f"{arm} seed {seed} has no evaluation protocol")
+    if (
+        protocol.get("split") != "mapping_only"
+        or protocol.get("query_selection") != "uniform_mapping_gate"
+        or not _is_exact_int(protocol.get("requested_query_count"), 256)
+        or not _is_exact_int(protocol.get("evaluated_query_count"), 256)
+        or not _is_exact_int(
+            protocol.get("teacher_query_count"),
+            int(arm_audit["teacher_query_count"]),
+        )
+        or not _is_exact_int(protocol.get("deployment_row_limit"), 0)
+    ):
+        raise ValueError(f"{arm} seed {seed} evaluation protocol differs")
+    expected_indices = arm_audit["uniform_q256_indices"]
+    actual_indices = protocol.get("selected_query_indices")
+    if (
+        not isinstance(actual_indices, list)
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in actual_indices
+        )
+        or actual_indices != expected_indices
+    ):
+        raise ValueError(f"{arm} seed {seed} selected query indices differ")
+    protocol_hashes = {
+        "ordered_teacher_query_names_sha256": arm_audit[
+            "ordered_teacher_query_names_sha256"
+        ],
+        "selected_query_indices_sha256": arm_audit["uniform_q256_indices_sha256"],
+        "selected_query_names_sha256": arm_audit["uniform_q256_query_names_sha256"],
+    }
+    for name, expected in protocol_hashes.items():
+        if protocol.get(name) != expected:
+            raise ValueError(f"{arm} seed {seed} {name} differs")
     summary = dict(report.get("summary", {}))
-    if int(summary.get("query_count", -1)) != 256:
+    if not _is_exact_int(summary.get("query_count"), 256):
         raise ValueError(f"{arm} seed {seed} nested summary query count differs")
     return {
         name: _numeric_metric(summary, name, seed=seed, arm=arm)
@@ -330,12 +445,9 @@ def _load_summary(
     }
 
 
-def _per_seed_comparison(
-    *, baseline: dict, variant: dict, thresholds: dict
-) -> dict:
+def _per_seed_comparison(*, baseline: dict, variant: dict, thresholds: dict) -> dict:
     delta = {
-        name: float(variant[name]) - float(baseline[name])
-        for name in SUMMARY_METRICS
+        name: float(variant[name]) - float(baseline[name]) for name in SUMMARY_METRICS
     }
     config = thresholds["per_seed_non_regression"]
     translation_tolerance = {
@@ -344,6 +456,13 @@ def _per_seed_comparison(
             float(config["translation_relative_tolerance"]) * float(baseline[name]),
         )
         for name in TRANSLATION_METRICS
+    }
+    rotation_tolerance = {
+        name: max(
+            float(config["rotation_absolute_tolerance_deg"]),
+            float(config["rotation_relative_tolerance"]) * float(baseline[name]),
+        )
+        for name in ROTATION_METRICS
     }
     checks = {
         "raw_precision_non_regression": delta["raw_gt_precision_percent"]
@@ -356,6 +475,14 @@ def _per_seed_comparison(
         <= translation_tolerance["p90_te_cm"],
         "cvar95_te_non_regression": delta["cvar95_te_cm"]
         <= translation_tolerance["cvar95_te_cm"],
+        "median_ae_non_regression": delta["median_ae_deg"]
+        <= rotation_tolerance["median_ae_deg"],
+        "mean_ae_non_regression": delta["mean_ae_deg"]
+        <= rotation_tolerance["mean_ae_deg"],
+        "p90_ae_non_regression": delta["p90_ae_deg"]
+        <= rotation_tolerance["p90_ae_deg"],
+        "p95_ae_non_regression": delta["p95_ae_deg"]
+        <= rotation_tolerance["p95_ae_deg"],
         "recall_5cm_5deg_non_regression": delta["recall_5cm_5deg_percent"]
         >= -float(config["recall_5cm_5deg_tolerance_pp"]),
         "catastrophic_count_non_regression": delta["catastrophic_100cm_count"] <= 0,
@@ -365,6 +492,7 @@ def _per_seed_comparison(
         "variant": variant,
         "delta_variant_minus_baseline": delta,
         "translation_tolerance_cm": translation_tolerance,
+        "rotation_tolerance_deg": rotation_tolerance,
         "checks": checks,
         "passes_non_regression": all(checks.values()),
     }
@@ -386,14 +514,14 @@ def _three_seed_mean(per_seed: dict[str, dict], thresholds: dict) -> dict:
     checks = {
         "raw_precision": delta["raw_gt_precision_percent"]
         >= float(gain["raw_precision_pp"]),
-        "median_te": -delta["median_te_cm"]
-        >= float(gain["central_translation_cm"]),
-        "mean_te": -delta["mean_te_cm"]
-        >= float(gain["central_translation_cm"]),
-        "p90_te": -delta["p90_te_cm"]
-        >= float(gain["tail_translation_cm"]),
-        "cvar95_te": -delta["cvar95_te_cm"]
-        >= float(gain["tail_translation_cm"]),
+        "median_te": -delta["median_te_cm"] >= float(gain["central_translation_cm"]),
+        "mean_te": -delta["mean_te_cm"] >= float(gain["central_translation_cm"]),
+        "p90_te": -delta["p90_te_cm"] >= float(gain["tail_translation_cm"]),
+        "cvar95_te": -delta["cvar95_te_cm"] >= float(gain["tail_translation_cm"]),
+        "median_ae": -delta["median_ae_deg"] >= float(gain["rotation_deg"]),
+        "mean_ae": -delta["mean_ae_deg"] >= float(gain["rotation_deg"]),
+        "p90_ae": -delta["p90_ae_deg"] >= float(gain["rotation_deg"]),
+        "p95_ae": -delta["p95_ae_deg"] >= float(gain["rotation_deg"]),
         "recall_5cm_5deg": delta["recall_5cm_5deg_percent"]
         >= float(gain["recall_5cm_5deg_pp"]),
     }
@@ -417,6 +545,7 @@ def compare_mapping_pose_gate(
 ) -> dict:
     """Audit paired inputs and apply the preregistered mapping-pose gate."""
     thresholds = _normalize_thresholds(thresholds)
+    evaluation_code = mapping_pose_evaluation_code_identity(require_clean=True)
     artifacts = {
         "baseline": _resolve_artifacts(baseline_artifacts, arm="baseline"),
         "variant": _resolve_artifacts(variant_artifacts, arm="variant"),
@@ -458,8 +587,7 @@ def compare_mapping_pose_gate(
             == variant_audit["uniform_q256_query_names_sha256"]
         ),
         "query_cache_paths_equal": (
-            artifacts["baseline"]["query_cache"]
-            == artifacts["variant"]["query_cache"]
+            artifacts["baseline"]["query_cache"] == artifacts["variant"]["query_cache"]
         ),
         "query_cache_sha256_equal": (
             actual_sha256["baseline.query_cache"]
@@ -482,7 +610,7 @@ def compare_mapping_pose_gate(
         failed = [name for name, passed in lineage_checks.items() if not passed]
         raise ValueError(f"paired mapping-pose lineage differs: {failed}")
 
-    # Keep only hashes and counts in the JSON; never serialize all query names or
+    # Keep compact indices/hashes in the JSON; never serialize all query names or
     # the large frozen numeric calibration payload twice.
     for audit in arm_audits.values():
         audit.pop("query_names")
@@ -498,6 +626,11 @@ def compare_mapping_pose_gate(
                 seed=seed,
                 path=summaries[arm][seed],
                 artifacts=artifacts[arm],
+                artifact_sha256={
+                    role: actual_sha256[f"{arm}.{role}"] for role in ARTIFACT_ROLES
+                },
+                arm_audit=arm_audits[arm],
+                expected_evaluation_code=evaluation_code,
             )
             for seed in REQUIRED_SEEDS
         }
@@ -505,7 +638,7 @@ def compare_mapping_pose_gate(
     }
     per_seed = {
         str(seed): {
-            "seed_binding": "explicit_cli",
+            "seed_binding": "embedded_report_and_explicit_cli",
             "baseline_summary": input_records[f"baseline.seed{seed}_summary"],
             "variant_summary": input_records[f"variant.seed{seed}_summary"],
             **_per_seed_comparison(
@@ -542,6 +675,7 @@ def compare_mapping_pose_gate(
         },
         "lineage": {
             "checks": lineage_checks,
+            "evaluation_code": evaluation_code,
             "arms": arm_audits,
             "inputs": input_records,
         },
@@ -584,10 +718,7 @@ def _parse_expected_sha256(values: list[str]) -> dict[str, str]:
 
 
 def _artifact_args(args, arm: str) -> dict[str, Path]:
-    return {
-        role: getattr(args, f"{arm}_{role}")
-        for role in ARTIFACT_ROLES
-    }
+    return {role: getattr(args, f"{arm}_{role}") for role in ARTIFACT_ROLES}
 
 
 def main() -> None:
@@ -622,9 +753,7 @@ def main() -> None:
         baseline_summaries=_parse_named_paths(
             args.baseline_seed, label="--baseline-seed"
         ),
-        variant_summaries=_parse_named_paths(
-            args.variant_seed, label="--variant-seed"
-        ),
+        variant_summaries=_parse_named_paths(args.variant_seed, label="--variant-seed"),
         baseline_artifacts=_artifact_args(args, "baseline"),
         variant_artifacts=_artifact_args(args, "variant"),
         thresholds=thresholds,
