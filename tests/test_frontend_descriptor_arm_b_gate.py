@@ -3,11 +3,24 @@ import json
 import pytest
 
 from common.hashing import sha256_file
+import scripts.compare_frontend_descriptor_arm_b as descriptor_gate
 from scripts.compare_frontend_descriptor_arm_b import main
 
 
 TOPKS = (1, 2, 4, 8, 16, 32)
 TEACHER_SCHEMA = "lafgs_v9_active_map_complete_positive_teacher"
+EVALUATION_CODE = {
+    "schema": "lafgs_frontend_descriptor_evaluation_code",
+    "version": 1,
+    "repository": "/synthetic/repository",
+    "git_commit": "a" * 40,
+    "git_worktree_clean": True,
+    "entrypoints": {
+        "map_learning/frontend_upper_bound.py": "b" * 64,
+        "scripts/audit_frontend_upper_bound.py": "c" * 64,
+        "scripts/compare_frontend_descriptor_arm_b.py": "d" * 64,
+    },
+}
 
 
 def _summary(
@@ -56,12 +69,8 @@ def _delta(candidate, baseline):
     result["by_anchor_kind"] = {
         kind: {
             str(topk): (
-                candidate["positive_recall_at_k_by_anchor_kind"][kind][
-                    str(topk)
-                ]
-                - baseline["positive_recall_at_k_by_anchor_kind"][kind][
-                    str(topk)
-                ]
+                candidate["positive_recall_at_k_by_anchor_kind"][kind][str(topk)]
+                - baseline["positive_recall_at_k_by_anchor_kind"][kind][str(topk)]
             )
             for topk in TOPKS
         }
@@ -248,9 +257,7 @@ def _report(paths):
             "frozen_superpoint": pooled_baseline,
             "candidate": pooled_candidate,
         },
-        "delta_candidate_minus_superpoint": _delta(
-            pooled_candidate, pooled_baseline
-        ),
+        "delta_candidate_minus_superpoint": _delta(pooled_candidate, pooled_baseline),
     }
     return {
         "schema": "lafgs_frontend_ceiling_probe_audit_bundle",
@@ -325,6 +332,46 @@ def _refresh_delta(report):
     )
 
 
+def _equal_energy_report(paths):
+    payload = _report(paths)
+    payload["evaluation_code"] = EVALUATION_CODE
+    descriptor = payload["descriptor_identity"]
+    descriptor["schema"] = "lafgs_mapping_descriptor_equal_energy_ceiling_probe"
+    descriptor["protocol"] = {
+        "query_coordinates": "exact_frozen_superpoint_keypoint_rows",
+        "positive_labels": TEACHER_SCHEMA,
+        "map_bank": "same_positive_edges_view_balanced_support_only",
+        "ranking": "single_global_cosine",
+        "crossfit": "bidirectional_temporal_block",
+        "crossfit_blocks": 8,
+        "minimum_support_views": 2,
+        "topks": list(TOPKS),
+        "candidate_detector_used": False,
+        "candidate_representation": ("l2_concat(l2(superpoint),l2(candidate))/sqrt(2)"),
+        "score_identity": "0.5*cosine_superpoint+0.5*cosine_candidate",
+        "source_candidate_descriptor_dim": 64,
+        "effective_candidate_descriptor_dim": 320,
+        "learned_fusion_parameters": False,
+        "source_specific_descriptor_routing": False,
+    }
+    for direction in descriptor["directions"]:
+        support = direction["support"]
+        anchors = support["supported_anchor_count"]
+        memory = support["map_descriptor_memory_float32"]
+        memory["candidate_dim"] = 320
+        memory["candidate_bytes"] = anchors * 320 * 4
+        memory["candidate_to_superpoint_ratio"] = 1.25
+        candidate = direction["ranking_resources"]["candidate"]
+        candidate["descriptor_dim"] = 320
+        candidate["dot_product_multiply_accumulates"] = (
+            candidate["query_rows"] * anchors * 320
+        )
+        direction["ranking_resources"]["candidate_to_superpoint_ratio"][
+            "dot_product_multiply_accumulates"
+        ] = 1.25
+    return payload
+
+
 def test_descriptor_arm_b_gate_passes_exact_bidirectional_contract(tmp_path):
     paths = _artifacts(tmp_path)
     report = _write_report(tmp_path, _report(paths))
@@ -338,6 +385,111 @@ def test_descriptor_arm_b_gate_passes_exact_bidirectional_contract(tmp_path):
     assert result["protocol"]["non_regression_absolute_tolerance"] == 1e-12
 
 
+def test_equal_energy_gate_requires_exact_single_320d_representation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        descriptor_gate,
+        "frontend_descriptor_evaluation_code_identity",
+        lambda **_: EVALUATION_CODE,
+    )
+    paths = _artifacts(tmp_path)
+    report = _write_report(tmp_path, _equal_energy_report(paths))
+    output = tmp_path / "equal_energy_gate.json"
+    argv = _argv(paths, report, output)
+    argv.extend(
+        [
+            "--candidate-representation",
+            "equal_energy_superpoint_candidate",
+            "--expected-effective-candidate-descriptor-dim",
+            "320",
+        ]
+    )
+    main(argv)
+    result = json.loads(output.read_text())
+    assert result["schema"] == ("lafgs_frontend_descriptor_equal_energy_mechanism_gate")
+    assert result["decision"] == "GO"
+    assert result["protocol"]["source_candidate_descriptor_dim"] == 64
+    assert result["protocol"]["effective_candidate_descriptor_dim"] == 320
+
+    invalid = _equal_energy_report(paths)
+    invalid["descriptor_identity"]["protocol"]["source_specific_descriptor_routing"] = (
+        True
+    )
+    invalid_report = _write_report(tmp_path, invalid, "invalid_equal_energy")
+    invalid_argv = _argv(paths, invalid_report, tmp_path / "invalid_gate.json")
+    invalid_argv.extend(
+        [
+            "--candidate-representation",
+            "equal_energy_superpoint_candidate",
+            "--expected-effective-candidate-descriptor-dim",
+            "320",
+        ]
+    )
+    with pytest.raises(ValueError, match="protocol differs"):
+        main(invalid_argv)
+
+
+def test_equal_energy_gate_rejects_missing_dimension_or_resource_tamper(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        descriptor_gate,
+        "frontend_descriptor_evaluation_code_identity",
+        lambda **_: EVALUATION_CODE,
+    )
+    payload = _equal_energy_report(_artifacts(tmp_path))
+    paths = {
+        name: (tmp_path / f"{name}.pt").resolve()
+        for name in ("state", "query_cache", "teacher", "probe_cache", "weights")
+    }
+    report = _write_report(tmp_path, payload)
+    argv = _argv(paths, report, tmp_path / "missing_dim_gate.json")
+    argv.extend(
+        [
+            "--candidate-representation",
+            "equal_energy_superpoint_candidate",
+        ]
+    )
+    with pytest.raises(ValueError, match="dimension is not additive"):
+        main(argv)
+
+    payload = _equal_energy_report(paths)
+    payload["descriptor_identity"]["directions"][0]["ranking_resources"]["candidate"][
+        "dot_product_multiply_accumulates"
+    ] += 1
+    report = _write_report(tmp_path, payload, "resource_tamper")
+    argv = _argv(paths, report, tmp_path / "resource_gate.json")
+    argv.extend(
+        [
+            "--candidate-representation",
+            "equal_energy_superpoint_candidate",
+            "--expected-effective-candidate-descriptor-dim",
+            "320",
+        ]
+    )
+    with pytest.raises(ValueError, match="MAC formula differs"):
+        main(argv)
+
+    payload = _equal_energy_report(paths)
+    payload["evaluation_code"] = {
+        **EVALUATION_CODE,
+        "git_commit": "e" * 40,
+    }
+    report = _write_report(tmp_path, payload, "code_mismatch")
+    argv = _argv(paths, report, tmp_path / "code_gate.json")
+    argv.extend(
+        [
+            "--candidate-representation",
+            "equal_energy_superpoint_candidate",
+            "--expected-effective-candidate-descriptor-dim",
+            "320",
+        ]
+    )
+    with pytest.raises(ValueError, match="code identity differs"):
+        main(argv)
+
+
 @pytest.mark.parametrize(
     ("regression", "expected_pass"),
     ((5e-13, True), (2e-12, False)),
@@ -348,9 +500,7 @@ def test_descriptor_arm_b_gate_uses_exact_non_regression_tolerance(
     paths = _artifacts(tmp_path)
     payload = _report(paths)
     descriptor = payload["descriptor_identity"]
-    baseline = descriptor["pooled"]["frozen_superpoint"][
-        "positive_recall_at_k"
-    ]["8"]
+    baseline = descriptor["pooled"]["frozen_superpoint"]["positive_recall_at_k"]["8"]
     descriptor["pooled"]["candidate"]["positive_recall_at_k"]["8"] = (
         baseline - regression
     )
@@ -368,7 +518,13 @@ def test_descriptor_arm_b_gate_uses_exact_non_regression_tolerance(
 
 @pytest.mark.parametrize(
     "failure",
-    ("first_direction_r1", "second_direction_r1", "pooled_r8", "track_r1", "reserve_r1"),
+    (
+        "first_direction_r1",
+        "second_direction_r1",
+        "pooled_r8",
+        "track_r1",
+        "reserve_r1",
+    ),
 )
 def test_descriptor_arm_b_gate_writes_stop_and_exits_two(tmp_path, failure):
     paths = _artifacts(tmp_path)
@@ -395,13 +551,13 @@ def test_descriptor_arm_b_gate_writes_stop_and_exits_two(tmp_path, failure):
     elif failure == "pooled_r8":
         descriptor["pooled"]["candidate"]["positive_recall_at_k"]["8"] = 0.7
     elif failure == "track_r1":
-        descriptor["pooled"]["candidate"][
-            "positive_recall_at_k_by_anchor_kind"
-        ]["track_core"]["1"] = 0.2
+        descriptor["pooled"]["candidate"]["positive_recall_at_k_by_anchor_kind"][
+            "track_core"
+        ]["1"] = 0.2
     else:
-        descriptor["pooled"]["candidate"][
-            "positive_recall_at_k_by_anchor_kind"
-        ]["gaussian_reserve"]["1"] = 0.1
+        descriptor["pooled"]["candidate"]["positive_recall_at_k_by_anchor_kind"][
+            "gaussian_reserve"
+        ]["1"] = 0.1
     _refresh_delta(payload)
     report = _write_report(tmp_path, payload)
     output = tmp_path / "gate.json"
@@ -435,9 +591,9 @@ def test_descriptor_arm_b_gate_rejects_relabelled_lineage(tmp_path):
 def test_descriptor_arm_b_gate_rejects_unidirectional_or_test_report(tmp_path):
     paths = _artifacts(tmp_path)
     payload = _report(paths)
-    payload["descriptor_identity"]["directions"] = payload[
-        "descriptor_identity"
-    ]["directions"][:1]
+    payload["descriptor_identity"]["directions"] = payload["descriptor_identity"][
+        "directions"
+    ][:1]
     report = _write_report(tmp_path, payload, "unidirectional")
     with pytest.raises(ValueError, match="not bidirectional"):
         main(_argv(paths, report, tmp_path / "gate.json"))

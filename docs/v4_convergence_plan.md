@@ -699,3 +699,10 @@ XFeat Arm B 进一步收紧了这个结论：identity descriptor 不是完全饱
 Track Core，Reserve 的严格非退化未通过。因此当前默认 frontend 仍保留 SuperPoint，且不跑
 XFeat map/pose/test；下一主线必须解释并保护 evidence-conditioned identity，而不是把一个
 pooled retrieval 增益直接当作完整定位方法增益。
+
+已在任何融合结果生成前预注册唯一的后续 descriptor 因子：将逐行归一化的 256D
+SuperPoint 与 64D XFeat 等能量拼接为一个 320D 单描述子。它仍只有一个 bank、一次全局
+Top-1 和一次 cosine，分数严格等于两分支 cosine 的 50/50 平均；禁止可调 alpha、类型路由、
+双 bank、detector/topology/pose 联动。双向 R@1 必须严格提升，pooled R@8、Track R@1 与
+Reserve R@1 必须全部非退化，否则 Stop。完整冻结合同见
+`docs/xfeat_equal_energy_descriptor_preregistration.md`。

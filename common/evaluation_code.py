@@ -12,10 +12,20 @@ MAPPING_POSE_ENTRYPOINTS = (
     "scripts/evaluate_mapping_cache.py",
     "scripts/compare_mapping_pose_gate.py",
 )
+FRONTEND_DESCRIPTOR_ENTRYPOINTS = (
+    "map_learning/frontend_upper_bound.py",
+    "scripts/audit_frontend_upper_bound.py",
+    "scripts/compare_frontend_descriptor_arm_b.py",
+)
 
 
-def mapping_pose_evaluation_code_identity(*, require_clean: bool = True) -> dict:
-    """Bind a pose replay and its decision gate to one clean Git revision."""
+def _evaluation_code_identity(
+    *,
+    schema: str,
+    entrypoints: tuple[str, ...],
+    require_clean: bool,
+    label: str,
+) -> dict:
     repository = Path(__file__).resolve().parents[1]
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -33,15 +43,34 @@ def mapping_pose_evaluation_code_identity(*, require_clean: bool = True) -> dict
     ).stdout
     clean = not status.strip()
     if require_clean and not clean:
-        raise RuntimeError("mapping-pose evaluation requires a clean Git worktree")
+        raise RuntimeError(f"{label} requires a clean Git worktree")
     return {
-        "schema": "lafgs_mapping_pose_evaluation_code",
+        "schema": schema,
         "version": 1,
         "repository": str(repository),
         "git_commit": commit,
         "git_worktree_clean": clean,
         "entrypoints": {
-            relative: sha256_file(repository / relative)
-            for relative in MAPPING_POSE_ENTRYPOINTS
+            relative: sha256_file(repository / relative) for relative in entrypoints
         },
     }
+
+
+def mapping_pose_evaluation_code_identity(*, require_clean: bool = True) -> dict:
+    """Bind a pose replay and its decision gate to one clean Git revision."""
+    return _evaluation_code_identity(
+        schema="lafgs_mapping_pose_evaluation_code",
+        entrypoints=MAPPING_POSE_ENTRYPOINTS,
+        require_clean=require_clean,
+        label="mapping-pose evaluation",
+    )
+
+
+def frontend_descriptor_evaluation_code_identity(*, require_clean: bool = True) -> dict:
+    """Bind a descriptor audit and its gate to one clean Git revision."""
+    return _evaluation_code_identity(
+        schema="lafgs_frontend_descriptor_evaluation_code",
+        entrypoints=FRONTEND_DESCRIPTOR_ENTRYPOINTS,
+        require_clean=require_clean,
+        label="frontend-descriptor evaluation",
+    )

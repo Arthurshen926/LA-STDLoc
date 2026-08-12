@@ -15,8 +15,10 @@ import subprocess
 
 import torch
 
+from common.evaluation_code import frontend_descriptor_evaluation_code_identity
 from map_learning.frontend_upper_bound import (
     PROBE_SCHEMA,
+    audit_descriptor_equal_energy_crossfit,
     audit_descriptor_identity_crossfit,
     audit_detector_repeatability,
     file_sha256,
@@ -24,9 +26,7 @@ from map_learning.frontend_upper_bound import (
 )
 
 
-SUPERPOINT_SHA256 = (
-    "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e"
-)
+SUPERPOINT_SHA256 = "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e"
 FEATUREBOOSTER_SHA256 = (
     "5334d9aa861e877a2b99baff0d682e1ac8a749cdd65eb1d4b8bd0a8bb8bf0359"
 )
@@ -151,9 +151,7 @@ def _candidate_preflight(args: argparse.Namespace) -> dict:
             "status": "BLOCKED_BY_ARTIFACT",
             "reason": "no candidate weight path was supplied",
         }
-    artifact = _inspect_artifact(
-        args.candidate_weights, args.candidate_weights_sha256
-    )
+    artifact = _inspect_artifact(args.candidate_weights, args.candidate_weights_sha256)
     detector_reasons = []
     if not args.candidate_weights_sha256:
         detector_reasons.append("candidate weight SHA256 was not supplied")
@@ -323,9 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--candidate-code-id", default="")
     preflight_parser.add_argument("--candidate-weights")
     preflight_parser.add_argument("--candidate-weights-sha256")
-    preflight_parser.add_argument(
-        "--candidate-descriptor-dim", type=int, default=256
-    )
+    preflight_parser.add_argument("--candidate-descriptor-dim", type=int, default=256)
 
     contract_parser = subparsers.add_parser(
         "contract", help="write the exact reference-row probe producer contract"
@@ -343,7 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--probe-cache", required=True)
     evaluate_parser.add_argument("--output", required=True)
     evaluate_parser.add_argument(
-        "--arm", choices=("detector", "descriptor", "both"), required=True
+        "--arm",
+        choices=("detector", "descriptor", "descriptor_equal_energy", "both"),
+        required=True,
     )
     evaluate_parser.add_argument("--crossfit-blocks", type=int, default=8)
     evaluate_parser.add_argument("--minimum-support-views", type=int, default=2)
@@ -369,6 +367,9 @@ def main() -> None:
             "teacher": _inspect_artifact(args.teacher),
         }
     else:
+        evaluation_code = frontend_descriptor_evaluation_code_identity(
+            require_clean=True
+        )
         state = _torch_load(args.state)
         query_cache = _torch_load(args.query_cache)
         teacher = _torch_load(args.teacher)
@@ -379,6 +380,7 @@ def main() -> None:
             "mapping_only": True,
             "uses_test_queries": False,
             "deployment_modified": False,
+            "evaluation_code": evaluation_code,
             "probe_cache": str(Path(args.probe_cache).resolve()),
             "source_artifacts": {
                 "state": _inspect_artifact(args.state),
@@ -399,6 +401,18 @@ def main() -> None:
             )
         if args.arm in ("descriptor", "both"):
             report["descriptor_identity"] = audit_descriptor_identity_crossfit(
+                state=state,
+                query_cache=query_cache,
+                teacher=teacher,
+                probe=probe,
+                crossfit_blocks=args.crossfit_blocks,
+                minimum_support_views=args.minimum_support_views,
+                topks=args.topks,
+                query_cache_path=args.query_cache,
+                teacher_path=args.teacher,
+            )
+        if args.arm == "descriptor_equal_energy":
+            report["descriptor_identity"] = audit_descriptor_equal_energy_crossfit(
                 state=state,
                 query_cache=query_cache,
                 teacher=teacher,

@@ -36,6 +36,8 @@ PROBE_SCHEMA = "lafgs_frontend_ceiling_probe_cache"
 PROBE_VERSION = 1
 DEFAULT_TOPKS = (1, 2, 4, 8, 16, 32)
 DEFAULT_REACHABILITY_RADII_PX = (2.0, 4.0, 8.0)
+DESCRIPTOR_REPRESENTATION_NATIVE = "native_candidate"
+DESCRIPTOR_REPRESENTATION_EQUAL_ENERGY = "equal_energy_superpoint_candidate"
 
 
 def file_sha256(path: str | Path) -> str:
@@ -65,9 +67,7 @@ def query_cache_queries(query_cache: Mapping) -> Mapping[str, Mapping]:
 
 
 def teacher_records(teacher: Mapping) -> dict[int, Mapping]:
-    records = {
-        int(record["query_index"]): record for record in teacher["records"]
-    }
+    records = {int(record["query_index"]): record for record in teacher["records"]}
     if len(records) != len(teacher["records"]):
         raise ValueError("teacher query indices must be unique")
     return records
@@ -91,12 +91,8 @@ def reference_registry(query_cache: Mapping, teacher: Mapping) -> dict:
             "native_row_count": int(keypoints.shape[0]),
             "teacher_row_count": int(rows.numel()),
             "reference_keypoints_sha256": tensor_sha256(keypoints),
-            "native_input_hw": [
-                int(value) for value in cached["native_input_hw"]
-            ],
-            "pixel_center_offset": float(
-                cached.get("pixel_center_offset", 0.5)
-            ),
+            "native_input_hw": [int(value) for value in cached["native_input_hw"]],
+            "pixel_center_offset": float(cached.get("pixel_center_offset", 0.5)),
         }
     return registry
 
@@ -106,10 +102,7 @@ def probe_contract(query_cache: Mapping, teacher: Mapping) -> dict:
     queries = query_cache_queries(query_cache)
     names = list(teacher["query_names"])
     requested_k = {
-        int(
-            queries[name]["native_sparse_metadata"]["detect_num"]
-        )
-        for name in names
+        int(queries[name]["native_sparse_metadata"]["detect_num"]) for name in names
     }
     if len(requested_k) != 1:
         raise ValueError("reference cache does not use one frozen detector K")
@@ -195,14 +188,11 @@ def _validate_reference_artifact(
         raise ValueError(f"probe does not bind the exact {label} artifact")
     reference_path = Path(reference_path_text).expanduser().resolve()
     if resolved != reference_path:
-        raise ValueError(
-            f"probe {label} path mismatch: {resolved} != {reference_path}"
-        )
+        raise ValueError(f"probe {label} path mismatch: {resolved} != {reference_path}")
     actual_sha256 = file_sha256(resolved)
     if actual_sha256 != expected_sha256:
         raise ValueError(
-            f"probe {label} SHA256 mismatch: "
-            f"{actual_sha256} != {expected_sha256}"
+            f"probe {label} SHA256 mismatch: {actual_sha256} != {expected_sha256}"
         )
     return {
         "path": str(resolved),
@@ -249,9 +239,10 @@ def validate_probe(
             ),
         }
     cache_signature = query_cache.get("signature")
-    if cache_signature is not None and reference.get(
-        "query_cache_signature"
-    ) != cache_signature:
+    if (
+        cache_signature is not None
+        and reference.get("query_cache_signature") != cache_signature
+    ):
         raise ValueError("probe query-cache signature mismatch")
     if reference.get("teacher_schema") != teacher.get("schema"):
         raise ValueError("probe teacher schema mismatch")
@@ -284,8 +275,7 @@ def validate_probe(
     if set(probe_queries) != set(names):
         raise ValueError("probe and teacher query-name sets differ")
     requested_k_values = {
-        int(queries[name]["native_sparse_metadata"]["detect_num"])
-        for name in names
+        int(queries[name]["native_sparse_metadata"]["detect_num"]) for name in names
     }
     if len(requested_k_values) != 1:
         raise ValueError("reference cache has inconsistent keypoint budgets")
@@ -309,9 +299,7 @@ def validate_probe(
     for name in names:
         cached = queries[name]
         candidate = probe_queries[name]
-        reference_keypoints = torch.as_tensor(
-            cached["native_keypoints"]
-        ).float()
+        reference_keypoints = torch.as_tensor(cached["native_keypoints"]).float()
         expected_hash = tensor_sha256(reference_keypoints)
         if str(candidate.get("reference_keypoints_sha256", "")) != expected_hash:
             raise ValueError(f"reference keypoint registry mismatch for {name}")
@@ -536,9 +524,7 @@ def audit_detector_repeatability(
         else depth_rel_tolerance
     )
     alpha = float(
-        config.get("alpha_minimum", 0.01)
-        if alpha_minimum is None
-        else alpha_minimum
+        config.get("alpha_minimum", 0.01) if alpha_minimum is None else alpha_minimum
     )
     radii = tuple(sorted(set(float(value) for value in radii_px)))
     if not radii or radii[0] <= 0:
@@ -600,9 +586,7 @@ def audit_detector_repeatability(
                 candidate_summary["by_anchor_kind"][kind]["reachable_fraction"][key]
                 - baseline_summary["by_anchor_kind"][kind]["reachable_fraction"][key]
             )
-            for key in baseline_summary["by_anchor_kind"][kind][
-                "reachable_fraction"
-            ]
+            for key in baseline_summary["by_anchor_kind"][kind]["reachable_fraction"]
         }
     return {
         "schema": "lafgs_mapping_detector_repeatability_ceiling_probe",
@@ -632,6 +616,7 @@ def _build_descriptor_banks(
     probe: Mapping,
     support_query_indices: Sequence[int],
     minimum_support_views: int,
+    candidate_representation: str = DESCRIPTOR_REPRESENTATION_NATIVE,
 ) -> tuple[dict[str, torch.Tensor], dict]:
     names = list(teacher["query_names"])
     records = teacher_records(teacher)
@@ -652,9 +637,7 @@ def _build_descriptor_banks(
         name = names[query_index]
         rows = torch.as_tensor(record["query_rows"]).long()
         selected = torch.arange(rows.numel())
-        _, edge_rows, edge_anchors = _selected_csr_edges(
-            record, "positive", selected
-        )
+        _, edge_rows, edge_anchors = _selected_csr_edges(record, "positive", selected)
         if not edge_rows.numel():
             continue
         raw = F.normalize(
@@ -684,12 +667,26 @@ def _build_descriptor_banks(
     if not bool(supported.any()):
         raise ValueError("support fold has no anchor meeting the view threshold")
     anchor_indices = torch.nonzero(supported, as_tuple=False).reshape(-1)
+    reference_bank = F.normalize(raw_sum[anchor_indices], dim=1)
+    native_candidate_bank = F.normalize(candidate_sum[anchor_indices], dim=1)
+    if candidate_representation == DESCRIPTOR_REPRESENTATION_NATIVE:
+        effective_candidate_bank = native_candidate_bank
+        effective_candidate_dim = candidate_dim
+    elif candidate_representation == DESCRIPTOR_REPRESENTATION_EQUAL_ENERGY:
+        effective_candidate_bank = torch.cat(
+            (reference_bank, native_candidate_bank), dim=1
+        ) / (2.0**0.5)
+        effective_candidate_dim = reference_dim + candidate_dim
+    else:
+        raise ValueError(
+            f"unsupported candidate representation: {candidate_representation}"
+        )
     reference_bytes = int(anchor_indices.numel() * reference_dim * 4)
-    candidate_bytes = int(anchor_indices.numel() * candidate_dim * 4)
+    candidate_bytes = int(anchor_indices.numel() * effective_candidate_dim * 4)
     return {
         "anchor_indices": anchor_indices,
-        "frozen_superpoint": F.normalize(raw_sum[anchor_indices], dim=1),
-        "candidate": F.normalize(candidate_sum[anchor_indices], dim=1),
+        "frozen_superpoint": reference_bank,
+        "candidate": effective_candidate_bank,
     }, {
         "support_query_count": len(support_query_indices),
         "positive_edge_count": positive_edges,
@@ -699,7 +696,7 @@ def _build_descriptor_banks(
             "formula": "supported_anchor_count * descriptor_dim * 4",
             "bytes_per_scalar": 4,
             "frozen_superpoint_dim": reference_dim,
-            "candidate_dim": candidate_dim,
+            "candidate_dim": effective_candidate_dim,
             "frozen_superpoint_bytes": reference_bytes,
             "candidate_bytes": candidate_bytes,
             "candidate_to_superpoint_ratio": float(
@@ -718,6 +715,7 @@ def _evaluate_descriptor_banks(
     gate_query_indices: Sequence[int],
     banks: Mapping[str, torch.Tensor],
     topks: Sequence[int],
+    candidate_representation: str = DESCRIPTOR_REPRESENTATION_NATIVE,
 ) -> tuple[dict, dict]:
     names = list(teacher["query_names"])
     records = teacher_records(teacher)
@@ -728,8 +726,7 @@ def _evaluate_descriptor_banks(
     anchor_type = torch.as_tensor(state["anchor_type"]).long().cpu()
     maximum_k = min(max(topks), int(anchor_indices.numel()))
     counts = {
-        name: _empty_retrieval(topks)
-        for name in ("frozen_superpoint", "candidate")
+        name: _empty_retrieval(topks) for name in ("frozen_superpoint", "candidate")
     }
     resources = {
         name: {
@@ -761,17 +758,29 @@ def _evaluate_descriptor_banks(
         ambiguous_keep = supported[ambiguous_anchors]
         ambiguous_rows = ambiguous_rows[ambiguous_keep]
         ambiguous_anchors = ambiguous_anchors[ambiguous_keep]
+        reference_descriptor = F.normalize(
+            torch.as_tensor(queries[name]["native_descriptors"]).float()[rows],
+            dim=1,
+        )
+        native_candidate_descriptor = F.normalize(
+            torch.as_tensor(
+                probe["queries"][name]["descriptor_at_reference_keypoints"]
+            ).float()[rows],
+            dim=1,
+        )
+        if candidate_representation == DESCRIPTOR_REPRESENTATION_NATIVE:
+            effective_candidate_descriptor = native_candidate_descriptor
+        elif candidate_representation == DESCRIPTOR_REPRESENTATION_EQUAL_ENERGY:
+            effective_candidate_descriptor = torch.cat(
+                (reference_descriptor, native_candidate_descriptor), dim=1
+            ) / (2.0**0.5)
+        else:
+            raise ValueError(
+                f"unsupported candidate representation: {candidate_representation}"
+            )
         descriptors = {
-            "frozen_superpoint": F.normalize(
-                torch.as_tensor(queries[name]["native_descriptors"]).float()[rows],
-                dim=1,
-            ),
-            "candidate": F.normalize(
-                torch.as_tensor(
-                    probe["queries"][name]["descriptor_at_reference_keypoints"]
-                ).float()[rows],
-                dim=1,
-            ),
+            "frozen_superpoint": reference_descriptor,
+            "candidate": effective_candidate_descriptor,
         }
         for descriptor_name, query_descriptor in descriptors.items():
             started = time.perf_counter()
@@ -784,9 +793,7 @@ def _evaluate_descriptor_banks(
             anchor_count = int(banks[descriptor_name].shape[0])
             descriptor_dim = int(query_descriptor.shape[1])
             resources[descriptor_name]["query_rows"] += query_rows
-            resources[descriptor_name]["score_elements"] += (
-                query_rows * anchor_count
-            )
+            resources[descriptor_name]["score_elements"] += query_rows * anchor_count
             resources[descriptor_name]["dot_product_multiply_accumulates"] += (
                 query_rows * anchor_count * descriptor_dim
             )
@@ -801,9 +808,7 @@ def _evaluate_descriptor_banks(
                 anchor_type=anchor_type,
                 topks=topks,
             )
-    reference_seconds = float(
-        resources["frozen_superpoint"]["ranking_wall_seconds"]
-    )
+    reference_seconds = float(resources["frozen_superpoint"]["ranking_wall_seconds"])
     reference_macs = int(
         resources["frozen_superpoint"]["dot_product_multiply_accumulates"]
     )
@@ -832,9 +837,7 @@ def _recall_delta(candidate: Mapping, baseline: Mapping) -> dict:
     }
     output["by_anchor_kind"] = {
         kind: {
-            key: float(
-                candidate["positive_recall_at_k_by_anchor_kind"][kind][key]
-            )
+            key: float(candidate["positive_recall_at_k_by_anchor_kind"][kind][key])
             - float(baseline["positive_recall_at_k_by_anchor_kind"][kind][key])
             for key in baseline["positive_recall_at_k_by_anchor_kind"][kind]
         }
@@ -874,9 +877,7 @@ def audit_descriptor_identity_crossfit(
         list(teacher["query_names"]), int(crossfit_blocks)
     )
     directions = []
-    pooled_counts = {
-        name: [] for name in ("frozen_superpoint", "candidate")
-    }
+    pooled_counts = {name: [] for name in ("frozen_superpoint", "candidate")}
     for direction, support, heldout in (
         ("selection_to_gate", selection, gate),
         ("gate_to_selection", gate, selection),
@@ -898,8 +899,7 @@ def audit_descriptor_identity_crossfit(
             topks=topks,
         )
         summaries = {
-            name: summarize_retrieval(value, topks)
-            for name, value in counts.items()
+            name: summarize_retrieval(value, topks) for name, value in counts.items()
         }
         for name in pooled_counts:
             pooled_counts[name].append(counts[name])
@@ -916,9 +916,7 @@ def audit_descriptor_identity_crossfit(
             }
         )
     pooled = {
-        name: summarize_retrieval(
-            combine_additive_counts(values, topks), topks
-        )
+        name: summarize_retrieval(combine_additive_counts(values, topks), topks)
         for name, values in pooled_counts.items()
     }
     return {
@@ -940,6 +938,125 @@ def audit_descriptor_identity_crossfit(
             "descriptor_dimension_policy": (
                 "native_dimensions_may_differ; rows_edges_folds_K_are_paired"
             ),
+        },
+        "split": split,
+        "directions": directions,
+        "pooled": pooled,
+        "delta_candidate_minus_superpoint": _recall_delta(
+            pooled["candidate"], pooled["frozen_superpoint"]
+        ),
+    }
+
+
+@torch.inference_mode()
+def audit_descriptor_equal_energy_crossfit(
+    *,
+    state: Mapping,
+    query_cache: Mapping,
+    teacher: Mapping,
+    probe: Mapping,
+    crossfit_blocks: int = 8,
+    minimum_support_views: int = 2,
+    topks: Sequence[int] = DEFAULT_TOPKS,
+    verify_weight_artifact: bool = True,
+    query_cache_path: str | Path | None = None,
+    teacher_path: str | Path | None = None,
+) -> dict:
+    """Audit one fixed SP+candidate descriptor with equal branch energy.
+
+    Both branch descriptors are independently L2-normalized before they are
+    concatenated and divided by sqrt(2).  Consequently a single global dot
+    product is exactly ``0.5 * cosine(SP) + 0.5 * cosine(candidate)``.  There
+    is no learned weight, source-specific bank, or detector change.
+    """
+    attestation = validate_probe(
+        probe,
+        query_cache,
+        teacher,
+        require_descriptor=True,
+        verify_weight_artifact=verify_weight_artifact,
+        query_cache_path=query_cache_path,
+        teacher_path=teacher_path,
+    )
+    topks = tuple(sorted(set(int(value) for value in topks)))
+    if not topks or topks[0] < 1:
+        raise ValueError("top-K values must be positive")
+    selection, gate, split = temporal_crossfit_split(
+        list(teacher["query_names"]), int(crossfit_blocks)
+    )
+    directions = []
+    pooled_counts = {name: [] for name in ("frozen_superpoint", "candidate")}
+    for direction, support, heldout in (
+        ("selection_to_gate", selection, gate),
+        ("gate_to_selection", gate, selection),
+    ):
+        banks, bank_report = _build_descriptor_banks(
+            query_cache=query_cache,
+            teacher=teacher,
+            probe=probe,
+            support_query_indices=support,
+            minimum_support_views=minimum_support_views,
+            candidate_representation=DESCRIPTOR_REPRESENTATION_EQUAL_ENERGY,
+        )
+        counts, ranking_resources = _evaluate_descriptor_banks(
+            state=state,
+            query_cache=query_cache,
+            teacher=teacher,
+            probe=probe,
+            gate_query_indices=heldout,
+            banks=banks,
+            topks=topks,
+            candidate_representation=DESCRIPTOR_REPRESENTATION_EQUAL_ENERGY,
+        )
+        summaries = {
+            name: summarize_retrieval(value, topks) for name, value in counts.items()
+        }
+        for name in pooled_counts:
+            pooled_counts[name].append(counts[name])
+        directions.append(
+            {
+                "direction": direction,
+                "support": bank_report,
+                "ranking_resources": ranking_resources,
+                "heldout_query_count": len(heldout),
+                **summaries,
+                "delta_candidate_minus_superpoint": _recall_delta(
+                    summaries["candidate"], summaries["frozen_superpoint"]
+                ),
+            }
+        )
+    pooled = {
+        name: summarize_retrieval(combine_additive_counts(values, topks), topks)
+        for name, values in pooled_counts.items()
+    }
+    reference_dim = int(attestation["reference_descriptor_dim"])
+    source_candidate_dim = int(attestation["candidate_descriptor_dim"])
+    return {
+        "schema": "lafgs_mapping_descriptor_equal_energy_ceiling_probe",
+        "version": 1,
+        "mapping_only": True,
+        "uses_test_queries": False,
+        "attestation": attestation,
+        "protocol": {
+            "query_coordinates": "exact_frozen_superpoint_keypoint_rows",
+            "positive_labels": str(teacher.get("schema", "unknown")),
+            "map_bank": "same_positive_edges_view_balanced_support_only",
+            "ranking": "single_global_cosine",
+            "crossfit": "bidirectional_temporal_block",
+            "crossfit_blocks": int(crossfit_blocks),
+            "minimum_support_views": int(minimum_support_views),
+            "topks": list(topks),
+            "candidate_detector_used": False,
+            "candidate_representation": (
+                "l2_concat(l2(superpoint),l2(candidate))/sqrt(2)"
+            ),
+            "score_identity": "0.5*cosine_superpoint+0.5*cosine_candidate",
+            "source_candidate_descriptor_dim": source_candidate_dim,
+            "effective_candidate_descriptor_dim": (
+                reference_dim + source_candidate_dim
+            ),
+            "learned_fusion_parameters": False,
+            "source_specific_descriptor_routing": False,
         },
         "split": split,
         "directions": directions,

@@ -9,12 +9,15 @@ import json
 import math
 from pathlib import Path
 
+from common.evaluation_code import frontend_descriptor_evaluation_code_identity
 from common.hashing import sha256_file
 
 
 REPORT_SCHEMA = "lafgs_frontend_ceiling_probe_audit_bundle"
 DESCRIPTOR_SCHEMA = "lafgs_mapping_descriptor_identity_ceiling_probe"
+DESCRIPTOR_EQUAL_ENERGY_SCHEMA = "lafgs_mapping_descriptor_equal_energy_ceiling_probe"
 GATE_SCHEMA = "lafgs_frontend_descriptor_arm_b_mechanism_gate"
+GATE_EQUAL_ENERGY_SCHEMA = "lafgs_frontend_descriptor_equal_energy_mechanism_gate"
 EXPECTED_CROSSFIT_BLOCKS = 8
 EXPECTED_MINIMUM_SUPPORT_VIEWS = 2
 EXPECTED_TOPKS = (1, 2, 4, 8, 16, 32)
@@ -159,9 +162,7 @@ def _validate_recall_summary(summary: object, *, label: str) -> Mapping:
         raise ValueError(f"{label} top-1 correct count exceeds eligible rows")
 
     topk_keys = {str(value) for value in EXPECTED_TOPKS}
-    recall = _mapping(
-        payload.get("positive_recall_at_k"), label=f"{label} recall"
-    )
+    recall = _mapping(payload.get("positive_recall_at_k"), label=f"{label} recall")
     if set(recall) != topk_keys:
         raise ValueError(f"{label} top-K registry differs from preregistration")
     previous = -math.inf
@@ -170,9 +171,7 @@ def _validate_recall_summary(summary: object, *, label: str) -> Mapping:
         if value + NON_REGRESSION_ABS_TOLERANCE < previous:
             raise ValueError(f"{label} recall is not monotonic in K")
         previous = value
-    expected_r1 = counts["top1_correct"] / max(
-        counts["positive_eligible_rows"], 1
-    )
+    expected_r1 = counts["top1_correct"] / max(counts["positive_eligible_rows"], 1)
     if not math.isclose(
         float(recall["1"]),
         expected_r1,
@@ -193,9 +192,7 @@ def _validate_recall_summary(summary: object, *, label: str) -> Mapping:
             raise ValueError(f"{label} {kind} top-K registry differs")
         previous = -math.inf
         for topk in EXPECTED_TOPKS:
-            value = _unit_interval(
-                values[str(topk)], label=f"{label} {kind} R@{topk}"
-            )
+            value = _unit_interval(values[str(topk)], label=f"{label} {kind} R@{topk}")
             if value + NON_REGRESSION_ABS_TOLERANCE < previous:
                 raise ValueError(f"{label} {kind} recall is not monotonic")
             previous = value
@@ -239,26 +236,18 @@ def _validate_reported_delta(
             key = str(topk)
             expected = float(
                 candidate["positive_recall_at_k_by_anchor_kind"][kind][key]
-            ) - float(
-                baseline["positive_recall_at_k_by_anchor_kind"][kind][key]
-            )
-            actual = _finite_number(
-                values[key], label=f"{label} {kind} delta R@{key}"
-            )
+            ) - float(baseline["positive_recall_at_k_by_anchor_kind"][kind][key])
+            actual = _finite_number(values[key], label=f"{label} {kind} delta R@{key}")
             if not math.isclose(
                 actual,
                 expected,
                 rel_tol=0.0,
                 abs_tol=REPORTED_DELTA_ABS_TOLERANCE,
             ):
-                raise ValueError(
-                    f"{label} reported {kind} R@{key} delta is not exact"
-                )
+                raise ValueError(f"{label} reported {kind} R@{key} delta is not exact")
 
 
-def _validate_paired_rows(
-    baseline: Mapping, candidate: Mapping, *, label: str
-) -> None:
+def _validate_paired_rows(baseline: Mapping, candidate: Mapping, *, label: str) -> None:
     paired_keys = (
         "replayed_rows",
         "positive_eligible_rows",
@@ -305,11 +294,9 @@ def _validate_direction_resources(
         label=f"{label} descriptor memory",
     )
     if (
-        memory.get("formula")
-        != "supported_anchor_count * descriptor_dim * 4"
+        memory.get("formula") != "supported_anchor_count * descriptor_dim * 4"
         or memory.get("bytes_per_scalar") != 4
-        or memory.get("frozen_superpoint_dim")
-        != expected_reference_descriptor_dim
+        or memory.get("frozen_superpoint_dim") != expected_reference_descriptor_dim
         or memory.get("candidate_dim") != expected_candidate_descriptor_dim
         or memory.get("frozen_superpoint_bytes")
         != supported_anchor_count * expected_reference_descriptor_dim * 4
@@ -317,6 +304,20 @@ def _validate_direction_resources(
         != supported_anchor_count * expected_candidate_descriptor_dim * 4
     ):
         raise ValueError(f"{label} descriptor memory attestation differs")
+    expected_memory_ratio = (
+        expected_candidate_descriptor_dim / expected_reference_descriptor_dim
+    )
+    memory_ratio = _finite_number(
+        memory.get("candidate_to_superpoint_ratio"),
+        label=f"{label} descriptor memory ratio",
+    )
+    if not math.isclose(
+        memory_ratio,
+        expected_memory_ratio,
+        rel_tol=0.0,
+        abs_tol=REPORTED_DELTA_ABS_TOLERANCE,
+    ):
+        raise ValueError(f"{label} descriptor memory ratio differs")
 
     resources = _mapping(
         direction.get("ranking_resources"), label=f"{label} ranking resources"
@@ -333,6 +334,7 @@ def _validate_direction_resources(
         raise ValueError(f"{label} baseline ranking dimension differs")
     if candidate.get("descriptor_dim") != expected_candidate_descriptor_dim:
         raise ValueError(f"{label} candidate ranking dimension differs")
+    paired_resources = {}
     for key in ("query_rows", "score_elements"):
         baseline_value = _nonnegative_int(
             baseline.get(key), label=f"{label} baseline {key}"
@@ -342,8 +344,14 @@ def _validate_direction_resources(
         )
         if baseline_value != candidate_value:
             raise ValueError(f"{label} paired ranking {key} differs")
+        paired_resources[key] = baseline_value
+    if paired_resources["score_elements"] != (
+        paired_resources["query_rows"] * supported_anchor_count
+    ):
+        raise ValueError(f"{label} ranking score-element formula differs")
+    reported_macs = {}
     for name, values in (("baseline", baseline), ("candidate", candidate)):
-        _nonnegative_int(
+        reported_macs[name] = _nonnegative_int(
             values.get("dot_product_multiply_accumulates"),
             label=f"{label} {name} ranking MACs",
         )
@@ -353,6 +361,41 @@ def _validate_direction_resources(
         )
         if seconds < 0.0:
             raise ValueError(f"{label} {name} ranking wall time is negative")
+    if reported_macs["baseline"] != (
+        paired_resources["score_elements"] * expected_reference_descriptor_dim
+    ) or reported_macs["candidate"] != (
+        paired_resources["score_elements"] * expected_candidate_descriptor_dim
+    ):
+        raise ValueError(f"{label} ranking MAC formula differs")
+    ratios = _mapping(
+        resources.get("candidate_to_superpoint_ratio"),
+        label=f"{label} ranking ratios",
+    )
+    mac_ratio = _finite_number(
+        ratios.get("dot_product_multiply_accumulates"),
+        label=f"{label} ranking MAC ratio",
+    )
+    if not math.isclose(
+        mac_ratio,
+        expected_memory_ratio,
+        rel_tol=0.0,
+        abs_tol=REPORTED_DELTA_ABS_TOLERANCE,
+    ):
+        raise ValueError(f"{label} ranking MAC ratio differs")
+    wall_ratio = _finite_number(
+        ratios.get("ranking_wall_seconds"),
+        label=f"{label} ranking wall-time ratio",
+    )
+    baseline_seconds = float(baseline["ranking_wall_seconds"])
+    candidate_seconds = float(candidate["ranking_wall_seconds"])
+    expected_wall_ratio = candidate_seconds / max(baseline_seconds, 1e-12)
+    if not math.isclose(
+        wall_ratio,
+        expected_wall_ratio,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(f"{label} ranking wall-time ratio differs")
 
 
 def _validate_bundle(
@@ -368,9 +411,27 @@ def _validate_bundle(
     expected_requested_keypoint_count: int,
     expected_reference_descriptor_dim: int,
     expected_candidate_descriptor_dim: int,
+    expected_effective_candidate_descriptor_dim: int,
     expected_validated_descriptor_rows: int,
     expected_teacher_schema: str,
+    candidate_representation: str,
+    expected_evaluation_code: Mapping | None,
 ) -> tuple[Mapping, dict]:
+    if candidate_representation not in {
+        "native_candidate",
+        "equal_energy_superpoint_candidate",
+    }:
+        raise ValueError("Unsupported candidate representation")
+    if candidate_representation == "native_candidate":
+        if (
+            expected_effective_candidate_descriptor_dim
+            != expected_candidate_descriptor_dim
+        ):
+            raise ValueError("Native candidate dimensions differ")
+    elif expected_effective_candidate_descriptor_dim != (
+        expected_reference_descriptor_dim + expected_candidate_descriptor_dim
+    ):
+        raise ValueError("Equal-energy descriptor dimension is not additive")
     if sha256_file(report_path) != expected_report_sha256:
         raise ValueError("Descriptor report SHA-256 differs from expected")
     if (
@@ -381,12 +442,15 @@ def _validate_bundle(
         or report.get("deployment_modified") is not False
     ):
         raise ValueError("Descriptor audit bundle is not mapping-only/test-free")
+    if (
+        expected_evaluation_code is not None
+        and report.get("evaluation_code") != expected_evaluation_code
+    ):
+        raise ValueError("Descriptor evaluator code identity differs")
     if "detector_repeatability" in report:
         raise ValueError("Descriptor Arm B report also contains detector Arm A")
 
-    source_entries = _mapping(
-        report.get("source_artifacts"), label="source_artifacts"
-    )
+    source_entries = _mapping(report.get("source_artifacts"), label="source_artifacts")
     if set(source_entries) != set(source_paths):
         raise ValueError("Descriptor report source-artifact registry differs")
     locked_sources = {
@@ -398,16 +462,22 @@ def _validate_bundle(
         )
         for name in source_paths
     }
-    if Path(str(report.get("probe_cache", ""))).expanduser().resolve() != source_paths[
-        "probe_cache"
-    ]:
+    if (
+        Path(str(report.get("probe_cache", ""))).expanduser().resolve()
+        != source_paths["probe_cache"]
+    ):
         raise ValueError("Descriptor report probe-cache path differs")
 
     descriptor = _mapping(
         report.get("descriptor_identity"), label="descriptor_identity"
     )
+    expected_descriptor_schema = (
+        DESCRIPTOR_SCHEMA
+        if candidate_representation == "native_candidate"
+        else DESCRIPTOR_EQUAL_ENERGY_SCHEMA
+    )
     if (
-        descriptor.get("schema") != DESCRIPTOR_SCHEMA
+        descriptor.get("schema") != expected_descriptor_schema
         or descriptor.get("version") != 1
         or descriptor.get("mapping_only") is not True
         or descriptor.get("uses_test_queries") is not False
@@ -465,13 +535,34 @@ def _validate_bundle(
             "native_dimensions_may_differ; rows_edges_folds_K_are_paired"
         ),
     }
+    if candidate_representation == "equal_energy_superpoint_candidate":
+        expected_protocol = {
+            "query_coordinates": "exact_frozen_superpoint_keypoint_rows",
+            "positive_labels": expected_teacher_schema,
+            "map_bank": "same_positive_edges_view_balanced_support_only",
+            "ranking": "single_global_cosine",
+            "crossfit": "bidirectional_temporal_block",
+            "crossfit_blocks": EXPECTED_CROSSFIT_BLOCKS,
+            "minimum_support_views": EXPECTED_MINIMUM_SUPPORT_VIEWS,
+            "topks": list(EXPECTED_TOPKS),
+            "candidate_detector_used": False,
+            "candidate_representation": (
+                "l2_concat(l2(superpoint),l2(candidate))/sqrt(2)"
+            ),
+            "score_identity": ("0.5*cosine_superpoint+0.5*cosine_candidate"),
+            "source_candidate_descriptor_dim": (expected_candidate_descriptor_dim),
+            "effective_candidate_descriptor_dim": (
+                expected_effective_candidate_descriptor_dim
+            ),
+            "learned_fusion_parameters": False,
+            "source_specific_descriptor_routing": False,
+        }
     if dict(protocol) != expected_protocol:
         raise ValueError("Descriptor protocol differs from preregistration")
 
     split = _mapping(descriptor.get("split"), label="descriptor split")
     if (
-        split.get("policy")
-        != "per_sequence_alternating_contiguous_temporal_blocks"
+        split.get("policy") != "per_sequence_alternating_contiguous_temporal_blocks"
         or split.get("block_count") != EXPECTED_CROSSFIT_BLOCKS
         or split.get("uses_test_queries") is not False
     ):
@@ -534,7 +625,9 @@ def _validate_bundle(
         _validate_direction_resources(
             direction,
             expected_reference_descriptor_dim=expected_reference_descriptor_dim,
-            expected_candidate_descriptor_dim=expected_candidate_descriptor_dim,
+            expected_candidate_descriptor_dim=(
+                expected_effective_candidate_descriptor_dim
+            ),
             label=name,
         )
         if (
@@ -597,18 +690,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-weights", type=Path, required=True)
     parser.add_argument("--expected-candidate-weights-sha256", required=True)
     parser.add_argument("--expected-query-count", type=int, required=True)
+    parser.add_argument("--expected-requested-keypoint-count", type=int, required=True)
+    parser.add_argument("--expected-reference-descriptor-dim", type=int, required=True)
+    parser.add_argument("--expected-candidate-descriptor-dim", type=int, required=True)
     parser.add_argument(
-        "--expected-requested-keypoint-count", type=int, required=True
+        "--candidate-representation",
+        choices=("native_candidate", "equal_energy_superpoint_candidate"),
+        default="native_candidate",
     )
-    parser.add_argument(
-        "--expected-reference-descriptor-dim", type=int, required=True
-    )
-    parser.add_argument(
-        "--expected-candidate-descriptor-dim", type=int, required=True
-    )
-    parser.add_argument(
-        "--expected-validated-descriptor-rows", type=int, required=True
-    )
+    parser.add_argument("--expected-effective-candidate-descriptor-dim", type=int)
+    parser.add_argument("--expected-validated-descriptor-rows", type=int, required=True)
     parser.add_argument("--expected-teacher-schema", required=True)
     parser.add_argument("--output", type=Path, required=True)
     return parser
@@ -627,9 +718,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "probe_cache": _resolved_file(args.probe_cache, label="probe cache"),
     }
     source_sha256 = {
-        "state": _sha256(
-            args.expected_state_sha256, label="Expected state SHA-256"
-        ),
+        "state": _sha256(args.expected_state_sha256, label="Expected state SHA-256"),
         "query_cache": _sha256(
             args.expected_query_cache_sha256,
             label="Expected query-cache SHA-256",
@@ -655,6 +744,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise ValueError("Gate output must not overwrite a source artifact")
 
     report = _read_json(report_path)
+    expected_candidate_descriptor_dim = int(args.expected_candidate_descriptor_dim)
+    expected_effective_candidate_descriptor_dim = int(
+        args.expected_effective_candidate_descriptor_dim
+        if args.expected_effective_candidate_descriptor_dim is not None
+        else expected_candidate_descriptor_dim
+    )
+    equal_energy = args.candidate_representation == "equal_energy_superpoint_candidate"
+    evaluation_code = (
+        frontend_descriptor_evaluation_code_identity(require_clean=True)
+        if equal_energy
+        else None
+    )
     descriptor, locked_sources = _validate_bundle(
         report,
         report_path=report_path,
@@ -664,19 +765,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         candidate_weights_path=candidate_weights_path,
         candidate_weights_sha256=candidate_weights_sha256,
         expected_query_count=int(args.expected_query_count),
-        expected_requested_keypoint_count=int(
-            args.expected_requested_keypoint_count
+        expected_requested_keypoint_count=int(args.expected_requested_keypoint_count),
+        expected_reference_descriptor_dim=int(args.expected_reference_descriptor_dim),
+        expected_candidate_descriptor_dim=expected_candidate_descriptor_dim,
+        expected_effective_candidate_descriptor_dim=(
+            expected_effective_candidate_descriptor_dim
         ),
-        expected_reference_descriptor_dim=int(
-            args.expected_reference_descriptor_dim
-        ),
-        expected_candidate_descriptor_dim=int(
-            args.expected_candidate_descriptor_dim
-        ),
-        expected_validated_descriptor_rows=int(
-            args.expected_validated_descriptor_rows
-        ),
+        expected_validated_descriptor_rows=int(args.expected_validated_descriptor_rows),
         expected_teacher_schema=str(args.expected_teacher_schema),
+        candidate_representation=str(args.candidate_representation),
+        expected_evaluation_code=evaluation_code,
     )
 
     direction_comparisons = {}
@@ -715,16 +813,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         gates[f"pooled_{kind}_r1_non_regression"] = (
             delta >= -NON_REGRESSION_ABS_TOLERANCE
         )
-    gates["pooled_r8_non_regression"] = (
-        pooled_r8_delta >= -NON_REGRESSION_ABS_TOLERANCE
-    )
+    gates["pooled_r8_non_regression"] = pooled_r8_delta >= -NON_REGRESSION_ABS_TOLERANCE
     passed = all(gates.values())
     gate_report = {
-        "schema": GATE_SCHEMA,
+        "schema": GATE_EQUAL_ENERGY_SCHEMA if equal_energy else GATE_SCHEMA,
         "version": 1,
         "mapping_only": True,
         "uses_test_queries": False,
-        "single_factor": "descriptor_identity_at_exact_superpoint_rows",
+        "single_factor": (
+            "equal_energy_single_descriptor_at_exact_superpoint_rows"
+            if equal_energy
+            else "descriptor_identity_at_exact_superpoint_rows"
+        ),
         "valid": True,
         "protocol": {
             "crossfit": "bidirectional_temporal_block",
@@ -735,6 +835,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             "non_regression_absolute_tolerance": NON_REGRESSION_ABS_TOLERANCE,
             "reported_delta_validation_absolute_tolerance": (
                 REPORTED_DELTA_ABS_TOLERANCE
+            ),
+            "candidate_representation": str(args.candidate_representation),
+            "source_candidate_descriptor_dim": (expected_candidate_descriptor_dim),
+            "effective_candidate_descriptor_dim": (
+                expected_effective_candidate_descriptor_dim
             ),
         },
         "comparisons": {
@@ -766,6 +871,11 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "path": str(candidate_weights_path),
                 "sha256": candidate_weights_sha256,
             },
+            **(
+                {"evaluation_code": evaluation_code}
+                if evaluation_code is not None
+                else {}
+            ),
         },
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
