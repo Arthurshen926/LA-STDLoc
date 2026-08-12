@@ -179,6 +179,47 @@ PYTHONPATH=/root/STDLoc \
   --output /mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor_report.json
 ```
 
+## Fail-closed Arm-B mechanism gate
+
+Freeze the evaluator report SHA256 and reuse the producer's printed
+`output_sha256` and `reference_row_count`; these are lineage values, not
+accuracy thresholds. Then run the descriptor-only machine gate. The command
+requires every source artifact by both exact path and SHA256, re-hashes them at
+gate time, and verifies the evaluator's nested weight/query-cache/teacher
+attestation before reading a metric:
+
+```bash
+PYTHONPATH=/root/STDLoc \
+  /root/miniconda3/envs/g4splat/bin/python -m scripts.compare_frontend_descriptor_arm_b \
+  --report /mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor_report.json \
+  --expected-report-sha256 REPORT_SHA256 \
+  --state /mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/anchor_map_step_1520.pt \
+  --expected-state-sha256 5f754ace648336d9f1fca381f29cd7f6164a217ca05b506644f21929e4a9e620 \
+  --query-cache /mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt \
+  --expected-query-cache-sha256 6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9 \
+  --teacher /mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/complete_positive_teacher.pt \
+  --expected-teacher-sha256 3f733debc51aafb7d166ebfb64010de237e3e7542851e647a7a2966f7c609a81 \
+  --probe-cache /mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/xfeat64_descriptor.pt \
+  --expected-probe-cache-sha256 PRODUCER_OUTPUT_SHA256 \
+  --candidate-weights /mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat.pt \
+  --expected-candidate-weights-sha256 0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b \
+  --expected-query-count 2000 \
+  --expected-requested-keypoint-count 1024 \
+  --expected-reference-descriptor-dim 256 \
+  --expected-candidate-descriptor-dim 64 \
+  --expected-validated-descriptor-rows PRODUCER_REFERENCE_ROW_COUNT \
+  --expected-teacher-schema lafgs_v9_active_map_complete_positive_teacher \
+  --output /mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/descriptor_arm_b_gate.json
+```
+
+The thresholds are compiled into the gate and are not command-line knobs:
+candidate R@1 delta must be strictly greater than zero in both temporal
+directions; pooled R@8, pooled Track-Core R@1, and pooled Gaussian-Reserve R@1
+each use the single explicit non-regression tolerance `delta >= -1e-12`.
+Contract or lineage corruption exits nonzero without a valid decision. A
+scientifically valid `STOP` writes its JSON and exits 2; `GO` authorizes only a
+mapping-only candidate descriptor rebuild and the later pose gate.
+
 ## Synthetic verification
 
 The producer tests use a clean temporary Git checkout, strict fake state dict,
@@ -188,3 +229,12 @@ sampling geometry, `[N,64]` shape/norm, mapping-only exclusion, row-registry
 hash corruption, query signature/test-set rejection, checkpoint/code SHA
 mismatch, dirty worktree rejection, and pair-checkpoint rejection. Tests use
 CPU tensors and synthetic images only.
+
+The machine-gate tests additionally cover synthetic GO, every preregistered
+STOP criterion, exact source mutation/relabel rejection, test-tainted reports,
+and a missing cross-fit direction:
+
+```bash
+/root/miniconda3/envs/g4splat/bin/python -m pytest -q \
+  tests/test_frontend_descriptor_arm_b_gate.py
+```
