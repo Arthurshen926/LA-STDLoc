@@ -587,6 +587,101 @@ def compute_track_functional_statistics(
     }
 
 
+def _canonical_base_tensors(
+    base_state: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    base_features = F.normalize(
+        torch.as_tensor(base_state["landmark_features"]).float(), dim=1
+    )
+    base_xyz = torch.as_tensor(base_state["landmark_xyz"]).float()
+    base_source_ids = torch.as_tensor(
+        base_state["landmark_indices"], dtype=torch.long
+    ).reshape(-1)
+    if not (
+        base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()
+    ):
+        raise ValueError("base state tensors are not row-aligned")
+    return base_features, base_xyz, base_source_ids
+
+
+def _empty_micro_anchor_quality() -> dict[str, torch.Tensor]:
+    return {
+        "coverage_gain": torch.empty(0, dtype=torch.long),
+        "valid_observations": torch.empty(0, dtype=torch.long),
+        "view_bin_count": torch.empty(0, dtype=torch.long),
+        "reprojection_median_px": torch.empty(0, dtype=torch.float32),
+        "covariance_trace_m2": torch.empty(0, dtype=torch.float32),
+    }
+
+
+def _build_add_only_anchor_map_schema(
+    *,
+    base_features: torch.Tensor,
+    base_xyz: torch.Tensor,
+    base_source_ids: torch.Tensor,
+    selected_track_ids: torch.Tensor,
+    source_extension: torch.Tensor,
+    xyz_extension: torch.Tensor,
+    feature_extension: torch.Tensor,
+    micro_anchor_quality: dict[str, torch.Tensor],
+    requested_budget: int,
+    minimum_coverage_gain: int,
+    minimum_distinct_view_bins: int,
+    minimum_separation_m: float,
+    descriptor_trim_fraction: float,
+    radius_px: float,
+) -> dict:
+    """Build the shared, ordered add-only anchor-map schema."""
+    base_count = int(base_source_ids.numel())
+    selected_count = int(selected_track_ids.numel())
+    if not (
+        int(source_extension.shape[0])
+        == int(xyz_extension.shape[0])
+        == int(feature_extension.shape[0])
+        == selected_count
+    ):
+        raise ValueError("materialized anchor extensions are not row-aligned")
+    return {
+        "version": 1,
+        "schema": "lafgs_materialized_anchor_map",
+        "anchor_ids": torch.arange(
+            base_count + selected_count, dtype=torch.long
+        ),
+        "source_primitive_ids": torch.cat(
+            (base_source_ids, source_extension)
+        ),
+        "track_cluster_ids": torch.cat(
+            (
+                torch.full((base_count,), -1, dtype=torch.long),
+                selected_track_ids,
+            )
+        ),
+        "anchor_xyz": torch.cat((base_xyz, xyz_extension)),
+        "anchor_features": torch.cat((base_features, feature_extension)),
+        "anchor_type": torch.cat(
+            (
+                torch.zeros(base_count, dtype=torch.int8),
+                torch.ones(selected_count, dtype=torch.int8),
+            )
+        ),
+        "base_anchor_count": base_count,
+        "requested_micro_anchor_budget": int(requested_budget),
+        "micro_anchor_count": selected_count,
+        "config": {
+            "level_a_only": True,
+            "add_only": True,
+            "old_anchor_descriptors_frozen": True,
+            "old_anchor_geometry_frozen": True,
+            "minimum_coverage_gain": int(minimum_coverage_gain),
+            "minimum_distinct_view_bins": int(minimum_distinct_view_bins),
+            "minimum_separation_m": float(minimum_separation_m),
+            "descriptor_trim_fraction": float(descriptor_trim_fraction),
+            "coverage_radius_px": float(radius_px),
+        },
+        "micro_anchor_quality": micro_anchor_quality,
+    }
+
+
 def build_add_only_materialized_anchor_map(
     *,
     base_state: dict,
@@ -603,17 +698,9 @@ def build_add_only_materialized_anchor_map(
     """Create a frozen old bank plus Level-A track-derived micro-anchors."""
     if str(payload.get("schema", "")) != "lafgs_track_first_payload":
         raise ValueError("unsupported Track-First payload schema")
-    base_features = F.normalize(
-        torch.as_tensor(base_state["landmark_features"]).float(), dim=1
+    base_features, base_xyz, base_source_ids = _canonical_base_tensors(
+        base_state
     )
-    base_xyz = torch.as_tensor(base_state["landmark_xyz"]).float()
-    base_source_ids = torch.as_tensor(
-        base_state["landmark_indices"], dtype=torch.long
-    ).reshape(-1)
-    if not (
-        base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()
-    ):
-        raise ValueError("base state tensors are not row-aligned")
     cache = query_cache.get("queries", query_cache)
     tracks = payload["tracks"]
     geometry = payload["track_geometry"]
@@ -719,60 +806,35 @@ def build_add_only_materialized_anchor_map(
         feature_extension = base_features.new_zeros((0, base_features.shape[1]))
         xyz_extension = base_xyz.new_zeros((0, 3))
         source_extension = base_source_ids.new_zeros((0,))
-    total = int(base_source_ids.numel() + selected_tensor.numel())
-    anchor_type = torch.cat(
-        (
-            torch.zeros(base_source_ids.numel(), dtype=torch.int8),
-            torch.ones(selected_tensor.numel(), dtype=torch.int8),
-        )
-    )
-    track_cluster_ids = torch.cat(
-        (
-            torch.full((base_source_ids.numel(),), -1, dtype=torch.long),
-            selected_tensor,
-        )
-    )
-    output = {
-        "version": 1,
-        "schema": "lafgs_materialized_anchor_map",
-        "anchor_ids": torch.arange(total, dtype=torch.long),
-        "source_primitive_ids": torch.cat(
-            (base_source_ids, source_extension)
-        ),
-        "track_cluster_ids": track_cluster_ids,
-        "anchor_xyz": torch.cat((base_xyz, xyz_extension)),
-        "anchor_features": torch.cat((base_features, feature_extension)),
-        "anchor_type": anchor_type,
-        "base_anchor_count": int(base_source_ids.numel()),
-        "requested_micro_anchor_budget": int(budget),
-        "micro_anchor_count": int(selected_tensor.numel()),
-        "config": {
-            "level_a_only": True,
-            "add_only": True,
-            "old_anchor_descriptors_frozen": True,
-            "old_anchor_geometry_frozen": True,
-            "minimum_coverage_gain": int(minimum_coverage_gain),
-            "minimum_distinct_view_bins": int(minimum_distinct_view_bins),
-            "minimum_separation_m": float(minimum_separation_m),
-            "descriptor_trim_fraction": float(descriptor_trim_fraction),
-            "coverage_radius_px": float(radius_px),
-        },
-        "micro_anchor_quality": {
-            "coverage_gain": coverage["coverage_gain"][selected_tensor],
-            "valid_observations": coverage["valid_observations"][
-                selected_tensor
-            ],
-            "view_bin_count": torch.as_tensor(
-                geometry["triangulation_distinct_view_bin_count"]
-            )[selected_tensor],
-            "reprojection_median_px": torch.as_tensor(
-                geometry["triangulation_reprojection_median_px"]
-            )[selected_tensor],
-            "covariance_trace_m2": torch.as_tensor(
-                geometry["triangulation_covariance_trace"]
-            )[selected_tensor],
-        },
+    micro_anchor_quality = {
+        "coverage_gain": coverage["coverage_gain"][selected_tensor],
+        "valid_observations": coverage["valid_observations"][selected_tensor],
+        "view_bin_count": torch.as_tensor(
+            geometry["triangulation_distinct_view_bin_count"]
+        )[selected_tensor],
+        "reprojection_median_px": torch.as_tensor(
+            geometry["triangulation_reprojection_median_px"]
+        )[selected_tensor],
+        "covariance_trace_m2": torch.as_tensor(
+            geometry["triangulation_covariance_trace"]
+        )[selected_tensor],
     }
+    output = _build_add_only_anchor_map_schema(
+        base_features=base_features,
+        base_xyz=base_xyz,
+        base_source_ids=base_source_ids,
+        selected_track_ids=selected_tensor,
+        source_extension=source_extension,
+        xyz_extension=xyz_extension,
+        feature_extension=feature_extension,
+        micro_anchor_quality=micro_anchor_quality,
+        requested_budget=budget,
+        minimum_coverage_gain=minimum_coverage_gain,
+        minimum_distinct_view_bins=minimum_distinct_view_bins,
+        minimum_separation_m=minimum_separation_m,
+        descriptor_trim_fraction=descriptor_trim_fraction,
+        radius_px=radius_px,
+    )
     diagnostics = {
         "base_anchor_count": int(base_source_ids.numel()),
         "eligible_track_count": int(candidate.sum()),
@@ -813,67 +875,31 @@ def build_canonical_base_anchor_map(
     makes that contract explicit.  It reports eligibility as unevaluated rather
     than incorrectly treating it as zero.
     """
-    base_features = F.normalize(
-        torch.as_tensor(base_state["landmark_features"]).float(), dim=1
+    base_features, base_xyz, base_source_ids = _canonical_base_tensors(
+        base_state
     )
-    base_xyz = torch.as_tensor(base_state["landmark_xyz"]).float()
-    base_source_ids = torch.as_tensor(
-        base_state["landmark_indices"], dtype=torch.long
-    ).reshape(-1)
-    if not (
-        base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()
-    ):
-        raise ValueError("base state tensors are not row-aligned")
 
     base_count = int(base_source_ids.numel())
-    empty_long = torch.empty(0, dtype=torch.long)
-    empty_float = torch.empty(0, dtype=torch.float32)
+    selected_track_ids = torch.empty(0, dtype=torch.long)
     feature_extension = base_features.new_zeros((0, base_features.shape[1]))
     xyz_extension = base_xyz.new_zeros((0, 3))
     source_extension = base_source_ids.new_zeros((0,))
-    output = {
-        "version": 1,
-        "schema": "lafgs_materialized_anchor_map",
-        "anchor_ids": torch.arange(base_count, dtype=torch.long),
-        "source_primitive_ids": torch.cat(
-            (base_source_ids, source_extension)
-        ),
-        "track_cluster_ids": torch.cat(
-            (
-                torch.full((base_count,), -1, dtype=torch.long),
-                empty_long,
-            )
-        ),
-        "anchor_xyz": torch.cat((base_xyz, xyz_extension)),
-        "anchor_features": torch.cat((base_features, feature_extension)),
-        "anchor_type": torch.cat(
-            (
-                torch.zeros(base_count, dtype=torch.int8),
-                torch.empty(0, dtype=torch.int8),
-            )
-        ),
-        "base_anchor_count": base_count,
-        "requested_micro_anchor_budget": 0,
-        "micro_anchor_count": 0,
-        "config": {
-            "level_a_only": True,
-            "add_only": True,
-            "old_anchor_descriptors_frozen": True,
-            "old_anchor_geometry_frozen": True,
-            "minimum_coverage_gain": int(minimum_coverage_gain),
-            "minimum_distinct_view_bins": int(minimum_distinct_view_bins),
-            "minimum_separation_m": float(minimum_separation_m),
-            "descriptor_trim_fraction": float(descriptor_trim_fraction),
-            "coverage_radius_px": float(radius_px),
-        },
-        "micro_anchor_quality": {
-            "coverage_gain": empty_long.clone(),
-            "valid_observations": empty_long.clone(),
-            "view_bin_count": empty_long.clone(),
-            "reprojection_median_px": empty_float.clone(),
-            "covariance_trace_m2": empty_float.clone(),
-        },
-    }
+    output = _build_add_only_anchor_map_schema(
+        base_features=base_features,
+        base_xyz=base_xyz,
+        base_source_ids=base_source_ids,
+        selected_track_ids=selected_track_ids,
+        source_extension=source_extension,
+        xyz_extension=xyz_extension,
+        feature_extension=feature_extension,
+        micro_anchor_quality=_empty_micro_anchor_quality(),
+        requested_budget=0,
+        minimum_coverage_gain=minimum_coverage_gain,
+        minimum_distinct_view_bins=minimum_distinct_view_bins,
+        minimum_separation_m=minimum_separation_m,
+        descriptor_trim_fraction=descriptor_trim_fraction,
+        radius_px=radius_px,
+    )
     diagnostics = {
         "base_anchor_count": base_count,
         "eligible_track_count": None,

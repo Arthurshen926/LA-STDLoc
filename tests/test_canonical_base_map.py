@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 from evidence.tracks import (
@@ -117,6 +118,14 @@ def test_zero_budget_cli_does_not_load_track_payload_or_query_cache(
     torch.save(_base_state(), base_path)
     track_path.write_bytes(b"must not be loaded")
     query_path.write_bytes(b"must not be loaded")
+    original_load = torch.load
+    loaded_paths = []
+
+    def tracked_load(path, *args, **kwargs):
+        loaded_paths.append(Path(path).resolve())
+        return original_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", tracked_load)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -137,11 +146,58 @@ def test_zero_budget_cli_does_not_load_track_payload_or_query_cache(
 
     candidates.main()
 
-    state = torch.load(output, map_location="cpu", weights_only=False)
+    assert loaded_paths == [base_path.resolve()]
+    state = original_load(output, map_location="cpu", weights_only=False)
     expected, _ = build_canonical_base_anchor_map(base_state=_base_state())
-    state.pop("provenance")
+    provenance = state.pop("provenance")
     _assert_exact(state, expected)
+    expected_context = {
+        "base_state": str(base_path.resolve()),
+        "track_payload": str(track_path.resolve()),
+        "query_cache": str(query_path.resolve()),
+    }
+    assert provenance["declared_context"] == expected_context
+    for name, path in expected_context.items():
+        dependency = provenance["materialized_dependencies"][name]
+        assert dependency["path"] == path
+        assert dependency["used"] is (name == "base_state")
+        assert provenance[name] == path
     report = json.loads(output.with_suffix(".json").read_text())
     assert report["eligible_track_count"] is None
     assert report["eligibility_evaluated"] is False
 
+
+@pytest.mark.parametrize("missing_name", ["track_payload", "query_cache"])
+def test_zero_budget_cli_requires_declared_context_files(
+    tmp_path: Path, monkeypatch, missing_name: str
+) -> None:
+    base_path = tmp_path / "base.pt"
+    track_path = tmp_path / "tracks.pt"
+    query_path = tmp_path / "queries.pt"
+    output = tmp_path / "canonical.pt"
+    torch.save(_base_state(), base_path)
+    if missing_name != "track_payload":
+        track_path.write_bytes(b"declared Track context")
+    if missing_name != "query_cache":
+        query_path.write_bytes(b"declared query context")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "topology.candidates",
+            "--base_state",
+            str(base_path),
+            "--track_payload",
+            str(track_path),
+            "--query_cache",
+            str(query_path),
+            "--output",
+            str(output),
+            "--budget",
+            "0",
+        ],
+    )
+
+    with pytest.raises(FileNotFoundError, match=missing_name):
+        candidates.main()
+    assert not output.exists()

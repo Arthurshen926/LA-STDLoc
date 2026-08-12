@@ -12,6 +12,45 @@ from evidence.tracks import (
 )
 
 
+def _require_input_file(value: str, *, name: str) -> Path:
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"declared {name} input is not an existing file: {path}"
+        )
+    return path
+
+
+def _canonical_map_provenance(
+    *,
+    base_state: Path,
+    track_payload: Path,
+    query_cache: Path,
+    track_context_used: bool,
+) -> dict:
+    declared_context = {
+        "base_state": str(base_state),
+        "track_payload": str(track_payload),
+        "query_cache": str(query_cache),
+    }
+    materialized_dependencies = {
+        name: {
+            "path": path,
+            "used": name == "base_state" or track_context_used,
+        }
+        for name, path in declared_context.items()
+    }
+    return {
+        "schema": "lafgs_canonical_map_provenance",
+        "version": 1,
+        # Compatibility aliases are declared context, not proof that a file's
+        # contents contributed to materialization.
+        **declared_context,
+        "declared_context": declared_context,
+        "materialized_dependencies": materialized_dependencies,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Build add-only Track-First localization micro-anchors"
@@ -36,10 +75,20 @@ def main():
     )
     args = parser.parse_args()
 
-    base_state = torch.load(
-        args.base_state, map_location="cpu", weights_only=False
+    base_state_path = _require_input_file(args.base_state, name="base_state")
+    track_payload_path = _require_input_file(
+        args.track_payload, name="track_payload"
     )
-    if int(args.budget) == 0 and not args.evaluate_zero_budget_eligibility:
+    query_cache_path = _require_input_file(
+        args.query_cache, name="query_cache"
+    )
+    track_context_used = not (
+        int(args.budget) == 0 and not args.evaluate_zero_budget_eligibility
+    )
+    base_state = torch.load(
+        base_state_path, map_location="cpu", weights_only=False
+    )
+    if not track_context_used:
         state, diagnostics = build_canonical_base_anchor_map(
             base_state=base_state,
             minimum_coverage_gain=args.minimum_coverage_gain,
@@ -50,10 +99,10 @@ def main():
         )
     else:
         track_payload = torch.load(
-            args.track_payload, map_location="cpu", weights_only=False
+            track_payload_path, map_location="cpu", weights_only=False
         )
         query_cache = torch.load(
-            args.query_cache, map_location="cpu", weights_only=False
+            query_cache_path, map_location="cpu", weights_only=False
         )
         state, diagnostics = build_add_only_materialized_anchor_map(
             base_state=base_state,
@@ -66,11 +115,12 @@ def main():
             descriptor_trim_fraction=args.descriptor_trim_fraction,
             radius_px=args.coverage_radius_px,
         )
-    state["provenance"] = {
-        "base_state": str(Path(args.base_state).resolve()),
-        "track_payload": str(Path(args.track_payload).resolve()),
-        "query_cache": str(Path(args.query_cache).resolve()),
-    }
+    state["provenance"] = _canonical_map_provenance(
+        base_state=base_state_path,
+        track_payload=track_payload_path,
+        query_cache=query_cache_path,
+        track_context_used=track_context_used,
+    )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(state, output)
