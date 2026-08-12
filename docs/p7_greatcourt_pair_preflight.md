@@ -84,6 +84,11 @@ FRESH_CACHE=$FACTOR/cache/query_cache.pt
 TRACK=$V3/bootstrap/tracks_refined/track_micro_anchor_payload.pt
 BOOT=$V3/bootstrap/tracks_refined/reproducibility_manifest.json
 BASE=$V3/bootstrap/stage_a/6630_lafgs_map_state.pt
+FACTOR_MANIFEST=$FACTOR/contracts/fresh_cache_bootstrap_manifest.json
+FRESH_PARENT_CAL=$FACTOR/contracts/fresh_cache_parent_calibration.json
+OLD_CACHE_SHA=13a4b23daae0194e92544746abf790eb72cd739890ad681df34878041e22e53a
+TRACK_SHA=f0fec708e00ab0f19160485059574eccdb8f6aba0484a257627f9b56a4cc90af
+BOOT_SHA=97ed0a0848a4c8bd219a82f98c2ee36aebd2258e9f3ea0f214a41a3e4ae8b846
 ```
 
 第一步必须真正重跑 detector，不能把旧 cache 政名伪装成 NMS-attested cache：
@@ -96,21 +101,47 @@ CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.refresh_mapping_sparse_cache \
 python -m scripts.audit_mapping_sparse_refresh_equivalence \
   --source-cache "$OLD_CACHE" --refreshed-cache "$FRESH_CACHE" \
   --source-track-payload "$TRACK" \
+  --expected-source-cache-sha256 "$OLD_CACHE_SHA" \
+  --expected-source-track-payload-sha256 "$TRACK_SHA" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
   --output "$FACTOR/contracts/sparse_refresh_equivalence.json"
 ```
 
 只有审计同时满足 1531/1531 Track inputs exact、1531/1531 alpha exact、
 1531/1531 metadata 为 K2048/NMS4 且
 `content_equivalent_track_payload_reuse_authorized=true` 才继续。记录 fresh cache 的
-SHA-256 为 `FRESH_SHA`，随后两个 factor arm 必须使用同一 SHA。
+SHA-256 为 `FRESH_SHA`，并记录审计 SHA 为 `REFRESH_AUDIT_SHA`。随后必须生成一份
+新的只读 manifest；它只把父 manifest 的 query-cache path/SHA 绑定到 fresh cache，
+并把父 manifest、等价审计、旧/新 cache 与冻结 Track payload 的 path/SHA 全部锁住：
+
+```bash
+python -m scripts.rebind_equivalent_query_cache_manifest \
+  --parent-manifest "$BOOT" --expected-parent-manifest-sha256 "$BOOT_SHA" \
+  --equivalence-report "$FACTOR/contracts/sparse_refresh_equivalence.json" \
+  --expected-equivalence-report-sha256 "$REFRESH_AUDIT_SHA" \
+  --source-cache "$OLD_CACHE" --expected-source-cache-sha256 "$OLD_CACHE_SHA" \
+  --refreshed-cache "$FRESH_CACHE" \
+  --expected-refreshed-cache-sha256 "$FRESH_SHA" \
+  --source-track-payload "$TRACK" \
+  --expected-source-track-payload-sha256 "$TRACK_SHA" \
+  --output "$FACTOR_MANIFEST"
+FACTOR_MANIFEST_SHA=$(sha256sum "$FACTOR_MANIFEST" | cut -d' ' -f1)
+```
+
+随后两个 factor arm 必须使用相同的 `FACTOR_MANIFEST_SHA`、`FRESH_SHA` 和
+`TRACK_SHA`。直接放松旧 manifest 的路径校验，或手工改写旧 manifest，均不合法。
 
 先跑 nearest control；`--expected-*` 缺失或与 manifest/cache/payload 不一致会硬失败：
 
 ```bash
 CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.run_track_pair_factor \
-  --manifest "$BOOT" --query-cache "$FRESH_CACHE" \
+  --manifest "$FACTOR_MANIFEST" \
+  --expected-manifest-sha256 "$FACTOR_MANIFEST_SHA" \
+  --query-cache "$FRESH_CACHE" --expected-query-cache-sha256 "$FRESH_SHA" \
   --frozen-track-payload "$TRACK" --output-dir "$FACTOR/nearest" \
+  --expected-frozen-track-payload-sha256 "$TRACK_SHA" \
   --pair-policy nearest --expected-mapping-keypoints 2048 \
+  --expected-nms-radius 4 \
   --expected-pair-budget 5254 --minimum-overlap-jaccard 0.15 \
   --minimum-joint-visibility-points 8 --parallax-saturation-deg 2.0 \
   --diversity-weight 0.20 --candidate-pool-per-camera 48 \
@@ -120,15 +151,17 @@ CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.run_track_pair_factor \
 CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.replay_track_provenance_assignment \
   --factor "$FACTOR/nearest/nearest_track_factor.pt" --base-state "$BASE" \
   --query-cache "$FRESH_CACHE" --expected-query-cache-sha256 "$FRESH_SHA" \
-  --expected-mapping-keypoints 2048 --expected-pair-budget 5254 \
-  --frozen-bootstrap-manifest "$BOOT" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
+  --expected-pair-budget 5254 \
+  --frozen-bootstrap-manifest "$FACTOR_MANIFEST" \
   --expected-frozen-bootstrap-manifest-sha256 \
-  97ed0a0848a4c8bd219a82f98c2ee36aebd2258e9f3ea0f214a41a3e4ae8b846 \
+  "$FACTOR_MANIFEST_SHA" \
   --output "$FACTOR/nearest/nearest_track_micro_anchor_payload.pt"
 
 python -m scripts.audit_track_payload_parity \
-  --reference "$TRACK" \
+  --reference "$TRACK" --expected-reference-sha256 "$TRACK_SHA" \
   --replay "$FACTOR/nearest/nearest_track_micro_anchor_payload.pt" \
+  --expected-replay-sha256 "$(sha256sum "$FACTOR/nearest/nearest_track_micro_anchor_payload.pt" | cut -d' ' -f1)" \
   --float-atol 0 \
   --output "$FACTOR/contracts/nearest_control_parity.json"
 ```
@@ -142,19 +175,99 @@ diagnostics 全部 exact。否则 fresh cache 改变了不止 NMS attestation，
 
 ```bash
 CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.run_track_pair_factor \
-  --manifest "$BOOT" --query-cache "$FRESH_CACHE" \
+  --manifest "$FACTOR_MANIFEST" \
+  --expected-manifest-sha256 "$FACTOR_MANIFEST_SHA" \
+  --query-cache "$FRESH_CACHE" --expected-query-cache-sha256 "$FRESH_SHA" \
   --frozen-track-payload "$TRACK" --output-dir "$FACTOR/parallax_diverse" \
+  --expected-frozen-track-payload-sha256 "$TRACK_SHA" \
   --pair-policy parallax_diverse --expected-mapping-keypoints 2048 \
+  --expected-nms-radius 4 \
   --expected-pair-budget 5254 --minimum-overlap-jaccard 0.15 \
   --minimum-joint-visibility-points 8 --parallax-saturation-deg 2.0 \
   --diversity-weight 0.20 --candidate-pool-per-camera 48 \
   --scene-points-per-camera 8 --maximum-scene-points 4096 \
   --scene-point-voxel-size-m 0.02 --device cuda
 
+CONTROL_REPORT=$FACTOR/nearest/nearest_track_factor.json
+VARIANT_REPORT=$FACTOR/parallax_diverse/parallax_diverse_track_factor.json
+CONTROL_REPORT_SHA=$(sha256sum "$CONTROL_REPORT" | cut -d' ' -f1)
+VARIANT_REPORT_SHA=$(sha256sum "$VARIANT_REPORT" | cut -d' ' -f1)
+
 python -m scripts.compare_track_pair_factor \
-  --control "$FACTOR/nearest/nearest_track_factor.json" \
-  --variant "$FACTOR/parallax_diverse/parallax_diverse_track_factor.json" \
+  --control "$CONTROL_REPORT" --expected-control-sha256 "$CONTROL_REPORT_SHA" \
+  --variant "$VARIANT_REPORT" --expected-variant-sha256 "$VARIANT_REPORT_SHA" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
+  --expected-pair-budget 5254 --expected-query-count 1531 \
+  --expected-query-names-sha256 3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b \
+  --expected-manifest-sha256 "$FACTOR_MANIFEST_SHA" \
+  --expected-query-cache-sha256 "$FRESH_SHA" \
+  --expected-frozen-track-payload-sha256 "$TRACK_SHA" \
+  --minimum-overlap-jaccard 0.15 --minimum-joint-visibility-points 8 \
+  --parallax-saturation-deg 2.0 --diversity-weight 0.20 \
+  --candidate-pool-per-camera 48 --scene-points-per-camera 8 \
+  --maximum-scene-points 4096 --scene-point-voxel-size-m 0.02 \
   --output "$FACTOR/contracts/mechanism_gate.json"
+```
+
+Comparator 失败会以非零退出；fullchain 的 `lock-inputs` 也会解析 V2 gate，拒绝仅有
+正确 SHA、但 `mechanism_gate_passed=false` 的 JSON。
+
+机制通过后还不能直接进入 fullchain。必须对 variant 做 exact splat-provenance replay
+及 payload lineage audit：
+
+```bash
+VARIANT_FACTOR=$FACTOR/parallax_diverse/parallax_diverse_track_factor.pt
+VARIANT_PAYLOAD=$FACTOR/parallax_diverse/parallax_diverse_track_micro_anchor_payload.pt
+
+CUDA_VISIBLE_DEVICES=<reserved> python -m scripts.replay_track_provenance_assignment \
+  --factor "$VARIANT_FACTOR" --base-state "$BASE" \
+  --query-cache "$FRESH_CACHE" --expected-query-cache-sha256 "$FRESH_SHA" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
+  --expected-pair-budget 5254 --frozen-bootstrap-manifest "$FACTOR_MANIFEST" \
+  --expected-frozen-bootstrap-manifest-sha256 "$FACTOR_MANIFEST_SHA" \
+  --output "$VARIANT_PAYLOAD"
+
+python -m scripts.audit_pair_payload_lineage \
+  --payload "$VARIANT_PAYLOAD" --factor "$VARIANT_FACTOR" \
+  --base-state "$BASE" --query-cache "$FRESH_CACHE" \
+  --expected-query-cache-sha256 "$FRESH_SHA" \
+  --frozen-bootstrap-manifest "$FACTOR_MANIFEST" \
+  --expected-frozen-bootstrap-manifest-sha256 "$FACTOR_MANIFEST_SHA" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
+  --expected-pair-budget 5254 \
+  --output "$FACTOR/contracts/parallax_diverse_payload_lineage_audit.json"
+```
+
+最后，冻结数值 calibration 也必须显式从旧 cache rebind 到 fresh cache；不能放宽
+parent path 校验。rebound parent 保持 statistics/parameters/policy 逐项不变：
+
+```bash
+PARENT_CAL=$V3/bootstrap/scene_calibration.json
+PARENT_CAL_SHA=b939fe0de7bc69245e025bcc41867986c477f11f8de984c7d4ffba949f04f38f
+
+python -m scripts.rebind_equivalent_query_cache_calibration \
+  --parent "$PARENT_CAL" --expected-parent-sha256 "$PARENT_CAL_SHA" \
+  --equivalence-report "$FACTOR/contracts/sparse_refresh_equivalence.json" \
+  --expected-equivalence-report-sha256 "$REFRESH_AUDIT_SHA" \
+  --source-cache "$OLD_CACHE" --expected-source-cache-sha256 "$OLD_CACHE_SHA" \
+  --refreshed-cache "$FRESH_CACHE" --expected-refreshed-cache-sha256 "$FRESH_SHA" \
+  --source-track-payload "$TRACK" \
+  --expected-source-track-payload-sha256 "$TRACK_SHA" \
+  --output "$FRESH_PARENT_CAL"
+
+FRESH_PARENT_CAL_SHA=$(sha256sum "$FRESH_PARENT_CAL" | cut -d' ' -f1)
+PAYLOAD_AUDIT=$FACTOR/contracts/parallax_diverse_payload_lineage_audit.json
+PAYLOAD_AUDIT_SHA=$(sha256sum "$PAYLOAD_AUDIT" | cut -d' ' -f1)
+
+python -m scripts.materialize_pair_factor_calibration \
+  --parent "$FRESH_PARENT_CAL" \
+  --expected-parent-calibration-sha256 "$FRESH_PARENT_CAL_SHA" \
+  --query-cache "$FRESH_CACHE" --expected-query-cache-sha256 "$FRESH_SHA" \
+  --track-payload "$VARIANT_PAYLOAD" --payload-lineage-audit "$PAYLOAD_AUDIT" \
+  --expected-payload-lineage-audit-sha256 "$PAYLOAD_AUDIT_SHA" \
+  --expected-mapping-keypoints 2048 --expected-nms-radius 4 \
+  --expected-pair-budget 5254 \
+  --output "$FACTOR/contracts/pair_factor_frozen_scene_calibration.json"
 ```
 
 若 overlap-constrained pool 不能在默认 pool=48 下填满 5254，视为固定 policy
@@ -204,4 +317,3 @@ average p90 严格低于 46.4954 cm 或 catastrophe total 严格低于 91。test
 - **Scientific risk:** GreatCourt 的远景深度几何高度病态；即使 parallax/covariance
   mechanism 改善，也可能不转化为 descriptor precision 或 pose。若 Stairs pose 已经
   Stop，则本外域实验没有继续运行的因果价值。
-

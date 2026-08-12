@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -29,6 +30,7 @@ def _validate_factor_contract(
     factor: dict,
     *,
     expected_mapping_keypoints: int,
+    expected_nms_radius: int,
     expected_pair_budget: int,
 ) -> None:
     if factor.get("schema") != "lafgs_pair_policy_track_factor":
@@ -39,8 +41,7 @@ def _validate_factor_contract(
         raise ValueError("Assignment replay must be mapping-only")
     if "assignment" in factor:
         raise ValueError(
-            "Pair factors containing assignment are invalid and must never be "
-            "consumed"
+            "Pair factors containing assignment are invalid and must never be consumed"
         )
     if any(
         factor.get(name) is not False
@@ -53,19 +54,36 @@ def _validate_factor_contract(
         raise ValueError("Track factor is not pair-policy-only")
     expected_mapping_keypoints = int(expected_mapping_keypoints)
     expected_pair_budget = int(expected_pair_budget)
+    expected_nms_radius = int(expected_nms_radius)
     if expected_mapping_keypoints <= 0:
         raise ValueError("Expected mapping keypoints must be positive")
     if expected_pair_budget <= 0:
         raise ValueError("Expected pair budget must be positive")
-    if int(factor.get("mapping_keypoint_factor", -1)) != (
-        expected_mapping_keypoints
-    ):
+    if expected_nms_radius <= 0:
+        raise ValueError("Expected NMS radius must be positive")
+    if int(factor.get("mapping_keypoint_factor", -1)) != (expected_mapping_keypoints):
         raise ValueError("Track factor mapping K differs from the replay contract")
+    if int(factor.get("mapping_nms_radius", -1)) != expected_nms_radius:
+        raise ValueError("Track factor NMS differs from the replay contract")
+    parameters = factor.get("pair_policy_parameters")
+    if not isinstance(parameters, dict) or not parameters:
+        raise ValueError("Track factor lacks pair-policy parameters")
     sidecar = factor.get("pair_sidecar")
     policy = sidecar.get("policy") if isinstance(sidecar, dict) else None
     pair = sidecar.get("pair") if isinstance(sidecar, dict) else None
     if not isinstance(policy, dict) or not isinstance(pair, dict):
         raise ValueError("Track factor lacks an exact pair-policy sidecar")
+    for name in (
+        "minimum_overlap_jaccard",
+        "minimum_joint_visibility_points",
+        "parallax_saturation_deg",
+        "diversity_weight",
+        "candidate_pool_per_camera",
+    ):
+        if policy.get(name) != parameters.get(name):
+            raise ValueError(
+                f"Track factor pair-policy parameter differs in sidecar: {name}"
+            )
     left = torch.as_tensor(pair.get("left_query_index", [])).reshape(-1)
     right = torch.as_tensor(pair.get("right_query_index", [])).reshape(-1)
     if (
@@ -76,20 +94,58 @@ def _validate_factor_contract(
         raise ValueError("Track factor pair budget differs from the replay contract")
 
 
+def _validate_factor_input_lineage(
+    factor: dict,
+    *,
+    manifest_path: Path,
+    expected_manifest_sha256: str,
+    query_cache_path: Path,
+    expected_query_cache_sha256: str,
+) -> None:
+    lineage = factor.get("input_lineage")
+    if not isinstance(lineage, dict):
+        raise ValueError("Track factor lacks exact input lineage")
+    manifest = lineage.get("manifest")
+    query_cache = lineage.get("query_cache")
+    frozen_track = lineage.get("frozen_track_payload")
+    if not all(
+        isinstance(value, dict) for value in (manifest, query_cache, frozen_track)
+    ):
+        raise ValueError("Track factor input lineage is incomplete")
+    if (
+        Path(str(manifest.get("path", ""))).resolve() != manifest_path.resolve()
+        or manifest.get("sha256") != expected_manifest_sha256
+    ):
+        raise ValueError("Track factor was built from a different manifest")
+    if (
+        Path(str(query_cache.get("path", ""))).resolve() != query_cache_path.resolve()
+        or query_cache.get("sha256") != expected_query_cache_sha256
+    ):
+        raise ValueError("Track factor was built from a different query cache")
+    frozen_track_path = Path(str(frozen_track.get("path", ""))).resolve()
+    if not frozen_track_path.is_file() or sha256_file(frozen_track_path) != (
+        frozen_track.get("sha256")
+    ):
+        raise ValueError("Track factor frozen Track input is missing or changed")
+
+
 def _camera_key(camera) -> str:
     return str(camera.image_name).replace("\\", "/")
 
 
 def _camera_names_sha256(names) -> str:
     normalized = sorted(str(name).replace("\\", "/") for name in names)
-    return hashlib.sha256(
-        ("\n".join(normalized) + "\n").encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(("\n".join(normalized) + "\n").encode("utf-8")).hexdigest()
 
 
 def _assignment_dependent_diagnostics(
-    *, tracks: dict, track_geometry: dict, landmark_geometry: dict,
-    assignment: dict, query_count: int, provenance_diagnostics: dict,
+    *,
+    tracks: dict,
+    track_geometry: dict,
+    landmark_geometry: dict,
+    assignment: dict,
+    query_count: int,
+    provenance_diagnostics: dict,
 ) -> dict:
     """Reproduce bootstrap diagnostics derived after provenance assignment."""
     track_high_confidence = torch.as_tensor(
@@ -126,9 +182,9 @@ def _assignment_dependent_diagnostics(
             torch.as_tensor(landmark_geometry["track_assigned"]).sum().item()
         ),
         "geometry_teacher_high_confidence_landmark_count": int(
-            torch.as_tensor(
-                landmark_geometry["triangulation_high_confidence"]
-            ).sum().item()
+            torch.as_tensor(landmark_geometry["triangulation_high_confidence"])
+            .sum()
+            .item()
         ),
         "geometry_teacher_query_support_edge_count": int(support_edge_count),
         **dict(provenance_diagnostics),
@@ -172,10 +228,18 @@ def _assignment_dependent_diagnostics(
 
 
 def _write_payload(
-    *, factor: dict, assignment: dict, diagnostics: dict,
-    landmark_indices: torch.Tensor, output: Path, factor_path: Path,
-    base_state_path: Path, query_cache_path: Path, bootstrap_manifest_path: Path,
-    assignment_parameters: dict, expected_query_cache_sha256: str,
+    *,
+    factor: dict,
+    assignment: dict,
+    diagnostics: dict,
+    landmark_indices: torch.Tensor,
+    output: Path,
+    factor_path: Path,
+    base_state_path: Path,
+    query_cache_path: Path,
+    bootstrap_manifest_path: Path,
+    assignment_parameters: dict,
+    expected_query_cache_sha256: str,
     expected_frozen_bootstrap_manifest_sha256: str,
 ) -> dict:
     names = [str(value) for value in factor["query_names"]]
@@ -211,17 +275,14 @@ def _write_payload(
             "query_cache": str(query_cache_path.resolve()),
             "query_cache_sha256": sha256_file(query_cache_path),
             "expected_query_cache_sha256": expected_query_cache_sha256,
-            "frozen_bootstrap_manifest": str(
-                bootstrap_manifest_path.resolve()
-            ),
-            "frozen_bootstrap_manifest_sha256": sha256_file(
-                bootstrap_manifest_path
-            ),
+            "frozen_bootstrap_manifest": str(bootstrap_manifest_path.resolve()),
+            "frozen_bootstrap_manifest_sha256": sha256_file(bootstrap_manifest_path),
             "expected_frozen_bootstrap_manifest_sha256": (
                 expected_frozen_bootstrap_manifest_sha256
             ),
             "assignment_algorithm": "frozen_2dgs_splat_provenance_exact_replay",
             "assignment_parameters": dict(assignment_parameters),
+            "factor_input_lineage": deepcopy(factor.get("input_lineage")),
         },
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -236,11 +297,10 @@ def main() -> None:
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
     parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
+    parser.add_argument("--expected-nms-radius", type=int, required=True)
     parser.add_argument("--expected-pair-budget", type=int, required=True)
     parser.add_argument("--frozen-bootstrap-manifest", type=Path, required=True)
-    parser.add_argument(
-        "--expected-frozen-bootstrap-manifest-sha256", required=True
-    )
+    parser.add_argument("--expected-frozen-bootstrap-manifest-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -248,18 +308,18 @@ def main() -> None:
     _validate_factor_contract(
         factor,
         expected_mapping_keypoints=args.expected_mapping_keypoints,
+        expected_nms_radius=args.expected_nms_radius,
         expected_pair_budget=args.expected_pair_budget,
     )
-    expected_frozen_bootstrap_manifest_sha256 = str(
-        args.expected_frozen_bootstrap_manifest_sha256
-    ).strip().lower()
+    expected_frozen_bootstrap_manifest_sha256 = (
+        str(args.expected_frozen_bootstrap_manifest_sha256).strip().lower()
+    )
     if len(expected_frozen_bootstrap_manifest_sha256) != 64 or any(
         character not in "0123456789abcdef"
         for character in expected_frozen_bootstrap_manifest_sha256
     ):
         raise ValueError(
-            "Expected frozen-bootstrap-manifest SHA-256 must be 64 lowercase "
-            "hex digits"
+            "Expected frozen-bootstrap-manifest SHA-256 must be 64 lowercase hex digits"
         )
     if sha256_file(args.frozen_bootstrap_manifest) != (
         expected_frozen_bootstrap_manifest_sha256
@@ -269,9 +329,7 @@ def main() -> None:
         )
     bootstrap_manifest = json.loads(args.frozen_bootstrap_manifest.read_text())
     frozen = dict(bootstrap_manifest["arguments"])
-    if str(frozen.get("geometry_teacher_identity_mode")) != (
-        "track_first_provenance"
-    ):
+    if str(frozen.get("geometry_teacher_identity_mode")) != ("track_first_provenance"):
         raise ValueError("Frozen bootstrap did not use splat provenance")
     expected_paths = {
         "initial_state_path": args.base_state,
@@ -287,16 +345,27 @@ def main() -> None:
     expected_base_sha256 = str(base_contract.get("sha256") or "")
     if not expected_base_sha256 or sha256_file(args.base_state) != expected_base_sha256:
         raise ValueError("Stage-A state SHA-256 differs from frozen bootstrap")
-    expected_query_cache_sha256 = str(
-        args.expected_query_cache_sha256
-    ).strip().lower()
+    expected_query_cache_sha256 = str(args.expected_query_cache_sha256).strip().lower()
     if len(expected_query_cache_sha256) != 64 or any(
-        character not in "0123456789abcdef"
-        for character in expected_query_cache_sha256
+        character not in "0123456789abcdef" for character in expected_query_cache_sha256
     ):
         raise ValueError("Expected query-cache SHA-256 must be 64 lowercase hex digits")
     if sha256_file(args.query_cache) != expected_query_cache_sha256:
         raise ValueError("Query-cache SHA-256 differs from frozen factor contract")
+    _validate_factor_input_lineage(
+        factor,
+        manifest_path=args.frozen_bootstrap_manifest,
+        expected_manifest_sha256=expected_frozen_bootstrap_manifest_sha256,
+        query_cache_path=args.query_cache,
+        expected_query_cache_sha256=expected_query_cache_sha256,
+    )
+    query_input = frozen_inputs.get("query_cache_path")
+    if not isinstance(query_input, dict):
+        raise ValueError("Manifest lacks query-cache input lineage")
+    if Path(str(query_input.get("path", ""))).resolve() != args.query_cache.resolve():
+        raise ValueError("Manifest input lineage names a different query cache")
+    if query_input.get("sha256") != expected_query_cache_sha256:
+        raise ValueError("Manifest does not bind the expected query-cache SHA-256")
     expected_mapping_keypoints = int(args.expected_mapping_keypoints)
     if int(factor.get("mapping_keypoint_factor", -1)) != int(
         frozen["native_keypoint_count"]
@@ -311,9 +380,7 @@ def main() -> None:
         "minimum_consensus_rate": float(
             frozen["geometry_teacher_provenance_min_consensus_rate"]
         ),
-        "minimum_views": int(
-            frozen["geometry_teacher_provenance_min_views"]
-        ),
+        "minimum_views": int(frozen["geometry_teacher_provenance_min_views"]),
         "group_maximum_landmarks": int(
             frozen["geometry_teacher_provenance_group_max_landmarks"]
         ),
@@ -380,11 +447,19 @@ def main() -> None:
         raise ValueError(
             "Query-cache mapping K differs from the explicit replay contract"
         )
+    if int(cache_contract.get("native_sparse_nms_radius", -1)) != int(
+        args.expected_nms_radius
+    ):
+        raise ValueError("Query-cache NMS differs from the replay contract")
+    for name in names:
+        metadata = cache[name].get("native_sparse_metadata")
+        if not isinstance(metadata, dict) or int(metadata.get("nms_radius", -1)) != int(
+            args.expected_nms_radius
+        ):
+            raise ValueError(f"Mapping query {name} does not attest replay NMS")
     if scene_args.gaussian_type != "2dgs":
         raise ValueError("Exact splat-provenance replay requires frozen 2DGS")
-    gaussians = _gaussian_model_for_type(
-        scene_args.gaussian_type, scene_args.sh_degree
-    )
+    gaussians = _gaussian_model_for_type(scene_args.gaussian_type, scene_args.sh_degree)
     scene = FrozenScene(
         scene_args,
         gaussians,
@@ -397,7 +472,9 @@ def main() -> None:
     if len(camera_names) != len(set(camera_names)) or names != camera_names:
         raise ValueError("Mapping camera scene does not align with Track factor")
     if int(gaussians.get_xyz.shape[0]) != int(frozen_prior["primitive_count"]):
-        raise ValueError("Loaded Gaussian primitive count differs from frozen bootstrap")
+        raise ValueError(
+            "Loaded Gaussian primitive count differs from frozen bootstrap"
+        )
     for name, camera in zip(names, mapping_cameras):
         cached = cache[name]
         height, width = map(int, cached["native_input_hw"])
@@ -432,22 +509,20 @@ def main() -> None:
         for name in names
     ]
     background_value = 1.0 if scene_args.white_background else 0.0
-    background = torch.full(
-        (3,), background_value, device=gaussians.get_xyz.device
-    )
+    background = torch.full((3,), background_value, device=gaussians.get_xyz.device)
     landmark_geometry, assignment, provenance_diagnostics = (
         assign_tracks_by_splat_provenance(
-        tracks=factor["tracks"],
-        track_geometry=factor["track_geometry"],
-        keypoints=keypoints,
-        query_names=names,
-        cache=cache,
-        bank_xyz=bank_xyz,
-        gaussians=gaussians,
-        cameras_by_name=cameras_by_name,
-        landmark_global_indices=global_indices,
-        background=background,
-        **assignment_parameters,
+            tracks=factor["tracks"],
+            track_geometry=factor["track_geometry"],
+            keypoints=keypoints,
+            query_names=names,
+            cache=cache,
+            bank_xyz=bank_xyz,
+            gaussians=gaussians,
+            cameras_by_name=cameras_by_name,
+            landmark_global_indices=global_indices,
+            background=background,
+            **assignment_parameters,
         )
     )
     diagnostics = _assignment_dependent_diagnostics(
@@ -480,17 +555,18 @@ def main() -> None:
         "uses_test_queries": False,
         "pair_policy": str(factor["pair_policy"]),
         "expected_mapping_keypoints": int(args.expected_mapping_keypoints),
+        "expected_nms_radius": int(args.expected_nms_radius),
         "expected_pair_budget": int(args.expected_pair_budget),
         "assignment_fields": sorted(payload["assignment"]),
         "track_count": int(torch.as_tensor(factor["tracks"]["track_level"]).numel()),
         "high_confidence_track_count": int(
-            torch.as_tensor(factor["track_geometry"]["triangulation_high_confidence"]).sum()
+            torch.as_tensor(
+                factor["track_geometry"]["triangulation_high_confidence"]
+            ).sum()
         ),
         "output": str(args.output.resolve()),
         "output_sha256": sha256_file(args.output),
-        "frozen_bootstrap_manifest_sha256": sha256_file(
-            args.frozen_bootstrap_manifest
-        ),
+        "frozen_bootstrap_manifest_sha256": sha256_file(args.frozen_bootstrap_manifest),
         "expected_frozen_bootstrap_manifest_sha256": (
             expected_frozen_bootstrap_manifest_sha256
         ),

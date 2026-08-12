@@ -46,8 +46,20 @@ def test_completed_track_factor_builds_and_writes_json_report(tmp_path):
         "schema": "lafgs_pair_policy_track_factor",
         "version": 1,
         "mapping_keypoint_factor": 1024,
+        "mapping_nms_radius": 4,
         "pair_policy": "nearest",
+        "pair_policy_parameters": {
+            "minimum_overlap_jaccard": 0.15,
+            "minimum_joint_visibility_points": 8,
+            "parallax_saturation_deg": 2.0,
+            "diversity_weight": 0.2,
+            "candidate_pool_per_camera": 48,
+        },
+        "input_lineage": {},
         "query_names": ["q0", "q1", "q2"],
+        "query_names_sha256": (
+            "634a811ae1691fedcd431d7be04fd78b36ef065b82e782cab589183f3542842d"
+        ),
         **_track_payload(),
     }
     sidecar = {
@@ -85,7 +97,9 @@ def test_track_factor_never_materializes_provenance_assignment():
     track = _track_payload()
     factor = _factor_payload(
         mapping_keypoints=1024,
+        nms_radius=4,
         pair_policy="parallax_diverse",
+        pair_policy_parameters={"candidate_pool_per_camera": 48},
         query_names=["q0", "q1", "q2"],
         query_bins=torch.tensor([0, 1, 2]),
         tracks=track["tracks"],
@@ -116,21 +130,11 @@ def _greatcourt_pair_factor() -> dict:
         "descriptor_accepted_before_epipolar_count": torch.zeros(
             pair_budget, dtype=torch.long
         ),
-        "epipolar_accepted_top1_count": torch.zeros(
-            pair_budget, dtype=torch.long
-        ),
-        "cycle_supported_edge_count": torch.zeros(
-            pair_budget, dtype=torch.long
-        ),
-        "conflict_rejected_edge_count": torch.zeros(
-            pair_budget, dtype=torch.long
-        ),
-        "final_component_edge_count": torch.zeros(
-            pair_budget, dtype=torch.long
-        ),
-        "triangulated_track_count": torch.zeros(
-            pair_budget, dtype=torch.long
-        ),
+        "epipolar_accepted_top1_count": torch.zeros(pair_budget, dtype=torch.long),
+        "cycle_supported_edge_count": torch.zeros(pair_budget, dtype=torch.long),
+        "conflict_rejected_edge_count": torch.zeros(pair_budget, dtype=torch.long),
+        "final_component_edge_count": torch.zeros(pair_budget, dtype=torch.long),
+        "triangulated_track_count": torch.zeros(pair_budget, dtype=torch.long),
         "actual_triangulation_parallax_median_deg": torch.ones(pair_budget),
         "final_track_offsets": torch.zeros(pair_budget + 1, dtype=torch.long),
         "final_track_indices": torch.zeros(0, dtype=torch.long),
@@ -140,10 +144,18 @@ def _greatcourt_pair_factor() -> dict:
         "version": 1,
         "uses_test_queries": False,
         "mapping_keypoint_factor": 2048,
+        "mapping_nms_radius": 4,
         "descriptor_factor_mutated": False,
         "density_factor_mutated": False,
         "selector_factor_mutated": False,
         "pair_policy": "parallax_diverse",
+        "pair_policy_parameters": {
+            "minimum_overlap_jaccard": 0.15,
+            "minimum_joint_visibility_points": 8,
+            "parallax_saturation_deg": 2.0,
+            "diversity_weight": 0.2,
+            "candidate_pool_per_camera": 48,
+        },
         "query_names": [f"q{index}" for index in range(104)],
         "pair_sidecar": {
             "schema": "lafgs_mapping_track_pair_sidecar",
@@ -155,6 +167,11 @@ def _greatcourt_pair_factor() -> dict:
                 "uses_test_queries": False,
                 "uses_descriptors_for_selection": False,
                 "overlap_constraint_applied": True,
+                "minimum_overlap_jaccard": 0.15,
+                "minimum_joint_visibility_points": 8,
+                "parallax_saturation_deg": 2.0,
+                "diversity_weight": 0.2,
+                "candidate_pool_per_camera": 48,
             },
             "pair": pair,
         },
@@ -164,23 +181,27 @@ def _greatcourt_pair_factor() -> dict:
 def test_k2048_pair_budget_5254_is_explicit_and_fail_closed():
     expected = _validate_expected_factor_contract(
         expected_mapping_keypoints=2048,
+        expected_nms_radius=4,
         expected_pair_budget=5254,
         manifest={"native_keypoint_count": 2048},
         query_cache_payload={
             "signature_payload": {"native_sparse_keypoint_count": 2048}
+            | {"native_sparse_nms_radius": 4}
         },
         frozen_track_payload={
             "diagnostics": {"track_camera_pair_candidate_count": 5254}
         },
     )
-    assert expected == (2048, 5254)
+    assert expected == (2048, 5254, 4)
     with pytest.raises(ValueError, match="nearest-pair budget"):
         _validate_expected_factor_contract(
             expected_mapping_keypoints=2048,
+            expected_nms_radius=4,
             expected_pair_budget=5255,
             manifest={"native_keypoint_count": 2048},
             query_cache_payload={
                 "signature_payload": {"native_sparse_keypoint_count": 2048}
+                | {"native_sparse_nms_radius": 4}
             },
             frozen_track_payload={
                 "diagnostics": {"track_camera_pair_candidate_count": 5254}
@@ -191,19 +212,19 @@ def test_k2048_pair_budget_5254_is_explicit_and_fail_closed():
     _validate_factor_contract(
         factor,
         expected_mapping_keypoints=2048,
+        expected_nms_radius=4,
         expected_pair_budget=5254,
     )
     assert _mapping_keypoint_contract(
-        factor, expected_mapping_keypoints=2048
+        factor, expected_mapping_keypoints=2048, expected_nms_radius=4
     )["mapping_keypoints_expected"]
-    pair_checks = _pair_sidecar_contract(
-        factor, expected_pair_budget=5254
-    )
+    pair_checks = _pair_sidecar_contract(factor, expected_pair_budget=5254)
     assert pair_checks
     assert all(pair_checks.values())
     with pytest.raises(ValueError, match="mapping K"):
         _validate_factor_contract(
             factor,
             expected_mapping_keypoints=1024,
+            expected_nms_radius=4,
             expected_pair_budget=5254,
         )

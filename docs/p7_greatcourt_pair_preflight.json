@@ -11,6 +11,8 @@
     "commit": "be5961d",
     "explicit_mapping_k_required": true,
     "explicit_pair_budget_required": true,
+    "explicit_manifest_cache_track_sha_required": true,
+    "fresh_cache_manifest_rebind_required": true,
     "synthetic_k2048_budget5254_contract_tested": true,
     "scientific_run_authorized": false
   },
@@ -108,6 +110,8 @@
     "Stairs pair-policy mapping pose gate passes",
     "fresh detector rerun produces a K2048/NMS4-attested cache",
     "all 1531 fresh records are Track-input and raster exact to the legacy cache",
+    "a V2 equivalence report binds old cache, fresh cache and frozen Track payload by SHA",
+    "a new immutable manifest binds the fresh cache while preserving the parent manifest SHA",
     "nearest replay exactly matches the frozen Track, geometry, assignment and query registries",
     "both factor arms bind the same fresh-cache SHA and exact pair budget 5254"
   ],

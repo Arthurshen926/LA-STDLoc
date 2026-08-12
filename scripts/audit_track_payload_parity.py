@@ -9,6 +9,8 @@ from pathlib import Path
 
 import torch
 
+from common.hashing import sha256_file
+
 
 def _load(path: Path) -> dict:
     return torch.load(path, map_location="cpu", weights_only=False)
@@ -52,9 +54,7 @@ def _tensor_parity(left, right, *, atol: float = 1e-7) -> dict:
 def _table_parity(left: dict, right: dict, *, atol: float) -> dict:
     left_keys, right_keys = set(left), set(right)
     common = sorted(left_keys & right_keys)
-    fields = {
-        key: _tensor_parity(left[key], right[key], atol=atol) for key in common
-    }
+    fields = {key: _tensor_parity(left[key], right[key], atol=atol) for key in common}
     return {
         "left_only": sorted(left_keys - right_keys),
         "right_only": sorted(right_keys - left_keys),
@@ -82,10 +82,9 @@ def audit_payload_parity(reference: dict, replay: dict, *, float_atol: float) ->
     assignment = _table_parity(
         reference["assignment"], replay["assignment"], atol=float_atol
     )
-    assignment["required_fields_present"] = (
-        required_assignment_fields <= set(reference["assignment"])
-        and required_assignment_fields <= set(replay["assignment"])
-    )
+    assignment["required_fields_present"] = required_assignment_fields <= set(
+        reference["assignment"]
+    ) and required_assignment_fields <= set(replay["assignment"])
     tracks = _table_parity(reference["tracks"], replay["tracks"], atol=0.0)
     reference_geometry = dict(reference["track_geometry"])
     replay_required_geometry = {
@@ -155,21 +154,35 @@ def audit_payload_parity(reference: dict, replay: dict, *, float_atol: float) ->
         "query_support_diagnostics": query_support_diagnostic_parity,
         "query_registry": query_registry,
     }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--expected-reference-sha256", required=True)
     parser.add_argument("--replay", type=Path, required=True)
+    parser.add_argument("--expected-replay-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--float-atol", type=float, default=1e-7)
     args = parser.parse_args()
+    reference_sha256 = sha256_file(args.reference)
+    replay_sha256 = sha256_file(args.replay)
+    if reference_sha256 != args.expected_reference_sha256.lower():
+        raise ValueError("Reference Track payload SHA-256 differs from expected")
+    if replay_sha256 != args.expected_replay_sha256.lower():
+        raise ValueError("Replay Track payload SHA-256 differs from expected")
     reference, replay = _load(args.reference), _load(args.replay)
-    report = audit_payload_parity(
-        reference, replay, float_atol=float(args.float_atol)
-    )
+    report = audit_payload_parity(reference, replay, float_atol=float(args.float_atol))
     report.update(
         {
-            "reference": str(args.reference.resolve()),
-            "replay": str(args.replay.resolve()),
+            "reference": {
+                "path": str(args.reference.resolve()),
+                "sha256": reference_sha256,
+            },
+            "replay": {
+                "path": str(args.replay.resolve()),
+                "sha256": replay_sha256,
+            },
         }
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -10,6 +10,21 @@ import torch
 from topology.adaptive_distillation import _adaptive_track_eligibility
 
 
+def _depth_at_sparse_rows(record: Mapping[str, Any]) -> torch.Tensor:
+    keypoints = torch.as_tensor(record["native_keypoints"]).float()
+    source = record.get("native_depth_at_keypoints", record.get("native_depth"))
+    if source is None:
+        raise ValueError("mapping cache lacks native sparse depth")
+    depth = torch.as_tensor(source)
+    if depth.ndim == 1:
+        if depth.shape != (keypoints.shape[0],):
+            raise ValueError("native sparse depth row count differs from keypoints")
+        return depth
+    x = keypoints[:, 0].round().long().clamp(0, int(depth.shape[1]) - 1)
+    y = keypoints[:, 1].round().long().clamp(0, int(depth.shape[0]) - 1)
+    return depth[y, x]
+
+
 def audit_sparse_refresh_equivalence(
     source_payload: Mapping[str, Any], refreshed_payload: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -18,6 +33,7 @@ def audit_sparse_refresh_equivalence(
     refreshed = refreshed_payload.get("queries", refreshed_payload)
     if set(source) != set(refreshed):
         raise ValueError("source and refreshed caches have different query sets")
+    query_order_exact = list(source) == list(refreshed)
     track_fields = (
         "native_keypoints",
         "native_descriptors",
@@ -25,8 +41,11 @@ def audit_sparse_refresh_equivalence(
         "native_K",
         "pose_w2c",
         "native_depth",
+        "native_valid_mask",
+        "native_input_hw",
     )
     track_input_exact = 0
+    effective_sparse_depth_exact = 0
     raster_exact = 0
     metadata_pass = 0
     payload = refreshed_payload["signature_payload"]
@@ -39,6 +58,12 @@ def audit_sparse_refresh_equivalence(
             all(
                 torch.equal(torch.as_tensor(left[field]), torch.as_tensor(right[field]))
                 for field in track_fields
+            )
+        )
+        effective_sparse_depth_exact += int(
+            torch.equal(
+                _depth_at_sparse_rows(left),
+                _depth_at_sparse_rows(right),
             )
         )
         raster_exact += int(
@@ -54,16 +79,20 @@ def audit_sparse_refresh_equivalence(
         )
     count = len(source)
     exact = (
-        track_input_exact == count
+        query_order_exact
+        and track_input_exact == count
+        and effective_sparse_depth_exact == count
         and raster_exact == count
         and metadata_pass == count
         and target_nms == 4
     )
     return {
         "query_count": count,
+        "query_order_exact": query_order_exact,
         "target_k_mapping": target_k,
         "target_nms_radius": target_nms,
         "track_input_exact_query_count": track_input_exact,
+        "effective_sparse_depth_exact_query_count": (effective_sparse_depth_exact),
         "native_alpha_exact_query_count": raster_exact,
         "refreshed_metadata_pass_count": metadata_pass,
         "content_equivalent_track_payload_reuse_authorized": exact,

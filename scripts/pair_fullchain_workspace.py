@@ -39,7 +39,9 @@ def preflight_workspace(
     unexpected = sorted(present - allowed)
     outside = sorted(path for path in allowed if not _inside(path, root))
     if outside:
-        raise ValueError(f"Allowed preflight input is outside output root: {outside[0]}")
+        raise ValueError(
+            f"Allowed preflight input is outside output root: {outside[0]}"
+        )
     if unexpected:
         raise RuntimeError(
             "Pair full-chain output is not empty/contract-only: "
@@ -53,8 +55,7 @@ def preflight_workspace(
         "valid": True,
         "root": str(root),
         "allowed_inputs": {
-            str(path.relative_to(root)): sha256_file(path)
-            for path in sorted(allowed)
+            str(path.relative_to(root)): sha256_file(path) for path in sorted(allowed)
         },
         "scientific_artifact_count": 0,
         "resume_policy": "quarantine_failed_root_and_restart_from_empty",
@@ -88,6 +89,25 @@ def _named_values(values: list[str], *, label: str) -> dict[str, str]:
     return result
 
 
+def _validate_semantic_input(name: str, path: Path) -> None:
+    """Reject a hash-locked decision artifact whose decision is not a Go."""
+    if name != "mechanism_gate":
+        return
+    payload = json.loads(path.read_text())
+    if (
+        payload.get("schema") != "lafgs_pair_policy_mechanism_gate"
+        or payload.get("version") != 2
+        or payload.get("uses_test_queries") is not False
+        or payload.get("valid") is not True
+        or payload.get("mechanism_gate_passed") is not True
+        or payload.get("advance_to_full_pipeline_pose") is not True
+        or payload.get("decision") != "GO_TO_PIPELINE"
+        or not payload.get("gates")
+        or not all(payload["gates"].values())
+    ):
+        raise ValueError("Locked mechanism gate does not authorize fullchain")
+
+
 def lock_inputs(
     *,
     root: Path,
@@ -107,9 +127,8 @@ def lock_inputs(
     for name, path in sorted(inputs.items()):
         path = path.expanduser().resolve()
         expected = expected_sha256[name].strip().lower()
-        if (
-            len(expected) != 64
-            or any(character not in "0123456789abcdef" for character in expected)
+        if len(expected) != 64 or any(
+            character not in "0123456789abcdef" for character in expected
         ):
             raise ValueError(f"Invalid expected SHA-256 for {name}")
         if not path.is_file():
@@ -117,6 +136,7 @@ def lock_inputs(
         actual = sha256_file(path)
         if actual != expected:
             raise ValueError(f"Locked input SHA-256 differs for {name}")
+        _validate_semantic_input(name, path)
         records[name] = {
             "path": str(path),
             "expected_sha256": expected,
@@ -197,8 +217,7 @@ def verify_stage_manifest(path: Path) -> dict:
     if (
         report.get("schema") != SCHEMA
         or report.get("version") != 1
-        or report.get("kind")
-        not in {"stage_sha256_manifest", "locked_external_inputs"}
+        or report.get("kind") not in {"stage_sha256_manifest", "locked_external_inputs"}
         or report.get("uses_test_queries") is not False
         or report.get("valid") is not True
         or report.get("silent_resume_authorized") is not False
@@ -264,9 +283,7 @@ def main() -> None:
         result = lock_inputs(
             root=args.root,
             inputs=_named_paths(args.input),
-            expected_sha256=_named_values(
-                args.expected_sha256, label="SHA256"
-            ),
+            expected_sha256=_named_values(args.expected_sha256, label="SHA256"),
             parent=args.parent_manifest,
             report_path=args.output,
         )

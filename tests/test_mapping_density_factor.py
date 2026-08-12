@@ -82,6 +82,8 @@ def test_sparse_refresh_equivalence_authorizes_exact_payload_reuse():
         "pose_w2c": torch.eye(4),
         "native_depth": torch.ones(2, 2),
         "native_alpha": torch.ones(2, 2),
+        "native_valid_mask": torch.ones(2, 2, dtype=torch.bool),
+        "native_input_hw": [2, 2],
     }
     refreshed_record = dict(record)
     refreshed_record["native_sparse_metadata"] = {
@@ -99,3 +101,36 @@ def test_sparse_refresh_equivalence_authorizes_exact_payload_reuse():
         },
     )
     assert report["content_equivalent_track_payload_reuse_authorized"] is True
+
+
+def test_sparse_refresh_equivalence_rejects_changed_effective_sparse_depth():
+    record = {
+        "native_keypoints": torch.tensor([[0.0, 0.0]]),
+        "native_descriptors": torch.ones(1, 4),
+        "native_scores": torch.ones(1),
+        "native_K": torch.eye(3),
+        "pose_w2c": torch.eye(4),
+        "native_depth": torch.ones(2, 2),
+        "native_depth_at_keypoints": torch.tensor([2.0]),
+        "native_alpha": torch.ones(2, 2),
+        "native_valid_mask": torch.ones(2, 2, dtype=torch.bool),
+        "native_input_hw": [2, 2],
+    }
+    refreshed = dict(record)
+    refreshed.pop("native_depth_at_keypoints")
+    refreshed["native_sparse_metadata"] = {
+        "requested_keypoint_count": 1,
+        "nms_radius": 4,
+    }
+    report = audit_sparse_refresh_equivalence(
+        {"queries": {"frame.png": record}},
+        {
+            "signature_payload": {
+                "native_sparse_keypoint_count": 1,
+                "native_sparse_nms_radius": 4,
+            },
+            "queries": {"frame.png": refreshed},
+        },
+    )
+    assert report["effective_sparse_depth_exact_query_count"] == 0
+    assert report["content_equivalent_track_payload_reuse_authorized"] is False

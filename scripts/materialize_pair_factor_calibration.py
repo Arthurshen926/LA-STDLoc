@@ -12,6 +12,9 @@ from pathlib import Path
 import torch
 
 from common.hashing import canonical_json, sha256_file
+from common.calibration import (
+    validate_equivalent_query_cache_calibration_parent,
+)
 
 
 def _canonical_sha256(value: dict) -> str:
@@ -36,14 +39,14 @@ def materialize_pair_factor_calibration(
     expected_parent_calibration_sha256: str,
     expected_query_cache_sha256: str,
     expected_payload_lineage_audit_sha256: str,
+    expected_mapping_keypoints: int,
+    expected_nms_radius: int,
     expected_pair_budget: int,
 ) -> dict:
     parent_path = Path(parent_path).resolve()
     query_cache_path = Path(query_cache_path).resolve()
     track_payload_path = Path(track_payload_path).resolve()
-    payload_lineage_audit_path = Path(
-        payload_lineage_audit_path
-    ).resolve()
+    payload_lineage_audit_path = Path(payload_lineage_audit_path).resolve()
     expected_parent_calibration_sha256 = _normalized_sha256(
         expected_parent_calibration_sha256,
         label="Expected parent-calibration SHA-256",
@@ -57,20 +60,19 @@ def materialize_pair_factor_calibration(
         label="Expected payload-lineage-audit SHA-256",
     )
     expected_pair_budget = int(expected_pair_budget)
+    expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_nms_radius = int(expected_nms_radius)
+    if expected_mapping_keypoints <= 0:
+        raise ValueError("Expected mapping keypoints must be positive")
+    if expected_nms_radius <= 0:
+        raise ValueError("Expected NMS radius must be positive")
     if expected_pair_budget <= 0:
         raise ValueError("Expected pair budget must be positive")
     parent_calibration_sha256 = sha256_file(parent_path)
     if parent_calibration_sha256 != expected_parent_calibration_sha256:
-        raise ValueError(
-            "Parent calibration SHA-256 differs from the frozen contract"
-        )
-    payload_lineage_audit_sha256 = sha256_file(
-        payload_lineage_audit_path
-    )
-    if (
-        payload_lineage_audit_sha256
-        != expected_payload_lineage_audit_sha256
-    ):
+        raise ValueError("Parent calibration SHA-256 differs from the frozen contract")
+    payload_lineage_audit_sha256 = sha256_file(payload_lineage_audit_path)
+    if payload_lineage_audit_sha256 != expected_payload_lineage_audit_sha256:
         raise ValueError(
             "Payload-lineage-audit SHA-256 differs from the frozen contract"
         )
@@ -88,9 +90,12 @@ def materialize_pair_factor_calibration(
     actual_query_cache_sha256 = sha256_file(query_cache_path)
     if actual_query_cache_sha256 != str(expected_query_cache_sha256):
         raise ValueError("Query-cache SHA-256 differs from frozen factor contract")
-    payload = torch.load(
-        track_payload_path, map_location="cpu", weights_only=False
+    validate_equivalent_query_cache_calibration_parent(
+        parent,
+        parent_path=parent_path,
+        query_cache_path=query_cache_path,
     )
+    payload = torch.load(track_payload_path, map_location="cpu", weights_only=False)
     track_payload_sha256 = sha256_file(track_payload_path)
     provenance = dict(payload.get("provenance", {}))
     if (
@@ -108,7 +113,18 @@ def materialize_pair_factor_calibration(
         "base_state_path_bound",
         "base_state_sha256_bound",
         "factor_has_no_assignment",
+        "factor_input_lineage_present",
+        "factor_input_lineage_copied_to_payload",
+        "factor_manifest_path_bound",
+        "factor_manifest_sha256_bound",
+        "factor_query_cache_path_bound",
+        "factor_query_cache_sha256_bound",
+        "manifest_query_cache_path_bound",
+        "manifest_query_cache_sha256_bound",
         "factor_sha256_bound",
+        "mapping_keypoints_expected",
+        "mapping_nms_radius_expected",
+        "pair_policy_parameters_present",
         "pair_policy_parallax_diverse",
         "pair_sidecar_exact_budget",
         "pair_sidecar_per_pair_columns_aligned",
@@ -126,12 +142,15 @@ def materialize_pair_factor_calibration(
         "assignment_costs_valid",
     }
     if (
-        audit.get("schema")
-        != "lafgs_pair_policy_payload_lineage_audit"
+        audit.get("schema") != "lafgs_pair_policy_payload_lineage_audit"
         or audit.get("version") != 1
         or audit.get("uses_test_queries") is not False
         or audit.get("valid") is not True
         or audit.get("pair_policy") != "parallax_diverse"
+        or audit.get("expected_mapping_keypoints") != expected_mapping_keypoints
+        or audit.get("mapping_keypoints") != expected_mapping_keypoints
+        or audit.get("expected_nms_radius") != expected_nms_radius
+        or audit.get("mapping_nms_radius") != expected_nms_radius
         or audit.get("expected_pair_budget") != expected_pair_budget
         or audit.get("exact_pair_budget") != expected_pair_budget
         or not required_audit_checks.issubset(checks)
@@ -141,11 +160,9 @@ def materialize_pair_factor_calibration(
             "Payload lineage audit is not a valid parallax-diverse contract"
         )
     if (
-        Path(str(audit.get("payload", ""))).resolve()
-        != track_payload_path
+        Path(str(audit.get("payload", ""))).resolve() != track_payload_path
         or audit.get("payload_sha256") != track_payload_sha256
-        or audit.get("query_cache_sha256")
-        != actual_query_cache_sha256
+        or audit.get("query_cache_sha256") != actual_query_cache_sha256
     ):
         raise ValueError("Payload lineage audit names different inputs")
     factor_path = Path(str(audit.get("factor", ""))).resolve()
@@ -153,16 +170,12 @@ def materialize_pair_factor_calibration(
     if (
         not factor_path.is_file()
         or sha256_file(factor_path) != audit.get("factor_sha256")
-        or provenance.get("source_factor_sha256")
-        != audit.get("factor_sha256")
-        or Path(str(provenance.get("source_factor", ""))).resolve()
-        != factor_path
+        or provenance.get("source_factor_sha256") != audit.get("factor_sha256")
+        or Path(str(provenance.get("source_factor", ""))).resolve() != factor_path
         or not base_state_path.is_file()
         or sha256_file(base_state_path) != audit.get("base_state_sha256")
-        or provenance.get("base_state_sha256")
-        != audit.get("base_state_sha256")
-        or Path(str(provenance.get("base_state", ""))).resolve()
-        != base_state_path
+        or provenance.get("base_state_sha256") != audit.get("base_state_sha256")
+        or Path(str(provenance.get("base_state", ""))).resolve() != base_state_path
     ):
         raise ValueError("Payload lineage audit factor/base binding failed")
 
@@ -175,26 +188,22 @@ def materialize_pair_factor_calibration(
         "track_payload": str(track_payload_path),
         "track_payload_sha256": track_payload_sha256,
         "payload_lineage_audit": str(payload_lineage_audit_path),
-        "payload_lineage_audit_sha256": (
-            payload_lineage_audit_sha256
-        ),
+        "payload_lineage_audit_sha256": (payload_lineage_audit_sha256),
         "uses_test_queries": False,
     }
     result["lineage"] = {
         "mode": "frozen_numeric_pair_factor",
         "parent_calibration": str(parent_path),
         "parent_calibration_sha256": parent_calibration_sha256,
-        "expected_parent_calibration_sha256": (
-            expected_parent_calibration_sha256
-        ),
+        "expected_parent_calibration_sha256": (expected_parent_calibration_sha256),
         "payload_lineage_audit": str(payload_lineage_audit_path),
-        "payload_lineage_audit_sha256": (
-            payload_lineage_audit_sha256
-        ),
+        "payload_lineage_audit_sha256": (payload_lineage_audit_sha256),
         "expected_payload_lineage_audit_sha256": (
             expected_payload_lineage_audit_sha256
         ),
         "expected_pair_budget": expected_pair_budget,
+        "expected_mapping_keypoints": expected_mapping_keypoints,
+        "expected_nms_radius": expected_nms_radius,
         "parameters_sha256": _canonical_sha256(parent["parameters"]),
         "policy_sha256": _canonical_sha256(parent["policy"]),
         "statistics_reused_from_parent": True,
@@ -214,13 +223,11 @@ def main() -> None:
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--track-payload", type=Path, required=True)
     parser.add_argument("--payload-lineage-audit", type=Path, required=True)
-    parser.add_argument(
-        "--expected-parent-calibration-sha256", required=True
-    )
+    parser.add_argument("--expected-parent-calibration-sha256", required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
-    parser.add_argument(
-        "--expected-payload-lineage-audit-sha256", required=True
-    )
+    parser.add_argument("--expected-payload-lineage-audit-sha256", required=True)
+    parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
+    parser.add_argument("--expected-nms-radius", type=int, required=True)
     parser.add_argument("--expected-pair-budget", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -229,13 +236,13 @@ def main() -> None:
         query_cache_path=args.query_cache,
         track_payload_path=args.track_payload,
         payload_lineage_audit_path=args.payload_lineage_audit,
-        expected_parent_calibration_sha256=(
-            args.expected_parent_calibration_sha256
-        ),
+        expected_parent_calibration_sha256=(args.expected_parent_calibration_sha256),
         expected_query_cache_sha256=args.expected_query_cache_sha256,
         expected_payload_lineage_audit_sha256=(
             args.expected_payload_lineage_audit_sha256
         ),
+        expected_mapping_keypoints=args.expected_mapping_keypoints,
+        expected_nms_radius=args.expected_nms_radius,
         expected_pair_budget=args.expected_pair_budget,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 import pytest
 import torch
@@ -40,12 +41,15 @@ def test_exact_scene_calibration_sidecar_avoids_query_cache_reload(
         raise AssertionError("the exact calibration sidecar must be reused")
 
     monkeypatch.setattr(pipeline, "calibrate_scene", unexpected_calibration)
-    assert pipeline._load_or_compute_scene_calibration(
-        query_cache=query_cache,
-        track_payload=track_payload,
-        policy=policy,
-        cached_path=path,
-    ) == cached
+    assert (
+        pipeline._load_or_compute_scene_calibration(
+            query_cache=query_cache,
+            track_payload=track_payload,
+            policy=policy,
+            cached_path=path,
+        )
+        == cached
+    )
 
 
 def test_stale_scene_calibration_sidecar_is_recomputed(tmp_path, monkeypatch) -> None:
@@ -70,12 +74,15 @@ def test_stale_scene_calibration_sidecar_is_recomputed(tmp_path, monkeypatch) ->
     )
     expected = {"parameters": {"metric_steps": 12}}
     monkeypatch.setattr(pipeline, "calibrate_scene", lambda *args, **kwargs: expected)
-    assert pipeline._load_or_compute_scene_calibration(
-        query_cache=query_cache,
-        track_payload=track_payload,
-        policy={"value": "current"},
-        cached_path=path,
-    ) == expected
+    assert (
+        pipeline._load_or_compute_scene_calibration(
+            query_cache=query_cache,
+            track_payload=track_payload,
+            policy={"value": "current"},
+            cached_path=path,
+        )
+        == expected
+    )
 
 
 def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
@@ -89,11 +96,14 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         "version": 1,
         "uses_test_queries": False,
         "mapping_keypoint_factor": 1024,
+        "mapping_nms_radius": 4,
         "density_factor_mutated": False,
         "descriptor_factor_mutated": False,
         "selector_factor_mutated": False,
         "pair_policy": "parallax_diverse",
+        "pair_policy_parameters": {"candidate_pool_per_camera": 48},
         "query_names": ["q0", "q1"],
+        "query_names_sha256": hashlib.sha256(b"q0\nq1\n").hexdigest(),
         "query_bins": torch.tensor([0, 1]),
         "tracks": {
             "track_level": torch.tensor([2]),
@@ -160,10 +170,32 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
                     "geometry_teacher_provenance_group_min_consensus_rate": 0.1,
                     "geometry_teacher_provenance_depth_abs_tolerance_m": 0.05,
                     "geometry_teacher_provenance_depth_rel_tolerance": 0.02,
-                }
+                },
+                "inputs": {
+                    "query_cache_path": {
+                        "path": str(query_cache.resolve()),
+                        "sha256": sha256_file(query_cache),
+                    }
+                },
             }
         )
     )
+    factor["input_lineage"] = {
+        "manifest": {
+            "path": str(manifest_path.resolve()),
+            "sha256": sha256_file(manifest_path),
+        },
+        "query_cache": {
+            "path": str(query_cache.resolve()),
+            "sha256": sha256_file(query_cache),
+        },
+        "frozen_track_payload": {
+            "path": str((tmp_path / "frozen.pt").resolve()),
+            "sha256": "0" * 64,
+        },
+        "equivalent_query_cache_rebind": None,
+    }
+    torch.save(factor, factor_path)
     track_payload = tmp_path / "variant_tracks.pt"
     payload = {
         "schema": "lafgs_track_first_payload",
@@ -195,10 +227,9 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
             "expected_query_cache_sha256": sha256_file(query_cache),
             "frozen_bootstrap_manifest": str(manifest_path.resolve()),
             "frozen_bootstrap_manifest_sha256": sha256_file(manifest_path),
-            "assignment_algorithm": (
-                "frozen_2dgs_splat_provenance_exact_replay"
-            ),
+            "assignment_algorithm": ("frozen_2dgs_splat_provenance_exact_replay"),
             "assignment_parameters": assignment_parameters,
+            "factor_input_lineage": factor["input_lineage"],
         },
     }
     torch.save(payload, track_payload)
@@ -214,6 +245,7 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         frozen_bootstrap_manifest_path=manifest_path,
         expected_frozen_bootstrap_manifest_sha256=sha256_file(manifest_path),
         expected_mapping_keypoints=1024,
+        expected_nms_radius=4,
         expected_pair_budget=1,
     )
     assert audit["valid"]
@@ -242,6 +274,8 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         expected_parent_calibration_sha256=sha256_file(parent_path),
         expected_query_cache_sha256=sha256_file(query_cache),
         expected_payload_lineage_audit_sha256=sha256_file(audit_path),
+        expected_mapping_keypoints=1024,
+        expected_nms_radius=4,
         expected_pair_budget=1,
     )
     assert rebound["parameters"] == parent["parameters"]
@@ -261,12 +295,15 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
         raise AssertionError("pair-factor calibration must be reused exactly")
 
     monkeypatch.setattr(pipeline, "calibrate_scene", unexpected_calibration)
-    assert pipeline._load_or_compute_scene_calibration(
-        query_cache=query_cache,
-        track_payload=track_payload,
-        policy=policy,
-        cached_path=rebound_path,
-    ) == rebound
+    assert (
+        pipeline._load_or_compute_scene_calibration(
+            query_cache=query_cache,
+            track_payload=track_payload,
+            policy=policy,
+            cached_path=rebound_path,
+        )
+        == rebound
+    )
 
     with pytest.raises(ValueError, match="Parent calibration SHA-256"):
         materialize_pair_factor_calibration(
@@ -277,6 +314,8 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
             expected_parent_calibration_sha256="0" * 64,
             expected_query_cache_sha256=sha256_file(query_cache),
             expected_payload_lineage_audit_sha256=sha256_file(audit_path),
+            expected_mapping_keypoints=1024,
+            expected_nms_radius=4,
             expected_pair_budget=1,
         )
 
@@ -290,8 +329,8 @@ def test_pair_factor_calibration_rebinds_paths_without_numeric_drift(
             payload_lineage_audit_path=rejected_audit_path,
             expected_parent_calibration_sha256=sha256_file(parent_path),
             expected_query_cache_sha256=sha256_file(query_cache),
-            expected_payload_lineage_audit_sha256=sha256_file(
-                rejected_audit_path
-            ),
+            expected_payload_lineage_audit_sha256=sha256_file(rejected_audit_path),
+            expected_mapping_keypoints=1024,
+            expected_nms_radius=4,
             expected_pair_budget=1,
         )

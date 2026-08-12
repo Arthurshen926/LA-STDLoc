@@ -44,30 +44,26 @@ def test_replayable_provenance_assignment_emits_complete_group_contract(monkeypa
         }
         for name in ("q0", "q1")
     }
-    cameras = {
-        name: SimpleNamespace(FoVx=1.0, FoVy=1.0) for name in cache
-    }
-    geometry, assignment, diagnostics = (
-        provenance.assign_tracks_by_splat_provenance(
-            tracks=tracks,
-            track_geometry=track_geometry,
-            keypoints=[torch.tensor([[1.5, 1.5]])] * 2,
-            query_names=["q0", "q1"],
-            cache=cache,
-            bank_xyz=torch.tensor([[0.0, 0.0, 2.0], [0.1, 0.0, 2.0]]),
-            gaussians=object(),
-            cameras_by_name=cameras,
-            landmark_global_indices=torch.tensor([7, 9]),
-            background=torch.ones(3),
-            topk=2,
-            minimum_consensus_rate=0.35,
-            minimum_views=2,
-            group_maximum_landmarks=4,
-            group_minimum_relative_mass=0.25,
-            group_minimum_consensus_rate=0.10,
-            depth_absolute_tolerance_m=0.05,
-            depth_relative_tolerance=0.02,
-        )
+    cameras = {name: SimpleNamespace(FoVx=1.0, FoVy=1.0) for name in cache}
+    geometry, assignment, diagnostics = provenance.assign_tracks_by_splat_provenance(
+        tracks=tracks,
+        track_geometry=track_geometry,
+        keypoints=[torch.tensor([[1.5, 1.5]])] * 2,
+        query_names=["q0", "q1"],
+        cache=cache,
+        bank_xyz=torch.tensor([[0.0, 0.0, 2.0], [0.1, 0.0, 2.0]]),
+        gaussians=object(),
+        cameras_by_name=cameras,
+        landmark_global_indices=torch.tensor([7, 9]),
+        background=torch.ones(3),
+        topk=2,
+        minimum_consensus_rate=0.35,
+        minimum_views=2,
+        group_maximum_landmarks=4,
+        group_minimum_relative_mass=0.25,
+        group_minimum_consensus_rate=0.10,
+        depth_absolute_tolerance_m=0.05,
+        depth_relative_tolerance=0.02,
     )
     assert set(assignment) == {
         "track_landmark_index",
@@ -80,9 +76,7 @@ def test_replayable_provenance_assignment_emits_complete_group_contract(monkeypa
     assert assignment["track_landmark_index"].tolist() == [0]
     assert assignment["track_landmark_offsets"].tolist() == [0, 2]
     assert assignment["track_landmark_indices"].tolist() == [0, 1]
-    assert torch.allclose(
-        assignment["track_landmark_costs"], torch.tensor([0.2, 0.7])
-    )
+    assert torch.allclose(assignment["track_landmark_costs"], torch.tensor([0.2, 0.7]))
     assert diagnostics == {
         "geometry_teacher_provenance_valid_observation_count": 2,
         "geometry_teacher_provenance_assigned_track_count": 1,
@@ -120,16 +114,11 @@ def test_replay_diagnostics_and_camera_hash_match_bootstrap_semantics():
         landmark_geometry=landmark_geometry,
         assignment=assignment,
         query_count=2,
-        provenance_diagnostics={
-            "geometry_teacher_provenance_group_edge_count": 2
-        },
+        provenance_diagnostics={"geometry_teacher_provenance_group_edge_count": 2},
     )
     assert diagnostics["geometry_teacher_query_support_edge_count"] == 4
     assert diagnostics["geometry_teacher_assigned_landmark_count"] == 2
-    assert (
-        _camera_names_sha256(["b", "a"])
-        == _camera_names_sha256(["a", "b"])
-    )
+    assert _camera_names_sha256(["b", "a"]) == _camera_names_sha256(["a", "b"])
 
 
 def test_control_parity_requires_all_six_assignment_fields_and_query_contract():
@@ -159,9 +148,7 @@ def test_control_parity_requires_all_six_assignment_fields_and_query_contract():
     assert audit_payload_parity(payload, payload, float_atol=1e-7)["valid"]
     incomplete = {**payload, "assignment": dict(six)}
     incomplete["assignment"].pop("track_landmark_costs")
-    assert not audit_payload_parity(
-        payload, incomplete, float_atol=1e-7
-    )["valid"]
+    assert not audit_payload_parity(payload, incomplete, float_atol=1e-7)["valid"]
 
 
 def test_replay_rejects_factor_owned_assignment():
@@ -178,6 +165,7 @@ def test_replay_rejects_factor_owned_assignment():
         _validate_factor_contract(
             factor,
             expected_mapping_keypoints=1024,
+            expected_nms_radius=4,
             expected_pair_budget=7450,
         )
     except ValueError as error:

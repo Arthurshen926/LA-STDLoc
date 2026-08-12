@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -19,6 +20,12 @@ def _normalized_sha256(value: str, *, label: str) -> str:
     ):
         raise ValueError(f"{label} must be 64 lowercase hex digits")
     return digest
+
+
+def _ordered_names_sha256(names: list[str]) -> str:
+    return hashlib.sha256(
+        ("\n".join(str(name) for name in names) + "\n").encode("utf-8")
+    ).hexdigest()
 
 
 def _tensor_exact(left, right) -> bool:
@@ -43,13 +50,10 @@ def _value_exact(left, right) -> bool:
             _value_exact(left[name], right[name]) for name in left
         )
     if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
-        if not isinstance(left, (list, tuple)) or not isinstance(
-            right, (list, tuple)
-        ):
+        if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
             return False
         return len(left) == len(right) and all(
-            _value_exact(lvalue, rvalue)
-            for lvalue, rvalue in zip(left, right)
+            _value_exact(lvalue, rvalue) for lvalue, rvalue in zip(left, right)
         )
     if torch.is_tensor(left) or torch.is_tensor(right):
         return _tensor_exact(left, right)
@@ -63,26 +67,18 @@ def _assignment_parameters_from_manifest(manifest: dict) -> dict:
         "minimum_consensus_rate": float(
             frozen["geometry_teacher_provenance_min_consensus_rate"]
         ),
-        "minimum_views": int(
-            frozen["geometry_teacher_provenance_min_views"]
-        ),
+        "minimum_views": int(frozen["geometry_teacher_provenance_min_views"]),
         "group_maximum_landmarks": int(
             frozen["geometry_teacher_provenance_group_max_landmarks"]
         ),
         "group_minimum_relative_mass": float(
-            frozen[
-                "geometry_teacher_provenance_group_min_relative_mass"
-            ]
+            frozen["geometry_teacher_provenance_group_min_relative_mass"]
         ),
         "group_minimum_consensus_rate": float(
-            frozen[
-                "geometry_teacher_provenance_group_min_consensus_rate"
-            ]
+            frozen["geometry_teacher_provenance_group_min_consensus_rate"]
         ),
         "depth_absolute_tolerance_m": float(
-            frozen[
-                "geometry_teacher_provenance_depth_abs_tolerance_m"
-            ]
+            frozen["geometry_teacher_provenance_depth_abs_tolerance_m"]
         ),
         "depth_relative_tolerance": float(
             frozen["geometry_teacher_provenance_depth_rel_tolerance"]
@@ -173,13 +169,9 @@ def _pair_sidecar_contract(
         is False,
         "pair_sidecar_policy_parallax_diverse": policy.get("name")
         == "parallax_diverse",
-        "pair_sidecar_overlap_constraint": policy.get(
-            "overlap_constraint_applied"
-        )
+        "pair_sidecar_overlap_constraint": policy.get("overlap_constraint_applied")
         is True,
-        "pair_sidecar_triangulation_attached": sidecar.get(
-            "triangulation_attached"
-        )
+        "pair_sidecar_triangulation_attached": sidecar.get("triangulation_attached")
         is True,
         "pair_sidecar_exact_budget": policy.get("exact_pair_budget")
         == int(expected_pair_budget)
@@ -191,13 +183,15 @@ def _pair_sidecar_contract(
 
 
 def _mapping_keypoint_contract(
-    factor: dict, *, expected_mapping_keypoints: int
+    factor: dict, *, expected_mapping_keypoints: int, expected_nms_radius: int
 ) -> dict[str, bool]:
     expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_nms_radius = int(expected_nms_radius)
     return {
         "mapping_keypoints_expected": expected_mapping_keypoints > 0
-        and factor.get("mapping_keypoint_factor")
-        == expected_mapping_keypoints,
+        and factor.get("mapping_keypoint_factor") == expected_mapping_keypoints,
+        "mapping_nms_radius_expected": expected_nms_radius > 0
+        and factor.get("mapping_nms_radius") == expected_nms_radius,
     }
 
 
@@ -214,6 +208,7 @@ def audit_pair_payload(
     frozen_bootstrap_manifest_path: Path,
     expected_frozen_bootstrap_manifest_sha256: str,
     expected_mapping_keypoints: int,
+    expected_nms_radius: int,
     expected_pair_budget: int,
 ) -> dict:
     assignment_fields = {
@@ -228,9 +223,7 @@ def audit_pair_payload(
     factor_path = Path(factor_path).resolve()
     base_state_path = Path(base_state_path).resolve()
     query_cache_path = Path(query_cache_path).resolve()
-    frozen_bootstrap_manifest_path = Path(
-        frozen_bootstrap_manifest_path
-    ).resolve()
+    frozen_bootstrap_manifest_path = Path(frozen_bootstrap_manifest_path).resolve()
     expected_query_cache_sha256 = _normalized_sha256(
         expected_query_cache_sha256, label="Expected query-cache SHA-256"
     )
@@ -239,21 +232,20 @@ def audit_pair_payload(
         label="Expected frozen-bootstrap-manifest SHA-256",
     )
     expected_mapping_keypoints = int(expected_mapping_keypoints)
+    expected_nms_radius = int(expected_nms_radius)
     expected_pair_budget = int(expected_pair_budget)
     if expected_mapping_keypoints <= 0:
         raise ValueError("Expected mapping keypoints must be positive")
+    if expected_nms_radius <= 0:
+        raise ValueError("Expected NMS radius must be positive")
     if expected_pair_budget <= 0:
         raise ValueError("Expected pair budget must be positive")
     payload_sha256 = sha256_file(payload_path)
     factor_sha256 = sha256_file(factor_path)
     base_state_sha256 = sha256_file(base_state_path)
     query_cache_sha256 = sha256_file(query_cache_path)
-    frozen_bootstrap_manifest_sha256 = sha256_file(
-        frozen_bootstrap_manifest_path
-    )
-    frozen_bootstrap_manifest = json.loads(
-        frozen_bootstrap_manifest_path.read_text()
-    )
+    frozen_bootstrap_manifest_sha256 = sha256_file(frozen_bootstrap_manifest_path)
+    frozen_bootstrap_manifest = json.loads(frozen_bootstrap_manifest_path.read_text())
     expected_assignment_parameters = _assignment_parameters_from_manifest(
         frozen_bootstrap_manifest
     )
@@ -261,8 +253,16 @@ def audit_pair_payload(
     provenance_factor = Path(str(provenance.get("source_factor", "")))
     provenance_base = Path(str(provenance.get("base_state", "")))
     provenance_query_cache = Path(str(provenance.get("query_cache", "")))
-    provenance_manifest = Path(
-        str(provenance.get("frozen_bootstrap_manifest", ""))
+    provenance_manifest = Path(str(provenance.get("frozen_bootstrap_manifest", "")))
+    factor_inputs = factor.get("input_lineage")
+    factor_manifest = (
+        factor_inputs.get("manifest") if isinstance(factor_inputs, dict) else None
+    )
+    factor_query_cache = (
+        factor_inputs.get("query_cache") if isinstance(factor_inputs, dict) else None
+    )
+    manifest_query_cache = frozen_bootstrap_manifest.get("inputs", {}).get(
+        "query_cache_path"
     )
     checks = {
         "payload_schema": payload.get("schema") == "lafgs_track_first_payload",
@@ -277,6 +277,7 @@ def audit_pair_payload(
         **_mapping_keypoint_contract(
             factor,
             expected_mapping_keypoints=expected_mapping_keypoints,
+            expected_nms_radius=expected_nms_radius,
         ),
         "frozen_bootstrap_mapping_keypoints_expected": int(
             frozen_bootstrap_manifest.get("arguments", {}).get(
@@ -287,9 +288,32 @@ def audit_pair_payload(
         "density_frozen": factor.get("density_factor_mutated") is False,
         "descriptor_frozen": factor.get("descriptor_factor_mutated") is False,
         "selector_frozen": factor.get("selector_factor_mutated") is False,
-        "pair_policy_parallax_diverse": factor.get("pair_policy")
-        == "parallax_diverse",
+        "pair_policy_parallax_diverse": factor.get("pair_policy") == "parallax_diverse",
         "factor_has_no_assignment": "assignment" not in factor,
+        "pair_policy_parameters_present": isinstance(
+            factor.get("pair_policy_parameters"), dict
+        )
+        and bool(factor.get("pair_policy_parameters")),
+        "query_names_sha256_exact": factor.get("query_names_sha256")
+        == _ordered_names_sha256(list(factor.get("query_names", []))),
+        "factor_input_lineage_present": isinstance(factor_inputs, dict),
+        "factor_input_lineage_copied_to_payload": _value_exact(
+            provenance.get("factor_input_lineage"), factor_inputs
+        ),
+        "factor_manifest_path_bound": isinstance(factor_manifest, dict)
+        and Path(str(factor_manifest.get("path", ""))).resolve()
+        == frozen_bootstrap_manifest_path,
+        "factor_manifest_sha256_bound": isinstance(factor_manifest, dict)
+        and factor_manifest.get("sha256") == expected_frozen_bootstrap_manifest_sha256,
+        "factor_query_cache_path_bound": isinstance(factor_query_cache, dict)
+        and Path(str(factor_query_cache.get("path", ""))).resolve() == query_cache_path,
+        "factor_query_cache_sha256_bound": isinstance(factor_query_cache, dict)
+        and factor_query_cache.get("sha256") == expected_query_cache_sha256,
+        "manifest_query_cache_path_bound": isinstance(manifest_query_cache, dict)
+        and Path(str(manifest_query_cache.get("path", ""))).resolve()
+        == query_cache_path,
+        "manifest_query_cache_sha256_bound": isinstance(manifest_query_cache, dict)
+        and manifest_query_cache.get("sha256") == expected_query_cache_sha256,
         "query_names_equal": payload.get("query_names") == factor.get("query_names"),
         "query_bins_equal": torch.equal(
             torch.as_tensor(payload.get("query_bins")),
@@ -303,25 +327,21 @@ def audit_pair_payload(
         == set(payload.get("assignment", {})),
         "assignment_algorithm_exact": provenance.get("assignment_algorithm")
         == "frozen_2dgs_splat_provenance_exact_replay",
-        "assignment_parameters_frozen": provenance.get(
-            "assignment_parameters"
-        ) == expected_assignment_parameters,
-        "source_factor_path_bound": provenance_factor.resolve()
-        == factor_path,
-        "factor_sha256_bound": provenance.get("source_factor_sha256")
-        == factor_sha256,
-        "base_state_path_bound": provenance_base.resolve()
-        == base_state_path,
+        "assignment_parameters_frozen": provenance.get("assignment_parameters")
+        == expected_assignment_parameters,
+        "source_factor_path_bound": provenance_factor.resolve() == factor_path,
+        "factor_sha256_bound": provenance.get("source_factor_sha256") == factor_sha256,
+        "base_state_path_bound": provenance_base.resolve() == base_state_path,
         "base_state_sha256_bound": provenance.get("base_state_sha256")
         == base_state_sha256,
-        "query_cache_path_bound": provenance_query_cache.resolve()
-        == query_cache_path,
+        "query_cache_path_bound": provenance_query_cache.resolve() == query_cache_path,
         "query_cache_sha256_bound": provenance.get("query_cache_sha256")
         == expected_query_cache_sha256
         == query_cache_sha256,
         "expected_query_cache_sha256_bound": provenance.get(
             "expected_query_cache_sha256"
-        ) == expected_query_cache_sha256,
+        )
+        == expected_query_cache_sha256,
         "frozen_bootstrap_manifest_path_bound": provenance_manifest.resolve()
         == frozen_bootstrap_manifest_path,
         "frozen_bootstrap_manifest_sha256_bound": provenance.get(
@@ -411,6 +431,8 @@ def audit_pair_payload(
         "valid": bool(valid),
         "pair_policy": str(factor.get("pair_policy")),
         "expected_mapping_keypoints": expected_mapping_keypoints,
+        "expected_nms_radius": expected_nms_radius,
+        "mapping_nms_radius": int(factor.get("mapping_nms_radius", -1)),
         "mapping_keypoints": int(factor.get("mapping_keypoint_factor", -1)),
         "expected_pair_budget": int(expected_pair_budget),
         "exact_pair_budget": int(
@@ -427,12 +449,8 @@ def audit_pair_payload(
         "base_state_sha256": base_state_sha256,
         "query_cache": str(query_cache_path.resolve()),
         "query_cache_sha256": query_cache_sha256,
-        "frozen_bootstrap_manifest": str(
-            frozen_bootstrap_manifest_path.resolve()
-        ),
-        "frozen_bootstrap_manifest_sha256": (
-            frozen_bootstrap_manifest_sha256
-        ),
+        "frozen_bootstrap_manifest": str(frozen_bootstrap_manifest_path.resolve()),
+        "frozen_bootstrap_manifest_sha256": (frozen_bootstrap_manifest_sha256),
         "assignment_algorithm": provenance.get("assignment_algorithm"),
         "assignment_parameters": provenance.get("assignment_parameters"),
         "assignment": {
@@ -440,14 +458,15 @@ def audit_pair_payload(
             "track_count": track_count,
             "group_edge_count": int(indices.numel()),
             "assigned_track_count": int(
-                (torch.as_tensor(
-                    payload["assignment"]["track_landmark_index"]
-                ) >= 0).sum()
+                (
+                    torch.as_tensor(payload["assignment"]["track_landmark_index"]) >= 0
+                ).sum()
             ),
             "assigned_landmark_count": int(
-                (torch.as_tensor(
-                    payload["assignment"]["landmark_best_track_index"]
-                ) >= 0).sum()
+                (
+                    torch.as_tensor(payload["assignment"]["landmark_best_track_index"])
+                    >= 0
+                ).sum()
             ),
         },
         "diagnostics": {
@@ -465,16 +484,14 @@ def main() -> None:
     parser.add_argument("--base-state", type=Path, required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--expected-query-cache-sha256", required=True)
-    parser.add_argument(
-        "--frozen-bootstrap-manifest", type=Path, required=True
-    )
-    parser.add_argument(
-        "--expected-frozen-bootstrap-manifest-sha256", required=True
-    )
+    parser.add_argument("--frozen-bootstrap-manifest", type=Path, required=True)
+    parser.add_argument("--expected-frozen-bootstrap-manifest-sha256", required=True)
     parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
+    parser.add_argument("--expected-nms-radius", type=int, required=True)
     parser.add_argument("--expected-pair-budget", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+
     def load(path: Path) -> dict:
         return torch.load(path, map_location="cpu", weights_only=False)
 
@@ -492,6 +509,7 @@ def main() -> None:
             args.expected_frozen_bootstrap_manifest_sha256
         ),
         expected_mapping_keypoints=args.expected_mapping_keypoints,
+        expected_nms_radius=args.expected_nms_radius,
         expected_pair_budget=args.expected_pair_budget,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)

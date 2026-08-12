@@ -105,3 +105,36 @@ def test_stage_manifest_rejects_artifact_outside_run(tmp_path):
             parents=[],
             report_path=root / "contracts" / "evidence.json",
         )
+
+
+def test_lock_inputs_rejects_failed_mechanism_gate(tmp_path):
+    root = tmp_path / "run"
+    preflight = root / "contracts" / "preflight.json"
+    preflight.parent.mkdir(parents=True)
+    preflight.write_text(json.dumps({"valid": True}))
+    gate = tmp_path / "mechanism.json"
+    gate.write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_pair_policy_mechanism_gate",
+                "version": 2,
+                "uses_test_queries": False,
+                "valid": True,
+                "mechanism_gate_passed": False,
+                "advance_to_full_pipeline_pose": False,
+                "decision": "STOP_BEFORE_PIPELINE",
+                "gates": {"quality": False},
+            }
+        )
+    )
+    import hashlib
+
+    digest = hashlib.sha256(gate.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="does not authorize"):
+        lock_inputs(
+            root=root,
+            inputs={"mechanism_gate": gate},
+            expected_sha256={"mechanism_gate": digest},
+            parent=preflight,
+            report_path=root / "contracts" / "inputs.json",
+        )

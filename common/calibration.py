@@ -24,6 +24,123 @@ def _canonical_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(value).encode("ascii")).hexdigest()
 
 
+def _lineage_entry(value: object, *, label: str) -> tuple[Path, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must contain path and SHA-256")
+    path = Path(str(value.get("path", ""))).resolve()
+    digest = str(value.get("sha256", "")).strip().lower()
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise ValueError(f"{label} SHA-256 is invalid")
+    return path, digest
+
+
+def validate_equivalent_query_cache_calibration_parent(
+    parent: Mapping[str, Any],
+    *,
+    parent_path: str | Path,
+    query_cache_path: str | Path,
+) -> None:
+    """Validate a numeric calibration rebound to an exact-equivalent cache."""
+    rebind = parent.get("equivalent_query_cache_rebind")
+    if rebind is None:
+        return
+    if not isinstance(rebind, Mapping):
+        raise ValueError("Calibration query-cache rebind must be a mapping")
+    if (
+        rebind.get("schema") != "lafgs_equivalent_query_cache_calibration_rebind"
+        or rebind.get("version") != 1
+        or rebind.get("uses_test_queries") is not False
+    ):
+        raise ValueError("Calibration query-cache rebind is not mapping-only V1")
+    parent_path = Path(parent_path).resolve()
+    query_cache_path = Path(query_cache_path).resolve()
+    original_path, original_sha256 = _lineage_entry(
+        rebind.get("parent_calibration"), label="Original calibration"
+    )
+    equivalence_path, equivalence_sha256 = _lineage_entry(
+        rebind.get("equivalence_report"), label="Sparse-refresh equivalence"
+    )
+    source_cache_path, source_cache_sha256 = _lineage_entry(
+        rebind.get("source_cache"), label="Source query cache"
+    )
+    refreshed_path, refreshed_sha256 = _lineage_entry(
+        rebind.get("refreshed_cache"), label="Refreshed query cache"
+    )
+    source_track_path, source_track_sha256 = _lineage_entry(
+        rebind.get("source_track_payload"), label="Source Track payload"
+    )
+    if original_path == parent_path:
+        raise ValueError("Calibration rebind must not overwrite its parent")
+    if refreshed_path != query_cache_path:
+        raise ValueError("Calibration rebind names a different refreshed cache")
+    if sha256_file(query_cache_path) != refreshed_sha256:
+        raise ValueError("Calibration rebind refreshed-cache SHA differs")
+    if not original_path.is_file() or sha256_file(original_path) != original_sha256:
+        raise ValueError("Calibration rebind parent is missing or changed")
+    if not equivalence_path.is_file() or sha256_file(equivalence_path) != (
+        equivalence_sha256
+    ):
+        raise ValueError("Calibration rebind equivalence report is missing or changed")
+    if not source_track_path.is_file() or sha256_file(source_track_path) != (
+        source_track_sha256
+    ):
+        raise ValueError(
+            "Calibration rebind source Track payload is missing or changed"
+        )
+    original = json.loads(original_path.read_text())
+    original_sources = dict(original.get("sources", {}))
+    if (
+        original.get("schema") != "lafgs_mapping_only_scene_calibration"
+        or int(original.get("version", 0)) < 2
+        or original_sources.get("uses_test_queries") is not False
+        or Path(str(original_sources.get("query_cache", ""))).resolve()
+        != source_cache_path
+        or Path(str(original_sources.get("track_payload", ""))).resolve()
+        != source_track_path
+    ):
+        raise ValueError(
+            "Calibration rebind parent is not the original mapping control"
+        )
+    equivalence = json.loads(equivalence_path.read_text())
+    report_sources = equivalence.get("sources", {})
+    report_source = _lineage_entry(
+        report_sources.get("source_cache"), label="Reported source cache"
+    )
+    report_refreshed = _lineage_entry(
+        report_sources.get("refreshed_cache"), label="Reported refreshed cache"
+    )
+    report_track = _lineage_entry(
+        report_sources.get("source_track_payload"), label="Reported Track payload"
+    )
+    if (
+        equivalence.get("schema") != "lafgs_mapping_sparse_refresh_equivalence"
+        or equivalence.get("version") != 2
+        or equivalence.get("uses_test_queries") is not False
+        or equivalence.get("valid") is not True
+        or not equivalence.get("checks")
+        or not all(equivalence["checks"].values())
+        or equivalence.get("audit", {}).get(
+            "content_equivalent_track_payload_reuse_authorized"
+        )
+        is not True
+        or report_source != (source_cache_path, source_cache_sha256)
+        or report_refreshed != (refreshed_path, refreshed_sha256)
+        or report_track != (source_track_path, source_track_sha256)
+    ):
+        raise ValueError("Calibration rebind equivalence contract is invalid")
+    parent_sources = dict(parent.get("sources", {}))
+    if (
+        Path(str(parent_sources.get("query_cache", ""))).resolve() != query_cache_path
+        or parent_sources.get("query_cache_sha256") != refreshed_sha256
+    ):
+        raise ValueError("Rebound calibration does not bind the refreshed cache")
+    for name in ("statistics", "parameters", "policy"):
+        if parent.get(name) != original.get(name):
+            raise ValueError(f"Rebound calibration {name} differs from original")
+
+
 def validate_frozen_numeric_scene_calibration(
     calibration: Mapping[str, Any],
     *,
@@ -69,15 +186,12 @@ def validate_frozen_numeric_scene_calibration(
             raise ValueError("Frozen calibration file SHA differs")
 
     parent_path = Path(str(lineage.get("parent_calibration", ""))).resolve()
-    expected_parent_sha256 = str(
-        lineage.get("expected_parent_calibration_sha256", "")
-    )
+    expected_parent_sha256 = str(lineage.get("expected_parent_calibration_sha256", ""))
     if (
         not parent_path.is_file()
         or len(expected_parent_sha256) != 64
         or any(
-            character not in "0123456789abcdef"
-            for character in expected_parent_sha256
+            character not in "0123456789abcdef" for character in expected_parent_sha256
         )
         or lineage.get("parent_calibration_sha256") != expected_parent_sha256
         or sha256_file(parent_path) != expected_parent_sha256
@@ -93,6 +207,11 @@ def validate_frozen_numeric_scene_calibration(
         != query_cache_path
     ):
         raise ValueError("Frozen calibration parent is not the mapping control")
+    validate_equivalent_query_cache_calibration_parent(
+        parent,
+        parent_path=parent_path,
+        query_cache_path=query_cache_path,
+    )
     for name in ("statistics", "parameters", "policy"):
         if calibration.get(name) != parent.get(name):
             raise ValueError(f"Frozen calibration {name} differ from parent")
@@ -101,8 +220,7 @@ def validate_frozen_numeric_scene_calibration(
         or lineage.get("parameters_reused_from_parent") is not True
         or lineage.get("parameters_sha256")
         != _canonical_sha256(dict(parent["parameters"]))
-        or lineage.get("policy_sha256")
-        != _canonical_sha256(dict(parent["policy"]))
+        or lineage.get("policy_sha256") != _canonical_sha256(dict(parent["policy"]))
     ):
         raise ValueError("Frozen calibration numeric lineage is incomplete")
 
@@ -114,20 +232,19 @@ def validate_frozen_numeric_scene_calibration(
         not audit_path.is_file()
         or len(expected_audit_sha256) != 64
         or any(
-            character not in "0123456789abcdef"
-            for character in expected_audit_sha256
+            character not in "0123456789abcdef" for character in expected_audit_sha256
         )
-        or lineage.get("payload_lineage_audit_sha256")
-        != expected_audit_sha256
-        or Path(str(sources.get("payload_lineage_audit", ""))).resolve()
-        != audit_path
-        or sources.get("payload_lineage_audit_sha256")
-        != expected_audit_sha256
+        or lineage.get("payload_lineage_audit_sha256") != expected_audit_sha256
+        or Path(str(sources.get("payload_lineage_audit", ""))).resolve() != audit_path
+        or sources.get("payload_lineage_audit_sha256") != expected_audit_sha256
         or sha256_file(audit_path) != expected_audit_sha256
     ):
         raise ValueError("Frozen calibration payload-lineage audit differs")
     audit = json.loads(audit_path.read_text())
     expected_pair_budget = int(lineage.get("expected_pair_budget", 0))
+    expected_mapping_keypoints = int(lineage.get("expected_mapping_keypoints", 0))
+    expected_nms_radius = int(lineage.get("expected_nms_radius", 0))
+    equivalent_cache_rebound = parent.get("equivalent_query_cache_rebind") is not None
     if (
         audit.get("schema") != "lafgs_pair_policy_payload_lineage_audit"
         or audit.get("version") != 1
@@ -135,6 +252,17 @@ def validate_frozen_numeric_scene_calibration(
         or audit.get("valid") is not True
         or audit.get("pair_policy") != "parallax_diverse"
         or expected_pair_budget <= 0
+        or (
+            equivalent_cache_rebound
+            and (
+                expected_mapping_keypoints <= 0
+                or expected_nms_radius <= 0
+                or audit.get("expected_mapping_keypoints") != expected_mapping_keypoints
+                or audit.get("mapping_keypoints") != expected_mapping_keypoints
+                or audit.get("expected_nms_radius") != expected_nms_radius
+                or audit.get("mapping_nms_radius") != expected_nms_radius
+            )
+        )
         or audit.get("expected_pair_budget") != expected_pair_budget
         or audit.get("exact_pair_budget") != expected_pair_budget
         or not audit.get("checks")
@@ -144,8 +272,7 @@ def validate_frozen_numeric_scene_calibration(
     if (
         Path(str(audit.get("payload", ""))).resolve() != track_payload_path
         or audit.get("payload_sha256") != sha256_file(track_payload_path)
-        or Path(str(audit.get("query_cache", ""))).resolve()
-        != query_cache_path
+        or Path(str(audit.get("query_cache", ""))).resolve() != query_cache_path
         or audit.get("query_cache_sha256") != sha256_file(query_cache_path)
     ):
         raise ValueError("Frozen calibration audit input binding differs")
@@ -156,26 +283,21 @@ def validate_frozen_numeric_scene_calibration(
     provenance = dict(track_payload.get("provenance", {}))
     factor_path = Path(str(audit.get("factor", ""))).resolve()
     base_state_path = Path(str(audit.get("base_state", ""))).resolve()
-    bootstrap_path = Path(
-        str(audit.get("frozen_bootstrap_manifest", ""))
-    ).resolve()
+    bootstrap_path = Path(str(audit.get("frozen_bootstrap_manifest", ""))).resolve()
     if (
         track_payload.get("schema") != "lafgs_track_first_payload"
         or track_payload.get("version") != 1
         or provenance.get("uses_test_queries") is not False
         or provenance.get("source_factor_sha256") != audit.get("factor_sha256")
-        or Path(str(provenance.get("source_factor", ""))).resolve()
-        != factor_path
+        or Path(str(provenance.get("source_factor", ""))).resolve() != factor_path
         or not factor_path.is_file()
         or sha256_file(factor_path) != audit.get("factor_sha256")
         or provenance.get("base_state_sha256") != audit.get("base_state_sha256")
-        or Path(str(provenance.get("base_state", ""))).resolve()
-        != base_state_path
+        or Path(str(provenance.get("base_state", ""))).resolve() != base_state_path
         or not base_state_path.is_file()
         or sha256_file(base_state_path) != audit.get("base_state_sha256")
         or provenance.get("query_cache_sha256") != audit.get("query_cache_sha256")
-        or Path(str(provenance.get("query_cache", ""))).resolve()
-        != query_cache_path
+        or Path(str(provenance.get("query_cache", ""))).resolve() != query_cache_path
         or provenance.get("assignment_algorithm")
         != "frozen_2dgs_splat_provenance_exact_replay"
         or Path(str(provenance.get("frozen_bootstrap_manifest", ""))).resolve()
@@ -183,8 +305,7 @@ def validate_frozen_numeric_scene_calibration(
         or not bootstrap_path.is_file()
         or provenance.get("frozen_bootstrap_manifest_sha256")
         != audit.get("frozen_bootstrap_manifest_sha256")
-        or sha256_file(bootstrap_path)
-        != audit.get("frozen_bootstrap_manifest_sha256")
+        or sha256_file(bootstrap_path) != audit.get("frozen_bootstrap_manifest_sha256")
     ):
         raise ValueError("Frozen calibration Track provenance differs from audit")
 
@@ -438,9 +559,7 @@ def derive_mapping_statistics(
     if baseline.numel() == 0 and centers.shape[0] > 1:
         fallback = torch.linalg.norm(centers[1:] - centers[:-1], dim=1)
         baseline = fallback[fallback > 1e-9]
-    effective_baseline = _quantile(
-        baseline, 0.5, REFERENCE_EFFECTIVE_BASELINE_M
-    )
+    effective_baseline = _quantile(baseline, 0.5, REFERENCE_EFFECTIVE_BASELINE_M)
     if track_payload is None:
         # Before Track-First evidence exists, a dense video's adjacent-frame
         # displacement reflects frame rate. A small trajectory-extent floor is
@@ -449,9 +568,7 @@ def derive_mapping_statistics(
     effective_baseline = max(effective_baseline, 1e-6)
     return MappingSceneStatistics(
         query_count=len(names),
-        image_diagonal_px=_quantile(
-            diagonal, 0.5, REFERENCE_IMAGE_DIAGONAL_PX
-        ),
+        image_diagonal_px=_quantile(diagonal, 0.5, REFERENCE_IMAGE_DIAGONAL_PX),
         focal_px=_quantile(focal, 0.5, 1.0),
         valid_keypoints_p10=_quantile(counts, 0.1, 1.0),
         valid_keypoints_median=_quantile(counts, 0.5, 1.0),
@@ -476,9 +593,7 @@ def derive_adaptive_parameters(
     reference_diagonal = float(
         policy.get("reference_image_diagonal_px", REFERENCE_IMAGE_DIAGONAL_PX)
     )
-    reference_focal = float(
-        policy.get("reference_focal_px", REFERENCE_FOCAL_PX)
-    )
+    reference_focal = float(policy.get("reference_focal_px", REFERENCE_FOCAL_PX))
     reference_baseline = float(
         policy.get("reference_effective_baseline_m", REFERENCE_EFFECTIVE_BASELINE_M)
     )
@@ -503,9 +618,7 @@ def derive_adaptive_parameters(
     bins = max(int(policy.get("pose_bins_minimum", 2)), bins)
     bins = min(int(policy.get("pose_bins_maximum", 8)), bins)
     angular_ransac_px = max(2.0, 12.0 * angular_pixel_scale)
-    track_residual_cap_px = float(
-        policy.get("ransac_reprojection_maximum_px", 12.0)
-    )
+    track_residual_cap_px = float(policy.get("ransac_reprojection_maximum_px", 12.0))
     track_residual_floor_px = min(
         track_residual_cap_px,
         statistics.stable_track_reprojection_p90_px,
