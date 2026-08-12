@@ -413,6 +413,68 @@ Heads 与 Stairs 的结果分别位于
 `/tmp/lafgs_heads_track_pair_graph_audit_v1.{pt,json}` 和
 `/tmp/lafgs_stairs_track_pair_graph_audit_v1.{pt,json}`。
 
+#### P7.1 mapping evidence 高密度协议审计已落实
+
+`evidence/mapping_density_audit.py` 与 `scripts/audit_mapping_density.py` 已把
+`K_mapping` 和 `K_deployment` 拆成两个不可混变的协议轴。该阶段仍严格是
+`uses_test_queries=false / audit_only=true / pose_gain_claimed=false`：只读取已经物化的
+mapping query cache，逐帧核对 detector 请求数、mask 前后 keypoint 数、原生 Tensor 行数、
+valid-mask 像素比例和 NMS metadata，并对冻结 function graph 计算内容指纹；没有重跑
+detector、GPU cache、Track、Map、metric 或 pose。
+
+真实 artifacts 揭示了一个此前被配置表述掩盖的机制缺口。Adaptive V3 bootstrap 用
+deployment 的面积自适应解析结果作为 mapping `native_keypoint_count`。Heads/Stairs 的
+processed image 均为 640x480；以 1920x1080 为参考面积时，`2048 * area/reference` 四舍
+五入仅为 303，随后被 `keypoint_minimum=1024` 截到 1024。因此当前两个室内 graph 并非
+建议协议中的 `K_mapping=2048`，而是从源头只请求了 1024：
+
+| mapping-only density 指标 | Heads | Stairs | ShopFacade |
+|---|---:|---:|---:|
+| Mapping queries | 1,000 | 2,000 | 231 |
+| Native input | 640x480 | 640x480 | 1920x1080 |
+| 面积缩放未截断 K | 303 | 303 | 2,048 |
+| 解析原因 / 请求 K | minimum clamp / **1,024** | minimum clamp / **1,024** | unclamped / **2,048** |
+| Mask 前 keypoints median | 1,024 | 1,024 | 2,048 |
+| Mask 后 keypoints p10 / median | 1,024 / 1,024 | 1,024 / 1,024 | 1,990 / 2,028 |
+| Valid-mask fraction median | 100.00% | 100.00% | 93.28% |
+| 有 keypoint mask-drop 的 query | 0.00% | 0.00% | 96.54% |
+| NMS=4 artifact attestation | 缺失 | 缺失 | 缺失 |
+
+最后一行必须按证据边界解释：当前源码和正式 config 都指定 NMS=4，但这三份旧 cache
+分别使用 signature v10/v10/v9，signature payload 与逐 query
+`native_sparse_metadata` 均未记录 NMS radius。因此审计结论是 **unattested**，不是已证明
+使用了错误 NMS。新 cache 必须同时在 cache signature 和逐 query metadata 写入 4，才可
+通过这一协议门。
+
+每个审计同时输出独立的 `lafgs_mapping_density_paired_factor_manifest`。manifest 将同一
+query-cache signature、同一 function-graph SHA256、同一 Map/metric 固定为
+`immutable_mapping_graph`，只允许 `K_deployment` 在 1024/2048 间变化，并显式禁止两个
+variant 之间重建 mapping cache 或同时改变 mapping/deployment density。当前 Heads 和
+Stairs manifest 因 `K_mapping=1024` 与 NMS 未证明而正确阻断；ShopFacade 已满足
+`K_mapping=2048`，但仍被 NMS attestation 阻断。也就是说，P7 的 2048 mapping evidence
+建议此前**尚未在室内哨兵落实**，不能把现有 graph 当作已经完成的高密度基线，更不能
+从本审计宣称 pose gain。
+
+可复现实跑命令为：
+
+```bash
+python -m scripts.audit_mapping_density \
+  --scene <scene> \
+  --query-cache <mapping-query-cache.pt> \
+  --mapping-graph <function-graph.pt> \
+  --mapping-keypoints 2048 \
+  --deployment-keypoints 1024,2048 \
+  --expected-nms-radius 4 \
+  --output /tmp/lafgs_mapping_density_audit/<scene>.json
+```
+
+真实报告和成对因子输入 manifest 位于
+`/tmp/lafgs_mapping_density_audit/{heads,stairs,shopfacade}.json` 与同目录的
+`*.paired_factor_manifest.json`。下一步解锁条件不是立即混合改动 deployment，而是先为
+Heads/Stairs 各物化一次固定 `K_mapping=2048 / NMS=4` 且 metadata 可证明的新 mapping
+cache/graph；随后两个 deployment K variant 必须复用该唯一 graph。该重建不属于本轮
+audit-only 工作。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
