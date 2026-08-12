@@ -405,7 +405,7 @@ PYTHONPATH=. python -m scripts.compare_cycle_verified_fisher_mechanism \
   --expected-mapping-keypoints 1024 --expected-nms-radius 4 \
   --expected-pair-budget 7450 --expected-candidate-pair-count 14835 \
   --expected-candidate-components 2 \
-  --output "$P8_ROOT/stairs/mechanism_gate.json"
+  --output "$P8_ROOT/stairs/stage_b_gate.json"
 ```
 
 Every P8 entry point requires the cache itself to contain
@@ -419,14 +419,28 @@ gate.  A valid comparison that fails any preregistered scientific gate persists
 the STOP JSON and exits 2.  A valid per-scene pass exits 0 but only emits
 `SCENE_PASS_REQUIRES_OTHER_SCENE`; it cannot authorize fullchain by itself.
 
-## Current blocker and next executable step
+## Current Stairs result and next executable step
 
-There is no scientific result for P8 yet.  The old selected-pair factors cannot
-be treated as valid probes or complete factor-lineage inputs because they do not
-retain candidate keypoint correspondences or the current complete cache
-lineage.  The orchestration is now ready; the next executable step is the
-pair-only Stairs proposal attestation, then the single bounded probe, selection,
-independent Stage A, two reuse-only Track factors and independent Stage B.  Only
-a Stairs Stage-A/B pass authorizes the identically frozen GreatCourt sequence.
-No real probe, GPU job, or test evaluation was started in this implementation
-task.
+The real Stairs mapping-only sequence is now complete.  Its proposal, bounded
+probe, exact-budget selection, independent Stage A, two reuse-only Track factors,
+and independent Stage B all validate against the preregistered contract.
+Stage A passes 9/9 gates: Fisher utility increases 64.03659 -> 638.61841,
+completed verified triangles increase 84,878 -> 825,469, and participating
+camera fraction increases 0.2660 -> 0.8665.  Stage B passes 8/8 gates:
+triangulated/broad/high-confidence Tracks increase 15,053/14,276/41 ->
+17,384/16,634/51, while triangulated covariance p90 decreases
+0.05501186 -> 0.03653227 m2 and broad-query coverage stays 1.0.
+
+The hash-bound Stage-B decision is `SCENE_PASS_REQUIRES_OTHER_SCENE`, not a
+fullchain authorization.  The only authorized next execution is the identically
+frozen GreatCourt Stage-A/B sequence.  GreatCourt has not run; neither scene has
+run a P8 fullchain, mapping pose, formal test, or default-method switch.
+
+The first real selector execution was separately recorded as invalid after
+1,592.086 seconds without an output; it exposed an engineering complexity
+blocker, not a scientific Stop.  The exact incremental selector at commit
+`199c187acd8a6df018e3630fe0babda3739e68c1` completed the same formal selection
+in about 188 seconds.  Runtime is not a scientific gate.  The complete result,
+artifact hashes, gate values, and control/variant lineage diff are in
+`docs/p8_cycle_verified_fisher_stairs_result.md` and
+`docs/evidence/p8_cycle_verified_fisher_stairs_result.json`.

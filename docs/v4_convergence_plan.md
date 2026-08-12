@@ -87,7 +87,7 @@ Heads V3 真实产物兼容审计结果：
 
 这是实验卫生修复，不作为算法增益申报。
 
-## 最新附件落实状态（2026-08-12）
+## 最新附件落实状态（2026-08-13）
 
 附件描述的是完整 V4 收敛目标，不是一次改动可以同时验收的单项功能。当前状态如下：
 
@@ -100,6 +100,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
 | Stage 6 室内身份自适应 | density-only No-Go；pair 在 Stairs mapping Go、GreatCourt 机制 Stop | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置、Stairs fullchain/mapping pose 与 GreatCourt 跨域反证 | K=2048 不进入默认；`parallax_diverse` 不升为跨域默认 |
+| Stage 7 可定位 pair utility | P8 Stairs Stage-A/B scene-specific Go | bounded same-probe control、exact cycle closure x bearing-Fisher selector、probe-row reuse；Stage A 9/9、Stage B 8/8 Pass | GreatCourt Stage-A/B 尚未执行；fullchain、pose、test、默认切换均未授权 |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -679,6 +680,30 @@ detector sampling。故保留 SuperPoint detector，只推进已独立通过 gat
 `docs/xfeat_arm_a_stairs_result.md`，机器摘要见
 `docs/evidence/xfeat_arm_a_stairs_gate.json`。
 
+#### P8 `cycle_verified_fisher`：Stairs 机制通过，等待 GreatCourt
+
+P8 不再把 parallax 当作充分效用，而是在同一 14,835-pair bounded probe、精确 7,450
+pair budget 下联合要求 exact descriptor triangle closure、dimensionless bearing-Fisher
+information 与硬 camera-graph coverage。Stairs Stage A 九项全通过：Fisher utility
+64.0366 -> 638.6184（9.9727x）、completed verified triangles 84,878 -> 825,469
+（9.7254x）、参与闭环的 mapping camera fraction 0.2660 -> 0.8665。selection 保持两个
+candidate components、零 isolates、minimum degree 1。
+
+same-probe 双 Track 构建随后复用 probe rows，没有重新 matching。Stage B 八项全通过：
+triangulated/broad/high-confidence Tracks 分别从 15,053/14,276/41 增至
+17,384/16,634/51；triangulated covariance p90 从 0.05501186 降到 0.03653227 m2，
+mapping-query broad coverage 保持 1.0。最终 gate SHA-256 为
+`72233ebd66c33e723d12d92f47b66c5fbf3638635768d2a3fd03802bce7e9dcf`，有效且
+`uses_test_queries=false`，decision 为 `SCENE_PASS_REQUIRES_OTHER_SCENE`。
+
+因此这是强 Stairs set/Track mechanism signal，而不是 pose 或跨域默认结论。唯一授权的
+下一步是原样执行 GreatCourt Stage-A/B；在它通过前，不重建 P8 function graph/Map，
+不跑 mapping pose、`office2_5b` 或 formal test。第一次旧 selector 在 1,592.086 秒后
+无产物中止，属于 invalid 工程执行；commit `199c187` 的精确增量实现约 188 秒完成，
+不改变任何科学 gate。完整结果见
+`docs/p8_cycle_verified_fisher_stairs_result.md`，机器证据见
+`docs/evidence/p8_cycle_verified_fisher_stairs_result.json`。
+
 ## 最小实验矩阵
 
 | 阶段 | 对照 | 变量 | 首要判据 | 决策 |
@@ -690,6 +715,7 @@ detector sampling。故保留 SuperPoint detector，只推进已独立通过 gat
 | P5 | V3 staged greedy | unified selector | 相同门槛更小/同预算更准 | 无优势保留兼容实现 |
 | P6 | current fusion | robust observation fusion + risk | indoor harmful/alias 降低 | 无可分性则停复杂头 |
 | P7 | V4 frozen | baseline-aware + K factors | 7/12Scenes 成对改善 | test 只做最终确认 |
+| P8 | nearest same-probe | exact closure x bearing-Fisher pair utility | Stairs/GreatCourt 均过 Stage-A/B | 单场景只保留 scene-specific Go |
 
 所有实验报告必须同时给出：Anchor 数、真实观测覆盖、每 query 匹配行 p10、唯一 landmark match 数、inlier 数、harmful rate、平移/旋转中位数及标准成功率。仅报告最终 pose 中位数不足以判断机制是否成立。
 
@@ -753,3 +779,11 @@ recall 下降 0.78125 pp；每种 seed 的 translation tail 与 recall 方向一
 `office2_5b`、室外 guard 或 formal test，也不围绕 alpha、类型路由和场景阈值继续局部搜索。
 完整 pose 结果见 `docs/xfeat_equal_energy_stairs_pose_result.md`，机器证据见
 `docs/evidence/xfeat_equal_energy_stairs_pose_gate.json`。
+
+当前唯一继续推进的 geometry/evidence 主线是 P8：它把“可定位证据效用”具体化为同一
+bounded probe 上的 exact identity closure、bearing-Fisher conditioning 与硬 graph
+coverage。Stairs 的 Stage-A/Stage-B 分别 9/9、8/8 通过，并且闭环增益确实转化为更多
+triangulated/broad/high-confidence Tracks 与更低 covariance tail。因此 P8 获得
+**Stairs scene-specific mechanism Go**，但仍不进入默认方法。下一步只运行完全冻结的
+GreatCourt Stage-A/B；在双场景 cross-scene gate 之前，禁止 fullchain、pose、test 或与
+descriptor 因子交叉组合。

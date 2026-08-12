@@ -1,0 +1,266 @@
+{
+  "schema": "lafgs_cycle_verified_fisher_stairs_result_evidence",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "scene": "7Scenes/stairs",
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "mapping_camera_pair_policy",
+  "policy": "cycle_verified_fisher",
+  "decision": {
+    "stage_a": "PASS_9_OF_9",
+    "stage_b": "PASS_8_OF_8",
+    "scene": "SCENE_PASS_REQUIRES_OTHER_SCENE",
+    "scene_specific_mechanism_pass": true,
+    "requires_other_scene": true,
+    "authorized_next_stage": "GREATCOURT_STAGE_A_AND_STAGE_B_ONLY",
+    "authorizes_cross_scene_fullchain": false,
+    "authorizes_mapping_pose": false,
+    "authorizes_formal_test": false,
+    "authorizes_method_default": false
+  },
+  "scene_contract": {
+    "query_count": 2000,
+    "query_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
+    "mapping_keypoints": 1024,
+    "mapping_nms_radius": 4,
+    "exact_pair_budget": 7450,
+    "candidate_pair_count": 14835,
+    "candidate_component_count": 2,
+    "candidate_isolated_camera_count": 0,
+    "candidate_minimum_degree": 9,
+    "matcher": {
+      "minimum_similarity": 0.65,
+      "minimum_margin": 0.01,
+      "maximum_epipolar_error_px": 2.0,
+      "epipolar_candidate_topk": 1,
+      "epipolar_recovered_minimum_similarity": -1.0,
+      "epipolar_recovered_minimum_margin": -1.0
+    }
+  },
+  "artifacts": {
+    "preregistration_contract": {
+      "path": "docs/evidence/p8_cycle_verified_fisher_preregistration.json",
+      "sha256": "39264e748adc735a85f141ac307aad6cba8b6a1d825880ce500ef3d86d6bc728"
+    },
+    "fresh_cache_manifest": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/contracts/fresh_cache_bootstrap_manifest.json",
+      "sha256": "cc7f2b7137451f6bbeed24b016fe5ef2ffff09b1322d8151b92e3410242f6539"
+    },
+    "query_cache": {
+      "path": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+      "sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+    },
+    "mapping_scope_equivalence": {
+      "path": "/mnt/pool/sqy/lafgs_frontend_ceiling_probe_20260813/stairs/contracts/fresh_cache_equivalence_v2.json",
+      "sha256": "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee"
+    },
+    "frozen_track_payload": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/tracks_refined/track_micro_anchor_payload.pt",
+      "sha256": "4e3a9c453b3602c066ca82b06694f3b27a690705cdf2ac9bd6cdce707c479a10"
+    },
+    "pair_proposals": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_proposals.pt",
+      "sha256": "31f458410cdad5f2ab0aef846532a2ae324f08cd7b07bae47e18de5b7897ab20",
+      "content_sha256": "d0d028a4dc8736d3d74a94090f6575da5a742353760a088dcd26c6c77f56c47a"
+    },
+    "pair_match_probe": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_match_probe.pt",
+      "sha256": "6fe4a0581335e7e535effbf44611e88709ed517bc10341efc1ce9e71f42a20e6",
+      "content_sha256": "53d94010d8e8d7d5e28540aef6a6345090d0191e2ab593c48252e18c0d817a58",
+      "match_count": 3848929
+    },
+    "pair_selection": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_selection.pt",
+      "sha256": "7d08bed0ead859ae917724beebe22af844b87bbd7e0f9579b834f5915a13c16f",
+      "content_sha256": "721617c2e084e1c8fe75e29cec6d818a0374d7522977c241880033489f9cf93f"
+    },
+    "stage_a_gate": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_a_gate.json",
+      "sha256": "cf77f75be254c432dde2d64cac647ec70cef7d62730b414e77503955acc4c455"
+    },
+    "control": {
+      "factor_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_nearest_control/cycle_verified_fisher_nearest_control_track_factor.pt",
+      "factor_sha256": "e7ba71207af19db71031e59d7f2d82bc7774669eeb497bff036c5ccf97d370e1",
+      "report_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_nearest_control/cycle_verified_fisher_nearest_control_track_factor.json",
+      "report_sha256": "30a89a51ea03a517bdabd631efe6a7d1b78df39cdc72793d41cb0413614ce49b"
+    },
+    "variant": {
+      "factor_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_variant/cycle_verified_fisher_track_factor.pt",
+      "factor_sha256": "ec569adce9d272f01aa9550f2b5558143ea740d31668121ba948706f9e5373dc",
+      "report_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_variant/cycle_verified_fisher_track_factor.json",
+      "report_sha256": "8b80257bcc3ae3f06da9ca58d5f6fed42c14232f81e8cb3294239a20244ce543"
+    },
+    "stage_b_gate": {
+      "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_b_gate.json",
+      "sha256": "72233ebd66c33e723d12d92f47b66c5fbf3638635768d2a3fd03802bce7e9dcf"
+    }
+  },
+  "stage_a": {
+    "passed": true,
+    "passed_gate_count": 9,
+    "gate_count": 9,
+    "decision": "GO_TO_TRACK_REUSE",
+    "gates": {
+      "candidate_components_exact": true,
+      "candidate_union_exact_and_bounded": true,
+      "selected_components_preserved": true,
+      "selected_exact_pair_budget": true,
+      "selected_minimum_degree_at_least_one": true,
+      "selected_zero_isolates": true,
+      "verified_fisher_utility_improves_5pct": true,
+      "verified_triangle_camera_fraction_not_lower": true,
+      "verified_triangles_retain_98pct": true
+    },
+    "selected_graph": {
+      "pair_count": 7450,
+      "component_count": 2,
+      "isolated_camera_count": 0,
+      "minimum_degree": 1
+    },
+    "comparisons": {
+      "confidence_weighted_fisher_utility_sum": {
+        "control": 64.03658996498018,
+        "variant": 638.6184120407931,
+        "delta": 574.581822075813,
+        "ratio": 9.972711107665722
+      },
+      "completed_verified_keypoint_triangle_count": {
+        "control": 84878,
+        "variant": 825469,
+        "delta": 740591,
+        "ratio": 9.725358750206178
+      },
+      "completed_verified_triangle_camera_fraction": {
+        "control": 0.266,
+        "variant": 0.8665,
+        "delta": 0.6005,
+        "ratio": 3.257518796992481
+      }
+    }
+  },
+  "stage_b": {
+    "passed": true,
+    "passed_gate_count": 8,
+    "gate_count": 8,
+    "decision": "SCENE_PASS_REQUIRES_OTHER_SCENE",
+    "gates": {
+      "broad_eligible_tracks_retain_98pct": true,
+      "broad_mapping_query_coverage_not_lower": true,
+      "control_probe_rows_reused": true,
+      "high_confidence_tracks_retain_98pct": true,
+      "same_probe_matcher_contract": true,
+      "triangulated_covariance_p90_not_worse_5pct": true,
+      "triangulated_tracks_retain_98pct": true,
+      "variant_probe_rows_reused": true
+    },
+    "comparisons": {
+      "triangulated_tracks": {
+        "control": 15053,
+        "variant": 17384,
+        "delta": 2331,
+        "ratio": 1.1548528532518434
+      },
+      "broad_eligible_tracks": {
+        "control": 14276,
+        "variant": 16634,
+        "delta": 2358,
+        "ratio": 1.1651723171756794
+      },
+      "high_confidence_tracks": {
+        "control": 41,
+        "variant": 51,
+        "delta": 10,
+        "ratio": 1.2439024390243902
+      },
+      "triangulated_covariance_p90_m2": {
+        "control": 0.055011858046054844,
+        "variant": 0.03653227165341379,
+        "delta": -0.01847958639264105,
+        "ratio": 0.664079944778991
+      },
+      "mapping_query_with_broad_track_fraction": {
+        "control": 1.0,
+        "variant": 1.0,
+        "delta": 0.0,
+        "ratio": 1.0
+      }
+    },
+    "reuse_contract": {
+      "control_track_pair_matches_reused": 1,
+      "variant_track_pair_matches_reused": 1,
+      "control_uses_precomputed_pair_matches": true,
+      "variant_uses_precomputed_pair_matches": true,
+      "same_probe_matcher_contract": true
+    }
+  },
+  "lineage_diff_audit": {
+    "shared_exact_inputs": [
+      "fresh_cache_manifest",
+      "query_cache",
+      "mapping_scope_equivalence",
+      "frozen_track_payload",
+      "pair_proposals",
+      "pair_match_probe",
+      "pair_selection",
+      "stage_a_gate",
+      "query_names_sha256",
+      "probe_matcher",
+      "track_science_contract"
+    ],
+    "expected_prebuild_input_lineage_differences": {
+      "pair_subset_role": {
+        "control": "attested_nearest_same_probe_control",
+        "variant": "cycle_verified_fisher_selection"
+      }
+    },
+    "unexpected_prebuild_input_lineage_differences": [],
+    "control_density_factor_mutated": false,
+    "variant_density_factor_mutated": false,
+    "control_descriptor_factor_mutated": false,
+    "variant_descriptor_factor_mutated": false,
+    "control_selector_factor_mutated": false,
+    "variant_selector_factor_mutated": false
+  },
+  "selector_engineering_execution_audit": {
+    "invalid_pre_optimization_execution": {
+      "record_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_selection_execution_invalid.json",
+      "record_sha256": "42145cc49c39dfc0fc6e08300742b476243ab6afb4ece18c85c8f1f27aa0ca10",
+      "elapsed_seconds": 1592.086041,
+      "selection_output_written": false,
+      "stage_a_gate_written": false,
+      "valid_scientific_result": false,
+      "scientific_decision": null,
+      "classification": "engineering_complexity_blocker"
+    },
+    "optimized_execution": {
+      "selector_optimization_commit": "199c187acd8a6df018e3630fe0babda3739e68c1",
+      "observed_elapsed_seconds": 188.0,
+      "selection_output_written": true,
+      "selection_invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_selection_invocation_v2.json",
+      "selection_invocation_sha256": "141d3776aec9b5c11339d34f3230c5b4f565b3a260d0698b55101443c7d65f17",
+      "timing_is_scientific_gate": false
+    },
+    "scientific_interpretation": "The invalid run and optimized runtime are engineering execution evidence only; the scientific result is determined solely by the hash-bound Stage-A and Stage-B gates."
+  },
+  "cross_checks": {
+    "direct_file_sha256_rehash_passed": true,
+    "json_parse_passed": true,
+    "pt_schema_and_content_field_load_passed": true,
+    "stage_gate_field_cross_check_passed": true,
+    "control_variant_lineage_diff_check_passed": true
+  },
+  "downstream_execution": {
+    "greatcourt_stage_a": false,
+    "greatcourt_stage_b": false,
+    "cross_scene_aggregator": false,
+    "fullchain_rebuild": false,
+    "function_graph_or_map_rebuild": false,
+    "mapping_pose": false,
+    "office2_5b_sentinel": false,
+    "formal_test": false,
+    "method_default_changed": false
+  },
+  "method_conclusion": "Stairs provides a strong scene-specific mechanism pass: the fixed-budget exact-closure/Fisher selector improves verified closure coverage and Fisher utility, and those gains survive Track construction as more triangulated, broad, and high-confidence Tracks with a lower covariance tail. This does not establish cross-scene sufficiency or pose accuracy; only the identically frozen GreatCourt Stage-A/B sequence is authorized next."
+}
