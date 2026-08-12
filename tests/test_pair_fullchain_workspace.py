@@ -3,10 +3,42 @@ import json
 import pytest
 
 from scripts.pair_fullchain_workspace import (
+    lock_inputs,
     preflight_workspace,
     verify_stage_manifest,
     write_stage_manifest,
 )
+
+
+def test_lock_inputs_requires_preregistered_hashes_and_verifies_them(tmp_path):
+    root = tmp_path / "run"
+    preflight = root / "contracts" / "preflight.json"
+    preflight.parent.mkdir(parents=True)
+    preflight.write_text(json.dumps({"valid": True}))
+    external = tmp_path / "query.pt"
+    external.write_bytes(b"query")
+    import hashlib
+
+    digest = hashlib.sha256(b"query").hexdigest()
+    report_path = root / "contracts" / "inputs.json"
+    report = lock_inputs(
+        root=root,
+        inputs={"query_cache": external},
+        expected_sha256={"query_cache": digest},
+        parent=preflight,
+        report_path=report_path,
+    )
+    assert report["inputs"]["query_cache"]["expected_sha256"] == digest
+    assert report["inputs"]["query_cache"]["inside_output_root"] is False
+    assert verify_stage_manifest(report_path)["valid"]
+    with pytest.raises(ValueError, match="differs"):
+        lock_inputs(
+            root=root,
+            inputs={"query_cache": external},
+            expected_sha256={"query_cache": "0" * 64},
+            parent=preflight,
+            report_path=report_path,
+        )
 
 
 def test_preflight_accepts_only_declared_contract_inputs(tmp_path):

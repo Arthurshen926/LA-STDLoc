@@ -1,0 +1,330 @@
+# P7 Stairs pair-policy full-chain runbook
+
+## Decision scope
+
+This run changes only the mapping-camera pair policy from `nearest` to
+`parallax_diverse`. It uses the frozen Stairs K_mapping=1024/NMS=4 query cache,
+Stage-A state, 2DGS prior, visibility cache, descriptors, provenance-assignment
+parameters, selector policy, and V3 numeric calibration. It evaluates mapping
+poses only (`q=256` uniformly spaced mapping queries, seeds 2026/2027/2028).
+Test images remain forbidden.
+
+The current mainline's independent `mapping` block is compatible: for the
+640x480 Stairs processed images it resolves to K_mapping=1024 and NMS=4. The
+density factor is a recorded no-go and must not be mixed into this run. Sparse
+deployment remains independently area-adaptive; this mapping-only gate replays
+the frozen cache and does not rerun the frontend.
+
+## Locked inputs
+
+Run from `/root/STDLoc` with the `g4splat` Python environment and the repository
+root on `PYTHONPATH`. The values below are the preregistered inputs, not paths
+to be discovered by globbing.
+
+```bash
+export PYTHONPATH=/root/STDLoc
+export PATH=/root/miniconda3/envs/g4splat/bin:$PATH
+export LD_LIBRARY_PATH=/root/miniconda3/envs/g4splat/lib:${LD_LIBRARY_PATH:-}
+
+RUN=/mnt/pool/sqy/lafgs_p7_pair_policy_fullchain_20260812/stairs
+INPUT=$RUN/inputs
+CONTRACT=$RUN/contracts
+DATA=/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1/stairs
+BASE=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/stage_a/8660_lafgs_map_state.pt
+QUERY=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/query_cache.pt
+VIS=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/visibility.pt
+PLY=/mnt/pool/sqy/indoor_priors_pgt_v1/7Scenes/stairs/lafgs_prior_v1/point_cloud/iteration_30000/point_cloud.ply
+PARENT_CAL=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/scene_calibration.json
+PAYLOAD=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/provenance_replay/parallax_diverse_track_micro_anchor_payload.pt
+PAYLOAD_AUDIT=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/provenance_replay/parallax_diverse_payload_lineage_audit.json
+FACTOR=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/parallax_diverse_track_factor.pt
+MECHANISM=/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/stairs/k1024/mechanism_gate.json
+BOOTSTRAP_MANIFEST=/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/bootstrap/tracks_refined/reproducibility_manifest.json
+CONFIG=/root/STDLoc/configs/paper_mainline.yaml
+
+QUERY_SHA=8f65f9ad067f40dd9bd7dda99f3b7674a3b9016b4679d29c0df8a54637d863d2
+BASE_SHA=949a1b5bdff5f0d72628393b7f02dee526df4c8e0d104739c5562cb5fef19451
+VIS_SHA=63b228b445e72ef3bcfe69fd56ec57e8b533e4d384ad343ae3ad37d571e3433b
+PLY_SHA=c1d71e3d1984fd8c18436ea0c447a3e75350217bfbb5c70ae03ea63e838f5699
+PARENT_CAL_SHA=d3bc0839d73310055d93b895aa5c96fd633bef0fbab276604bffb782335120b2
+PAYLOAD_SHA=f1ab21fae713c37ac9725de8bf7eeacf8dcfa02ba91d45883dd789f04cb5a059
+PAYLOAD_AUDIT_SHA=46056d8c19c90c273720569a6ca424a7f436441b1afa4a0c141d40d96d810688
+FACTOR_SHA=5eb12e6936b0783b1e500d785d6165f1bf21b42bdc5f5b71a018b5d7c2bd5811
+MECHANISM_SHA=d32e51396392a76910f119b6f78dcb3a1dde00657af1bfda3c33ff690eaa7c52
+BOOTSTRAP_MANIFEST_SHA=cb0241f694f6bdd5f4d663bd88273f94217d0a42502a5be97107b5c35a64b8aa
+CONFIG_SHA=c522d3a3d692a5e3c4c6db06083ec5ca9682c9f1c2bef49b6bb135b622b352cc
+```
+
+Before doing any work, verify all eleven digests. The 10.38 GB query-cache hash
+may be slow on the pool filesystem; a timeout is not evidence of a mismatch.
+
+```bash
+test "$(sha256sum "$BASE" | cut -d' ' -f1)" = "$BASE_SHA"
+test "$(sha256sum "$QUERY" | cut -d' ' -f1)" = "$QUERY_SHA"
+test "$(sha256sum "$VIS" | cut -d' ' -f1)" = "$VIS_SHA"
+test "$(sha256sum "$PLY" | cut -d' ' -f1)" = "$PLY_SHA"
+test "$(sha256sum "$PARENT_CAL" | cut -d' ' -f1)" = "$PARENT_CAL_SHA"
+test "$(sha256sum "$PAYLOAD" | cut -d' ' -f1)" = "$PAYLOAD_SHA"
+test "$(sha256sum "$PAYLOAD_AUDIT" | cut -d' ' -f1)" = "$PAYLOAD_AUDIT_SHA"
+test "$(sha256sum "$FACTOR" | cut -d' ' -f1)" = "$FACTOR_SHA"
+test "$(sha256sum "$MECHANISM" | cut -d' ' -f1)" = "$MECHANISM_SHA"
+test "$(sha256sum "$BOOTSTRAP_MANIFEST" | cut -d' ' -f1)" = "$BOOTSTRAP_MANIFEST_SHA"
+test "$(sha256sum "$CONFIG" | cut -d' ' -f1)" = "$CONFIG_SHA"
+```
+
+The payload audit must additionally report `valid=true`,
+`pair_policy=parallax_diverse`, all checks true, and bind factor SHA
+`5eb12e6936b0783b1e500d785d6165f1bf21b42bdc5f5b71a018b5d7c2bd5811`.
+
+## 1. Fresh workspace preflight
+
+Never resume a failed scientific output directory. Move the whole failed root
+aside and start again. Preflight the empty root before copying any input:
+
+```bash
+python -m scripts.pair_fullchain_workspace preflight \
+  --root "$RUN" \
+  --output "$CONTRACT/preflight.json"
+
+mkdir -p "$INPUT"
+cp "$PAYLOAD_AUDIT" "$INPUT/payload_lineage_audit.json"
+cp "$PARENT_CAL" "$INPUT/parent_scene_calibration.json"
+cp "$CONFIG" "$INPUT/paper_mainline.yaml"
+```
+
+The report must say `scientific_artifact_count=0` and `valid=true`.
+
+## 2. Variant-bound frozen calibration
+
+Materialize a new sidecar; do not edit or copy the old calibration under a new
+name. The producer must require both expected SHA arguments and bind the valid
+payload-lineage audit.
+
+```bash
+python -m scripts.materialize_pair_factor_calibration \
+  --parent "$INPUT/parent_scene_calibration.json" \
+  --expected-parent-calibration-sha256 "$PARENT_CAL_SHA" \
+  --query-cache "$QUERY" \
+  --expected-query-cache-sha256 "$QUERY_SHA" \
+  --track-payload "$PAYLOAD" \
+  --payload-lineage-audit "$INPUT/payload_lineage_audit.json" \
+  --expected-payload-lineage-audit-sha256 "$PAYLOAD_AUDIT_SHA" \
+  --output "$INPUT/frozen_pair_scene_calibration.json"
+
+python -m scripts.pair_fullchain_workspace lock-inputs \
+  --root "$RUN" \
+  --input base_state="$BASE" --expected-sha256 base_state="$BASE_SHA" \
+  --input query_cache="$QUERY" --expected-sha256 query_cache="$QUERY_SHA" \
+  --input visibility_cache="$VIS" --expected-sha256 visibility_cache="$VIS_SHA" \
+  --input gaussian_ply="$PLY" --expected-sha256 gaussian_ply="$PLY_SHA" \
+  --input track_payload="$PAYLOAD" --expected-sha256 track_payload="$PAYLOAD_SHA" \
+  --input pair_factor="$FACTOR" --expected-sha256 pair_factor="$FACTOR_SHA" \
+  --input mechanism_gate="$MECHANISM" --expected-sha256 mechanism_gate="$MECHANISM_SHA" \
+  --input bootstrap_manifest="$BOOTSTRAP_MANIFEST" \
+  --expected-sha256 bootstrap_manifest="$BOOTSTRAP_MANIFEST_SHA" \
+  --input parent_calibration="$INPUT/parent_scene_calibration.json" \
+  --expected-sha256 parent_calibration="$PARENT_CAL_SHA" \
+  --input payload_lineage_audit="$INPUT/payload_lineage_audit.json" \
+  --expected-sha256 payload_lineage_audit="$PAYLOAD_AUDIT_SHA" \
+  --input config="$INPUT/paper_mainline.yaml" \
+  --expected-sha256 config="$CONFIG_SHA" \
+  --parent-manifest "$CONTRACT/preflight.json" \
+  --output "$CONTRACT/locked_inputs.json"
+
+python -m scripts.pair_fullchain_workspace manifest \
+  --root "$RUN" --stage frozen_calibration \
+  --artifact calibration="$INPUT/frozen_pair_scene_calibration.json" \
+  --artifact payload_lineage_audit="$INPUT/payload_lineage_audit.json" \
+  --artifact parent_calibration="$INPUT/parent_scene_calibration.json" \
+  --artifact config="$INPUT/paper_mainline.yaml" \
+  --parent-manifest "$CONTRACT/locked_inputs.json" \
+  --output "$CONTRACT/inputs.json"
+```
+
+The generated sidecar must retain V3 `statistics`, `parameters`, and `policy`
+exactly, hence `metric_steps=1520`. Its sources must bind the variant payload
+path/SHA and query path/SHA; lineage must bind expected and actual parent/audit
+SHAs. All downstream consumers validate this and must raise rather than
+silently recalibrate.
+
+## 3. Canonical evidence from the variant payload
+
+No old canonical map, function graph, provenance, or teacher is permitted.
+The output directory is new, so every artifact below is rebuilt.
+
+```bash
+CUDA_VISIBLE_DEVICES=2 python -m scripts.build_evidence \
+  --base-state "$BASE" \
+  --track-payload "$PAYLOAD" \
+  --query-cache "$QUERY" \
+  --gaussian-ply "$PLY" \
+  --gaussian-type 2dgs --sh-degree 3 \
+  --visibility-cache "$VIS" \
+  --config "$INPUT/paper_mainline.yaml" \
+  --scene-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+  --function-graph-shards 4 --provenance-shards 4 --observation-shards 4 \
+  --output "$RUN/evidence"
+
+python -m common.evidence_contract \
+  --verify --output "$RUN/evidence/evidence_contract.json"
+
+python -m scripts.audit_pair_fullchain_lineage \
+  --stage canonical \
+  --evidence-contract "$RUN/evidence/evidence_contract.json" \
+  --expected-track-payload "$PAYLOAD" \
+  --output "$CONTRACT/canonical_lineage.json"
+
+python -m scripts.pair_fullchain_workspace manifest \
+  --root "$RUN" --stage canonical_evidence \
+  --artifact canonical_map="$RUN/evidence/canonical_map.pt" \
+  --artifact function_graph_v2="$RUN/evidence/function_graph_v2.pt" \
+  --artifact raster_provenance="$RUN/evidence/raster_provenance.pt" \
+  --artifact function_graph="$RUN/evidence/function_graph.pt" \
+  --artifact positive_teacher="$RUN/evidence/complete_positive_teacher.pt" \
+  --artifact evidence_contract="$RUN/evidence/evidence_contract.json" \
+  --artifact lineage_audit="$CONTRACT/canonical_lineage.json" \
+  --parent-manifest "$CONTRACT/inputs.json" \
+  --output "$CONTRACT/canonical.json"
+```
+
+`canonical_lineage.json` must be valid and the evidence contract's Track
+artifact SHA must equal `PAYLOAD_SHA`.
+
+## 4. Adaptive distillation with frozen numeric thresholds
+
+```bash
+CUDA_VISIBLE_DEVICES=2 python -m scripts.distill_map \
+  --canonical-map "$RUN/evidence/canonical_map.pt" \
+  --function-graph "$RUN/evidence/function_graph.pt" \
+  --positive-teacher "$RUN/evidence/complete_positive_teacher.pt" \
+  --track-payload "$PAYLOAD" \
+  --query-cache "$QUERY" \
+  --scene-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+  --config "$INPUT/paper_mainline.yaml" \
+  --output "$RUN/topology"
+
+COMPACT=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["map"])' \
+  "$RUN/topology/adaptive_distillation_build.json")
+
+python -m scripts.pair_fullchain_workspace manifest \
+  --root "$RUN" --stage adaptive_distillation \
+  --artifact compact_map="$COMPACT" \
+  --artifact build_report="$RUN/topology/adaptive_distillation_build.json" \
+  --artifact selection_provenance="$RUN/topology/adaptive_selection_provenance.pt" \
+  --artifact sufficiency_selection="$RUN/topology/unified_sufficiency_selection.pt" \
+  --artifact scene_calibration="$RUN/topology/scene_calibration.json" \
+  --parent-manifest "$CONTRACT/canonical.json" \
+  --output "$CONTRACT/topology.json"
+```
+
+The build report's `calibration_contract.mode` must be
+`frozen_numeric_pair_factor`, with the exact sidecar path and SHA. A preexisting
+report with another contract is rejected.
+
+## 5. Rebuild compact evidence and cold 1520-step metric
+
+The canonical graph argument is only a compatibility input. The CLI forces
+`rebuild_function_graph=true`, producing new compact graph V2, raster
+provenance, evidence graph, and complete-positive teacher before training.
+
+```bash
+CUDA_VISIBLE_DEVICES=2 python -m scripts.train_compact_map \
+  --compact-map "$COMPACT" \
+  --canonical-function-graph "$RUN/evidence/function_graph.pt" \
+  --track-payload "$PAYLOAD" \
+  --query-cache "$QUERY" \
+  --gaussian-ply "$PLY" --gaussian-type 2dgs --sh-degree 3 \
+  --scene-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+  --config "$INPUT/paper_mainline.yaml" \
+  --function-graph-shards 4 --provenance-shards 4 --observation-shards 4 \
+  --output "$RUN/map_learning"
+
+python -m scripts.audit_pair_fullchain_lineage \
+  --stage compact --compact-map "$COMPACT" \
+  --raster-provenance "$RUN/map_learning/raster_provenance.pt" \
+  --complete-positive-teacher "$RUN/map_learning/complete_positive_teacher.pt" \
+  --expected-track-payload "$PAYLOAD" \
+  --output "$CONTRACT/compact_lineage.json"
+
+python -m scripts.audit_compact_artifact_lineage \
+  --map "$RUN/map_learning/anchor_map_step_1520.pt" \
+  --function-graph "$RUN/map_learning/compact_function_graph.pt" \
+  --complete-positive-teacher "$RUN/map_learning/complete_positive_teacher.pt" \
+  --metric-state "$RUN/map_learning/metric_state_step_1520.pt" \
+  --output "$CONTRACT/metric_lineage.json"
+
+python -m scripts.pair_fullchain_workspace manifest \
+  --root "$RUN" --stage compact_metric \
+  --artifact compact_map="$COMPACT" \
+  --artifact compact_function_graph_v2="$RUN/map_learning/compact_function_graph_v2.pt" \
+  --artifact compact_function_graph="$RUN/map_learning/compact_function_graph.pt" \
+  --artifact compact_provenance="$RUN/map_learning/raster_provenance.pt" \
+  --artifact compact_teacher="$RUN/map_learning/complete_positive_teacher.pt" \
+  --artifact trained_map="$RUN/map_learning/anchor_map_step_1520.pt" \
+  --artifact metric="$RUN/map_learning/metric_state_step_1520.pt" \
+  --artifact training_report="$RUN/map_learning/training_report.json" \
+  --artifact pair_lineage="$CONTRACT/compact_lineage.json" \
+  --artifact metric_lineage="$CONTRACT/metric_lineage.json" \
+  --parent-manifest "$CONTRACT/topology.json" \
+  --output "$CONTRACT/metric.json"
+```
+
+The metric must be cold-started: `training_report.config.initial_metric_state`
+is null. The metric audit must show exact map/metric anchor-ID alignment and
+teacher/function-graph row alignment. Both lineage reports must be valid.
+
+## 6. Mapping pose q256 x 3
+
+Verify the complete chain immediately before pose evaluation; this detects any
+artifact change after manifest creation.
+
+```bash
+python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/inputs.json"
+python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/canonical.json"
+python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/topology.json"
+python -m scripts.pair_fullchain_workspace verify --manifest "$CONTRACT/metric.json"
+
+for SEED in 2026 2027 2028; do
+  CUDA_VISIBLE_DEVICES=2 python -m scripts.evaluate_mapping_cache \
+    --map "$RUN/map_learning/anchor_map_step_1520.pt" \
+    --metric-state "$RUN/map_learning/metric_state_step_1520.pt" \
+    --complete-positive-teacher "$RUN/map_learning/complete_positive_teacher.pt" \
+    --query-cache "$QUERY" \
+    --scene-calibration "$INPUT/frozen_pair_scene_calibration.json" \
+    --query-count 256 --seed "$SEED" --device cuda \
+    --output "$RUN/mapping_pose_q256/seed${SEED}"
+done
+
+python -m scripts.pair_fullchain_workspace manifest \
+  --root "$RUN" --stage mapping_pose_q256x3 \
+  --artifact seed2026="$RUN/mapping_pose_q256/seed2026/mapping_cache_summary.json" \
+  --artifact seed2027="$RUN/mapping_pose_q256/seed2027/mapping_cache_summary.json" \
+  --artifact seed2028="$RUN/mapping_pose_q256/seed2028/mapping_cache_summary.json" \
+  --parent-manifest "$CONTRACT/metric.json" \
+  --output "$CONTRACT/pose.json"
+```
+
+This q256 gate is mapping-only and does not establish test accuracy. Compare it
+against a V3 control evaluated with the same q256 index rule and the same three
+seeds. Only a stable no-regression/positive pose result authorizes an all-mapping
+refresh and then a separately preregistered test evaluation. If the proxy gains
+do not survive pose, stop this pair-policy route despite the strong Track
+mechanism result.
+
+## Fail-closed checklist
+
+- Never use either `invalid_lineage_attempt` or
+  `invalid_spatial_assignment_attempt`.
+- No K=2048 cache, density config, changed descriptors, alias selector, surface
+  factor, or old canonical/compact artifact may enter this run.
+- No old canonical/function graph/provenance/teacher/metric is reused.
+- Any failed run root is quarantined; do not delete individual artifacts and
+  continue, because pipeline stages otherwise support ordinary silent resume.
+- Every sidecar consumer must accept the exact variant binding; any mismatch
+  raises and must never fall back to recalibration.
+- `scene_calibration.json` remains numerically identical to V3 for statistics,
+  parameters, and policy, while its sources/lineage bind the variant payload.
+- Canonical and compact lineage audits must bind Track payload SHA
+  `f1ab21fa...a059` through every evidence producer.
+- All four stage manifests are reverified before pose. A changed path, size,
+  SHA, invalid parent, or stale distillation calibration contract stops the run.

@@ -76,6 +76,70 @@ def _named_paths(values: list[str]) -> dict[str, Path]:
     return result
 
 
+def _named_values(values: list[str], *, label: str) -> dict[str, str]:
+    result = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError(f"Expected NAME={label}, found {value!r}")
+        name, resolved = value.split("=", 1)
+        if not name or name in result:
+            raise ValueError(f"Input name is empty or duplicated: {name!r}")
+        result[name] = resolved
+    return result
+
+
+def lock_inputs(
+    *,
+    root: Path,
+    inputs: dict[str, Path],
+    expected_sha256: dict[str, str],
+    parent: Path,
+    report_path: Path,
+) -> dict:
+    root = root.expanduser().resolve()
+    parent = parent.expanduser().resolve()
+    report_path = report_path.expanduser().resolve()
+    if set(inputs) != set(expected_sha256):
+        raise ValueError("Every locked input requires exactly one expected SHA-256")
+    if not parent.is_file() or json.loads(parent.read_text()).get("valid") is not True:
+        raise ValueError("Locked inputs require a valid fresh-workspace preflight")
+    records = {}
+    for name, path in sorted(inputs.items()):
+        path = path.expanduser().resolve()
+        expected = expected_sha256[name].strip().lower()
+        if (
+            len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+        ):
+            raise ValueError(f"Invalid expected SHA-256 for {name}")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        actual = sha256_file(path)
+        if actual != expected:
+            raise ValueError(f"Locked input SHA-256 differs for {name}")
+        records[name] = {
+            "path": str(path),
+            "expected_sha256": expected,
+            "sha256": actual,
+            "size_bytes": path.stat().st_size,
+            "inside_output_root": _inside(path, root),
+        }
+    report = {
+        "schema": SCHEMA,
+        "version": 1,
+        "kind": "locked_external_inputs",
+        "uses_test_queries": False,
+        "valid": True,
+        "root": str(root),
+        "inputs": records,
+        "parents": [{"path": str(parent), "sha256": sha256_file(parent)}],
+        "silent_resume_authorized": False,
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
+
+
 def write_stage_manifest(
     *,
     root: Path,
@@ -133,13 +197,19 @@ def verify_stage_manifest(path: Path) -> dict:
     if (
         report.get("schema") != SCHEMA
         or report.get("version") != 1
-        or report.get("kind") != "stage_sha256_manifest"
+        or report.get("kind")
+        not in {"stage_sha256_manifest", "locked_external_inputs"}
         or report.get("uses_test_queries") is not False
         or report.get("valid") is not True
         or report.get("silent_resume_authorized") is not False
     ):
         raise ValueError("Unsupported or invalid pair full-chain stage manifest")
-    for record in report.get("artifacts", {}).values():
+    records = (
+        report.get("inputs", {})
+        if report.get("kind") == "locked_external_inputs"
+        else report.get("artifacts", {})
+    )
+    for record in records.values():
         artifact = Path(record["path"]).resolve()
         if (
             not artifact.is_file()
@@ -167,6 +237,12 @@ def main() -> None:
     manifest.add_argument("--artifact", action="append", default=[])
     manifest.add_argument("--parent-manifest", type=Path, action="append", default=[])
     manifest.add_argument("--output", type=Path, required=True)
+    lock = subparsers.add_parser("lock-inputs")
+    lock.add_argument("--root", type=Path, required=True)
+    lock.add_argument("--input", action="append", default=[])
+    lock.add_argument("--expected-sha256", action="append", default=[])
+    lock.add_argument("--parent-manifest", type=Path, required=True)
+    lock.add_argument("--output", type=Path, required=True)
     verify = subparsers.add_parser("verify")
     verify.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
@@ -182,6 +258,16 @@ def main() -> None:
             stage=args.stage,
             artifacts=_named_paths(args.artifact),
             parents=args.parent_manifest,
+            report_path=args.output,
+        )
+    elif args.command == "lock-inputs":
+        result = lock_inputs(
+            root=args.root,
+            inputs=_named_paths(args.input),
+            expected_sha256=_named_values(
+                args.expected_sha256, label="SHA256"
+            ),
+            parent=args.parent_manifest,
             report_path=args.output,
         )
     else:
