@@ -33,6 +33,18 @@ from topology.pose_information import (
 )
 
 
+LOCKED_BATCH_QUERIES = 8
+LOCKED_CPU_THREADS = 32
+BASELINE_CROSS_DEVICE_MEAN_TOLERANCE = 5e-5
+SOLVER_PROTOCOL = {
+    "solver": "poselib_absolute_pose",
+    "confidence": 0.99999,
+    "max_iterations": 100000,
+    "min_iterations": 1000,
+    "progressive_sampling": False,
+}
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -179,6 +191,207 @@ def _arm_paths(args: argparse.Namespace, prefix: str) -> dict[str, Path]:
         role: Path(getattr(args, f"{prefix}_{role}")).resolve()
         for role in ("map", "metric", "teacher", "cache")
     }
+
+
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
+
+
+def _require_artifact_record(
+    record: dict,
+    *,
+    path: Path,
+    label: str,
+) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"formal gate misses {label} artifact record")
+    if not _same_path(record.get("path", ""), path):
+        raise ValueError(f"formal gate {label} path does not match replay input")
+    digest = _sha256(path)
+    if record.get("sha256") != digest:
+        raise ValueError(f"formal gate {label} SHA-256 does not match replay input")
+    if record.get("expected_sha256_matches") is not True:
+        raise ValueError(f"formal gate {label} was not checked against its expected SHA-256")
+    if record.get("expected_sha256") != digest:
+        raise ValueError(f"formal gate {label} expected SHA-256 is not the replay input")
+
+
+def _load_locked_protocol(
+    *,
+    gate_path: Path,
+    expected_gate_sha256: str,
+    arm_paths: dict[str, dict[str, Path]],
+    summary_roots: dict[str, Path],
+    requested_query_count: int,
+    requested_seeds: list[int],
+) -> tuple[dict, dict[str, Path], dict[str, dict[str, dict]], list[int]]:
+    if _sha256(gate_path) != str(expected_gate_sha256):
+        raise ValueError("formal pose-gate SHA-256 does not match the explicit expectation")
+    gate = json.loads(gate_path.read_text())
+    if (
+        gate.get("schema") != "lafgs_mapping_pose_pair_gate"
+        or int(gate.get("version", 0)) != 1
+        or gate.get("uses_test_queries") is not False
+        or gate.get("valid") is not True
+        or gate.get("decision", {}).get("verdict") != "STOP"
+    ):
+        raise ValueError("postmortem requires the valid mapping-only STOP pose gate")
+    checks = gate.get("lineage", {}).get("checks", {})
+    if not checks or any(value is not True for value in checks.values()):
+        raise ValueError("formal pose gate has an incomplete lineage check")
+
+    protocol = gate.get("preregistered_protocol", {})
+    locked_query_count = int(protocol.get("query_count", -1))
+    locked_seeds = [int(value) for value in protocol.get("seeds", [])]
+    if int(protocol.get("deployment_row_limit", -1)) != 0:
+        raise ValueError("postmortem requires the full mapping rows used by the pose gate")
+    if int(requested_query_count) != locked_query_count:
+        raise ValueError("query count differs from the formal pose gate")
+    if [int(value) for value in requested_seeds] != locked_seeds:
+        raise ValueError("seed list/order differs from the formal pose gate")
+
+    gate_arms = gate.get("lineage", {}).get("arms", {})
+    baseline_indices = [
+        int(value)
+        for value in gate_arms.get("baseline", {}).get("uniform_q256_indices", [])
+    ]
+    variant_indices = [
+        int(value)
+        for value in gate_arms.get("variant", {}).get("uniform_q256_indices", [])
+    ]
+    if (
+        len(baseline_indices) != locked_query_count
+        or baseline_indices != variant_indices
+        or _json_sha256(baseline_indices)
+        != gate_arms.get("baseline", {}).get("uniform_q256_indices_sha256")
+        or _json_sha256(variant_indices)
+        != gate_arms.get("variant", {}).get("uniform_q256_indices_sha256")
+    ):
+        raise ValueError("formal pose gate does not bind one exact paired query subset")
+
+    inputs = gate.get("lineage", {}).get("inputs", {})
+    calibration_paths: dict[str, Path] = {}
+    source_summaries: dict[str, dict[str, dict]] = {
+        "baseline": {},
+        "candidate": {},
+    }
+    for local_arm, gate_arm in (("baseline", "baseline"), ("candidate", "variant")):
+        for local_role, gate_role in (
+            ("map", "map"),
+            ("metric", "metric"),
+            ("teacher", "teacher"),
+            ("cache", "query_cache"),
+        ):
+            _require_artifact_record(
+                inputs.get(f"{gate_arm}.{gate_role}"),
+                path=arm_paths[local_arm][local_role],
+                label=f"{gate_arm}.{gate_role}",
+            )
+        calibration_record = inputs.get(f"{gate_arm}.calibration")
+        if not isinstance(calibration_record, dict):
+            raise ValueError(f"formal gate misses {gate_arm}.calibration artifact record")
+        calibration_path = Path(str(calibration_record.get("path", ""))).resolve()
+        _require_artifact_record(
+            calibration_record,
+            path=calibration_path,
+            label=f"{gate_arm}.calibration",
+        )
+        calibration_paths[local_arm] = calibration_path
+        for seed in locked_seeds:
+            summary_path = (
+                summary_roots[local_arm]
+                / f"seed{seed}"
+                / "mapping_cache_summary.json"
+            ).resolve()
+            record = inputs.get(f"{gate_arm}.seed{seed}_summary")
+            _require_artifact_record(
+                record,
+                path=summary_path,
+                label=f"{gate_arm}.seed{seed}_summary",
+            )
+            source_summaries[local_arm][str(seed)] = json.loads(
+                summary_path.read_text()
+            )
+    return gate, calibration_paths, source_summaries, baseline_indices
+
+
+def _validate_calibration(
+    calibration: dict,
+    *,
+    calibration_path: Path,
+    cache_path: Path,
+) -> None:
+    sources = calibration.get("sources", {})
+    if (
+        calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
+        or int(calibration.get("version", 0)) < 2
+        or sources.get("uses_test_queries") is not False
+        or not _same_path(sources.get("query_cache", ""), cache_path)
+    ):
+        raise ValueError(f"calibration is not bound to the mapping-only cache: {calibration_path}")
+    expected_cache_sha256 = sources.get("query_cache_sha256")
+    if expected_cache_sha256 is not None and expected_cache_sha256 != _sha256(cache_path):
+        raise ValueError(f"calibration query-cache SHA-256 mismatch: {calibration_path}")
+
+
+def _validate_source_summary(
+    report: dict,
+    *,
+    arm: str,
+    seed: int,
+    selected: list[int],
+    paths: dict[str, Path],
+    calibration_path: Path,
+    expected_sha256: dict[str, str],
+) -> None:
+    protocol = report.get("evaluation_protocol", {})
+    if (
+        report.get("schema") != "lafgs_mapping_cache_evaluation"
+        or int(report.get("version", 0)) != 2
+        or report.get("uses_test_queries") is not False
+        or int(report.get("seed", -1)) != int(seed)
+        or int(report.get("query_count", -1)) != len(selected)
+        or report.get("query_selection") != "uniform_mapping_gate"
+        or protocol.get("split") != "mapping_only"
+        or protocol.get("query_selection") != "uniform_mapping_gate"
+        or int(protocol.get("requested_query_count", -1)) != len(selected)
+        or int(protocol.get("evaluated_query_count", -1)) != len(selected)
+        or int(protocol.get("deployment_row_limit", -1)) != 0
+        or [int(value) for value in protocol.get("selected_query_indices", [])]
+        != selected
+        or protocol.get("selected_query_indices_sha256") != _json_sha256(selected)
+    ):
+        raise ValueError(f"{arm} seed {seed} summary is not the locked mapping-only replay")
+    direct_paths = {
+        "map": "map",
+        "metric_state": "metric",
+        "complete_positive_teacher": "teacher",
+        "query_cache": "cache",
+    }
+    for field, role in direct_paths.items():
+        if not _same_path(report.get(field, ""), paths[role]):
+            raise ValueError(f"{arm} seed {seed} summary names a different {role}")
+    if not _same_path(report.get("scene_calibration", ""), calibration_path):
+        raise ValueError(f"{arm} seed {seed} summary names a different calibration")
+    artifacts = report.get("artifacts", {})
+    for summary_role, local_role in (
+        ("map", "map"),
+        ("metric", "metric"),
+        ("teacher", "teacher"),
+        ("query_cache", "cache"),
+    ):
+        record = artifacts.get(summary_role, {})
+        if (
+            not _same_path(record.get("path", ""), paths[local_role])
+            or record.get("sha256") != expected_sha256[local_role]
+        ):
+            raise ValueError(f"{arm} seed {seed} summary artifact {summary_role} mismatch")
+    calibration_record = artifacts.get("calibration", {})
+    if (
+        not _same_path(calibration_record.get("path", ""), calibration_path)
+        or calibration_record.get("sha256") != expected_sha256["calibration"]
+    ):
+        raise ValueError(f"{arm} seed {seed} summary calibration artifact mismatch")
 
 
 @torch.inference_mode()
@@ -437,10 +650,11 @@ def _pose_one(
         xyz[torch.as_tensor(winners).long()].numpy(),
         intrinsic.numpy(),
         reprojection_error_px=float(ransac_px),
-        confidence=0.99999,
-        max_iterations=100000,
-        min_iterations=1000,
+        confidence=float(SOLVER_PROTOCOL["confidence"]),
+        max_iterations=int(SOLVER_PROTOCOL["max_iterations"]),
+        min_iterations=int(SOLVER_PROTOCOL["min_iterations"]),
         seed=int(seed),
+        progressive_sampling=bool(SOLVER_PROTOCOL["progressive_sampling"]),
     )
     inliers = np.asarray(estimate.inliers, dtype=np.int64).reshape(-1)
     clean = np.zeros(inliers.size, dtype=bool)
@@ -523,10 +737,18 @@ def _numeric_summary(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def _pose_summary(rows: list[dict]) -> dict[str, float | int]:
+def _pose_summary(
+    rows: list[dict],
+    *,
+    raw_count: int,
+    correct_count: int,
+) -> dict[str, float | int]:
     te = np.asarray([row["te_cm"] for row in rows], dtype=np.float64)
     ae = np.asarray([row["ae_deg"] for row in rows], dtype=np.float64)
     tail_count = max(int(math.ceil(0.05 * te.size)), 1)
+    inlier_count = int(sum(row["inlier_count"] for row in rows))
+    clean_inlier_count = int(sum(row["clean_inlier_count"] for row in rows))
+    harmful_inlier_count = int(sum(row["harmful_inlier_count"] for row in rows))
     return {
         "query_count": int(te.size),
         "median_te_cm": float(np.median(te)),
@@ -541,11 +763,55 @@ def _pose_summary(rows: list[dict]) -> dict[str, float | int]:
         "p95_ae_deg": float(np.percentile(ae, 95)),
         "recall_5cm_5deg_percent": float(100.0 * np.mean((te < 5.0) & (ae < 5.0))),
         "catastrophic_100cm_count": int(np.count_nonzero(te >= 100.0)),
-        "inlier_count": int(sum(row["inlier_count"] for row in rows)),
-        "clean_inlier_count": int(sum(row["clean_inlier_count"] for row in rows)),
-        "harmful_inlier_count": int(sum(row["harmful_inlier_count"] for row in rows)),
+        "raw_gt_precision_percent": float(100.0 * correct_count / max(raw_count, 1)),
+        "inlier_gt_precision_percent": float(
+            100.0 * clean_inlier_count / max(inlier_count, 1)
+        ),
+        "solver_inlier_ratio_percent": float(
+            100.0 * inlier_count / max(raw_count, 1)
+        ),
+        "retained_matches_mean": float(raw_count / max(te.size, 1)),
+        "inlier_count": inlier_count,
+        "clean_inlier_count": clean_inlier_count,
+        "harmful_inlier_count": harmful_inlier_count,
         "mean_hypotheses": float(np.mean([row["hypotheses"] for row in rows])),
     }
+
+
+def _validate_reproduction(
+    *,
+    arm: str,
+    seed: int,
+    computed: dict,
+    original: dict,
+) -> dict[str, float]:
+    missing = sorted(set(original) - set(computed))
+    if missing:
+        raise ValueError(
+            f"{arm} seed {seed} replay does not recompute summary fields: {missing}"
+        )
+    differences = {
+        key: float(computed[key] - original[key])
+        for key in sorted(original)
+        if isinstance(computed[key], (int, float))
+        and isinstance(original[key], (int, float))
+    }
+    nonzero = {key: abs(value) for key, value in differences.items() if value != 0.0}
+    if arm == "candidate":
+        if nonzero:
+            raise ValueError(
+                f"candidate seed {seed} does not exactly reproduce its source summary: {nonzero}"
+            )
+    else:
+        permitted = {"mean_te_cm", "mean_ae_deg"}
+        if set(nonzero) - permitted or any(
+            value > BASELINE_CROSS_DEVICE_MEAN_TOLERANCE
+            for value in nonzero.values()
+        ):
+            raise ValueError(
+                f"baseline seed {seed} exceeds the bounded CPU/GPU replay difference: {nonzero}"
+            )
+    return differences
 
 
 def _correlation(left: list[float], right: list[float]) -> float | None:
@@ -564,46 +830,93 @@ def main() -> None:
         parser.add_argument(f"--{prefix}-teacher", required=True)
         parser.add_argument(f"--{prefix}-cache", required=True)
         parser.add_argument(f"--{prefix}-summary-root", required=True)
-    parser.add_argument("--calibration", required=True)
+    parser.add_argument("--formal-pose-gate", type=Path, required=True)
+    parser.add_argument("--expected-formal-pose-gate-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--query-count", type=int, default=256)
     parser.add_argument("--seeds", type=int, nargs="+", default=[2026, 2027, 2028])
-    parser.add_argument("--batch-queries", type=int, default=8)
-    parser.add_argument("--threads", type=int, default=32)
     args = parser.parse_args()
     if torch.cuda.is_initialized():
         raise RuntimeError("this audit must run before any CUDA initialization")
-    torch.set_num_threads(int(args.threads))
-    baseline_paths = _arm_paths(args, "baseline")
-    candidate_paths = _arm_paths(args, "candidate")
-    calibration_path = Path(args.calibration).resolve()
-    calibration = json.loads(calibration_path.read_text())
-    parameters = calibration["parameters"]
+    torch.set_num_threads(LOCKED_CPU_THREADS)
+    arm_paths = {
+        arm: _arm_paths(args, arm) for arm in ("baseline", "candidate")
+    }
+    summary_roots = {
+        arm: Path(getattr(args, f"{arm}_summary_root")).resolve()
+        for arm in ("baseline", "candidate")
+    }
+    gate_path = args.formal_pose_gate.resolve()
+    gate, calibration_paths, source_summary_reports, selected = _load_locked_protocol(
+        gate_path=gate_path,
+        expected_gate_sha256=args.expected_formal_pose_gate_sha256,
+        arm_paths=arm_paths,
+        summary_roots=summary_roots,
+        requested_query_count=args.query_count,
+        requested_seeds=args.seeds,
+    )
+    calibrations = {
+        arm: json.loads(path.read_text())
+        for arm, path in calibration_paths.items()
+    }
+    for arm in ("baseline", "candidate"):
+        _validate_calibration(
+            calibrations[arm],
+            calibration_path=calibration_paths[arm],
+            cache_path=arm_paths[arm]["cache"],
+        )
+    for numeric_scope in ("parameters", "policy", "statistics"):
+        if calibrations["baseline"].get(numeric_scope) != calibrations["candidate"].get(
+            numeric_scope
+        ):
+            raise ValueError(f"paired calibrations differ in {numeric_scope}")
+    parameters = calibrations["baseline"]["parameters"]
+    gate_inputs = gate["lineage"]["inputs"]
+    for arm, gate_arm in (("baseline", "baseline"), ("candidate", "variant")):
+        expected_sha256 = {
+            "map": gate_inputs[f"{gate_arm}.map"]["sha256"],
+            "metric": gate_inputs[f"{gate_arm}.metric"]["sha256"],
+            "teacher": gate_inputs[f"{gate_arm}.teacher"]["sha256"],
+            "cache": gate_inputs[f"{gate_arm}.query_cache"]["sha256"],
+            "calibration": gate_inputs[f"{gate_arm}.calibration"]["sha256"],
+        }
+        for seed in args.seeds:
+            _validate_source_summary(
+                source_summary_reports[arm][str(seed)],
+                arm=arm,
+                seed=int(seed),
+                selected=selected,
+                paths=arm_paths[arm],
+                calibration_path=calibration_paths[arm],
+                expected_sha256=expected_sha256,
+            )
 
     baseline_teacher_header = torch.load(
-        baseline_paths["teacher"], map_location="cpu", weights_only=False
+        arm_paths["baseline"]["teacher"], map_location="cpu", weights_only=False
     )
     total_queries = len(baseline_teacher_header["records"])
-    selected = (
+    computed_selected = (
         torch.linspace(0, total_queries - 1, steps=int(args.query_count))
         .round()
         .long()
         .unique(sorted=True)
         .tolist()
     )
+    if computed_selected != selected:
+        raise ValueError("teacher does not reproduce the gate-bound uniform query subset")
     del baseline_teacher_header
     baseline, geometry, baseline_meta = _match_arm(
         label="baseline",
-        paths=baseline_paths,
+        paths=arm_paths["baseline"],
         selected_queries=selected,
-        batch_queries=args.batch_queries,
+        batch_queries=LOCKED_BATCH_QUERIES,
         common_geometry=None,
     )
     candidate, geometry, candidate_meta = _match_arm(
         label="candidate",
-        paths=candidate_paths,
+        paths=arm_paths["candidate"],
         selected_queries=selected,
-        batch_queries=args.batch_queries,
+        batch_queries=LOCKED_BATCH_QUERIES,
         common_geometry=geometry,
     )
     if not torch.equal(baseline_meta["xyz"], candidate_meta["xyz"]):
@@ -688,18 +1001,26 @@ def main() -> None:
             sidecar[f"{arm_label}_seed{seed}_inlier_offsets"] = np.asarray(inlier_offsets, dtype=np.int64)
             sidecar[f"{arm_label}_seed{seed}_inlier_indices"] = np.concatenate(inlier_values).astype(np.int32, copy=False)
             sidecar[f"{arm_label}_seed{seed}_inlier_clean"] = np.concatenate(clean_values).astype(np.uint8, copy=False)
-            computed = _pose_summary(pose_results[seed_key][arm_label])
-            original_path = Path(getattr(args, f"{arm_label}_summary_root")) / f"seed{seed}" / "mapping_cache_summary.json"
-            original = json.loads(original_path.read_text())["summary"]
+            computed = _pose_summary(
+                pose_results[seed_key][arm_label],
+                raw_count=int(matching["row_count"]),
+                correct_count=int(matching[f"{arm_label}_correct_count"]),
+            )
+            original_path = (
+                summary_roots[arm_label]
+                / f"seed{seed}"
+                / "mapping_cache_summary.json"
+            ).resolve()
+            original = source_summary_reports[arm_label][seed_key]["summary"]
             original_summaries[arm_label][seed_key] = {
                 "path": str(original_path.resolve()), "sha256": _sha256(original_path), "summary": original
             }
-            shared = sorted(set(computed) & set(original))
-            differences = {
-                key: float(computed[key] - original[key])
-                for key in shared
-                if isinstance(computed[key], (int, float)) and isinstance(original[key], (int, float))
-            }
+            differences = _validate_reproduction(
+                arm=arm_label,
+                seed=int(seed),
+                computed=computed,
+                original=original,
+            )
             reproduction[arm_label][seed_key] = {
                 "computed": computed,
                 "absolute_differences_from_gpu_gate_summary": {
@@ -818,7 +1139,7 @@ def main() -> None:
     np.savez_compressed(sidecar_path, **sidecar)
     report = {
         "schema": "lafgs_equal_energy_pose_postmortem",
-        "version": 1,
+        "version": 2,
         "uses_test_queries": False,
         "device": "cpu",
         "scope": "mapping_only_q256_frozen_pair",
@@ -827,8 +1148,18 @@ def main() -> None:
             "selected_query_indices": selected,
             "selected_query_indices_sha256": _json_sha256(selected),
             "seeds": [int(seed) for seed in args.seeds],
+            "batch_queries": LOCKED_BATCH_QUERIES,
+            "cpu_threads": LOCKED_CPU_THREADS,
             "matching": "same shared-metric/global-top1 implementation as gate, CPU replay",
             "pose": "same PoseLib parameters and seeds as gate, CPU replay",
+            "solver": {
+                **SOLVER_PROTOCOL,
+                "ransac_reprojection_px": float(
+                    parameters["ransac_reprojection_px"]
+                ),
+                "clean_radius_px": float(parameters["clean_radius_px"]),
+            },
+            "baseline_cross_device_mean_tolerance": BASELINE_CROSS_DEVICE_MEAN_TOLERANCE,
             "primary_artifacts_modified": False,
         },
         "lineage": {
@@ -838,7 +1169,18 @@ def main() -> None:
             "anchor_type_bitwise_equal": True,
             "selected_teacher_rows_and_labels_bitwise_equal": True,
             "selected_query_geometry_bitwise_equal": True,
-            "calibration": {"path": str(calibration_path), "sha256": _sha256(calibration_path)},
+            "formal_pose_gate": {
+                "path": str(gate_path),
+                "sha256": _sha256(gate_path),
+            },
+            "calibrations": {
+                arm: {"path": str(path), "sha256": _sha256(path)}
+                for arm, path in calibration_paths.items()
+            },
+            "audit_script": {
+                "path": str(Path(__file__).resolve()),
+                "sha256": _sha256(Path(__file__).resolve()),
+            },
         },
         "source_gate_summaries": original_summaries,
         "cpu_reproduction": reproduction,

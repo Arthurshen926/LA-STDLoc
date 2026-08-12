@@ -4,9 +4,10 @@
 
 The formal pose **STOP** is now explained more narrowly. The 320D descriptor
 does not fail because it lacks identity signal, because the 7,275-anchor map
-has bad global geometry, or because PoseLib is seed-unstable. It fails because
-the fixed 50/50 score changes `43.68%` of all Top-1 assignments and creates a
-localized, seed-stable **wrong geometric consensus** on repeated Stairs views.
+has bad global geometry, or because PoseLib is unstable across the three
+preregistered seeds. The fixed 50/50 score changes `43.68%` of all Top-1
+assignments and creates a localized, seed-stable **wrong geometric consensus**
+on a small group of Stairs views.
 
 The deployment conclusion is therefore:
 
@@ -35,10 +36,20 @@ query indices, calibration, PoseLib parameters, and seeds.
 | Original formal pose gate | `5ef1a156e9e2ac54fa0e111a246865269510ee4971d685f0dac52a798e03f947` |
 
 Candidate pose metrics reproduce the GPU gate exactly for all three seeds.
-The baseline differs only in mean floating-point aggregation by at most
-`3.67e-5`; all raw Top-1 counts and decision-relevant behavior reproduce. The
-pair also re-verifies bitwise-equal anchor xyz/types, teacher labels, and query
-geometry.
+For the baseline, the only nonzero aggregate differences are mean TE and mean
+AE, bounded by `3.67e-5`; the available aggregate artifacts do not identify
+whether this comes from CPU/GPU matching arithmetic or another cross-device
+numeric detail, so no narrower cause is claimed. All raw Top-1 counts and
+decision-relevant behavior reproduce. The pair also re-verifies bitwise-equal
+anchor xyz/types, teacher labels, and query geometry.
+
+An independent review matched both arms and all six summaries to the formal
+mapping-only gate, whose lineage checks are all true and whose
+`uses_test_queries` field is false. The original full postmortem report predates
+that fail-closed binding, so the audit script is now hardened to require the
+formal gate and its expected SHA, exact artifact and summary hashes, the q256
+subset, the ordered seeds, both rebound calibrations, and the fixed solver
+protocol before a future replay can emit `uses_test_queries=false`.
 
 ## Why raw precision rises while pose worsens
 
@@ -85,12 +96,13 @@ not random solver variation. Four queries dominate the regression:
 | `seq-05/frame-000254` | 0.70 cm | **30.27 cm** | +1 | 24 -> **0** |
 | `seq-05/frame-000497` | 1.14 cm | **29.43 cm** | -2 | 16 -> **0** |
 
-The first three are neighboring views in one Stairs trajectory. A targeted
-pose lookup places their false estimates near later frames of the same
-trajectory (`279`, `293`, and `313`); frame `497` locks near the earlier
-frame-`336` region. This is the signature expected from repeated indoor
-structure: many individually plausible assignments jointly vote for another
-physical segment.
+The first three are neighboring views in one Stairs trajectory. That
+localization is consistent with a repeated-structure alias, but the current
+full report and NPZ sidecar do not retain estimated pose matrices or a
+nearest-mapping-camera lookup. The stronger attribution to a particular other
+trajectory segment is therefore intentionally not made here. What the retained
+evidence establishes is narrower: many assignments jointly support a larger
+consensus that is geometrically wrong under the mapping ground truth.
 
 The candidate recovers three former 5 cm failures (query indices `494`,
 `1631`, `1999`) but creates five (`1239`, `1246`, `1254`, `1497`, `1638`),

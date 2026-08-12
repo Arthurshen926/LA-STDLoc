@@ -7,7 +7,7 @@
     "fixed_equal_energy_0p5": "REJECT_FOR_DEPLOYMENT",
     "one_vector_representation": "RETAIN_AS_RESEARCH_CONSTRAINT",
     "xfeat_complementarity": "MECHANISM_SUPPORTED",
-    "descriptor_pose_failure": "LOCALIZED_COHERENT_FALSE_CONSENSUS",
+    "descriptor_pose_failure": "LOCALIZED_SEED_STABLE_WRONG_CONSENSUS",
     "p8_relation": "SHARED_SET_LEVEL_PRINCIPLE_BUT_DISTINCT_CAUSAL_FACTOR"
   },
   "artifacts": {
@@ -30,7 +30,8 @@
     "seeds": [2026, 2027, 2028],
     "candidate_all_reported_pose_metrics_exact": true,
     "baseline_max_absolute_gpu_summary_difference": 0.000036692426874651574,
-    "baseline_difference_is_limited_to_mean_float_aggregation": true,
+    "baseline_only_nonzero_summary_differences_are_mean_te_and_mean_ae": true,
+    "baseline_cross_device_difference_cause_is_not_attributed": true,
     "raw_top1_counts_exact": true,
     "anchor_xyz_bitwise_equal": true,
     "anchor_type_bitwise_equal": true,
@@ -96,13 +97,7 @@
       "candidate_te_cm": 27.672678232192993,
       "correct_count_delta": 6,
       "baseline_clean_inliers": 14,
-      "candidate_clean_inliers": 0,
-      "nearest_mapping_camera_to_false_estimate": {
-        "query_index": 1279,
-        "image_name": "seq-05/frame-000279.color.png",
-        "translation_cm": 7.378,
-        "rotation_deg": 4.793
-      }
+      "candidate_clean_inliers": 0
     },
     {
       "query_index": 1246,
@@ -111,13 +106,7 @@
       "candidate_te_cm": 27.38232910633087,
       "correct_count_delta": -1,
       "baseline_clean_inliers": 26,
-      "candidate_clean_inliers": 0,
-      "nearest_mapping_camera_to_false_estimate": {
-        "query_index": 1293,
-        "image_name": "seq-05/frame-000293.color.png",
-        "translation_cm": 8.782,
-        "rotation_deg": 3.675
-      }
+      "candidate_clean_inliers": 0
     },
     {
       "query_index": 1254,
@@ -126,13 +115,7 @@
       "candidate_te_cm": 30.26546537876129,
       "correct_count_delta": 1,
       "baseline_clean_inliers": 24,
-      "candidate_clean_inliers": 0,
-      "nearest_mapping_camera_to_false_estimate": {
-        "query_index": 1313,
-        "image_name": "seq-05/frame-000313.color.png",
-        "translation_cm": 2.339,
-        "rotation_deg": 2.685
-      }
+      "candidate_clean_inliers": 0
     },
     {
       "query_index": 1497,
@@ -141,13 +124,7 @@
       "candidate_te_cm": 29.42691743373871,
       "correct_count_delta": -2,
       "baseline_clean_inliers": 16,
-      "candidate_clean_inliers": 0,
-      "nearest_mapping_camera_to_false_estimate": {
-        "query_index": 1336,
-        "image_name": "seq-05/frame-000336.color.png",
-        "translation_cm": 3.067,
-        "rotation_deg": 6.47
-      }
+      "candidate_clean_inliers": 0
     }
   ],
   "tail_repeatability": {
@@ -167,8 +144,15 @@
     "supported": [
       "fixed 0.5 fusion changes too many unlabeled or ambiguous assignments",
       "marginal identity gain does not control joint geometric consensus",
-      "localized repeated-scene aliases form a larger but wrong PoseLib consensus",
+      "localized tail queries form a larger but wrong PoseLib consensus",
       "the descriptor-to-pose interface is the failed factor"
     ]
+  },
+  "independent_review": {
+    "formal_gate_mapping_only_and_test_free_crosscheck": true,
+    "formal_gate_binds_all_six_source_summaries_and_both_artifact_arms": true,
+    "full_report_predates_fail_closed_gate_binding": true,
+    "audit_script_hardened_for_future_replays": true,
+    "unsupported_nearest_mapping_camera_attribution_removed": true
   }
 }
