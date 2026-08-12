@@ -1,0 +1,86 @@
+{
+  "adjudication": {
+    "formal_test_frozen": true,
+    "office2_5b": {
+      "catastrophic_100cm_count_tolerance": 0,
+      "mapping_only": true,
+      "no_threshold_tuning": true,
+      "requires_tail_non_regression": true
+    },
+    "post_stairs_pass_required_guard_order": [
+      "12Scenes/office2_5b_mapping_pose_tail_non_regression",
+      "outdoor_mapping_guard"
+    ],
+    "stairs_mapping_pose_gate": {
+      "query_count": 256,
+      "query_selection": "uniform_mapping_gate",
+      "requires_tail_metrics": [
+        "p90_te_cm",
+        "cvar95_te_cm"
+      ],
+      "requires_translation_rotation_recall_and_catastrophe_non_regression": true,
+      "seeds": [
+        2026,
+        2027,
+        2028
+      ]
+    }
+  },
+  "estimator_extension": {
+    "all_frozen_anchors_retained": true,
+    "anchor_ids_geometry_topology_frozen": true,
+    "deployment_estimator_domain_min": 1,
+    "estimator": "uniform_mean_of_all_available_mapping_views_after_per_view_positive_mean",
+    "mechanism_support_domain_min": 2,
+    "no_anchor_removal": true,
+    "no_source_or_anchor_type_routing": true,
+    "no_unsupported_anchor_fallback": true,
+    "single_view_extension_preregistered": true
+  },
+  "expected_support": {
+    "anchor_count": 7275,
+    "single_view_anchor_count": 70,
+    "single_view_anchor_ids_sha256": "194ba8babde041e9325df9f28c7563f11f131a416e6c76d8fa9942e0db83f4dc",
+    "single_view_anchor_indices_sha256": "194ba8babde041e9325df9f28c7563f11f131a416e6c76d8fa9942e0db83f4dc",
+    "single_view_anchor_type_histogram": {
+      "0": 70
+    }
+  },
+  "mapping_only": true,
+  "proxy_to_deployment_transfer": {
+    "deployment_score": "0.5*cos(frozen_v3_metric_superpoint_query,frozen_v3_anchor_features)+0.5*cos(xfeat_query,all_mapping_view_xfeat_bank)",
+    "mechanism_and_deployment_superpoint_banks_bitwise_identical": false,
+    "mechanism_superpoint_branch": "raw_l2_superpoint_query_vs_crossfit_positive_view_superpoint_bank",
+    "preregistered_before_pose": true,
+    "reason": "preserve_the_frozen_v3_baseline_branch",
+    "requires_pose_tail_and_cross_domain_adjudication": true
+  },
+  "scene": "7Scenes/stairs",
+  "schema": "lafgs_equal_energy_descriptor_deployment_extension_preregistration",
+  "single_factor": "fixed_equal_energy_descriptor_representation",
+  "source_artifacts": {
+    "mechanism_gate": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/sp_xfeat_equal_energy_descriptor_gate.json",
+      "sha256": "19e6e5797840943bf7d4a0144f1b4cc1b99e2f895dea6437c9e529cc8cc8a623"
+    },
+    "mechanism_report": {
+      "path": "/mnt/pool/sqy/lafgs_xfeat_arm_b_20260813/stairs/sp_xfeat_equal_energy_descriptor_report.json",
+      "sha256": "6dbc8394da5c6a498d5648ddbe474f71b82c2baba91eb0ed05e2193dffc63aaa"
+    },
+    "source_map": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/anchor_map_step_1520.pt",
+      "sha256": "5f754ace648336d9f1fca381f29cd7f6164a217ca05b506644f21929e4a9e620"
+    },
+    "source_metric": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/metric_state_step_1520.pt",
+      "sha256": "c55818b3ab27e6d1b4ca929d21d235eed5e80238913113ed596a5ea9b436f903"
+    },
+    "teacher": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/7Scenes/stairs/map_learning/complete_positive_teacher.pt",
+      "sha256": "3f733debc51aafb7d166ebfb64010de237e3e7542851e647a7a2966f7c609a81"
+    }
+  },
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 1
+}

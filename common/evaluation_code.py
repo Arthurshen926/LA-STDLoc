@@ -9,6 +9,8 @@ from common.hashing import sha256_file
 
 
 MAPPING_POSE_ENTRYPOINTS = (
+    "map_learning/equal_energy_descriptor_factor.py",
+    "scripts/materialize_equal_energy_descriptor_factor.py",
     "scripts/evaluate_mapping_cache.py",
     "scripts/compare_mapping_pose_gate.py",
 )

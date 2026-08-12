@@ -95,3 +95,25 @@ The fail-closed comparator uses
 candidate dimension `64`, effective dimension `320`, and the exact report and
 input SHA-256 values. The report must exist before its SHA is supplied; no
 wildcard or latest-file resolution is allowed.
+
+## Pose-before-deployment extension
+
+The mechanism audit excluded anchors with fewer than two support views. The
+frozen deployed map has 7,275 anchors, including exactly 70 single-view
+anchors; all 70 are Gaussian Reserve (`anchor_type=0`). Removing or routing
+them would change the topology and the scientific factor. Therefore the
+versioned preregistration at
+`docs/evidence/xfeat_equal_energy_deployment_extension_preregistration.json`
+(SHA-256
+`ee44fedbbe80227ccb0b741e7a585776d2ffe2019fe11e88e8922e2965741075`)
+locks one uniform all-available-view estimator for every anchor with at least
+one mapping view. It locks the exact 70-anchor row/ID hashes and type
+histogram, and forbids fallback, routing, removal, or topology mutation.
+
+It also records the deliberate proxy transfer: the mechanism GO used the raw
+normalized SuperPoint cross-fit branch, while deployment preserves the frozen
+V3 metric/query and V3 anchor-feature branch. This is not claimed to be a
+bitwise-identical SuperPoint bank. The extension is adjudicated first by the
+Stairs uniform-q256, seeds 2026/2027/2028 pose/tail gate. A PASS only advances
+to the mapping-only `office2_5b` tail guard, then an outdoor guard; formal test
+data remain frozen.

@@ -12,6 +12,9 @@ import torch
 
 from common.evaluation_code import mapping_pose_evaluation_code_identity
 from common.hashing import sha256_file
+from map_learning.equal_energy_descriptor_factor import (
+    validate_descriptor_factor_contract,
+)
 from topology.deployment_revision import collect_deployment_statistics
 
 
@@ -52,6 +55,14 @@ def main() -> None:
     parser.add_argument("--metric-state", type=Path, required=True)
     parser.add_argument("--complete-positive-teacher", type=Path, required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
+    parser.add_argument(
+        "--descriptor-factor-contract",
+        type=Path,
+        help=(
+            "Optional mapping-only descriptor-source contract. Map, metric, "
+            "query cache, teacher, and calibration must be its candidate outputs."
+        ),
+    )
     parser.add_argument("--scene-calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--deployment-row-limit", type=int, default=0)
@@ -93,6 +104,25 @@ def main() -> None:
         != artifact_paths["query_cache"]
     ):
         raise ValueError("complete-positive teacher names a different query cache")
+    descriptor_factor = None
+    deployment_cache = cache
+    if args.descriptor_factor_contract is not None:
+        descriptor_factor = validate_descriptor_factor_contract(
+            args.descriptor_factor_contract,
+            variant_map_path=artifact_paths["map"],
+            variant_metric_path=artifact_paths["metric"],
+            variant_query_cache_path=artifact_paths["query_cache"],
+            variant_teacher_path=artifact_paths["teacher"],
+            variant_calibration_path=artifact_paths["calibration"],
+        )
+        descriptor_cache_path = descriptor_factor["descriptor_cache_path"]
+        if descriptor_cache_path != artifact_paths["query_cache"]:
+            raise ValueError("descriptor-factor output is not the evaluated query cache")
+        artifact_paths["descriptor_factor"] = descriptor_factor["path"]
+        artifact_records["descriptor_factor"] = {
+            "path": str(descriptor_factor["path"]),
+            "sha256": descriptor_factor["sha256"],
+        }
     parameters = calibration["parameters"]
     query_names = list(teacher["query_names"])
     total_queries = len(teacher["records"])
@@ -119,7 +149,7 @@ def main() -> None:
         state=state,
         metric_state_path=artifact_paths["metric"],
         teacher=teacher,
-        query_cache=cache,
+        query_cache=deployment_cache,
         device=torch.device(args.device),
         ransac_reprojection_px=float(parameters["ransac_reprojection_px"]),
         clean_reprojection_px=float(parameters["clean_radius_px"]),
@@ -141,6 +171,14 @@ def main() -> None:
         "metric_state": str(artifact_paths["metric"]),
         "complete_positive_teacher": str(artifact_paths["teacher"]),
         "query_cache": str(artifact_paths["query_cache"]),
+        "descriptor_cache": str(
+            artifact_paths.get("descriptor_cache", artifact_paths["query_cache"])
+        ),
+        "descriptor_factor_contract": (
+            str(artifact_paths["descriptor_factor"])
+            if descriptor_factor is not None
+            else None
+        ),
         "scene_calibration": str(artifact_paths["calibration"]),
         "artifacts": artifact_records,
         "deployment_row_limit": int(args.deployment_row_limit),
@@ -158,6 +196,24 @@ def main() -> None:
             "selected_query_indices_sha256": _json_sha256(selected_query_indices),
             "selected_query_names_sha256": _json_sha256(selected_query_names),
             "deployment_row_limit": int(args.deployment_row_limit),
+            "descriptor_protocol": (
+                {
+                    "kind": "equal_energy_descriptor_factor",
+                    "factor_id": descriptor_factor["factor_id"],
+                    "source_descriptor_dim": 256,
+                    "xfeat_descriptor_dim": 64,
+                    "effective_descriptor_dim": 320,
+                    "strict_identity_metric": True,
+                    "one_materialized_bank": True,
+                    "one_global_top1": True,
+                    "one_poselib_call_per_query": True,
+                }
+                if descriptor_factor is not None
+                else {
+                    "kind": "canonical_query_cache_shared_metric",
+                    "descriptor_cache_equals_query_cache": True,
+                }
+            ),
         },
         "summary": statistics["summary"],
     }

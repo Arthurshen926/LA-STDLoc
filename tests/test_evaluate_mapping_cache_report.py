@@ -156,7 +156,13 @@ def test_mapping_cache_report_self_binds_inputs_seed_and_query_subset(
         "selected_query_indices_sha256": _json_sha256(expected_indices),
         "selected_query_names_sha256": _json_sha256(expected_names),
         "deployment_row_limit": 0,
+        "descriptor_protocol": {
+            "kind": "canonical_query_cache_shared_metric",
+            "descriptor_cache_equals_query_cache": True,
+        },
     }
+    assert report["descriptor_cache"] == str(paths["query_cache"].resolve())
+    assert report["descriptor_factor_contract"] is None
     for role, path in paths.items():
         assert report["artifacts"][role] == {
             "path": str(path.resolve()),

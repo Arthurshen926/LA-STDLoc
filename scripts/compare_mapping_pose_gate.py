@@ -14,6 +14,7 @@ import torch
 
 from common.evaluation_code import mapping_pose_evaluation_code_identity
 from common.hashing import sha256_file
+from map_learning.equal_energy_descriptor_factor import audit_descriptor_factor_pair
 
 
 REQUIRED_SEEDS = (2026, 2027, 2028)
@@ -177,6 +178,7 @@ def _hash_inputs(
     artifacts: dict[str, dict[str, Path]],
     summaries: dict[str, dict[int, Path]],
     expected_sha256: Mapping[str, str] | None,
+    extra_paths: Mapping[str, Path] | None = None,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     paths: dict[str, Path] = {}
     for arm in ("baseline", "variant"):
@@ -187,6 +189,7 @@ def _hash_inputs(
                 for seed in REQUIRED_SEEDS
             }
         )
+    paths.update(dict(extra_paths or {}))
     expected = _normalize_expected_sha256(expected_sha256, allowed_keys=set(paths))
     digest_cache: dict[Path, str] = {}
     records = {}
@@ -354,6 +357,7 @@ def _load_summary(
     artifact_sha256: dict[str, str],
     arm_audit: dict,
     expected_evaluation_code: dict,
+    extra_artifacts: Mapping[str, Path] | None = None,
 ) -> dict:
     report = json.loads(path.read_text())
     if (
@@ -381,19 +385,35 @@ def _load_summary(
         "query_cache": "query_cache",
         "scene_calibration": "calibration",
     }
+    extra_artifacts = dict(extra_artifacts or {})
+    if extra_artifacts:
+        required_paths["descriptor_factor_contract"] = "descriptor_factor"
     for field, role in required_paths.items():
-        if Path(str(report.get(field, ""))).resolve() != artifacts[role]:
+        expected_path = ({**artifacts, **extra_artifacts})[role]
+        if Path(str(report.get(field, ""))).resolve() != expected_path:
             raise ValueError(f"{arm} seed {seed} summary {field} path differs")
+    descriptor_cache = report.get("descriptor_cache")
+    if extra_artifacts and descriptor_cache is None:
+        raise ValueError(f"{arm} seed {seed} descriptor cache is absent")
+    if descriptor_cache is not None and Path(str(descriptor_cache)).resolve() != (
+        artifacts["query_cache"]
+    ):
+        raise ValueError(f"{arm} seed {seed} descriptor cache differs")
+    if not extra_artifacts:
+        if report.get("descriptor_factor_contract") is not None:
+            raise ValueError(f"{arm} seed {seed} unexpectedly binds a descriptor factor")
     embedded_artifacts = report.get("artifacts")
-    if not isinstance(embedded_artifacts, dict) or set(embedded_artifacts) != set(
-        ARTIFACT_ROLES
+    expected_artifact_roles = set(ARTIFACT_ROLES) | set(extra_artifacts)
+    if not isinstance(embedded_artifacts, dict) or set(embedded_artifacts) != (
+        expected_artifact_roles
     ):
         raise ValueError(f"{arm} seed {seed} summary artifact bindings are incomplete")
-    for role in ARTIFACT_ROLES:
+    summary_artifacts = {**artifacts, **extra_artifacts}
+    for role in expected_artifact_roles:
         record = embedded_artifacts[role]
         if not isinstance(record, dict):
             raise ValueError(f"{arm} seed {seed} summary {role} binding is invalid")
-        if Path(str(record.get("path", ""))).resolve() != artifacts[role]:
+        if Path(str(record.get("path", ""))).resolve() != summary_artifacts[role]:
             raise ValueError(f"{arm} seed {seed} summary {role} artifact path differs")
         if str(record.get("sha256", "")).lower() != artifact_sha256[role]:
             raise ValueError(
@@ -436,6 +456,28 @@ def _load_summary(
     for name, expected in protocol_hashes.items():
         if protocol.get(name) != expected:
             raise ValueError(f"{arm} seed {seed} {name} differs")
+    descriptor_protocol = protocol.get("descriptor_protocol")
+    if extra_artifacts:
+        if descriptor_protocol != {
+            "kind": "equal_energy_descriptor_factor",
+            "factor_id": arm_audit["descriptor_factor_id"],
+            "source_descriptor_dim": 256,
+            "xfeat_descriptor_dim": 64,
+            "effective_descriptor_dim": 320,
+            "strict_identity_metric": True,
+            "one_materialized_bank": True,
+            "one_global_top1": True,
+            "one_poselib_call_per_query": True,
+        }:
+            raise ValueError(f"{arm} seed {seed} descriptor protocol differs")
+    elif descriptor_protocol not in (
+        None,
+        {
+            "kind": "canonical_query_cache_shared_metric",
+            "descriptor_cache_equals_query_cache": True,
+        },
+    ):
+        raise ValueError(f"{arm} seed {seed} baseline descriptor protocol differs")
     summary = dict(report.get("summary", {}))
     if not _is_exact_int(summary.get("query_count"), 256):
         raise ValueError(f"{arm} seed {seed} nested summary query count differs")
@@ -542,6 +584,7 @@ def compare_mapping_pose_gate(
     variant_artifacts: Mapping[str, str | Path],
     thresholds: dict | None = None,
     expected_sha256: Mapping[str, str] | None = None,
+    variant_descriptor_factor: str | Path | None = None,
 ) -> dict:
     """Audit paired inputs and apply the preregistered mapping-pose gate."""
     thresholds = _normalize_thresholds(thresholds)
@@ -562,10 +605,47 @@ def compare_mapping_pose_gate(
     if len(set(all_summary_paths)) != len(all_summary_paths):
         raise ValueError("all six seed summaries must be distinct files")
 
+    descriptor_factor = None
+    extra_artifacts = {"baseline": {}, "variant": {}}
+    extra_input_paths = {}
+    if variant_descriptor_factor is not None:
+        expected_factor_sha256 = dict(expected_sha256 or {}).get(
+            "variant.descriptor_factor"
+        )
+        if expected_factor_sha256 is None:
+            raise ValueError(
+                "descriptor factor requires expected SHA-256 for "
+                "variant.descriptor_factor"
+            )
+        descriptor_factor = audit_descriptor_factor_pair(
+            variant_descriptor_factor,
+            source_map_path=artifacts["baseline"]["map"],
+            source_metric_path=artifacts["baseline"]["metric"],
+            source_query_cache_path=artifacts["baseline"]["query_cache"],
+            teacher_path=artifacts["baseline"]["teacher"],
+            calibration_path=artifacts["baseline"]["calibration"],
+            variant_map_path=artifacts["variant"]["map"],
+            variant_metric_path=artifacts["variant"]["metric"],
+            variant_query_cache_path=artifacts["variant"]["query_cache"],
+            variant_teacher_path=artifacts["variant"]["teacher"],
+            variant_calibration_path=artifacts["variant"]["calibration"],
+        )
+        if descriptor_factor["producer_git_commit"] != evaluation_code["git_commit"]:
+            raise ValueError(
+                "descriptor-factor producer and pose evaluator Git commits differ"
+            )
+        extra_artifacts["variant"] = {
+            "descriptor_factor": descriptor_factor["path"],
+        }
+        extra_input_paths = {
+            "variant.descriptor_factor": descriptor_factor["path"],
+        }
+
     input_records, actual_sha256 = _hash_inputs(
         artifacts=artifacts,
         summaries=summaries,
         expected_sha256=expected_sha256,
+        extra_paths=extra_input_paths,
     )
     arm_audits = {
         arm: _audit_arm_artifacts(arm=arm, paths=artifacts[arm])
@@ -573,6 +653,30 @@ def compare_mapping_pose_gate(
     }
     baseline_audit = arm_audits["baseline"]
     variant_audit = arm_audits["variant"]
+    if descriptor_factor is not None:
+        variant_audit["descriptor_factor_id"] = descriptor_factor["factor_id"]
+        variant_audit["descriptor_factor"] = {
+            "path": str(descriptor_factor["path"]),
+            "sha256": descriptor_factor["sha256"],
+            "descriptor_cache": str(descriptor_factor["descriptor_cache_path"]),
+            "descriptor_cache_sha256": descriptor_factor[
+                "descriptor_cache_sha256"
+            ],
+            "source_metric_descriptor_dim": descriptor_factor[
+                "source_metric_descriptor_dim"
+            ],
+            "variant_metric_descriptor_dim": descriptor_factor[
+                "variant_metric_descriptor_dim"
+            ],
+            "strict_identity_metric": descriptor_factor["strict_identity_metric"],
+            "producer_git_commit": descriptor_factor["producer_git_commit"],
+            "deployment_extension": descriptor_factor["contract"][
+                "deployment_extension_audit"
+            ],
+            "anchor_registry_bitwise_equal": descriptor_factor[
+                "anchor_registry_bitwise_equal"
+            ],
+        }
     lineage_checks = {
         "ordered_teacher_query_names_equal": (
             baseline_audit["ordered_teacher_query_names_sha256"]
@@ -585,13 +689,6 @@ def compare_mapping_pose_gate(
         "uniform_q256_query_names_equal": (
             baseline_audit["uniform_q256_query_names_sha256"]
             == variant_audit["uniform_q256_query_names_sha256"]
-        ),
-        "query_cache_paths_equal": (
-            artifacts["baseline"]["query_cache"] == artifacts["variant"]["query_cache"]
-        ),
-        "query_cache_sha256_equal": (
-            actual_sha256["baseline.query_cache"]
-            == actual_sha256["variant.query_cache"]
         ),
         "calibration_statistics_equal": (
             baseline_audit["calibration_numeric_contract"]["statistics"]
@@ -606,6 +703,60 @@ def compare_mapping_pose_gate(
             == variant_audit["calibration_numeric_contract"]["policy"]
         ),
     }
+    if descriptor_factor is not None:
+        lineage_checks.update(
+            {
+                "descriptor_factor_contract_valid": True,
+                "anchor_registry_bitwise_equal": (
+                    descriptor_factor["anchor_registry_bitwise_equal"] is True
+                ),
+                "strict_320d_identity_metric": (
+                    descriptor_factor["strict_identity_metric"] is True
+                ),
+                "query_caches_descriptor_factor_equivalent": True,
+                "teacher_rebind_only": descriptor_factor["teacher_rebind_only"]
+                is True,
+                "calibration_rebind_only": descriptor_factor[
+                    "calibration_rebind_only"
+                ]
+                is True,
+                "one_global_top1_and_one_poselib": (
+                    descriptor_factor["contract"]["checks"]["one_global_top1"]
+                    is True
+                    and descriptor_factor["contract"]["checks"][
+                        "one_poselib_call_per_query"
+                    ]
+                    is True
+                ),
+                "deployment_extension_compiled_before_pose": (
+                    descriptor_factor["contract"]["deployment_extension_audit"][
+                        "compiled_expected_support_exact"
+                    ]
+                    is True
+                    and descriptor_factor["contract"][
+                        "deployment_extension_audit"
+                    ]["proxy_to_deployment_transfer_preregistered"]
+                    is True
+                    and descriptor_factor["contract"][
+                        "deployment_extension_audit"
+                    ]["stairs_q256_three_seed_tail_gate_required"]
+                    is True
+                ),
+            }
+        )
+    else:
+        lineage_checks.update(
+            {
+                "query_cache_paths_equal": (
+                    artifacts["baseline"]["query_cache"]
+                    == artifacts["variant"]["query_cache"]
+                ),
+                "query_cache_sha256_equal": (
+                    actual_sha256["baseline.query_cache"]
+                    == actual_sha256["variant.query_cache"]
+                ),
+            }
+        )
     if not all(lineage_checks.values()):
         failed = [name for name, passed in lineage_checks.items() if not passed]
         raise ValueError(f"paired mapping-pose lineage differs: {failed}")
@@ -627,10 +778,12 @@ def compare_mapping_pose_gate(
                 path=summaries[arm][seed],
                 artifacts=artifacts[arm],
                 artifact_sha256={
-                    role: actual_sha256[f"{arm}.{role}"] for role in ARTIFACT_ROLES
+                    role: actual_sha256[f"{arm}.{role}"]
+                    for role in (*ARTIFACT_ROLES, *extra_artifacts[arm])
                 },
                 arm_audit=arm_audits[arm],
                 expected_evaluation_code=evaluation_code,
+                extra_artifacts=extra_artifacts[arm],
             )
             for seed in REQUIRED_SEEDS
         }
@@ -672,6 +825,16 @@ def compare_mapping_pose_gate(
             "query_selection": "uniform_mapping_gate",
             "deployment_row_limit": 0,
             "thresholds": thresholds,
+            "descriptor_factor": (
+                {
+                    "required": True,
+                    "factor_id": descriptor_factor["factor_id"],
+                    "formula": descriptor_factor["contract"]["formula"],
+                    "effective_descriptor_dim": 320,
+                }
+                if descriptor_factor is not None
+                else {"required": False}
+            ),
         },
         "lineage": {
             "checks": lineage_checks,
@@ -687,6 +850,10 @@ def compare_mapping_pose_gate(
             "all_per_seed_non_regression_checks_pass": per_seed_safe,
             "has_substantive_three_seed_mean_improvement": substantive,
             "authorizes_next_stage": passed,
+            "authorized_next_stage": (
+                "12Scenes/office2_5b_mapping_pose_tail_guard" if passed else None
+            ),
+            "authorizes_deployment": False,
             "establishes_test_accuracy": False,
         },
     }
@@ -725,6 +892,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-seed", action="append", required=True)
     parser.add_argument("--variant-seed", action="append", required=True)
+    parser.add_argument(
+        "--variant-descriptor-factor",
+        type=Path,
+        help=(
+            "Required for the 320D equal-energy arm; binds its descriptor cache "
+            "and proves descriptor-only mutation."
+        ),
+    )
     for arm in ("baseline", "variant"):
         for role in ARTIFACT_ROLES:
             parser.add_argument(
@@ -736,7 +911,8 @@ def main() -> None:
         default=[],
         help=(
             "Optional ARM.ROLE=SHA256 lock, including seed2026_summary roles; "
-            "repeat for each known digest."
+            "repeat for each known digest. The variant descriptor-factor SHA "
+            "is mandatory when that factor is enabled."
         ),
     )
     parser.add_argument(
@@ -758,6 +934,7 @@ def main() -> None:
         variant_artifacts=_artifact_args(args, "variant"),
         thresholds=thresholds,
         expected_sha256=_parse_expected_sha256(args.expected_sha256),
+        variant_descriptor_factor=args.variant_descriptor_factor,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
