@@ -1,0 +1,146 @@
+{
+  "schema": "lafgs_greatcourt_pair_policy_preflight",
+  "version": 1,
+  "audit_date": "2026-08-12",
+  "read_only_preflight": true,
+  "gpu_used": false,
+  "large_query_cache_loaded": false,
+  "decision": "BLOCK_UNTIL_FRESH_K2048_NMS4_CONTROL_PARITY",
+  "code_support": {
+    "branch": "codex/greatcourt-pair-preflight",
+    "commit": "be5961d",
+    "explicit_mapping_k_required": true,
+    "explicit_pair_budget_required": true,
+    "synthetic_k2048_budget5254_contract_tested": true,
+    "scientific_run_authorized": false
+  },
+  "scene": {
+    "dataset": "Cambridge/GreatCourt",
+    "dataset_path": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+    "mapping_camera_count": 1531,
+    "mapping_camera_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+    "mapping_keypoints_requested": 2048,
+    "valid_keypoints_median": 2018.0,
+    "valid_keypoints_p10": 2004.0,
+    "legacy_nms_attested": false,
+    "required_fresh_nms_radius": 4,
+    "nearest_candidate_pair_budget": 5254,
+    "nearest_matched_pair_count": 5178
+  },
+  "frozen_inputs": {
+    "root": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt",
+    "stage_a": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/stage_a/6630_lafgs_map_state.pt",
+      "sha256": "4f133a8099dc989542fdc058c4c1582b43658a28fc718b818ccea64916a3e2c3"
+    },
+    "query_cache": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/query_cache.pt",
+      "sha256": "13a4b23daae0194e92544746abf790eb72cd739890ad681df34878041e22e53a",
+      "size_bytes": 49686036665,
+      "sha_source": "frozen_evidence_contract",
+      "directly_rehashed_by_this_preflight": false
+    },
+    "visibility": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/visibility.pt",
+      "sha256": "9594e814f9ffa53708b27ae1ae3a18fc55ccd1775001de81e03f4f872ece44c1"
+    },
+    "gaussian_ply": {
+      "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+      "sha256": "91b2b6b47a2d8c5b8618fae541a5d2b5bde6b90ace381a31e44a56e1cb0362d2"
+    },
+    "scene_calibration": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/scene_calibration.json",
+      "sha256": "b939fe0de7bc69245e025bcc41867986c477f11f8de984c7d4ffba949f04f38f",
+      "metric_steps": 1164
+    },
+    "track_payload": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/tracks_refined/track_micro_anchor_payload.pt",
+      "sha256": "f0fec708e00ab0f19160485059574eccdb8f6aba0484a257627f9b56a4cc90af"
+    },
+    "bootstrap_manifest": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/bootstrap/tracks_refined/reproducibility_manifest.json",
+      "sha256": "97ed0a0848a4c8bd219a82f98c2ee36aebd2258e9f3ea0f214a41a3e4ae8b846"
+    },
+    "trained_map": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/map_learning/anchor_map_step_1164.pt",
+      "sha256": "7b1d24316494a39ea259792b0a7ab8f5e4489c2144d7583aec3e2c3d45589b08"
+    },
+    "metric": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/map_learning/metric_state_step_1164.pt",
+      "sha256": "f45ef61b5e1a798b346775ed6c307491aad431a9e883b2af3996629d5ea746b1"
+    },
+    "compact_teacher": {
+      "path": "/mnt/pool/sqy/lafgs_adaptive_v3_full_benchmark_20260807/Cambridge/GreatCourt/map_learning/complete_positive_teacher.pt",
+      "sha256": "19bcad509e6d3139040a2dd3f874642e337768d9ad8eace862eb3cd55e21f6cd"
+    },
+    "config": {
+      "path": "/root/STDLoc/configs/paper_mainline.yaml",
+      "sha256": "c522d3a3d692a5e3c4c6db06083ec5ca9682c9f1c2bef49b6bb135b622b352cc"
+    }
+  },
+  "track_failure_domain": {
+    "track_count": 206755,
+    "triangulated_track_count": 34150,
+    "high_confidence_track_count": 1933,
+    "triangulated_parallax_median_deg": 2.270395278930664,
+    "triangulated_parallax_below_1deg_fraction": 0.1593557894229889,
+    "triangulation_covariance_trace_median": 0.8806635141372681,
+    "triangulation_covariance_trace_p90": 28.149654579162632
+  },
+  "proposed_roots": {
+    "factor": {
+      "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4",
+      "existed_at_preflight": false
+    },
+    "fullchain": {
+      "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_fullchain_20260812/greatcourt",
+      "existed_at_preflight": false
+    }
+  },
+  "estimated_new_storage_gb": {
+    "fresh_query_cache": 49.69,
+    "factor_and_replays": [0.5, 1.0],
+    "fullchain": [5.0, 10.0],
+    "recommended_reservation": [60.0, 70.0],
+    "pool_available_at_preflight": 1009.0
+  },
+  "mandatory_preconditions": [
+    "Stairs pair-policy mapping pose gate passes",
+    "fresh detector rerun produces a K2048/NMS4-attested cache",
+    "all 1531 fresh records are Track-input and raster exact to the legacy cache",
+    "nearest replay exactly matches the frozen Track, geometry, assignment and query registries",
+    "both factor arms bind the same fresh-cache SHA and exact pair budget 5254"
+  ],
+  "mechanism_gate": {
+    "exact_pair_budget": 5254,
+    "low_parallax_fraction_minimum_reduction_pp": 10.0,
+    "triangulated_tracks_minimum_retained_fraction": 0.95,
+    "broad_tracks_minimum_retained_fraction": 0.98,
+    "triangulated_covariance_p90_maximum_ratio": 1.05,
+    "broad_support_p10_minimum_retained_fraction": 0.95
+  },
+  "mapping_pose_gate": {
+    "query_selection": "uniform_mapping_q256_exact_index_hash",
+    "seeds": [2026, 2027, 2028],
+    "catastrophe_each_seed_must_not_increase": true,
+    "raw_precision_maximum_mean_regression_pp": 0.005,
+    "recall_5cm5deg_maximum_mean_regression_pp": 0.1,
+    "translation_maximum_mean_regression": "max(0.02_cm,1_percent)",
+    "minimum_one_substantive_gain": {
+      "median_or_mean_te_reduction_cm": 0.03,
+      "p90_or_cvar95_te_reduction_cm": 0.05,
+      "recall_5cm5deg_gain_pp": 0.2,
+      "raw_precision_gain_pp": 0.01
+    }
+  },
+  "formal_test_gate": {
+    "query_count": 760,
+    "seeds": [2026, 2027, 2028],
+    "baseline_average_p90_te_cm": 46.49539669354757,
+    "baseline_catastrophe_total": 91,
+    "baseline_raw_precision_percent": 7.325630447978791,
+    "baseline_average_recall_5cm5deg_percent": 23.50877192982456,
+    "additional_required_strict_gain": "average_p90_te_below_baseline_or_catastrophe_total_below_baseline",
+    "test_may_tune_factor": false
+  }
+}
