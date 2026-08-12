@@ -402,6 +402,17 @@ def test_cli_materializes_consumer_valid_mapping_only_arm_a(
     assert probe["producer"]["shared_forward_descriptor_output_used"] is False
     assert probe["producer"]["candidate_descriptor_rows_materialized"] is False
     assert probe["producer"]["pair_matcher_used"] is False
+    assert probe["reference"]["reference_detector_protocol"] == {
+        "name": "frozen_superpoint",
+        "requested_keypoint_count": 4,
+        "nms_radius": 4,
+        "mask_filter": "sample_mask_at_grid_uv_nearest_round",
+        "top_k_before_native_mask": True,
+    }
+    assert probe["producer"]["detector_protocol"]["nms_kernel_size"] == 5
+    assert probe["producer"]["detector_protocol"][
+        "strict_probability_threshold"
+    ] == 0.05
     assert set(probe["queries"]) == set(arm_a_bundle["mapping_names"])
     assert arm_a_bundle["test_name"] not in probe["queries"]
     for record in probe["queries"].values():

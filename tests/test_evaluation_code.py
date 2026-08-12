@@ -2,6 +2,7 @@ from pathlib import Path
 
 from common.evaluation_code import (
     frontend_descriptor_evaluation_code_identity,
+    frontend_detector_evaluation_code_identity,
     mapping_pose_evaluation_code_identity,
 )
 from common.hashing import sha256_file
@@ -33,5 +34,19 @@ def test_frontend_descriptor_code_identity_binds_audit_and_gate_bytes() -> None:
             "map_learning/frontend_upper_bound.py",
             "scripts/audit_frontend_upper_bound.py",
             "scripts/compare_frontend_descriptor_arm_b.py",
+        )
+    }
+
+
+def test_frontend_detector_code_identity_binds_audit_and_gate_bytes() -> None:
+    identity = frontend_detector_evaluation_code_identity(require_clean=False)
+    repository = Path(identity["repository"])
+    assert identity["schema"] == "lafgs_frontend_detector_evaluation_code"
+    assert identity["entrypoints"] == {
+        relative: sha256_file(repository / relative)
+        for relative in (
+            "map_learning/frontend_upper_bound.py",
+            "scripts/audit_frontend_upper_bound.py",
+            "scripts/compare_frontend_detector_arm_a.py",
         )
     }

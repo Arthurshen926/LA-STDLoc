@@ -360,6 +360,15 @@ def materialize_xfeat_arm_a(
             "query_names": list(context.names),
             "query_names_sha256": _query_names_sha256(context.names),
             "reference_rows": "exact_cached_superpoint_registry_hash_only",
+            "reference_detector_protocol": {
+                "name": "frozen_superpoint",
+                "requested_keypoint_count": context.requested_keypoint_count,
+                "nms_radius": int(
+                    context.signature_payload["native_sparse_nms_radius"]
+                ),
+                "mask_filter": "sample_mask_at_grid_uv_nearest_round",
+                "top_k_before_native_mask": True,
+            },
         },
         "frontend": {
             "name": "xfeat_sparse_64d_detector_only",
@@ -406,6 +415,22 @@ def materialize_xfeat_arm_a(
             "detected_count_after_mask": total_after_mask,
             "all_queries_identity_xfeat_resize": True,
             "all_queries_round_floor_mask_equivalent": True,
+            "detector_protocol": {
+                "name": "xfeat_single_image_sparse",
+                "requested_keypoint_count": context.requested_keypoint_count,
+                "keypoint_heatmap": (
+                    "softmax_65_discard_dustbin_then_8x8_unpack"
+                ),
+                "nms_kernel_size": NMS_KERNEL_SIZE,
+                "nms_radius": NMS_KERNEL_SIZE // 2,
+                "nms_passes": 1,
+                "strict_probability_threshold": DETECTION_THRESHOLD,
+                "score_semantics": SCORE_SEMANTICS,
+                "origin_padding_sentinel_excluded": True,
+                "sort": "descending_score_stable_row_major_ties",
+                "top_k_before_native_mask": True,
+                "native_mask_filter": "sample_mask_at_grid_uv_nearest_round",
+            },
         },
         "queries": queries,
     }

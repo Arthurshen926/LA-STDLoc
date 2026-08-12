@@ -17,6 +17,11 @@ FRONTEND_DESCRIPTOR_ENTRYPOINTS = (
     "scripts/audit_frontend_upper_bound.py",
     "scripts/compare_frontend_descriptor_arm_b.py",
 )
+FRONTEND_DETECTOR_ENTRYPOINTS = (
+    "map_learning/frontend_upper_bound.py",
+    "scripts/audit_frontend_upper_bound.py",
+    "scripts/compare_frontend_detector_arm_a.py",
+)
 
 
 def _evaluation_code_identity(
@@ -73,4 +78,14 @@ def frontend_descriptor_evaluation_code_identity(*, require_clean: bool = True) 
         entrypoints=FRONTEND_DESCRIPTOR_ENTRYPOINTS,
         require_clean=require_clean,
         label="frontend-descriptor evaluation",
+    )
+
+
+def frontend_detector_evaluation_code_identity(*, require_clean: bool = True) -> dict:
+    """Bind a detector audit and its decision gate to one clean revision."""
+    return _evaluation_code_identity(
+        schema="lafgs_frontend_detector_evaluation_code",
+        entrypoints=FRONTEND_DETECTOR_ENTRYPOINTS,
+        require_clean=require_clean,
+        label="frontend-detector evaluation",
     )

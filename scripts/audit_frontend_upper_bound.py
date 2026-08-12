@@ -15,7 +15,10 @@ import subprocess
 
 import torch
 
-from common.evaluation_code import frontend_descriptor_evaluation_code_identity
+from common.evaluation_code import (
+    frontend_descriptor_evaluation_code_identity,
+    frontend_detector_evaluation_code_identity,
+)
 from map_learning.frontend_upper_bound import (
     PROBE_SCHEMA,
     audit_descriptor_equal_energy_crossfit,
@@ -367,8 +370,10 @@ def main() -> None:
             "teacher": _inspect_artifact(args.teacher),
         }
     else:
-        evaluation_code = frontend_descriptor_evaluation_code_identity(
-            require_clean=True
+        evaluation_code = (
+            frontend_detector_evaluation_code_identity(require_clean=True)
+            if args.arm == "detector"
+            else frontend_descriptor_evaluation_code_identity(require_clean=True)
         )
         state = _torch_load(args.state)
         query_cache = _torch_load(args.query_cache)
