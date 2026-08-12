@@ -4,6 +4,7 @@ import pytest
 
 from scripts.pair_fullchain_workspace import (
     preflight_workspace,
+    verify_stage_manifest,
     write_stage_manifest,
 )
 
@@ -53,6 +54,10 @@ def test_stage_manifest_hashes_in_root_artifacts_and_valid_parents(tmp_path):
     assert report["valid"]
     assert report["silent_resume_authorized"] is False
     assert report["artifacts"]["canonical_map"]["size_bytes"] == 9
+    assert verify_stage_manifest(root / "contracts" / "evidence.json")["valid"]
+    artifact.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="differs from manifest"):
+        verify_stage_manifest(root / "contracts" / "evidence.json")
 
 
 def test_stage_manifest_rejects_artifact_outside_run(tmp_path):

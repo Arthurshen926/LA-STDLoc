@@ -127,6 +127,33 @@ def write_stage_manifest(
     return report
 
 
+def verify_stage_manifest(path: Path) -> dict:
+    path = path.expanduser().resolve()
+    report = json.loads(path.read_text())
+    if (
+        report.get("schema") != SCHEMA
+        or report.get("version") != 1
+        or report.get("kind") != "stage_sha256_manifest"
+        or report.get("uses_test_queries") is not False
+        or report.get("valid") is not True
+        or report.get("silent_resume_authorized") is not False
+    ):
+        raise ValueError("Unsupported or invalid pair full-chain stage manifest")
+    for record in report.get("artifacts", {}).values():
+        artifact = Path(record["path"]).resolve()
+        if (
+            not artifact.is_file()
+            or artifact.stat().st_size != int(record["size_bytes"])
+            or sha256_file(artifact) != record["sha256"]
+        ):
+            raise ValueError(f"Stage artifact differs from manifest: {artifact}")
+    for record in report.get("parents", []):
+        parent = Path(record["path"]).resolve()
+        if not parent.is_file() or sha256_file(parent) != record["sha256"]:
+            raise ValueError(f"Parent manifest differs: {parent}")
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -140,6 +167,8 @@ def main() -> None:
     manifest.add_argument("--artifact", action="append", default=[])
     manifest.add_argument("--parent-manifest", type=Path, action="append", default=[])
     manifest.add_argument("--output", type=Path, required=True)
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "preflight":
         result = preflight_workspace(
@@ -147,7 +176,7 @@ def main() -> None:
             allowed_inputs=args.allow_input,
             report_path=args.output,
         )
-    else:
+    elif args.command == "manifest":
         result = write_stage_manifest(
             root=args.root,
             stage=args.stage,
@@ -155,6 +184,8 @@ def main() -> None:
             parents=args.parent_manifest,
             report_path=args.output,
         )
+    else:
+        result = verify_stage_manifest(args.manifest)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
