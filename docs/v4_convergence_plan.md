@@ -275,6 +275,42 @@ Heads 首轮真实 selector 重放的机制 gate 已通过：
 
 因此 P5.1 通过 **机制/充分性 gate**，但尚未通过 pose-accuracy gate。因为最终 Anchor 集合发生变化，V3 的 8119-row metric state 不允许复用；必须先为 8117-row Map 重建 compact teacher/function graph 并执行相同 bounded metric refresh，之后才能比较 mapping pose。当前不申报精度提升。
 
+#### P5.1 Heads compact refresh 与 mapping pose：Stop
+
+Heads 的 8117-row P5.1 Map 已完成独立的 compact Top-64 function graph、Gaussian
+raster provenance、provenance-aligned function graph 和 complete-positive teacher 重建。
+teacher 覆盖全部 1000 个 mapping queries，包含 172526 个 positive rows、189351 个
+strong pairs 与 414104 个 ambiguous pairs。随后从 identity metric 初始化执行与 V3 相同的
+760-step bounded refresh（rank 16、residual 0.05、LR 2e-4、temperature 0.04、harmful
+weight 0.1、trust 1.0、Group-DRO eta 0.03/max ratio 3、seed 2026）。严格 lineage audit
+确认 Map/graph/teacher/metric 均为 8117 行，metric IDs 与 Map IDs bitwise equal、teacher
+rows 与 function graph rows bitwise equal，且 `initial_metric_state=null`。
+
+固定 96 个均匀 mapping queries、seeds 2026/2027/2028 的 P5.1−V3 结果为：
+
+| 指标（三种子均值） | Delta |
+|---|---:|
+| Raw precision | **-0.00610 pp** |
+| Inlier precision | **-0.04939 pp** |
+| Median TE | -0.00940 cm |
+| Mean TE | -0.00675 cm |
+| P90 TE | -0.04140 cm |
+| P95 TE | -0.08223 cm |
+| CVaR95 TE | **+0.01433 cm** |
+| Catastrophic >100cm | 0 |
+
+mean、P90 与 P95 TE 均 3/3 seed 改善，但 raw precision 是确定性下降，inlier precision
+也 3/3 下降；CVaR95 仅 1/3 改善、2/3 恶化。结合 ShopFacade 全量 precision sentinel
+失败，Heads 对当前 equal-gain alias-risk tie-break 同样判为 **Stop**：不运行 test，不把
+当前 tie-break 合入默认 selector。这个结果不否定 all-candidate alias risk 的可分性，而是
+说明风险不能只在 matching/pose gain 相等时作为独立替换准则；下一版本必须联合估计
+clean utility、observation-descriptor representability 与 tail pose risk。
+
+Heads 完整 artifacts 位于
+`/mnt/pool/sqy/lafgs_anchor_identity_p51_validation_20260812/7Scenes/heads`，其中
+`map_learning/lineage_audit.json` 保存所有内容指纹，mapping pose 位于
+`evaluation/pose_gate_q96/{baseline,alias}_seed{2026,2027,2028}`。
+
 #### P5.1 ShopFacade precision sentinel：Stop
 
 ShopFacade 使用冻结 V3 的精确 canonical、Track payload、231 个 mapping query 和 `ref2p067_stop1e3` calibration 重放。完整合法候选池包含 7300 个 Track 与 7837 个 surface candidate。global Top-1 alias graph 仅使用 mapping split，并以 rendered depth/alpha 与 GT reprojection 判定合法性：
