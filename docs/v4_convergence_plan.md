@@ -780,6 +780,14 @@ recall 下降 0.78125 pp；每种 seed 的 translation tail 与 recall 方向一
 完整 pose 结果见 `docs/xfeat_equal_energy_stairs_pose_result.md`，机器证据见
 `docs/evidence/xfeat_equal_energy_stairs_pose_gate.json`。
 
+随后 hardened postmortem 将失败定位为 query-level coherent false consensus，并完成了
+一次固定协议的 CPU-only 可学习性审计。二策略 oracle 虽有 12.61% 风险 headroom，但固定
+19 维检索前统计的连续 advantage gate 只通过 3/4 个 sequence 外折；support-only 95%
+conformal gate 又只恢复 4.50% oracle headroom。无参数的双专家 min-agreement 也保留了
+raw precision 增益却继续恶化 CVaR95 与 recall。因此 descriptor fusion 家族正式 Stop，
+不再实现同类 query gate。完整结果见
+`docs/xfeat_equal_energy_descriptor_consensus_stop.md`。
+
 当前唯一继续推进的 geometry/evidence 主线是 P8：它把“可定位证据效用”具体化为同一
 bounded probe 上的 exact identity closure、bearing-Fisher conditioning 与硬 graph
 coverage。Stairs 的 Stage-A/Stage-B 分别 9/9、8/8 通过，并且闭环增益确实转化为更多

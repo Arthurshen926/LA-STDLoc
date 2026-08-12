@@ -302,3 +302,11 @@ non-regression: three-seed mean translation rose by `+0.38664 cm`, CVaR95 by
 mechanism therefore remains informative, while the fixed 50/50 deployment arm
 stops before `office2_5b`, outdoor guards, and formal test. The default
 frontend remains the frozen V3 SuperPoint path.
+
+A final mapping-only CPU audit also closes the obvious query-gating escape
+hatch.  The ideal A1/equal-energy policy has `12.61%` relative risk headroom,
+but a fixed 19-statistic continuous-advantage gate fails one of four held-out
+Stairs sequences; a support-only conformal gate recovers only `4.50%` of the
+oracle.  Parameter-free expert agreement still creates a `30.41 cm` coherent
+tail failure.  Descriptor fusion is therefore stopped as a family rather than
+retuned.  See `docs/xfeat_equal_energy_descriptor_consensus_stop.md`.
