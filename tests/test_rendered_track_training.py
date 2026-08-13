@@ -321,3 +321,10 @@ def test_reciprocal_pair_matches_and_merge_are_row_unique():
     assert merged_query.tolist() == [0, 1, 2]
     assert merged_anchor.tolist() == [5, 1, 2]
     assert merged_score.tolist() == [2.0, 1.0, 1.0]
+
+
+def test_a1_crossfit_cli_exposes_anchor_specific_residual():
+    source = Path("scripts/train_rendered_track_crossfit.py").read_text()
+    assert "--held-sequence" in source
+    assert "--anchor-feature-residual-max-norm" in source
+    assert "anchor_feature_residual_max_norm=(" in source

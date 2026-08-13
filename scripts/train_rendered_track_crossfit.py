@@ -125,6 +125,8 @@ def run(args) -> dict:
     all_rows = []
     folds = []
     for fold_index, held_sequence in enumerate(sequences):
+        if args.held_sequence and held_sequence != args.held_sequence:
+            continue
         fold_dir = args.output_dir / held_sequence
         fold_dir.mkdir()
         source_fold = args.identity_crossfit / held_sequence
@@ -166,6 +168,10 @@ def run(args) -> dict:
             trust_weight=args.trust_weight,
             group_dro_eta=args.group_dro_eta,
             group_dro_max_weight_ratio=args.group_dro_max_weight_ratio,
+            anchor_feature_residual_max_norm=(args.anchor_feature_residual_max_norm),
+            anchor_feature_residual_trust_weight=(
+                args.anchor_feature_residual_trust_weight
+            ),
             refresh_interval=0,
             refresh_shards=4,
             initial_ransac_refresh=False,
@@ -229,6 +235,9 @@ def run(args) -> dict:
         )
         print(json.dumps(folds[-1], sort_keys=True), flush=True)
 
+    if not folds:
+        raise RuntimeError("requested held mapping sequence was not found")
+
     combined = {
         "schema": "lafgs_rendered_track_a1_mapping_sequence_crossfit_statistics",
         "version": 1,
@@ -259,6 +268,10 @@ def run(args) -> dict:
             "trust_weight": args.trust_weight,
             "group_dro_eta": args.group_dro_eta,
             "group_dro_max_weight_ratio": args.group_dro_max_weight_ratio,
+            "anchor_feature_residual_max_norm": (args.anchor_feature_residual_max_norm),
+            "anchor_feature_residual_trust_weight": (
+                args.anchor_feature_residual_trust_weight
+            ),
         },
         "folds": folds,
         "combined_summary": combined["summary"],
@@ -279,6 +292,7 @@ def main() -> None:
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--identity-crossfit", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--held-sequence", default="")
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--topk", type=int, default=64)
@@ -291,6 +305,10 @@ def main() -> None:
     parser.add_argument("--trust-weight", type=float, default=1.0)
     parser.add_argument("--group-dro-eta", type=float, default=0.03)
     parser.add_argument("--group-dro-max-weight-ratio", type=float, default=3.0)
+    parser.add_argument("--anchor-feature-residual-max-norm", type=float, default=0.0)
+    parser.add_argument(
+        "--anchor-feature-residual-trust-weight", type=float, default=1.0
+    )
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
     parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
     parser.add_argument("--task-translation-m", type=float, default=0.05)
