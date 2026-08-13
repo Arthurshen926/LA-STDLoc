@@ -23,10 +23,15 @@ import torch.nn.functional as F
 
 from common.hashing import sha256_file
 from data.datasets import ColmapDataset
+from evidence.camera_pair_policy import (
+    candidate_camera_pairs,
+    trajectory_balanced_camera_pairs,
+)
 from evidence.tracks import fuse_track_descriptors
 from evidence.triangulation import (
     build_cycle_consistent_tracks,
     camera_pose_bins,
+    reciprocal_epipolar_matches,
     robust_triangulate_associations,
 )
 from features.extractor import FeatureExtractor
@@ -191,6 +196,80 @@ def _load_cache(path: Path) -> dict:
     return payload
 
 
+def _query_trajectory(image_name: str) -> str:
+    return str(image_name).split("/", maxsplit=1)[0]
+
+
+def _trajectory_balanced_matches(
+    *,
+    args,
+    names: list[str],
+    descriptors: list[torch.Tensor],
+    keypoints: list[torch.Tensor],
+    scores: list[torch.Tensor],
+    intrinsics: torch.Tensor,
+    poses: torch.Tensor,
+) -> tuple[
+    list[tuple[int, int]],
+    dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    dict[tuple[int, int], dict[str, int]],
+]:
+    nearest = candidate_camera_pairs(
+        poses,
+        neighbors=args.pair_neighbors,
+        minimum_baseline_m=args.minimum_baseline_m,
+        maximum_baseline_m=args.maximum_baseline_m,
+        maximum_axis_angle_deg=args.maximum_axis_angle_deg,
+        policy="nearest",
+    )
+    pairs = trajectory_balanced_camera_pairs(
+        poses,
+        [_query_trajectory(name) for name in names],
+        local_neighbors=args.local_pair_neighbors,
+        pair_budget=len(nearest),
+        minimum_baseline_m=args.minimum_baseline_m,
+        maximum_baseline_m=args.maximum_baseline_m,
+        maximum_axis_angle_deg=args.maximum_axis_angle_deg,
+    )
+    device = torch.device(args.device)
+    matches = {}
+    diagnostics = {}
+    for completed, (left, right) in enumerate(pairs, start=1):
+        source, target, confidence, pair_diagnostics = reciprocal_epipolar_matches(
+            descriptors[left].to(device),
+            descriptors[right].to(device),
+            keypoints[left],
+            keypoints[right],
+            intrinsics[left],
+            poses[left],
+            intrinsics[right],
+            poses[right],
+            minimum_similarity=args.minimum_similarity,
+            minimum_margin=args.minimum_margin,
+            maximum_epipolar_error_px=args.maximum_epipolar_error_px,
+            epipolar_candidate_topk=args.epipolar_candidate_topk,
+            recovered_minimum_similarity=-1.0,
+            recovered_minimum_margin=-1.0,
+            return_diagnostics=True,
+        )
+        confidence = confidence.cpu() * torch.sqrt(
+            scores[left][source.cpu()].float().clamp_min(0.0)
+            * scores[right][target.cpu()].float().clamp_min(0.0)
+        )
+        matches[(left, right)] = (
+            source.cpu().long(),
+            target.cpu().long(),
+            confidence.float(),
+        )
+        diagnostics[(left, right)] = pair_diagnostics
+        if completed % 250 == 0 or completed == len(pairs):
+            print(
+                f"matched {completed}/{len(pairs)} trajectory-balanced pairs",
+                flush=True,
+            )
+    return pairs, matches, diagnostics
+
+
 def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     started = time.perf_counter()
     payload = _load_cache(cache_path)
@@ -215,6 +294,21 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         [torch.as_tensor(cache[name]["native_input_hw"]).long() for name in names]
     )
 
+    precomputed_pairs = None
+    precomputed_matches = None
+    precomputed_diagnostics = None
+    if args.pair_policy == "trajectory_balanced":
+        precomputed_pairs, precomputed_matches, precomputed_diagnostics = (
+            _trajectory_balanced_matches(
+                args=args,
+                names=names,
+                descriptors=descriptors,
+                keypoints=keypoints,
+                scores=scores,
+                intrinsics=intrinsics,
+                poses=poses,
+            )
+        )
     track_started = time.perf_counter()
     tracks, diagnostics, sidecar = build_cycle_consistent_tracks(
         descriptors=descriptors,
@@ -223,7 +317,10 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         camera_K=intrinsics,
         pose_w2c=poses,
         pair_neighbors=args.pair_neighbors,
-        pair_policy="nearest",
+        pair_policy=(
+            "nearest" if args.pair_policy == "nearest" else "trajectory_balanced"
+        ),
+        pair_budget=(len(precomputed_pairs) if precomputed_pairs is not None else None),
         pair_image_hw=image_hw,
         minimum_baseline_m=args.minimum_baseline_m,
         maximum_baseline_m=args.maximum_baseline_m,
@@ -238,6 +335,10 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         require_cycle=True,
         allow_chain_tracks=True,
         return_pair_sidecar=True,
+        precomputed_pairs=precomputed_pairs,
+        precomputed_pair_matches=precomputed_matches,
+        precomputed_pair_match_diagnostics=precomputed_diagnostics,
+        precomputed_confidence_includes_detector_scores=(precomputed_pairs is not None),
         device=args.device,
     )
     track_seconds = time.perf_counter() - track_started
@@ -383,6 +484,16 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         },
         "query_count": len(names),
         "pair_count": int(diagnostics["track_camera_pair_candidate_count"]),
+        "pair_policy": str(args.pair_policy),
+        "cross_trajectory_pair_count": int(
+            sum(
+                _query_trajectory(names[left]) != _query_trajectory(names[right])
+                for left, right in zip(
+                    torch.as_tensor(sidecar["pair"]["left_query_index"]).tolist(),
+                    torch.as_tensor(sidecar["pair"]["right_query_index"]).tolist(),
+                )
+            )
+        ),
         "raw_match_count": int(diagnostics["track_raw_reciprocal_epipolar_edge_count"]),
         "cycle_or_chain_supported_edge_count": int(
             diagnostics["track_cycle_supported_edge_count"]
@@ -443,6 +554,12 @@ def main() -> None:
     parser.add_argument("--nms-radius", type=int, default=4)
     parser.add_argument("--detection-threshold", type=float, default=0.0)
     parser.add_argument("--pair-neighbors", type=int, default=6)
+    parser.add_argument(
+        "--pair-policy",
+        choices=("nearest", "trajectory_balanced"),
+        default="nearest",
+    )
+    parser.add_argument("--local-pair-neighbors", type=int, default=4)
     parser.add_argument("--minimum-baseline-m", type=float, default=0.03)
     parser.add_argument("--maximum-baseline-m", type=float, default=5.0)
     parser.add_argument("--maximum-axis-angle-deg", type=float, default=75.0)
