@@ -1,0 +1,97 @@
+{
+  "schema": "lafgs_rendered_rgb_only_track_train_result",
+  "version": 1,
+  "scene": "Stairs",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "uses_rendered_depth": false,
+  "uses_gaussian_primitive_geometry_for_triangulation": false,
+  "decision": "GEOMETRY_FEASIBLE_DESCRIPTOR_SET_ASSIGNMENT_REQUIRED",
+  "construction": {
+    "pair_count": 7450,
+    "within_trajectory_pair_count": 5022,
+    "cross_trajectory_pair_count": 2428,
+    "track_count": 72269,
+    "triangulated_track_count": 15533,
+    "broad_track_count": 14855,
+    "cross_trajectory_selected_track_count": 1876,
+    "triangulation_reprojection_median_px": 0.9591,
+    "triangulation_reprojection_p90_px": 2.2089,
+    "triangulation_parallax_median_deg": 2.8018
+  },
+  "training_teacher": {
+    "query_count": 2000,
+    "positive_rows": 1155567,
+    "strong_pair_count": 1885996,
+    "exact_track_positive_count": 721040
+  },
+  "combined_mapping_crossfit": {
+    "identity": {
+      "recall_5cm_5deg_percent": 77.85,
+      "median_te_cm": 1.860600057989359,
+      "cvar95_te_cm": 467.8888130187988,
+      "catastrophic_100cm_count": 222
+    },
+    "capacity_selected": {
+      "retained_anchor_count": 14560,
+      "pruned_anchor_count": 295,
+      "recall_5cm_5deg_percent": 79.60000000000001,
+      "median_te_cm": 1.6943045891821384,
+      "cvar95_te_cm": 478.9268436431885,
+      "catastrophic_100cm_count": 212
+    },
+    "two_prototypes": {
+      "recall_5cm_5deg_percent": 79.7,
+      "median_te_cm": 1.7653947696089745,
+      "cvar95_te_cm": 470.916912317276,
+      "catastrophic_100cm_count": 206
+    }
+  },
+  "held_seq05": {
+    "capacity_selected_recall_percent": 42.0,
+    "two_prototype_recall_percent": 42.6,
+    "top4_one_pnp_recall_percent": 42.6,
+    "view_retrieval_recall_percent": 35.0,
+    "reciprocal_pair_retrieval_recall_percent": 37.2,
+    "anchor_residual_recall_percent": 42.199999999999996,
+    "soft_pose_recall_percent": 42.0,
+    "strict_geometry_oracle": {
+      "recall_5cm_5deg_percent": 100.0,
+      "median_te_cm": 0.1710998942144215,
+      "p90_te_cm": 0.45194944832473993,
+      "catastrophic_100cm_count": 0,
+      "positive_correspondence_median": 97.5
+    }
+  },
+  "positive_rank_audit": {
+    "combined_positive_row_count": 645685,
+    "combined_hit_fraction": {
+      "top1": 0.19856276667415226,
+      "top4": 0.36365565252406357,
+      "top16": 0.5259608013195288,
+      "top64": 0.6614324322231429
+    },
+    "seq05_hit_fraction": {
+      "top1": 0.218548512692727,
+      "top4": 0.38786793334371594,
+      "top16": 0.5416679644915122,
+      "top64": 0.6607070549758605
+    }
+  },
+  "artifact_sha256": {
+    "track_map": "44fa1d957bc6bb8e4843550149c868e1d100fa830f49b9dcfa950c5fece26c24",
+    "track_payload": "89a2abc04513501f7a82ae1f6bb6a34ef6daebf4cd61c640589c13a623524881",
+    "positive_teacher": "8436de52b9dd17100461eeb7fc3e4a60d2a5f7abb74dce5793e64eb45e77824a",
+    "selected_map": "2144dd17163499a7bc97e1fe0383c83121a14054ff300f22c629d9db2510621f",
+    "identity_crossfit_report": "1743e5a6145e1f72a9fd5e1485a27a765cadec195dd28ebfa5d6bdfd534256ac",
+    "capacity_crossfit_report": "dcc0cc0453f00f06065050743a3b3383628473c4c39e550fe2b3a09c0ef77ec9",
+    "two_prototype_crossfit_report": "b8c77775890d217b9a50ba39db1cd8127e4da483d6be9b3918c08016540d27a9",
+    "positive_rank_audit": "e01ad956258deebe13ae302d3ae650c6294eb19b9120d008658564b4774e1857",
+    "top4_pnp_seq05": "4774c7f5206df420a52dcc361dfafd882fe3301bc38d874f267fd60f4b375da9",
+    "view_retrieval_seq05": "ba6b9c69d27a238e1a1f6db9618f1ed6d2d7b412c6cbcbc5836c56291120b91b",
+    "pair_retrieval_seq05": "3c97a5fb0c3feb83839d2c71c20663e837da865e7d0bb8e171af1aba45b46763",
+    "anchor_residual_seq05": "af9c597b5bcc0542de5bcc4d19e3c2cfa917f49f7bcaa6405d7489dedbe00f48",
+    "soft_pose_seq05": "824fdab32076c9bf808869ca881078767d9d083d5287847b92d1e0e987bda942",
+    "geometry_oracle_seq05": "33bafb71eb49fff08d67af5bd1210162e27d645be0d46ffbdb1818bca0fcea6e"
+  }
+}
