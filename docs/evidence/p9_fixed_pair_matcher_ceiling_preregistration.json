@@ -1,0 +1,724 @@
+{
+  "schema": "lafgs_p9_fixed_pair_matcher_ceiling_preregistration",
+  "version": 1,
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "pair_matcher_with_shared_bundled_extractor_rows",
+  "hypothesis": {
+    "control": "mutual_nearest_neighbor_cosine",
+    "variant": "bundled_lighterglue",
+    "only_scientific_difference": "pair_matcher",
+    "same_extractor_for_both_arms": "E1_bundled_xfeat_extractor_from_xfeat_lighterglue_checkpoint",
+    "track_is_in_scope": false,
+    "fullchain_is_in_scope": false,
+    "pose_is_in_scope": false,
+    "test_split_is_in_scope": false
+  },
+  "runtime": {
+    "device": "cpu",
+    "cuda_visible_devices": "",
+    "python_executable": "/root/miniconda3/envs/cybersim_agent/bin/python",
+    "python": "3.9.12",
+    "torch": "2.0.1+cu118",
+    "kornia": "0.8.2",
+    "numpy": "1.26.4",
+    "pillow": "10.4.0",
+    "kornia_lightglue_source_path": "/root/miniconda3/envs/cybersim_agent/lib/python3.9/site-packages/kornia/feature/lightglue.py",
+    "kornia_lightglue_source_sha256": "bb003885e5c4918d5762c6c98f9c423d61dcefe62790b8900d4fbb9bc738a7cb",
+    "kornia_license_path": "/root/miniconda3/envs/cybersim_agent/lib/python3.9/site-packages/kornia-0.8.2.dist-info/licenses/LICENSE",
+    "kornia_license_sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+    "kornia_usage_boundary": "runtime_import_only_no_source_or_weights_vendored",
+    "environment": {
+      "OMP_NUM_THREADS": "16",
+      "MKL_NUM_THREADS": "16",
+      "OPENBLAS_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1"
+    },
+    "torch_intraop_threads": 16,
+    "torch_interop_threads": 1,
+    "torch_deterministic_algorithms": true,
+    "torch_mkldnn_enabled": true,
+    "torch_float32_matmul_precision": "highest",
+    "extractor_dtype": "float32",
+    "matcher_dtype": "float32",
+    "autocast_enabled": false,
+    "extractor_eval": true,
+    "matcher_eval": true,
+    "torch_inference_mode": true,
+    "self_attention_backend": "torch_scaled_dot_product_attention_cpu_no_flash",
+    "cross_attention_backend": "kornia_manual_einsum_softmax_cpu",
+    "network_access_used": false
+  },
+  "external_xfeat": {
+    "worktree": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean",
+    "parent_commit": "b28d53258ab4461ba1a02eaa60ef504e9b82b9ab",
+    "xfeat_tree": "4f804566cb1cf72469b7d7174fba9308885c5c5a",
+    "required_clean": true,
+    "files": {
+      "model": {
+        "path": "encoders/XFeat/modules/model.py",
+        "sha256": "d9a665f18fcea5eaf3e278925e1a92103afcba9051e05b2334f3daa29f411964"
+      },
+      "interpolator": {
+        "path": "encoders/XFeat/modules/interpolator.py",
+        "sha256": "d63a6163eb6fff81e8720231f62537a42a69fccb44dc8851b04de5115daab4da"
+      },
+      "wrapper": {
+        "path": "encoders/XFeat/modules/xfeat.py",
+        "sha256": "f1b0f73c77e34381a46578866bb1531b98180e8d870c0fc61fbfdbd29ac64f31"
+      },
+      "lighterglue_wrapper": {
+        "path": "encoders/XFeat/modules/lighterglue.py",
+        "sha256": "2269f2830669cf56702ffa053b817c3ed0e93ce2b55db1bbaa06b4d3ee9cbb28"
+      },
+      "license": {
+        "path": "encoders/XFeat/LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    }
+  },
+  "checkpoint": {
+    "path": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat-lighterglue.pt",
+    "sha256": "766102df37f11189efe5b0811d1f47c72b22629b79bfabfcfff9d2a2f84654b8",
+    "git_blob": "061e168b4d9db6b086172f247c8adcebb76d7ef8",
+    "size_bytes": 10820795,
+    "exact_tensor_key_count": 291,
+    "raw_key_order_sha256": "76542560a0d12c49b2bef38cc1041450759fd8a857cb3788b61784a036f8232e",
+    "key_order_hash_encoding": "utf8_newline_join_with_final_newline",
+    "exact_split": {
+      "extractor": {
+        "prefix": "extractor.model.net.",
+        "tensor_key_count": 122,
+        "stripped_key_order_sha256": "7a1831132282b855068949cf02ed0e6a394f21da0f29032476e41bb42ab5abc6",
+        "load": "strict_true"
+      },
+      "matcher": {
+        "prefix": "matcher.",
+        "tensor_key_count": 169,
+        "stripped_key_order_sha256": "bebf26fe084d5ebd9b71f71edb6dbd0cde65275c4df88e5278758e6a3966345d",
+        "legacy_self_cross_attention_names_are_rewritten_before_load": true,
+        "load": "strict_true_after_unique_runtime_buffer_insertion"
+      }
+    },
+    "other_prefixes_allowed": false,
+    "strict_false_allowed": false,
+    "relative_xfeat_pt_allowed": false,
+    "high_level_match_xfeat_allowed": false
+  },
+  "lighterglue": {
+    "config": {
+      "name": "xfeat",
+      "input_dim": 64,
+      "descriptor_dim": 96,
+      "add_scale_ori": false,
+      "add_laf": false,
+      "scale_coef": 1.0,
+      "n_layers": 6,
+      "num_heads": 1,
+      "flash": true,
+      "mp": false,
+      "depth_confidence": -1,
+      "width_confidence": 0.95,
+      "filter_threshold": 0.1,
+      "weights": null
+    },
+    "canonical_config_sha256": "b2268682d92af67e2c3b11e66c17e30dea6e4aeeb546df21e6bc390b8f381585",
+    "canonical_config_encoding": "json_sort_keys_compact_utf8",
+    "instantiated_state_key_count": 170,
+    "checkpoint_state_key_count": 169,
+    "unique_runtime_buffer": {
+      "name": "confidence_thresholds",
+      "dtype": "float32",
+      "values": [
+        0.8999999761581421,
+        0.851341724395752,
+        0.8263596892356873,
+        0.8135335445404053,
+        0.8069483637809753,
+        0.8035674095153809
+      ],
+      "tensor_bytes_sha256": "5182f70851806dfdb0b2942073b6669e66e37276f311aaaaea4cde75b3b7d3e5"
+    },
+    "one_direct_forward_per_pair": true,
+    "redetection_or_high_level_wrapper": false
+  },
+  "feature_cache": {
+    "schema": "lafgs_p9_fixed_pair_feature_cache",
+    "version": 1,
+    "source": "fresh_single_forward_per_mapping_image",
+    "native_rgb": "recreated_masked_rgb_from_frozen_mapping_dataset",
+    "detection_threshold": 0.05,
+    "nms_kernel_size": 5,
+    "nms_radius": 2,
+    "sort": "descending_score_stable_row_major_ties",
+    "top_k_before_mask": true,
+    "mask_refill": false,
+    "greatcourt_non_divisible_by_32_supported": true,
+    "exact_input_and_row_semantics": {
+      "native_rgb_load": "PIL_to_numpy_float32_divide_255_CHW_first_three_channels",
+      "camera_hw_resize": "bilinear_align_corners_false",
+      "scene_resolution_resize": "bilinear_align_corners_false",
+      "valid_mask_channels": "object_and_sky_and_distortion_first_three_logical_and",
+      "valid_mask_resize": "nearest",
+      "rgb_mask_application": "native_rgb_times_native_valid_mask_before_extractor",
+      "extractor_height": "32*floor(native_height/32)",
+      "extractor_width": "32*floor(native_width/32)",
+      "native_to_extractor_resize": "bilinear_align_corners_false",
+      "heatmap": "softmax_over_65_channels_discard_dustbin_then_unpack_8x8",
+      "nms": "single_max_pool_5_stride_1_padding_2_then_heatmap_equal_local_max_and_heatmap_strictly_greater_than_0.05",
+      "pre_sort_coordinate_order": "torch_nonzero_row_major_yx_then_columns_reordered_to_xy",
+      "score": "locked_nearest_interpolation_of_heatmap_times_locked_bilinear_interpolation_of_reliability",
+      "interpolator_grid": "2*xy/[extractor_width-1,extractor_height-1]-1_align_corners_false",
+      "origin_sentinel": "raw_xfeat_xy_equal_[0,0]_score_set_to_-1_then_positive_score_filter",
+      "sort_and_budget": "stable_descending_score_preserving_row_major_ties_then_first_scene_K_then_positive_score",
+      "raw_to_native_xy": "native_x=raw_x*(native_width/extractor_width);native_y=raw_y*(native_height/extractor_height)",
+      "native_xy_may_be_fractional": true,
+      "mask_lookup": "torch_round_ties_to_even_native_xy_then_in_bounds_and_native_valid_mask",
+      "mask_floor_lookup_allowed": false,
+      "mask_filter_after_top_k": true,
+      "mask_refill": false,
+      "descriptor_dense_normalization": "L2_dim1_float32",
+      "descriptor_sampling": "locked_bicubic_at_raw_xfeat_xy_align_corners_false",
+      "descriptor_row_normalization": "L2_dim1_float32",
+      "descriptor_dim": 64,
+      "detector_score_dtype": "float32",
+      "raw_xfeat_xy_dtype": "float32",
+      "native_xy_dtype": "float32",
+      "greatcourt_native_hw": [
+        1080,
+        1920
+      ],
+      "greatcourt_extractor_hw": [
+        1056,
+        1920
+      ]
+    },
+    "coordinate_fields": [
+      "raw_xfeat_xy",
+      "native_xy"
+    ],
+    "row_fields": [
+      "descriptor",
+      "detector_score",
+      "row_registry_sha256"
+    ],
+    "dense_teacher_fields": [
+      "native_depth_resampled",
+      "native_alpha_resampled"
+    ],
+    "dense_teacher_resampling": {
+      "target": "declared_native_input_hw",
+      "depth": "identity_if_same_hw_else_bilinear_align_corners_false_float32",
+      "alpha": "identity_if_same_hw_else_bilinear_align_corners_false_then_clamp_0_1_and_serialize_float16"
+    },
+    "tensor_sha256_encoding": "sha256(dtype_ascii_then_python_tuple_shape_ascii_then_contiguous_cpu_raw_bytes)",
+    "row_registry_sha256_encoding": "sha256(canonical_json_sort_keys_compact_utf8_of_raw_xy_sha256_native_xy_sha256_descriptor_sha256_detector_score_sha256_row_count)",
+    "lineage_fields": [
+      "native_K",
+      "pose_w2c",
+      "native_valid_mask",
+      "source_image_sha256",
+      "native_masked_rgb_sha256",
+      "query_cache_sha256",
+      "query_names_sha256"
+    ],
+    "same_exact_rows_consumed_by_both_arms": true
+  },
+  "fixed_pair_probe": {
+    "schema": "lafgs_p9_fixed_pair_match_probe",
+    "version": 1,
+    "pair_source": "p8_attested_nearest_proposal_arm_pair_table_only",
+    "proposal_match_rows_reused": false,
+    "p8_probe_reused": false,
+    "xfeat_arm_a_or_b_probe_reused": false,
+    "detector_reentry_forbidden": true,
+    "arm_order": [
+      "mnn_control",
+      "lighterglue_variant"
+    ],
+    "mnn_minimum_cosine": -1.0,
+    "mnn_definition": "L2_renormalize_float32_rows_then_left_argmax_and_right_argmax_reciprocal_rows_in_left_row_order;minimum_cosine_-1_applies_no_similarity_filter",
+    "lighterglue_input": {
+      "keypoints": "native_xy_without_pixel_center_offset",
+      "descriptors": "same_exact_E1_float32_rows",
+      "image_size": "float32_[native_width,native_height]",
+      "scores_passed_to_lighterglue": false,
+      "direct_forward": "matcher({image0:{keypoints,descriptors,image_size},image1:{keypoints,descriptors,image_size}})",
+      "accepted_raw_rows": "compact_matches_after_LighterGlue_internal_filter_threshold_0.1"
+    },
+    "maximum_symmetric_epipolar_error_px": 2.0,
+    "symmetric_epipolar_definition": {
+      "physical_xy": "native_xy+0.5",
+      "relative_pose": "R_10=R_1*transpose(R_0);t_10=t_1-R_10*t_0",
+      "fundamental": "F=inv(K_1)^T*[t_10]_x*R_10*inv(K_0)",
+      "left_distance_px": "abs(x_1^T*F*x_0)/max(norm((F^T*x_1)[0:2]),1e-12)",
+      "right_distance_px": "abs(x_1^T*F*x_0)/max(norm((F*x_0)[0:2]),1e-12)",
+      "symmetric_error_px": "max(left_distance_px,right_distance_px)",
+      "acceptance": "finite_symmetric_error_px<=2.0_inclusive"
+    },
+    "common_confidence": "sqrt(left_detector_score*right_detector_score)",
+    "minimum_common_confidence": 0.0,
+    "atomic_fresh_output_required": true,
+    "partial_or_spliced_arm_output_allowed": false
+  },
+  "dense_depth_teacher": {
+    "mapping_only": true,
+    "pixel_center_offset": 0.5,
+    "depth_sample": "torch_round_ties_to_even_at_native_xy",
+    "minimum_alpha": 0.2,
+    "positive_finite_depth_required": true,
+    "evaluation_population": "epipolar_accepted_matches_only",
+    "unprojection": "camera_xyz=inv(K)*[native_xy+0.5,1]*sampled_z;world_xyz=transpose(R_w2c)*(camera_xyz-t_w2c)",
+    "correct_if_bidirectional_depth_reprojection_max_px": 2.0,
+    "correct_threshold_inclusive": true,
+    "unevaluable_rows_excluded_from_precision_denominator": true,
+    "test_image_or_pose_allowed": false
+  },
+  "pair_gate": {
+    "schema": "lafgs_p9_fixed_pair_matcher_ceiling_pair_gate",
+    "version": 1,
+    "scientific_gates": {
+      "correct_correspondence_count_not_lower": "variant >= control",
+      "correct_correspondence_precision_not_lower": "variant >= control",
+      "epipolar_accepted_count_not_lower": "variant >= control",
+      "epipolar_acceptance_rate_not_lower": "variant >= control",
+      "verified_keypoint_triangle_count_not_lower": "variant >= control",
+      "cycle_supported_edge_count_not_lower": "variant >= control",
+      "verified_triangle_camera_set_not_lower": "control_set subset_of variant_set",
+      "nonempty_pair_coverage_not_lower": "variant >= control",
+      "identity_conflict_count_not_higher": "variant <= control",
+      "at_least_one_primary_strict_gain": "correct_count or verified_triangle_count or cycle_supported_edge_count variant > control"
+    },
+    "metric_definitions": {
+      "raw_match_count": "sum per fixed pair of reciprocal MNN rows or compact post-internal-filter LighterGlue rows before common epipolar filtering",
+      "epipolar_accepted_count": "count raw rows with finite symmetric_epipolar_error_px<=2.0",
+      "epipolar_acceptance_rate": "epipolar_accepted_count/raw_match_count;defined_as_0.0_when_raw_match_count_is_0",
+      "teacher_evaluable_count": "epipolar-accepted rows whose two rounded endpoints are in-bounds, valid-mask true, alpha>=0.2, finite positive depth, and whose two cross-camera projected depths are positive with finite errors",
+      "correct_correspondence_count": "teacher-evaluable epipolar-accepted rows with maximum bidirectional depth reprojection error<=2.0",
+      "correct_correspondence_precision": "correct_correspondence_count/teacher_evaluable_count;defined_as_0.0_when_teacher_evaluable_count_is_0",
+      "verified_keypoint_triangle_count": "enumerate lexicographically sorted camera triples whose three undirected pairs exist; close exact row identities left_to_middle,left_to_right,middle_to_right; batch homogeneous DLT SVD from all three physical native_xy+0.5 observations; require finite homogeneous division, positive depth in all cameras, and maximum three-view reprojection error<=2.0;count every verified row closure",
+      "cycle_supported_edge_count": "cardinality_of_unique_(fixed_pair_table_index,source_row,target_row)_tuples_participating_in_at_least_one_verified_keypoint_triangle",
+      "verified_triangle_camera_indices": "sorted_unique_camera_indices_participating_in_at_least_one_verified_keypoint_triangle",
+      "nonempty_pair_coverage_count": "number_of_fixed_pairs_with_at_least_one_epipolar_accepted_match",
+      "identity_conflict_count": "after_processing_fixed_pairs_in_table_order_and_matches_in_source_row_order_union_all_epipolar_accepted_(camera,row)_nodes;for_each_connected_component_and_camera_add_max(number_of_distinct_rows_from_that_camera-1,0);sum_over_all_components",
+      "identity_conflict_component_count": "number_of_union_components_with_identity_conflict_count_greater_than_zero"
+    },
+    "derived_fraction_validation": {
+      "authoritative_values": "nonnegative_integer_counts",
+      "serialized_float_values_are_authoritative": false,
+      "required_count_order": "0<=epipolar_accepted_count<=raw_match_count;0<=correct_correspondence_count<=teacher_evaluable_count<=epipolar_accepted_count",
+      "epipolar_acceptance_rate_projection": "recompute_exactly_as_epipolar_accepted_count/raw_match_count_or_0.0_when_denominator_is_zero",
+      "correct_correspondence_precision_projection": "recompute_exactly_as_correct_correspondence_count/teacher_evaluable_count_or_0.0_when_denominator_is_zero",
+      "zero_denominator_rational": "0/1_and_count_consistency_requires_zero_numerator",
+      "non_regression_comparison": "Python_integer_cross_multiplication_of_recomputed_rationals_never_serialized_float_comparison",
+      "epipolar_acceptance_rate_formula": "variant_epipolar_accepted_count*control_raw_match_count>=control_epipolar_accepted_count*variant_raw_match_count_after_zero_denominators_are_canonicalized_to_0/1",
+      "correct_correspondence_precision_formula": "variant_correct_correspondence_count*control_teacher_evaluable_count>=control_correct_correspondence_count*variant_teacher_evaluable_count_after_zero_denominators_are_canonicalized_to_0/1"
+    },
+    "metric_pipeline_order": [
+      "raw_matcher_output",
+      "common_symmetric_epipolar_filter",
+      "dense_depth_teacher_correctness",
+      "exact_triangle_and_cycle_deduplication",
+      "nonempty_pair_coverage",
+      "identity_conflict_union"
+    ],
+    "verified_triangle_maximum_reprojection_error_px": 2.0,
+    "verified_cycle_identity": "same_exact_keypoint_rows_around_three_fixed_pair_edges",
+    "valid_scientific_stop_exit_code": 2,
+    "invalid_input_or_lineage_exit_code": 1,
+    "pass_exit_code": 0,
+    "pass_decision": "SCENE_PAIR_PASS_REQUIRES_OTHER_SCENE",
+    "stop_decision": "STOP_FIXED_PAIR_MATCHER_CEILING",
+    "single_scene_authorizes_track": false,
+    "both_scene_pass_authorizes_track_implementation_review_only": true,
+    "authorizes_real_track_run": false,
+    "authorizes_pose": false,
+    "authorizes_test": false,
+    "changes_method_default": false
+  },
+  "two_scene_protocol": {
+    "scene_order": [
+      "stairs",
+      "greatcourt"
+    ],
+    "first_scene": "stairs",
+    "first_scene_stop": "STOP_WITHOUT_BUILDING_GREATCOURT_FEATURE_CACHE_OR_PROBE",
+    "second_scene_requires_parent": {
+      "schema": "lafgs_p9_fixed_pair_matcher_ceiling_pair_gate",
+      "scene": "stairs",
+      "valid": true,
+      "scene_pair_gate_passed": true,
+      "decision": "SCENE_PAIR_PASS_REQUIRES_OTHER_SCENE",
+      "exact_path_and_sha256_required": true,
+      "validate_before_second_scene_large_io": true,
+      "construct_current_feature_producer_identity_before_second_scene_large_io": true,
+      "current_compiled_identity_must_equal_stairs_parent_before_second_scene_large_io_or_forward": true
+    },
+    "cross_scene_gate": {
+      "schema": "lafgs_p9_fixed_pair_matcher_ceiling_cross_scene_pair_gate",
+      "version": 1,
+      "both_scene_exact_gate_paths_and_sha256_required": true,
+      "same_compiled_identity_required": true,
+      "same_producer_source_hashes_required": true,
+      "same_runtime_and_backend_required": true,
+      "pass_formula": "stairs_scene_pair_gate_passed and greatcourt_scene_pair_gate_passed and same_compiled_identity and same_producer_source_hashes and same_runtime_and_backend",
+      "pass_decision": "GO_TO_FIXED_PAIR_TRACK_IMPLEMENTATION_REVIEW",
+      "stop_decision": "STOP_BEFORE_FIXED_PAIR_TRACK_IMPLEMENTATION",
+      "pass_exit_code": 0,
+      "scientific_stop_exit_code": 2,
+      "invalid_input_or_lineage_exit_code": 1,
+      "authorizes_track_implementation_review": true,
+      "authorizes_real_track_run": false,
+      "authorizes_pose": false,
+      "authorizes_test": false,
+      "changes_method_default": false
+    }
+  },
+  "fixed_scene_registry": {
+    "stairs": {
+      "dataset_root": "/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1/stairs",
+      "images": "processed",
+      "query_count": 2000,
+      "mapping_source_image_manifest": {
+        "path": "docs/evidence/p9_stairs_mapping_image_manifest.json",
+        "sha256": "9aa19b0fefb872143df7b9118453e8b8063bc589cda709ba0d49b615724ef1a4",
+        "ordered_source_image_manifest_sha256": "ff39e966b651a3c265cc59200b5cf8f319be4777a5594a7ca0a4ab98f89cd4f9",
+        "ordered_source_image_manifest_encoding": "utf8_name_tab_lowercase_file_sha256_lf",
+        "mapping_image_count": 2000,
+        "mapping_image_total_bytes": 793635630,
+        "mapping_test_name_intersection_count": 0
+      },
+      "query_cache": {
+        "path": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+        "sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+      },
+      "mapping_scope_equivalence": {
+        "path": "/mnt/pool/sqy/lafgs_frontend_ceiling_probe_20260813/stairs/contracts/fresh_cache_equivalence_v2.json",
+        "sha256": "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee"
+      },
+      "query_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
+      "requested_keypoint_count": 1024,
+      "pair_proposals": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_proposals.pt",
+        "sha256": "31f458410cdad5f2ab0aef846532a2ae324f08cd7b07bae47e18de5b7897ab20",
+        "content_sha256": "d0d028a4dc8736d3d74a94090f6575da5a742353760a088dcd26c6c77f56c47a"
+      },
+      "exact_nearest_pair_count": 7450,
+      "nearest_pair_table_sha256": "6d6afc9335bcb59470541042770e3d4352c2c90e89c11b78992da7314a762b29"
+    },
+    "greatcourt": {
+      "dataset_root": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+      "images": "processed",
+      "query_count": 1531,
+      "mapping_source_image_manifest": {
+        "path": "docs/evidence/p9_greatcourt_mapping_image_manifest.json",
+        "sha256": "e63d0de7efe30ddabc33ca682f2efbfb456842c5455a2d3c8a1f9f6340209ee7",
+        "ordered_source_image_manifest_sha256": "21261bb646419272241b08a761a9480e0180f06e9b83a7ea90fb47d1f4a15f67",
+        "ordered_source_image_manifest_encoding": "utf8_name_tab_lowercase_file_sha256_lf",
+        "mapping_image_count": 1531,
+        "mapping_image_total_bytes": 3864188235,
+        "mapping_test_name_intersection_count": 0
+      },
+      "query_cache": {
+        "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/cache/query_cache.pt",
+        "sha256": "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92"
+      },
+      "mapping_scope_equivalence": {
+        "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/contracts/sparse_refresh_equivalence.json",
+        "sha256": "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2"
+      },
+      "query_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+      "requested_keypoint_count": 2048,
+      "pair_proposals": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_proposals.pt",
+        "sha256": "de9cc32ca29a932f95c839143ccb7a8c034c9e861c0c9ce9f5bd192a6467abf6",
+        "content_sha256": "53b03061bfcfa9da0a7db166731d1d51f9144c168d2d32b5c6cb708a381f18e8"
+      },
+      "exact_nearest_pair_count": 5254,
+      "nearest_pair_table_sha256": "355e01989327c91ee2a316fcb12433056632bd74f166882d8a29ef053b80da61"
+    }
+  },
+  "artifact_protocol": {
+    "feature_cache_then_paired_probe_then_pair_gate": true,
+    "fresh_nonexistent_outputs_required": true,
+    "atomic_replace_from_same_directory_temporary": true,
+    "completion_schema": "lafgs_p9_fixed_pair_match_probe_completion",
+    "completion_written_last_after_cache_and_both_arms_reload": true,
+    "scene_gate_embeds_compiled_identity": true,
+    "greatcourt_scene_gate_embeds_exact_stairs_parent": true,
+    "cross_scene_gate_is_required_before_any_track_implementation_review": true,
+    "producer_identity_required": true,
+    "committed_preregistration_required": true,
+    "post_review_implementation_registry_required_before_real_mapping_run": true
+  },
+  "artifact_schemas": {
+    "feature_cache": {
+      "schema": "lafgs_p9_fixed_pair_feature_cache",
+      "version": 1,
+      "fixed_filename": "p9_fixed_pair_feature_cache.pt",
+      "required_top_level_keys": [
+        "schema",
+        "version",
+        "scene",
+        "mapping_only",
+        "uses_test_queries",
+        "run_uuid",
+        "query_count",
+        "query_names",
+        "query_names_sha256",
+        "requested_keypoint_count",
+        "inputs",
+        "extractor",
+        "feature_contract",
+        "producer_identity",
+        "queries",
+        "content_sha256"
+      ],
+      "query_required_keys": [
+        "query_index",
+        "query_name",
+        "native_input_hw",
+        "xfeat_input_hw",
+        "row_count",
+        "raw_xfeat_xy",
+        "native_xy",
+        "descriptor",
+        "detector_score",
+        "native_depth_resampled",
+        "native_alpha_resampled",
+        "native_valid_mask",
+        "native_K",
+        "pose_w2c",
+        "image_lineage",
+        "detector_lineage",
+        "dense_teacher_lineage",
+        "hashes"
+      ],
+      "query_tensor_shapes_and_dtypes": {
+        "raw_xfeat_xy": "float32[N,2]",
+        "native_xy": "float32[N,2]",
+        "descriptor": "float32[N,64]",
+        "detector_score": "float32[N]",
+        "native_depth_resampled": "float32[H_native,W_native]",
+        "native_alpha_resampled": "float16[H_native,W_native]",
+        "native_valid_mask": "bool[H_native,W_native]",
+        "native_K": "float32[3,3]",
+        "pose_w2c": "float32[3,4]_or_float32[4,4]"
+      },
+      "shape_validation_before_reshape_or_squeeze": true,
+      "singleton_expanded_score_or_dense_field_allowed": false,
+      "content_hash_domain": "all_top_level_scientific_metadata_except_content_sha256_plus_ordered_query_metadata_and_recomputed_tensor_hashes",
+      "fresh_atomic_rule": "fixed_file_must_not_exist;save_same_directory_temp;reload_full_validator;os_replace_once",
+      "source_image_manifest_revalidated_before_first_forward_and_after_last_forward": true
+    },
+    "paired_probe": {
+      "schema": "lafgs_p9_fixed_pair_match_probe",
+      "version": 1,
+      "fixed_filename": "fixed_pair_match_probe.pt",
+      "required_top_level_keys": [
+        "schema",
+        "version",
+        "scene",
+        "mapping_only",
+        "uses_test_queries",
+        "run_uuid",
+        "query_count",
+        "query_names_sha256",
+        "feature_cache",
+        "pair_table",
+        "shared_contract",
+        "producer_identity",
+        "arms",
+        "content_sha256"
+      ],
+      "exact_arm_keys": [
+        "mnn_control",
+        "lighterglue_variant"
+      ],
+      "arm_required_keys": [
+        "name",
+        "run_uuid",
+        "producer_identity",
+        "pair_count",
+        "matcher",
+        "matches",
+        "pair_diagnostics",
+        "metrics",
+        "tensor_sha256"
+      ],
+      "match_tensor_shapes_and_dtypes": {
+        "offsets": "int64[P+1]",
+        "source_row": "int64[M]",
+        "target_row": "int64[M]",
+        "matcher_confidence": "float32[M]",
+        "common_confidence": "float64[M]",
+        "symmetric_epipolar_error_px": "float64[M]",
+        "teacher_evaluable": "bool[M]",
+        "teacher_correct": "bool[M]",
+        "teacher_bidirectional_error_px": "float64[M]"
+      },
+      "pair_index_tensor_shapes": "int64[P]_for_both_left_and_right",
+      "diagnostic_tensor_shapes": "int64[P]_for_every_diagnostic",
+      "shape_validation_before_reshape_or_squeeze": true,
+      "singleton_expanded_pair_match_or_diagnostic_allowed": false,
+      "content_hash_domain": "top_level_scientific_metadata_pair_table_tensor_hashes_and_for_each_exact_arm_match_diagnostic_tensor_hashes_matcher_metrics_run_uuid_producer_identity",
+      "same_run_uuid_and_exact_producer_identity_required_for_both_arms": true,
+      "partial_or_arm_splice_invalid": true
+    },
+    "paired_probe_summary": {
+      "schema": "lafgs_p9_fixed_pair_match_probe_summary",
+      "version": 1,
+      "fixed_filename": "fixed_pair_match_probe.json",
+      "non_authoritative": true,
+      "must_exact_project_validated_probe_metrics": true
+    },
+    "paired_completion": {
+      "schema": "lafgs_p9_fixed_pair_match_probe_completion",
+      "version": 1,
+      "fixed_filename": "paired_match_completion.json",
+      "required_keys": [
+        "schema",
+        "version",
+        "scene",
+        "mapping_only",
+        "uses_test_queries",
+        "complete",
+        "partial",
+        "resume_allowed",
+        "run_uuid",
+        "producer_identity",
+        "compiled_identity",
+        "build_order",
+        "inputs",
+        "artifacts",
+        "failure_recovery"
+      ],
+      "build_order": [
+        "mnn_control",
+        "lighterglue_variant"
+      ],
+      "failure_recovery_exact_value": "isolate_root_and_rebuild_both_arms_from_fresh_cache",
+      "atomic_rule": "fresh_nonexistent_final_root;write_probe_then_summary_in_sibling_temp_root;reload_and_validate_both_arms;write_completion_last;atomically_rename_whole_root",
+      "only_authoritative_pair_gate_input": true,
+      "direct_probe_path_as_pair_gate_input_allowed": false
+    },
+    "scene_pair_gate": {
+      "schema": "lafgs_p9_fixed_pair_matcher_ceiling_pair_gate",
+      "version": 1,
+      "fixed_filename": "p9_fixed_pair_matcher_ceiling_pair_gate.json",
+      "required_keys": [
+        "schema",
+        "version",
+        "scene",
+        "mapping_only",
+        "uses_test_queries",
+        "valid",
+        "policy",
+        "inputs",
+        "parent_stairs_gate",
+        "compiled_identity",
+        "producer_identity",
+        "control",
+        "variant",
+        "comparisons",
+        "gates",
+        "scene_pair_gate_passed",
+        "requires_other_scene",
+        "advance_to_track_implementation_review",
+        "authorizes_real_track_run",
+        "advance_to_pose",
+        "authorizes_test",
+        "changes_method_default",
+        "decision"
+      ],
+      "stairs_parent_value": null,
+      "greatcourt_parent_value": "exact_path_sha256_and_scientific_projection_of_valid_passing_stairs_scene_gate",
+      "scientific_stop_is_valid_gate": true
+    },
+    "cross_scene_pair_gate": {
+      "schema": "lafgs_p9_fixed_pair_matcher_ceiling_cross_scene_pair_gate",
+      "version": 1,
+      "fixed_filename": "cross_scene_fixed_pair_matcher_ceiling_gate.json",
+      "required_keys": [
+        "schema",
+        "version",
+        "mapping_only",
+        "uses_test_queries",
+        "valid",
+        "inputs",
+        "compiled_identity",
+        "same_producer_source_hashes",
+        "same_runtime_and_backend",
+        "scene_pair_gate_passed",
+        "both_scene_pair_gate_passed",
+        "advance_to_track_implementation_review",
+        "authorizes_real_track_run",
+        "advance_to_pose",
+        "authorizes_test",
+        "changes_method_default",
+        "decision"
+      ]
+    }
+  },
+  "producer_identity_contract": {
+    "schema": "lafgs_p9_fixed_pair_matcher_ceiling_producer",
+    "version": 1,
+    "required_keys": [
+      "schema",
+      "version",
+      "algorithm",
+      "entrypoint",
+      "git_commit",
+      "implementation_commit",
+      "implementation_registry",
+      "preregistration",
+      "source_paths",
+      "source_file_sha256",
+      "required_source_paths_clean",
+      "runtime",
+      "compiled_identity"
+    ],
+    "dirty_guard": "git_status_porcelain_must_be_empty_for_every_recursive_required_source_path_and_preregistration_manifest",
+    "implementation_commit_must_be_ancestor_of_current_head": true,
+    "preregistration_commit_must_be_ancestor_of_implementation_commit": true,
+    "registry_must_be_committed_at_current_head": true,
+    "compiled_identity_hash_domain": "canonical_json_sort_keys_compact_utf8_of_implementation_commit_preregistration_commit_and_blob_source_paths_and_sha256_runtime_versions_device_dtype_eval_inference_autocast_threads_and_backends",
+    "same_compiled_identity_for_feature_probe_scene_gate_and_both_scenes": true
+  },
+  "planned_producer_source_paths": [
+    "common/hashing.py",
+    "data/colmap.py",
+    "data/datasets.py",
+    "data/images.py",
+    "evidence/fixed_pair_matcher_ceiling.py",
+    "features/multiview_fusion.py",
+    "map_learning/frontend_upper_bound.py",
+    "map_learning/fixed_pair_matcher_ceiling.py",
+    "scripts/fixed_pair_matcher_ceiling_common.py",
+    "scripts/materialize_fixed_pair_feature_cache.py",
+    "scripts/materialize_fixed_pair_match_probe.py",
+    "scripts/compare_fixed_pair_matcher_ceiling.py",
+    "scripts/aggregate_fixed_pair_matcher_ceiling_cross_scene.py",
+    "docs/evidence/p9_fixed_pair_matcher_ceiling_preregistration.json",
+    "docs/evidence/p9_stairs_mapping_image_manifest.json",
+    "docs/evidence/p9_greatcourt_mapping_image_manifest.json"
+  ],
+  "current_status": {
+    "preregistration_frozen_before_implementation": true,
+    "preregistration_p1_amendment_frozen_before_any_real_run": true,
+    "implementation_complete": false,
+    "full_cpu_tests_complete": false,
+    "independent_review_complete": false,
+    "implementation_registry_committed": false,
+    "real_mapping_feature_cache_run": false,
+    "real_mapping_pair_probe_run": false,
+    "real_pair_gate_run": false,
+    "real_mapping_extractor_forward_count": 0,
+    "real_mapping_lighterglue_forward_count": 0,
+    "real_mapping_or_test_artifact_inspected_for_scientific_metrics": false,
+    "track_implemented": false,
+    "gpu_run": false,
+    "test_split_run": false
+  }
+}

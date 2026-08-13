@@ -1,0 +1,51 @@
+{
+  "schema": "lafgs_p9_mapping_source_image_manifest",
+  "version": 1,
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "scene": "greatcourt",
+  "dataset_root": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+  "images": "processed",
+  "mapping_image_count": 1531,
+  "mapping_image_total_bytes": 3864188235,
+  "ordered_source_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+  "ordered_source_image_manifest_sha256": "21261bb646419272241b08a761a9480e0180f06e9b83a7ea90fb47d1f4a15f67",
+  "ordered_source_image_manifest_encoding": "UTF-8 in exact mapping-query order; each record is name\\tlowercase_file_sha256\\n",
+  "ordered_source_image_records_diagnostic_sha256": "a0f787a075c6f6cc5ea69844ccd2bbf129cfa44f542c81fbd05a18967c03d2d4",
+  "ordered_source_image_records_diagnostic_encoding": "UTF-8 in exact mapping-query order; each record is len(name):name\\tfile_size_bytes\\twidthxheight\\tfile_sha256\\n",
+  "first_mapping_image_name": "seq2/frame00001.png",
+  "last_mapping_image_name": "seq5/frame00665.png",
+  "distinct_source_width_height": [
+    [
+      1920,
+      1080
+    ]
+  ],
+  "split_and_mask_files": {
+    "dataset_test.txt": {
+      "sha256": "7fc0b6caba8bb4eeaeef1df85751a1f85ab9b9db696f796e15ad8edc7fdd506f",
+      "size_bytes": 65249
+    },
+    "processed/masks.pkl": {
+      "sha256": "376684dde32c8f8f59af9c98077d9c434bef02362e57486af8a0dc4ade68c65e",
+      "size_bytes": 1585697441
+    },
+    "sparse/0/cameras.bin": {
+      "sha256": "026e6b21dd711d67df5c2fdf1c29abfe5ea7106b0e357db470ff2afd8b53de98",
+      "size_bytes": 128304
+    },
+    "sparse/0/images.bin": {
+      "sha256": "59251e9e4a8a1f37a95842fd325127e0886da6f71a6f37e54c7d7cf6c07b96a8",
+      "size_bytes": 210780
+    }
+  },
+  "revalidation": {
+    "mapping_order": "query-cache order, required exact-equal to ColmapDataset(dataset_root, images=processed).split(mapping), sorted by image_name",
+    "mapping_test_name_intersection_count": 0,
+    "name_hash_encoding": "UTF-8 name followed by newline for every ordered mapping image",
+    "image_manifest_hash_algorithm": "SHA-256 over the complete ordered name-tab-file-digest stream",
+    "each_source_image_file_sha256_recomputed": true,
+    "image_dimensions_read_from_source_file": true
+  }
+}
