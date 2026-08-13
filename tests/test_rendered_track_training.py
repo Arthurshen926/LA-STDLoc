@@ -2,6 +2,7 @@ from pathlib import Path
 
 import torch
 
+from scripts.audit_rendered_track_positive_ranks import positive_rank_hits
 from scripts.materialize_rendered_track_training import materialize
 from scripts.evaluate_rendered_track_multiprototype_crossfit import (
     _fold_map,
@@ -211,3 +212,13 @@ def test_multi_prototype_fold_excludes_held_sequence_descriptors():
     assert rows == [[0, 1], []]
     assert torch.equal(fold["anchor_features"], torch.eye(2))
     assert fold["provenance"]["multi_prototype_crossfit"]["uses_test_queries"] is False
+
+
+def test_positive_rank_hits_uses_row_aligned_csr():
+    ranks, has_positive = positive_rank_hits(
+        torch.tensor([[5, 2, 1], [4, 3, 2], [1, 0, 2]]),
+        torch.tensor([0, 2, 2, 3]),
+        torch.tensor([1, 8, 0]),
+    )
+    assert ranks.tolist() == [3, 4, 2]
+    assert has_positive.tolist() == [True, False, True]
