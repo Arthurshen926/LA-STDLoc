@@ -874,3 +874,12 @@ cross-B、fullchain、pose、test 或默认切换；冻结 V3 `nearest` 继续�
 fullchain、pose 或 test。双向 sentinel 与机器证据见
 `docs/v4_7scenes_track_repair_port.md` 和
 `docs/evidence/v4_7scenes_track_repair_port.json`。
+
+P9 fixed-pair matcher ceiling 已完成预注册、实现、审查修补与 implementation registry。
+它固定 nearest pair IDs 和同一 fresh bundled-XFeat rows，只比较 pure MNN 与一次 direct
+LighterGlue；count/rate Gate 使用整数交叉乘法，所有 tensor shape 在 reshape 前精确校验，
+Stairs parent identity 在 GreatCourt 大 I/O/model forward 前校验。该实现只授权 mapping-only
+Pair Gate，仍禁止 Track、pose、test 和默认切换。正式 CPU-only Stairs 运行包含 7,450 次
+六层 pair forward，不属于本轮“快速收敛”的机械验证，因此未盲目启动；下一次科学算力只应
+用于这一条冻结的 Stairs Pair Gate，若 Stop 则不运行 GreatCourt。实现 registry 见
+`docs/evidence/p9_fixed_pair_matcher_ceiling_implementation.json`。
