@@ -1,0 +1,47 @@
+{
+  "schema": "lafgs_p9_mapping_source_image_manifest",
+  "version": 1,
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "scene": "stairs",
+  "dataset_root": "/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1/stairs",
+  "images": "processed",
+  "mapping_image_count": 2000,
+  "mapping_image_total_bytes": 793635630,
+  "ordered_source_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
+  "ordered_source_image_manifest_sha256": "ff39e966b651a3c265cc59200b5cf8f319be4777a5594a7ca0a4ab98f89cd4f9",
+  "ordered_source_image_manifest_encoding": "UTF-8 in exact mapping-query order; each record is name\\tlowercase_file_sha256\\n",
+  "ordered_source_image_records_diagnostic_sha256": "96206241d9a472d1589474dbe04f82c06b4dfbf3ca4b5ab7379513da34146e8d",
+  "ordered_source_image_records_diagnostic_encoding": "UTF-8 in exact mapping-query order; each record is len(name):name\\tfile_size_bytes\\twidthxheight\\tfile_sha256\\n",
+  "first_mapping_image_name": "seq-02/frame-000000.color.png",
+  "last_mapping_image_name": "seq-06/frame-000499.color.png",
+  "distinct_source_width_height": [
+    [
+      640,
+      480
+    ]
+  ],
+  "split_and_mask_files": {
+    "sparse/0/cameras.txt": {
+      "sha256": "46879bb067447a0b541d0b2a6618db68b79522bbd0d18e2102f5aab907daa751",
+      "size_bytes": 106
+    },
+    "sparse/0/images.txt": {
+      "sha256": "1f2532b9ecd79b0fe7bac7c67d501778080267cf03e78f88794c268bacdb98b6",
+      "size_bytes": 434435
+    },
+    "sparse/0/list_test.txt": {
+      "sha256": "78a1ecdeb8ee6394a24b3ab0d37a0a29fe52ca0445d36995000484ca143c3954",
+      "size_bytes": 30000
+    }
+  },
+  "revalidation": {
+    "mapping_order": "query-cache order, required exact-equal to ColmapDataset(dataset_root, images=processed).split(mapping), sorted by image_name",
+    "mapping_test_name_intersection_count": 0,
+    "name_hash_encoding": "UTF-8 name followed by newline for every ordered mapping image",
+    "image_manifest_hash_algorithm": "SHA-256 over the complete ordered name-tab-file-digest stream",
+    "each_source_image_file_sha256_recomputed": true,
+    "image_dimensions_read_from_source_file": true
+  }
+}
