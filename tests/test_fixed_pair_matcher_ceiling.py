@@ -66,14 +66,20 @@ def _fresh_models(artifact: dict):
     ).cpu().eval()
 
 
-def test_preregistration_is_exact_and_real_execution_remains_locked():
+def test_preregistration_and_reviewed_implementation_registry_are_exact():
     payload = preregistration()
     assert payload["valid"] is True
     assert payload["checkpoint"]["exact_tensor_key_count"] == 291
     assert payload["checkpoint"]["exact_split"]["extractor"]["tensor_key_count"] == 122
     assert payload["checkpoint"]["exact_split"]["matcher"]["tensor_key_count"] == 169
-    with pytest.raises(RuntimeError, match="registry is not committed"):
-        feature_core.implementation_registry()
+    registry = feature_core.implementation_registry()
+    assert registry["valid"] is True
+    assert registry["implementation_commit"] == (
+        "b63fc5e4e1306c150e59f029ce87780e8b0d6827"
+    )
+    assert registry["authorizes_real_mapping_pair_gate"] is True
+    assert registry["authorizes_track"] is False
+    assert registry["authorizes_test"] is False
 
 
 def test_strict_bundled_loader_accepts_exact_291_key_split(bundled_artifact: dict):
