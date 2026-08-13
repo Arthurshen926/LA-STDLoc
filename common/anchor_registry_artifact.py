@@ -206,6 +206,20 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                     raise ValueError(
                         f"trained_map and compact_map differ in topology field {key}"
                     )
+        compact_rows = compact.get("track_centric_reconstruction", {}).get(
+            "base_canonical_rows"
+        )
+        trained_rows = state.get("track_centric_reconstruction", {}).get(
+            "base_canonical_rows"
+        )
+        if (
+            compact_rows is None
+            or trained_rows is None
+            or not tensor_bitwise_equal(compact_rows, trained_rows)
+        ):
+            raise ValueError(
+                "trained_map and compact_map differ in base canonical rows"
+            )
 
     teacher = payloads.get("positive_teacher")
     tracks = payloads.get("track_payload")
@@ -351,8 +365,12 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
     if metric is not None:
         if metric.get("schema") != "lafgs_shared_metric_state":
             raise ValueError("metric_state has an unsupported schema")
-        landmark_indices = torch.as_tensor(metric.get("landmark_indices", ())).long()
-        if not torch.equal(landmark_indices.cpu(), torch.arange(count)):
+        landmark_indices = torch.as_tensor(
+            metric.get("landmark_indices", ())
+        ).detach().cpu()
+        if not tensor_bitwise_equal(
+            landmark_indices, torch.arange(count, dtype=torch.long)
+        ):
             raise ValueError("metric_state Anchor registry differs from trained_map")
         _require_declared_parent(
             metric,

@@ -316,6 +316,42 @@ def test_pipeline_registry_rejects_non_bitwise_compact_map(
         )
 
 
+def test_pipeline_registry_rejects_mixed_base_canonical_rows(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    compact_path = parents["compact_map"][0]
+    compact = torch.load(compact_path, map_location="cpu", weights_only=False)
+    compact["track_centric_reconstruction"]["base_canonical_rows"] = torch.tensor(
+        [4, 2]
+    )
+    torch.save(compact, compact_path)
+    parents["compact_map"] = (compact_path, sha256_file(compact_path))
+    with pytest.raises(ValueError, match="differ in base canonical rows"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
+def test_pipeline_registry_rejects_non_integer_metric_registry(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    metric_path = parents["metric_state"][0]
+    metric = torch.load(metric_path, map_location="cpu", weights_only=False)
+    metric["landmark_indices"] = metric["landmark_indices"].float()
+    torch.save(metric, metric_path)
+    parents["metric_state"] = (metric_path, sha256_file(metric_path))
+    with pytest.raises(ValueError, match="metric_state Anchor registry differs"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
 def test_pipeline_registry_is_sibling_and_preserves_localization_tensors(
     tmp_path: Path,
 ) -> None:
@@ -797,6 +833,37 @@ def test_pipeline_completion_rejects_hidden_factor_test_mix(tmp_path: Path) -> N
         "split": "test",
         "explicit_opt_in_required": True,
     }
+    completion_path.write_text(json.dumps(completion))
+    with pytest.raises(ValueError, match="active experimental factors"):
+        verify_pipeline_completion(completion_path)
+
+
+def test_pipeline_completion_rejects_active_factor_numeric_type_forgery(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    result = write_pipeline_completion(
+        output=tmp_path,
+        artifacts=artifacts,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=parents["config"][0],
+        evaluation_requested=False,
+        experimental_factors={**NO_FACTORS, "mapping_keypoints": 1024},
+    )
+    completion_path = Path(result["path"])
+    completion = json.loads(completion_path.read_text())
+    completion["active_experimental_factors"]["mapping_keypoints"] = 1024.0
     completion_path.write_text(json.dumps(completion))
     with pytest.raises(ValueError, match="active experimental factors"):
         verify_pipeline_completion(completion_path)

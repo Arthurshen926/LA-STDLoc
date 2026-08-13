@@ -16,6 +16,7 @@ from common.producer_identity import (
     capture_producer_identity,
     verify_producer_identity,
 )
+from common.tensor_identity import recursive_bitwise_equal
 
 
 SCHEMA = "lafgs_fail_closed_pipeline_completion"
@@ -203,8 +204,11 @@ def _validated_factor_contract(
         for name, value in factors.items()
         if (value is not None if name != "surface_supported_tracks" else value is True)
     }
-    if active is not None and active != canonical_active:
-        raise ValueError("active experimental factors differ from canonical replay")
+    if active is not None:
+        if not isinstance(active, dict) or not recursive_bitwise_equal(
+            active, canonical_active
+        ):
+            raise ValueError("active experimental factors differ from canonical replay")
     return dict(factors), canonical_active
 
 
