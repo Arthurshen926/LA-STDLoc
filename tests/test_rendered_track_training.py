@@ -10,6 +10,10 @@ from scripts.evaluate_rendered_track_retrieval_crossfit import (
     observation_bank_for_references,
     pooled_image_descriptor,
 )
+from scripts.evaluate_rendered_track_pair_retrieval_crossfit import (
+    merge_pair_matches,
+    reciprocal_pair_matches,
+)
 from scripts.materialize_rendered_track_training import materialize
 from scripts.evaluate_rendered_track_multiprototype_crossfit import (
     _fold_map,
@@ -298,3 +302,22 @@ def test_retrieval_rejects_an_empty_reference_bank():
         assert "no selected Track rows" in str(error)
     else:
         raise AssertionError("empty rendered reference bank must fail closed")
+
+
+def test_reciprocal_pair_matches_and_merge_are_row_unique():
+    source, target, score = reciprocal_pair_matches(
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+        torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+        minimum_similarity=0.5,
+        minimum_margin=0.1,
+    )
+    assert source.tolist() == [0, 1, 2]
+    assert target.tolist() == [0, 1, 2]
+    merged_query, merged_anchor, merged_score = merge_pair_matches(
+        [source, torch.tensor([0, 2])],
+        [target, torch.tensor([5, 6])],
+        [score, torch.tensor([2.0, 0.5])],
+    )
+    assert merged_query.tolist() == [0, 1, 2]
+    assert merged_anchor.tolist() == [5, 1, 2]
+    assert merged_score.tolist() == [2.0, 1.0, 1.0]
