@@ -3,6 +3,9 @@ from pathlib import Path
 import torch
 
 from scripts.audit_rendered_track_positive_ranks import positive_rank_hits
+from scripts.evaluate_rendered_track_topk_pnp_crossfit import (
+    flatten_topk_correspondences,
+)
 from scripts.materialize_rendered_track_training import materialize
 from scripts.evaluate_rendered_track_multiprototype_crossfit import (
     _fold_map,
@@ -222,3 +225,18 @@ def test_positive_rank_hits_uses_row_aligned_csr():
     )
     assert ranks.tolist() == [3, 4, 2]
     assert has_positive.tolist() == [True, False, True]
+
+
+def test_topk_correspondence_flattening_repeats_each_query_row():
+    keypoints, xyz = flatten_topk_correspondences(
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [2.0, 0.0, 1.0]]),
+        torch.tensor([[2, 0], [1, 2]]),
+    )
+    assert keypoints.tolist() == [[1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0]]
+    assert xyz.tolist() == [
+        [2.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [2.0, 0.0, 1.0],
+    ]
