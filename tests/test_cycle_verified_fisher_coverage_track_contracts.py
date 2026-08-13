@@ -1184,3 +1184,79 @@ def test_implementation_registry_rejects_commit_or_prereg_forgery(
             track_common.implementation_registry()
     finally:
         registry_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "producer_kind,field",
+    [
+        ("track", "git_commit"),
+        ("track", "source_file_sha256"),
+        ("track", "runtime"),
+        ("stage_b", "git_commit"),
+        ("stage_b", "source_file_sha256"),
+        ("stage_b", "runtime"),
+    ],
+)
+def test_track_and_stage_b_producer_identity_reject_forged_immutable_fields(
+    producer_kind, field, monkeypatch
+):
+    source_paths = (
+        track_common.TRACK_PRODUCER_SOURCE_PATHS
+        if producer_kind == "track"
+        else track_common.STAGE_B_PRODUCER_SOURCE_PATHS
+    )
+    current = {
+        "schema": (
+            track_common.TRACK_PRODUCER_SCHEMA
+            if producer_kind == "track"
+            else track_common.STAGE_B_PRODUCER_SCHEMA
+        ),
+        "version": 1,
+        "algorithm": (
+            "p8_cycle_verified_fisher_coverage_v2_reuse_track"
+            if producer_kind == "track"
+            else "p8_cycle_verified_fisher_coverage_v2_stage_b"
+        ),
+        "entrypoint": (
+            "python -m "
+            "scripts.materialize_cycle_verified_fisher_coverage_track_factor"
+            if producer_kind == "track"
+            else "python -m scripts.compare_cycle_verified_fisher_coverage_mechanism"
+        ),
+        "git_commit": "a" * 40,
+        "required_source_paths_clean": True,
+        "source_paths": list(source_paths),
+        "source_file_sha256": {name: "b" * 64 for name in source_paths},
+        "runtime": {"python": "3.9.12", "torch": "2.0"},
+    }
+    if producer_kind == "track":
+        current["runtime"]["device"] = "cpu"
+    monkeypatch.setattr(
+        track_common, "code_identity", lambda **kwargs: copy.deepcopy(current)
+    )
+    monkeypatch.setattr(
+        track_common, "require_clean_identity", lambda *args, **kwargs: None
+    )
+    forged = copy.deepcopy(current)
+    if field == "git_commit":
+        forged[field] = "c" * 40
+    elif field == "source_file_sha256":
+        forged[field][source_paths[0]] = "d" * 64
+    else:
+        forged[field]["python"] = "0.0.0"
+    with pytest.raises(ValueError, match="producer source/commit/runtime identity differs"):
+        if producer_kind == "track":
+            track_common.validate_track_producer_identity(forged, label="synthetic")
+        else:
+            track_common.validate_code_identity(
+                forged,
+                schema=track_common.STAGE_B_PRODUCER_SCHEMA,
+                algorithm="p8_cycle_verified_fisher_coverage_v2_stage_b",
+                entrypoint=(
+                    "python -m "
+                    "scripts.compare_cycle_verified_fisher_coverage_mechanism"
+                ),
+                source_paths=track_common.STAGE_B_PRODUCER_SOURCE_PATHS,
+                device=None,
+                label="synthetic",
+            )

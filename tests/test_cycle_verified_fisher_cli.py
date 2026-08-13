@@ -853,14 +853,25 @@ def test_coverage_v2_paired_runner_and_recursive_stage_b_end_to_end(
     }
     implementation = {"implementation_commit": "c" * 40}
     observed_subsets = []
+    observed_build_calls = []
     real_subset_builder = coverage_track_cli.probe_pair_subset_track_build_inputs
+    real_track_builder = coverage_track_cli.triangulation.build_cycle_consistent_tracks
 
     def record_subset(probe, pairs):
         observed_subsets.append(list(pairs))
         return real_subset_builder(probe, pairs)
 
+    def record_track_build(**kwargs):
+        observed_build_calls.append(copy.deepcopy(kwargs))
+        return real_track_builder(**kwargs)
+
     monkeypatch.setattr(
         coverage_track_cli, "probe_pair_subset_track_build_inputs", record_subset
+    )
+    monkeypatch.setattr(
+        coverage_track_cli.triangulation,
+        "build_cycle_consistent_tracks",
+        record_track_build,
     )
     monkeypatch.setattr(
         coverage_track_cli, "load_scene_inputs", lambda **kwargs: registry
@@ -943,6 +954,21 @@ def test_coverage_v2_paired_runner_and_recursive_stage_b_end_to_end(
         coverage_track_cli.build_parser().parse_args(common_args)
     )
     assert observed_subsets == [nearest_pairs, variant_pairs]
+    assert len(observed_build_calls) == 2
+    allowed_difference = {
+        "pair_policy",
+        "precomputed_pairs",
+        "precomputed_pair_matches",
+        "precomputed_pair_match_diagnostics",
+    }
+    shared_calls = []
+    for call in observed_build_calls:
+        assert call["precomputed_confidence_includes_detector_scores"] is True
+        assert set(call) >= allowed_difference
+        shared_calls.append(
+            {name: value for name, value in call.items() if name not in allowed_difference}
+        )
+    assert coverage_track_common.recursive_equal(shared_calls[0], shared_calls[1])
     assert result["build_order"] == ["control", "variant"]
     assert len(result["artifacts"]) == 4
     completion_path = Path(result["completion_manifest"])
