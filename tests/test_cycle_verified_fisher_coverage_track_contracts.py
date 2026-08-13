@@ -235,6 +235,16 @@ def test_completion_manifest_rejects_partial_and_wrong_relative_path(
         "scripts.cycle_verified_fisher_coverage_track_common.validate_track_producer_identity",
         lambda identity, label: identity,
     )
+    monkeypatch.setattr(
+        "scripts.cycle_verified_fisher_coverage_track_common.implementation_registry",
+        lambda: {"implementation_commit": "c" * 40},
+    )
+    registry_path = tmp_path / "implementation.json"
+    registry_path.write_text("registry")
+    monkeypatch.setattr(
+        "scripts.cycle_verified_fisher_coverage_track_common.IMPLEMENTATION_REGISTRY_PATH",
+        registry_path,
+    )
     stems = {
         "control_factor": "cycle_verified_fisher_coverage_nearest_control_track_factor.pt",
         "control_report": "cycle_verified_fisher_coverage_nearest_control_track_factor.json",
@@ -258,8 +268,17 @@ def test_completion_manifest_rejects_partial_and_wrong_relative_path(
         "build_order": ["control", "variant"],
         "run_uuid": "a" * 32,
         "track_producer_identity": producer,
+        "implementation_registry": {
+            "path": str(registry_path),
+            "sha256": sha256_file(registry_path),
+            "implementation_commit": "c" * 40,
+        },
         "inputs": {},
         "artifacts": artifacts,
+        "summaries": {"control": {}, "variant": {}},
+        "failure_recovery": (
+            "isolate_entire_output_root_and_rebuild_both_arms_from_scratch"
+        ),
     }
     manifest = tmp_path / "paired_track_completion.json"
     digest = _write_json(manifest, payload)
@@ -287,6 +306,16 @@ def test_completion_manifest_rejects_cross_run_splice(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "scripts.cycle_verified_fisher_coverage_track_common.validate_track_producer_identity",
         lambda identity, label: identity,
+    )
+    monkeypatch.setattr(
+        "scripts.cycle_verified_fisher_coverage_track_common.implementation_registry",
+        lambda: {"implementation_commit": "c" * 40},
+    )
+    registry_path = tmp_path / "implementation.json"
+    registry_path.write_text("registry")
+    monkeypatch.setattr(
+        "scripts.cycle_verified_fisher_coverage_track_common.IMPLEMENTATION_REGISTRY_PATH",
+        registry_path,
     )
     producer = _producer()
     run_uuid = "a" * 32
@@ -327,8 +356,17 @@ def test_completion_manifest_rejects_cross_run_splice(tmp_path, monkeypatch):
         "build_order": ["control", "variant"],
         "run_uuid": run_uuid,
         "track_producer_identity": producer,
+        "implementation_registry": {
+            "path": str(registry_path),
+            "sha256": sha256_file(registry_path),
+            "implementation_commit": "c" * 40,
+        },
         "inputs": {},
         "artifacts": artifacts,
+        "summaries": {"control": {}, "variant": {}},
+        "failure_recovery": (
+            "isolate_entire_output_root_and_rebuild_both_arms_from_scratch"
+        ),
     }
     path = tmp_path / "paired_track_completion.json"
     digest = _write_json(path, manifest)
@@ -386,7 +424,14 @@ def test_stairs_runner_requires_greatcourt_pass_before_any_output(
     tmp_path, monkeypatch
 ):
     output = tmp_path / "stairs_output"
-    monkeypatch.setattr(runner, "load_scene_inputs", lambda **kwargs: {})
+    monkeypatch.setattr(runner, "implementation_registry", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "load_scene_inputs",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("Stairs inputs must remain untouched before GC Pass")
+        ),
+    )
     arguments = runner.build_parser().parse_args(
         [
             "--scene", "stairs",

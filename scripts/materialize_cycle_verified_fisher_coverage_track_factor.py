@@ -428,6 +428,31 @@ def run(args: argparse.Namespace) -> dict:
         raise FileExistsError(
             "Paired Track output root must not exist; isolate any failed root and rerun"
         )
+    greatcourt_parent = None
+    if args.scene == "stairs":
+        if (
+            args.greatcourt_stage_b_gate is None
+            or args.expected_greatcourt_stage_b_gate_sha256 is None
+        ):
+            raise ValueError(
+                "Stairs Track requires the prior GreatCourt V2 Stage-B Pass"
+            )
+        from scripts.compare_cycle_verified_fisher_coverage_mechanism import (
+            validate_stage_b_gate,
+        )
+
+        greatcourt_parent = validate_stage_b_gate(
+            scene="greatcourt",
+            path=args.greatcourt_stage_b_gate,
+            expected_sha256=args.expected_greatcourt_stage_b_gate_sha256,
+        )
+        if greatcourt_parent["payload"]["scene_specific_mechanism_pass"] is not True:
+            raise ValueError("GreatCourt V2 Stage-B STOP forbids Stairs Track")
+    elif (
+        args.greatcourt_stage_b_gate is not None
+        or args.expected_greatcourt_stage_b_gate_sha256 is not None
+    ):
+        raise ValueError("GreatCourt runner must not name itself as a prior parent")
     registry = load_scene_inputs(
         scene=args.scene,
         cross_scene_stage_a_gate=args.cross_scene_stage_a_gate,
@@ -472,30 +497,7 @@ def run(args: argparse.Namespace) -> dict:
         expected_candidate_components=args.expected_candidate_components,
     )
     if args.scene == "stairs":
-        if (
-            args.greatcourt_stage_b_gate is None
-            or args.expected_greatcourt_stage_b_gate_sha256 is None
-        ):
-            raise ValueError(
-                "Stairs Track requires the prior GreatCourt V2 Stage-B Pass"
-            )
-        from scripts.compare_cycle_verified_fisher_coverage_mechanism import (
-            validate_stage_b_gate,
-        )
-
-        greatcourt_parent = validate_stage_b_gate(
-            scene="greatcourt",
-            path=args.greatcourt_stage_b_gate,
-            expected_sha256=args.expected_greatcourt_stage_b_gate_sha256,
-        )
-        if greatcourt_parent["payload"]["scene_specific_mechanism_pass"] is not True:
-            raise ValueError("GreatCourt V2 Stage-B STOP forbids Stairs Track")
         registry["greatcourt_stage_b_parent"] = greatcourt_parent
-    elif (
-        args.greatcourt_stage_b_gate is not None
-        or args.expected_greatcourt_stage_b_gate_sha256 is not None
-    ):
-        raise ValueError("GreatCourt runner must not name itself as a prior parent")
     manifest_payload = json.loads(registry["manifest_path"].read_text())
     base_lineage = _validate_factor_input_lineage(
         manifest_payload=manifest_payload,

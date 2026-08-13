@@ -29,7 +29,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     validate_probe_proposal_lineage,
     validate_v2_frozen_source_contract,
 )
-from scripts.run_track_pair_factor import _track_report
+from scripts.run_track_pair_factor import _pair_report, _track_report
 
 
 PREREGISTRATION_PATH = (
@@ -221,6 +221,22 @@ def implementation_registry() -> dict:
         ).hexdigest()
         if committed != digest:
             raise RuntimeError("P8 implementation commit/source registry differs")
+    relative_registry = str(IMPLEMENTATION_REGISTRY_PATH.relative_to(root))
+    try:
+        committed_registry = subprocess.run(
+            ["git", "show", f"{current_commit}:{relative_registry}"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "Reviewed P8 implementation registry must be committed"
+        ) from error
+    if hashlib.sha256(committed_registry).hexdigest() != sha256_file(
+        IMPLEMENTATION_REGISTRY_PATH
+    ):
+        raise RuntimeError("Reviewed P8 implementation registry is dirty")
     return payload
 
 
@@ -673,6 +689,95 @@ def artifact_reference(artifact: dict) -> dict:
     return result
 
 
+def _manifest_required(arguments: dict, name: str, cast):
+    if name not in arguments:
+        raise ValueError(f"P8 Track manifest lacks required argument {name}")
+    value = arguments[name]
+    if cast is bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"P8 Track manifest argument {name} must be boolean")
+        return value
+    return cast(value)
+
+
+def compiled_track_science_contract(registry: dict) -> dict:
+    """Independently reconstruct the only allowed Track science contract."""
+    payload = json.loads(registry["manifest_path"].read_text())
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, dict):
+        raise ValueError("Frozen bootstrap manifest lacks its arguments")
+    compiled = registry["compiled"]
+    matcher = registry["pair_match_probe"]["payload"]["matcher"]
+    return {
+        "mapping_keypoints": int(compiled["mapping_keypoints"]),
+        "mapping_nms_radius": int(compiled["mapping_nms_radius"]),
+        "exact_pair_budget": int(compiled["exact_pair_budget"]),
+        "pair_neighbors": _manifest_required(
+            arguments, "geometry_teacher_track_pair_neighbors", int
+        ),
+        "minimum_baseline_m": _manifest_required(
+            arguments, "geometry_teacher_track_min_baseline_m", float
+        ),
+        "maximum_baseline_m": _manifest_required(
+            arguments, "geometry_teacher_track_max_baseline_m", float
+        ),
+        "maximum_axis_angle_deg": _manifest_required(
+            arguments, "geometry_teacher_track_max_axis_angle_deg", float
+        ),
+        "matcher": deepcopy(matcher),
+        "minimum_track_views": _manifest_required(
+            arguments, "geometry_teacher_min_views", int
+        ),
+        "require_cycle": _manifest_required(
+            arguments, "geometry_teacher_track_require_cycle", bool
+        ),
+        "allow_chain_tracks": _manifest_required(
+            arguments, "geometry_teacher_track_allow_chain_tracks", bool
+        ),
+        "view_bins": _manifest_required(
+            arguments, "geometry_teacher_view_bins", int
+        ),
+        "view_direction_weight": _manifest_required(
+            arguments, "geometry_teacher_view_direction_weight", float
+        ),
+        "maximum_observations_per_landmark": _manifest_required(
+            arguments, "geometry_teacher_max_observations_per_landmark", int
+        ),
+        "minimum_view_bins": _manifest_required(
+            arguments, "geometry_teacher_min_view_bins", int
+        ),
+        "huber_delta_px": _manifest_required(
+            arguments, "geometry_teacher_huber_delta_px", float
+        ),
+        "triangulation_iterations": _manifest_required(
+            arguments, "geometry_teacher_iterations", int
+        ),
+        "minimum_parallax_deg": _manifest_required(
+            arguments, "geometry_teacher_min_parallax_deg", float
+        ),
+        "parallax_quantile": _manifest_required(
+            arguments, "geometry_teacher_parallax_quantile", float
+        ),
+        "maximum_reprojection_px": _manifest_required(
+            arguments, "geometry_teacher_max_reprojection_px", float
+        ),
+        "maximum_condition_number": _manifest_required(
+            arguments, "geometry_teacher_max_condition_number", float
+        ),
+        "maximum_covariance_trace_m2": _manifest_required(
+            arguments, "geometry_teacher_max_covariance_trace_m2", float
+        ),
+        "maximum_rendered_depth_residual_m": _manifest_required(
+            arguments, "geometry_teacher_max_rendered_depth_residual_m", float
+        ),
+        "minimum_rendered_depth_observations": _manifest_required(
+            arguments, "geometry_teacher_min_rendered_depth_observations", int
+        ),
+        "surface_support_enabled": False,
+        "depth_sampling": "native_depth_at_sparse_keypoints_or_nearest_pixel_v1",
+    }
+
+
 def frozen_track_lineage(registry: dict, base_lineage: dict) -> dict:
     lineage = deepcopy(base_lineage)
     lineage.update(
@@ -1007,6 +1112,7 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
     scene = registry["scene"]
     compiled = registry["compiled"]
     payload = completion["payload"]
+    expected_science = compiled_track_science_contract(registry)
     expected_input_refs = {
         "cross_scene_stage_a_gate": artifact_reference(
             registry["cross_scene_stage_a_gate"]
@@ -1042,6 +1148,20 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
         )
         if validated_parent["payload"]["scene_specific_mechanism_pass"] is not True:
             raise ValueError("Stairs completion binds a GreatCourt Stage-B STOP")
+    manifest_payload = json.loads(registry["manifest_path"].read_text())
+    from scripts.run_track_pair_factor import _validate_factor_input_lineage
+
+    expected_base_lineage = _validate_factor_input_lineage(
+        manifest_payload=manifest_payload,
+        manifest_path=registry["manifest_path"],
+        query_cache_path=registry["query_cache"]["path"],
+        frozen_track_payload_path=registry["frozen_track_payload_path"],
+        expected_manifest_sha256=registry["manifest_sha256"],
+        expected_query_cache_sha256=registry["query_cache"]["sha256"],
+        expected_frozen_track_payload_sha256=registry[
+            "frozen_track_payload_sha256"
+        ],
+    )
     if payload.get("inputs") != expected_input_refs:
         raise ValueError("Completion manifest input registry differs from preregistration")
     expected_names = registry["query_cache"]["names"]
@@ -1092,6 +1212,9 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
             or report.get("query_names_sha256")
             != registry["query_cache"]["query_names_sha256"]
             or report.get("probe_matcher") != MATCHER_CONTRACT
+            or factor_payload.get("descriptor_factor_mutated") is not False
+            or factor_payload.get("density_factor_mutated") is not False
+            or factor_payload.get("selector_factor_mutated") is not False
             or Path(str(report.get("artifact", ""))).resolve() != factor["path"]
             or report.get("artifact_sha256") != factor["sha256"]
             or report.get("inputs") != lineage
@@ -1110,6 +1233,7 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
             or parameters.get("pair_subset_role") != subset_role
             or parameters.get("probe_matcher") != MATCHER_CONTRACT
             or not isinstance(parameters.get("track_science_contract"), dict)
+            or parameters.get("track_science_contract") != expected_science
             or not isinstance(diagnostics, dict)
             or diagnostics.get("track_pair_matches_reused") != 1
             or diagnostics.get("track_camera_pair_policy") != policy
@@ -1126,8 +1250,8 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
         expected_lineage["query_cache"]["mapping_scope"] = deepcopy(
             registry["query_cache"]["mapping_scope"]
         )
-        expected_lineage["equivalent_query_cache_rebind"] = lineage.get(
-            "equivalent_query_cache_rebind"
+        expected_lineage["equivalent_query_cache_rebind"] = deepcopy(
+            expected_base_lineage.get("equivalent_query_cache_rebind")
         )
         expected_lineage.update(
             {
@@ -1160,6 +1284,8 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
         )
         if report.get("track") != expected_track:
             raise ValueError(f"Completed {scene}/{role} report metrics are stale")
+        if report.get("pair") != _pair_report(factor_payload["pair_sidecar"]):
+            raise ValueError(f"Completed {scene}/{role} pair report is stale")
         summary = payload["summaries"].get(role)
         if summary != {
             "pair_policy": policy,
@@ -1191,6 +1317,11 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
     variant_parameters.pop("pair_subset_role")
     if control_lineage != variant_lineage or control_parameters != variant_parameters:
         raise ValueError("Paired Track arms differ outside policy-derived outputs")
+    if not recursive_equal(
+        result["control"]["factor"]["payload"].get("query_bins"),
+        result["variant"]["factor"]["payload"].get("query_bins"),
+    ):
+        raise ValueError("Paired Track arms use different camera-bin assignments")
     return result
 
 
