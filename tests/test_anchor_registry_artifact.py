@@ -11,13 +11,23 @@ from common.anchor_registry_artifact import (
     verify_anchor_registry_contract,
 )
 from common.artifact_contract import anchor_registry
+from common.config import load_mainline_config
 from common.hashing import sha256_file
 from common.pipeline_completion import (
     atomic_json_install,
     verify_pipeline_completion,
     write_pipeline_completion,
 )
+from common.tensor_identity import tensor_bitwise_equal, tensor_bytes
 from topology.anchor_registry import build_anchor_registry
+from topology.anchor_registry import validate_registry_compatibility
+
+
+NO_FACTORS = {
+    "joint_keypoints": None,
+    "mapping_keypoints": None,
+    "surface_supported_tracks": False,
+}
 
 
 def _state() -> dict:
@@ -83,17 +93,63 @@ def _write_ply(path: Path) -> Path:
 
 
 def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
+    config = Path("configs/paper_mainline.yaml").resolve()
+    query_path = tmp_path / "query.pt"
+    track_path = tmp_path / "tracks.pt"
+    calibration_core = {
+        "schema": "lafgs_mapping_only_scene_calibration",
+        "version": 2,
+        "statistics": {"query_count": 2, "metric_scale": 1.0},
+        "parameters": {
+            "surface_max_distance_m": 0.3,
+            "surface_point_plane_m": 0.1,
+        },
+        "policy": copy.deepcopy(load_mainline_config(config).values["adaptive"]),
+        "sources": {
+            "query_cache": str(query_path),
+            "track_payload": str(track_path),
+            "uses_test_queries": False,
+        },
+    }
+    calibration_payload = {
+        **copy.deepcopy(calibration_core),
+        "refinement": {
+            "relative_drift": 0.0,
+            "rebuild_threshold": 0.25,
+            "track_evidence_rebuilt": False,
+        },
+    }
+    selection_groups = {
+        "track_core_universe_ids": torch.tensor([1]),
+        "coverage_track_universe_ids": torch.empty(0, dtype=torch.long),
+        "coverage_gaussian_universe_ids": torch.tensor([7]),
+        "pose_track_universe_ids": torch.empty(0, dtype=torch.long),
+        "pose_gaussian_universe_ids": torch.tensor([9]),
+    }
     compact_state = _state()
+    compact_state["track_centric_reconstruction"]["calibration"] = copy.deepcopy(
+        calibration_core
+    )
+    compact_state["track_centric_reconstruction"]["selection_provenance"] = {
+        key: value.clone() for key, value in selection_groups.items()
+    }
     compact_state["anchor_position_covariance"] = torch.eye(3).repeat(3, 1, 1) * 17
     compact = _save(tmp_path / "compact.pt", compact_state)
     trained_state = _state()
+    trained_state["track_centric_reconstruction"]["calibration"] = copy.deepcopy(
+        calibration_core
+    )
     trained_state["anchor_features"] = trained_state["anchor_features"] + 0.01
     trained_state["anchor_position_covariance"] = compact_state[
         "anchor_position_covariance"
     ].clone()
+    trained_state["track_centric_reconstruction"]["selection_provenance"] = {
+        key: value.clone() for key, value in selection_groups.items()
+    }
     trained = _save(tmp_path / "trained.pt", trained_state)
+    gaussian = _write_ply(tmp_path / "gaussians.ply")
     query = _save(
-        tmp_path / "query.pt",
+        query_path,
         {
             "queries": {
                 name: {"native_descriptors": torch.zeros(1, 2)}
@@ -102,7 +158,7 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
         },
     )
     tracks = _save(
-        tmp_path / "tracks.pt",
+        track_path,
         {
             "schema": "lafgs_track_first_payload",
             "query_names": ["a", "b"],
@@ -123,6 +179,9 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
             "schema": "lafgs_v9_active_map_complete_positive_teacher",
             "anchor_count": 3,
             "anchor_map": str(compact),
+            "query_cache": str(query),
+            "raster_provenance": str(tmp_path / "raster.pt"),
+            "track_payload": str(tracks),
             "query_names": ["a", "b"],
             "records": [
                 {
@@ -141,8 +200,14 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
             "schema": "lafgs_native_keypoint_raster_provenance",
             "anchor_map": str(compact),
             "query_cache": str(query),
-            "track_payload": str(tracks),
+            "gaussian_ply": str(gaussian),
             "query_names": ["a", "b"],
+            "config": {
+                "anchor_map": str(compact),
+                "query_cache": str(query),
+                "track_payload": str(tracks),
+                "gaussian_ply": str(gaussian),
+            },
         },
     )
     selection = _save(
@@ -151,27 +216,11 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
             "schema": "lafgs_adaptive_selection_provenance",
             "version": 1,
             "track_universe_count": 5,
-            "track_core_universe_ids": torch.tensor([1]),
-            "coverage_track_universe_ids": torch.empty(0, dtype=torch.long),
-            "coverage_gaussian_universe_ids": torch.tensor([7]),
-            "pose_track_universe_ids": torch.empty(0, dtype=torch.long),
-            "pose_gaussian_universe_ids": torch.tensor([9]),
+            **selection_groups,
         },
     )
     calibration = tmp_path / "calibration.json"
-    calibration.write_text(
-        json.dumps(
-            {
-                "schema": "lafgs_mapping_only_scene_calibration",
-                "version": 2,
-                "sources": {
-                    "query_cache": str(query),
-                    "track_payload": str(tracks),
-                    "uses_test_queries": False,
-                },
-            }
-        )
-    )
+    calibration.write_text(json.dumps(calibration_payload))
     metric = _save(
         tmp_path / "metric.pt",
         {
@@ -180,8 +229,6 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
             "map_path": str(trained),
         },
     )
-    config = Path("configs/paper_mainline.yaml").resolve()
-    gaussian = _write_ply(tmp_path / "gaussians.ply")
     paths = {
         "trained_map": trained,
         "compact_map": compact,
@@ -229,6 +276,44 @@ def test_complete_registry_digest_covers_geometry_observations_and_evidence() ->
         before["field_sha256"]["evidence_mask"]
         != after["field_sha256"]["evidence_mask"]
     )
+
+
+def test_localization_tensor_compatibility_is_dtype_and_signed_zero_exact() -> None:
+    state = _state()
+    registry = build_anchor_registry(state)
+    dtype_changed = copy.deepcopy(registry)
+    dtype_changed["anchor_xyz"] = dtype_changed["anchor_xyz"].double()
+    with pytest.raises(ValueError, match="changed localization tensor"):
+        validate_registry_compatibility(dtype_changed, state)
+
+    signed_zero_changed = copy.deepcopy(registry)
+    signed_zero_changed["anchor_xyz"][0, 0] = -0.0
+    assert not tensor_bitwise_equal(
+        signed_zero_changed["anchor_xyz"], state["anchor_xyz"]
+    )
+    with pytest.raises(ValueError, match="changed localization tensor"):
+        validate_registry_compatibility(signed_zero_changed, state)
+
+
+@pytest.mark.parametrize("mutation", ["dtype", "signed_zero"])
+def test_pipeline_registry_rejects_non_bitwise_compact_map(
+    tmp_path: Path, mutation: str
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    compact_path = parents["compact_map"][0]
+    compact = torch.load(compact_path, map_location="cpu", weights_only=False)
+    if mutation == "dtype":
+        compact["anchor_xyz"] = compact["anchor_xyz"].double()
+    else:
+        compact["anchor_xyz"][0, 0] = -0.0
+    torch.save(compact, compact_path)
+    parents["compact_map"] = (compact_path, sha256_file(compact_path))
+    with pytest.raises(ValueError, match="differ in topology field anchor_xyz"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
 
 
 def test_pipeline_registry_is_sibling_and_preserves_localization_tensors(
@@ -280,6 +365,48 @@ def test_registry_contract_rejects_parent_tamper(tmp_path: Path) -> None:
         verify_anchor_registry_contract(result["contract"])
 
 
+def test_registry_contract_rejects_expected_and_observed_parent_sha_split(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    contract_path = Path(result["contract"])
+    contract = json.loads(contract_path.read_text())
+    contract["parent_artifacts"]["trained_map"]["expected_sha256"] = "0" * 64
+    contract_path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="parent changed"):
+        verify_anchor_registry_contract(contract_path)
+
+
+def test_registry_contract_rejects_forged_self_consistent_artifact_flags(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    registry_path = Path(result["registry"])
+    registry = torch.load(registry_path, map_location="cpu", weights_only=False)
+    registry["localization_input"] = True
+    torch.save(registry, registry_path)
+    contract_path = Path(result["contract"])
+    contract = json.loads(contract_path.read_text())
+    contract["artifact"]["sha256"] = sha256_file(registry_path)
+    contract["artifact"]["size_bytes"] = registry_path.stat().st_size
+    contract["anchor_registry"] = anchor_registry(registry)
+    contract_path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="unsupported schema"):
+        verify_anchor_registry_contract(
+            contract_path, require_pipeline_eligible=True
+        )
+
+
 @pytest.mark.parametrize("mixed_parent", ["query_cache", "track_payload"])
 def test_pipeline_registry_rejects_raster_with_mixed_declared_parent(
     tmp_path: Path, mixed_parent: str
@@ -311,10 +438,103 @@ def test_pipeline_registry_rejects_raster_with_mixed_declared_parent(
             calibration_path,
             sha256_file(calibration_path),
         )
+    teacher_path = parents["positive_teacher"][0]
+    teacher = torch.load(teacher_path, map_location="cpu", weights_only=False)
+    teacher[mixed_parent] = str(replacement)
+    torch.save(teacher, teacher_path)
+    parents["positive_teacher"] = (teacher_path, sha256_file(teacher_path))
     with pytest.raises(ValueError, match=f"different {mixed_parent}"):
         materialize_anchor_registry(
             parents=parents,
             output=tmp_path / "mixed_registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
+def test_pipeline_registry_rejects_teacher_with_mixed_raster_parent(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    old_raster = parents["raster_provenance"][0]
+    raster = torch.load(old_raster, map_location="cpu", weights_only=False)
+    replacement = _save(tmp_path / "replacement_raster.pt", raster)
+    parents["raster_provenance"] = (replacement, sha256_file(replacement))
+    with pytest.raises(ValueError, match="different raster_provenance"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
+def test_pipeline_registry_rejects_swapped_selection_semantics(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    selection_path = parents["selection_provenance"][0]
+    selection = torch.load(selection_path, map_location="cpu", weights_only=False)
+    coverage = selection["coverage_gaussian_universe_ids"].clone()
+    selection["coverage_gaussian_universe_ids"] = selection[
+        "pose_gaussian_universe_ids"
+    ].clone()
+    selection["pose_gaussian_universe_ids"] = coverage
+    torch.save(selection, selection_path)
+    parents["selection_provenance"] = (
+        selection_path,
+        sha256_file(selection_path),
+    )
+    with pytest.raises(ValueError, match="embedded selection provenance differs"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
+def test_pipeline_registry_binds_selection_to_track_universe(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    selection_path = parents["selection_provenance"][0]
+    selection = torch.load(selection_path, map_location="cpu", weights_only=False)
+    selection["track_universe_count"] = 6
+    selection["coverage_gaussian_universe_ids"] += 1
+    selection["pose_gaussian_universe_ids"] += 1
+    torch.save(selection, selection_path)
+    parents["selection_provenance"] = (
+        selection_path,
+        sha256_file(selection_path),
+    )
+    with pytest.raises(ValueError, match="differs from Track geometry"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
+            require_pipeline_parents=True,
+        )
+
+
+@pytest.mark.parametrize("scope", ["parameters", "policy"])
+def test_pipeline_registry_rejects_mixed_calibration_semantics(
+    tmp_path: Path, scope: str
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    calibration_path = parents["scene_calibration"][0]
+    calibration = json.loads(calibration_path.read_text())
+    if scope == "parameters":
+        calibration["parameters"]["surface_max_distance_m"] = 0.31
+        message = "embedded calibration differs"
+    else:
+        calibration["policy"]["maximum_harmful_rate"] = 0.09
+        message = "policy differs from pipeline config"
+    calibration_path.write_text(json.dumps(calibration))
+    parents["scene_calibration"] = (
+        calibration_path,
+        sha256_file(calibration_path),
+    )
+    with pytest.raises(ValueError, match=message):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "registry.pt",
             require_pipeline_parents=True,
         )
 
@@ -361,6 +581,21 @@ def test_legacy_unresolved_requires_explicit_audit_and_never_pipeline_eligible(
         verify_anchor_registry_contract(
             result["contract"], require_pipeline_eligible=True
         )
+
+
+def test_registry_contract_recomputes_pipeline_eligibility(tmp_path: Path) -> None:
+    state = _save(tmp_path / "state.pt", _state())
+    result = materialize_anchor_registry(
+        parents={"trained_map": (state, sha256_file(state))},
+        output=tmp_path / "audit.pt",
+        allow_legacy_unresolved_audit=True,
+    )
+    contract_path = Path(result["contract"])
+    contract = json.loads(contract_path.read_text())
+    contract["pipeline_eligible"] = True
+    contract_path.write_text(json.dumps(contract))
+    with pytest.raises(ValueError, match="eligibility differs from replay"):
+        verify_anchor_registry_contract(contract_path)
 
 
 def test_explicit_malformed_selection_fails_instead_of_becoming_legacy(
@@ -432,11 +667,7 @@ def test_pipeline_completion_is_atomic_last_and_recursively_verifiable(
         anchor_registry_contract=registry_result["contract"],
         config=parents["config"][0],
         evaluation_requested=False,
-        experimental_factors={
-            "joint_keypoints": None,
-            "mapping_keypoints": None,
-            "surface_supported_tracks": False,
-        },
+        experimental_factors=NO_FACTORS,
     )
     assert result["uses_test_queries"] is False
     assert result["mapping_only"] is True
@@ -469,46 +700,50 @@ def test_pipeline_completion_rejects_tamper_zero_byte_and_factor_test_mix(
             anchor_registry_contract=registry_result["contract"],
             config=parents["config"][0],
             evaluation_requested=True,
-            experimental_factors={"mapping_keypoints": 1024},
+            experimental_factors={
+                **NO_FACTORS,
+                "mapping_keypoints": 1024,
+            },
         )
     assert not (tmp_path / "pipeline_completion.json").exists()
 
     mixed_map = tmp_path / "mixed_trained.pt"
     mixed_map.write_bytes(parents["trained_map"][0].read_bytes())
     artifacts["trained_map"] = mixed_map
-    mixed_manifest = atomic_json_install(
-        {name: str(path) for name, path in artifacts.items()},
-        tmp_path / "mixed_pipeline_manifest.json",
+    manifest.write_text(
+        json.dumps({name: str(path) for name, path in artifacts.items()})
     )
     with pytest.raises(ValueError, match="differs from Registry parent"):
         write_pipeline_completion(
             output=tmp_path,
             artifacts=artifacts,
-            pipeline_manifest=mixed_manifest,
+            pipeline_manifest=manifest,
             anchor_registry_contract=registry_result["contract"],
             config=parents["config"][0],
             evaluation_requested=False,
-            experimental_factors={},
+            experimental_factors=NO_FACTORS,
         )
 
     empty = tmp_path / "empty.pt"
     empty.touch()
     artifacts["trained_map"] = empty
-    empty_manifest = atomic_json_install(
-        {name: str(path) for name, path in artifacts.items()},
-        tmp_path / "empty_pipeline_manifest.json",
+    manifest.write_text(
+        json.dumps({name: str(path) for name, path in artifacts.items()})
     )
     with pytest.raises(ValueError, match="empty"):
         write_pipeline_completion(
             output=tmp_path,
             artifacts=artifacts,
-            pipeline_manifest=empty_manifest,
+            pipeline_manifest=manifest,
             anchor_registry_contract=registry_result["contract"],
             config=parents["config"][0],
             evaluation_requested=False,
-            experimental_factors={},
+            experimental_factors=NO_FACTORS,
         )
     artifacts["trained_map"] = parents["trained_map"][0]
+    manifest.write_text(
+        json.dumps({name: str(path) for name, path in artifacts.items()})
+    )
     result = write_pipeline_completion(
         output=tmp_path,
         artifacts=artifacts,
@@ -516,8 +751,155 @@ def test_pipeline_completion_rejects_tamper_zero_byte_and_factor_test_mix(
         anchor_registry_contract=registry_result["contract"],
         config=parents["config"][0],
         evaluation_requested=False,
-        experimental_factors={},
+        experimental_factors=NO_FACTORS,
     )
     Path(artifacts["metric_state"]).write_bytes(b"tampered")
     with pytest.raises(ValueError, match="artifact differs|parent changed"):
         verify_pipeline_completion(result["path"])
+
+
+def test_pipeline_completion_rejects_hidden_factor_test_mix(tmp_path: Path) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    result = write_pipeline_completion(
+        output=tmp_path,
+        artifacts=artifacts,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=parents["config"][0],
+        evaluation_requested=False,
+        experimental_factors=NO_FACTORS,
+    )
+    completion_path = Path(result["path"])
+    completion = json.loads(completion_path.read_text())
+    completion.update(
+        {
+            "uses_test_queries": True,
+            "mapping_only": False,
+            "experimental_factors": {
+                **NO_FACTORS,
+                "mapping_keypoints": 1024,
+            },
+            "active_experimental_factors": {},
+        }
+    )
+    completion["evaluation"] = {
+        "requested": True,
+        "split": "test",
+        "explicit_opt_in_required": True,
+    }
+    completion_path.write_text(json.dumps(completion))
+    with pytest.raises(ValueError, match="active experimental factors"):
+        verify_pipeline_completion(completion_path)
+
+
+def test_pipeline_completion_rejects_missing_evaluation_before_publish(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="evaluation artifact"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=True,
+            experimental_factors=NO_FACTORS,
+        )
+    assert not (tmp_path / "pipeline_completion.json").exists()
+
+
+def test_pipeline_completion_rejects_unrequested_evaluation_before_publish(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    evaluation = tmp_path / "evaluation"
+    evaluation.mkdir()
+    (evaluation / "summary.json").write_text("{}")
+    artifacts["evaluation"] = evaluation
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="evaluation artifact"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=False,
+            experimental_factors=NO_FACTORS,
+        )
+    assert not (tmp_path / "pipeline_completion.json").exists()
+
+
+def test_pipeline_completion_rejects_output_root_directory_alias_before_publish(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = {
+        **_completion_artifacts(parents, registry_result),
+        "root_alias": tmp_path,
+    }
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="contains pipeline completion"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=False,
+            experimental_factors=NO_FACTORS,
+        )
+    assert not (tmp_path / "pipeline_completion.json").exists()
+
+
+def test_tensor_bytes_support_scalar_empty_bfloat_and_signed_zero() -> None:
+    assert len(tensor_bytes(torch.tensor(1.0))) == 4
+    assert len(tensor_bytes(torch.tensor(1, dtype=torch.int64))) == 8
+    assert tensor_bytes(torch.empty(0, dtype=torch.float32)) == b""
+    assert len(tensor_bytes(torch.tensor(1.0, dtype=torch.bfloat16))) == 2
+    positive = torch.tensor([0.0], dtype=torch.float32)
+    negative = torch.tensor([-0.0], dtype=torch.float32)
+    assert tensor_bytes(positive) != tensor_bytes(negative)
+    assert not tensor_bitwise_equal(positive, negative)
+    assert not tensor_bitwise_equal(
+        torch.tensor([1], dtype=torch.int64),
+        torch.tensor([1.0], dtype=torch.float32),
+    )

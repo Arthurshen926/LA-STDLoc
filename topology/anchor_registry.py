@@ -12,6 +12,7 @@ from collections.abc import Mapping
 
 import torch
 
+from common.tensor_identity import tensor_bitwise_equal
 from topology.geometry_materializer import (
     GEOMETRY_IMAGE_TRIANGULATED,
     GEOMETRY_SURFACE_INITIALIZED,
@@ -540,8 +541,8 @@ def validate_registry_compatibility(registry: Mapping, state: Mapping) -> None:
     ):
         if key not in state:
             continue
-        if key not in registry or not torch.equal(
-            torch.as_tensor(registry[key]).cpu(), torch.as_tensor(state[key]).cpu()
+        if key not in registry or not tensor_bitwise_equal(
+            registry[key], state[key]
         ):
             raise ValueError(f"registry changed localization tensor: {key}")
 

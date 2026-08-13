@@ -103,7 +103,9 @@ def _validate_arguments(
 
 
 def run(args: argparse.Namespace, *, experimental_factors: dict[str, object]) -> dict:
-    args.output.mkdir(parents=True, exist_ok=True)
+    # Atomically claim the run root.  This closes the preflight/write TOCTOU
+    # window and makes direct API callers obey the same fresh-root contract.
+    args.output.mkdir(parents=True, exist_ok=False)
     config = Path(args.config)
     if args.keypoints is not None:
         config = materialize_keypoint_factor_config(

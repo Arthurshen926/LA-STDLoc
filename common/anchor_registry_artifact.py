@@ -23,6 +23,7 @@ from common.producer_identity import (
     capture_producer_identity,
     verify_producer_identity,
 )
+from common.tensor_identity import recursive_bitwise_equal, tensor_bitwise_equal
 from topology.anchor_covariance import attach_gaussian_prior_covariance
 from topology.anchor_registry import (
     SCHEMA as REGISTRY_SCHEMA,
@@ -57,6 +58,7 @@ PRODUCER_SOURCE_PATHS = (
     "common/config.py",
     "common/hashing.py",
     "common/producer_identity.py",
+    "common/tensor_identity.py",
     "scripts/materialize_anchor_registry.py",
     "topology/anchor_covariance.py",
     "topology/anchor_registry.py",
@@ -85,10 +87,16 @@ def lock_parent_artifacts(
     if "trained_map" not in parents:
         raise ValueError("Anchor Registry requires an explicit trained_map parent")
     records = {}
+    seen_paths: dict[Path, str] = {}
     for name, (raw_path, raw_sha256) in sorted(parents.items()):
         if not name:
             raise ValueError("Anchor Registry parent name must be non-empty")
         path = Path(raw_path).expanduser().resolve()
+        if path in seen_paths:
+            raise ValueError(
+                f"Anchor Registry parents {seen_paths[path]} and {name} alias one path"
+            )
+        seen_paths[path] = name
         expected = _normalized_sha256(raw_sha256, label=f"expected {name} SHA-256")
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -146,6 +154,7 @@ def _require_declared_parent(
 
 def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
     """Load supplied parents and reject row-, query-, or path-mixed chains."""
+    strict_pipeline = set(records) == PIPELINE_PARENT_NAMES
     paths = {name: Path(record["path"]) for name, record in records.items()}
     payloads = {
         name: _torch_load(path)
@@ -189,9 +198,10 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
             "anchor_alias_risk",
         ):
             if key in compact or key in state:
-                if key not in compact or key not in state or not torch.equal(
-                    torch.as_tensor(compact[key]).cpu(),
-                    torch.as_tensor(state[key]).cpu(),
+                if (
+                    key not in compact
+                    or key not in state
+                    or not tensor_bitwise_equal(compact[key], state[key])
                 ):
                     raise ValueError(
                         f"trained_map and compact_map differ in topology field {key}"
@@ -216,6 +226,19 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 paths["compact_map"],
                 label="positive_teacher",
             )
+        for key, parent_name in (
+            ("query_cache", "query_cache"),
+            ("raster_provenance", "raster_provenance"),
+            ("track_payload", "track_payload"),
+        ):
+            if parent_name in paths:
+                _require_declared_parent(
+                    teacher,
+                    key,
+                    paths[parent_name],
+                    label="positive_teacher",
+                    required=strict_pipeline,
+                )
     if tracks is not None and tracks.get("schema") != "lafgs_track_first_payload":
         raise ValueError("track_payload has an unsupported schema")
     if raster is not None:
@@ -229,13 +252,18 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 label="raster_provenance",
             )
         if tracks is not None:
-            _require_declared_parent(
-                raster,
-                "track_payload",
-                paths["track_payload"],
-                label="raster_provenance",
-                required=False,
-            )
+            config = raster.get("config")
+            if not isinstance(config, Mapping):
+                if strict_pipeline:
+                    raise ValueError("raster_provenance lacks its producer config")
+            else:
+                _require_declared_parent(
+                    config,
+                    "track_payload",
+                    paths["track_payload"],
+                    label="raster_provenance.config",
+                    required=strict_pipeline,
+                )
         if query_cache is not None:
             _require_declared_parent(
                 raster,
@@ -243,11 +271,62 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 paths["query_cache"],
                 label="raster_provenance",
             )
+        if "gaussian_ply" in paths:
+            _require_declared_parent(
+                raster,
+                "gaussian_ply",
+                paths["gaussian_ply"],
+                label="raster_provenance",
+                required=strict_pipeline,
+            )
+        if strict_pipeline:
+            config = raster["config"]
+            for key, parent_name in (
+                ("anchor_map", "compact_map"),
+                ("query_cache", "query_cache"),
+                ("gaussian_ply", "gaussian_ply"),
+            ):
+                _require_declared_parent(
+                    config,
+                    key,
+                    paths[parent_name],
+                    label="raster_provenance.config",
+                )
     if selection is not None and (
         selection.get("schema") != "lafgs_adaptive_selection_provenance"
         or selection.get("version") != 1
     ):
         raise ValueError("selection_provenance has an unsupported schema")
+    if strict_pipeline:
+        if tracks is None or selection is None or compact is None:
+            raise ValueError("pipeline selection lineage is incomplete")
+        track_count = int(
+            torch.as_tensor(tracks["track_geometry"]["triangulated_xyz"]).shape[0]
+        )
+        if selection.get("track_universe_count") != track_count:
+            raise ValueError(
+                "selection track_universe_count differs from Track geometry"
+            )
+        selection_keys = (
+            "track_core_universe_ids",
+            "coverage_track_universe_ids",
+            "coverage_gaussian_universe_ids",
+            "pose_track_universe_ids",
+            "pose_gaussian_universe_ids",
+        )
+        for label, candidate in (("compact_map", compact), ("trained_map", state)):
+            embedded = candidate.get("track_centric_reconstruction", {}).get(
+                "selection_provenance"
+            )
+            if not isinstance(embedded, Mapping):
+                raise ValueError(f"{label} lacks embedded selection provenance")
+            for key in selection_keys:
+                if key not in embedded or not tensor_bitwise_equal(
+                    embedded[key], selection[key]
+                ):
+                    raise ValueError(
+                        f"{label} embedded selection provenance differs for {key}"
+                    )
 
     named = {
         name: _query_names(payload)
@@ -282,14 +361,25 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
             label="metric_state",
         )
 
+    resolved_config = (
+        load_mainline_config(paths["config"]) if "config" in paths else None
+    )
     if "scene_calibration" in paths:
         calibration = json.loads(paths["scene_calibration"].read_text())
         sources = calibration.get("sources", {})
+        version = calibration.get("version")
         if (
             calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
+            or type(version) is not int
+            or version < 2
+            or not isinstance(calibration.get("statistics"), Mapping)
+            or not isinstance(calibration.get("parameters"), Mapping)
+            or not isinstance(calibration.get("policy"), Mapping)
+            or not isinstance(sources, Mapping)
+            or calibration.get("uses_test_queries", False) is not False
             or sources.get("uses_test_queries") is not False
         ):
-            raise ValueError("scene_calibration is not mapping-only/test-free")
+            raise ValueError("scene_calibration is not a complete V2 mapping-only contract")
         if query_cache is not None and not _same_locked_path(
             sources.get("query_cache"), paths["query_cache"]
         ):
@@ -298,18 +388,63 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
             sources.get("track_payload"), paths["track_payload"]
         ):
             raise ValueError("scene_calibration declares a different track_payload")
-    if "config" in paths:
-        load_mainline_config(paths["config"])
+        if strict_pipeline:
+            if resolved_config is None or int(resolved_config.values["version"]) < 2:
+                raise ValueError("pipeline calibration requires an adaptive V2 config")
+            if not recursive_bitwise_equal(
+                calibration["policy"], resolved_config.values["adaptive"]
+            ):
+                raise ValueError("scene_calibration policy differs from pipeline config")
+            calibration_core_fields = (
+                "schema",
+                "version",
+                "statistics",
+                "parameters",
+                "policy",
+                "sources",
+            )
+            external_core = {
+                key: calibration[key] for key in calibration_core_fields
+            }
+            for label, candidate in (("compact_map", compact), ("trained_map", state)):
+                embedded = candidate.get("track_centric_reconstruction", {}).get(
+                    "calibration"
+                )
+                if not isinstance(embedded, Mapping) or any(
+                    key not in embedded for key in calibration_core_fields
+                ):
+                    raise ValueError(f"{label} lacks complete embedded calibration")
+                embedded_core = {
+                    key: embedded[key] for key in calibration_core_fields
+                }
+                if not recursive_bitwise_equal(embedded_core, external_core):
+                    raise ValueError(
+                        f"{label} embedded calibration differs from scene_calibration"
+                    )
     return payloads
 
 
 def _assert_parents_unchanged(records: Mapping[str, Mapping]) -> None:
     for name, record in records.items():
-        path = Path(record["path"])
+        if not isinstance(name, str) or not name or not isinstance(record, Mapping):
+            raise ValueError("Anchor Registry parent record is malformed")
+        path = Path(str(record.get("path", ""))).expanduser().resolve()
+        expected_sha256 = _normalized_sha256(
+            record.get("expected_sha256", ""),
+            label=f"expected {name} SHA-256",
+        )
+        recorded_sha256 = _normalized_sha256(
+            record.get("sha256", ""), label=f"recorded {name} SHA-256"
+        )
+        size_bytes = record.get("size_bytes")
         if (
-            not path.is_file()
-            or path.stat().st_size != int(record["size_bytes"])
-            or sha256_file(path) != record["sha256"]
+            str(path) != record.get("path")
+            or expected_sha256 != recorded_sha256
+            or type(size_bytes) is not int
+            or size_bytes <= 0
+            or not path.is_file()
+            or path.stat().st_size != size_bytes
+            or sha256_file(path) != recorded_sha256
         ):
             raise ValueError(f"Anchor Registry parent changed during build: {name}")
 
@@ -423,7 +558,10 @@ def materialize_anchor_registry(
             "complete": True,
             "partial": False,
             "pipeline_eligible": bool(
-                set(records) == PIPELINE_PARENT_NAMES and exact_selection
+                set(records) == PIPELINE_PARENT_NAMES
+                and exact_selection
+                and unresolved == 0
+                and not allow_legacy_unresolved_audit
             ),
             "artifact": {
                 "path": str(output),
@@ -501,8 +639,6 @@ def verify_anchor_registry_contract(
         or contract.get("atomic_last") is not True
     ):
         raise ValueError("unsupported or incomplete Anchor Registry contract")
-    if require_pipeline_eligible and contract.get("pipeline_eligible") is not True:
-        raise ValueError("Anchor Registry contract is not pipeline eligible")
     producer = contract.get("producer_identity")
     if not isinstance(producer, dict):
         raise ValueError("Anchor Registry contract lacks producer identity")
@@ -525,20 +661,95 @@ def verify_anchor_registry_contract(
     ):
         raise ValueError("Anchor Registry artifact differs from its contract")
     registry = _torch_load(registry_path)
-    if registry.get("schema") != REGISTRY_SCHEMA:
+    if (
+        registry.get("schema") != REGISTRY_SCHEMA
+        or registry.get("version") != 1
+        or registry.get("uses_test_queries") is not False
+        or registry.get("mapping_only") is not True
+        or registry.get("audit_only") is not True
+        or registry.get("localization_input") is not False
+    ):
         raise ValueError("Anchor Registry artifact has an unsupported schema")
+    materialization = registry.get("materialization")
+    if not isinstance(materialization, dict):
+        raise ValueError("Anchor Registry lacks embedded materialization")
+    complete_parent_set = set(records) == PIPELINE_PARENT_NAMES
+    explicit_legacy_audit = materialization.get(
+        "legacy_unresolved_audit_explicit"
+    )
+    if not isinstance(explicit_legacy_audit, bool):
+        raise ValueError("Anchor Registry legacy audit flag must be boolean")
+    if (
+        materialization.get("schema") != CONTRACT_SCHEMA
+        or materialization.get("version") != CONTRACT_VERSION
+        or materialization.get("pipeline_parent_set_complete")
+        is not complete_parent_set
+        or materialization.get("changes_localization_tensors") is not False
+    ):
+        raise ValueError("Anchor Registry embedded materialization is invalid")
+    if materialization.get("parent_artifacts") != records:
+        raise ValueError("Anchor Registry embedded parent registry differs")
+    if materialization.get("producer_identity") != producer:
+        raise ValueError("Anchor Registry embedded producer identity differs")
+    expected_registry = build_anchor_registry(
+        payloads["trained_map"],
+        teacher=payloads.get("positive_teacher"),
+        track_payload=payloads.get("track_payload"),
+        selection_provenance=payloads.get("selection_provenance"),
+    )
+    if "gaussian_ply" in records:
+        expected_registry = attach_gaussian_prior_covariance(
+            expected_registry,
+            payloads["trained_map"],
+            Path(records["gaussian_ply"]["path"]),
+        )
+    expected_registry["materialization"] = {
+        "schema": CONTRACT_SCHEMA,
+        "version": CONTRACT_VERSION,
+        "parent_artifacts": deepcopy(records),
+        "producer_identity": deepcopy(producer),
+        "pipeline_parent_set_complete": complete_parent_set,
+        "legacy_unresolved_audit_explicit": explicit_legacy_audit,
+        "changes_localization_tensors": False,
+    }
+    if anchor_registry(registry) != anchor_registry(expected_registry):
+        raise ValueError("Anchor Registry differs from deterministic parent replay")
     if anchor_registry(registry) != contract.get("anchor_registry"):
         raise ValueError("Anchor Registry full schema digest differs")
-    if registry.get("materialization", {}).get("parent_artifacts") != records:
-        raise ValueError("Anchor Registry embedded parent registry differs")
-    if registry.get("materialization", {}).get("producer_identity") != producer:
-        raise ValueError("Anchor Registry embedded producer identity differs")
     validate_registry_compatibility(registry, payloads["trained_map"])
     selection = contract.get("selection", {})
-    if require_pipeline_eligible and (
-        selection.get("exact") is not True
-        or int(selection.get("legacy_unresolved_count", -1)) != 0
-        or set(records) != PIPELINE_PARENT_NAMES
+    recomputed_unresolved = int(
+        (
+            torch.as_tensor(registry["selection_reason"])
+            == SELECTION_LEGACY_UNRESOLVED
+        )
+        .sum()
+        .item()
+    )
+    recomputed_exact = bool(
+        registry["compatibility"]["selection_provenance_exact"]
+    )
+    exact_field = selection.get("exact")
+    unresolved_field = selection.get("legacy_unresolved_count")
+    if (
+        not isinstance(exact_field, bool)
+        or exact_field is not recomputed_exact
+        or type(unresolved_field) is not int
+        or unresolved_field != recomputed_unresolved
+        or selection.get("legacy_unresolved_is_epistemic_unknown") is not True
+        or (not recomputed_exact and explicit_legacy_audit is not True)
     ):
-        raise ValueError("pipeline Registry contains unresolved selection semantics")
+        raise ValueError("Anchor Registry selection completion contract differs")
+    expected_pipeline_eligible = bool(
+        complete_parent_set
+        and recomputed_exact
+        and recomputed_unresolved == 0
+        and explicit_legacy_audit is False
+    )
+    if contract.get("pipeline_eligible") is not expected_pipeline_eligible:
+        raise ValueError("Anchor Registry pipeline eligibility differs from replay")
+    if require_pipeline_eligible and (
+        not expected_pipeline_eligible
+    ):
+        raise ValueError("Anchor Registry contract is not pipeline eligible")
     return contract

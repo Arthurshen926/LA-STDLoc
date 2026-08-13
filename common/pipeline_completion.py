@@ -59,11 +59,15 @@ PRODUCER_SOURCE_PATHS = (
     "common/hashing.py",
     "common/pipeline_completion.py",
     "common/producer_identity.py",
+    "common/tensor_identity.py",
     "map_learning/pipeline.py",
     "scripts/run_pipeline.py",
     "topology/anchor_covariance.py",
     "topology/anchor_registry.py",
     "topology/geometry_materializer.py",
+)
+EXPERIMENTAL_FACTOR_KEYS = frozenset(
+    {"joint_keypoints", "mapping_keypoints", "surface_supported_tracks"}
 )
 
 
@@ -175,6 +179,35 @@ def _read_flat_manifest(path: Path) -> dict[str, str]:
     return payload
 
 
+def _validated_factor_contract(
+    factors: object,
+    active: object | None = None,
+) -> tuple[dict[str, object], dict[str, object]]:
+    if not isinstance(factors, dict) or set(factors) != EXPERIMENTAL_FACTOR_KEYS:
+        raise ValueError("pipeline completion has an invalid experimental factor set")
+    joint = factors["joint_keypoints"]
+    mapping = factors["mapping_keypoints"]
+    surface = factors["surface_supported_tracks"]
+    if joint is not None and (type(joint) is not int or joint not in {1024, 2048}):
+        raise ValueError("joint keypoint factor is invalid")
+    if mapping is not None and (
+        type(mapping) is not int or mapping not in {1024, 2048}
+    ):
+        raise ValueError("mapping keypoint factor is invalid")
+    if not isinstance(surface, bool):
+        raise ValueError("surface Track factor must be boolean")
+    if joint is not None and mapping is not None:
+        raise ValueError("joint and mapping keypoint factors are mutually exclusive")
+    canonical_active = {
+        name: value
+        for name, value in factors.items()
+        if (value is not None if name != "surface_supported_tracks" else value is True)
+    }
+    if active is not None and active != canonical_active:
+        raise ValueError("active experimental factors differ from canonical replay")
+    return dict(factors), canonical_active
+
+
 def _require_same_registry_parents(
     registry_contract: Mapping, records: Mapping[str, Mapping]
 ) -> None:
@@ -198,6 +231,39 @@ def _require_same_registry_parents(
             )
 
 
+def _reject_artifact_aliases_and_completion_ancestors(
+    records: Mapping[str, Mapping], completion_path: Path
+) -> None:
+    resolved: dict[str, Path] = {}
+    for name, record in records.items():
+        path = Path(str(record.get("path", ""))).expanduser().resolve()
+        if path in resolved.values():
+            other = next(key for key, value in resolved.items() if value == path)
+            raise ValueError(f"pipeline artifacts {other} and {name} alias one path")
+        resolved[name] = path
+        if record.get("kind") == "directory" and path in completion_path.parents:
+            raise ValueError(
+                f"pipeline directory artifact {name} contains pipeline completion"
+            )
+    names = list(resolved)
+    for index, left_name in enumerate(names):
+        left = resolved[left_name]
+        for right_name in names[index + 1 :]:
+            right = resolved[right_name]
+            left_record = records[left_name]
+            right_record = records[right_name]
+            if (
+                left_record.get("kind") == "directory"
+                and left in right.parents
+            ) or (
+                right_record.get("kind") == "directory"
+                and right in left.parents
+            ):
+                raise ValueError(
+                    f"pipeline artifacts {left_name} and {right_name} overlap"
+                )
+
+
 def write_pipeline_completion(
     *,
     output: str | Path,
@@ -213,11 +279,15 @@ def write_pipeline_completion(
     completion_path = output / "pipeline_completion.json"
     if completion_path.exists():
         raise FileExistsError(f"Pipeline completion already exists: {completion_path}")
-    active_factors = {
-        name: value for name, value in experimental_factors.items() if bool(value)
-    }
+    if "pipeline_manifest" in artifacts:
+        raise ValueError("pipeline_manifest is a reserved completion artifact name")
+    if not isinstance(evaluation_requested, bool):
+        raise ValueError("evaluation_requested must be boolean")
+    factors, active_factors = _validated_factor_contract(experimental_factors)
     if evaluation_requested and active_factors:
         raise ValueError("experimental factors and test evaluation are mutually exclusive")
+    if evaluation_requested is not ("evaluation" in artifacts):
+        raise ValueError("pipeline evaluation artifact does not match test opt-in")
     producer = capture_producer_identity(
         schema=PRODUCER_SCHEMA, source_paths=PRODUCER_SOURCE_PATHS
     )
@@ -226,6 +296,8 @@ def write_pipeline_completion(
         registry_contract_path, require_pipeline_eligible=True
     )
     manifest_path = Path(pipeline_manifest).expanduser().resolve()
+    if manifest_path != output / "pipeline_manifest.json":
+        raise ValueError("pipeline manifest must be the canonical output-root sibling")
     flat_manifest = _read_flat_manifest(manifest_path)
     missing = sorted(REQUIRED_ARTIFACTS - set(artifacts))
     if missing:
@@ -244,6 +316,7 @@ def write_pipeline_completion(
             {**artifacts, "pipeline_manifest": manifest_path}.items()
         )
     }
+    _reject_artifact_aliases_and_completion_ancestors(records, completion_path)
     _require_same_registry_parents(registry_contract, records)
     if any(Path(record["path"]) == completion_path for record in records.values()):
         raise ValueError("pipeline completion cannot recursively include itself")
@@ -269,7 +342,7 @@ def write_pipeline_completion(
             "split": "test" if evaluation_requested else None,
             "explicit_opt_in_required": True,
         },
-        "experimental_factors": dict(experimental_factors),
+        "experimental_factors": factors,
         "active_experimental_factors": active_factors,
         "artifacts": records,
         "anchor_registry_contract": contract_record,
@@ -315,7 +388,13 @@ def verify_pipeline_completion(
             raise ValueError("pipeline completion hash mismatch")
     payload = json.loads(path.read_text())
     evaluation = payload.get("evaluation", {})
-    active = payload.get("active_experimental_factors", {})
+    _, active = _validated_factor_contract(
+        payload.get("experimental_factors"),
+        payload.get("active_experimental_factors"),
+    )
+    requested = evaluation.get("requested")
+    if not isinstance(requested, bool):
+        raise ValueError("pipeline evaluation.requested must be boolean")
     if (
         payload.get("schema") != SCHEMA
         or payload.get("version") != VERSION
@@ -323,9 +402,12 @@ def verify_pipeline_completion(
         or payload.get("partial") is not False
         or payload.get("atomic_last") is not True
         or evaluation.get("explicit_opt_in_required") is not True
-        or payload.get("uses_test_queries") is not bool(evaluation.get("requested"))
-        or payload.get("mapping_only") is bool(evaluation.get("requested"))
-        or (evaluation.get("requested") and bool(active))
+        or not isinstance(payload.get("uses_test_queries"), bool)
+        or payload.get("uses_test_queries") is not requested
+        or not isinstance(payload.get("mapping_only"), bool)
+        or payload.get("mapping_only") is requested
+        or evaluation.get("split") != ("test" if requested else None)
+        or (requested and bool(active))
     ):
         raise ValueError("unsupported, partial, or mixed pipeline completion")
     producer = payload.get("producer_identity")
@@ -342,6 +424,9 @@ def verify_pipeline_completion(
     missing = sorted(REQUIRED_ARTIFACTS - set(artifacts))
     if missing:
         raise ValueError(f"pipeline completion artifact registry is incomplete: {missing}")
+    if requested != ("evaluation" in artifacts):
+        raise ValueError("pipeline evaluation artifact does not match test opt-in")
+    _reject_artifact_aliases_and_completion_ancestors(artifacts, path)
     for record in artifacts.values():
         _verify_path_record(record)
     contract_record = payload.get("anchor_registry_contract", {})
@@ -365,6 +450,9 @@ def verify_pipeline_completion(
     manifest_record = artifacts.get("pipeline_manifest")
     if not isinstance(manifest_record, dict) or manifest_record.get("kind") != "file":
         raise ValueError("pipeline completion lacks the flat pipeline manifest")
+    expected_manifest_path = path.parent / "pipeline_manifest.json"
+    if Path(str(manifest_record.get("path", ""))).resolve() != expected_manifest_path:
+        raise ValueError("pipeline completion names a non-canonical manifest sibling")
     flat_manifest = _read_flat_manifest(Path(manifest_record["path"]))
     expected_flat_names = set(artifacts) - {"pipeline_manifest"}
     if set(flat_manifest) != expected_flat_names:

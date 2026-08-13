@@ -12,6 +12,8 @@ from typing import Any
 
 import torch
 
+from common.tensor_identity import tensor_bytes
+
 
 CONTRACT_SCHEMA = "lafgs_artifact_contract"
 CONTRACT_VERSION = 1
@@ -101,7 +103,7 @@ def _semantic_digest(digest: "hashlib._Hash", path: str, value: Any) -> None:
             f"{path}:shape",
             json.dumps(list(tensor.shape), separators=(",", ":")).encode("ascii"),
         )
-        _digest_frame(digest, f"{path}:bytes", tensor.numpy().tobytes())
+        _digest_frame(digest, f"{path}:bytes", tensor_bytes(tensor))
         return
     if isinstance(value, dict):
         _digest_frame(digest, f"{path}:kind", b"mapping")

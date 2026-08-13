@@ -81,6 +81,31 @@ def test_pipeline_rejects_stale_or_partial_root_before_any_write(
     assert stale.read_bytes() == b"partial"
 
 
+def test_direct_run_atomically_rejects_root_created_after_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = run_pipeline.build_parser().parse_args(_arguments(tmp_path))
+    args.output = args.output.resolve()
+    args.output.mkdir()
+    stale = args.output / "concurrent-owner.txt"
+    stale.write_text("keep")
+    monkeypatch.setattr(
+        run_pipeline,
+        "build_bootstrap_and_tracks",
+        lambda **_kwargs: pytest.fail("pipeline stage must not start"),
+    )
+    with pytest.raises(FileExistsError):
+        run_pipeline.run(
+            args,
+            experimental_factors={
+                "joint_keypoints": None,
+                "mapping_keypoints": None,
+                "surface_supported_tracks": False,
+            },
+        )
+    assert stale.read_text() == "keep"
+
+
 def test_joint_and_mapping_density_fail_before_config_materialization(
     tmp_path: Path,
 ) -> None:
