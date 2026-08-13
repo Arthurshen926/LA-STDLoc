@@ -83,9 +83,14 @@ def _write_ply(path: Path) -> Path:
 
 
 def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
-    compact = _save(tmp_path / "compact.pt", _state())
+    compact_state = _state()
+    compact_state["anchor_position_covariance"] = torch.eye(3).repeat(3, 1, 1) * 17
+    compact = _save(tmp_path / "compact.pt", compact_state)
     trained_state = _state()
     trained_state["anchor_features"] = trained_state["anchor_features"] + 0.01
+    trained_state["anchor_position_covariance"] = compact_state[
+        "anchor_position_covariance"
+    ].clone()
     trained = _save(tmp_path / "trained.pt", trained_state)
     query = _save(
         tmp_path / "query.pt",
@@ -136,6 +141,7 @@ def _pipeline_parents(tmp_path: Path) -> dict[str, tuple[Path, str]]:
             "schema": "lafgs_native_keypoint_raster_provenance",
             "anchor_map": str(compact),
             "query_cache": str(query),
+            "track_payload": str(tracks),
             "query_names": ["a", "b"],
         },
     )
@@ -248,8 +254,10 @@ def test_pipeline_registry_is_sibling_and_preserves_localization_tensors(
         "source_primitive_ids",
         "track_cluster_ids",
         "anchor_type",
+        "anchor_position_covariance",
     ):
         assert torch.equal(persisted[key], source[key])
+    assert "anchor_position_covariance_enriched" in persisted
     assert persisted["localization_input"] is False
     verified = verify_anchor_registry_contract(
         result["contract"],
@@ -270,6 +278,45 @@ def test_registry_contract_rejects_parent_tamper(tmp_path: Path) -> None:
     parents["positive_teacher"][0].write_bytes(b"tampered")
     with pytest.raises(ValueError, match="parent changed"):
         verify_anchor_registry_contract(result["contract"])
+
+
+@pytest.mark.parametrize("mixed_parent", ["query_cache", "track_payload"])
+def test_pipeline_registry_rejects_raster_with_mixed_declared_parent(
+    tmp_path: Path, mixed_parent: str
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    old_path = parents[mixed_parent][0]
+    if mixed_parent == "query_cache":
+        old_payload = torch.load(old_path, map_location="cpu", weights_only=False)
+        replacement = _save(tmp_path / "replacement_query.pt", old_payload)
+    else:
+        old_payload = torch.load(old_path, map_location="cpu", weights_only=False)
+        replacement = _save(tmp_path / "replacement_tracks.pt", old_payload)
+    parents[mixed_parent] = (replacement, sha256_file(replacement))
+    if mixed_parent == "query_cache":
+        calibration_path = parents["scene_calibration"][0]
+        calibration = json.loads(calibration_path.read_text())
+        calibration["sources"]["query_cache"] = str(replacement)
+        calibration_path.write_text(json.dumps(calibration))
+        parents["scene_calibration"] = (
+            calibration_path,
+            sha256_file(calibration_path),
+        )
+    else:
+        calibration_path = parents["scene_calibration"][0]
+        calibration = json.loads(calibration_path.read_text())
+        calibration["sources"]["track_payload"] = str(replacement)
+        calibration_path.write_text(json.dumps(calibration))
+        parents["scene_calibration"] = (
+            calibration_path,
+            sha256_file(calibration_path),
+        )
+    with pytest.raises(ValueError, match=f"different {mixed_parent}"):
+        materialize_anchor_registry(
+            parents=parents,
+            output=tmp_path / "mixed_registry.pt",
+            require_pipeline_parents=True,
+        )
 
 
 def test_registry_rejects_zero_byte_and_partial_outputs(tmp_path: Path) -> None:

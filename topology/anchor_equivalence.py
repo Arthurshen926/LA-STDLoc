@@ -180,7 +180,12 @@ def build_equivalence_candidates(
             registry.get("dependency_group_ids", torch.arange(anchor_type.numel())),
         )
     ).long()
-    covariance = torch.as_tensor(registry["anchor_position_covariance"]).float()
+    covariance = torch.as_tensor(
+        registry.get(
+            "anchor_position_covariance_enriched",
+            registry["anchor_position_covariance"],
+        )
+    ).float()
     if covariance.shape != (anchor_type.numel(), 3, 3):
         raise ValueError("anchor covariance does not align with anchors")
     if left.numel() == 0:

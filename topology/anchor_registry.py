@@ -45,7 +45,7 @@ def _aligned_tensor(
 ) -> torch.Tensor:
     if key not in payload:
         return torch.full((count,), default, dtype=torch.float32)
-    value = torch.as_tensor(payload[key]).detach().cpu().float().reshape(-1)
+    value = torch.as_tensor(payload[key]).detach().cpu().reshape(-1)
     if value.numel() != count:
         raise ValueError(f"{key} does not align with anchor IDs")
     return value.clone()
@@ -268,9 +268,20 @@ def _geometry_fields(
     track_payload: Mapping | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     materialized = materialize_legacy_map_geometry(state, track_payload)
+    covariance = materialized["covariance"]
+    if "anchor_position_covariance" in state:
+        covariance = (
+            torch.as_tensor(state["anchor_position_covariance"])
+            .detach()
+            .cpu()
+            .clone()
+        )
+        count = int(torch.as_tensor(state["anchor_ids"]).numel())
+        if covariance.shape != (count, 3, 3):
+            raise ValueError("anchor position covariance does not align with map")
     return (
         materialized["geometry_mode"],
-        materialized["covariance"],
+        covariance,
         materialized["surface_evidence"],
         materialized["surface_dependence"],
     )
@@ -522,6 +533,10 @@ def validate_registry_compatibility(registry: Mapping, state: Mapping) -> None:
         "coarse_dependency_group_ids",
         "fine_identity_ids",
         "source_dependency_group_ids",
+        "anchor_position_covariance",
+        "anchor_reliability",
+        "anchor_matchability",
+        "anchor_alias_risk",
     ):
         if key not in state:
             continue

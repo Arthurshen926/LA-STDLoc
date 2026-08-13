@@ -183,6 +183,10 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
             "coarse_dependency_group_ids",
             "fine_identity_ids",
             "source_dependency_group_ids",
+            "anchor_position_covariance",
+            "anchor_reliability",
+            "anchor_matchability",
+            "anchor_alias_risk",
         ):
             if key in compact or key in state:
                 if key not in compact or key not in state or not torch.equal(
@@ -224,11 +228,6 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 paths["compact_map"],
                 label="raster_provenance",
             )
-    if selection is not None and (
-        selection.get("schema") != "lafgs_adaptive_selection_provenance"
-        or selection.get("version") != 1
-    ):
-        raise ValueError("selection_provenance has an unsupported schema")
         if tracks is not None:
             _require_declared_parent(
                 raster,
@@ -244,6 +243,11 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 paths["query_cache"],
                 label="raster_provenance",
             )
+    if selection is not None and (
+        selection.get("schema") != "lafgs_adaptive_selection_provenance"
+        or selection.get("version") != 1
+    ):
+        raise ValueError("selection_provenance has an unsupported schema")
 
     named = {
         name: _query_names(payload)

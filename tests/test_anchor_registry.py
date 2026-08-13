@@ -113,3 +113,29 @@ def test_registry_uses_track_covariance_trace_as_isotropic_fallback():
     torch.testing.assert_close(
         registry["anchor_position_covariance"][0], torch.eye(3) * 0.1
     )
+
+
+def test_registry_preserves_optional_runtime_tensors_bitwise():
+    state = _state()
+    state["anchor_position_covariance"] = torch.eye(3, dtype=torch.float64).repeat(
+        3, 1, 1
+    ) * 17.0
+    state["anchor_reliability"] = torch.tensor(
+        [0.1, 0.2, 0.3], dtype=torch.float64
+    )
+    state["anchor_matchability"] = torch.tensor(
+        [0.4, 0.5, 0.6], dtype=torch.float64
+    )
+    state["anchor_alias_risk"] = torch.tensor(
+        [0.7, 0.8, 0.9], dtype=torch.float64
+    )
+    registry = build_anchor_registry(state, track_payload=_tracks())
+    for key in (
+        "anchor_position_covariance",
+        "anchor_reliability",
+        "anchor_matchability",
+        "anchor_alias_risk",
+    ):
+        assert registry[key].dtype == state[key].dtype
+        assert torch.equal(registry[key], state[key])
+    validate_registry_compatibility(registry, state)

@@ -53,8 +53,15 @@ def test_gaussian_covariance_enrichment_is_auxiliary_and_calibrated(tmp_path):
         output["anchor_position_covariance"][0],
         registry["anchor_position_covariance"][0],
     )
+    torch.testing.assert_close(
+        output["anchor_position_covariance"],
+        registry["anchor_position_covariance"],
+        equal_nan=True,
+    )
     expected = torch.diag(torch.tensor([0.01, 0.01, 0.0001]))
-    torch.testing.assert_close(output["anchor_position_covariance"][1], expected)
+    torch.testing.assert_close(
+        output["anchor_position_covariance_enriched"][1], expected
+    )
     assert output["covariance_source"].tolist() == [
         COVARIANCE_TRIANGULATION,
         COVARIANCE_GAUSSIAN_SURFACE_PRIOR,
