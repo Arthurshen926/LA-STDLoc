@@ -1,0 +1,76 @@
+{
+  "schema": "lafgs_p9_fixed_pair_matcher_ceiling_implementation_registry",
+  "version": 1,
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "preregistration": {
+    "path": "docs/evidence/p9_fixed_pair_matcher_ceiling_preregistration.json",
+    "commit": "35ea06953d6a080e8ce1e609a60522bae74069ed",
+    "blob_sha256": "31e775a3b1c1d418ef1ad03a42b46c652f477f8ab38dadf53fcd85efbb96950a"
+  },
+  "implementation_commit": "b63fc5e4e1306c150e59f029ce87780e8b0d6827",
+  "required_source_paths": [
+    "common/hashing.py",
+    "data/colmap.py",
+    "data/datasets.py",
+    "data/images.py",
+    "docs/evidence/p9_fixed_pair_matcher_ceiling_preregistration.json",
+    "docs/evidence/p9_greatcourt_mapping_image_manifest.json",
+    "docs/evidence/p9_stairs_mapping_image_manifest.json",
+    "evidence/fixed_pair_matcher_ceiling.py",
+    "features/multiview_fusion.py",
+    "map_learning/fixed_pair_matcher_ceiling.py",
+    "map_learning/frontend_upper_bound.py",
+    "scripts/aggregate_fixed_pair_matcher_ceiling_cross_scene.py",
+    "scripts/compare_fixed_pair_matcher_ceiling.py",
+    "scripts/fixed_pair_matcher_ceiling_common.py",
+    "scripts/materialize_fixed_pair_feature_cache.py",
+    "scripts/materialize_fixed_pair_match_probe.py"
+  ],
+  "source_file_sha256": {
+    "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+    "data/colmap.py": "fdefb67e37f596e2c972f98d5a8d49eaa7425bac33f4e79a4bd33d8e302a408a",
+    "data/datasets.py": "5de6f734c5e7def2f8c5661038a541a21593de3b4db4b83e236a6d8d3f3123ba",
+    "data/images.py": "63cda80b4f8dffc4b53a08160e8b97e10e4bc32cd22a30a75063de2e2f8358ac",
+    "docs/evidence/p9_fixed_pair_matcher_ceiling_preregistration.json": "31e775a3b1c1d418ef1ad03a42b46c652f477f8ab38dadf53fcd85efbb96950a",
+    "docs/evidence/p9_greatcourt_mapping_image_manifest.json": "e63d0de7efe30ddabc33ca682f2efbfb456842c5455a2d3c8a1f9f6340209ee7",
+    "docs/evidence/p9_stairs_mapping_image_manifest.json": "9aa19b0fefb872143df7b9118453e8b8063bc589cda709ba0d49b615724ef1a4",
+    "evidence/fixed_pair_matcher_ceiling.py": "25dd82010a9a44968d08c5f56a1e264e5addf4f9b653a0d9852325c3bd08520b",
+    "features/multiview_fusion.py": "572400cb0edfc36fdf7b9c6c7e429a7b8fc9daeab2a0bfaceee1b6bd465d84e8",
+    "map_learning/fixed_pair_matcher_ceiling.py": "5d65fcd926ba5b7b12698e298c121a1e159b1c71d8b854bab846a1a27888eeee",
+    "map_learning/frontend_upper_bound.py": "d59b47a88fbf5f4cc85e0d0b9a0b5760334698a709b9fb46ca9e0bec69c05fa9",
+    "scripts/aggregate_fixed_pair_matcher_ceiling_cross_scene.py": "4a3c752211153e6f2ef1231db9ad849ad8ef1f232305841855178dc6df09ea0e",
+    "scripts/compare_fixed_pair_matcher_ceiling.py": "b9190dee56d581062051c5351647857a616c3fce570b72af25472dc12537a57c",
+    "scripts/fixed_pair_matcher_ceiling_common.py": "7b93fedfb2f4a0ff4a012c8c6d7787dfe13661d399bebdf226364926ffb2c950",
+    "scripts/materialize_fixed_pair_feature_cache.py": "ea4f9a76a6b4f9c526206c00ca8e2ee3086df4deaf32fcb699c356563c136d6d",
+    "scripts/materialize_fixed_pair_match_probe.py": "bae78ee15ed4fc9522b0a17b3f95f02e4348423c0e88e98192121728025df7e3"
+  },
+  "full_cpu_tests": {
+    "passed": true,
+    "result": "497_PASSED_1_CUDA_SMOKE_SKIPPED_15_WARNINGS_IN_113_20_SECONDS",
+    "implementation_commit": "b63fc5e4e1306c150e59f029ce87780e8b0d6827",
+    "command": "/root/miniconda3/envs/cybersim_agent/bin/python -m pytest -q",
+    "test_count": 497
+  },
+  "independent_review": {
+    "passed": true,
+    "result": "P9_REVIEW_FINDINGS_CLOSED_BY_EXACT_COUNT_SHAPE_COMPLETION_AND_PARENT_IDENTITY_ATTACK_TESTS",
+    "implementation_commit": "b63fc5e4e1306c150e59f029ce87780e8b0d6827",
+    "finding_counts": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 0
+    },
+    "resolved_findings": [
+      "integer_cross_multiplication_for_rate_and_precision_gates",
+      "exact_raw_tensor_shapes_before_any_reshape_or_squeeze",
+      "paired_completion_required_keys_and_failure_recovery_value",
+      "greatcourt_parent_compiled_identity_before_dataset_or_model_io"
+    ]
+  },
+  "authorizes_real_mapping_pair_gate": true,
+  "authorizes_track": false,
+  "authorizes_test": false,
+  "authorizes_method_default_change": false
+}
