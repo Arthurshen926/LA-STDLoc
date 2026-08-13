@@ -98,7 +98,11 @@ def _render_feature_cache(args, output: Path) -> dict:
         if args.gaussian_type == "2dgs"
         else GaussianModel3D(args.sh_degree)
     )
-    model.load_ply(args.gaussian_ply)
+    # This experiment consumes only Gaussian RGB appearance.  Do not
+    # materialize the fallback random localization-feature bank when the PLY
+    # has no loc_* fields; it is unused by rgb_only rendering and can dominate
+    # prior-loading time and memory for million-Gaussian scenes.
+    model.load_ply(args.gaussian_ply, loc_feature_dim=0)
     model = model.cuda().eval()
     extractor = FeatureExtractor("sp", nms_radius=args.nms_radius).cuda().eval()
     extractor.requires_grad_(False)

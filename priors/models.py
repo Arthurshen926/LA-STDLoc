@@ -117,19 +117,27 @@ class FrozenGaussianModel(nn.Module):
             )
         rotations = _stack_properties(vertex, _ordered_properties(vertex, "rot_"), rows)
         if rotations.shape[1] != 4:
-            raise ValueError(f"Expected four quaternion fields, found {rotations.shape[1]}")
+            raise ValueError(
+                f"Expected four quaternion fields, found {rotations.shape[1]}"
+            )
 
         loc_names = _ordered_properties(vertex, "loc_")
         if loc_names:
             loc = _stack_properties(vertex, loc_names, rows)[:, None, :]
         else:
-            dimension = int(loc_feature_dim or 256)
-            if dimension <= 0:
-                raise ValueError("loc_feature_dim must be positive")
-            generator = np.random.default_rng(0)
-            loc = generator.standard_normal((rows, dimension)).astype(np.float32)
-            loc /= np.clip(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12, None)
-            loc = loc[:, None, :]
+            dimension = 256 if loc_feature_dim is None else int(loc_feature_dim)
+            if dimension < 0:
+                raise ValueError("loc_feature_dim must be non-negative")
+            if dimension == 0:
+                # RGB-only consumers never rasterize localization features.
+                # Avoid allocating and normalizing an otherwise unused
+                # [Gaussian, 256] random bank for large appearance priors.
+                loc = np.empty((rows, 1, 0), dtype=np.float32)
+            else:
+                generator = np.random.default_rng(0)
+                loc = generator.standard_normal((rows, dimension)).astype(np.float32)
+                loc /= np.clip(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12, None)
+                loc = loc[:, None, :]
 
         device = self.target_device
         self._xyz = nn.Parameter(torch.from_numpy(xyz).to(device), requires_grad=False)
@@ -155,12 +163,16 @@ class FrozenGaussianModel(nn.Module):
 
 
 class GaussianModel3D(FrozenGaussianModel):
-    def __init__(self, sh_degree: int = 3, *, device: str | torch.device = "cuda") -> None:
+    def __init__(
+        self, sh_degree: int = 3, *, device: str | torch.device = "cuda"
+    ) -> None:
         super().__init__(sh_degree, expected_scale_dimensions=3, device=device)
 
 
 class GaussianModel2D(FrozenGaussianModel):
-    def __init__(self, sh_degree: int = 3, *, device: str | torch.device = "cuda") -> None:
+    def __init__(
+        self, sh_degree: int = 3, *, device: str | torch.device = "cuda"
+    ) -> None:
         super().__init__(sh_degree, expected_scale_dimensions=2, device=device)
 
 
