@@ -6,6 +6,10 @@ from scripts.audit_rendered_track_positive_ranks import positive_rank_hits
 from scripts.evaluate_rendered_track_topk_pnp_crossfit import (
     flatten_topk_correspondences,
 )
+from scripts.evaluate_rendered_track_retrieval_crossfit import (
+    observation_bank_for_references,
+    pooled_image_descriptor,
+)
 from scripts.materialize_rendered_track_training import materialize
 from scripts.evaluate_rendered_track_multiprototype_crossfit import (
     _fold_map,
@@ -240,3 +244,26 @@ def test_topk_correspondence_flattening_repeats_each_query_row():
         [1.0, 0.0, 1.0],
         [2.0, 0.0, 1.0],
     ]
+
+
+def test_retrieval_bank_uses_only_requested_training_views():
+    names = ["seq-02/a", "seq-03/b", "seq-05/c"]
+    cache = {
+        names[0]: {"native_descriptors": torch.tensor([[1.0, 0.0]])},
+        names[1]: {"native_descriptors": torch.tensor([[0.0, 1.0]])},
+        names[2]: {"native_descriptors": torch.tensor([[-1.0, 0.0]])},
+    }
+    descriptors, anchors, observations = observation_bank_for_references(
+        reference_queries=torch.tensor([0, 1]),
+        track_to_anchor=torch.tensor([2, 3, 4]),
+        track_query=torch.tensor([0, 1, 2]),
+        track_keypoint=torch.tensor([0, 0, 0]),
+        names=names,
+        cache=cache,
+    )
+    assert torch.equal(descriptors, torch.eye(2))
+    assert anchors.tolist() == [2, 3]
+    assert observations.tolist() == [0, 1]
+    pooled = pooled_image_descriptor(torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+    assert pooled.shape == (4,)
+    assert torch.isclose(pooled.norm(), torch.tensor(1.0))
