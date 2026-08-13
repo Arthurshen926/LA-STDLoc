@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 
 from scripts.materialize_rendered_track_training import materialize
+from scripts.train_rendered_track_crossfit import _training_inputs
 
 
 def _inputs(tmp_path: Path):
@@ -104,3 +105,36 @@ def test_rendered_track_training_rejects_source_rgb_or_test_cache(tmp_path):
             assert "rendered-RGB-only" in str(error) or "test queries" in str(error)
         else:
             raise AssertionError("forbidden training source must fail closed")
+
+
+def test_crossfit_training_inputs_exclude_held_mapping_sequence():
+    teacher = {
+        "query_names": ["seq-02/a", "seq-03/b", "seq-05/c"],
+        "records": [
+            {
+                "query_index": index,
+                "query_name": name,
+                "query_rows": torch.tensor([0]),
+                "positive_offsets": torch.tensor([0, 1]),
+                "positive_indices": torch.tensor([0]),
+                "ambiguous_offsets": torch.tensor([0, 0]),
+                "ambiguous_indices": torch.empty(0, dtype=torch.long),
+            }
+            for index, name in enumerate(("seq-02/a", "seq-03/b", "seq-05/c"))
+        ],
+        "diagnostics": {
+            "query_count": 3,
+            "positive_rows": 3,
+            "strong_pair_count": 3,
+            "ambiguous_pair_count": 0,
+        },
+    }
+    revised, graph, payload = _training_inputs(
+        held_sequence="seq-03", fold_teacher=teacher, full_payload={}
+    )
+    assert revised["query_names"] == ["seq-02/a", "seq-05/c"]
+    assert graph["query_names"] == revised["query_names"]
+    assert payload["query_names"] == revised["query_names"]
+    assert payload["query_bins"].tolist() == [0, 1]
+    assert payload["uses_test_queries"] is False
+    assert revised["crossfit"]["held_mapping_sequence"] == "seq-03"
