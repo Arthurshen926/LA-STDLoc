@@ -100,6 +100,34 @@ def test_revision_subsets_teacher_and_map_consistently(tmp_path):
     assert revised_metric["map_path"] == str((tmp_path / "map.pt").resolve())
 
 
+def test_revision_subsets_track_only_map_without_selector_metadata(tmp_path):
+    state = {
+        "anchor_ids": torch.arange(3),
+        "anchor_xyz": torch.randn(3, 3),
+        "anchor_features": torch.randn(3, 4),
+        "anchor_type": torch.ones(3, dtype=torch.long),
+        "source_primitive_ids": torch.full((3,), -1, dtype=torch.long),
+        "track_cluster_ids": torch.arange(3),
+        "base_anchor_count": 0,
+        "micro_anchor_count": 3,
+        "canonical_anchor_count": 3,
+    }
+    metric = {"landmark_indices": torch.arange(3)}
+    revised_map, revised_metric = subset_map_and_metric(
+        state,
+        metric,
+        torch.tensor([True, False, True]),
+        output_map=tmp_path / "map.pt",
+    )
+    assert revised_map["anchor_ids"].tolist() == [0, 1]
+    assert revised_map["anchor_type"].tolist() == [1, 1]
+    assert revised_map["source_primitive_ids"].tolist() == [-1, -1]
+    assert "track_centric_reconstruction" not in revised_map
+    assert revised_map["base_anchor_count"] == 0
+    assert revised_map["micro_anchor_count"] == 2
+    assert revised_metric["landmark_indices"].tolist() == [0, 1]
+
+
 def test_revision_teacher_refuses_to_remove_track_core(tmp_path):
     with pytest.raises(ValueError, match="Track Core"):
         subset_teacher(

@@ -86,20 +86,15 @@ def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
         "p90_te_cm": float(np.percentile(translation_errors, 90)),
         "p95_te_cm": float(np.percentile(translation_errors, 95)),
         "p99_te_cm": float(np.percentile(translation_errors, 99)),
-        "cvar95_te_cm": float(
-            np.sort(translation_errors)[-tail_count:].mean()
-        ),
+        "cvar95_te_cm": float(np.sort(translation_errors)[-tail_count:].mean()),
         "median_ae_deg": float(np.median(rotation_errors)),
         "mean_ae_deg": float(np.mean(rotation_errors)),
         "p90_ae_deg": float(np.percentile(rotation_errors, 90)),
         "p95_ae_deg": float(np.percentile(rotation_errors, 95)),
         "recall_5cm_5deg_percent": float(
-            100.0
-            * np.mean((translation_errors < 5.0) & (rotation_errors < 5.0))
+            100.0 * np.mean((translation_errors < 5.0) & (rotation_errors < 5.0))
         ),
-        "catastrophic_100cm_count": int(
-            np.count_nonzero(translation_errors >= 100.0)
-        ),
+        "catastrophic_100cm_count": int(np.count_nonzero(translation_errors >= 100.0)),
         "raw_gt_precision_percent": _safe_percent(correct, raw),
         "inlier_gt_precision_percent": _safe_percent(clean, inliers),
         "solver_inlier_ratio_percent": _safe_percent(inliers, raw),
@@ -206,9 +201,7 @@ def collect_deployment_statistics(
         current_ambiguous, _ = _csr_contains_per_row(record, "ambiguous", winners)
         correct_winners = winners[current_correct]
         ambiguous_winners = winners[~current_correct & current_ambiguous]
-        false_winners = winners[
-            ~current_correct & ~current_ambiguous & has_positive
-        ]
+        false_winners = winners[~current_correct & ~current_ambiguous & has_positive]
         for counter_name, selected in (
             ("correct_winner_count", correct_winners),
             ("ambiguous_winner_count", ambiguous_winners),
@@ -297,9 +290,7 @@ def collect_deployment_statistics(
             estimate.pose_w2c,
             torch.as_tensor(cached["pose_w2c"]).cpu().numpy(),
         )
-        te_cm = _pose_error_cm(
-            estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"])
-        )
+        te_cm = _pose_error_cm(estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"]))
         query_rows.append(
             {
                 "query_index": query_index,
@@ -573,23 +564,26 @@ def subset_map_and_metric(
     output["anchor_ids"] = torch.arange(int(keep.sum()), dtype=torch.long)
     track_mask = keep & (torch.as_tensor(state["anchor_type"]).long() == 1)
     base_mask = keep & ~track_mask
-    metadata = dict(state["track_centric_reconstruction"])
-    source_track_indices = torch.as_tensor(metadata["track_indices"]).long()
-    source_base_rows = torch.as_tensor(metadata["base_canonical_rows"]).long()
-    source_track_count = source_track_indices.numel()
-    metadata.update(
-        {
-            "budget": int(keep.sum()),
-            "track_anchor_count": int(track_mask.sum()),
-            "base_reserve_count": int(base_mask.sum()),
-            "final_track_count": int(track_mask.sum()),
-            "final_base_count": int(base_mask.sum()),
-            "track_indices": source_track_indices[keep[:source_track_count]],
-            "base_canonical_rows": source_base_rows[keep[source_track_count:]],
-            "deployment_revision_applied": True,
-        }
-    )
-    output["track_centric_reconstruction"] = metadata
+    if "track_centric_reconstruction" in state:
+        metadata = dict(state["track_centric_reconstruction"])
+        source_track_indices = torch.as_tensor(metadata["track_indices"]).long()
+        source_base_rows = torch.as_tensor(metadata["base_canonical_rows"]).long()
+        source_track_count = source_track_indices.numel()
+        if source_track_count + source_base_rows.numel() != count:
+            raise ValueError("track reconstruction registry and map do not align")
+        metadata.update(
+            {
+                "budget": int(keep.sum()),
+                "track_anchor_count": int(track_mask.sum()),
+                "base_reserve_count": int(base_mask.sum()),
+                "final_track_count": int(track_mask.sum()),
+                "final_base_count": int(base_mask.sum()),
+                "track_indices": source_track_indices[keep[:source_track_count]],
+                "base_canonical_rows": source_base_rows[keep[source_track_count:]],
+                "deployment_revision_applied": True,
+            }
+        )
+        output["track_centric_reconstruction"] = metadata
     output["provenance"] = {
         **state.get("provenance", {}),
         "deployment_revision": {
