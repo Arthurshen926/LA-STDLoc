@@ -44,7 +44,7 @@ def reciprocal_pair_matches(
     similarity = query @ reference.T
     values_q, indices_q = torch.topk(similarity, k=2, dim=1)
     values_r, indices_r = torch.topk(similarity, k=2, dim=0)
-    query_row = torch.arange(query.shape[0])
+    query_row = torch.arange(query.shape[0], device=similarity.device)
     reference_row = indices_q[:, 0]
     mutual = indices_r[0, reference_row] == query_row
     valid = (
