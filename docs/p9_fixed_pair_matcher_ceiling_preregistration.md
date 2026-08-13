@@ -71,6 +71,17 @@ Correctness is evaluated after the shared epipolar filter, never on raw matcher
 output.  When the raw or evaluable denominator is zero, the respective rate or
 precision is exactly 0.0.
 
+The count fields are authoritative and the serialized rate/precision fields
+are only checked projections.  Every validator recomputes both projections
+from nonnegative integer counts and requires
+`epipolar_accepted_count <= raw_match_count` and
+`correct_correspondence_count <= teacher_evaluable_count <=
+epipolar_accepted_count`.  A zero denominator therefore also requires a zero
+numerator and is represented by the exact rational `0/1`.  Pair-Gate
+non-regression never compares serialized floats: it compares the recomputed
+rationals with Python-integer cross multiplication, so equality at a binary
+floating-point boundary cannot change a decision.
+
 ## Pair Gate
 
 For each scene, LighterGlue must not reduce any of correct count, correct
@@ -105,6 +116,10 @@ parents plus identical compiled source and runtime/backend identities.  Its
 only pass decision is `GO_TO_FIXED_PAIR_TRACK_IMPLEMENTATION_REVIEW`; it still
 does not authorize a real Track run.
 
+Before any GreatCourt query-cache/image/checkpoint loading or model forward,
+the feature CLI constructs its current producer identity and requires its
+compiled identity to equal the already validated Stairs parent identity.
+
 ## Frozen mapping image inputs and runtime
 
 The two source-image manifests are frozen beside the preregistration.  They
@@ -137,6 +152,14 @@ P9 schemas and content hashes.  Outputs must be fresh and are committed by an
 atomic same-directory rename; the completion marker is written last only after
 the feature cache and both arms reload and validate.  Spliced, partial, resumed,
 or one-arm outputs are invalid.
+
+Tensor shapes are exact and are checked before any reshape or squeeze.  In
+particular detector scores are `[N]`, depth/alpha/masks are `[H,W]`, pair
+indices and every match column are one-dimensional, and each diagnostic is
+`[P]`; singleton-expanded forms such as `[N,1]` and `[1,H,W]` are invalid.
+The completion marker must contain `failure_recovery` with the exact value
+`isolate_root_and_rebuild_both_arms_from_fresh_cache`; missing, null, or edited
+values invalidate the completion before artifact loading.
 
 The machine contract enumerates every required top-level/query/arm key, tensor
 shape and dtype, and content-hash domain.  The fixed files are

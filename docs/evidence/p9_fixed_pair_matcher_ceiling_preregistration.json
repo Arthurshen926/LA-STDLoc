@@ -304,6 +304,17 @@
       "identity_conflict_count": "after_processing_fixed_pairs_in_table_order_and_matches_in_source_row_order_union_all_epipolar_accepted_(camera,row)_nodes;for_each_connected_component_and_camera_add_max(number_of_distinct_rows_from_that_camera-1,0);sum_over_all_components",
       "identity_conflict_component_count": "number_of_union_components_with_identity_conflict_count_greater_than_zero"
     },
+    "derived_fraction_validation": {
+      "authoritative_values": "nonnegative_integer_counts",
+      "serialized_float_values_are_authoritative": false,
+      "required_count_order": "0<=epipolar_accepted_count<=raw_match_count;0<=correct_correspondence_count<=teacher_evaluable_count<=epipolar_accepted_count",
+      "epipolar_acceptance_rate_projection": "recompute_exactly_as_epipolar_accepted_count/raw_match_count_or_0.0_when_denominator_is_zero",
+      "correct_correspondence_precision_projection": "recompute_exactly_as_correct_correspondence_count/teacher_evaluable_count_or_0.0_when_denominator_is_zero",
+      "zero_denominator_rational": "0/1_and_count_consistency_requires_zero_numerator",
+      "non_regression_comparison": "Python_integer_cross_multiplication_of_recomputed_rationals_never_serialized_float_comparison",
+      "epipolar_acceptance_rate_formula": "variant_epipolar_accepted_count*control_raw_match_count>=control_epipolar_accepted_count*variant_raw_match_count_after_zero_denominators_are_canonicalized_to_0/1",
+      "correct_correspondence_precision_formula": "variant_correct_correspondence_count*control_teacher_evaluable_count>=control_correct_correspondence_count*variant_teacher_evaluable_count_after_zero_denominators_are_canonicalized_to_0/1"
+    },
     "metric_pipeline_order": [
       "raw_matcher_output",
       "common_symmetric_epipolar_filter",
@@ -340,7 +351,9 @@
       "scene_pair_gate_passed": true,
       "decision": "SCENE_PAIR_PASS_REQUIRES_OTHER_SCENE",
       "exact_path_and_sha256_required": true,
-      "validate_before_second_scene_large_io": true
+      "validate_before_second_scene_large_io": true,
+      "construct_current_feature_producer_identity_before_second_scene_large_io": true,
+      "current_compiled_identity_must_equal_stairs_parent_before_second_scene_large_io_or_forward": true
     },
     "cross_scene_gate": {
       "schema": "lafgs_p9_fixed_pair_matcher_ceiling_cross_scene_pair_gate",
@@ -493,6 +506,8 @@
         "native_K": "float32[3,3]",
         "pose_w2c": "float32[3,4]_or_float32[4,4]"
       },
+      "shape_validation_before_reshape_or_squeeze": true,
+      "singleton_expanded_score_or_dense_field_allowed": false,
       "content_hash_domain": "all_top_level_scientific_metadata_except_content_sha256_plus_ordered_query_metadata_and_recomputed_tensor_hashes",
       "fresh_atomic_rule": "fixed_file_must_not_exist;save_same_directory_temp;reload_full_validator;os_replace_once",
       "source_image_manifest_revalidated_before_first_forward_and_after_last_forward": true
@@ -543,6 +558,10 @@
         "teacher_correct": "bool[M]",
         "teacher_bidirectional_error_px": "float64[M]"
       },
+      "pair_index_tensor_shapes": "int64[P]_for_both_left_and_right",
+      "diagnostic_tensor_shapes": "int64[P]_for_every_diagnostic",
+      "shape_validation_before_reshape_or_squeeze": true,
+      "singleton_expanded_pair_match_or_diagnostic_allowed": false,
       "content_hash_domain": "top_level_scientific_metadata_pair_table_tensor_hashes_and_for_each_exact_arm_match_diagnostic_tensor_hashes_matcher_metrics_run_uuid_producer_identity",
       "same_run_uuid_and_exact_producer_identity_required_for_both_arms": true,
       "partial_or_arm_splice_invalid": true
@@ -579,6 +598,7 @@
         "mnn_control",
         "lighterglue_variant"
       ],
+      "failure_recovery_exact_value": "isolate_root_and_rebuild_both_arms_from_fresh_cache",
       "atomic_rule": "fresh_nonexistent_final_root;write_probe_then_summary_in_sibling_temp_root;reload_and_validate_both_arms;write_completion_last;atomically_rename_whole_root",
       "only_authoritative_pair_gate_input": true,
       "direct_probe_path_as_pair_gate_input_allowed": false
