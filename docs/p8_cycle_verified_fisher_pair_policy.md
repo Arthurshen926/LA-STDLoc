@@ -9,9 +9,11 @@
 > preregistration is in
 > `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md`.  At the time
 > of that preregistration no real V2 selector had run.  The subsequent formal
-> mapping-only V2 Stage-A run passed in both Stairs and GreatCourt; its
-> cross-scene Go authorizes only implementation of a new V2-aware reuse-only
-> Track lineage, not the V1 runner or any downstream experiment.
+> mapping-only V2 Stage-A run passed in both Stairs and GreatCourt.  The new
+> V2-aware reuse-only Track lineage was then implemented and run: GreatCourt
+> passed Stage B 8/8, while Stairs produced a valid Stop because query 1933
+> lost all broad Track support.  No cross-B/fullchain/pose/test/default change
+> followed; frozen V3 `nearest` remains the shared default.
 
 The next pair-policy objective is **verified triangle closure × dimensionless
 bearing-Fisher information**, under an exact global pair budget and hard camera
@@ -528,8 +530,41 @@ The recursive cross-scene gate SHA-256 is
 `b9aecc359af0f66272602901d60777ebcca2b6800769a6c262d4cb0a121c74da` and its
 decision is `GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`.  This is an implementation
 authorization only.  It records `authorizes_existing_v1_track_runner=false`;
-no V2 Track/Stage-B, fullchain, function graph/Map, mapping pose, formal test, or
-default-method switch has run or been authorized.  Frozen V3 `nearest` remains
-the shared default.  The full artifact and certificate audit is in
+at issuance no V2 Track/Stage-B had run, and the gate itself does not authorize
+fullchain, function graph/Map, mapping pose, formal test, or a default switch.
+Frozen V3 `nearest` remains the shared default.  The Stage-A artifact and
+certificate audit is in
 `docs/p8_cycle_verified_fisher_coverage_v2_stage_a_result.md` and
 `docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_a_result.json`.
+
+## P8 V2 mapping-only Stage-B result
+
+The separately schema-bound paired Track runner was then executed in the fixed
+order control -> V2 on both scenes.  GreatCourt passed all 8/8 Stage-B base
+gates; its completion/gate SHA-256 values are
+`21be068fd6b63ab5e2ff0514a75ef1f022a617efef48bbbba6192f837faf5d03` and
+`6963235eeb219154ce1540fd7c89cb1831d595c6149b64775d2e9de08a363091`.
+Stairs produced a complete, valid lineage but a scientific Stop; its
+completion/gate SHA-256 values are
+`39799b4f8c559589ab934992854ec9961eb9df9e56d21f2b7fecca2b00f1ef17` and
+`059eb4d1b8c6468a26ba9214228d33e937924511e9318f75dac025ac6851ad06`.
+
+Stairs improved aggregate triangulated, broad and high-confidence Track counts
+and covariance p90, but broad-query coverage fell from 1.0 to
+0.9994999766.  Direct tensor recomputation isolates exactly one lost query:
+index 1933 (`seq-06/frame-000433.color.png`).  Nearest control supplies
+6 incident pairs, 459 observations, 211 triangulated supports and 184 broad
+supports; V2 supplies 1 pair, 21 observations and zero triangulated/broad
+support.  Thus 7/8 base gates and 4/5 frozen-V1 retention gates pass, while
+`broad_mapping_query_coverage_not_lower` fails.
+
+This does not contradict the Stage-A Pass.  Stage A preserves the exact
+nearest-control completed-triangle camera target set; Stage B requires broad
+post-Track support for every mapping query.  Query 1933 is outside that Stage-A
+target set, so camera-set coverage does not imply its query-level Track
+sufficiency.  The valid Stairs `STOP_SCENE_MECHANISM` closes P8 V2 before the
+cross-scene Stage-B aggregator.  No cross-B gate, fullchain lineage, function
+graph/Map, mapping pose, formal test, or default switch was run; frozen V3
+`nearest` remains the shared default.  Full evidence is in
+`docs/p8_cycle_verified_fisher_coverage_v2_stage_b_result.md` and
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_result.json`.

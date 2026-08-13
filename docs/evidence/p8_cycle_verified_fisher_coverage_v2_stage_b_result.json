@@ -1,0 +1,316 @@
+{
+  "schema": "lafgs_cycle_verified_fisher_coverage_v2_stage_b_result_evidence",
+  "version": 1,
+  "audit_date": "2026-08-13",
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "mapping_camera_pair_policy",
+  "policy": "cycle_verified_fisher_coverage",
+  "policy_version": "P8_V2",
+  "result": {
+    "classification": "P8_V2_SCIENTIFIC_STOP_AT_STAIRS_STAGE_B",
+    "greatcourt_scene_stage_b_decision": "SCENE_PASS_REQUIRES_OTHER_SCENE",
+    "stairs_scene_stage_b_decision": "STOP_SCENE_MECHANISM",
+    "cross_scene_stage_b_gate_emitted": false,
+    "cross_scene_stage_b_decision": null,
+    "reason": "The valid Stairs scene gate failed broad_mapping_query_coverage_not_lower; the formal cross-scene Stage-B aggregator was not run."
+  },
+  "producer": {
+    "formal_git_head": "783bef63c113bb80f236b1234fb1d6ac85b29e12",
+    "track_implementation_commit": "dce574f2df115a4a5638969e2975445f687813b7",
+    "implementation_registry": {
+      "path": "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_implementation.json",
+      "sha256": "541e58ad15c2b7fe8c9df7c47ff045a95b3888cbba77ed25abc39967dbc498ce"
+    },
+    "stage_b_preregistration": {
+      "path": "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json",
+      "sha256": "eab20cb3fac8440eb2b22b4c4c88a2e1efb911aebeefe06fbd1e41cf26f8a54e"
+    },
+    "runtime": {
+      "device": "cpu",
+      "python": "3.9.12",
+      "torch": "2.0.1+cu118"
+    },
+    "required_source_paths_clean": true,
+    "same_track_producer_identity_across_scenes": true,
+    "same_stage_b_producer_identity_across_scenes": true
+  },
+  "artifacts": {
+    "greatcourt": {
+      "paired_track_completion": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2/paired_track_completion.json",
+        "sha256": "21be068fd6b63ab5e2ff0514a75ef1f022a617efef48bbbba6192f837faf5d03",
+        "run_uuid": "a349873a571543b1a8c1990395878de3",
+        "complete": true,
+        "partial": false,
+        "resume_allowed": false
+      },
+      "control_factor": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2/cycle_verified_fisher_coverage_nearest_control_track_factor.pt",
+        "sha256": "44ef0afe953ede1ec1a96fbd4864936d66d437485d9d67ed45fa6d58950a6b2c"
+      },
+      "control_report": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2/cycle_verified_fisher_coverage_nearest_control_track_factor.json",
+        "sha256": "0cc09a49005dcca2fbfc5a8786c198aa97b4588d0d8fa6e281dd1eb3d19b5c81"
+      },
+      "variant_factor": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2/cycle_verified_fisher_coverage_track_factor.pt",
+        "sha256": "874a5e86a046de790cd7fa1d928c9e5ab984e706a6a3068d9de4b7b2106c20a6"
+      },
+      "variant_report": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2/cycle_verified_fisher_coverage_track_factor.json",
+        "sha256": "7e82822dae5878bb37c51a898c690b36e21f061b7f7b752571bea23cc9a32b1e"
+      },
+      "scene_stage_b_gate": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_b_coverage_v2_gate.json",
+        "sha256": "6963235eeb219154ce1540fd7c89cb1831d595c6149b64775d2e9de08a363091"
+      },
+      "execution": {
+        "track_invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2_invocation.json",
+        "track_invocation_sha256": "4ace24710447ad6cdb9ca419c2f22a2c1dcf4da61827339b3f55c3af1f1e89c7",
+        "track_exit_status_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2_exit_status.txt",
+        "track_exit_status": 0,
+        "track_exit_status_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "track_stderr_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/track_coverage_v2_stderr.log",
+        "track_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stage_b_invocation_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_b_coverage_v2_gate_invocation.json",
+        "stage_b_invocation_sha256": "7549f4fe642d0bd3286a5cf23cd7443bfea4bb7012b23344ceae00c33c90e0ce",
+        "stage_b_exit_status_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_b_coverage_v2_gate_exit_status.txt",
+        "stage_b_exit_status": 0,
+        "stage_b_exit_status_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "stage_b_stderr_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/stage_b_coverage_v2_gate_stderr.log",
+        "stage_b_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "stairs": {
+      "paired_track_completion": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2/paired_track_completion.json",
+        "sha256": "39799b4f8c559589ab934992854ec9961eb9df9e56d21f2b7fecca2b00f1ef17",
+        "run_uuid": "3184d9c99690401eabd4435259e0c0aa",
+        "complete": true,
+        "partial": false,
+        "resume_allowed": false
+      },
+      "control_factor": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2/cycle_verified_fisher_coverage_nearest_control_track_factor.pt",
+        "sha256": "99282152b74d30cadc5412fa617bf2a16c63e15c632fba55e8a405ca44548374"
+      },
+      "control_report": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2/cycle_verified_fisher_coverage_nearest_control_track_factor.json",
+        "sha256": "2afe1579169ff7c75d2772a7766d6939d904376b34ba14034629d400f8f4aa53"
+      },
+      "variant_factor": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2/cycle_verified_fisher_coverage_track_factor.pt",
+        "sha256": "db62b10c37623bdf3d55f6f93ea98bd8e33100c2845024d2fc5790416fe073a9"
+      },
+      "variant_report": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2/cycle_verified_fisher_coverage_track_factor.json",
+        "sha256": "edb80038e3a4ca692c2804584ebd32f09d92590735c8498a2bc7435d1a1f7974"
+      },
+      "scene_stage_b_gate": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_b_coverage_v2_gate.json",
+        "sha256": "059eb4d1b8c6468a26ba9214228d33e937924511e9318f75dac025ac6851ad06"
+      },
+      "execution": {
+        "track_exit_status_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2.status",
+        "track_exit_status": 0,
+        "track_exit_status_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "track_stderr_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/track_coverage_v2.stderr.log",
+        "track_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stage_b_exit_status_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_b_coverage_v2_gate.status",
+        "stage_b_exit_status": 2,
+        "stage_b_exit_status_sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+        "stage_b_stderr_path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_b_coverage_v2_gate.stderr.log",
+        "stage_b_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "exit_two_classification": "valid_preregistered_scientific_stop"
+      }
+    }
+  },
+  "scene_results": {
+    "greatcourt": {
+      "valid": true,
+      "decision": "SCENE_PASS_REQUIRES_OTHER_SCENE",
+      "scene_specific_mechanism_pass": true,
+      "base_gates_passed": 8,
+      "base_gates_total": 8,
+      "base_gates": {
+        "broad_eligible_tracks_retain_98pct": true,
+        "broad_mapping_query_coverage_not_lower": true,
+        "control_probe_rows_reused": true,
+        "high_confidence_tracks_retain_98pct": true,
+        "same_probe_matcher_contract": true,
+        "triangulated_covariance_p90_not_worse_5pct": true,
+        "triangulated_tracks_retain_98pct": true,
+        "variant_probe_rows_reused": true
+      },
+      "metrics": {
+        "triangulated_tracks": {
+          "control": 32067,
+          "variant": 31806,
+          "ratio": 0.9918607914678642
+        },
+        "broad_eligible_tracks": {
+          "control": 17402,
+          "variant": 20499,
+          "ratio": 1.1779680496494656
+        },
+        "high_confidence_tracks": {
+          "control": 1920,
+          "variant": 3084,
+          "ratio": 1.60625
+        },
+        "triangulated_covariance_p90_m2": {
+          "control": 15.51392707824709,
+          "variant": 9.45641040802002,
+          "ratio": 0.6095433064964809
+        },
+        "mapping_query_with_broad_track_fraction": {
+          "control": 0.8465055227279663,
+          "variant": 0.8621816039085388,
+          "delta": 0.01567608118057251
+        }
+      }
+    },
+    "stairs": {
+      "valid": true,
+      "decision": "STOP_SCENE_MECHANISM",
+      "scene_specific_mechanism_pass": false,
+      "base_gates_passed": 7,
+      "base_gates_total": 8,
+      "base_gates": {
+        "broad_eligible_tracks_retain_98pct": true,
+        "broad_mapping_query_coverage_not_lower": false,
+        "control_probe_rows_reused": true,
+        "high_confidence_tracks_retain_98pct": true,
+        "same_probe_matcher_contract": true,
+        "triangulated_covariance_p90_not_worse_5pct": true,
+        "triangulated_tracks_retain_98pct": true,
+        "variant_probe_rows_reused": true
+      },
+      "v1_retention_gates_passed": 4,
+      "v1_retention_gates_total": 5,
+      "v1_retention_gates": {
+        "v1_broad_eligible_tracks_retain_98pct": true,
+        "v1_broad_mapping_query_coverage_not_lower": false,
+        "v1_high_confidence_tracks_retain_98pct": true,
+        "v1_triangulated_covariance_p90_not_worse_5pct": true,
+        "v1_triangulated_tracks_retain_98pct": true
+      },
+      "v1_nearest_control_scientific_projection_exact": true,
+      "v2_control_exact_scientific_tensor_parity": true,
+      "v2_control_exact_metric_parity": true,
+      "metrics": {
+        "triangulated_tracks": {
+          "control": 15053,
+          "variant": 17099,
+          "ratio": 1.1359197502159037
+        },
+        "broad_eligible_tracks": {
+          "control": 14276,
+          "variant": 16357,
+          "ratio": 1.1457691230036424
+        },
+        "high_confidence_tracks": {
+          "control": 41,
+          "variant": 50,
+          "ratio": 1.2195121951219512
+        },
+        "triangulated_covariance_p90_m2": {
+          "control": 0.055011858046054844,
+          "variant": 0.03784503489732745,
+          "ratio": 0.6879432224529543
+        },
+        "mapping_query_with_broad_track_fraction": {
+          "control": 1.0,
+          "variant": 0.9994999766349792,
+          "delta": -0.000500023365020752
+        }
+      }
+    }
+  },
+  "stairs_query_level_failure_audit": {
+    "source": "direct_recomputation_from_both_sha_bound_track_factor_tensors",
+    "query_count": 2000,
+    "query_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
+    "control_zero_broad_support_query_index": [],
+    "variant_zero_broad_support_query_index": [
+      1933
+    ],
+    "lost_broad_support_query_index": [
+      1933
+    ],
+    "lost_broad_support_query_count": 1,
+    "query": {
+      "index": 1933,
+      "stored_name": "seq-06/frame-000433.color.png",
+      "short_name": "seq-06/frame-000433",
+      "stage_a_target_camera_member": false,
+      "stage_a_selected_completed_triangle_camera_member": false,
+      "control": {
+        "incident_selected_pair_count": 6,
+        "track_observation_count": 459,
+        "triangulated_track_support": 211,
+        "broad_eligible_track_support": 184,
+        "peer_query_index": [
+          1928,
+          1929,
+          1930,
+          1939,
+          1940,
+          1941
+        ]
+      },
+      "variant": {
+        "incident_selected_pair_count": 1,
+        "track_observation_count": 21,
+        "triangulated_track_support": 0,
+        "broad_eligible_track_support": 0,
+        "peer_query_index": [
+          1929
+        ],
+        "selected_pair_completed_verified_triangle_count": 0
+      }
+    }
+  },
+  "causal_boundary": {
+    "stage_a_property": "Exact membership preservation for the nearest-control completed verified-triangle camera target set under the selected pair graph.",
+    "stage_b_property": "Every mapping query retains at least one broad-eligible post-Track support under the full reuse-only Track construction.",
+    "non_implication": "Stage-A completed-triangle camera coverage does not imply Stage-B per-query broad Track support. Query 1933 was outside the Stage-A target set, yet nearest had broad support there and V2 reduced it to zero."
+  },
+  "cross_checks": {
+    "completion_and_eight_track_artifact_file_sha256_rehash_passed": true,
+    "both_scene_gate_file_sha256_rehash_passed": true,
+    "all_completion_report_and_gate_json_parse_passed": true,
+    "completion_internal_artifact_hashes_match_direct_rehash": true,
+    "completion_complete_and_non_partial": true,
+    "factor_and_report_uses_test_queries_false": true,
+    "scene_gate_uses_test_queries_false": true,
+    "greatcourt_all_eight_base_gates_true": true,
+    "stairs_only_failed_base_gate_is_broad_mapping_query_coverage_not_lower": true,
+    "stairs_v1_control_tensor_and_metric_parity_passed": true,
+    "stairs_query_support_direct_tensor_recomputation_passed": true,
+    "stairs_unique_lost_query_diff_check_passed": true,
+    "formal_independent_result_audit_p0_p1_p2_zero": true,
+    "additional_docs_audit_recursive_replay_skipped_as_redundant": true,
+    "formal_track_stderr_empty": true,
+    "formal_stage_b_stderr_empty": true,
+    "git_diff_scope_docs_only": true
+  },
+  "downstream_execution": {
+    "gpu_run": false,
+    "v2_paired_track": true,
+    "scene_stage_b": true,
+    "cross_scene_stage_b_aggregator": false,
+    "cross_scene_stage_b_gate": false,
+    "v2_aware_fullchain_lineage_implementation": false,
+    "existing_fullchain": false,
+    "fullchain_rebuild": false,
+    "function_graph_or_map_rebuild": false,
+    "mapping_pose": false,
+    "formal_test": false,
+    "method_default_changed": false,
+    "shared_default_pair_policy": "nearest"
+  },
+  "method_conclusion": "GreatCourt passes all 8 preregistered Stage-B gates, but the independently produced Stairs gate is a valid scientific Stop. Aggregate Stairs Track counts and covariance improve, yet query 1933 alone loses all broad support (nearest: 6 pairs, 459 observations, 211 triangulated supports, 184 broad supports; V2: 1 pair, 21 observations, 0 triangulated supports, 0 broad supports). P8 V2 therefore stops before cross-scene Stage-B aggregation, fullchain lineage implementation, pose, test, or a default change. Frozen V3 nearest remains the shared default."
+}

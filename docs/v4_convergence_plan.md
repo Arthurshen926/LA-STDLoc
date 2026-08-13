@@ -100,7 +100,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
 | Stage 6 室内身份自适应 | density-only No-Go；pair 在 Stairs mapping Go、GreatCourt 机制 Stop | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置、Stairs fullchain/mapping pose 与 GreatCourt 跨域反证 | K=2048 不进入默认；`parallax_diverse` 不升为跨域默认 |
-| Stage 7 可定位 pair utility | P8 V1 跨域 Stop；P8 V2 双场景 Stage-A Go-to-build | V2 对 Stairs/GreatCourt 的 nearest completed-triangle camera exact set 均 lost=0，Stage-A 全门通过 | 仅授权实现 V2-aware reuse-only Track lineage；V1 runner、Track/Stage-B、fullchain、pose、test、默认切换均未授权 |
+| Stage 7 可定位 pair utility | P8 V1 跨域 Stop；P8 V2 Stage-B 科学 Stop | V2 双场景 Stage-A camera target 均 lost=0；GreatCourt Stage-B 8/8 通过，但 Stairs 唯一 query 1933 的 broad support 归零 | 不运行 cross-B、fullchain、pose、test 或默认切换；共享默认仍为 `nearest` |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -740,10 +740,32 @@ gate，中间没有结果后调参。Stairs 的 Stage-1 scaffold 为
 递归 cross-scene gate SHA-256 为
 `b9aecc359af0f66272602901d60777ebcca2b6800769a6c262d4cb0a121c74da`，decision 为
 `GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`。它只授权实现独立 V2-aware reuse-only Track
-lineage，并显式拒绝既有 V1 runner；尚未运行 GPU/Track/Stage-B/fullchain/pose/test，默认
-仍为冻结 V3 `nearest`。正式结果见
+lineage，并显式拒绝既有 V1 runner；该 Stage-A gate 本身不授权
+fullchain/pose/test/default。正式 Stage-A 结果见
 `docs/p8_cycle_verified_fisher_coverage_v2_stage_a_result.md` 与
 `docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_a_result.json`。
+
+#### P8 V2 reuse-only Track / Stage-B：Stairs 科学 Stop
+
+独立 V2 lineage 随后在 commit `783bef6`、CPU、同一 clean producer 下完成双场景正式
+control -> V2 Track。GreatCourt completion/gate SHA-256 为 `21be068f...5d03` /
+`6963235e...3091`，8/8 base gates 通过。Stairs completion/gate SHA-256 为
+`39799b4f...ef17` / `059eb4d1...ad06`，lineage、control 科学投影与产物均合法，但
+`broad_mapping_query_coverage_not_lower` 失败，得到 `STOP_SCENE_MECHANISM`。
+
+Stairs 的 aggregate triangulated/broad/high-confidence Tracks 分别提高到 control 的
+113.5920%/114.5769%/121.9512%，covariance p90 降到 68.7943%，但 broad-query
+coverage 从 1.0 降到 0.99949998。逐 tensor diff 只有 query 1933
+(`seq-06/frame-000433.color.png`) 丢失 support：nearest 为
+6 pairs / 459 observations / 211 triangulated / 184 broad，V2 为
+1 / 21 / 0 / 0。Stage-A 约束 completed-triangle camera target membership，Stage-B
+约束每个 mapping query 的 post-Track broad support；前者不蕴含后者，且 query 1933 不在
+Stage-A target set 中。
+
+因此 P8 V2 在 Stairs Stage-B 正式停止：未运行 cross-B、fullchain lineage、function
+graph/Map、mapping pose、formal test 或默认切换。完整结果见
+`docs/p8_cycle_verified_fisher_coverage_v2_stage_b_result.md` 与
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_result.json`。
 
 ## 最小实验矩阵
 
@@ -757,7 +779,7 @@ lineage，并显式拒绝既有 V1 runner；尚未运行 GPU/Track/Stage-B/fullc
 | P6 | current fusion | robust observation fusion + risk | indoor harmful/alias 降低 | 无可分性则停复杂头 |
 | P7 | V4 frozen | baseline-aware + K factors | 7/12Scenes 成对改善 | test 只做最终确认 |
 | P8 | nearest same-probe | exact closure x bearing-Fisher pair utility | Stairs/GreatCourt 均过 Stage-A/B；camera coverage 不可补偿 | V1 Stop；Stairs 只保留 scene-specific signal，默认 nearest |
-| P8 V2 | nearest same-probe | hard completed-triangle camera coverage -> closure/Fisher | exact target membership、预算/图约束、utility/triangle no-regression | 双场景 Stage-A Pass；仅授权实现 V2-aware runner，默认 nearest |
+| P8 V2 | nearest same-probe | hard completed-triangle camera coverage -> closure/Fisher | Stage-A exact target；Stage-B per-query broad support 不降 | GreatCourt 8/8 Pass；Stairs query 1933 归零而 Stop；默认 nearest |
 
 所有实验报告必须同时给出：Anchor 数、真实观测覆盖、每 query 匹配行 p10、唯一 landmark match 数、inlier 数、harmful rate、平移/旋转中位数及标准成功率。仅报告最终 pose 中位数不足以判断机制是否成立。
 
@@ -837,10 +859,9 @@ graph 连通并显著增加总 Fisher utility/triangle count，却让 verified-t
 coverage 回退 19.2031 pp，触发预注册 Stage-A Stop。故 **Stairs 只保留 scene-specific
 mechanism signal，P8 V1 不进入共享默认**；冻结 V3 `nearest` 继续作为当前方法。
 
-P8 V1 没有获授权的后续 Track/fullchain/pose/test。P8 V2 已用全新 policy/schema 和
-preregistration 把 triangle-camera coverage 从事后 gate 提升为 selector 内部的
-lexicographic hard constraint，并完成 GreatCourt 与 Stairs 两个正式 Stage-A；
-两场景均 exact 覆盖 nearest target set、`lost_control_camera_count=0`，递归 gate 只输出
-`GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`。下一步仅实现并审核独立 V2-aware reuse-only
-Track lineage；V1 runner、Track/Stage-B、fullchain、pose、test 和默认切换均未获授权，
-冻结 V3 `nearest` 继续作为当前方法。
+P8 V1 没有获授权的后续 Track/fullchain/pose/test。P8 V2 用全新 policy/schema 将
+triangle-camera coverage 变成 selector 内部的 lexicographic hard constraint，并在两个
+正式 Stage-A 中 exact 覆盖 nearest target set、`lost_control_camera_count=0`。独立
+V2-aware reuse-only Track lineage 随后完成正式 Stage-B：GreatCourt 8/8 通过，Stairs
+却因唯一 query 1933 的 broad support 从 184 降为 0 而得到合法科学 Stop。故未运行
+cross-B、fullchain、pose、test 或默认切换；冻结 V3 `nearest` 继续作为当前方法。
