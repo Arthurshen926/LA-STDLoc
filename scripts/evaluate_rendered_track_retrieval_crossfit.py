@@ -136,6 +136,8 @@ def run(args) -> dict:
     observation_query = torch.as_tensor(tracks["query_index"]).long()
     observation_keypoint = torch.as_tensor(tracks["keypoint_index"]).long()
     observation_anchor = track_to_anchor[observation_track]
+    eligible_reference_query = torch.zeros(len(names), dtype=torch.bool)
+    eligible_reference_query[observation_query[observation_anchor >= 0]] = True
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
     device = torch.device(args.device)
     global_descriptors = torch.stack(
@@ -152,8 +154,14 @@ def run(args) -> dict:
                 index
                 for index, name in enumerate(names)
                 if _sequence_name(name) != held_sequence
+                and bool(eligible_reference_query[index])
             ]
         ).long()
+        if train_queries.numel() < args.reference_count:
+            raise RuntimeError(
+                f"held fold {held_sequence} has fewer eligible rendered references "
+                f"than requested: {int(train_queries.numel())} < {args.reference_count}"
+            )
         held_queries = [
             index
             for index, name in enumerate(names)

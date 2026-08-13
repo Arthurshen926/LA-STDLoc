@@ -278,3 +278,23 @@ def test_retrieval_payload_fixture_uses_observation_track_schema():
     }
     assert "track_offsets" not in tracks
     assert int(tracks["track_level"].numel()) == int(tracks["track_index"].max()) + 1
+
+
+def test_retrieval_rejects_an_empty_reference_bank():
+    try:
+        observation_bank_for_references(
+            reference_queries=torch.tensor([2]),
+            track_to_anchor=torch.tensor([2, 3, -1]),
+            track_query=torch.tensor([0, 1, 2]),
+            track_keypoint=torch.zeros(3, dtype=torch.long),
+            names=["seq-02/a", "seq-03/b", "seq-05/c"],
+            cache={
+                "seq-02/a": {"native_descriptors": torch.eye(1)},
+                "seq-03/b": {"native_descriptors": torch.eye(1)},
+                "seq-05/c": {"native_descriptors": torch.eye(1)},
+            },
+        )
+    except RuntimeError as error:
+        assert "no selected Track rows" in str(error)
+    else:
+        raise AssertionError("empty rendered reference bank must fail closed")
