@@ -1,6 +1,9 @@
 import copy
 import hashlib
 import json
+import math
+from pathlib import Path
+import shutil
 
 import pytest
 import torch
@@ -12,9 +15,12 @@ from scripts import attest_cycle_verified_pair_proposals as proposal_cli
 from scripts import compare_cycle_verified_fisher_mechanism as stage_b_cli
 from scripts import compare_cycle_verified_fisher_stage_a as stage_a_cli
 from scripts import compare_cycle_verified_fisher_coverage_stage_a as coverage_stage_a_cli
+from scripts import compare_cycle_verified_fisher_coverage_mechanism as coverage_stage_b_cli
 from scripts import materialize_cycle_verified_triangle_table as verified_table_cli
 from scripts import materialize_cycle_verified_pair_probe as probe_cli
 from scripts import materialize_cycle_verified_track_factor as track_cli
+from scripts import materialize_cycle_verified_fisher_coverage_track_factor as coverage_track_cli
+from scripts import cycle_verified_fisher_coverage_track_common as coverage_track_common
 from scripts import select_cycle_verified_fisher_pairs as select_cli
 from scripts import select_cycle_verified_fisher_coverage_pairs as coverage_select_cli
 from scripts.cycle_verified_fisher_cli_common import (
@@ -734,6 +740,294 @@ def test_reuse_only_track_factors_and_stage_b_end_to_end(p8_cli_artifacts):
     assert "advance_to_fullchain_mapping_pose" not in gate
     if gate["scene_specific_mechanism_pass"]:
         assert gate["decision"] == "SCENE_PASS_REQUIRES_OTHER_SCENE"
+
+
+def test_coverage_v2_paired_runner_and_recursive_stage_b_end_to_end(
+    p8_cli_artifacts, monkeypatch
+):
+    artifact = p8_cli_artifacts
+    cache = load_mapping_cache(
+        path=artifact["cache_path"],
+        expected_file_sha256=artifact["cache_sha256"],
+        expected_query_names_sha256=artifact["names_sha256"],
+        expected_mapping_keypoints=3,
+        expected_nms_radius=1,
+    )
+    nearest_pairs = cycle_fisher.proposal_arm_pairs(
+        artifact["proposals"], "nearest"
+    )
+    variant_pairs = list(
+        zip(
+            artifact["selection"]["selected_pair"]["left_query_index"].tolist(),
+            artifact["selection"]["selected_pair"]["right_query_index"].tolist(),
+        )
+    )
+    assert nearest_pairs != variant_pairs
+
+    cross_a = artifact["tmp_path"] / "synthetic_cross_a.json"
+    scene_a = artifact["tmp_path"] / "synthetic_scene_a.json"
+    table_path = artifact["tmp_path"] / "synthetic_verified_table.pt"
+    implementation_path = coverage_track_common.IMPLEMENTATION_REGISTRY_PATH
+    cross_a.write_text("{}")
+    scene_a.write_text("{}")
+    torch.save({"synthetic": True}, table_path)
+    registry = {
+        "scene": "greatcourt",
+        "compiled": {
+            "mapping_keypoints": 3,
+            "mapping_nms_radius": 1,
+            "exact_pair_budget": 5,
+            "candidate_pair_count": 6,
+            "candidate_component_count": 1,
+            "control_pair_table_sha256": coverage_track_common.pair_table_sha256(
+                nearest_pairs
+            ),
+            "variant_pair_table_sha256": coverage_track_common.pair_table_sha256(
+                variant_pairs
+            ),
+        },
+        "cross_scene_stage_a_gate": {
+            "path": cross_a.resolve(),
+            "sha256": sha256_file(cross_a),
+        },
+        "scene_stage_a_gate": {
+            "path": scene_a.resolve(),
+            "sha256": sha256_file(scene_a),
+        },
+        "query_cache": cache,
+        "pair_proposals": {
+            "path": artifact["proposals_path"].resolve(),
+            "sha256": artifact["proposal_record"]["sha256"],
+            "content_sha256": artifact["proposal_record"]["content_sha256"],
+            "payload": artifact["proposals"],
+            "nearest_pairs": nearest_pairs,
+        },
+        "pair_match_probe": {
+            "path": artifact["probe_path"].resolve(),
+            "sha256": artifact["probe_record"]["sha256"],
+            "content_sha256": artifact["probe_record"]["content_sha256"],
+            "payload": artifact["probe"],
+        },
+        "verified_cycle_table": {
+            "path": table_path.resolve(),
+            "sha256": sha256_file(table_path),
+            "content_sha256": "1" * 64,
+        },
+        "pair_selection": {
+            "path": artifact["selection_path"].resolve(),
+            "sha256": artifact["selection_record"]["sha256"],
+            "content_sha256": artifact["selection_record"]["content_sha256"],
+            "payload": artifact["selection"],
+        },
+        "manifest_path": artifact["manifest_path"].resolve(),
+        "manifest_sha256": sha256_file(artifact["manifest_path"]),
+        "frozen_track_payload_path": artifact["frozen_path"].resolve(),
+        "frozen_track_payload_sha256": sha256_file(artifact["frozen_path"]),
+    }
+    track_producer = {
+        "schema": coverage_track_common.TRACK_PRODUCER_SCHEMA,
+        "version": 1,
+        "algorithm": "p8_cycle_verified_fisher_coverage_v2_reuse_track",
+        "entrypoint": (
+            "python -m "
+            "scripts.materialize_cycle_verified_fisher_coverage_track_factor"
+        ),
+        "git_commit": "a" * 40,
+        "required_source_paths_clean": True,
+        "source_paths": ["synthetic.py"],
+        "source_file_sha256": {"synthetic.py": "b" * 64},
+        "runtime": {"python": "3.11", "torch": "2", "device": "cpu"},
+    }
+    stage_producer = {
+        "schema": coverage_track_common.STAGE_B_PRODUCER_SCHEMA,
+        "version": 1,
+        "algorithm": "p8_cycle_verified_fisher_coverage_v2_stage_b",
+        "entrypoint": (
+            "python -m scripts.compare_cycle_verified_fisher_coverage_mechanism"
+        ),
+        "git_commit": "a" * 40,
+        "required_source_paths_clean": True,
+        "source_paths": ["synthetic.py"],
+        "source_file_sha256": {"synthetic.py": "b" * 64},
+        "runtime": {"python": "3.11", "torch": "2"},
+    }
+    implementation = {"implementation_commit": "c" * 40}
+    observed_subsets = []
+    real_subset_builder = coverage_track_cli.probe_pair_subset_track_build_inputs
+
+    def record_subset(probe, pairs):
+        observed_subsets.append(list(pairs))
+        return real_subset_builder(probe, pairs)
+
+    monkeypatch.setattr(
+        coverage_track_cli, "probe_pair_subset_track_build_inputs", record_subset
+    )
+    monkeypatch.setattr(
+        coverage_track_cli, "load_scene_inputs", lambda **kwargs: registry
+    )
+    monkeypatch.setattr(
+        coverage_track_cli, "implementation_registry", lambda: implementation
+    )
+    monkeypatch.setattr(
+        coverage_track_cli,
+        "track_producer_identity",
+        lambda device: copy.deepcopy(track_producer),
+    )
+    monkeypatch.setattr(
+        coverage_track_cli, "require_clean_identity", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        coverage_track_common, "implementation_registry", lambda: implementation
+    )
+    monkeypatch.setattr(
+        coverage_track_common,
+        "validate_track_producer_identity",
+        lambda identity, label: identity,
+    )
+    monkeypatch.setattr(
+        coverage_stage_b_cli,
+        "load_compiled_scene_inputs",
+        lambda scene: registry,
+    )
+    monkeypatch.setattr(
+        coverage_stage_b_cli,
+        "stage_b_producer_identity",
+        lambda: copy.deepcopy(stage_producer),
+    )
+    monkeypatch.setattr(
+        coverage_stage_b_cli, "require_clean_identity", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        coverage_stage_b_cli,
+        "validate_code_identity",
+        lambda identity, **kwargs: identity,
+    )
+
+    output_root = artifact["tmp_path"] / "coverage_v2_pair"
+    common_args = [
+        "--scene", "greatcourt",
+        "--cross-scene-stage-a-gate", str(cross_a),
+        "--expected-cross-scene-stage-a-gate-sha256", sha256_file(cross_a),
+        "--scene-stage-a-gate", str(scene_a),
+        "--expected-scene-stage-a-gate-sha256", sha256_file(scene_a),
+        "--manifest", str(artifact["manifest_path"]),
+        "--expected-manifest-sha256", sha256_file(artifact["manifest_path"]),
+        "--frozen-track-payload", str(artifact["frozen_path"]),
+        "--expected-frozen-track-payload-sha256", sha256_file(artifact["frozen_path"]),
+        "--query-cache", str(artifact["cache_path"]),
+        "--expected-query-cache-sha256", artifact["cache_sha256"],
+        "--mapping-scope-equivalence", str(scene_a),
+        "--expected-mapping-scope-equivalence-sha256", sha256_file(scene_a),
+        "--proposals", str(artifact["proposals_path"]),
+        "--expected-proposals-sha256", artifact["proposal_record"]["sha256"],
+        "--expected-proposals-content-sha256", artifact["proposal_record"]["content_sha256"],
+        "--probe", str(artifact["probe_path"]),
+        "--expected-probe-sha256", artifact["probe_record"]["sha256"],
+        "--expected-probe-content-sha256", artifact["probe_record"]["content_sha256"],
+        "--verified-cycle-table", str(table_path),
+        "--expected-verified-cycle-table-sha256", sha256_file(table_path),
+        "--expected-verified-cycle-table-content-sha256", "1" * 64,
+        "--selection", str(artifact["selection_path"]),
+        "--expected-selection-sha256", artifact["selection_record"]["sha256"],
+        "--expected-selection-content-sha256", artifact["selection_record"]["content_sha256"],
+        "--expected-query-names-sha256", artifact["names_sha256"],
+        "--expected-mapping-keypoints", "3",
+        "--expected-nms-radius", "1",
+        "--expected-pair-budget", "5",
+        "--expected-candidate-pair-count", "6",
+        "--expected-candidate-components", "1",
+        "--device", "cpu",
+        "--output-root", str(output_root),
+    ]
+    result = coverage_track_cli.run(
+        coverage_track_cli.build_parser().parse_args(common_args)
+    )
+    assert observed_subsets == [nearest_pairs, variant_pairs]
+    assert result["build_order"] == ["control", "variant"]
+    assert len(result["artifacts"]) == 4
+    completion_path = Path(result["completion_manifest"])
+    completion_sha = result["completion_manifest_sha256"]
+    assert completion_path.name == "paired_track_completion.json"
+    assert implementation_path.is_file()
+
+    evaluation = coverage_stage_b_cli.evaluate_scene(
+        scene="greatcourt",
+        completion_manifest=completion_path,
+        expected_completion_sha256=completion_sha,
+    )
+    for role in ("control", "variant"):
+        payload = evaluation["arms"][role]["factor"]["payload"]
+        assert payload["diagnostics"]["track_pair_matches_reused"] == 1
+        assert payload["pair_sidecar"]["policy"][
+            "uses_precomputed_pair_matches"
+        ] is True
+        pair_report = evaluation["arms"][role]["report"]["payload"]["pair"]
+        assert math.isnan(
+            pair_report["mapping_point_parallax_below_1deg_fraction"]
+        )
+    assert evaluation["base_gates"]["control_probe_rows_reused"] is True
+    assert evaluation["base_gates"]["variant_probe_rows_reused"] is True
+    assert evaluation["base_gates"]["same_probe_matcher_contract"] is True
+
+    gate_path = artifact["tmp_path"] / "coverage_v2_stage_b_gate.json"
+    gate = coverage_stage_b_cli.run(
+        coverage_stage_b_cli.build_parser().parse_args(
+            [
+                "--scene", "greatcourt",
+                "--completion-manifest", str(completion_path),
+                "--expected-completion-manifest-sha256", completion_sha,
+                "--output", str(gate_path),
+            ]
+        )
+    )
+    recursively_validated = coverage_stage_b_cli.validate_stage_b_gate(
+        scene="greatcourt",
+        path=gate_path,
+        expected_sha256=gate["output_sha256"],
+    )
+    assert recursively_validated["payload"]["valid"] is True
+
+    tampered_root = artifact["tmp_path"] / "coverage_v2_resigned_cross_run"
+    shutil.copytree(output_root, tampered_root)
+    tampered_completion_path = tampered_root / completion_path.name
+    tampered_completion = json.loads(tampered_completion_path.read_text())
+    variant_factor_path = tampered_root / tampered_completion["artifacts"][
+        "variant_factor"
+    ]["relative_path"]
+    variant_report_path = tampered_root / tampered_completion["artifacts"][
+        "variant_report"
+    ]["relative_path"]
+    variant_factor = torch.load(
+        variant_factor_path, map_location="cpu", weights_only=False
+    )
+    forged_uuid = "f" * 32
+    variant_factor["paired_run_uuid"] = forged_uuid
+    variant_factor["input_lineage"]["paired_run_uuid"] = forged_uuid
+    torch.save(variant_factor, variant_factor_path)
+    variant_report = json.loads(variant_report_path.read_text())
+    variant_report["paired_run_uuid"] = forged_uuid
+    variant_report["inputs"] = copy.deepcopy(variant_factor["input_lineage"])
+    variant_report["artifact"] = str(variant_factor_path)
+    variant_report["artifact_sha256"] = sha256_file(variant_factor_path)
+    variant_report_path.write_text(json.dumps(variant_report, sort_keys=True))
+    tampered_completion["artifacts"]["variant_factor"]["sha256"] = sha256_file(
+        variant_factor_path
+    )
+    tampered_completion["artifacts"]["variant_report"]["sha256"] = sha256_file(
+        variant_report_path
+    )
+    tampered_completion_path.write_text(
+        json.dumps(tampered_completion, indent=2, sort_keys=True) + "\n"
+    )
+    resigned = coverage_track_common.validate_completion_manifest(
+        path=tampered_completion_path,
+        expected_sha256=sha256_file(tampered_completion_path),
+        expected_scene="greatcourt",
+    )
+    with pytest.raises(ValueError, match="Track contract is invalid"):
+        coverage_track_common.load_completed_arms(
+            completion=resigned, registry=registry
+        )
 
 
 def test_stage_b_rejects_non_reuse_control_lineage(p8_cli_artifacts):

@@ -21,8 +21,10 @@ from scripts.cycle_verified_fisher_cli_common import (
     validate_output_target,
 )
 from scripts.cycle_verified_fisher_coverage_track_common import (
+    artifact_schema_contract,
     cross_b_producer_identity,
     require_clean_identity,
+    required_artifact_keys,
 )
 
 
@@ -160,6 +162,20 @@ def run(args: argparse.Namespace) -> dict:
             else "STOP_BEFORE_FULLCHAIN_LINEAGE_IMPLEMENTATION"
         ),
     }
+    contract = artifact_schema_contract("cross_scene_stage_b_gate")
+    if (
+        set(report) != required_artifact_keys("cross_scene_stage_b_gate")
+        or report["schema"] != contract["schema"]
+        or report["version"] != contract["version"]
+        or report["decision"]
+        not in {contract["pass_decision"], contract["stop_decision"]}
+        or report["authorizes_existing_fullchain"]
+        is not contract["authorizes_existing_fullchain"]
+        or report["advance_to_mapping_pose"]
+        is not contract["advance_to_mapping_pose"]
+        or report["authorizes_test"] is not contract["authorizes_test"]
+    ):
+        raise RuntimeError("Compiled cross-scene Stage-B output schema changed")
     output = validate_output_target(
         args.output, protected_paths=[value["path"] for value in scenes.values()]
     )

@@ -740,15 +740,30 @@ def test_producer_identity_compares_source_bytes_to_head_not_git_status(
 
 def test_producer_identity_binds_claimed_commit_to_its_source_blobs():
     identity = cycle_fisher._verified_cycle_producer_identity()
-    parent = cycle_fisher.subprocess.run(
-        ["git", "rev-parse", "HEAD^"],
-        cwd=cycle_fisher.Path(cycle_fisher.__file__).resolve().parents[1],
+    root = cycle_fisher.Path(cycle_fisher.__file__).resolve().parents[1]
+    last_source_change = cycle_fisher.subprocess.run(
+        [
+            "git",
+            "log",
+            "-1",
+            "--format=%H",
+            "--",
+            *cycle_fisher._VERIFIED_TABLE_PRODUCER_SOURCES,
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    ancestor_with_different_sources = cycle_fisher.subprocess.run(
+        ["git", "rev-parse", f"{last_source_change}^"],
+        cwd=root,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
     forged = copy.deepcopy(identity)
-    forged["git_commit"] = parent
+    forged["git_commit"] = ancestor_with_different_sources
     with pytest.raises(
         ValueError, match="lacks required source identity|commit/source identity"
     ):

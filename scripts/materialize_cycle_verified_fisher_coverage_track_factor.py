@@ -23,6 +23,7 @@ from scripts.cycle_verified_fisher_cli_common import (
     atomic_json_save,
     atomic_torch_save,
     selection_pairs,
+    torch_load,
 )
 from scripts.cycle_verified_fisher_coverage_track_common import (
     CONTROL_POLICY_NAME,
@@ -35,6 +36,7 @@ from scripts.cycle_verified_fisher_coverage_track_common import (
     implementation_registry,
     load_scene_inputs,
     reference_registry_unchanged,
+    recursive_equal,
     require_clean_identity,
     track_producer_identity,
 )
@@ -421,6 +423,18 @@ def _completion_inputs(registry: dict) -> dict:
     return result
 
 
+def _validate_written_arm(
+    *, factor: dict, report: dict, factor_path: Path, report_path: Path
+) -> None:
+    """Reload both files before the atomic-last completion marker is allowed."""
+    reloaded_factor = torch_load(factor_path)
+    reloaded_report = json.loads(report_path.read_text())
+    if not recursive_equal(reloaded_factor, factor):
+        raise RuntimeError("Reloaded paired Track factor differs from construction")
+    if not recursive_equal(reloaded_report, report):
+        raise RuntimeError("Reloaded paired Track report differs from construction")
+
+
 def run(args: argparse.Namespace) -> dict:
     reviewed_implementation = implementation_registry()
     output_root = args.output_root.expanduser().resolve()
@@ -603,12 +617,18 @@ def run(args: argparse.Namespace) -> dict:
         ):
             raise RuntimeError(f"P8 {role} Track report failed independent replay")
         atomic_json_save(report, report_path, overwrite=False)
+        _validate_written_arm(
+            factor=factor,
+            report=report,
+            factor_path=factor_path,
+            report_path=report_path,
+        )
         artifact_records[f"{role}_factor"] = {
-            "path": str(factor_path),
+            "relative_path": factor_path.name,
             "sha256": sha256_file(factor_path),
         }
         artifact_records[f"{role}_report"] = {
-            "path": str(report_path),
+            "relative_path": report_path.name,
             "sha256": sha256_file(report_path),
         }
         summaries[role] = {
@@ -621,7 +641,10 @@ def run(args: argparse.Namespace) -> dict:
     if track_producer_identity(args.device) != producer:
         raise RuntimeError("P8 Track producer source identity changed during build")
     for artifact in artifact_records.values():
-        if sha256_file(Path(artifact["path"])) != artifact["sha256"]:
+        if (
+            sha256_file(output_root / artifact["relative_path"])
+            != artifact["sha256"]
+        ):
             raise RuntimeError("A paired Track output changed before completion")
     completion = {
         "schema": "lafgs_cycle_verified_fisher_coverage_paired_track_completion",

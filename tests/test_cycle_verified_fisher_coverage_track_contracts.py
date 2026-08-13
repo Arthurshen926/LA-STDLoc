@@ -10,7 +10,9 @@ from common.hashing import sha256_file
 from scripts import aggregate_cycle_verified_fisher_coverage_cross_scene as cross_b
 from scripts import compare_cycle_verified_fisher_coverage_mechanism as stage_b
 from scripts import materialize_cycle_verified_fisher_coverage_track_factor as runner
-from scripts import materialize_cycle_verified_track_factor as v1_runner
+from evidence.cycle_verified_fisher import COVERAGE_POLICY_NAME, COVERAGE_SELECTION_SCHEMA
+from scripts.cycle_verified_fisher_cli_common import load_selection
+from scripts import cycle_verified_fisher_coverage_track_common as track_common
 from scripts.cycle_verified_fisher_coverage_track_common import (
     CONTROL_POLICY_NAME,
     CONTROL_SUBSET_ROLE,
@@ -45,6 +47,103 @@ def _producer() -> dict:
     }
 
 
+def _valid_implementation_registry_payload() -> dict:
+    root = Path(track_common.__file__).resolve().parents[1]
+    implementation_commit = "c" * 40
+    source_paths = sorted(
+        set(track_common.TRACK_PRODUCER_SOURCE_PATHS)
+        | set(track_common.STAGE_B_PRODUCER_SOURCE_PATHS)
+        | set(track_common.CROSS_B_PRODUCER_SOURCE_PATHS)
+    )
+    return {
+        "schema": (
+            "lafgs_cycle_verified_fisher_coverage_stage_b_implementation_registry"
+        ),
+        "version": 1,
+        "valid": True,
+        "uses_test_queries": False,
+        "mapping_only": True,
+        "preregistration": {
+            "path": "docs/evidence/"
+            "p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json",
+            "commit": track_common.PREREGISTRATION_COMMIT,
+            "blob_sha256": track_common.PREREGISTRATION_BLOB_SHA256,
+        },
+        "implementation_commit": implementation_commit,
+        "required_source_paths": source_paths,
+        "source_file_sha256": {
+            name: sha256_file(root / name) for name in source_paths
+        },
+        "full_cpu_tests": {
+            "passed": True,
+            "result": "ALL_CPU_TESTS_PASSED",
+            "implementation_commit": implementation_commit,
+            "command": "python -m pytest -q",
+            "test_count": 1,
+        },
+        "independent_review": {
+            "passed": True,
+            "result": "INDEPENDENT_REVIEW_COMPLETE_NO_FINDINGS",
+            "implementation_commit": implementation_commit,
+            "finding_counts": {"p0": 0, "p1": 0, "p2": 0},
+        },
+        "authorizes_real_track_execution": True,
+        "authorizes_test": False,
+        "authorizes_method_default_change": False,
+    }
+
+
+def _mock_registry_git(
+    monkeypatch,
+    *,
+    payload: dict,
+    registry_path: Path,
+    committed_registry,
+    implementation_is_ancestor: bool = True,
+    prereg_is_ancestor: bool = True,
+    committed_prereg=None,
+) -> None:
+    real_run = track_common.subprocess.run
+    root = Path(track_common.__file__).resolve().parents[1]
+    current_commit = "d" * 40
+    registry_relative = str(registry_path.relative_to(root))
+    prereg_relative = str(track_common.PREREGISTRATION_PATH.relative_to(root))
+
+    def fake_run(command, **kwargs):
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return track_common.subprocess.CompletedProcess(
+                command, 0, stdout=f"{current_commit}\n", stderr=""
+            )
+        if command[:3] == ["git", "merge-base", "--is-ancestor"]:
+            is_prereg = command[3] == track_common.PREREGISTRATION_COMMIT
+            ok = prereg_is_ancestor if is_prereg else implementation_is_ancestor
+            return track_common.subprocess.CompletedProcess(command, 0 if ok else 1)
+        if command[:2] == ["git", "show"]:
+            reference = command[-1]
+            if reference == (
+                f"{track_common.PREREGISTRATION_COMMIT}:{prereg_relative}"
+            ):
+                content = (
+                    track_common.PREREGISTRATION_PATH.read_bytes()
+                    if committed_prereg is None
+                    else committed_prereg
+                )
+            elif reference == f"{current_commit}:{registry_relative}":
+                if committed_registry is None:
+                    raise track_common.subprocess.CalledProcessError(128, command)
+                content = committed_registry
+            elif reference.startswith(f"{payload['implementation_commit']}:"):
+                content = (root / reference.split(":", 1)[1]).read_bytes()
+            else:
+                return real_run(command, **kwargs)
+            return track_common.subprocess.CompletedProcess(
+                command, 0, stdout=content, stderr=b""
+            )
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(track_common.subprocess, "run", fake_run)
+
+
 def _factor(*, policy: str, role: str, run_uuid: str, producer: dict) -> dict:
     return {
         "schema": "lafgs_pair_policy_track_factor",
@@ -77,7 +176,11 @@ def test_pair_table_hash_is_order_and_membership_exact():
 
 
 def test_recursive_tensor_parity_treats_aligned_nan_as_equal():
-    left = {"x": torch.tensor([1.0, float("nan")]), "y": [torch.tensor([2])]}
+    left = {
+        "x": torch.tensor([1.0, float("nan")]),
+        "y": [torch.tensor([2])],
+        "scalar": float("nan"),
+    }
     right = copy.deepcopy(left)
     assert recursive_equal(left, right)
     right["x"][0] = 2.0
@@ -145,6 +248,100 @@ def test_each_scientific_base_gate_can_stop(gate_name, field, bad):
     variant[field] = bad
     gates = stage_b._base_gates(control=control, variant=variant)
     assert gates[gate_name] is False
+
+
+@pytest.mark.parametrize(
+    "gate_name,field,bad",
+    [
+        ("v1_triangulated_tracks_retain_98pct", "triangulated_tracks", 17036),
+        (
+            "v1_broad_eligible_tracks_retain_98pct",
+            "broad_eligible_tracks",
+            16301,
+        ),
+        ("v1_high_confidence_tracks_retain_98pct", "high_confidence_tracks", 49),
+        (
+            "v1_triangulated_covariance_p90_not_worse_5pct",
+            "triangulated_covariance_p90_m2",
+            0.0383588852360845,
+        ),
+        (
+            "v1_broad_mapping_query_coverage_not_lower",
+            "mapping_query_with_broad_track_fraction",
+            0.999,
+        ),
+    ],
+)
+def test_each_stairs_v1_retention_gate_can_stop(gate_name, field, bad):
+    thresholds = {
+        "triangulated_tracks_at_least": 17037,
+        "broad_eligible_tracks_at_least": 16302,
+        "high_confidence_tracks_at_least": 50,
+        "triangulated_covariance_p90_m2_at_most": 0.03835888523608449,
+        "mapping_query_with_broad_track_fraction_exact": 1.0,
+    }
+    metrics = {
+        "triangulated_tracks": 17037,
+        "broad_eligible_tracks": 16302,
+        "high_confidence_tracks": 50,
+        "triangulated_covariance_p90_m2": 0.03835888523608449,
+        "mapping_query_with_broad_track_fraction": 1.0,
+    }
+    assert all(
+        stage_b._stairs_retention_gates(
+            metrics=metrics, thresholds=thresholds
+        ).values()
+    )
+    metrics[field] = bad
+    gates = stage_b._stairs_retention_gates(metrics=metrics, thresholds=thresholds)
+    assert gates[gate_name] is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["query_bins", "tracks", "track_geometry", "pair_sidecar.pair", "metrics"],
+)
+def test_each_v1_control_scientific_projection_field_is_exact(mutation):
+    v1_factor = {
+        "query_bins": torch.tensor([0, 1]),
+        "tracks": {"track_index": torch.tensor([0])},
+        "track_geometry": {"triangulated": torch.tensor([True])},
+        "pair_sidecar": {"pair": {"left_query_index": torch.tensor([0])}},
+    }
+    metrics = {
+        "triangulated_tracks": 1,
+        "broad_eligible_tracks": 1,
+        "high_confidence_tracks": 1,
+        "triangulated_covariance_p90_m2": 0.1,
+        "mapping_query_with_broad_track_fraction": 1.0,
+    }
+    v2 = {
+        "factor": {"payload": copy.deepcopy(v1_factor)},
+        "metrics": copy.deepcopy(metrics),
+    }
+    assert all(
+        stage_b._control_scientific_projection_status(
+            v2_control=v2,
+            v1_control_factor=v1_factor,
+            v1_control_metrics=metrics,
+        ).values()
+    )
+    if mutation == "pair_sidecar.pair":
+        v2["factor"]["payload"]["pair_sidecar"]["pair"][
+            "left_query_index"
+        ][0] = 1
+    elif mutation == "metrics":
+        v2["metrics"]["triangulated_tracks"] = 2
+    else:
+        value = v2["factor"]["payload"][mutation]
+        first_tensor = value if isinstance(value, torch.Tensor) else next(iter(value.values()))
+        first_tensor.reshape(-1)[0] = 0 if bool(first_tensor.reshape(-1)[0]) else 1
+    status = stage_b._control_scientific_projection_status(
+        v2_control=v2,
+        v1_control_factor=v1_factor,
+        v1_control_metrics=metrics,
+    )
+    assert not all(status.values())
 
 
 def test_runner_forbids_matcher_and_pair_selector_reentry(monkeypatch):
@@ -255,7 +452,10 @@ def test_completion_manifest_rejects_partial_and_wrong_relative_path(
     for name, relative in stems.items():
         path = tmp_path / relative
         path.write_bytes(name.encode())
-        artifacts[name] = {"path": str(path), "sha256": sha256_file(path)}
+        artifacts[name] = {
+            "relative_path": relative,
+            "sha256": sha256_file(path),
+        }
     payload = {
         "schema": "lafgs_cycle_verified_fisher_coverage_paired_track_completion",
         "version": 1,
@@ -292,9 +492,7 @@ def test_completion_manifest_rejects_partial_and_wrong_relative_path(
             path=manifest, expected_sha256=digest, expected_scene="greatcourt"
         )
     payload["partial"] = False
-    payload["artifacts"]["control_factor"]["path"] = str(
-        tmp_path / "alternate.pt"
-    )
+    payload["artifacts"]["control_factor"]["relative_path"] = "alternate.pt"
     digest = _write_json(manifest, payload)
     with pytest.raises(ValueError, match="missing or changed"):
         validate_completion_manifest(
@@ -337,11 +535,11 @@ def test_completion_manifest_rejects_cross_run_splice(tmp_path, monkeypatch):
         torch.save(factor, factor_path)
         report_path.write_text("{}")
         artifacts[f"{role}_factor"] = {
-            "path": str(factor_path),
+            "relative_path": factor_path.name,
             "sha256": sha256_file(factor_path),
         }
         artifacts[f"{role}_report"] = {
-            "path": str(report_path),
+            "relative_path": report_path.name,
             "sha256": sha256_file(report_path),
         }
     manifest = {
@@ -373,12 +571,50 @@ def test_completion_manifest_rejects_cross_run_splice(tmp_path, monkeypatch):
     completion = validate_completion_manifest(
         path=path, expected_sha256=digest, expected_scene="greatcourt"
     )
-    variant = torch.load(artifacts["variant_factor"]["path"], weights_only=False)
+    variant_path = tmp_path / artifacts["variant_factor"]["relative_path"]
+    variant = torch.load(variant_path, weights_only=False)
     variant["paired_run_uuid"] = "b" * 32
-    torch.save(variant, artifacts["variant_factor"]["path"])
-    assert sha256_file(Path(artifacts["variant_factor"]["path"])) != completion[
+    torch.save(variant, variant_path)
+    assert sha256_file(variant_path) != completion[
         "artifacts"
     ]["variant_factor"]["sha256"]
+    with pytest.raises(ValueError, match="missing or changed"):
+        validate_completion_manifest(
+            path=path, expected_sha256=digest, expected_scene="greatcourt"
+        )
+
+
+def test_completion_is_not_allowed_when_written_factor_reload_differs(
+    tmp_path, monkeypatch
+):
+    factor_path = tmp_path / "factor.pt"
+    report_path = tmp_path / "report.json"
+    expected_factor = {"x": torch.tensor([1])}
+    torch.save({"x": torch.tensor([2])}, factor_path)
+    report = {"valid": True}
+    report_path.write_text(json.dumps(report))
+    with pytest.raises(RuntimeError, match="Reloaded paired Track factor differs"):
+        runner._validate_written_arm(
+            factor=expected_factor,
+            report=report,
+            factor_path=factor_path,
+            report_path=report_path,
+        )
+
+
+def test_completion_reload_accepts_aligned_scalar_nan(tmp_path):
+    factor_path = tmp_path / "factor.pt"
+    report_path = tmp_path / "report.json"
+    factor = {"x": torch.tensor([1.0, float("nan")])}
+    report = {"pair": {"mapping_point_parallax_below_1deg_fraction": float("nan")}}
+    torch.save(factor, factor_path)
+    report_path.write_text(json.dumps(report))
+    runner._validate_written_arm(
+        factor=factor,
+        report=report,
+        factor_path=factor_path,
+        report_path=report_path,
+    )
 
 
 def test_cross_authority_rejects_caller_selected_alternate(tmp_path, monkeypatch):
@@ -474,47 +710,44 @@ def test_stairs_runner_requires_greatcourt_pass_before_any_output(
     assert not output.exists()
 
 
-def test_v1_runner_schema_loader_rejects_v2_selection(tmp_path, monkeypatch):
-    monkeypatch.setattr(v1_runner, "validate_scene_contract", lambda **kwargs: {})
-    monkeypatch.setattr(v1_runner, "load_mapping_cache", lambda **kwargs: {})
-    monkeypatch.setattr(v1_runner, "load_proposals", lambda **kwargs: {})
-    monkeypatch.setattr(v1_runner, "load_probe", lambda **kwargs: {})
-    monkeypatch.setattr(v1_runner, "validate_probe_proposal_lineage", lambda **kwargs: None)
-    monkeypatch.setattr(
-        v1_runner,
-        "load_selection",
-        lambda **kwargs: (_ for _ in ()).throw(
-            ValueError("Unexpected cycle-verified Fisher selection contract")
-        ),
-    )
-    args = type(
-        "Args",
-        (),
-        {
-            "scene": "stairs",
-            "expected_mapping_keypoints": 1,
-            "expected_nms_radius": 1,
-            "expected_pair_budget": 1,
-            "expected_candidate_pair_count": 1,
-            "expected_candidate_components": 1,
-            "query_cache": tmp_path / "cache",
-            "expected_query_cache_sha256": "0" * 64,
-            "expected_query_names_sha256": "0" * 64,
-            "mapping_scope_equivalence": None,
-            "expected_mapping_scope_equivalence_sha256": None,
-            "proposals": tmp_path / "proposals",
-            "expected_proposals_sha256": "0" * 64,
-            "expected_proposals_content_sha256": "0" * 64,
-            "probe": tmp_path / "probe",
-            "expected_probe_sha256": "0" * 64,
-            "expected_probe_content_sha256": "0" * 64,
-            "selection": tmp_path / "v2_selection",
-            "expected_selection_sha256": "0" * 64,
-            "expected_selection_content_sha256": "0" * 64,
-        },
-    )()
+def test_paired_runner_refuses_preexisting_partial_root_without_resume(
+    tmp_path, monkeypatch
+):
+    output = tmp_path / "partial_root"
+    output.mkdir()
+    partial = output / "orphaned_control.pt"
+    partial.write_bytes(b"partial")
+    monkeypatch.setattr(runner, "implementation_registry", lambda: {})
+    with pytest.raises(FileExistsError, match="must not exist"):
+        runner.run(
+            type(
+                "Args",
+                (),
+                {"scene": "greatcourt", "output_root": output},
+            )()
+        )
+    assert partial.read_bytes() == b"partial"
+
+
+def test_v1_runner_schema_loader_rejects_v2_selection(tmp_path):
+    path = tmp_path / "v2_selection.pt"
+    payload = {
+        "schema": COVERAGE_SELECTION_SCHEMA,
+        "version": 1,
+        "policy": COVERAGE_POLICY_NAME,
+        "uses_test_queries": False,
+        "content_sha256": "0" * 64,
+    }
+    torch.save(payload, path)
+    digest = sha256_file(path)
     with pytest.raises(ValueError, match="Unexpected cycle-verified"):
-        v1_runner.run(args)
+        load_selection(
+            path=path,
+            expected_file_sha256=digest,
+            expected_content_sha256="0" * 64,
+            probe={"payload": {}},
+            expected_pair_budget=1,
+        )
 
 
 def _scene_gate_payload(scene: str, *, passed: bool, compiled: dict, parent=None):
@@ -547,9 +780,7 @@ def _scene_gate_payload(scene: str, *, passed: bool, compiled: dict, parent=None
     }
 
 
-def test_cross_b_keeps_base_and_stairs_gates_separate_and_does_not_overauthorize(
-    tmp_path, monkeypatch
-):
+def _cross_b_fixture(tmp_path):
     stairs_path = tmp_path / "stairs.json"
     gc_path = tmp_path / "greatcourt.json"
     stairs_path.write_text("stairs")
@@ -572,6 +803,29 @@ def test_cross_b_keeps_base_and_stairs_gates_separate_and_does_not_overauthorize
             ),
         },
     }
+    return stairs_path, gc_path, records
+
+
+def _cross_b_args(tmp_path, stairs_path, gc_path, records):
+    return type(
+        "Args",
+        (),
+        {
+            "stairs_stage_b_gate": stairs_path,
+            "expected_stairs_stage_b_gate_sha256": records["stairs"]["sha256"],
+            "greatcourt_stage_b_gate": gc_path,
+            "expected_greatcourt_stage_b_gate_sha256": records["greatcourt"][
+                "sha256"
+            ],
+            "output": tmp_path / "cross_b.json",
+        },
+    )()
+
+
+def test_cross_b_keeps_base_and_stairs_gates_separate_and_does_not_overauthorize(
+    tmp_path, monkeypatch
+):
+    stairs_path, gc_path, records = _cross_b_fixture(tmp_path)
     monkeypatch.setattr(
         cross_b,
         "validate_stage_b_gate",
@@ -579,20 +833,7 @@ def test_cross_b_keeps_base_and_stairs_gates_separate_and_does_not_overauthorize
     )
     monkeypatch.setattr(cross_b, "cross_b_producer_identity", lambda: {"clean": True})
     monkeypatch.setattr(cross_b, "require_clean_identity", lambda *args, **kwargs: None)
-    output = tmp_path / "cross_b.json"
-    result = cross_b.run(
-        type(
-            "Args",
-            (),
-            {
-                "stairs_stage_b_gate": stairs_path,
-                "expected_stairs_stage_b_gate_sha256": records["stairs"]["sha256"],
-                "greatcourt_stage_b_gate": gc_path,
-                "expected_greatcourt_stage_b_gate_sha256": records["greatcourt"]["sha256"],
-                "output": output,
-            },
-        )()
-    )
+    result = cross_b.run(_cross_b_args(tmp_path, stairs_path, gc_path, records))
     assert result["decision"] == "GO_TO_V2_AWARE_FULLCHAIN_LINEAGE_IMPLEMENTATION"
     assert result["authorizes_existing_fullchain"] is False
     assert result["advance_to_mapping_pose"] is False
@@ -648,3 +889,298 @@ def test_cross_b_persists_scientific_stop(monkeypatch, tmp_path):
     assert output.exists()
     assert result["both_scene_stage_b_passed"] is False
     assert result["decision"] == "STOP_BEFORE_FULLCHAIN_LINEAGE_IMPLEMENTATION"
+
+
+@pytest.mark.parametrize(
+    "contamination",
+    [
+        "cross_stage_a_root",
+        "greatcourt_parent",
+        "compiled_identity",
+        "track_producer",
+        "stage_b_producer",
+        "missing_base_gate",
+        "retention_leaks_to_greatcourt",
+    ],
+)
+def test_cross_b_rejects_recursive_scene_contamination(
+    contamination, monkeypatch, tmp_path
+):
+    stairs_path, gc_path, records = _cross_b_fixture(tmp_path)
+    stairs = records["stairs"]["payload"]
+    greatcourt = records["greatcourt"]["payload"]
+    if contamination == "cross_stage_a_root":
+        greatcourt["stage_a"]["cross_scene_gate"]["sha256"] = "1" * 64
+    elif contamination == "greatcourt_parent":
+        stairs["paired_track"]["greatcourt_stage_b_parent"]["sha256"] = "1" * 64
+    elif contamination == "compiled_identity":
+        greatcourt["compiled_identity"] = {"algorithm": "polluted"}
+    elif contamination == "track_producer":
+        greatcourt["paired_track"]["track_producer_identity"] = {"commit": "other"}
+    elif contamination == "stage_b_producer":
+        greatcourt["stage_b_producer_identity"] = {"commit": "other"}
+    elif contamination == "missing_base_gate":
+        stairs["stage_b"]["base_gates"].pop(next(iter(stage_b.BASE_GATE_NAMES)))
+    elif contamination == "retention_leaks_to_greatcourt":
+        greatcourt["stage_b"]["stairs_v1_retention_gates"] = {
+            name: True for name in stage_b.STAIRS_RETENTION_GATE_NAMES
+        }
+    monkeypatch.setattr(
+        cross_b,
+        "validate_stage_b_gate",
+        lambda scene, path, expected_sha256: records[scene],
+    )
+    with pytest.raises(ValueError):
+        cross_b.run(_cross_b_args(tmp_path, stairs_path, gc_path, records))
+
+
+def test_stage_b_entrypoint_invalid_is_exit1_without_gate(monkeypatch, tmp_path):
+    output = tmp_path / "scene_gate.json"
+    monkeypatch.setattr(
+        stage_b,
+        "evaluate_scene",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("invalid lineage")),
+    )
+    with pytest.raises(SystemExit) as raised:
+        stage_b.entrypoint(
+            [
+                "--scene",
+                "greatcourt",
+                "--completion-manifest",
+                str(tmp_path / "completion.json"),
+                "--expected-completion-manifest-sha256",
+                "0" * 64,
+                "--output",
+                str(output),
+            ]
+        )
+    assert raised.value.code == 1
+    assert not output.exists()
+
+
+def test_stage_b_entrypoint_scientific_stop_is_exit2_with_gate(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "scene_gate.json"
+    evaluation = {
+        "completion": {"path": tmp_path / "completion.json", "artifacts": {}},
+        "passed": False,
+    }
+    monkeypatch.setattr(stage_b, "evaluate_scene", lambda **kwargs: evaluation)
+    monkeypatch.setattr(stage_b, "stage_b_producer_identity", lambda: {})
+    monkeypatch.setattr(stage_b, "require_clean_identity", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        stage_b,
+        "gate_payload",
+        lambda **kwargs: {
+            "scene_specific_mechanism_pass": False,
+            "decision": "STOP_SCENE_MECHANISM",
+        },
+    )
+    with pytest.raises(SystemExit) as raised:
+        stage_b.entrypoint(
+            [
+                "--scene",
+                "greatcourt",
+                "--completion-manifest",
+                str(tmp_path / "completion.json"),
+                "--expected-completion-manifest-sha256",
+                "0" * 64,
+                "--output",
+                str(output),
+            ]
+        )
+    assert raised.value.code == 2
+    assert json.loads(output.read_text())["decision"] == "STOP_SCENE_MECHANISM"
+
+
+def test_cross_b_entrypoint_scientific_stop_is_exit2_with_gate(
+    monkeypatch, tmp_path
+):
+    stairs_path, gc_path, records = _cross_b_fixture(tmp_path)
+    records["greatcourt"]["payload"]["scene_specific_mechanism_pass"] = False
+    output = tmp_path / "cross_stop.json"
+    monkeypatch.setattr(
+        cross_b,
+        "validate_stage_b_gate",
+        lambda scene, path, expected_sha256: records[scene],
+    )
+    monkeypatch.setattr(cross_b, "cross_b_producer_identity", lambda: {"clean": True})
+    monkeypatch.setattr(cross_b, "require_clean_identity", lambda *args, **kwargs: None)
+    with pytest.raises(SystemExit) as raised:
+        cross_b.entrypoint(
+            [
+                "--stairs-stage-b-gate",
+                str(stairs_path),
+                "--expected-stairs-stage-b-gate-sha256",
+                records["stairs"]["sha256"],
+                "--greatcourt-stage-b-gate",
+                str(gc_path),
+                "--expected-greatcourt-stage-b-gate-sha256",
+                records["greatcourt"]["sha256"],
+                "--output",
+                str(output),
+            ]
+        )
+    assert raised.value.code == 2
+    assert output.exists()
+
+
+def test_cross_b_entrypoint_invalid_is_exit1_without_gate(monkeypatch, tmp_path):
+    output = tmp_path / "invalid_cross.json"
+    monkeypatch.setattr(
+        cross_b,
+        "validate_stage_b_gate",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("invalid lineage")),
+    )
+    with pytest.raises(SystemExit) as raised:
+        cross_b.entrypoint(
+            [
+                "--stairs-stage-b-gate",
+                str(tmp_path / "stairs.json"),
+                "--expected-stairs-stage-b-gate-sha256",
+                "0" * 64,
+                "--greatcourt-stage-b-gate",
+                str(tmp_path / "greatcourt.json"),
+                "--expected-greatcourt-stage-b-gate-sha256",
+                "0" * 64,
+                "--output",
+                str(output),
+            ]
+        )
+    assert raised.value.code == 1
+    assert not output.exists()
+
+
+def test_implementation_registry_missing_and_pending_are_fail_closed(
+    monkeypatch, tmp_path
+):
+    missing = tmp_path / "missing.json"
+    monkeypatch.setattr(track_common, "IMPLEMENTATION_REGISTRY_PATH", missing)
+    with pytest.raises(RuntimeError, match="not committed"):
+        track_common.implementation_registry()
+
+    pending = tmp_path / "pending.json"
+    payload = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "docs/evidence/"
+            "p8_cycle_verified_fisher_coverage_v2_stage_b_implementation.json"
+        ).read_text()
+    )
+    payload["full_cpu_tests"]["passed"] = False
+    payload["full_cpu_tests"]["result"] = "PENDING_SYNTHETIC_TEST"
+    payload["independent_review"]["passed"] = False
+    payload["independent_review"]["result"] = "PENDING_SYNTHETIC_REVIEW"
+    payload["authorizes_real_track_execution"] = False
+    pending.write_text(json.dumps(payload))
+    monkeypatch.setattr(track_common, "IMPLEMENTATION_REGISTRY_PATH", pending)
+    with pytest.raises(RuntimeError, match="invalid or stale"):
+        track_common.implementation_registry()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "cpu_false",
+        "empty_cpu_result",
+        "wrong_tested_commit",
+        "review_finding",
+        "source_hash",
+        "authorization_false",
+    ],
+)
+def test_implementation_registry_rejects_false_or_tampered_claims(
+    tamper, monkeypatch, tmp_path
+):
+    payload = _valid_implementation_registry_payload()
+    if tamper == "cpu_false":
+        payload["full_cpu_tests"]["passed"] = False
+    elif tamper == "empty_cpu_result":
+        payload["full_cpu_tests"]["result"] = ""
+    elif tamper == "wrong_tested_commit":
+        payload["full_cpu_tests"]["implementation_commit"] = "e" * 40
+    elif tamper == "review_finding":
+        payload["independent_review"]["finding_counts"]["p1"] = 1
+    elif tamper == "source_hash":
+        first = payload["required_source_paths"][0]
+        payload["source_file_sha256"][first] = "0" * 64
+    elif tamper == "authorization_false":
+        payload["authorizes_real_track_execution"] = False
+    path = tmp_path / "tampered_registry.json"
+    path.write_text(json.dumps(payload))
+    monkeypatch.setattr(track_common, "IMPLEMENTATION_REGISTRY_PATH", path)
+    with pytest.raises(RuntimeError, match="invalid or stale"):
+        track_common.implementation_registry()
+
+
+def test_implementation_registry_rejects_untracked_and_dirty_file(
+    monkeypatch, tmp_path
+):
+    root = Path(track_common.__file__).resolve().parents[1]
+    registry_dir = root / ".pytest_cache" / "p8_registry_contracts"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    registry_path = registry_dir / f"{tmp_path.name}.json"
+    payload = _valid_implementation_registry_payload()
+    registry_path.write_text(json.dumps(payload, sort_keys=True))
+    monkeypatch.setattr(
+        track_common, "IMPLEMENTATION_REGISTRY_PATH", registry_path
+    )
+    try:
+        _mock_registry_git(
+            monkeypatch,
+            payload=payload,
+            registry_path=registry_path,
+            committed_registry=None,
+        )
+        with pytest.raises(RuntimeError, match="must be committed"):
+            track_common.implementation_registry()
+
+        dirty_bytes = registry_path.read_bytes()
+        _mock_registry_git(
+            monkeypatch,
+            payload=payload,
+            registry_path=registry_path,
+            committed_registry=dirty_bytes + b"\ncommitted-version-differs",
+        )
+        with pytest.raises(RuntimeError, match="registry is dirty"):
+            track_common.implementation_registry()
+    finally:
+        registry_path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["implementation_ancestry", "prereg_ancestry", "prereg_blob"],
+)
+def test_implementation_registry_rejects_commit_or_prereg_forgery(
+    boundary, monkeypatch, tmp_path
+):
+    root = Path(track_common.__file__).resolve().parents[1]
+    registry_dir = root / ".pytest_cache" / "p8_registry_contracts"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    registry_path = registry_dir / f"{tmp_path.name}.json"
+    payload = _valid_implementation_registry_payload()
+    registry_path.write_text(json.dumps(payload, sort_keys=True))
+    monkeypatch.setattr(
+        track_common, "IMPLEMENTATION_REGISTRY_PATH", registry_path
+    )
+    try:
+        _mock_registry_git(
+            monkeypatch,
+            payload=payload,
+            registry_path=registry_path,
+            committed_registry=registry_path.read_bytes(),
+            implementation_is_ancestor=boundary != "implementation_ancestry",
+            prereg_is_ancestor=boundary != "prereg_ancestry",
+            committed_prereg=(b"forged-prereg" if boundary == "prereg_blob" else None),
+        )
+        expected = {
+            "implementation_ancestry": "not in current history",
+            "prereg_ancestry": "does not precede implementation",
+            "prereg_blob": "commit/blob registry differs",
+        }[boundary]
+        with pytest.raises(RuntimeError, match=expected):
+            track_common.implementation_registry()
+    finally:
+        registry_path.unlink(missing_ok=True)

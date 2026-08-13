@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -26,10 +27,11 @@ from scripts.cycle_verified_fisher_cli_common import (
     load_track_factor,
     load_verified_cycle_table,
     selection_pairs,
+    torch_load,
     validate_probe_proposal_lineage,
     validate_v2_frozen_source_contract,
 )
-from scripts.run_track_pair_factor import _pair_report, _track_report
+from scripts.run_track_pair_factor import _build_report, _pair_report, _track_report
 
 
 PREREGISTRATION_PATH = (
@@ -152,6 +154,9 @@ def implementation_registry() -> dict:
             "Reviewed P8 coverage-V2 implementation registry is not committed"
         )
     payload = json.loads(IMPLEMENTATION_REGISTRY_PATH.read_text())
+    cpu_result = payload.get("full_cpu_tests")
+    review_result = payload.get("independent_review")
+    implementation_commit = payload.get("implementation_commit")
     required_source_paths = sorted(
         set(TRACK_PRODUCER_SOURCE_PATHS)
         | set(STAGE_B_PRODUCER_SOURCE_PATHS)
@@ -171,9 +176,7 @@ def implementation_registry() -> dict:
         or payload.get("preregistration", {}).get("blob_sha256")
         != PREREGISTRATION_BLOB_SHA256
         or sha256_file(PREREGISTRATION_PATH) != PREREGISTRATION_BLOB_SHA256
-        or re.fullmatch(
-            r"[0-9a-f]{40}", str(payload.get("implementation_commit", ""))
-        )
+        or re.fullmatch(r"[0-9a-f]{40}", str(implementation_commit))
         is None
         or payload.get("required_source_paths") != required_source_paths
         or payload.get("source_file_sha256")
@@ -181,8 +184,24 @@ def implementation_registry() -> dict:
             name: _file_sha256(Path(__file__).resolve().parents[1] / name)
             for name in required_source_paths
         }
-        or payload.get("full_cpu_tests", {}).get("passed") is not True
-        or payload.get("independent_review", {}).get("passed") is not True
+        or not isinstance(cpu_result, dict)
+        or set(cpu_result)
+        != {"passed", "result", "implementation_commit", "command", "test_count"}
+        or cpu_result.get("passed") is not True
+        or cpu_result.get("implementation_commit") != implementation_commit
+        or not isinstance(cpu_result.get("command"), str)
+        or not cpu_result["command"].strip()
+        or isinstance(cpu_result.get("test_count"), bool)
+        or not isinstance(cpu_result.get("test_count"), int)
+        or cpu_result["test_count"] <= 0
+        or not _finished_result(cpu_result.get("result"))
+        or not isinstance(review_result, dict)
+        or set(review_result)
+        != {"passed", "result", "implementation_commit", "finding_counts"}
+        or review_result.get("passed") is not True
+        or review_result.get("implementation_commit") != implementation_commit
+        or review_result.get("finding_counts") != {"p0": 0, "p1": 0, "p2": 0}
+        or not _finished_result(review_result.get("result"))
         or payload.get("authorizes_real_track_execution") is not True
         or payload.get("authorizes_test") is not False
         or payload.get("authorizes_method_default_change") is not False
@@ -210,6 +229,32 @@ def implementation_registry() -> dict:
     )
     if ancestor.returncode != 0:
         raise RuntimeError("Reviewed P8 implementation commit is not in current history")
+    prereg_ancestor = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            PREREGISTRATION_COMMIT,
+            payload["implementation_commit"],
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if prereg_ancestor.returncode != 0:
+        raise RuntimeError("P8 preregistration commit does not precede implementation")
+    relative_prereg = str(PREREGISTRATION_PATH.relative_to(root))
+    try:
+        committed_prereg = subprocess.run(
+            ["git", "show", f"{PREREGISTRATION_COMMIT}:{relative_prereg}"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("P8 preregistration commit/blob cannot be verified") from error
+    if hashlib.sha256(committed_prereg).hexdigest() != PREREGISTRATION_BLOB_SHA256:
+        raise RuntimeError("P8 preregistration commit/blob registry differs")
     for name, digest in payload["source_file_sha256"].items():
         committed = hashlib.sha256(
             subprocess.run(
@@ -221,7 +266,12 @@ def implementation_registry() -> dict:
         ).hexdigest()
         if committed != digest:
             raise RuntimeError("P8 implementation commit/source registry differs")
-    relative_registry = str(IMPLEMENTATION_REGISTRY_PATH.relative_to(root))
+    try:
+        relative_registry = str(IMPLEMENTATION_REGISTRY_PATH.relative_to(root))
+    except ValueError as error:
+        raise RuntimeError(
+            "Reviewed P8 implementation registry must be inside the repository"
+        ) from error
     try:
         committed_registry = subprocess.run(
             ["git", "show", f"{current_commit}:{relative_registry}"],
@@ -240,6 +290,14 @@ def implementation_registry() -> dict:
     return payload
 
 
+def _finished_result(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "PENDING" not in value.upper()
+    )
+
+
 def scene_preregistration(scene: str) -> dict:
     scene = str(scene).lower()
     payload = preregistration().get("fixed_scene_contracts", {}).get(scene)
@@ -256,6 +314,25 @@ def scene_preregistration(scene: str) -> dict:
     if observed != expected:
         raise RuntimeError(f"Compiled {scene} P8 scene contract is inconsistent")
     return deepcopy(payload)
+
+
+def artifact_schema_contract(name: str) -> dict:
+    contract = preregistration().get("artifact_schemas", {}).get(name)
+    if not isinstance(contract, dict):
+        raise RuntimeError(f"P8 preregistration lacks the {name} artifact contract")
+    return deepcopy(contract)
+
+
+def required_artifact_keys(name: str) -> set[str]:
+    keys = artifact_schema_contract(name).get("required_keys")
+    if (
+        not isinstance(keys, list)
+        or not keys
+        or any(not isinstance(key, str) for key in keys)
+        or len(keys) != len(set(keys))
+    ):
+        raise RuntimeError(f"P8 preregistration has invalid {name} required keys")
+    return set(keys)
 
 
 def _sha256(value: object, *, label: str) -> str:
@@ -1004,6 +1081,9 @@ def recursive_equal(left: Any, right: Any) -> bool:
             and len(left) == len(right)
             and all(recursive_equal(a, b) for a, b in zip(left, right))
         )
+    if isinstance(left, float) and isinstance(right, float):
+        if math.isnan(left) and math.isnan(right):
+            return True
     return left == right
 
 
@@ -1056,9 +1136,12 @@ def validate_completion_manifest(
         "sha256": sha256_file(IMPLEMENTATION_REGISTRY_PATH),
         "implementation_commit": compiled_implementation["implementation_commit"],
     }
+    contract = artifact_schema_contract("paired_completion")
     if (
-        payload.get("schema") != COMPLETION_SCHEMA
-        or payload.get("version") != 1
+        set(payload) != required_artifact_keys("paired_completion")
+        or path.name != contract["atomic_last_marker"]
+        or payload.get("schema") != contract["schema"]
+        or payload.get("version") != contract["version"]
         or payload.get("uses_test_queries") is not False
         or payload.get("mapping_only") is not True
         or payload.get("complete") is not True
@@ -1069,7 +1152,7 @@ def validate_completion_manifest(
         or not isinstance(payload.get("run_uuid"), str)
         or re.fullmatch(r"[0-9a-f]{32}", payload["run_uuid"]) is None
         or not isinstance(artifacts, dict)
-        or set(artifacts) != {"control_factor", "control_report", "variant_factor", "variant_report"}
+        or set(artifacts) != set(contract["relative_artifact_paths"])
         or not isinstance(inputs, dict)
         or not isinstance(summaries, dict)
         or set(summaries) != {"control", "variant"}
@@ -1088,10 +1171,14 @@ def validate_completion_manifest(
         for kind, suffix in (("factor", ".pt"), ("report", ".json")):
             name = f"{role}_{kind}"
             reference = artifacts[name]
-            expected_path = root / f"{stem}{suffix}"
+            expected_relative = contract["relative_artifact_paths"][name]
+            expected_path = root / expected_relative
             if (
                 not isinstance(reference, dict)
-                or Path(str(reference.get("path", ""))).resolve() != expected_path
+                or set(reference) != {"relative_path", "sha256"}
+                or reference.get("relative_path") != expected_relative
+                or expected_relative != f"{stem}{suffix}"
+                or expected_path.resolve().parent != root
                 or reference.get("sha256") != sha256_file(expected_path)
             ):
                 raise ValueError(f"Completion manifest {name} is missing or changed")
@@ -1165,6 +1252,11 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
     if payload.get("inputs") != expected_input_refs:
         raise ValueError("Completion manifest input registry differs from preregistration")
     expected_names = registry["query_cache"]["names"]
+    frozen = torch_load(registry["frozen_track_payload_path"])
+    keypoint_counts = torch.as_tensor(
+        [int(value.shape[0]) for value in registry["query_cache"]["keypoints"]],
+        dtype=torch.long,
+    )
     common = {
         "expected_query_names": expected_names,
         "expected_query_names_sha256": registry["query_cache"]["query_names_sha256"],
@@ -1198,8 +1290,31 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
         parameters = factor_payload.get("pair_policy_parameters")
         diagnostics = factor_payload.get("diagnostics")
         sidecar_policy = factor_payload.get("pair_sidecar", {}).get("policy", {})
+        expected_factor_keys = {
+            "schema",
+            "version",
+            "uses_test_queries",
+            "mapping_keypoint_factor",
+            "mapping_nms_radius",
+            "descriptor_factor_mutated",
+            "density_factor_mutated",
+            "selector_factor_mutated",
+            "pair_policy",
+            "pair_policy_parameters",
+            "query_names",
+            "query_names_sha256",
+            "query_bins",
+            "tracks",
+            "track_geometry",
+            "pair_sidecar",
+            "diagnostics",
+            "input_lineage",
+            "paired_run_uuid",
+            "track_producer_identity",
+        }
         if (
-            report.get("schema") != "lafgs_pair_policy_track_factor"
+            set(factor_payload) != expected_factor_keys
+            or report.get("schema") != "lafgs_pair_policy_track_factor"
             or report.get("version") != 1
             or report.get("uses_test_queries") is not False
             or report.get("reuse_only") is not True
@@ -1282,16 +1397,58 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
             factor_payload["track_geometry"],
             query_count=len(expected_names),
         )
-        if report.get("track") != expected_track:
+        if not recursive_equal(report.get("track"), expected_track):
             raise ValueError(f"Completed {scene}/{role} report metrics are stale")
-        if report.get("pair") != _pair_report(factor_payload["pair_sidecar"]):
+        if not recursive_equal(
+            report.get("pair"), _pair_report(factor_payload["pair_sidecar"])
+        ):
             raise ValueError(f"Completed {scene}/{role} pair report is stale")
+        expected_base_report = _build_report(
+            result=factor_payload,
+            frozen=frozen,
+            sidecar=factor_payload["pair_sidecar"],
+            keypoint_counts=keypoint_counts,
+            scene_point_count=0,
+            pair_budget=compiled["exact_pair_budget"],
+            manifest_path=registry["manifest_path"],
+            query_cache_path=registry["query_cache"]["path"],
+            frozen_track_payload_path=registry["frozen_track_payload_path"],
+        )
+        deterministic_report_fields = set(expected_base_report)
+        expected_report_keys = deterministic_report_fields | {
+            "reuse_only",
+            "probe_matcher",
+            "scene_contract",
+            "paired_run_uuid",
+            "track_producer_identity",
+            "stage_seconds",
+            "artifact",
+            "artifact_sha256",
+        }
+        timing = report.get("stage_seconds")
+        if (
+            set(report) != expected_report_keys
+            or any(
+                not recursive_equal(report.get(name), value)
+                for name, value in expected_base_report.items()
+            )
+            or not isinstance(timing, dict)
+            or set(timing) != {"total"}
+            or isinstance(timing["total"], bool)
+            or not isinstance(timing["total"], (int, float))
+            or not math.isfinite(float(timing["total"]))
+            or float(timing["total"]) < 0.0
+        ):
+            raise ValueError(f"Completed {scene}/{role} deterministic report differs")
         summary = payload["summaries"].get(role)
-        if summary != {
-            "pair_policy": policy,
-            "pair_subset_role": subset_role,
-            "track": expected_track,
-        }:
+        if not recursive_equal(
+            summary,
+            {
+                "pair_policy": policy,
+                "pair_subset_role": subset_role,
+                "track": expected_track,
+            },
+        ):
             raise ValueError(f"Completed {scene}/{role} summary differs from report")
         result[role] = {
             "factor": factor,

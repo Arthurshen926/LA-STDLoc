@@ -25,6 +25,7 @@ from scripts.cycle_verified_fisher_coverage_track_common import (
     STAGE_B_PRODUCER_SOURCE_PATHS,
     VARIANT_POLICY_NAME,
     VARIANT_SUBSET_ROLE,
+    artifact_schema_contract,
     load_compiled_scene_inputs,
     load_completed_arms,
     preregistration,
@@ -34,6 +35,7 @@ from scripts.cycle_verified_fisher_coverage_track_common import (
     scene_preregistration,
     stage_b_producer_identity,
     track_metrics,
+    required_artifact_keys,
     validate_code_identity,
     validate_completion_manifest,
 )
@@ -173,6 +175,47 @@ def _attest_baseline(name: str) -> tuple[Path, dict]:
     return path, reference
 
 
+def _control_scientific_projection_status(
+    *, v2_control: dict, v1_control_factor: dict, v1_control_metrics: dict
+) -> dict[str, bool]:
+    """Compare only the preregistered scientific projection of the control."""
+    v2_factor = v2_control["factor"]["payload"]
+    tensor_fields = ("query_bins", "tracks", "track_geometry")
+    tensor_parity = all(
+        recursive_equal(v2_factor.get(name), v1_control_factor.get(name))
+        for name in tensor_fields
+    ) and recursive_equal(
+        v2_factor.get("pair_sidecar", {}).get("pair"),
+        v1_control_factor.get("pair_sidecar", {}).get("pair"),
+    )
+    return {
+        "tensor_parity": tensor_parity,
+        "metric_parity": recursive_equal(v2_control["metrics"], v1_control_metrics),
+    }
+
+
+def _stairs_retention_gates(*, metrics: dict, thresholds: dict) -> dict[str, bool]:
+    covariance = metrics["triangulated_covariance_p90_m2"]
+    return {
+        "v1_triangulated_tracks_retain_98pct": metrics["triangulated_tracks"]
+        >= thresholds["triangulated_tracks_at_least"],
+        "v1_broad_eligible_tracks_retain_98pct": metrics[
+            "broad_eligible_tracks"
+        ]
+        >= thresholds["broad_eligible_tracks_at_least"],
+        "v1_high_confidence_tracks_retain_98pct": metrics[
+            "high_confidence_tracks"
+        ]
+        >= thresholds["high_confidence_tracks_at_least"],
+        "v1_triangulated_covariance_p90_not_worse_5pct": covariance is not None
+        and covariance <= thresholds["triangulated_covariance_p90_m2_at_most"],
+        "v1_broad_mapping_query_coverage_not_lower": metrics[
+            "mapping_query_with_broad_track_fraction"
+        ]
+        == thresholds["mapping_query_with_broad_track_fraction_exact"],
+    }
+
+
 def _load_stairs_v1_reference(*, v2_control: dict, v2_variant: dict) -> dict:
     control_path, control_ref = _attest_baseline("control_factor")
     control_report_path, control_report_ref = _attest_baseline("control_report")
@@ -217,7 +260,7 @@ def _load_stairs_v1_reference(*, v2_control: dict, v2_variant: dict) -> dict:
             or Path(str(report.get("artifact", ""))).resolve()
             != Path(factor_ref["path"]).resolve()
             or report.get("artifact_sha256") != factor_ref["sha256"]
-            or report.get("track") != expected_track
+            or not recursive_equal(report.get("track"), expected_track)
         ):
             raise ValueError(f"Stairs V1 {role} report differs from its factor")
     gate_inputs = gate.get("inputs")
@@ -249,48 +292,21 @@ def _load_stairs_v1_reference(*, v2_control: dict, v2_variant: dict) -> dict:
             or observed.get("sha256") != reference["sha256"]
         ):
             raise ValueError(f"Stairs V1 Stage-B gate changed {name}")
-    v2_factor = v2_control["factor"]["payload"]
-    exact_science_fields = (
-        "query_bins",
-        "tracks",
-        "track_geometry",
+    parity = _control_scientific_projection_status(
+        v2_control=v2_control,
+        v1_control_factor=control_factor,
+        v1_control_metrics=control_metrics,
     )
-    tensor_parity = not any(
-        not recursive_equal(v2_factor.get(name), control_factor.get(name))
-        for name in exact_science_fields
-    ) and recursive_equal(
-        v2_factor.get("pair_sidecar", {}).get("pair"),
-        control_factor.get("pair_sidecar", {}).get("pair"),
-    )
-    metric_parity = v2_control["metrics"] == control_metrics
-    parity_gate = {
-        "v1_nearest_control_scientific_projection_exact": (
-            tensor_parity and metric_parity
+    if not all(parity.values()):
+        raise ValueError(
+            "Stairs V2 nearest control differs from the frozen V1 scientific projection"
         )
+    parity_gate = {
+        "v1_nearest_control_scientific_projection_exact": True
     }
     thresholds = expected_metrics["retention_gates"]
     v2_metrics = v2_variant["metrics"]
-    covariance = v2_metrics["triangulated_covariance_p90_m2"]
-    gates = {
-        "v1_triangulated_tracks_retain_98pct": v2_metrics[
-            "triangulated_tracks"
-        ]
-        >= thresholds["triangulated_tracks_at_least"],
-        "v1_broad_eligible_tracks_retain_98pct": v2_metrics[
-            "broad_eligible_tracks"
-        ]
-        >= thresholds["broad_eligible_tracks_at_least"],
-        "v1_high_confidence_tracks_retain_98pct": v2_metrics[
-            "high_confidence_tracks"
-        ]
-        >= thresholds["high_confidence_tracks_at_least"],
-        "v1_triangulated_covariance_p90_not_worse_5pct": covariance is not None
-        and covariance <= thresholds["triangulated_covariance_p90_m2_at_most"],
-        "v1_broad_mapping_query_coverage_not_lower": v2_metrics[
-            "mapping_query_with_broad_track_fraction"
-        ]
-        == thresholds["mapping_query_with_broad_track_fraction_exact"],
-    }
+    gates = _stairs_retention_gates(metrics=v2_metrics, thresholds=thresholds)
     return {
         "references": {
             "stage_b_gate": gate_ref,
@@ -304,8 +320,8 @@ def _load_stairs_v1_reference(*, v2_control: dict, v2_variant: dict) -> dict:
         "thresholds": deepcopy(thresholds),
         "gates": gates,
         "control_parity_gate": parity_gate,
-        "v2_control_exact_scientific_tensor_parity": tensor_parity,
-        "v2_control_exact_metric_parity": metric_parity,
+        "v2_control_exact_scientific_tensor_parity": parity["tensor_parity"],
+        "v2_control_exact_metric_parity": parity["metric_parity"],
     }
 
 
@@ -485,6 +501,8 @@ def gate_payload(*, scene: str, evaluation: dict, producer: dict) -> dict:
             "candidate_component_count"
         ],
     }
+    if set(report) != required_artifact_keys("scene_stage_b_gate"):
+        raise RuntimeError("Compiled scene Stage-B output schema changed")
     return report
 
 
@@ -493,9 +511,11 @@ def validate_stage_b_gate(
 ) -> dict:
     path = attest_file(path, expected_sha256, label=f"{scene} V2 Stage-B gate")
     observed = json.loads(path.read_text())
+    contract = artifact_schema_contract("scene_stage_b_gate")
     if (
-        observed.get("schema") != SCHEMA
-        or observed.get("version") != 1
+        set(observed) != required_artifact_keys("scene_stage_b_gate")
+        or observed.get("schema") != contract["schema"]
+        or observed.get("version") != contract["version"]
         or observed.get("uses_test_queries") is not False
         or observed.get("mapping_only") is not True
         or observed.get("valid") is not True

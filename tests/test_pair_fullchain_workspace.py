@@ -3,6 +3,7 @@ import json
 import pytest
 
 from scripts.pair_fullchain_workspace import (
+    _validate_semantic_input,
     lock_inputs,
     preflight_workspace,
     verify_stage_manifest,
@@ -138,3 +139,29 @@ def test_lock_inputs_rejects_failed_mechanism_gate(tmp_path):
             parent=preflight,
             report_path=root / "contracts" / "inputs.json",
         )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "lafgs_cycle_verified_fisher_coverage_mechanism_gate",
+        "lafgs_cycle_verified_fisher_coverage_cross_scene_stage_b_gate",
+    ],
+)
+def test_existing_fullchain_rejects_coverage_v2_stage_b_schemas(tmp_path, schema):
+    gate = tmp_path / "coverage_v2_gate.json"
+    gate.write_text(
+        json.dumps(
+            {
+                "schema": schema,
+                "version": 1,
+                "uses_test_queries": False,
+                "valid": True,
+                "scene_specific_mechanism_pass": True,
+                "both_scene_stage_b_passed": True,
+                "decision": "GO_TO_V2_AWARE_FULLCHAIN_LINEAGE_IMPLEMENTATION",
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="does not authorize fullchain"):
+        _validate_semantic_input("mechanism_gate", gate)
