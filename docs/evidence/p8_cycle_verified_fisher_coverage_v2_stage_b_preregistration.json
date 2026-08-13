@@ -18,6 +18,127 @@
       "authorizes_existing_v1_track_runner": false
     }
   },
+  "artifact_schemas": {
+    "track_factor": {
+      "schema": "lafgs_pair_policy_track_factor",
+      "version": 1,
+      "required_v2_keys": [
+        "paired_run_uuid",
+        "track_producer_identity"
+      ]
+    },
+    "track_report": {
+      "schema": "lafgs_pair_policy_track_factor",
+      "version": 1,
+      "required_v2_keys": [
+        "paired_run_uuid",
+        "track_producer_identity",
+        "reuse_only",
+        "probe_matcher",
+        "scene_contract"
+      ]
+    },
+    "paired_completion": {
+      "schema": "lafgs_cycle_verified_fisher_coverage_paired_track_completion",
+      "version": 1,
+      "relative_artifact_paths": {
+        "control_factor": "cycle_verified_fisher_coverage_nearest_control_track_factor.pt",
+        "control_report": "cycle_verified_fisher_coverage_nearest_control_track_factor.json",
+        "variant_factor": "cycle_verified_fisher_coverage_track_factor.pt",
+        "variant_report": "cycle_verified_fisher_coverage_track_factor.json"
+      },
+      "atomic_last_marker": "paired_track_completion.json",
+      "required_keys": [
+        "schema",
+        "version",
+        "uses_test_queries",
+        "mapping_only",
+        "complete",
+        "partial",
+        "resume_allowed",
+        "scene",
+        "build_order",
+        "run_uuid",
+        "track_producer_identity",
+        "inputs",
+        "artifacts",
+        "summaries",
+        "failure_recovery"
+      ]
+    },
+    "scene_stage_b_gate": {
+      "schema": "lafgs_cycle_verified_fisher_coverage_mechanism_gate",
+      "version": 1,
+      "pass_decision": "SCENE_PASS_REQUIRES_OTHER_SCENE",
+      "stop_decision": "STOP_SCENE_MECHANISM",
+      "advance_to_existing_fullchain": false,
+      "advance_to_mapping_pose": false,
+      "authorizes_test": false,
+      "required_keys": [
+        "schema",
+        "version",
+        "uses_test_queries",
+        "mapping_only",
+        "valid",
+        "scene",
+        "policy",
+        "control_policy",
+        "scene_contract",
+        "stage_a",
+        "inputs",
+        "paired_track",
+        "stage_b",
+        "stairs_v1_reference",
+        "compiled_identity",
+        "stage_b_producer_identity",
+        "scene_specific_mechanism_pass",
+        "requires_other_scene",
+        "advance_to_existing_fullchain",
+        "advance_to_mapping_pose",
+        "authorizes_test",
+        "changes_method_default",
+        "decision"
+      ]
+    },
+    "cross_scene_stage_b_gate": {
+      "schema": "lafgs_cycle_verified_fisher_coverage_cross_scene_stage_b_gate",
+      "version": 1,
+      "pass_decision": "GO_TO_V2_AWARE_FULLCHAIN_LINEAGE_IMPLEMENTATION",
+      "stop_decision": "STOP_BEFORE_FULLCHAIN_LINEAGE_IMPLEMENTATION",
+      "authorizes_existing_fullchain": false,
+      "advance_to_mapping_pose": false,
+      "authorizes_test": false,
+      "required_keys": [
+        "schema",
+        "version",
+        "uses_test_queries",
+        "mapping_only",
+        "valid",
+        "policy",
+        "inputs",
+        "cross_scene_stage_a_gate",
+        "compiled_identity",
+        "track_producer_identity",
+        "stage_b_producer_identity",
+        "cross_stage_b_producer_identity",
+        "base_gates",
+        "stairs_control_parity_gate",
+        "stairs_v1_retention_gates",
+        "scene_stage_b_passed",
+        "both_scene_stage_b_passed",
+        "advance_to_v2_aware_fullchain_lineage_implementation",
+        "authorizes_existing_fullchain",
+        "advance_to_mapping_pose",
+        "authorizes_test",
+        "changes_method_default",
+        "decision"
+      ]
+    },
+    "legacy_consumer_boundary": {
+      "v1_track_runner_rejects_coverage_selection_and_gates": true,
+      "existing_fullchain_rejects_scene_and_cross_v2_stage_b_schemas": true
+    }
+  },
   "fixed_scene_contracts": {
     "greatcourt": {
       "scene_stage_a_gate": {
@@ -69,7 +190,9 @@
       "candidate_component_count": 1,
       "maximum_reprojection_px": 1.9869927213147978,
       "maximum_covariance_trace_m2": 0.01762529499703211,
-      "maximum_rendered_depth_residual_m": 0.751298756941752
+      "maximum_rendered_depth_residual_m": 0.751298756941752,
+      "control_pair_table_sha256": "355e01989327c91ee2a316fcb12433056632bd74f166882d8a29ef053b80da61",
+      "variant_pair_table_sha256": "c2c0e1e90eeccae7af7a23f1da4dcedafe89a213ec5f3dc1ffb641bbce10f79e"
     },
     "stairs": {
       "scene_stage_a_gate": {
@@ -121,7 +244,9 @@
       "candidate_component_count": 2,
       "maximum_reprojection_px": 0.628583948286277,
       "maximum_covariance_trace_m2": 0.00001758278067415831,
-      "maximum_rendered_depth_residual_m": 0.01893807070901341
+      "maximum_rendered_depth_residual_m": 0.01893807070901341,
+      "control_pair_table_sha256": "6d6afc9335bcb59470541042770e3d4352c2c90e89c11b78992da7314a762b29",
+      "variant_pair_table_sha256": "f92a48ce96dd56730b667683b5cd0ede325095772c50530ef4e35b10583fdcdd"
     }
   },
   "track_pair_contract": {
@@ -137,7 +262,39 @@
     "matcher_reentry_forbidden": true,
     "candidate_camera_pair_selection_reentry_forbidden": true,
     "shared_run_uuid_required": true,
-    "only_authorized_scientific_difference": "exact_pair_subset_and_policy_label"
+    "only_exogenous_scientific_difference": "exact_pair_subset",
+    "non_scientific_labels_may_differ": [
+      "pair_policy",
+      "pair_subset_role"
+    ],
+    "must_exact_inputs": [
+      "query_cache",
+      "mapping_scope_equivalence",
+      "pair_proposals",
+      "pair_match_probe",
+      "verified_cycle_table",
+      "pair_selection",
+      "scene_stage_a_gate",
+      "cross_scene_stage_a_gate",
+      "bootstrap_manifest",
+      "frozen_track_payload",
+      "track_producer_identity",
+      "paired_run_uuid"
+    ],
+    "shared_build_call_kwargs_except": [
+      "pair_policy",
+      "precomputed_pairs",
+      "precomputed_pair_matches",
+      "precomputed_pair_match_diagnostics"
+    ],
+    "authorized_derived_output_differences": [
+      "pair_subset_role_and_policy_labels",
+      "exact_precomputed_pair_rows_and_match_rows",
+      "pair_sidecar_and_diagnostics",
+      "tracks_and_triangulated_geometry",
+      "factor_and_report_metrics"
+    ],
+    "stage_b_only_accepts_completion_manifest_path_and_sha256": true
   },
   "producer_identity": {
     "clean_committed_source_bytes_required": true,
@@ -147,6 +304,7 @@
       "common/hashing.py",
       "evidence/camera_pair_policy.py",
       "evidence/cycle_verified_fisher.py",
+      "evidence/tracks.py",
       "evidence/triangulation.py",
       "features/multiview_fusion.py",
       "scripts/cycle_verified_fisher_cli_common.py",
@@ -162,6 +320,27 @@
       "device"
     ]
   },
+  "stage_b_producer_identity": {
+    "clean_committed_source_bytes_required": true,
+    "entrypoint_source_closure_required": true,
+    "required_source_paths_include": [
+      "scripts/cycle_verified_fisher_coverage_track_common.py",
+      "scripts/compare_cycle_verified_fisher_coverage_mechanism.py",
+      "scripts/run_track_pair_factor.py",
+      "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json"
+    ]
+  },
+  "cross_scene_stage_b_producer_identity": {
+    "clean_committed_source_bytes_required": true,
+    "entrypoint_source_closure_required": true,
+    "required_source_paths_include": [
+      "scripts/cycle_verified_fisher_coverage_track_common.py",
+      "scripts/compare_cycle_verified_fisher_coverage_mechanism.py",
+      "scripts/aggregate_cycle_verified_fisher_coverage_cross_scene.py",
+      "scripts/run_track_pair_factor.py",
+      "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json"
+    ]
+  },
   "stage_b_base_gates": {
     "triangulated_tracks_retain_98pct": true,
     "broad_eligible_tracks_retain_98pct": true,
@@ -171,6 +350,40 @@
     "control_probe_rows_reused": true,
     "variant_probe_rows_reused": true,
     "same_probe_matcher_contract": true
+  },
+  "stage_b_thresholds": {
+    "minimum_triangulated_track_retention_ratio": 0.98,
+    "minimum_broad_eligible_track_retention_ratio": 0.98,
+    "minimum_high_confidence_track_retention_ratio": 0.98,
+    "maximum_triangulated_covariance_p90_ratio": 1.05,
+    "minimum_broad_query_coverage_delta": 0.0,
+    "coverage_formula": "variant_mapping_query_with_broad_track_fraction_greater_than_or_equal_to_control"
+  },
+  "pass_and_exit_contract": {
+    "scene_pass_formulas": {
+      "greatcourt": "all(base_gates_8)",
+      "stairs": "all(base_gates_8) and v1_nearest_control_scientific_projection_exact and all(stairs_v1_retention_gates_5)"
+    },
+    "cross_pass_formula": "stairs_scene_specific_mechanism_pass and greatcourt_scene_specific_mechanism_pass and same_track_producer_identity and same_stage_b_producer_identity and same_compiled_identity",
+    "lineage_or_input_invalid": {
+      "exit_code": 1,
+      "writes_gate": false,
+      "includes": [
+        "reuse_attestation_invalid",
+        "control_scientific_projection_unverifiable",
+        "producer_identity_invalid",
+        "input_hash_or_schema_invalid",
+        "completion_partial_or_cross_run"
+      ]
+    },
+    "scientific_gate_failure": {
+      "exit_code": 2,
+      "writes_valid_stop_gate": true,
+      "includes": [
+        "base_gate_false",
+        "stairs_retention_gate_false"
+      ]
+    }
   },
   "stairs_v1_reference": {
     "stage_b_gate": {
@@ -208,6 +421,24 @@
       "mapping_query_with_broad_track_fraction": 1.0
     },
     "v2_control_scientific_tensor_and_metric_exact_parity_required": true,
+    "v2_control_scientific_projection": {
+      "factor_tensor_fields": [
+        "query_bins",
+        "tracks",
+        "track_geometry",
+        "pair_sidecar.pair"
+      ],
+      "report_metric_source": "independent_recomputation_from_tracks_and_track_geometry",
+      "excluded_non_scientific_fields": [
+        "pair_policy_and_subset_role_labels",
+        "input_lineage",
+        "producer_identity",
+        "run_uuid",
+        "artifact_paths_and_hashes",
+        "timing"
+      ],
+      "scene_gate_name": "v1_nearest_control_scientific_projection_exact"
+    },
     "retention_gates": {
       "triangulated_tracks_at_least": 17037,
       "broad_eligible_tracks_at_least": 16302,
@@ -231,6 +462,24 @@
     "cross_scene_stage_b_aggregation",
     "implement_v2_aware_fullchain_lineage_only_after_cross_scene_go"
   ],
+  "greatcourt_fail_fast_parent_contract": {
+    "greatcourt_stage_b_runs_first": true,
+    "stairs_paired_runner_requires_greatcourt_stage_b_pass_path_and_sha256": true,
+    "stairs_stage_b_requires_same_greatcourt_stage_b_pass_parent": true,
+    "greatcourt_scientific_stop_forbids_stairs_execution": true
+  },
+  "implementation_authorization_boundary": {
+    "cross_stage_a_authorizes_implementation_only": true,
+    "real_track_execution_requires_reviewed_implementation_registry": true,
+    "reviewed_implementation_registry_must_lock": [
+      "preregistration_commit_and_blob_sha256",
+      "implementation_commit",
+      "track_stage_b_cross_b_source_closure_sha256",
+      "full_cpu_test_result",
+      "independent_review_result"
+    ],
+    "two_commit_no_self_hash_cycle": true
+  },
   "current_status": {
     "preregistered_before_v2_track_artifacts": true,
     "real_v2_track_run": false,
