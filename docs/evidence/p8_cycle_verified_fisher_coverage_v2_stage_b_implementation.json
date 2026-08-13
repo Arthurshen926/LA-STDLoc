@@ -1,0 +1,65 @@
+{
+  "schema": "lafgs_cycle_verified_fisher_coverage_stage_b_implementation_registry",
+  "version": 1,
+  "valid": true,
+  "uses_test_queries": false,
+  "mapping_only": true,
+  "preregistration": {
+    "path": "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json",
+    "commit": "9384986df4c1d22ea5aeac71b5caa460f9785589",
+    "blob_sha256": "eab20cb3fac8440eb2b22b4c4c88a2e1efb911aebeefe06fbd1e41cf26f8a54e"
+  },
+  "implementation_commit": "dce574f2df115a4a5638969e2975445f687813b7",
+  "required_source_paths": [
+    "common/hashing.py",
+    "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json",
+    "evidence/camera_pair_policy.py",
+    "evidence/cycle_verified_fisher.py",
+    "evidence/tracks.py",
+    "evidence/triangulation.py",
+    "features/multiview_fusion.py",
+    "scripts/aggregate_cycle_verified_fisher_coverage_cross_scene.py",
+    "scripts/compare_cycle_verified_fisher_coverage_mechanism.py",
+    "scripts/cycle_verified_fisher_cli_common.py",
+    "scripts/cycle_verified_fisher_coverage_track_common.py",
+    "scripts/materialize_cycle_verified_fisher_coverage_track_factor.py",
+    "scripts/run_track_pair_factor.py",
+    "topology/track_core.py"
+  ],
+  "source_file_sha256": {
+    "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+    "docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json": "eab20cb3fac8440eb2b22b4c4c88a2e1efb911aebeefe06fbd1e41cf26f8a54e",
+    "evidence/camera_pair_policy.py": "892b20c36a17dae201870f2ca2bf22b202238c743a2ae8c9d9a7b66e9bbe5f7c",
+    "evidence/cycle_verified_fisher.py": "f693173914c69c8de39b85715f3a631e146714e6bcd6505d5504cdb26b95644d",
+    "evidence/tracks.py": "841f394cd7ceee8b7ac6b2f3ff74eca547afe210a5f55214de7e1ab95996915b",
+    "evidence/triangulation.py": "5d6de719ab88f5e8c27572df0d1300ba355017688e770e29386d229e7df2d924",
+    "features/multiview_fusion.py": "572400cb0edfc36fdf7b9c6c7e429a7b8fc9daeab2a0bfaceee1b6bd465d84e8",
+    "scripts/aggregate_cycle_verified_fisher_coverage_cross_scene.py": "efe92b9705455c646d1eed8350b993962d6319ea00529065ae22ed608e3505cf",
+    "scripts/compare_cycle_verified_fisher_coverage_mechanism.py": "adda5918bbf8711161802da29626021767f92a1017920fb4f71f34a4825cabfb",
+    "scripts/cycle_verified_fisher_cli_common.py": "050577cba21142cd579c66ef6ddd49d291b5a991bce9b3b0551e5d1512c3afbb",
+    "scripts/cycle_verified_fisher_coverage_track_common.py": "2413e4e9ad5d25c073771b4af634d089e2da9b12374ed99a9254f30f7ee37b46",
+    "scripts/materialize_cycle_verified_fisher_coverage_track_factor.py": "ca025c4a213614439cf1a7ee7cf0cb48bb2b45bdf4782b77411616d5e92a7699",
+    "scripts/run_track_pair_factor.py": "1b4bf3e8fdead2f10b2806a909094dbaa26a195cee65c4aff2973bd6c573ea5d",
+    "topology/track_core.py": "746a921b8cd0b81fe1c182241f54abb7ad624512e6337bb2ca6c10c7b19a9230"
+  },
+  "full_cpu_tests": {
+    "passed": true,
+    "result": "465_PASSED_1_CUDA_SMOKE_SKIPPED_15_WARNINGS_IN_71_85_SECONDS",
+    "implementation_commit": "dce574f2df115a4a5638969e2975445f687813b7",
+    "command": "CUDA_VISIBLE_DEVICES='' /root/miniconda3/envs/cybersim_agent/bin/python -m pytest -q",
+    "test_count": 465
+  },
+  "independent_review": {
+    "passed": true,
+    "result": "INDEPENDENT_IMPLEMENTATION_AND_TEST_GAP_REVIEW_COMPLETE_NO_P0_P1_P2_FINDINGS",
+    "implementation_commit": "dce574f2df115a4a5638969e2975445f687813b7",
+    "finding_counts": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 0
+    }
+  },
+  "authorizes_real_track_execution": true,
+  "authorizes_test": false,
+  "authorizes_method_default_change": false
+}
