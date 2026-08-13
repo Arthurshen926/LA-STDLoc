@@ -294,6 +294,7 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         [torch.as_tensor(cache[name]["native_input_hw"]).long() for name in names]
     )
 
+    track_started = time.perf_counter()
     precomputed_pairs = None
     precomputed_matches = None
     precomputed_diagnostics = None
@@ -309,7 +310,6 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
                 poses=poses,
             )
         )
-    track_started = time.perf_counter()
     tracks, diagnostics, sidecar = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
