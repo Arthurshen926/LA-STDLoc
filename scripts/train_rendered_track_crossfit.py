@@ -172,6 +172,11 @@ def run(args) -> dict:
             anchor_feature_residual_trust_weight=(
                 args.anchor_feature_residual_trust_weight
             ),
+            soft_pose_weight=args.soft_pose_weight,
+            soft_pose_topk=args.soft_pose_topk,
+            soft_pose_temperature=args.soft_pose_temperature,
+            soft_pose_inlier_softness_px=args.soft_pose_inlier_softness_px,
+            soft_pose_miss_weight=args.soft_pose_miss_weight,
             refresh_interval=0,
             refresh_shards=4,
             initial_ransac_refresh=False,
@@ -272,6 +277,11 @@ def run(args) -> dict:
             "anchor_feature_residual_trust_weight": (
                 args.anchor_feature_residual_trust_weight
             ),
+            "soft_pose_weight": args.soft_pose_weight,
+            "soft_pose_topk": args.soft_pose_topk,
+            "soft_pose_temperature": args.soft_pose_temperature,
+            "soft_pose_inlier_softness_px": args.soft_pose_inlier_softness_px,
+            "soft_pose_miss_weight": args.soft_pose_miss_weight,
         },
         "folds": folds,
         "combined_summary": combined["summary"],
@@ -309,6 +319,11 @@ def main() -> None:
     parser.add_argument(
         "--anchor-feature-residual-trust-weight", type=float, default=1.0
     )
+    parser.add_argument("--soft-pose-weight", type=float, default=0.0)
+    parser.add_argument("--soft-pose-topk", type=int, default=8)
+    parser.add_argument("--soft-pose-temperature", type=float, default=0.05)
+    parser.add_argument("--soft-pose-inlier-softness-px", type=float, default=1.0)
+    parser.add_argument("--soft-pose-miss-weight", type=float, default=0.05)
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
     parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
     parser.add_argument("--task-translation-m", type=float, default=0.05)

@@ -328,3 +328,5 @@ def test_a1_crossfit_cli_exposes_anchor_specific_residual():
     assert "--held-sequence" in source
     assert "--anchor-feature-residual-max-norm" in source
     assert "anchor_feature_residual_max_norm=(" in source
+    assert "--soft-pose-weight" in source
+    assert "soft_pose_weight=args.soft_pose_weight" in source
