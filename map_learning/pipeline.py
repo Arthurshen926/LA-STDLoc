@@ -25,6 +25,7 @@ from common.config import (
     resolve_mapping_nms_radius,
 )
 from common.hashing import sha256_file
+from common.pipeline_completion import atomic_json_install
 from data.datasets import ColmapDataset
 from map_learning.trainer import full_refresh_interval, train
 
@@ -1715,11 +1716,15 @@ def train_compact_map(
                 "compact_function_graph": compact_graph,
             }
         )
+    if calibration is not None:
+        results["scene_calibration"] = output / "scene_calibration.json"
     return results
 
 
-def write_pipeline_manifest(output: Path, values: dict) -> None:
+def write_pipeline_manifest(output: Path, values: dict) -> Path:
+    """Write the legacy flat path map atomically without silent replacement."""
     serializable = {key: str(value) for key, value in values.items()}
-    (output / "pipeline_manifest.json").write_text(
-        json.dumps(serializable, indent=2, sort_keys=True) + "\n"
+    return atomic_json_install(
+        serializable,
+        output / "pipeline_manifest.json",
     )

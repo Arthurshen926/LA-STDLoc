@@ -65,8 +65,8 @@ prior reconstruction, evidence construction, or map learning.
 
 ## Reconstruct
 
-The canonical command runs the complete method and, by default,
-evaluates the official test split:
+The canonical command runs the complete mapping/training method without
+reading the official test split:
 
 ```bash
 python scripts/run_pipeline.py \
@@ -75,6 +75,11 @@ python scripts/run_pipeline.py \
   --gaussian-type 2dgs \
   --output /data/runs/OldHospital
 ```
+
+Pass `--evaluate` only for an explicit standard-mainline test run.  Test
+evaluation is rejected when any experimental factor flag is active.  Every run
+requires a fresh output root and writes `pipeline_completion.json` only after
+all artifacts and the neutral Anchor Registry lineage verify recursively.
 
 For large mapping sets, use `--function-graph-shards N --provenance-shards N
 --observation-shards N --pose-scoring-shards N`. These options evaluate

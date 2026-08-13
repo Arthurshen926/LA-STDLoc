@@ -125,9 +125,15 @@ def attach_gaussian_prior_covariance(
     base_covariance = frame @ torch.diag_embed(sigma.square()) @ frame.transpose(1, 2)
 
     output = dict(registry)
-    covariance = torch.as_tensor(registry["anchor_position_covariance"]).float().clone()
-    if covariance.shape != (count, 3, 3):
+    source_covariance = torch.as_tensor(
+        registry["anchor_position_covariance"]
+    ).detach().cpu()
+    if source_covariance.shape != (count, 3, 3):
         raise ValueError("Anchor covariance does not align with Registry")
+    # Preserve a covariance already carried by the trained map bit-for-bit.
+    # Gaussian enrichment is a separate audit view, never a replacement for a
+    # runtime or localization-facing tensor.
+    covariance = source_covariance.float().clone()
     covariance[base_rows] = base_covariance
     covariance_source = torch.full(
         (count,), COVARIANCE_MISSING, dtype=torch.int8
@@ -140,7 +146,7 @@ def attach_gaussian_prior_covariance(
     center_distance[base_rows] = torch.linalg.norm(xyz[base_rows] - prior_xyz, dim=1)
     output.update(
         {
-            "anchor_position_covariance": covariance,
+            "anchor_position_covariance_enriched": covariance,
             "covariance_source": covariance_source,
             "gaussian_prior_center_distance_m": center_distance,
             "covariance_enrichment": {
@@ -161,5 +167,6 @@ def attach_gaussian_prior_covariance(
     output["compatibility"] = {
         **dict(registry.get("compatibility", {})),
         "covariance_enrichment_changes_localization_tensors": False,
+        "source_anchor_position_covariance_preserved_exactly": True,
     }
     return output

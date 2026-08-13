@@ -6,7 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Sequence
 
+from common.anchor_registry_artifact import materialize_anchor_registry
+from common.hashing import sha256_file
+from common.pipeline_completion import write_pipeline_completion
 from data.datasets import ColmapDataset
 from evaluation.evaluator import evaluate_dataset
 from localization.localizer import SparseLocalizer
@@ -29,7 +33,7 @@ from map_learning.pipeline import (
 )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--prior", type=Path, required=True)
@@ -43,7 +47,10 @@ def main() -> None:
     parser.add_argument("--observation-shards", type=int, default=1)
     parser.add_argument("--pose-scoring-shards", type=int, default=1)
     parser.add_argument(
-        "--evaluate", action=argparse.BooleanOptionalAction, default=True
+        "--evaluate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Explicitly opt into reading and evaluating the test split.",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -70,8 +77,35 @@ def main() -> None:
             "the config's independent density policy."
         ),
     )
-    args = parser.parse_args()
-    args.output.mkdir(parents=True, exist_ok=True)
+    return parser
+
+
+def _validate_arguments(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> dict[str, object]:
+    experimental_factors = {
+        "joint_keypoints": args.keypoints,
+        "mapping_keypoints": args.mapping_keypoints,
+        "surface_supported_tracks": bool(args.surface_supported_tracks),
+    }
+    if args.keypoints is not None and args.mapping_keypoints is not None:
+        parser.error("--mapping-keypoints cannot be combined with joint --keypoints")
+    if args.evaluate and any(bool(value) for value in experimental_factors.values()):
+        parser.error(
+            "experimental factor flags and --evaluate are mutually exclusive"
+        )
+    args.output = args.output.expanduser().resolve()
+    if args.output.exists():
+        parser.error(
+            "--output must be a fresh, nonexistent root; quarantine partial or stale runs"
+        )
+    return experimental_factors
+
+
+def run(args: argparse.Namespace, *, experimental_factors: dict[str, object]) -> dict:
+    # Atomically claim the run root.  This closes the preflight/write TOCTOU
+    # window and makes direct API callers obey the same fresh-root contract.
+    args.output.mkdir(parents=True, exist_ok=False)
     config = Path(args.config)
     if args.keypoints is not None:
         config = materialize_keypoint_factor_config(
@@ -80,8 +114,6 @@ def main() -> None:
             args.keypoints,
         )
     if args.mapping_keypoints is not None:
-        if args.keypoints is not None:
-            parser.error("--mapping-keypoints cannot be combined with joint --keypoints")
         config = materialize_mapping_keypoint_config(
             config,
             args.output / f"factor_config_mapping_k{args.mapping_keypoints}.yaml",
@@ -151,6 +183,8 @@ def main() -> None:
         "prior_ply": prior_ply,
         "compact_map": compact_map,
     }
+    if args.valid_masks:
+        outputs["valid_masks"] = Path(args.valid_masks).expanduser().resolve()
     if args.evaluate:
         deployment = load_mainline_config(config).values["deployment"]
         dataset = ColmapDataset(args.dataset, images="processed")
@@ -204,7 +238,70 @@ def main() -> None:
         )
         print(json.dumps(result["summary"], indent=2))
         outputs["evaluation"] = args.output / "evaluation"
-    write_pipeline_manifest(args.output, outputs)
+    selection_provenance = args.output / "topology/adaptive_selection_provenance.pt"
+    scene_calibration = trained.get("scene_calibration")
+    if scene_calibration is None:
+        raise RuntimeError(
+            "new pipeline completion requires an explicit mapping-only calibration"
+        )
+    registry_parents = {
+        "trained_map": Path(trained["trained_map"]),
+        "compact_map": Path(compact_map),
+        "positive_teacher": Path(trained["compact_positive_teacher"]),
+        "track_payload": Path(artifacts["track_payload"]),
+        "query_cache": Path(artifacts["query_cache"]),
+        "raster_provenance": Path(trained["compact_provenance"]),
+        "selection_provenance": selection_provenance,
+        "scene_calibration": Path(scene_calibration),
+        "metric_state": Path(trained["metric_state"]),
+        "config": Path(config).expanduser().resolve(),
+        "gaussian_ply": Path(prior_ply),
+    }
+    locked_parents = {
+        name: (path, sha256_file(path)) for name, path in registry_parents.items()
+    }
+    registry_result = materialize_anchor_registry(
+        parents=locked_parents,
+        output=Path(trained["trained_map"]).parent / "neutral_anchor_registry.pt",
+        contract_output=(
+            Path(trained["trained_map"]).parent
+            / "neutral_anchor_registry.contract.json"
+        ),
+        require_pipeline_parents=True,
+    )
+    outputs["anchor_registry"] = registry_result["registry"]
+    outputs["anchor_registry_contract"] = registry_result["contract"]
+    outputs["selection_provenance"] = selection_provenance
+    outputs["config"] = Path(config).expanduser().resolve()
+    manifest = write_pipeline_manifest(args.output, outputs)
+    completion = write_pipeline_completion(
+        output=args.output,
+        artifacts=outputs,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=config,
+        evaluation_requested=bool(args.evaluate),
+        experimental_factors=experimental_factors,
+    )
+    print(
+        json.dumps(
+            {
+                "pipeline_completion": completion["path"],
+                "pipeline_completion_sha256": completion["sha256"],
+                "uses_test_queries": completion["uses_test_queries"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return completion
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    experimental_factors = _validate_arguments(args, parser)
+    run(args, experimental_factors=experimental_factors)
 
 
 if __name__ == "__main__":
