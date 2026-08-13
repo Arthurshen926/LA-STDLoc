@@ -16,6 +16,9 @@ from common.hashing import sha256_file
 from evidence.camera_pair_policy import (
     mapping_scene_points_from_depth_samples,
 )
+from evidence.parallax_stratified_pair_policy import (
+    representative_scene_depth_from_samples,
+)
 from evidence.triangulation import (
     attach_pair_triangulation_statistics,
     build_cycle_consistent_tracks,
@@ -466,7 +469,9 @@ def main() -> None:
     parser.add_argument("--expected-frozen-track-payload-sha256", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--pair-policy", choices=["nearest", "parallax_diverse"], required=True
+        "--pair-policy",
+        choices=["nearest", "parallax_diverse", "parallax_stratified"],
+        required=True,
     )
     parser.add_argument("--expected-mapping-keypoints", type=int, required=True)
     parser.add_argument("--expected-nms-radius", type=int, required=True)
@@ -489,6 +494,11 @@ def main() -> None:
     parser.add_argument("--scene-points-per-camera", type=int, default=8)
     parser.add_argument("--maximum-scene-points", type=int, default=4096)
     parser.add_argument("--scene-point-voxel-size-m", type=float, default=0.02)
+    parser.add_argument("--minimum-expected-parallax-deg", type=float, default=1.0)
+    parser.add_argument("--near-fraction", type=float, default=1.0 / 3.0)
+    parser.add_argument(
+        "--maximum-baseline-depth-ratio", type=float, default=0.5
+    )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
     started = time.perf_counter()
@@ -584,6 +594,9 @@ def main() -> None:
         maximum_points=int(args.maximum_scene_points),
         voxel_size_m=float(args.scene_point_voxel_size_m),
     )
+    scene_depth_m = representative_scene_depth_from_samples(
+        depth_at_keypoints
+    )
     stage_seconds["mapping_scene_points"] = (
         time.perf_counter() - started - sum(stage_seconds.values())
     )
@@ -603,6 +616,14 @@ def main() -> None:
         pair_parallax_saturation_deg=float(args.parallax_saturation_deg),
         pair_diversity_weight=float(args.diversity_weight),
         pair_candidate_pool_per_camera=int(args.candidate_pool_per_camera),
+        pair_scene_depth_m=scene_depth_m,
+        pair_minimum_expected_parallax_deg=float(
+            args.minimum_expected_parallax_deg
+        ),
+        pair_near_fraction=float(args.near_fraction),
+        pair_maximum_baseline_depth_ratio=float(
+            args.maximum_baseline_depth_ratio
+        ),
         minimum_baseline_m=float(
             manifest.get("geometry_teacher_track_min_baseline_m", 0.03)
         ),
@@ -725,16 +746,30 @@ def main() -> None:
         time.perf_counter() - started - sum(stage_seconds.values())
     )
 
-    pair_policy_parameters = {
-        "minimum_overlap_jaccard": float(args.minimum_overlap_jaccard),
-        "minimum_joint_visibility_points": int(args.minimum_joint_visibility_points),
-        "parallax_saturation_deg": float(args.parallax_saturation_deg),
-        "diversity_weight": float(args.diversity_weight),
-        "candidate_pool_per_camera": int(args.candidate_pool_per_camera),
-        "scene_points_per_camera": int(args.scene_points_per_camera),
-        "maximum_scene_points": int(args.maximum_scene_points),
-        "scene_point_voxel_size_m": float(args.scene_point_voxel_size_m),
-    }
+    if args.pair_policy == "parallax_stratified":
+        pair_policy_parameters = {
+            "minimum_expected_parallax_deg": float(
+                args.minimum_expected_parallax_deg
+            ),
+            "near_fraction": float(args.near_fraction),
+            "maximum_baseline_depth_ratio": float(
+                args.maximum_baseline_depth_ratio
+            ),
+            "scene_depth_estimator": "median_positive_mapping_keypoint_depth",
+        }
+    else:
+        pair_policy_parameters = {
+            "minimum_overlap_jaccard": float(args.minimum_overlap_jaccard),
+            "minimum_joint_visibility_points": int(
+                args.minimum_joint_visibility_points
+            ),
+            "parallax_saturation_deg": float(args.parallax_saturation_deg),
+            "diversity_weight": float(args.diversity_weight),
+            "candidate_pool_per_camera": int(args.candidate_pool_per_camera),
+            "scene_points_per_camera": int(args.scene_points_per_camera),
+            "maximum_scene_points": int(args.maximum_scene_points),
+            "scene_point_voxel_size_m": float(args.scene_point_voxel_size_m),
+        }
     result = _factor_payload(
         mapping_keypoints=mapping_keypoints,
         nms_radius=nms_radius,

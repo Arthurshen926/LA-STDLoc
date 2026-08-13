@@ -865,3 +865,12 @@ triangle-camera coverage 变成 selector 内部的 lexicographic hard constraint
 V2-aware reuse-only Track lineage 随后完成正式 Stage-B：GreatCourt 8/8 通过，Stairs
 却因唯一 query 1933 的 broad support 从 184 降为 0 而得到合法科学 Stop。故未运行
 cross-B、fullchain、pose、test 或默认切换；冻结 V3 `nearest` 继续作为当前方法。
+
+旧 `codex/v4-7scenes-track-repair` 随后只做了选择性移植：保留其独有的
+`parallax_stratified` proposal 规则，不合并已被主线取代的 pipeline/runner。只读复核表明
+旧策略对 P8 丢失的 query 1933 仍有 149 条 broad Track 支持，但旧 full mapping pose 又在
+`seq-05/frame-000226--000242` 产生 11 个 27--31 cm coherent false poses。因此该移植仅授权
+一次当前合同下的 optional proposal-factor replay，不修改 P8 正式 Stop，也不授权 default、
+fullchain、pose 或 test。双向 sentinel 与机器证据见
+`docs/v4_7scenes_track_repair_port.md` 和
+`docs/evidence/v4_7scenes_track_repair_port.json`。

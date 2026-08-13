@@ -10,6 +10,9 @@ from evidence.camera_pair_policy import (
     candidate_camera_pairs,
     mapping_scene_points_from_depth_samples,
 )
+from evidence.parallax_stratified_pair_policy import (
+    representative_scene_depth_from_samples,
+)
 from evidence.triangulation import (
     attach_pair_triangulation_statistics,
     build_cycle_consistent_tracks,
@@ -134,6 +137,85 @@ def test_parallax_diverse_policy_preserves_exact_global_budget_and_overlap():
         minimum_joint_visibility_points=8,
         candidate_pool_per_camera=7,
     )
+
+
+def test_parallax_stratified_policy_replays_archived_exact_pair_table():
+    poses = torch.stack(
+        [
+            _look_at_pose([0.04 * index, 0.0, 0.0], [0.0, 0.0, 2.0])
+            for index in range(12)
+        ]
+    )
+    nearest = candidate_camera_pairs(
+        poses, neighbors=3, minimum_baseline_m=0.03
+    )
+    revised = candidate_camera_pairs(
+        poses,
+        neighbors=3,
+        minimum_baseline_m=0.03,
+        policy="parallax_stratified",
+        pair_budget=len(nearest),
+        scene_depth_m=torch.full((12,), 2.0),
+        minimum_expected_parallax_deg=1.0,
+        near_fraction=1.0 / 3.0,
+        maximum_baseline_depth_ratio=0.5,
+    )
+    assert revised == [
+        (0, 1), (0, 2), (0, 5), (1, 2), (1, 6), (2, 3),
+        (2, 7), (3, 4), (3, 8), (3, 9), (4, 5), (4, 9),
+        (4, 10), (5, 6), (5, 10), (5, 11), (6, 7), (6, 11),
+        (7, 8), (8, 9), (9, 10), (9, 11), (10, 11),
+    ]
+    assert len(revised) == len(nearest)
+
+
+def test_parallax_stratified_policy_fails_closed_on_depth_or_budget():
+    poses = torch.stack(
+        [
+            _look_at_pose([0.1 * index, 0.0, 0.0], [0.0, 0.0, 2.0])
+            for index in range(4)
+        ]
+    )
+    nearest = candidate_camera_pairs(
+        poses, neighbors=2, minimum_baseline_m=0.0
+    )
+    try:
+        candidate_camera_pairs(
+            poses,
+            neighbors=2,
+            minimum_baseline_m=0.0,
+            policy="parallax_stratified",
+        )
+    except ValueError as error:
+        assert "requires mapping scene depth" in str(error)
+    else:
+        raise AssertionError("missing mapping depth must fail closed")
+    try:
+        candidate_camera_pairs(
+            poses,
+            neighbors=2,
+            minimum_baseline_m=0.0,
+            policy="parallax_stratified",
+            pair_budget=len(nearest) - 1,
+            scene_depth_m=torch.ones(4),
+        )
+    except ValueError as error:
+        assert "exact nearest pair budget" in str(error)
+    else:
+        raise AssertionError("non-nearest pair budget must fail closed")
+
+
+def test_representative_scene_depth_preserves_missing_camera_sentinel():
+    result = representative_scene_depth_from_samples(
+        [
+            torch.tensor([float("nan"), 2.0, 4.0]),
+            torch.tensor([-1.0, 0.0]),
+        ]
+    )
+    torch.testing.assert_close(
+        result[0], torch.tensor(2.0, dtype=torch.float64)
+    )
+    assert bool(torch.isnan(result[1]))
 
 
 def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():

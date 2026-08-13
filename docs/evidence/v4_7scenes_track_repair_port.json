@@ -1,0 +1,57 @@
+{
+  "schema": "lafgs_v4_7scenes_track_repair_selective_port",
+  "version": 1,
+  "uses_test_queries": false,
+  "archived_source": {
+    "branch": "codex/v4-7scenes-track-repair",
+    "commit": "6bf48bb0f51faafa496fd3251955a88304a96fa3",
+    "result_document_git_blob": "5c3b277dabf538478989a7707db7135cd7f68d7b"
+  },
+  "archived_stairs_track_payload": {
+    "path": "/mnt/pool/sqy/lafgs_7scenes_track_repair_20260812/stairs/k1024_parallax/tracks/track_micro_anchor_payload.pt",
+    "sha256": "9465eb6e816ce9c669d0446a3439869a9cb7c67cf3bd027702d106ef167d9c39",
+    "query_count": 2000,
+    "broad_track_count_under_current_definition": 23826,
+    "broad_covered_query_count": 2000,
+    "p8_lost_query_index": 1933,
+    "p8_lost_query_name": "seq-06/frame-000433.color.png",
+    "p8_lost_query_broad_support": 149
+  },
+  "formal_p8_v2_stop_gate": {
+    "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/stage_b_coverage_v2_gate.json",
+    "sha256": "059eb4d1b8c6468a26ba9214228d33e937924511e9318f75dac025ac6851ad06",
+    "decision": "STOP_SCENE_MECHANISM",
+    "control_broad_query_count": 2000,
+    "variant_broad_query_count": 1999,
+    "lost_query_index": 1933,
+    "lost_query_control_broad_support": 184,
+    "lost_query_variant_broad_support": 0
+  },
+  "sentinels": {
+    "missing_support": "seq-06/frame-000433.color.png",
+    "coherent_false_pose_window": "seq-05/frame-000226--000242"
+  },
+  "ported_contract": {
+    "policy": "parallax_stratified",
+    "selection_inputs": [
+      "mapping_pose_w2c",
+      "median_positive_mapping_keypoint_depth"
+    ],
+    "nearest_reserve": true,
+    "log_spaced_parallax_targets": true,
+    "exact_nearest_pair_budget_required": true,
+    "descriptors_used_for_selection": false,
+    "matches_used_for_selection": false,
+    "track_ids_used_for_selection": false,
+    "test_queries_used": false
+  },
+  "authorization": {
+    "optional_proposal_factor_replay": true,
+    "existing_p8_gate_modified": false,
+    "fullchain": false,
+    "pose": false,
+    "test": false,
+    "default_change": false
+  },
+  "conclusion": "GO_OPTIONAL_PROPOSAL_REPLAY_STOP_DEFAULT_INTEGRATION"
+}

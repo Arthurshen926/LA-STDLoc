@@ -714,6 +714,10 @@ def build_cycle_consistent_tracks(
     pair_parallax_saturation_deg: float = 2.0,
     pair_diversity_weight: float = 0.20,
     pair_candidate_pool_per_camera: int = 48,
+    pair_scene_depth_m: torch.Tensor | None = None,
+    pair_minimum_expected_parallax_deg: float = 1.0,
+    pair_near_fraction: float = 1.0 / 3.0,
+    pair_maximum_baseline_depth_ratio: float = 0.5,
     minimum_baseline_m: float = 0.03,
     maximum_baseline_m: float = 5.0,
     maximum_axis_angle_deg: float = 75.0,
@@ -804,6 +808,14 @@ def build_cycle_consistent_tracks(
             parallax_saturation_deg=pair_parallax_saturation_deg,
             diversity_weight=pair_diversity_weight,
             candidate_pool_per_camera=pair_candidate_pool_per_camera,
+            scene_depth_m=pair_scene_depth_m,
+            minimum_expected_parallax_deg=(
+                pair_minimum_expected_parallax_deg
+            ),
+            near_fraction=pair_near_fraction,
+            maximum_baseline_depth_ratio=(
+                pair_maximum_baseline_depth_ratio
+            ),
         )
     pair_matches = {}
     pair_match_diagnostics = {}
@@ -1176,6 +1188,21 @@ def build_cycle_consistent_tracks(
             ),
         },
     }
+    if str(pair_policy) == "parallax_stratified":
+        pair_sidecar["policy"].update(
+            {
+                "minimum_expected_parallax_deg": float(
+                    pair_minimum_expected_parallax_deg
+                ),
+                "near_fraction": float(pair_near_fraction),
+                "maximum_baseline_depth_ratio": float(
+                    pair_maximum_baseline_depth_ratio
+                ),
+                "scene_depth_estimator": (
+                    "median_positive_mapping_keypoint_depth"
+                ),
+            }
+        )
     return tracks, diagnostics, pair_sidecar
 
 

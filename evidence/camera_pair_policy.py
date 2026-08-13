@@ -114,6 +114,10 @@ def candidate_camera_pairs(
     parallax_saturation_deg: float = 2.0,
     diversity_weight: float = 0.20,
     candidate_pool_per_camera: int = 48,
+    scene_depth_m: torch.Tensor | None = None,
+    minimum_expected_parallax_deg: float = 1.0,
+    near_fraction: float = 1.0 / 3.0,
+    maximum_baseline_depth_ratio: float = 0.5,
 ) -> list[tuple[int, int]]:
     """Build a deterministic camera graph without descriptor or map IDs.
 
@@ -124,7 +128,11 @@ def candidate_camera_pairs(
     the exact legacy graph cardinality is used.  This prevents a graph change
     from silently buying more descriptor comparisons.
     """
-    if str(policy) not in {"nearest", "parallax_diverse"}:
+    if str(policy) not in {
+        "nearest",
+        "parallax_diverse",
+        "parallax_stratified",
+    }:
         raise ValueError(f"Unknown camera pair policy: {policy}")
     centers, axes = _camera_centers_and_axes(pose_w2c)
     count = int(centers.shape[0])
@@ -161,6 +169,30 @@ def candidate_camera_pairs(
                 "nearest policy does not permit pair-budget cardinality changes"
             )
         return sorted(legacy_pairs)
+
+    if str(policy) == "parallax_stratified":
+        if pair_budget is not None and int(pair_budget) != len(legacy_pairs):
+            raise ValueError(
+                "parallax_stratified requires the exact nearest pair budget"
+            )
+        from evidence.parallax_stratified_pair_policy import (
+            parallax_stratified_pairs,
+        )
+
+        return parallax_stratified_pairs(
+            centers=centers,
+            axes=axes,
+            distance=distance,
+            axis_cosine=axis_cosine,
+            valid=valid,
+            cost=cost,
+            legacy_pairs=legacy_pairs,
+            neighbors=neighbors,
+            scene_depth_m=scene_depth_m,
+            minimum_expected_parallax_deg=minimum_expected_parallax_deg,
+            near_fraction=near_fraction,
+            maximum_baseline_depth_ratio=maximum_baseline_depth_ratio,
+        )
 
     if camera_K is None or image_hw is None or scene_points_xyz is None:
         raise ValueError(
