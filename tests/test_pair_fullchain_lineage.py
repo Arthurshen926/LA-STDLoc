@@ -73,6 +73,7 @@ def test_canonical_pair_lineage_verifies_contract_track_hash(tmp_path):
         tmp_path / "anchors.pt",
         {
             "anchor_xyz": torch.zeros(1, 3),
+            "anchor_features": torch.zeros(1, 2),
             "anchor_ids": torch.tensor([0]),
             "source_primitive_ids": torch.tensor([0]),
             "track_cluster_ids": torch.tensor([-1]),

@@ -20,8 +20,15 @@ python scripts/run_pipeline.py \
 ```
 
 The mapping split is used in full; the test split is read only by the final
-evaluation stage. Re-running the command reuses only artifacts whose contracts
-match.
+evaluation stage, which is disabled by default.  Add `--evaluate` for an
+explicit standard-mainline test run; it cannot be combined with experimental
+factor flags.  The output path must not exist.  A partial or stale run is
+quarantined and restarted at a fresh path rather than silently resumed.
+
+Successful runs end with an atomic `pipeline_completion.json`.  That marker
+recursively verifies every required artifact and the sibling neutral Anchor
+Registry contract.  Its absence means the root is incomplete, regardless of
+which intermediate files happen to exist.
 
 The default V2 configuration derives angular pixel thresholds, metric thresholds,
 query exposure, pose/view bins, matching-rank targets, and final topology size

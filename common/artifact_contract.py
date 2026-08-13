@@ -105,9 +105,10 @@ def _semantic_digest(digest: "hashlib._Hash", path: str, value: Any) -> None:
         return
     if isinstance(value, dict):
         _digest_frame(digest, f"{path}:kind", b"mapping")
-        keys = sorted(value)
+        keys = list(value)
         if any(not isinstance(key, str) for key in keys):
             raise TypeError(f"{path} contains a non-string schema key")
+        keys.sort()
         _digest_frame(
             digest,
             f"{path}:keys",

@@ -19,6 +19,10 @@ import torch
 from common.artifact_contract import anchor_registry
 from common.config import load_mainline_config
 from common.hashing import sha256_file
+from common.producer_identity import (
+    capture_producer_identity,
+    verify_producer_identity,
+)
 from topology.anchor_covariance import attach_gaussian_prior_covariance
 from topology.anchor_registry import (
     SCHEMA as REGISTRY_SCHEMA,
@@ -46,6 +50,18 @@ PIPELINE_PARENT_NAMES = frozenset(
     }
 )
 SHA256 = re.compile(r"[0-9a-f]{64}")
+PRODUCER_SCHEMA = "lafgs_neutral_anchor_registry_producer"
+PRODUCER_SOURCE_PATHS = (
+    "common/anchor_registry_artifact.py",
+    "common/artifact_contract.py",
+    "common/config.py",
+    "common/hashing.py",
+    "common/producer_identity.py",
+    "scripts/materialize_anchor_registry.py",
+    "topology/anchor_covariance.py",
+    "topology/anchor_registry.py",
+    "topology/geometry_materializer.py",
+)
 
 
 def _torch_load(path: Path) -> dict:
@@ -105,13 +121,11 @@ def _query_names(payload: Mapping) -> list[str]:
     ]
 
 
-def _same_file_or_content(declared: object, expected: Path) -> bool:
+def _same_locked_path(declared: object, expected: Path) -> bool:
     if not isinstance(declared, (str, Path)) or not str(declared):
         return False
     path = Path(declared).expanduser().resolve()
-    if path == expected:
-        return True
-    return path.is_file() and sha256_file(path) == sha256_file(expected)
+    return path == expected
 
 
 def _require_declared_parent(
@@ -120,8 +134,13 @@ def _require_declared_parent(
     expected: Path,
     *,
     label: str,
+    required: bool = True,
 ) -> None:
-    if key in payload and not _same_file_or_content(payload[key], expected):
+    if key not in payload:
+        if required:
+            raise ValueError(f"{label} does not declare its {key} parent")
+        return
+    if not _same_locked_path(payload[key], expected):
         raise ValueError(f"{label} declares a different {key} parent")
 
 
@@ -178,6 +197,7 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
     tracks = payloads.get("track_payload")
     query_cache = payloads.get("query_cache")
     raster = payloads.get("raster_provenance")
+    selection = payloads.get("selection_provenance")
     metric = payloads.get("metric_state")
 
     if teacher is not None:
@@ -204,12 +224,18 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
                 paths["compact_map"],
                 label="raster_provenance",
             )
+    if selection is not None and (
+        selection.get("schema") != "lafgs_adaptive_selection_provenance"
+        or selection.get("version") != 1
+    ):
+        raise ValueError("selection_provenance has an unsupported schema")
         if tracks is not None:
             _require_declared_parent(
                 raster,
                 "track_payload",
                 paths["track_payload"],
                 label="raster_provenance",
+                required=False,
             )
         if query_cache is not None:
             _require_declared_parent(
@@ -260,11 +286,11 @@ def _validate_parent_lineage(records: Mapping[str, Mapping]) -> dict[str, dict]:
             or sources.get("uses_test_queries") is not False
         ):
             raise ValueError("scene_calibration is not mapping-only/test-free")
-        if query_cache is not None and not _same_file_or_content(
+        if query_cache is not None and not _same_locked_path(
             sources.get("query_cache"), paths["query_cache"]
         ):
             raise ValueError("scene_calibration declares a different query_cache")
-        if tracks is not None and not _same_file_or_content(
+        if tracks is not None and not _same_locked_path(
             sources.get("track_payload"), paths["track_payload"]
         ):
             raise ValueError("scene_calibration declares a different track_payload")
@@ -327,6 +353,9 @@ def materialize_anchor_registry(
             f"missing={missing}, extra={extra}"
         )
     payloads = _validate_parent_lineage(records)
+    producer = capture_producer_identity(
+        schema=PRODUCER_SCHEMA, source_paths=PRODUCER_SOURCE_PATHS
+    )
     state = payloads["trained_map"]
     registry = build_anchor_registry(
         state,
@@ -356,6 +385,7 @@ def materialize_anchor_registry(
         "schema": CONTRACT_SCHEMA,
         "version": CONTRACT_VERSION,
         "parent_artifacts": deepcopy(records),
+        "producer_identity": deepcopy(producer),
         "pipeline_parent_set_complete": set(records) == PIPELINE_PARENT_NAMES,
         "legacy_unresolved_audit_explicit": bool(allow_legacy_unresolved_audit),
         "changes_localization_tensors": False,
@@ -397,6 +427,7 @@ def materialize_anchor_registry(
                 "size_bytes": temporary_artifact.stat().st_size,
             },
             "parent_artifacts": deepcopy(records),
+            "producer_identity": deepcopy(producer),
             "anchor_registry": identity,
             "selection": {
                 "exact": exact_selection,
@@ -411,6 +442,11 @@ def materialize_anchor_registry(
         )
         json.loads(temporary_contract.read_text())
         _assert_parents_unchanged(records)
+        verify_producer_identity(
+            producer,
+            schema=PRODUCER_SCHEMA,
+            source_paths=PRODUCER_SOURCE_PATHS,
+        )
         _install_without_overwrite(temporary_artifact, output)
         installed_artifact = True
         if sha256_file(output) != artifact_sha256:
@@ -463,6 +499,14 @@ def verify_anchor_registry_contract(
         raise ValueError("unsupported or incomplete Anchor Registry contract")
     if require_pipeline_eligible and contract.get("pipeline_eligible") is not True:
         raise ValueError("Anchor Registry contract is not pipeline eligible")
+    producer = contract.get("producer_identity")
+    if not isinstance(producer, dict):
+        raise ValueError("Anchor Registry contract lacks producer identity")
+    verify_producer_identity(
+        producer,
+        schema=PRODUCER_SCHEMA,
+        source_paths=PRODUCER_SOURCE_PATHS,
+    )
     records = contract.get("parent_artifacts")
     if not isinstance(records, dict) or "trained_map" not in records:
         raise ValueError("Anchor Registry contract lacks explicit parents")
@@ -483,6 +527,8 @@ def verify_anchor_registry_contract(
         raise ValueError("Anchor Registry full schema digest differs")
     if registry.get("materialization", {}).get("parent_artifacts") != records:
         raise ValueError("Anchor Registry embedded parent registry differs")
+    if registry.get("materialization", {}).get("producer_identity") != producer:
+        raise ValueError("Anchor Registry embedded producer identity differs")
     validate_registry_compatibility(registry, payloads["trained_map"])
     selection = contract.get("selection", {})
     if require_pipeline_eligible and (

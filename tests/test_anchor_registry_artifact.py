@@ -12,6 +12,11 @@ from common.anchor_registry_artifact import (
 )
 from common.artifact_contract import anchor_registry
 from common.hashing import sha256_file
+from common.pipeline_completion import (
+    atomic_json_install,
+    verify_pipeline_completion,
+    write_pipeline_completion,
+)
 from topology.anchor_registry import build_anchor_registry
 
 
@@ -318,6 +323,8 @@ def test_explicit_malformed_selection_fails_instead_of_becoming_legacy(
     selection = _save(
         tmp_path / "selection.pt",
         {
+            "schema": "lafgs_adaptive_selection_provenance",
+            "version": 1,
             "track_universe_count": 5,
             "track_core_universe_ids": torch.tensor([1]),
             "coverage_track_universe_ids": torch.empty(0, dtype=torch.long),
@@ -335,3 +342,135 @@ def test_explicit_malformed_selection_fails_instead_of_becoming_legacy(
             output=tmp_path / "registry.pt",
             allow_legacy_unresolved_audit=True,
         )
+
+
+def _completion_artifacts(
+    parents: dict[str, tuple[Path, str]], registry_result: dict
+) -> dict[str, Path]:
+    return {
+        "anchor_registry": registry_result["registry"],
+        "anchor_registry_contract": registry_result["contract"],
+        "trained_map": parents["trained_map"][0],
+        "metric_state": parents["metric_state"][0],
+        "compact_map": parents["compact_map"][0],
+        "compact_positive_teacher": parents["positive_teacher"][0],
+        "compact_provenance": parents["raster_provenance"][0],
+        "track_payload": parents["track_payload"][0],
+        "query_cache": parents["query_cache"][0],
+        "selection_provenance": parents["selection_provenance"][0],
+        "scene_calibration": parents["scene_calibration"][0],
+        "prior_ply": parents["gaussian_ply"][0],
+        "config": parents["config"][0],
+    }
+
+
+def test_pipeline_completion_is_atomic_last_and_recursively_verifiable(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    result = write_pipeline_completion(
+        output=tmp_path,
+        artifacts=artifacts,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=parents["config"][0],
+        evaluation_requested=False,
+        experimental_factors={
+            "joint_keypoints": None,
+            "mapping_keypoints": None,
+            "surface_supported_tracks": False,
+        },
+    )
+    assert result["uses_test_queries"] is False
+    assert result["mapping_only"] is True
+    verified = verify_pipeline_completion(
+        result["path"], expected_sha256=result["sha256"]
+    )
+    assert verified["complete"] is True
+    assert verified["partial"] is False
+
+
+def test_pipeline_completion_rejects_tamper_zero_byte_and_factor_test_mix(
+    tmp_path: Path,
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=True,
+            experimental_factors={"mapping_keypoints": 1024},
+        )
+    assert not (tmp_path / "pipeline_completion.json").exists()
+
+    mixed_map = tmp_path / "mixed_trained.pt"
+    mixed_map.write_bytes(parents["trained_map"][0].read_bytes())
+    artifacts["trained_map"] = mixed_map
+    mixed_manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "mixed_pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="differs from Registry parent"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=mixed_manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=False,
+            experimental_factors={},
+        )
+
+    empty = tmp_path / "empty.pt"
+    empty.touch()
+    artifacts["trained_map"] = empty
+    empty_manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "empty_pipeline_manifest.json",
+    )
+    with pytest.raises(ValueError, match="empty"):
+        write_pipeline_completion(
+            output=tmp_path,
+            artifacts=artifacts,
+            pipeline_manifest=empty_manifest,
+            anchor_registry_contract=registry_result["contract"],
+            config=parents["config"][0],
+            evaluation_requested=False,
+            experimental_factors={},
+        )
+    artifacts["trained_map"] = parents["trained_map"][0]
+    result = write_pipeline_completion(
+        output=tmp_path,
+        artifacts=artifacts,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=parents["config"][0],
+        evaluation_requested=False,
+        experimental_factors={},
+    )
+    Path(artifacts["metric_state"]).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="artifact differs|parent changed"):
+        verify_pipeline_completion(result["path"])

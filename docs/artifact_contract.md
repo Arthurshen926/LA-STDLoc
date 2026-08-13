@@ -44,6 +44,24 @@ overwrite.  Its JSON contract is installed atomically last.  An artifact
 without that completion contract is a failed partial run and must be
 quarantined rather than resumed.
 
+## Public pipeline completion
+
+`scripts/run_pipeline.py` accepts only a fresh, nonexistent output root.  It
+does not silently resume a partial or stale tree.  Test evaluation is disabled
+by default and requires an explicit `--evaluate`; that opt-in is rejected when
+any scientific factor flag (`--keypoints`, `--mapping-keypoints`, or
+`--surface-supported-tracks`) is active.
+
+After mapping/training, the pipeline materializes the neutral Registry next to
+the trained map and keeps the legacy `pipeline_manifest.json` as a flat
+`name -> path` mapping, now including `anchor_registry` and
+`anchor_registry_contract`.  It then hashes every required file (and every file
+inside a declared artifact directory), recursively verifies the Registry and
+all of its parents, and installs `pipeline_completion.json` atomically last.
+Missing, empty, changed, mixed-parent, or zero-byte artifacts cannot produce or
+validate a completion.  Recovery from a failed run is to quarantine the whole
+root and restart from a fresh root.
+
 Large `.pt`, `.pth`, and `.ckpt` files are runtime outputs and are not committed.
 `paper_baseline/` stores only compact fixtures, hashes, manifests, and reports.
 
