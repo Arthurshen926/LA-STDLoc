@@ -7,8 +7,11 @@
 > cameras (295 control cameras lost, 1 added).  V1 is not
 > being repaired or reinterpreted.  A separately named/schema-bound P8 V2
 > preregistration is in
-> `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md`; no real V2
-> selector or downstream experiment has run at the time of that preregistration.
+> `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md`.  At the time
+> of that preregistration no real V2 selector had run.  The subsequent formal
+> mapping-only V2 Stage-A run passed in both Stairs and GreatCourt; its
+> cross-scene Go authorizes only implementation of a new V2-aware reuse-only
+> Track lineage, not the V1 runner or any downstream experiment.
 
 The next pair-policy objective is **verified triangle closure × dimensionless
 bearing-Fisher information**, under an exact global pair budget and hard camera
@@ -505,3 +508,28 @@ artifact hashes, gate values, and control/variant lineage diff are in
 Stop, exact artifacts, and field-level audit are in
 `docs/p8_cycle_verified_fisher_greatcourt_result.md` and
 `docs/evidence/p8_cycle_verified_fisher_greatcourt_result.json`.
+
+## P8 V2 mapping-only Stage-A result
+
+The separately preregistered `cycle_verified_fisher_coverage` selector has now
+completed its formal Stage-A sequence on both frozen scenes.  Stairs exactly
+covered all 532 nearest-control target cameras with a 2,457/7,450-pair Stage-1
+scaffold and finished with 1,764 covered cameras, utility 629.409066, and
+812,232 completed verified triangles.  Its utility/triangle retention relative
+to successful V1 was 98.5579%/98.3964%, and covered-camera count increased from
+1,733 to 1,764.  GreatCourt exactly covered all 1,524 target cameras with a
+2,347/5,254-pair scaffold and finished with 1,525 covered cameras, utility
+4,248.919363, and 1,717,438 completed verified triangles.  Both scenes report
+`lost_control_camera_count=0`, preserve the candidate component count, zero
+isolates and minimum degree one, and pass every preregistered Stage-A gate after
+independent full geometry rematerialization.
+
+The recursive cross-scene gate SHA-256 is
+`b9aecc359af0f66272602901d60777ebcca2b6800769a6c262d4cb0a121c74da` and its
+decision is `GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`.  This is an implementation
+authorization only.  It records `authorizes_existing_v1_track_runner=false`;
+no V2 Track/Stage-B, fullchain, function graph/Map, mapping pose, formal test, or
+default-method switch has run or been authorized.  Frozen V3 `nearest` remains
+the shared default.  The full artifact and certificate audit is in
+`docs/p8_cycle_verified_fisher_coverage_v2_stage_a_result.md` and
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_a_result.json`.

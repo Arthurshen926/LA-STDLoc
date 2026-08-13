@@ -100,7 +100,7 @@ Heads V3 真实产物兼容审计结果：
 | Stage 4 统一 Sufficiency Selector | compatibility 完成；P5.1 Stop | 单一 selected state、统一 primary reason/trace；equal-gain alias tie-break 已在 Heads/Stairs/ShopFacade 完成 compact refresh 与 pose gate | 当前 alias tie-break 不部署；不再沿其做局部阈值扩展 |
 | Stage 5 observation descriptor | P6.0 机制 Go；P6.1 单 medoid Stop | 分层融合审计完成；Stairs 三种 trajectory cross-fit 的六个方向均大幅损失 held-out R@1 | 不物化当前 raw observation medoid；多 prototype 延后到 P7 evidence 因子之后 |
 | Stage 6 室内身份自适应 | density-only No-Go；pair 在 Stairs mapping Go、GreatCourt 机制 Stop | NMS=4 契约、all-candidate alias audit、baseline/parallax pair audit、K_mapping 独立配置、Stairs fullchain/mapping pose 与 GreatCourt 跨域反证 | K=2048 不进入默认；`parallax_diverse` 不升为跨域默认 |
-| Stage 7 可定位 pair utility | P8 V1 跨域 Stop；Stairs scene-specific Go | Stairs Stage A/B 9/9、8/8 Pass；GreatCourt Stage A 8/9，triangle-camera coverage -19.2031 pp | GreatCourt Track/Stage-B、fullchain、pose、test、默认切换均停止；V2 需新 prereg |
+| Stage 7 可定位 pair utility | P8 V1 跨域 Stop；P8 V2 双场景 Stage-A Go-to-build | V2 对 Stairs/GreatCourt 的 nearest completed-triangle camera exact set 均 lost=0，Stage-A 全门通过 | 仅授权实现 V2-aware reuse-only Track lineage；V1 runner、Track/Stage-B、fullchain、pose、test、默认切换均未授权 |
 
 因此答案明确：**附件内容尚未全部落实**。当前已经把它从方向性建议收敛为带硬门槛的阶段实现；任何未通过 mapping gate 的阶段都不会伪装成“已完成”。
 
@@ -727,10 +727,23 @@ potential coverage 因没有同预算 witness 而不作为 target。实现使用
 随机小图 exhaustive oracle 只验证可行性与 hard invariant；联合 set-cover/graph 问题一般
 NP-hard，因此不声称 deterministic greedy 是全局最优。新冻结合同见
 `docs/p8_cycle_verified_fisher_coverage_v2_preregistration.md` 与
-`docs/evidence/p8_cycle_verified_fisher_coverage_v2_preregistration.json`。当前只完成 CPU
-实现/测试，尚未运行真实 V2 selector/GPU/Track/pose/test。下一步顺序冻结为 GreatCourt
-Stage-A -> Stairs Stage-A；两者都通过后仍须新增 V2-aware Track lineage，不能让 V1
-runner 把 V2 selection 冒充既有授权。
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_preregistration.json`。
+
+预注册的 GreatCourt 与 Stairs 两个固定 Stage-A 现已完成；两场景使用同一预冻结算法与
+gate，中间没有结果后调参。Stairs 的 Stage-1 scaffold 为
+2,457/7,450，target/final coverage 为 532/1,764、lost=0；utility/triangles 为
+629.409066/812,232，并保留成功 V1 的 98.5579%/98.3964%。GreatCourt scaffold 为
+2,347/5,254，target/final coverage 为 1,524/1,525、lost=0；utility/triangles 为
+4,248.919363/1,717,438。两个正式 comparator 都完整重物化 SHA-bound 三视图几何，
+两场景所有 Stage-A gates 均通过。
+
+递归 cross-scene gate SHA-256 为
+`b9aecc359af0f66272602901d60777ebcca2b6800769a6c262d4cb0a121c74da`，decision 为
+`GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`。它只授权实现独立 V2-aware reuse-only Track
+lineage，并显式拒绝既有 V1 runner；尚未运行 GPU/Track/Stage-B/fullchain/pose/test，默认
+仍为冻结 V3 `nearest`。正式结果见
+`docs/p8_cycle_verified_fisher_coverage_v2_stage_a_result.md` 与
+`docs/evidence/p8_cycle_verified_fisher_coverage_v2_stage_a_result.json`。
 
 ## 最小实验矩阵
 
@@ -744,7 +757,7 @@ runner 把 V2 selection 冒充既有授权。
 | P6 | current fusion | robust observation fusion + risk | indoor harmful/alias 降低 | 无可分性则停复杂头 |
 | P7 | V4 frozen | baseline-aware + K factors | 7/12Scenes 成对改善 | test 只做最终确认 |
 | P8 | nearest same-probe | exact closure x bearing-Fisher pair utility | Stairs/GreatCourt 均过 Stage-A/B；camera coverage 不可补偿 | V1 Stop；Stairs 只保留 scene-specific signal，默认 nearest |
-| P8 V2 | nearest same-probe | hard completed-triangle camera coverage -> closure/Fisher | exact target membership、预算/图约束、utility/triangle no-regression | 新预注册；尚未运行真实 selector，默认 nearest |
+| P8 V2 | nearest same-probe | hard completed-triangle camera coverage -> closure/Fisher | exact target membership、预算/图约束、utility/triangle no-regression | 双场景 Stage-A Pass；仅授权实现 V2-aware runner，默认 nearest |
 
 所有实验报告必须同时给出：Anchor 数、真实观测覆盖、每 query 匹配行 p10、唯一 landmark match 数、inlier 数、harmful rate、平移/旋转中位数及标准成功率。仅报告最终 pose 中位数不足以判断机制是否成立。
 
@@ -826,6 +839,8 @@ mechanism signal，P8 V1 不进入共享默认**；冻结 V3 `nearest` 继续作
 
 P8 V1 没有获授权的后续 Track/fullchain/pose/test。P8 V2 已用全新 policy/schema 和
 preregistration 把 triangle-camera coverage 从事后 gate 提升为 selector 内部的
-lexicographic hard constraint，并完成 CPU 实现/测试；尚未运行任何真实 V2 selector。
-不得通过放宽 GreatCourt 失败门或场景后验调参延续 V1，V2 也必须严格按冻结的
-GreatCourt -> Stairs Stage-A 顺序推进。
+lexicographic hard constraint，并完成 GreatCourt 与 Stairs 两个正式 Stage-A；
+两场景均 exact 覆盖 nearest target set、`lost_control_camera_count=0`，递归 gate 只输出
+`GO_TO_V2_AWARE_REUSE_ONLY_TRACK_BUILD`。下一步仅实现并审核独立 V2-aware reuse-only
+Track lineage；V1 runner、Track/Stage-B、fullchain、pose、test 和默认切换均未获授权，
+冻结 V3 `nearest` 继续作为当前方法。
