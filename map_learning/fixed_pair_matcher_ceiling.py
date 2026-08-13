@@ -37,9 +37,9 @@ PREREGISTRATION_PATH = (
 )
 PREREGISTRATION_COMMIT = "ee638ce009f6b76f6393c8e9867198c46a434f82"
 PREREGISTRATION_BLOB_SHA256 = (
-    "3cd77d4388df12aed3fb6f91222084bf8e34dffb70e85e14b77249b47e6dd8c7"
+    "31e775a3b1c1d418ef1ad03a42b46c652f477f8ab38dadf53fcd85efbb96950a"
 )
-PREREGISTRATION_AMENDMENT_COMMIT = "c7acbd78c8178c8f763ec2e046e943d36938dc4b"
+PREREGISTRATION_AMENDMENT_COMMIT = "35ea06953d6a080e8ce1e609a60522bae74069ed"
 IMPLEMENTATION_REGISTRY_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/evidence/p9_fixed_pair_matcher_ceiling_implementation.json"
@@ -824,7 +824,7 @@ def _mask_at_hw(dataset: ColmapDataset, name: str, hw: tuple[int, int]) -> torch
         raise ValueError(f"P9 valid mask lacks three channels: {name}")
     resized = []
     for channel in channels[:3]:
-        value = torch.as_tensor(channel, dtype=torch.float32, device="cpu").squeeze()
+        value = torch.as_tensor(channel, dtype=torch.float32, device="cpu")
         if value.ndim != 2:
             raise ValueError(f"P9 valid-mask channel is not 2D: {name}")
         resized.append(
@@ -873,7 +873,10 @@ def recreate_native_mapping_input(
         ].bool()
     if tuple(native_hw) != tuple(int(value) for value in cached["native_input_hw"]):
         raise ValueError("P9 recreated native dimensions differ from source cache")
-    cached_mask = torch.as_tensor(cached["native_valid_mask"]).bool().squeeze()
+    cached_mask_value = torch.as_tensor(cached["native_valid_mask"])
+    if cached_mask_value.ndim != 2:
+        raise ValueError("P9 cached native valid mask must have exact shape [H,W]")
+    cached_mask = cached_mask_value.bool()
     if not torch.equal(mask, cached_mask):
         raise ValueError("P9 recreated native valid mask differs from source cache")
     if (
@@ -935,6 +938,15 @@ def extract_bundled_features(
     requested_keypoint_count: int,
 ) -> dict:
     """Run exactly one E1 forward and materialize fresh detector rows."""
+    native_image = torch.as_tensor(native_image)
+    valid_mask = torch.as_tensor(valid_mask)
+    if (
+        native_image.ndim != 3
+        or native_image.shape[0] not in (1, 3)
+        or valid_mask.dtype != torch.bool
+        or tuple(valid_mask.shape) != tuple(native_image.shape[-2:])
+    ):
+        raise ValueError("P9 native image/mask tensors have invalid exact shapes")
     contract = xfeat_resize_contract(native_image.shape[-2:])
     xfeat_hw = tuple(contract["xfeat_input_hw"])
     model_input = F.interpolate(
@@ -972,20 +984,24 @@ def extract_bundled_features(
     detected_after_nms = int(raw_xy.shape[0])
     if raw_xy.numel():
         positions = raw_xy[None]
-        probability = (
-            interpolators["nearest"](heatmap, positions, H=xfeat_hw[0], W=xfeat_hw[1])[
-                0
-            ]
-            .reshape(-1)
-            .float()
+        probability_value = torch.as_tensor(
+            interpolators["nearest"](heatmap, positions, H=xfeat_hw[0], W=xfeat_hw[1])
         )
-        reliability_score = (
+        reliability_value = torch.as_tensor(
             interpolators["bilinear"](
                 reliability, positions, H=xfeat_hw[0], W=xfeat_hw[1]
-            )[0]
-            .reshape(-1)
-            .float()
+            )
         )
+        expected_score_shape = (1, detected_after_nms, 1)
+        if (
+            tuple(probability_value.shape) != expected_score_shape
+            or tuple(reliability_value.shape) != expected_score_shape
+        ):
+            raise ValueError(
+                "P9 interpolated detector scores have invalid exact shapes"
+            )
+        probability = probability_value[0, :, 0].float()
+        reliability_score = reliability_value[0, :, 0].float()
         score = probability * reliability_score
         score[torch.all(raw_xy == 0, dim=1)] = -1.0
         order = torch.argsort(-score, stable=True)[: int(requested_keypoint_count)]
@@ -1013,7 +1029,7 @@ def extract_bundled_features(
         descriptors = torch.empty((0, DESCRIPTOR_DIM), dtype=torch.float32)
     if (
         descriptors.shape != (native_xy.shape[0], DESCRIPTOR_DIM)
-        or score.numel() != native_xy.shape[0]
+        or score.shape != (native_xy.shape[0],)
         or not all(
             bool(torch.isfinite(value).all())
             for value in (raw_xy, native_xy, descriptors, score)
@@ -1049,10 +1065,12 @@ def resample_dense_teacher(
 ) -> tuple[torch.Tensor, torch.Tensor, dict]:
     """Resample source dense depth/alpha onto the exact declared native grid."""
     target_hw = tuple(int(value) for value in native_hw)
-    depth = torch.as_tensor(cached["native_depth"]).detach().cpu().float().squeeze()
-    alpha = torch.as_tensor(cached["native_alpha"]).detach().cpu().float().squeeze()
-    if depth.ndim != 2 or alpha.ndim != 2:
-        raise ValueError("P9 dense teacher fields must be two-dimensional")
+    depth_value = torch.as_tensor(cached["native_depth"])
+    alpha_value = torch.as_tensor(cached["native_alpha"])
+    if depth_value.ndim != 2 or alpha_value.ndim != 2:
+        raise ValueError("P9 dense teacher fields must have exact shape [H,W]")
+    depth = depth_value.detach().cpu().float()
+    alpha = alpha_value.detach().cpu().float()
     source_depth_hw = tuple(depth.shape)
     source_alpha_hw = tuple(alpha.shape)
     if source_depth_hw != target_hw:
@@ -1277,23 +1295,26 @@ def validate_feature_cache(
         raw = raw_value
         native = native_value
         descriptor = descriptor_value
-        score = score_value.reshape(-1)
-        depth = depth_value.squeeze()
-        alpha = alpha_value.squeeze()
-        mask = mask_value.squeeze()
+        score = score_value
+        depth = depth_value
+        alpha = alpha_value
+        mask = mask_value
         camera_k = camera_k_value
         pose = pose_value
         row_count = int(record.get("row_count", -1))
         if (
-            raw.shape != (row_count, 2)
+            type(record.get("row_count")) is not int
+            or len(native_hw) != 2
+            or min(native_hw) <= 0
+            or raw.shape != (row_count, 2)
             or native.shape != (row_count, 2)
             or descriptor.shape != (row_count, DESCRIPTOR_DIM)
-            or score.numel() != row_count
+            or score.shape != (row_count,)
             or row_count <= 0
             or row_count > requested_k
-            or tuple(depth.shape) != native_hw
-            or tuple(alpha.shape) != native_hw
-            or tuple(mask.shape) != native_hw
+            or depth.shape != native_hw
+            or alpha.shape != native_hw
+            or mask.shape != native_hw
             or camera_k.shape != (3, 3)
             or pose.shape not in {(3, 4), (4, 4)}
             or tuple(record.get("xfeat_input_hw", ()))

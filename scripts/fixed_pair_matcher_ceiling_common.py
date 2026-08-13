@@ -714,8 +714,11 @@ def load_completion(*, path: str | Path, expected_file_sha256: str) -> dict:
     if completion_path.name != "paired_match_completion.json":
         raise ValueError("P9 completion must use its preregistered fixed filename")
     completion = json.loads(completion_path.read_text())
+    completion_contract = preregistration()["artifact_schemas"]["paired_completion"]
+    required_keys = set(completion_contract["required_keys"])
     if (
-        completion.get("schema") != COMPLETION_SCHEMA
+        not required_keys.issubset(completion)
+        or completion.get("schema") != COMPLETION_SCHEMA
         or completion.get("version") != COMPLETION_VERSION
         or completion.get("mapping_only") is not True
         or completion.get("uses_test_queries") is not False
@@ -723,6 +726,8 @@ def load_completion(*, path: str | Path, expected_file_sha256: str) -> dict:
         or completion.get("partial") is not False
         or completion.get("resume_allowed") is not False
         or completion.get("build_order") != list(("mnn_control", "lighterglue_variant"))
+        or completion.get("failure_recovery")
+        != completion_contract["failure_recovery_exact_value"]
     ):
         raise ValueError("P9 paired completion is partial or invalid")
     feature_lineage = completion.get("inputs", {}).get("feature_cache", {})

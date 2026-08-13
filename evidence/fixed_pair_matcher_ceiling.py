@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 import hashlib
+import math
 from pathlib import Path
 import re
 from typing import Callable
@@ -116,6 +117,15 @@ def direct_lighterglue_match(
     descriptor1 = torch.as_tensor(right["descriptor"]).cpu().float()
     keypoints0 = torch.as_tensor(left["native_xy"]).cpu().float()
     keypoints1 = torch.as_tensor(right["native_xy"]).cpu().float()
+    if (
+        descriptor0.ndim != 2
+        or descriptor1.ndim != 2
+        or descriptor0.shape[1] != 64
+        or descriptor1.shape[1] != 64
+        or keypoints0.shape != (descriptor0.shape[0], 2)
+        or keypoints1.shape != (descriptor1.shape[0], 2)
+    ):
+        raise ValueError("P9 LighterGlue feature rows have invalid exact shapes")
     if descriptor0.shape[0] == 0 or descriptor1.shape[0] == 0:
         raise ValueError("P9 LighterGlue requires nonempty fixed feature rows")
     height0, width0 = (int(value) for value in left["native_input_hw"])
@@ -137,8 +147,8 @@ def direct_lighterglue_match(
     if not isinstance(output, Mapping) or set(("matches", "scores")) - set(output):
         raise ValueError("P9 direct LighterGlue output is incomplete")
     matches = torch.as_tensor(output["matches"][0]).detach().cpu().long()
-    score = torch.as_tensor(output["scores"][0]).detach().cpu().float().reshape(-1)
-    if matches.ndim != 2 or matches.shape[1] != 2 or score.numel() != matches.shape[0]:
+    score = torch.as_tensor(output["scores"][0]).detach().cpu().float()
+    if matches.ndim != 2 or matches.shape[1] != 2 or score.shape != (matches.shape[0],):
         raise ValueError("P9 direct LighterGlue compact matches are misaligned")
     source = matches[:, 0].contiguous()
     target = matches[:, 1].contiguous()
@@ -193,8 +203,12 @@ def symmetric_epipolar_error(
     target_index: torch.Tensor,
 ) -> torch.Tensor:
     """Maximum of the two point-to-epipolar-line distances in pixels."""
-    source = torch.as_tensor(source_index).long().reshape(-1)
-    target = torch.as_tensor(target_index).long().reshape(-1)
+    source_value = torch.as_tensor(source_index)
+    target_value = torch.as_tensor(target_index)
+    if source_value.ndim != 1 or target_value.ndim != 1:
+        raise ValueError("P9 epipolar match columns must have exact shape [N]")
+    source = source_value.long()
+    target = target_value.long()
     if source.numel() != target.numel():
         raise ValueError("P9 epipolar match columns are misaligned")
     if source.numel() == 0:
@@ -216,10 +230,24 @@ def symmetric_epipolar_error(
 
 
 def _sample_teacher(record: Mapping, indices: torch.Tensor) -> tuple[torch.Tensor, ...]:
-    xy = torch.as_tensor(record["native_xy"]).double()[indices]
-    depth = torch.as_tensor(record["native_depth_resampled"]).double().squeeze()
-    alpha = torch.as_tensor(record["native_alpha_resampled"]).double().squeeze()
-    mask = torch.as_tensor(record["native_valid_mask"]).bool().squeeze()
+    native_xy = torch.as_tensor(record["native_xy"])
+    depth_value = torch.as_tensor(record["native_depth_resampled"])
+    alpha_value = torch.as_tensor(record["native_alpha_resampled"])
+    mask_value = torch.as_tensor(record["native_valid_mask"])
+    native_hw = tuple(int(value) for value in record.get("native_input_hw", ()))
+    if (
+        native_xy.ndim != 2
+        or native_xy.shape[1] != 2
+        or len(native_hw) != 2
+        or depth_value.shape != native_hw
+        or alpha_value.shape != native_hw
+        or mask_value.shape != native_hw
+    ):
+        raise ValueError("P9 depth-teacher feature fields have invalid exact shapes")
+    xy = native_xy.double()[indices]
+    depth = depth_value.double()
+    alpha = alpha_value.double()
+    mask = mask_value.bool()
     rounded = xy.round().long()
     height, width = depth.shape
     inside = (
@@ -273,8 +301,14 @@ def dense_teacher_correctness(
     target_index: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return evaluable, correct, and maximum bidirectional errors."""
-    source = torch.as_tensor(source_index).long().reshape(-1)
-    target = torch.as_tensor(target_index).long().reshape(-1)
+    source_value = torch.as_tensor(source_index)
+    target_value = torch.as_tensor(target_index)
+    if source_value.ndim != 1 or target_value.ndim != 1:
+        raise ValueError("P9 teacher match columns must have exact shape [N]")
+    source = source_value.long()
+    target = target_value.long()
+    if source.shape != target.shape:
+        raise ValueError("P9 teacher match columns are misaligned")
     if source.numel() == 0:
         return (
             torch.empty(0, dtype=torch.bool),
@@ -301,8 +335,14 @@ def _common_confidence(
     source: torch.Tensor,
     target: torch.Tensor,
 ) -> torch.Tensor:
-    score0 = torch.as_tensor(left["detector_score"]).double()[source].clamp_min(0)
-    score1 = torch.as_tensor(right["detector_score"]).double()[target].clamp_min(0)
+    score0_value = torch.as_tensor(left["detector_score"])
+    score1_value = torch.as_tensor(right["detector_score"])
+    if score0_value.shape != (int(left["row_count"]),) or score1_value.shape != (
+        int(right["row_count"]),
+    ):
+        raise ValueError("P9 detector scores must have exact shape [N]")
+    score0 = score0_value.double()[source].clamp_min(0)
+    score1 = score1_value.double()[target].clamp_min(0)
     return torch.sqrt(score0 * score1).contiguous()
 
 
@@ -331,9 +371,18 @@ def _pack_arm(
     for left_index, right_index in pairs:
         left, right = feature_queries[left_index], feature_queries[right_index]
         source, target, raw_confidence, matcher_diagnostic = matcher(left, right)
-        source = torch.as_tensor(source).long().cpu().reshape(-1)
-        target = torch.as_tensor(target).long().cpu().reshape(-1)
-        raw_confidence = torch.as_tensor(raw_confidence).float().cpu().reshape(-1)
+        source_value = torch.as_tensor(source)
+        target_value = torch.as_tensor(target)
+        raw_confidence_value = torch.as_tensor(raw_confidence)
+        if (
+            source_value.ndim != 1
+            or target_value.ndim != 1
+            or raw_confidence_value.ndim != 1
+        ):
+            raise ValueError(f"P9 {name} raw match columns must have exact shape [N]")
+        source = source_value.long().cpu()
+        target = target_value.long().cpu()
+        raw_confidence = raw_confidence_value.float().cpu()
         if (
             source.numel() != target.numel()
             or source.numel() != raw_confidence.numel()
@@ -611,6 +660,95 @@ def summarize_arm(
     }
 
 
+ARM_COUNT_METRICS = (
+    "raw_match_count",
+    "epipolar_accepted_count",
+    "teacher_evaluable_count",
+    "correct_correspondence_count",
+    "verified_keypoint_triangle_count",
+    "cycle_supported_edge_count",
+    "verified_triangle_camera_count",
+    "nonempty_pair_coverage_count",
+    "identity_conflict_count",
+    "identity_conflict_component_count",
+)
+ARM_RATE_METRICS = (
+    "epipolar_acceptance_rate",
+    "correct_correspondence_precision",
+)
+ARM_METRIC_KEYS = (
+    set(ARM_COUNT_METRICS)
+    | set(ARM_RATE_METRICS)
+    | {"verified_triangle_camera_indices"}
+)
+
+
+def _validated_arm_metrics(metrics: Mapping) -> dict:
+    """Validate counts and recompute non-authoritative float projections."""
+    if not isinstance(metrics, Mapping) or set(metrics) != ARM_METRIC_KEYS:
+        raise ValueError("P9 arm metrics are incomplete or contain unknown fields")
+    if any(type(metrics.get(name)) is not int for name in ARM_COUNT_METRICS):
+        raise ValueError("P9 authoritative arm counts must be Python integers")
+    counts = {name: int(metrics[name]) for name in ARM_COUNT_METRICS}
+    cameras = metrics.get("verified_triangle_camera_indices")
+    if (
+        any(value < 0 for value in counts.values())
+        or not isinstance(cameras, list)
+        or any(type(value) is not int or value < 0 for value in cameras)
+        or cameras != sorted(set(cameras))
+        or counts["verified_triangle_camera_count"] != len(cameras)
+        or counts["epipolar_accepted_count"] > counts["raw_match_count"]
+        or counts["teacher_evaluable_count"] > counts["epipolar_accepted_count"]
+        or counts["correct_correspondence_count"] > counts["teacher_evaluable_count"]
+        or counts["identity_conflict_component_count"]
+        > counts["identity_conflict_count"]
+    ):
+        raise ValueError("P9 authoritative arm counts are inconsistent")
+    expected_rates = {
+        "epipolar_acceptance_rate": (
+            counts["epipolar_accepted_count"] / counts["raw_match_count"]
+            if counts["raw_match_count"]
+            else 0.0
+        ),
+        "correct_correspondence_precision": (
+            counts["correct_correspondence_count"] / counts["teacher_evaluable_count"]
+            if counts["teacher_evaluable_count"]
+            else 0.0
+        ),
+    }
+    if any(
+        type(metrics.get(name)) is not float
+        or not math.isfinite(metrics[name])
+        or metrics[name] != expected
+        for name, expected in expected_rates.items()
+    ):
+        raise ValueError(
+            "P9 serialized rate/precision differs from authoritative counts"
+        )
+    return {**dict(metrics), **expected_rates}
+
+
+def _fraction(metrics: Mapping, numerator: str, denominator: str) -> tuple[int, int]:
+    numerator_value = int(metrics[numerator])
+    denominator_value = int(metrics[denominator])
+    return (numerator_value, denominator_value) if denominator_value else (0, 1)
+
+
+def _fraction_not_lower(
+    control: Mapping,
+    variant: Mapping,
+    *,
+    numerator: str,
+    denominator: str,
+) -> bool:
+    control_numerator, control_denominator = _fraction(control, numerator, denominator)
+    variant_numerator, variant_denominator = _fraction(variant, numerator, denominator)
+    return (
+        variant_numerator * control_denominator
+        >= control_numerator * variant_denominator
+    )
+
+
 def _arm_tensor_hashes(arm: Mapping) -> dict:
     return {
         "matches": {
@@ -850,8 +988,10 @@ def validate_paired_probe(
     right_value = torch.as_tensor(pair_table.get("right_query_index"))
     if left_value.dtype != torch.int64 or right_value.dtype != torch.int64:
         raise ValueError("P9 paired-probe pair table dtype differs")
-    left = left_value.reshape(-1)
-    right = right_value.reshape(-1)
+    if left_value.ndim != 1 or right_value.ndim != 1:
+        raise ValueError("P9 paired-probe pair columns must have exact shape [P]")
+    left = left_value
+    right = right_value
     pairs = canonical_pairs(
         list(zip(left.tolist(), right.tolist())),
         query_count=int(payload["query_count"]),
@@ -924,11 +1064,18 @@ def validate_paired_probe(
             tensor_values[key].dtype != dtype for key, dtype in expected_dtypes.items()
         ):
             raise ValueError(f"P9 {name} match tensor dtype differs")
-        offsets = tensor_values["offsets"].reshape(-1)
-        columns = {
-            key: tensor_values[key].reshape(-1)
+        if tensor_values["offsets"].shape != (len(pairs) + 1,):
+            raise ValueError(f"P9 {name} match offsets must have exact shape [P+1]")
+        offsets = tensor_values["offsets"]
+        expected_match_count = int(offsets[-1]) if offsets.numel() else -1
+        if any(
+            tensor_values[key].shape != (expected_match_count,)
             for key in expected_dtypes
             if key != "offsets"
+        ):
+            raise ValueError(f"P9 {name} match columns must have exact shape [N]")
+        columns = {
+            key: tensor_values[key] for key in expected_dtypes if key != "offsets"
         }
         match_count = columns["source_row"].numel()
         if (
@@ -975,7 +1122,7 @@ def validate_paired_probe(
             "teacher_correct_count",
             "direct_matcher_forward_count",
         } or any(
-            torch.as_tensor(value).numel() != len(pairs)
+            torch.as_tensor(value).shape != (len(pairs),)
             for value in diagnostics.values()
         ):
             raise ValueError(f"P9 {name} diagnostics are partial")
@@ -1044,8 +1191,11 @@ def validate_paired_probe(
         observed_hashes = _arm_tensor_hashes(arm)
         if arm.get("tensor_sha256") != observed_hashes:
             raise ValueError(f"P9 {name} scientific tensor hash is stale")
-        metrics = summarize_arm(arm=arm, pairs=pairs, feature_queries=feature_queries)
-        if arm.get("metrics") != metrics:
+        metrics = _validated_arm_metrics(
+            summarize_arm(arm=arm, pairs=pairs, feature_queries=feature_queries)
+        )
+        serialized_metrics = _validated_arm_metrics(arm.get("metrics"))
+        if serialized_metrics != metrics:
             raise ValueError(f"P9 {name} metrics are stale")
     content = probe_content_sha256(payload)
     if payload.get("content_sha256") != content or (
@@ -1060,6 +1210,8 @@ def validate_paired_probe(
 
 
 def _pair_gate_axes(control: Mapping, variant: Mapping) -> dict[str, bool]:
+    control = _validated_arm_metrics(control)
+    variant = _validated_arm_metrics(variant)
     control_cameras = set(control["verified_triangle_camera_indices"])
     variant_cameras = set(variant["verified_triangle_camera_indices"])
     return {
@@ -1067,14 +1219,20 @@ def _pair_gate_axes(control: Mapping, variant: Mapping) -> dict[str, bool]:
             "correct_correspondence_count"
         ]
         >= control["correct_correspondence_count"],
-        "correct_correspondence_precision_not_lower": variant[
-            "correct_correspondence_precision"
-        ]
-        >= control["correct_correspondence_precision"],
+        "correct_correspondence_precision_not_lower": _fraction_not_lower(
+            control,
+            variant,
+            numerator="correct_correspondence_count",
+            denominator="teacher_evaluable_count",
+        ),
         "epipolar_accepted_count_not_lower": variant["epipolar_accepted_count"]
         >= control["epipolar_accepted_count"],
-        "epipolar_acceptance_rate_not_lower": variant["epipolar_acceptance_rate"]
-        >= control["epipolar_acceptance_rate"],
+        "epipolar_acceptance_rate_not_lower": _fraction_not_lower(
+            control,
+            variant,
+            numerator="epipolar_accepted_count",
+            denominator="raw_match_count",
+        ),
         "verified_keypoint_triangle_count_not_lower": variant[
             "verified_keypoint_triangle_count"
         ]
@@ -1100,6 +1258,9 @@ def _pair_gate_axes(control: Mapping, variant: Mapping) -> dict[str, bool]:
 
 
 def _pair_gate_comparisons(control: Mapping, variant: Mapping) -> dict:
+    control = _validated_arm_metrics(control)
+    variant = _validated_arm_metrics(variant)
+
     def comparison(name: str) -> dict:
         before, after = control[name], variant[name]
         return {
@@ -1178,6 +1339,8 @@ def validate_pair_gate_report(
         )
     ):
         raise ValueError("P9 scene Pair Gate lacks arm metrics")
+    control = _validated_arm_metrics(control)
+    variant = _validated_arm_metrics(variant)
     gates = _pair_gate_axes(control, variant)
     comparisons = _pair_gate_comparisons(control, variant)
     passed = all(gates.values())
@@ -1221,8 +1384,8 @@ def pair_gate_report(
     parent_stairs_gate: Mapping | None,
 ) -> dict:
     """Apply the exact preregistered scientific Pair Gate."""
-    control = probe["arms"]["mnn_control"]["metrics"]
-    variant = probe["arms"]["lighterglue_variant"]["metrics"]
+    control = _validated_arm_metrics(probe["arms"]["mnn_control"]["metrics"])
+    variant = _validated_arm_metrics(probe["arms"]["lighterglue_variant"]["metrics"])
     gates = _pair_gate_axes(control, variant)
     passed = all(gates.values())
     report = {

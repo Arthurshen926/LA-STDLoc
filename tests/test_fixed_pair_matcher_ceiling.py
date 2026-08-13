@@ -33,6 +33,7 @@ from map_learning.fixed_pair_matcher_ceiling import (
 )
 from scripts import aggregate_fixed_pair_matcher_ceiling_cross_scene as cross_cli
 from scripts import compare_fixed_pair_matcher_ceiling as compare_cli
+from scripts import materialize_fixed_pair_feature_cache as feature_cli
 from scripts.fixed_pair_matcher_ceiling_common import (
     atomic_torch_save_fresh,
     load_completion,
@@ -448,6 +449,17 @@ def test_feature_row_mutation_is_rejected():
         validate_feature_cache(cache)
 
 
+@pytest.mark.parametrize("field", ["detector_score", "native_depth_resampled"])
+def test_feature_cache_rejects_resigned_noncanonical_shapes(field: str):
+    cache = _synthetic_feature_cache()
+    query = cache["queries"]["mapping-0.png"]
+    query[field] = query[field].unsqueeze(0)
+    query["tensor_sha256"] = _query_hashes(query)
+    cache["content_sha256"] = feature_cache_content_sha256(cache)
+    with pytest.raises(ValueError, match="shape|misaligned"):
+        validate_feature_cache(cache)
+
+
 def test_probe_pair_or_match_row_mutation_is_rejected():
     probe, cache, pairs = _synthetic_probe()
     mutated = copy.deepcopy(probe)
@@ -458,6 +470,25 @@ def test_probe_pair_or_match_row_mutation_is_rejected():
     mutated["arms"]["mnn_control"]["matches"]["source_row"][0] = 1
     with pytest.raises(ValueError, match="hash is stale|non-reciprocal"):
         validate_paired_probe(mutated, feature_cache=cache, expected_pairs=pairs)
+
+
+@pytest.mark.parametrize("field", ["pair", "match", "diagnostic"])
+def test_probe_rejects_noncanonical_column_shapes(field: str):
+    probe, cache, pairs = _synthetic_probe()
+    if field == "pair":
+        probe["pair_table"]["left_query_index"] = probe["pair_table"][
+            "left_query_index"
+        ].unsqueeze(1)
+    elif field == "match":
+        probe["arms"]["mnn_control"]["matches"]["source_row"] = probe["arms"][
+            "mnn_control"
+        ]["matches"]["source_row"].unsqueeze(1)
+    else:
+        probe["arms"]["mnn_control"]["pair_diagnostics"]["raw_match_count"] = probe[
+            "arms"
+        ]["mnn_control"]["pair_diagnostics"]["raw_match_count"].unsqueeze(1)
+    with pytest.raises(ValueError, match="exact shape|partial"):
+        validate_paired_probe(probe, feature_cache=cache, expected_pairs=pairs)
 
 
 @pytest.mark.parametrize("mutation", ["partial", "splice"])
@@ -506,7 +537,7 @@ def test_pair_gate_scientific_stop_and_no_downstream_authority():
 def test_pair_gate_go_still_authorizes_review_only():
     probe, _, _ = _synthetic_probe()
     variant = probe["arms"]["lighterglue_variant"]["metrics"]
-    variant["correct_correspondence_count"] += 1
+    variant["verified_keypoint_triangle_count"] += 1
     producer = {"compiled_identity": "a" * 64}
     report = pair_gate_report(
         probe=probe,
@@ -522,6 +553,39 @@ def test_pair_gate_go_still_authorizes_review_only():
     assert report["decision"] == "SCENE_PAIR_PASS_REQUIRES_OTHER_SCENE"
     assert report["requires_other_scene"] is True
     assert report["advance_to_track_implementation_review"] is False
+
+
+def test_pair_gate_uses_counts_and_rejects_edited_float_projection():
+    probe, _, _ = _synthetic_probe()
+    variant = probe["arms"]["lighterglue_variant"]["metrics"]
+    variant["raw_match_count"] = 7
+    variant["epipolar_accepted_count"] = 6
+    variant["epipolar_acceptance_rate"] = 6 / 7
+    variant["verified_keypoint_triangle_count"] += 1
+    producer = {"compiled_identity": "a" * 64}
+    report = pair_gate_report(
+        probe=probe,
+        probe_path="/synthetic/fixed_pair_match_probe.pt",
+        probe_sha256="f" * 64,
+        completion_path="/synthetic/paired_match_completion.json",
+        completion_sha256="1" * 64,
+        producer_identity=producer,
+        compiled_identity=producer["compiled_identity"],
+        parent_stairs_gate=None,
+    )
+    assert report["gates"]["epipolar_acceptance_rate_not_lower"] is False
+    variant["epipolar_acceptance_rate"] = 1.0
+    with pytest.raises(ValueError, match="differs from authoritative counts"):
+        pair_gate_report(
+            probe=probe,
+            probe_path="/synthetic/fixed_pair_match_probe.pt",
+            probe_sha256="f" * 64,
+            completion_path="/synthetic/paired_match_completion.json",
+            completion_sha256="1" * 64,
+            producer_identity=producer,
+            compiled_identity=producer["compiled_identity"],
+            parent_stairs_gate=None,
+        )
 
 
 def test_atomic_fresh_file_rejects_partial_replacement(tmp_path: Path):
@@ -564,6 +628,97 @@ def test_partial_completion_is_rejected_before_artifact_loading(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="partial or invalid"):
         load_completion(path=path, expected_file_sha256=sha256_file(path))
+
+
+def test_completion_missing_failure_recovery_is_rejected_before_loading(
+    tmp_path: Path,
+):
+    path = tmp_path / "paired_match_completion.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_p9_fixed_pair_match_probe_completion",
+                "version": 1,
+                "scene": "stairs",
+                "mapping_only": True,
+                "uses_test_queries": False,
+                "complete": True,
+                "partial": False,
+                "resume_allowed": False,
+                "run_uuid": "synthetic",
+                "producer_identity": {},
+                "compiled_identity": "a" * 64,
+                "build_order": ["mnn_control", "lighterglue_variant"],
+                "inputs": {},
+                "artifacts": {},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="partial or invalid"):
+        load_completion(path=path, expected_file_sha256=sha256_file(path))
+
+
+def test_greatcourt_rejects_parent_identity_before_dataset_or_model_io(
+    monkeypatch,
+):
+    monkeypatch.setattr(feature_cli, "configure_formal_cpu_runtime", lambda: None)
+    monkeypatch.setattr(
+        feature_cli,
+        "producer_identity",
+        lambda **_: {"compiled_identity": "a" * 64},
+    )
+    monkeypatch.setattr(
+        feature_cli,
+        "load_scene_gate",
+        lambda **_: {
+            "path": Path("/synthetic/stairs.json"),
+            "sha256": "1" * 64,
+            "scientific_projection": {
+                "compiled_identity": "b" * 64,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        feature_cli,
+        "require_fixed_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dataset I/O happened before parent identity rejection")
+        ),
+    )
+    arguments = feature_cli.build_parser().parse_args(
+        [
+            "--scene",
+            "greatcourt",
+            "--dataset",
+            "/synthetic/dataset",
+            "--query-cache",
+            "/synthetic/cache.pt",
+            "--expected-query-cache-sha256",
+            "1" * 64,
+            "--mapping-scope-equivalence",
+            "/synthetic/proof.json",
+            "--expected-mapping-scope-equivalence-sha256",
+            "2" * 64,
+            "--xfeat-worktree",
+            "/synthetic/xfeat",
+            "--checkpoint",
+            "/synthetic/checkpoint.pt",
+            "--expected-checkpoint-sha256",
+            "3" * 64,
+            "--expected-parent-commit",
+            "4" * 40,
+            "--expected-xfeat-tree",
+            "5" * 40,
+            "--stairs-pair-gate",
+            "/synthetic/stairs.json",
+            "--expected-stairs-pair-gate-sha256",
+            "6" * 64,
+            "--output",
+            "/synthetic/output.pt",
+        ]
+    )
+    with pytest.raises(ValueError, match="different implementation"):
+        feature_cli.run(arguments)
 
 
 def test_comparator_exit_codes_are_two_for_scientific_stop_and_one_for_input_error(

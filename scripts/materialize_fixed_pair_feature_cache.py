@@ -59,6 +59,9 @@ def run(args: argparse.Namespace) -> dict:
     if args.device != "cpu":
         raise ValueError("P9 feature-cache producer is CPU-only")
     contract = scene_contract(args.scene)
+    producer = producer_identity(
+        entrypoint="python -m scripts.materialize_fixed_pair_feature_cache"
+    )
     parent_arguments = (
         args.stairs_pair_gate,
         args.expected_stairs_pair_gate_sha256,
@@ -75,6 +78,13 @@ def run(args: argparse.Namespace) -> dict:
             expected_scene="stairs",
             require_pass=True,
         )
+        if (
+            parent["scientific_projection"].get("compiled_identity")
+            != producer["compiled_identity"]
+        ):
+            raise ValueError(
+                "GreatCourt P9 parent was produced by a different implementation"
+            )
         parent_stairs_gate = {
             "path": str(parent["path"]),
             "sha256": parent["sha256"],
@@ -122,9 +132,6 @@ def run(args: argparse.Namespace) -> dict:
     )
     if output.name != "p9_fixed_pair_feature_cache.pt":
         raise ValueError("P9 feature cache output must use its fixed filename")
-    producer = producer_identity(
-        entrypoint="python -m scripts.materialize_fixed_pair_feature_cache"
-    )
     artifact_spec = BundledXFeatSpec(
         worktree=args.xfeat_worktree,
         checkpoint=checkpoint,
