@@ -1,0 +1,298 @@
+{
+  "schema": "lafgs_p9_fixed_pair_matcher_ceiling_preregistration",
+  "version": 1,
+  "valid": true,
+  "mapping_only": true,
+  "uses_test_queries": false,
+  "single_factor": "pair_matcher_with_shared_bundled_extractor_rows",
+  "hypothesis": {
+    "control": "mutual_nearest_neighbor_cosine",
+    "variant": "bundled_lighterglue",
+    "only_scientific_difference": "pair_matcher",
+    "same_extractor_for_both_arms": "E1_bundled_xfeat_extractor_from_xfeat_lighterglue_checkpoint",
+    "track_is_in_scope": false,
+    "fullchain_is_in_scope": false,
+    "pose_is_in_scope": false,
+    "test_split_is_in_scope": false
+  },
+  "runtime": {
+    "device": "cpu",
+    "cuda_visible_devices": "",
+    "python": "3.9.12",
+    "torch": "2.0.1+cu118",
+    "kornia": "0.8.2",
+    "numpy": "1.26.4",
+    "pillow": "10.4.0",
+    "kornia_lightglue_source_path": "/root/miniconda3/envs/cybersim_agent/lib/python3.9/site-packages/kornia/feature/lightglue.py",
+    "kornia_lightglue_source_sha256": "bb003885e5c4918d5762c6c98f9c423d61dcefe62790b8900d4fbb9bc738a7cb"
+  },
+  "external_xfeat": {
+    "worktree": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean",
+    "parent_commit": "b28d53258ab4461ba1a02eaa60ef504e9b82b9ab",
+    "xfeat_tree": "4f804566cb1cf72469b7d7174fba9308885c5c5a",
+    "required_clean": true,
+    "files": {
+      "model": {
+        "path": "encoders/XFeat/modules/model.py",
+        "sha256": "d9a665f18fcea5eaf3e278925e1a92103afcba9051e05b2334f3daa29f411964"
+      },
+      "interpolator": {
+        "path": "encoders/XFeat/modules/interpolator.py",
+        "sha256": "d63a6163eb6fff81e8720231f62537a42a69fccb44dc8851b04de5115daab4da"
+      },
+      "wrapper": {
+        "path": "encoders/XFeat/modules/xfeat.py",
+        "sha256": "f1b0f73c77e34381a46578866bb1531b98180e8d870c0fc61fbfdbd29ac64f31"
+      },
+      "lighterglue_wrapper": {
+        "path": "encoders/XFeat/modules/lighterglue.py",
+        "sha256": "2269f2830669cf56702ffa053b817c3ed0e93ce2b55db1bbaa06b4d3ee9cbb28"
+      },
+      "license": {
+        "path": "encoders/XFeat/LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    }
+  },
+  "checkpoint": {
+    "path": "/mnt/pool/sqy/G4Splat_runs/cambridge_stmarys_strict_ablation_v2/external_controls/ulfloc_main_b28d532_clean/encoders/XFeat/weights/xfeat-lighterglue.pt",
+    "sha256": "766102df37f11189efe5b0811d1f47c72b22629b79bfabfcfff9d2a2f84654b8",
+    "git_blob": "061e168b4d9db6b086172f247c8adcebb76d7ef8",
+    "size_bytes": 10820795,
+    "exact_tensor_key_count": 291,
+    "raw_key_order_sha256": "76542560a0d12c49b2bef38cc1041450759fd8a857cb3788b61784a036f8232e",
+    "key_order_hash_encoding": "utf8_newline_join_with_final_newline",
+    "exact_split": {
+      "extractor": {
+        "prefix": "extractor.model.net.",
+        "tensor_key_count": 122,
+        "stripped_key_order_sha256": "7a1831132282b855068949cf02ed0e6a394f21da0f29032476e41bb42ab5abc6",
+        "load": "strict_true"
+      },
+      "matcher": {
+        "prefix": "matcher.",
+        "tensor_key_count": 169,
+        "stripped_key_order_sha256": "bebf26fe084d5ebd9b71f71edb6dbd0cde65275c4df88e5278758e6a3966345d",
+        "legacy_self_cross_attention_names_are_rewritten_before_load": true,
+        "load": "strict_true_after_unique_runtime_buffer_insertion"
+      }
+    },
+    "other_prefixes_allowed": false,
+    "strict_false_allowed": false,
+    "relative_xfeat_pt_allowed": false,
+    "high_level_match_xfeat_allowed": false
+  },
+  "lighterglue": {
+    "config": {
+      "name": "xfeat",
+      "input_dim": 64,
+      "descriptor_dim": 96,
+      "add_scale_ori": false,
+      "add_laf": false,
+      "scale_coef": 1.0,
+      "n_layers": 6,
+      "num_heads": 1,
+      "flash": true,
+      "mp": false,
+      "depth_confidence": -1,
+      "width_confidence": 0.95,
+      "filter_threshold": 0.1,
+      "weights": null
+    },
+    "canonical_config_sha256": "b2268682d92af67e2c3b11e66c17e30dea6e4aeeb546df21e6bc390b8f381585",
+    "canonical_config_encoding": "json_sort_keys_compact_utf8",
+    "instantiated_state_key_count": 170,
+    "checkpoint_state_key_count": 169,
+    "unique_runtime_buffer": {
+      "name": "confidence_thresholds",
+      "dtype": "float32",
+      "values": [
+        0.8999999761581421,
+        0.851341724395752,
+        0.8263596892356873,
+        0.8135335445404053,
+        0.8069483637809753,
+        0.8035674095153809
+      ],
+      "tensor_bytes_sha256": "5182f70851806dfdb0b2942073b6669e66e37276f311aaaaea4cde75b3b7d3e5"
+    },
+    "one_direct_forward_per_pair": true,
+    "redetection_or_high_level_wrapper": false
+  },
+  "feature_cache": {
+    "schema": "lafgs_p9_fixed_pair_feature_cache",
+    "version": 1,
+    "source": "fresh_single_forward_per_mapping_image",
+    "native_rgb": "recreated_masked_rgb_from_frozen_mapping_dataset",
+    "detection_threshold": 0.05,
+    "nms_kernel_size": 5,
+    "nms_radius": 2,
+    "sort": "descending_score_stable_row_major_ties",
+    "top_k_before_mask": true,
+    "mask_refill": false,
+    "greatcourt_non_divisible_by_32_supported": true,
+    "coordinate_fields": [
+      "raw_xfeat_xy",
+      "native_xy"
+    ],
+    "row_fields": [
+      "descriptor",
+      "detector_score",
+      "row_registry_sha256"
+    ],
+    "dense_teacher_fields": [
+      "native_depth_resampled",
+      "native_alpha_resampled"
+    ],
+    "lineage_fields": [
+      "native_K",
+      "pose_w2c",
+      "native_valid_mask",
+      "source_image_sha256",
+      "native_masked_rgb_sha256",
+      "query_cache_sha256",
+      "query_names_sha256"
+    ],
+    "same_exact_rows_consumed_by_both_arms": true
+  },
+  "fixed_pair_probe": {
+    "schema": "lafgs_p9_fixed_pair_match_probe",
+    "version": 1,
+    "pair_source": "p8_attested_nearest_proposal_arm_pair_table_only",
+    "proposal_match_rows_reused": false,
+    "p8_probe_reused": false,
+    "xfeat_arm_a_or_b_probe_reused": false,
+    "detector_reentry_forbidden": true,
+    "arm_order": [
+      "mnn_control",
+      "lighterglue_variant"
+    ],
+    "mnn_minimum_cosine": -1.0,
+    "maximum_symmetric_epipolar_error_px": 2.0,
+    "common_confidence": "sqrt(left_detector_score*right_detector_score)",
+    "minimum_common_confidence": 0.0,
+    "atomic_fresh_output_required": true,
+    "partial_or_spliced_arm_output_allowed": false
+  },
+  "dense_depth_teacher": {
+    "mapping_only": true,
+    "pixel_center_offset": 0.5,
+    "depth_sample": "nearest_round_at_native_xy",
+    "minimum_alpha": 0.2,
+    "positive_finite_depth_required": true,
+    "correct_if_bidirectional_depth_reprojection_max_px": 2.0,
+    "unevaluable_rows_excluded_from_precision_denominator": true,
+    "test_image_or_pose_allowed": false
+  },
+  "pair_gate": {
+    "schema": "lafgs_p9_fixed_pair_matcher_ceiling_pair_gate",
+    "version": 1,
+    "scientific_gates": {
+      "correct_correspondence_count_not_lower": "variant >= control",
+      "correct_correspondence_precision_not_lower": "variant >= control",
+      "epipolar_accepted_count_not_lower": "variant >= control",
+      "epipolar_acceptance_rate_not_lower": "variant >= control",
+      "verified_keypoint_triangle_count_not_lower": "variant >= control",
+      "cycle_supported_edge_count_not_lower": "variant >= control",
+      "verified_triangle_camera_set_not_lower": "control_set subset_of variant_set",
+      "nonempty_pair_coverage_not_lower": "variant >= control",
+      "identity_conflict_count_not_higher": "variant <= control",
+      "at_least_one_primary_strict_gain": "correct_count or verified_triangle_count or cycle_supported_edge_count variant > control"
+    },
+    "verified_triangle_maximum_reprojection_error_px": 2.0,
+    "verified_cycle_identity": "same_exact_keypoint_rows_around_three_fixed_pair_edges",
+    "valid_scientific_stop_exit_code": 2,
+    "invalid_input_or_lineage_exit_code": 1,
+    "pass_exit_code": 0,
+    "pass_decision": "SCENE_PAIR_PASS_REQUIRES_OTHER_SCENE",
+    "stop_decision": "STOP_FIXED_PAIR_MATCHER_CEILING",
+    "single_scene_authorizes_track": false,
+    "both_scene_pass_authorizes_track_implementation_review_only": true,
+    "authorizes_real_track_run": false,
+    "authorizes_pose": false,
+    "authorizes_test": false,
+    "changes_method_default": false
+  },
+  "fixed_scene_registry": {
+    "stairs": {
+      "dataset_root": "/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1/stairs",
+      "images": "processed",
+      "query_count": 2000,
+      "query_cache": {
+        "path": "/mnt/pool/sqy/lafgs_p7_density_factor_20260812/stairs/k1024_nms4/query_cache.pt",
+        "sha256": "6f2b5a73185a98af10278d6d6fa68f1a95eac1907133dfa0678c357cb09e72c9"
+      },
+      "mapping_scope_equivalence": {
+        "path": "/mnt/pool/sqy/lafgs_frontend_ceiling_probe_20260813/stairs/contracts/fresh_cache_equivalence_v2.json",
+        "sha256": "b600403c9d3e59f9ef68389dc7a5e321028889bea8515cae80e449c3603522ee"
+      },
+      "query_names_sha256": "5167c86bcf9665c7cafdaa9d195a1075becda209b457217ca1afe0a39fbf8e4e",
+      "requested_keypoint_count": 1024,
+      "pair_proposals": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/stairs/pair_proposals.pt",
+        "sha256": "31f458410cdad5f2ab0aef846532a2ae324f08cd7b07bae47e18de5b7897ab20",
+        "content_sha256": "d0d028a4dc8736d3d74a94090f6575da5a742353760a088dcd26c6c77f56c47a"
+      },
+      "exact_nearest_pair_count": 7450,
+      "nearest_pair_table_sha256": "6d6afc9335bcb59470541042770e3d4352c2c90e89c11b78992da7314a762b29"
+    },
+    "greatcourt": {
+      "dataset_root": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+      "images": "processed",
+      "query_count": 1531,
+      "query_cache": {
+        "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/cache/query_cache.pt",
+        "sha256": "0550b59e3350cc6759515f0904a96243f9849f12bc868d449415fb2758153e92"
+      },
+      "mapping_scope_equivalence": {
+        "path": "/mnt/pool/sqy/lafgs_p7_pair_policy_factor_20260812/greatcourt/k2048_nms4/contracts/sparse_refresh_equivalence.json",
+        "sha256": "9f1593b7143bfd42cc69866ff6bd7d27e36de4d13c87989b677f8b4b7724f5e2"
+      },
+      "query_names_sha256": "3ac3c28420a68ac72c779f3f0699ce0773745be62a845f72d0fe91024134451b",
+      "requested_keypoint_count": 2048,
+      "pair_proposals": {
+        "path": "/mnt/pool/sqy/lafgs_p8_cycle_verified_fisher_20260813/greatcourt/pair_proposals.pt",
+        "sha256": "de9cc32ca29a932f95c839143ccb7a8c034c9e861c0c9ce9f5bd192a6467abf6",
+        "content_sha256": "53b03061bfcfa9da0a7db166731d1d51f9144c168d2d32b5c6cb708a381f18e8"
+      },
+      "exact_nearest_pair_count": 5254,
+      "nearest_pair_table_sha256": "355e01989327c91ee2a316fcb12433056632bd74f166882d8a29ef053b80da61"
+    }
+  },
+  "artifact_protocol": {
+    "feature_cache_then_paired_probe_then_pair_gate": true,
+    "fresh_nonexistent_outputs_required": true,
+    "atomic_replace_from_same_directory_temporary": true,
+    "completion_schema": "lafgs_p9_fixed_pair_match_probe_completion",
+    "completion_written_last_after_cache_and_both_arms_reload": true,
+    "producer_identity_required": true,
+    "committed_preregistration_required": true,
+    "post_review_implementation_registry_required_before_real_mapping_run": true
+  },
+  "planned_producer_source_paths": [
+    "common/hashing.py",
+    "data/datasets.py",
+    "data/images.py",
+    "evidence/fixed_pair_matcher_ceiling.py",
+    "features/multiview_fusion.py",
+    "map_learning/fixed_pair_matcher_ceiling.py",
+    "scripts/fixed_pair_matcher_ceiling_common.py",
+    "scripts/materialize_fixed_pair_feature_cache.py",
+    "scripts/materialize_fixed_pair_match_probe.py",
+    "scripts/compare_fixed_pair_matcher_ceiling.py",
+    "docs/evidence/p9_fixed_pair_matcher_ceiling_preregistration.json"
+  ],
+  "current_status": {
+    "preregistration_frozen_before_implementation": true,
+    "implementation_complete": false,
+    "full_cpu_tests_complete": false,
+    "independent_review_complete": false,
+    "implementation_registry_committed": false,
+    "real_mapping_feature_cache_run": false,
+    "real_mapping_pair_probe_run": false,
+    "real_pair_gate_run": false,
+    "track_implemented": false,
+    "gpu_run": false,
+    "test_split_run": false
+  }
+}
