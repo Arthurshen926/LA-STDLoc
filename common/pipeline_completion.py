@@ -392,9 +392,12 @@ def verify_pipeline_completion(
             raise ValueError("pipeline completion hash mismatch")
     payload = json.loads(path.read_text())
     evaluation = payload.get("evaluation", {})
+    stored_active = payload.get("active_experimental_factors")
+    if not isinstance(stored_active, dict):
+        raise ValueError("pipeline completion lacks active experimental factors")
     _, active = _validated_factor_contract(
         payload.get("experimental_factors"),
-        payload.get("active_experimental_factors"),
+        stored_active,
     )
     requested = evaluation.get("requested")
     if not isinstance(requested, bool):

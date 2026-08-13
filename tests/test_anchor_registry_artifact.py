@@ -869,6 +869,41 @@ def test_pipeline_completion_rejects_active_factor_numeric_type_forgery(
         verify_pipeline_completion(completion_path)
 
 
+@pytest.mark.parametrize("replacement", [None, "missing"])
+def test_pipeline_completion_requires_explicit_active_factor_mapping(
+    tmp_path: Path, replacement: object
+) -> None:
+    parents = _pipeline_parents(tmp_path)
+    registry_result = materialize_anchor_registry(
+        parents=parents,
+        output=tmp_path / "registry.pt",
+        require_pipeline_parents=True,
+    )
+    artifacts = _completion_artifacts(parents, registry_result)
+    manifest = atomic_json_install(
+        {name: str(path) for name, path in artifacts.items()},
+        tmp_path / "pipeline_manifest.json",
+    )
+    result = write_pipeline_completion(
+        output=tmp_path,
+        artifacts=artifacts,
+        pipeline_manifest=manifest,
+        anchor_registry_contract=registry_result["contract"],
+        config=parents["config"][0],
+        evaluation_requested=False,
+        experimental_factors=NO_FACTORS,
+    )
+    completion_path = Path(result["path"])
+    completion = json.loads(completion_path.read_text())
+    if replacement == "missing":
+        completion.pop("active_experimental_factors")
+    else:
+        completion["active_experimental_factors"] = replacement
+    completion_path.write_text(json.dumps(completion))
+    with pytest.raises(ValueError, match="lacks active experimental factors"):
+        verify_pipeline_completion(completion_path)
+
+
 def test_pipeline_completion_rejects_missing_evaluation_before_publish(
     tmp_path: Path,
 ) -> None:
