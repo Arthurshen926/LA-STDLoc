@@ -60,6 +60,7 @@
         "build_order",
         "run_uuid",
         "track_producer_identity",
+        "implementation_registry",
         "inputs",
         "artifacts",
         "summaries",
