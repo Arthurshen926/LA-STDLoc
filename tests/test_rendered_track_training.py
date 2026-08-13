@@ -267,3 +267,14 @@ def test_retrieval_bank_uses_only_requested_training_views():
     pooled = pooled_image_descriptor(torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
     assert pooled.shape == (4,)
     assert torch.isclose(pooled.norm(), torch.tensor(1.0))
+
+
+def test_retrieval_payload_fixture_uses_observation_track_schema():
+    tracks = {
+        "track_index": torch.tensor([0, 2, 2]),
+        "query_index": torch.tensor([0, 1, 2]),
+        "keypoint_index": torch.zeros(3, dtype=torch.long),
+        "track_level": torch.zeros(3, dtype=torch.int8),
+    }
+    assert "track_offsets" not in tracks
+    assert int(tracks["track_level"].numel()) == int(tracks["track_index"].max()) + 1

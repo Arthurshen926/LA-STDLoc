@@ -124,10 +124,15 @@ def run(args) -> dict:
         raise ValueError("teacher and Track query names differ")
     tracks = payload["tracks"]
     selected_track_ids = torch.as_tensor(state["track_cluster_ids"]).long()
-    total_tracks = int(torch.as_tensor(tracks["track_offsets"]).numel() - 1)
+    observation_track = torch.as_tensor(tracks["track_index"]).long()
+    if "track_level" in tracks:
+        total_tracks = int(torch.as_tensor(tracks["track_level"]).numel())
+    elif observation_track.numel():
+        total_tracks = int(observation_track.max()) + 1
+    else:
+        raise ValueError("Track payload has no observations or Track registry")
     track_to_anchor = torch.full((total_tracks,), -1, dtype=torch.long)
     track_to_anchor[selected_track_ids] = torch.arange(selected_track_ids.numel())
-    observation_track = torch.as_tensor(tracks["track_index"]).long()
     observation_query = torch.as_tensor(tracks["query_index"]).long()
     observation_keypoint = torch.as_tensor(tracks["keypoint_index"]).long()
     observation_anchor = track_to_anchor[observation_track]
