@@ -20,7 +20,7 @@ from map_learning.trainer import train
 from scripts.evaluate_rendered_track_crossfit import (
     COUNTER_NAMES,
     _combined_summary,
-    _sequence_name,
+    _crossfit_groups,
 )
 from topology.deployment_revision import collect_deployment_statistics
 
@@ -37,6 +37,7 @@ def _atomic_save(payload: dict, path: Path) -> None:
 def _training_inputs(
     *,
     held_sequence: str,
+    crossfit_groups: list[str],
     fold_teacher: dict,
     full_payload: dict,
 ) -> tuple[dict, dict, dict]:
@@ -44,10 +45,11 @@ def _training_inputs(
     selected_indices = [
         index
         for index, name in enumerate(all_names)
-        if _sequence_name(name) != held_sequence
+        if crossfit_groups[index] != held_sequence
     ]
     selected_names = [all_names[index] for index in selected_indices]
-    sequence_names = sorted({_sequence_name(name) for name in selected_names})
+    selected_groups = [crossfit_groups[index] for index in selected_indices]
+    sequence_names = sorted(set(selected_groups))
     sequence_id = {sequence: index for index, sequence in enumerate(sequence_names)}
     records = []
     positive_rows = strong_pairs = ambiguous_pairs = 0
@@ -98,7 +100,7 @@ def _training_inputs(
         "version": full_payload.get("version", 1),
         "query_names": selected_names,
         "query_bins": torch.as_tensor(
-            [sequence_id[_sequence_name(name)] for name in selected_names]
+            [sequence_id[group] for group in selected_groups]
         ).long(),
         "training_sequence_names": sequence_names,
         "held_mapping_sequence": held_sequence,
@@ -116,7 +118,7 @@ def run(args) -> dict:
     if cache.get("uses_test_queries") is not False:
         raise ValueError("training cache contains test queries")
     names = list(teacher["query_names"])
-    sequences = sorted({_sequence_name(name) for name in names})
+    crossfit_groups, sequences = _crossfit_groups(names, args.blocked_folds)
     args.output_dir.mkdir(parents=True, exist_ok=False)
     full_count = int(teacher["anchor_count"])
     aggregate = {
@@ -136,6 +138,7 @@ def run(args) -> dict:
         )
         train_teacher, graph, train_payload = _training_inputs(
             held_sequence=held_sequence,
+            crossfit_groups=crossfit_groups,
             fold_teacher=fold_teacher,
             full_payload=payload,
         )
@@ -176,7 +179,7 @@ def run(args) -> dict:
         query_indices = [
             index
             for index, name in enumerate(names)
-            if _sequence_name(name) == held_sequence
+            if crossfit_groups[index] == held_sequence
         ]
         statistics = collect_deployment_statistics(
             state=torch.load(trained_map_path, map_location="cpu", weights_only=False),
@@ -279,6 +282,7 @@ def main() -> None:
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--identity-crossfit", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--blocked-folds", type=int, default=3)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--topk", type=int, default=64)

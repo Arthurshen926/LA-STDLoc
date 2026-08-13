@@ -4,10 +4,12 @@ import random
 import torch
 
 from topology.adaptive_distillation import (
+    _candidate_matchability,
     _deployment_track_geometry,
     _image_only_core_eligibility,
     _project_world_covariance,
 )
+from topology.track_core import _materialize, _track_source_ids
 
 from topology.distillation import greedy_query_multicover
 from topology.coverage_reserve import greedy_pose_reserve
@@ -25,8 +27,11 @@ from topology.matching_coverage import (
 def test_query_multicover_selects_complementary_anchors():
     events = [{0}, {1}, {(1 << 32)}, {(1 << 32) | 1}]
     selected, report = greedy_query_multicover(
-        events, set(), torch.tensor([0, 1]), minimum_rows_per_query=2,
-        utility=torch.tensor([4., 3., 2., 1.]),
+        events,
+        set(),
+        torch.tensor([0, 1]),
+        minimum_rows_per_query=2,
+        utility=torch.tensor([4.0, 3.0, 2.0, 1.0]),
     )
     assert selected.tolist() == [0, 1, 2, 3]
     assert report["unmet_query_count"] == 0
@@ -34,10 +39,11 @@ def test_query_multicover_selects_complementary_anchors():
 
 def test_pose_reserve_respects_source_capacity():
     selected = greedy_pose_reserve(
-        [[(0, 3.), (1, 2.)], [(0, 2.), (2, 4.)]],
+        [[(0, 3.0), (1, 2.0)], [(0, 2.0), (2, 4.0)]],
         source_ids=torch.tensor([0, 0, 1]),
         voxel_ids=torch.tensor([0, 1, 2]),
-        budget=2, maximum_per_source=1,
+        budget=2,
+        maximum_per_source=1,
     )
     assert len(selected) == 2
     assert torch.unique(torch.tensor([0, 0, 1])[selected]).numel() == 2
@@ -84,15 +90,15 @@ def test_incremental_matching_matches_bruteforce_on_random_small_graphs():
         row_count = generator.randint(1, 5)
         edges = []
         for _candidate in range(candidate_count):
-            rows = tuple(
-                row for row in range(row_count) if generator.random() < 0.5
-            )
+            rows = tuple(row for row in range(row_count) if generator.random() < 0.5)
             edges.append({0: rows} if rows else {})
         state = IncrementalBipartiteCoverage(1, edges)
         for candidate in range(candidate_count):
             state.add(candidate)
         optimum = 0
-        choices = [(-1, *edges[candidate].get(0, ())) for candidate in range(candidate_count)]
+        choices = [
+            (-1, *edges[candidate].get(0, ())) for candidate in range(candidate_count)
+        ]
         for assignment in itertools.product(*choices):
             used = [row for row in assignment if row >= 0]
             if len(used) == len(set(used)):
@@ -125,9 +131,7 @@ def test_spatial_voxels_do_not_depend_on_source_identity():
 
 def test_anisotropic_landmark_covariance_is_projected_with_full_jacobian():
     point = torch.tensor([[1.0, 0.5, 4.0]], dtype=torch.float64)
-    covariance = torch.diag(
-        torch.tensor([0.01, 0.04, 0.09], dtype=torch.float64)
-    )[None]
+    covariance = torch.diag(torch.tensor([0.01, 0.04, 0.09], dtype=torch.float64))[None]
     intrinsic = torch.tensor(
         [[800.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
         dtype=torch.float64,
@@ -168,9 +172,7 @@ def test_image_stable_core_deploys_image_only_geometry():
         "triangulation_covariance_trace": torch.tensor([0.01, 0.01]),
         "triangulation_image_only_covariance_trace": torch.tensor([0.1, 0.2]),
     }
-    deployed = _deployment_track_geometry(
-        geometry, torch.tensor([True, False])
-    )
+    deployed = _deployment_track_geometry(geometry, torch.tensor([True, False]))
     assert torch.allclose(
         deployed["triangulated_xyz"],
         torch.tensor([[1.0, 0.0, 0.0], [2.1, 0.0, 0.0]]),
@@ -183,6 +185,59 @@ def test_image_stable_core_deploys_image_only_geometry():
         geometry["triangulated_xyz"],
         torch.tensor([[1.1, 0.0, 0.0], [2.1, 0.0, 0.0]]),
     )
+
+
+def test_track_only_materialization_keeps_primitive_lineage_explicitly_absent(
+    tmp_path,
+):
+    canonical = {
+        "base_anchor_count": 0,
+        "anchor_xyz": torch.empty((0, 3)),
+        "anchor_features": torch.empty((0, 4)),
+        "source_primitive_ids": torch.empty(0, dtype=torch.long),
+        "provenance": {"mapping_rgb_source": "gaussian_render_only"},
+    }
+    geometry = {
+        "triangulated": torch.tensor([True, True]),
+        "triangulated_xyz": torch.tensor([[0.0, 0.0, 2.0], [1.0, 0.0, 2.0]]),
+    }
+    payload = {"track_geometry": geometry, "query_names": ["mapping/0.png"]}
+    rows = torch.tensor([1, 0])
+    assert _track_source_ids(canonical, payload, rows).tolist() == [-1, -1]
+    state = _materialize(
+        canonical,
+        payload,
+        rows,
+        torch.eye(4)[:2],
+        torch.empty(0, dtype=torch.long),
+        budget=2,
+        quality_tier="adaptive_matching_feasible",
+        source_map=tmp_path / "empty_canonical.pt",
+        payload_path=tmp_path / "tracks.pt",
+        dependency_voxel_size=0.5,
+        separate_spatial_dependency=True,
+    )
+    assert state["base_anchor_count"] == 0
+    assert state["anchor_type"].tolist() == [1, 1]
+    assert state["source_primitive_ids"].tolist() == [-1, -1]
+    assert state["source_dependency_group_ids"].tolist() == [-1, -1]
+
+
+def test_track_only_matchability_does_not_require_gaussian_graph_counters():
+    payload = {
+        "track_geometry": {
+            "triangulated": torch.tensor([True, True]),
+            "track_confidence_level": torch.tensor([2, 1]),
+            "triangulation_reprojection_median_px": torch.tensor([0.5, 1.0]),
+        },
+        "tracks": {
+            "track_index": torch.tensor([0, 0, 1]),
+            "confidence": torch.tensor([1.0, 0.8, 0.7]),
+        },
+    }
+    result = _candidate_matchability(payload, {}, 0, 2.0)
+    assert result.shape == (2,)
+    assert bool(((result > 0) & (result < 1)).all())
 
 
 def test_dynamic_pose_reserve_updates_full_information_and_stops_naturally():
@@ -243,8 +298,7 @@ def test_pose_reserve_uses_objective_relative_natural_stop():
     eye = torch.eye(6, dtype=torch.float64)
     evidence = [[PoseEvidence(0, (0,), eye, 0, 0, 0)]]
     evidence += [
-        [PoseEvidence(0, (index,), eye * 1e-8, 0, 0, index)]
-        for index in range(1, 5)
+        [PoseEvidence(0, (index,), eye * 1e-8, 0, 0, index)] for index in range(1, 5)
     ]
     selected, report = greedy_dynamic_pose_reserve(
         evidence,

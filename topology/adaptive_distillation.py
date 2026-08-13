@@ -18,6 +18,7 @@ from common.calibration import (
     validate_frozen_numeric_scene_calibration,
 )
 from common.config import load_mainline_config
+from common.hashing import sha256_file
 from evidence.tracks import fuse_track_descriptors
 from map_learning.observations import _query_index_remap
 from topology.dynamic_reserve import PoseEvidence, spatial_voxel_ids
@@ -59,10 +60,7 @@ def _adaptive_track_eligibility(
     return (
         torch.as_tensor(geometry["triangulated"]).bool()
         & torch.isfinite(xyz).all(dim=1)
-        & (
-            torch.as_tensor(geometry["triangulation_distinct_view_bin_count"])
-            >= 2
-        )
+        & (torch.as_tensor(geometry["triangulation_distinct_view_bin_count"]) >= 2)
         & (
             torch.as_tensor(geometry["triangulation_reprojection_median_px"])
             <= float(median_px) * (4.0 / 3.0 if broad else 1.0)
@@ -75,10 +73,7 @@ def _adaptive_track_eligibility(
             torch.as_tensor(geometry["triangulation_covariance_trace"])
             <= float(covariance_m2) * factor
         )
-        & (
-            torch.as_tensor(geometry["triangulation_parallax_deg"])
-            >= parallax
-        )
+        & (torch.as_tensor(geometry["triangulation_parallax_deg"]) >= parallax)
     )
 
 
@@ -129,9 +124,7 @@ def _deployment_track_geometry(
     PnP geometry.  Surface-fused geometry remains available to weak tracks and
     must still pass the matching/pose reserve selection.
     """
-    return materialize_track_geometry_compatibility(
-        geometry, image_only_core
-    )
+    return materialize_track_geometry_compatibility(geometry, image_only_core)
 
 
 def _mean_track_confidence(payload: dict) -> torch.Tensor:
@@ -157,14 +150,22 @@ def _candidate_matchability(
     level_factor = torch.where(
         level >= 2,
         torch.ones_like(confidence),
-        torch.where(level == 1, 0.8 * torch.ones_like(confidence), 0.6 * torch.ones_like(confidence)),
+        torch.where(
+            level == 1,
+            0.8 * torch.ones_like(confidence),
+            0.6 * torch.ones_like(confidence),
+        ),
     )
     reprojection = torch.as_tensor(
         geometry["triangulation_reprojection_median_px"]
     ).float()
-    track_probability = confidence * level_factor * torch.exp(
-        -reprojection / max(float(track_threshold_px), 1e-6)
+    track_probability = (
+        confidence
+        * level_factor
+        * torch.exp(-reprojection / max(float(track_threshold_px), 1e-6))
     )
+    if int(base_count) == 0:
+        return track_probability.clamp(0.02, 0.98)
     opportunity = torch.as_tensor(
         graph["provenance_opportunity_count"][:base_count]
     ).float()
@@ -419,6 +420,13 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--alias-risk-audit")
     parser.add_argument(
+        "--excluded-track-ids",
+        help=(
+            "Mapping-crossfit Track exclusion artifact. It is accepted only "
+            "for a rendered-RGB Track-only candidate universe."
+        ),
+    )
+    parser.add_argument(
         "--frozen-scene-calibration",
         help=(
             "Exact variant-bound calibration sidecar for a pre-registered "
@@ -494,9 +502,7 @@ def main() -> None:
     )
     query_groups = torch.empty_like(torch.as_tensor(payload["query_bins"]))
     query_groups[payload_to_teacher] = torch.as_tensor(payload["query_bins"])
-    track_edges = track_candidate_edges(
-        payload, query_index_remap=payload_to_teacher
-    )
+    track_edges = track_candidate_edges(payload, query_index_remap=payload_to_teacher)
     base_edges = base_candidate_edges(teacher, base_count)
     edges = [*track_edges, *base_edges]
     alias_risk = None
@@ -530,6 +536,36 @@ def main() -> None:
         }
 
     geometry = payload["track_geometry"]
+    excluded_tracks = torch.zeros(track_count, dtype=torch.bool)
+    exclusion_contract = None
+    if args.excluded_track_ids:
+        if base_count != 0 or payload.get("rendered_rgb_only") is not True:
+            raise ValueError(
+                "crossfit Track exclusions require rendered-RGB Track-only mode"
+            )
+        exclusion_path = Path(args.excluded_track_ids).resolve()
+        exclusion = torch.load(exclusion_path, map_location="cpu", weights_only=False)
+        ids = torch.as_tensor(exclusion.get("excluded_track_ids", ())).long()
+        if (
+            exclusion.get("schema") != "lafgs_rendered_track_crossfit_exclusions"
+            or exclusion.get("version") != 1
+            or exclusion.get("uses_test_queries") is not False
+            or Path(str(exclusion.get("track_payload", ""))).resolve() != payload_path
+            or exclusion.get("track_payload_sha256") != sha256_file(payload_path)
+        ):
+            raise ValueError("invalid rendered Track crossfit exclusion artifact")
+        if ids.ndim != 1 or torch.unique(ids).numel() != ids.numel():
+            raise ValueError("excluded Track IDs must be a unique vector")
+        if ids.numel() and (int(ids.min()) < 0 or int(ids.max()) >= track_count):
+            raise ValueError("excluded Track ID is outside the candidate universe")
+        excluded_tracks[ids] = True
+        exclusion_contract = {
+            "path": str(exclusion_path),
+            "sha256": sha256_file(exclusion_path),
+            "excluded_track_count": int(ids.numel()),
+            "selection_split": "mapping_crossfit_only",
+            "uses_test_queries": False,
+        }
     quality = _track_quality(geometry)
     medium = _adaptive_track_eligibility(
         geometry,
@@ -551,6 +587,9 @@ def main() -> None:
         p90_px=parameters.track_reprojection_p90_px,
         covariance_m2=parameters.track_covariance_trace_m2,
     )
+    medium &= ~excluded_tracks
+    broad &= ~excluded_tracks
+    image_only_core &= ~excluded_tracks
     deployment_geometry = _deployment_track_geometry(geometry, image_only_core)
     deployment_quality = _track_quality(deployment_geometry)
     quality = torch.where(image_only_core, deployment_quality, quality)
@@ -571,27 +610,33 @@ def main() -> None:
         check_interval=int(policy["track_core_check_interval"]),
     )
 
-    opportunity = torch.as_tensor(
-        graph["provenance_opportunity_count"][:base_count]
-    ).float()
-    harmful = torch.as_tensor(
-        graph["provenance_harmful_solver_inlier_count"][:base_count]
-    ).float()
-    harmful_rate = harmful / opportunity.clamp_min(1)
-    base_eligible = (
-        _graph_counter(
-            graph,
-            "provenance_legal_hit_strong_count",
-            "provenance_legal_hit_2px_count",
-        )[:base_count]
-        > 0
-    ) & (harmful_rate <= float(policy["maximum_harmful_rate"]))
+    if base_count:
+        opportunity = torch.as_tensor(
+            graph["provenance_opportunity_count"][:base_count]
+        ).float()
+        harmful = torch.as_tensor(
+            graph["provenance_harmful_solver_inlier_count"][:base_count]
+        ).float()
+        harmful_rate = harmful / opportunity.clamp_min(1)
+        base_eligible = (
+            _graph_counter(
+                graph,
+                "provenance_legal_hit_strong_count",
+                "provenance_legal_hit_2px_count",
+            )[:base_count]
+            > 0
+        ) & (harmful_rate <= float(policy["maximum_harmful_rate"]))
+        base_utility = _base_utility(graph, base_count)
+    else:
+        base_eligible = torch.empty(0, dtype=torch.bool)
+        base_utility = torch.empty(0, dtype=quality.dtype)
     core_mask = torch.zeros(track_count, dtype=torch.bool)
     core_mask[core] = True
     reserve_track_ids = torch.nonzero(broad & ~core_mask, as_tuple=False).reshape(-1)
-    reserve_base_ids = torch.nonzero(base_eligible, as_tuple=False).reshape(-1) + track_count
+    reserve_base_ids = (
+        torch.nonzero(base_eligible, as_tuple=False).reshape(-1) + track_count
+    )
     reserve_candidates = torch.cat((reserve_track_ids, reserve_base_ids))
-    base_utility = _base_utility(graph, base_count)
     utility = torch.cat((quality, base_utility))
     coverage_selected, matching, coverage_report = selector.complete_matching(
         reserve_candidates,
@@ -603,19 +648,22 @@ def main() -> None:
     )
     selected = selector.compatibility_materialization_ids
 
-    track_xyz = torch.as_tensor(
-        deployment_geometry["triangulated_xyz"]
-    ).float()
+    track_xyz = torch.as_tensor(deployment_geometry["triangulated_xyz"]).float()
     base_xyz = torch.as_tensor(canonical["anchor_xyz"][:base_count]).float()
     xyz = torch.cat((track_xyz, base_xyz))
     finite_tracks = torch.isfinite(track_xyz).all(dim=1)
     track_sources = torch.full((track_count,), -1, dtype=torch.long)
-    finite_track_indices = torch.nonzero(
-        finite_tracks, as_tuple=False
-    ).reshape(-1)
-    track_sources[finite_track_indices] = _track_source_ids(
-        canonical, deployment_payload, finite_track_indices
-    )
+    finite_track_indices = torch.nonzero(finite_tracks, as_tuple=False).reshape(-1)
+    if base_count > 0:
+        track_sources[finite_track_indices] = _track_source_ids(
+            canonical, deployment_payload, finite_track_indices
+        )
+    else:
+        # In Track-only mode each observation Track is its own source-capacity
+        # identity.  Serialized primitive lineage remains -1 in the Map, while
+        # pose completion must not collapse all candidates into one shared
+        # ``-1`` capacity bucket.
+        track_sources[finite_track_indices] = finite_track_indices
     source_ids = torch.cat(
         (
             track_sources,
@@ -635,9 +683,11 @@ def main() -> None:
         ).float()
         covariance_model = "anisotropic_triangulation_covariance_projected_by_Jx"
     else:
-        track_covariance = torch.as_tensor(
-            deployment_geometry["triangulation_covariance_trace"]
-        ).float().clamp_min(0)
+        track_covariance = (
+            torch.as_tensor(deployment_geometry["triangulation_covariance_trace"])
+            .float()
+            .clamp_min(0)
+        )
         covariance_model = "isotropic_trace_fallback_projected_by_Jx"
     selected_mask = torch.zeros(len(edges), dtype=torch.bool)
     selected_mask[selected] = True
@@ -696,8 +746,12 @@ def main() -> None:
     selected = selector.compatibility_materialization_ids
     selected_tracks = selected[selected < track_count]
     selected_base = selected[selected >= track_count] - track_count
-    selected_tracks = selected_tracks[torch.argsort(quality[selected_tracks], descending=True)]
-    selected_base = selected_base[torch.argsort(base_utility[selected_base], descending=True)]
+    selected_tracks = selected_tracks[
+        torch.argsort(quality[selected_tracks], descending=True)
+    ]
+    selected_base = selected_base[
+        torch.argsort(base_utility[selected_base], descending=True)
+    ]
 
     original_threads = torch.get_num_threads()
     try:
@@ -719,9 +773,7 @@ def main() -> None:
         "coverage_gaussian_universe_ids": coverage_selected[
             coverage_selected >= track_count
         ].clone(),
-        "pose_track_universe_ids": pose_selected[
-            pose_selected < track_count
-        ].clone(),
+        "pose_track_universe_ids": pose_selected[pose_selected < track_count].clone(),
         "pose_gaussian_universe_ids": pose_selected[
             pose_selected >= track_count
         ].clone(),
@@ -772,10 +824,19 @@ def main() -> None:
             "selection_provenance": selection_provenance,
             "unified_sufficiency_selection": selector.artifact(),
             "all_candidate_alias_risk": alias_risk_contract,
+            "rendered_track_crossfit_exclusions": exclusion_contract,
             "final_track_count": int(selected_tracks.numel()),
             "final_base_count": int(selected_base.numel()),
-            "reserve_candidate_pool": "leftover_tracks_plus_gaussian_base",
-            "geometry_policy": "hybrid_triangulated_tracks_and_canonical_gaussian_reserve",
+            "reserve_candidate_pool": (
+                "leftover_tracks_only"
+                if base_count == 0
+                else "leftover_tracks_plus_gaussian_base"
+            ),
+            "geometry_policy": (
+                "ray_triangulated_tracks_only"
+                if base_count == 0
+                else "hybrid_triangulated_tracks_and_canonical_gaussian_reserve"
+            ),
             "track_core_geometry_source": "image_only_triangulation",
             "surface_geometry_scope": "functionally_selected_promoted_reserve",
             "surface_supported_candidate_count": int(surface_supported.sum()),
@@ -822,12 +883,11 @@ def main() -> None:
             "behavior_change_authorized": False,
         },
         "all_candidate_alias_risk": alias_risk_contract,
+        "rendered_track_crossfit_exclusions": exclusion_contract,
         "surface_supported": {
             "candidate_count": int(surface_supported.sum()),
             "promoted_reserve_candidate_count": int(surface_promoted.sum()),
-            "promoted_selected_count": int(
-                surface_promoted[selected_tracks].sum()
-            ),
+            "promoted_selected_count": int(surface_promoted[selected_tracks].sum()),
             "core_requires_image_only_geometry": True,
             "track_core_geometry_source": "image_only_triangulation",
             "surface_geometry_scope": "functionally_selected_promoted_reserve",

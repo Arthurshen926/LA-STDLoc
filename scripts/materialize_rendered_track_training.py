@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 
 from common.hashing import sha256_file
+from scripts.evaluate_rendered_track_crossfit import _crossfit_groups
 
 
 def _atomic_torch_save(payload: dict, path: Path) -> None:
@@ -93,6 +94,7 @@ def materialize(
     output_dir: Path,
     strong_radius_px: float,
     ambiguous_radius_px: float,
+    blocked_folds: int = 3,
 ) -> dict:
     if float(strong_radius_px) <= 0 or float(ambiguous_radius_px) <= float(
         strong_radius_px
@@ -197,9 +199,9 @@ def materialize(
                 flush=True,
             )
 
-    sequence_names = sorted({_sequence_name(name) for name in names})
+    group_labels, sequence_names = _crossfit_groups(names, blocked_folds)
     sequence_ids = torch.as_tensor(
-        [sequence_names.index(_sequence_name(name)) for name in names]
+        [sequence_names.index(group) for group in group_labels]
     ).long()
     teacher = {
         "schema": "lafgs_v9_active_map_complete_positive_teacher",
@@ -271,9 +273,14 @@ def materialize(
         "uses_test_queries": False,
         "mapping_sequence_names": sequence_names,
         "mapping_sequence_query_counts": {
-            sequence: sum(_sequence_name(name) == sequence for name in names)
+            sequence: sum(group == sequence for group in group_labels)
             for sequence in sequence_names
         },
+        "mapping_grouping": (
+            "mapping_trajectory"
+            if len(set(_sequence_name(name) for name in names)) >= 2
+            else "contiguous_mapping_blocks"
+        ),
         "teacher_diagnostics": teacher["diagnostics"],
         "inputs": {
             "anchor_map": str(anchor_map_path.resolve()),
@@ -301,6 +308,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--strong-radius-px", type=float, default=2.0)
     parser.add_argument("--ambiguous-radius-px", type=float, default=8.0)
+    parser.add_argument("--blocked-folds", type=int, default=3)
     args = parser.parse_args()
     report = materialize(
         anchor_map_path=args.anchor_map.resolve(),
@@ -309,6 +317,7 @@ def main() -> None:
         output_dir=args.output_dir.resolve(),
         strong_radius_px=args.strong_radius_px,
         ambiguous_radius_px=args.ambiguous_radius_px,
+        blocked_folds=args.blocked_folds,
     )
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
 

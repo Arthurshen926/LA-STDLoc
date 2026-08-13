@@ -1,8 +1,14 @@
 from pathlib import Path
+import json
 
 import torch
 
+from common.hashing import sha256_file
 from scripts.materialize_rendered_track_training import materialize
+from scripts.evaluate_rendered_track_crossfit import _crossfit_groups
+from scripts.materialize_rendered_track_fullchain_inputs import (
+    materialize as materialize_fullchain_inputs,
+)
 from scripts.train_rendered_track_crossfit import _training_inputs
 
 
@@ -130,7 +136,10 @@ def test_crossfit_training_inputs_exclude_held_mapping_sequence():
         },
     }
     revised, graph, payload = _training_inputs(
-        held_sequence="seq-03", fold_teacher=teacher, full_payload={}
+        held_sequence="seq-03",
+        crossfit_groups=["seq-02", "seq-03", "seq-05"],
+        fold_teacher=teacher,
+        full_payload={},
     )
     assert revised["query_names"] == ["seq-02/a", "seq-05/c"]
     assert graph["query_names"] == revised["query_names"]
@@ -138,3 +147,69 @@ def test_crossfit_training_inputs_exclude_held_mapping_sequence():
     assert payload["query_bins"].tolist() == [0, 1]
     assert payload["uses_test_queries"] is False
     assert revised["crossfit"]["held_mapping_sequence"] == "seq-03"
+
+
+def test_single_mapping_trajectory_uses_contiguous_blocked_crossfit():
+    names = [f"seq2/frame{index:05d}.png" for index in range(7)]
+    groups, folds = _crossfit_groups(names, 3)
+    assert folds == ["blocked_00", "blocked_01", "blocked_02"]
+    assert groups == [
+        "blocked_00",
+        "blocked_00",
+        "blocked_00",
+        "blocked_01",
+        "blocked_01",
+        "blocked_02",
+        "blocked_02",
+    ]
+
+
+def test_fullchain_inputs_resolve_pruned_rows_to_track_ids(tmp_path):
+    paths = _inputs(tmp_path)
+    state = torch.load(paths["map"], map_location="cpu", weights_only=False)
+    state.update(
+        {
+            "schema": "lafgs_materialized_anchor_map",
+            "anchor_type": torch.ones(1, dtype=torch.long),
+        }
+    )
+    torch.save(state, paths["map"])
+    payload = torch.load(paths["track"], map_location="cpu", weights_only=False)
+    payload.update(
+        {
+            "schema": "lafgs_track_first_payload",
+            "rendered_rgb_only": True,
+            "track_geometry": {"triangulated": torch.tensor([True])},
+        }
+    )
+    torch.save(payload, paths["track"])
+    capacity = {
+        "schema": "lafgs_rendered_track_train_only_capacity_selection",
+        "version": 1,
+        "uses_test_queries": False,
+        "inputs": {"anchor_map": str(paths["map"].resolve())},
+        "input_sha256": {"anchor_map": sha256_file(paths["map"])},
+        "pruned_anchor_rows": [0],
+    }
+    capacity_path = tmp_path / "capacity.json"
+    capacity_path.write_text(json.dumps(capacity))
+    result = materialize_fullchain_inputs(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        capacity_report_path=capacity_path,
+        output_dir=tmp_path / "fullchain",
+    )
+    empty = torch.load(
+        result["outputs"]["empty_canonical_map"],
+        map_location="cpu",
+        weights_only=False,
+    )
+    exclusions = torch.load(
+        result["outputs"]["track_exclusions"],
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert empty["base_anchor_count"] == 0
+    assert empty["anchor_xyz"].shape == (0, 3)
+    assert exclusions["excluded_track_ids"].tolist() == [0]

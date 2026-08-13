@@ -72,12 +72,35 @@ def _sequence_name(image_name: str) -> str:
     return str(image_name).split("/", maxsplit=1)[0]
 
 
+def _crossfit_groups(
+    names: list[str], blocked_folds: int
+) -> tuple[list[str], list[str]]:
+    sequences = [_sequence_name(name) for name in names]
+    unique = sorted(set(sequences))
+    if len(unique) >= 2:
+        return sequences, unique
+    fold_count = int(blocked_folds)
+    if fold_count < 2:
+        raise ValueError(
+            "a single mapping trajectory requires at least two blocked folds"
+        )
+    # Camera names are already in the frozen dataset/cache order.  Contiguous
+    # blocks keep neighboring Cambridge frames together and make every held
+    # block disjoint from the descriptors used to build its Track bank.
+    groups = [
+        f"blocked_{min(index * fold_count // len(names), fold_count - 1):02d}"
+        for index in range(len(names))
+    ]
+    return groups, sorted(set(groups))
+
+
 def _fold_bank(
     *,
     state: dict,
     payload: dict,
     query_cache: dict,
     held_sequence: str,
+    crossfit_groups: list[str],
     trim_fraction: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     names = list(payload["query_names"])
@@ -98,7 +121,7 @@ def _fold_bank(
         )
     ):
         row = selected_lookup.get(int(track))
-        if row is not None and _sequence_name(names[int(query)]) != held_sequence:
+        if row is not None and crossfit_groups[int(query)] != held_sequence:
             observations[row].append(observation)
 
     eligible = torch.zeros(selected_tracks.numel(), dtype=torch.bool)
@@ -190,9 +213,7 @@ def run(args) -> dict:
     names = list(payload["query_names"])
     if names != list(teacher["query_names"]):
         raise ValueError("teacher and Track query order differs")
-    sequences = sorted({_sequence_name(name) for name in names})
-    if len(sequences) < 2:
-        raise ValueError("crossfit requires multiple mapping sequences")
+    crossfit_groups, sequences = _crossfit_groups(names, args.blocked_folds)
     args.output_dir.mkdir(parents=True, exist_ok=False)
 
     full_count = int(torch.as_tensor(state["anchor_ids"]).numel())
@@ -209,6 +230,7 @@ def run(args) -> dict:
             payload=payload,
             query_cache=cache,
             held_sequence=held_sequence,
+            crossfit_groups=crossfit_groups,
             trim_fraction=args.descriptor_trim_fraction,
         )
         fold_map = _subset_state(state, keep, features)
@@ -223,7 +245,7 @@ def run(args) -> dict:
         query_indices = [
             index
             for index, name in enumerate(names)
-            if _sequence_name(name) == held_sequence
+            if crossfit_groups[index] == held_sequence
         ]
         statistics = collect_deployment_statistics(
             state=fold_map,
@@ -274,6 +296,11 @@ def run(args) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "sequences": sequences,
+        "grouping": (
+            "mapping_trajectory"
+            if len(set(_sequence_name(name) for name in names)) >= 2
+            else "contiguous_mapping_blocks"
+        ),
         "folds": folds,
         "combined_summary": combined["summary"],
         "inputs": {
@@ -304,6 +331,7 @@ def main() -> None:
     parser.add_argument("--teacher", type=Path, required=True)
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--blocked-folds", type=int, default=3)
     parser.add_argument("--descriptor-trim-fraction", type=float, default=0.2)
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
     parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
