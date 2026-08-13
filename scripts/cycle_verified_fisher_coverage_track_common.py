@@ -37,6 +37,15 @@ PREREGISTRATION_PATH = (
     / "docs/evidence/"
     "p8_cycle_verified_fisher_coverage_v2_stage_b_preregistration.json"
 )
+PREREGISTRATION_COMMIT = "9384986df4c1d22ea5aeac71b5caa460f9785589"
+PREREGISTRATION_BLOB_SHA256 = (
+    "eab20cb3fac8440eb2b22b4c4c88a2e1efb911aebeefe06fbd1e41cf26f8a54e"
+)
+IMPLEMENTATION_REGISTRY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/evidence/"
+    "p8_cycle_verified_fisher_coverage_v2_stage_b_implementation.json"
+)
 CONTROL_POLICY_NAME = "cycle_verified_fisher_coverage_nearest_control"
 VARIANT_POLICY_NAME = COVERAGE_POLICY_NAME
 CONTROL_SUBSET_ROLE = "attested_nearest_same_probe_control"
@@ -85,6 +94,7 @@ CROSS_B_PRODUCER_SOURCE_PATHS = (
 
 def preregistration() -> dict:
     payload = json.loads(PREREGISTRATION_PATH.read_text())
+    prereg_source = payload.get("producer_identity", {}).get("required_source_paths")
     expected_pass_contract = {
         "greatcourt": "all(base_gates_8)",
         "stairs": (
@@ -103,6 +113,17 @@ def preregistration() -> dict:
         or payload.get("mapping_only") is not True
         or payload.get("policy")
         != {"control": CONTROL_POLICY_NAME, "variant": VARIANT_POLICY_NAME}
+        or prereg_source != list(TRACK_PRODUCER_SOURCE_PATHS)
+        or not set(
+            payload.get("stage_b_producer_identity", {}).get(
+                "required_source_paths_include", []
+            )
+        ).issubset(STAGE_B_PRODUCER_SOURCE_PATHS)
+        or not set(
+            payload.get("cross_scene_stage_b_producer_identity", {}).get(
+                "required_source_paths_include", []
+            )
+        ).issubset(CROSS_B_PRODUCER_SOURCE_PATHS)
         or exit_contract.get("scene_pass_formulas") != expected_pass_contract
         or exit_contract.get("cross_pass_formula")
         != (
@@ -121,6 +142,85 @@ def preregistration() -> dict:
         is not True
     ):
         raise RuntimeError("P8 coverage-V2 Stage-B preregistration is invalid")
+    return payload
+
+
+def implementation_registry() -> dict:
+    """Load the post-review implementation boundary required for real Track."""
+    if not IMPLEMENTATION_REGISTRY_PATH.is_file():
+        raise RuntimeError(
+            "Reviewed P8 coverage-V2 implementation registry is not committed"
+        )
+    payload = json.loads(IMPLEMENTATION_REGISTRY_PATH.read_text())
+    required_source_paths = sorted(
+        set(TRACK_PRODUCER_SOURCE_PATHS)
+        | set(STAGE_B_PRODUCER_SOURCE_PATHS)
+        | set(CROSS_B_PRODUCER_SOURCE_PATHS)
+    )
+    if (
+        payload.get("schema")
+        != "lafgs_cycle_verified_fisher_coverage_stage_b_implementation_registry"
+        or payload.get("version") != 1
+        or payload.get("valid") is not True
+        or payload.get("uses_test_queries") is not False
+        or payload.get("mapping_only") is not True
+        or payload.get("preregistration", {}).get("path")
+        != str(PREREGISTRATION_PATH.relative_to(PREREGISTRATION_PATH.parents[2]))
+        or payload.get("preregistration", {}).get("commit")
+        != PREREGISTRATION_COMMIT
+        or payload.get("preregistration", {}).get("blob_sha256")
+        != PREREGISTRATION_BLOB_SHA256
+        or sha256_file(PREREGISTRATION_PATH) != PREREGISTRATION_BLOB_SHA256
+        or re.fullmatch(
+            r"[0-9a-f]{40}", str(payload.get("implementation_commit", ""))
+        )
+        is None
+        or payload.get("required_source_paths") != required_source_paths
+        or payload.get("source_file_sha256")
+        != {
+            name: _file_sha256(Path(__file__).resolve().parents[1] / name)
+            for name in required_source_paths
+        }
+        or payload.get("full_cpu_tests", {}).get("passed") is not True
+        or payload.get("independent_review", {}).get("passed") is not True
+        or payload.get("authorizes_real_track_execution") is not True
+        or payload.get("authorizes_test") is not False
+        or payload.get("authorizes_method_default_change") is not False
+    ):
+        raise RuntimeError("P8 reviewed implementation registry is invalid or stale")
+    root = Path(__file__).resolve().parents[1]
+    current_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    ancestor = subprocess.run(
+        [
+            "git",
+            "merge-base",
+            "--is-ancestor",
+            payload["implementation_commit"],
+            current_commit,
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if ancestor.returncode != 0:
+        raise RuntimeError("Reviewed P8 implementation commit is not in current history")
+    for name, digest in payload["source_file_sha256"].items():
+        committed = hashlib.sha256(
+            subprocess.run(
+                ["git", "show", f"{payload['implementation_commit']}:{name}"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            ).stdout
+        ).hexdigest()
+        if committed != digest:
+            raise RuntimeError("P8 implementation commit/source registry differs")
     return payload
 
 
@@ -843,6 +943,14 @@ def validate_completion_manifest(
     root = path.parent.resolve()
     artifacts = payload.get("artifacts")
     inputs = payload.get("inputs")
+    summaries = payload.get("summaries")
+    implementation = payload.get("implementation_registry")
+    compiled_implementation = implementation_registry()
+    compiled_implementation_reference = {
+        "path": str(IMPLEMENTATION_REGISTRY_PATH),
+        "sha256": sha256_file(IMPLEMENTATION_REGISTRY_PATH),
+        "implementation_commit": compiled_implementation["implementation_commit"],
+    }
     if (
         payload.get("schema") != COMPLETION_SCHEMA
         or payload.get("version") != 1
@@ -858,6 +966,11 @@ def validate_completion_manifest(
         or not isinstance(artifacts, dict)
         or set(artifacts) != {"control_factor", "control_report", "variant_factor", "variant_report"}
         or not isinstance(inputs, dict)
+        or not isinstance(summaries, dict)
+        or set(summaries) != {"control", "variant"}
+        or payload.get("failure_recovery")
+        != "isolate_entire_output_root_and_rebuild_both_arms_from_scratch"
+        or implementation != compiled_implementation_reference
     ):
         raise ValueError("Paired Track completion manifest is invalid or partial")
     producer = validate_track_producer_identity(
@@ -1047,6 +1160,13 @@ def load_completed_arms(*, completion: dict, registry: dict) -> dict:
         )
         if report.get("track") != expected_track:
             raise ValueError(f"Completed {scene}/{role} report metrics are stale")
+        summary = payload["summaries"].get(role)
+        if summary != {
+            "pair_policy": policy,
+            "pair_subset_role": subset_role,
+            "track": expected_track,
+        }:
+            raise ValueError(f"Completed {scene}/{role} summary differs from report")
         result[role] = {
             "factor": factor,
             "report": {

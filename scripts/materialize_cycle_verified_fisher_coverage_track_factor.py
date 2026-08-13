@@ -32,6 +32,7 @@ from scripts.cycle_verified_fisher_coverage_track_common import (
     artifact_reference,
     completion_artifact_names,
     frozen_track_lineage,
+    implementation_registry,
     load_scene_inputs,
     reference_registry_unchanged,
     require_clean_identity,
@@ -421,6 +422,7 @@ def _completion_inputs(registry: dict) -> dict:
 
 
 def run(args: argparse.Namespace) -> dict:
+    reviewed_implementation = implementation_registry()
     output_root = args.output_root.expanduser().resolve()
     if output_root.exists():
         raise FileExistsError(
@@ -631,6 +633,19 @@ def run(args: argparse.Namespace) -> dict:
         "build_order": ["control", "variant"],
         "run_uuid": run_uuid,
         "track_producer_identity": deepcopy(producer),
+        "implementation_registry": {
+            "path": str(
+                runner_registry_path := (
+                    Path(__file__).resolve().parents[1]
+                    / "docs/evidence/"
+                    "p8_cycle_verified_fisher_coverage_v2_stage_b_implementation.json"
+                )
+            ),
+            "sha256": sha256_file(runner_registry_path),
+            "implementation_commit": reviewed_implementation[
+                "implementation_commit"
+            ],
+        },
         "inputs": _completion_inputs(registry),
         "artifacts": artifact_records,
         "summaries": summaries,
