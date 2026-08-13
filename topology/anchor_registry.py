@@ -283,41 +283,39 @@ def _selection_reasons(
     count = int(torch.as_tensor(state["anchor_ids"]).numel())
     reason = torch.full((count,), SELECTION_LEGACY_UNRESOLVED, dtype=torch.int8)
     if provenance is None:
-        embedded = state.get("track_centric_reconstruction", {}).get(
-            "selection_provenance"
-        )
-        provenance = embedded if isinstance(embedded, Mapping) else None
-    if provenance is None:
         return reason, False
+    required = (
+        "track_universe_count",
+        "track_core_universe_ids",
+        "coverage_track_universe_ids",
+        "coverage_gaussian_universe_ids",
+        "pose_track_universe_ids",
+        "pose_gaussian_universe_ids",
+    )
+    missing = [key for key in required if key not in provenance]
+    if missing:
+        raise ValueError(
+            "explicit selection provenance is incomplete: " + ", ".join(missing)
+        )
     track_ids = torch.as_tensor(state["track_cluster_ids"]).detach().cpu().long()
     base_rows = torch.as_tensor(
         state.get("track_centric_reconstruction", {}).get(
             "base_canonical_rows", torch.empty(0, dtype=torch.long)
         )
     ).detach().cpu().long()
-    track_count = provenance.get("track_universe_count")
-    if track_count is None:
-        gaussian_ids = torch.cat(
-            [
-                torch.as_tensor(provenance.get(key, ())).long().reshape(-1)
-                for key in (
-                    "coverage_gaussian_universe_ids",
-                    "pose_gaussian_universe_ids",
-                )
-            ]
-        )
-        if gaussian_ids.numel() != base_rows.numel() or not gaussian_ids.numel():
-            return reason, False
-        differences = torch.sort(gaussian_ids).values - torch.sort(base_rows).values
-        if not bool((differences == differences[0]).all()) or int(differences[0]) < 0:
-            return reason, False
-        track_count = int(differences[0])
-    track_count = int(track_count)
+    raw_track_count = provenance["track_universe_count"]
+    if isinstance(raw_track_count, bool) or not isinstance(raw_track_count, int):
+        raise ValueError("selection track_universe_count must be an integer")
+    track_count = int(raw_track_count)
+    if track_count < 0:
+        raise ValueError("selection track_universe_count must be non-negative")
     is_track = track_ids >= 0
     unified_ids = track_ids.clone()
     if int((~is_track).sum()) != int(base_rows.numel()):
         raise ValueError("base canonical rows do not align with materialized map")
     unified_ids[~is_track] = track_count + base_rows
+    if unified_ids.numel() != torch.unique(unified_ids).numel():
+        raise ValueError("materialized Anchor selection universe is not unique")
     assignments = (
         (SELECTION_PRECISION, ("track_core_universe_ids",)),
         (
@@ -329,14 +327,50 @@ def _selection_reasons(
             ("pose_track_universe_ids", "pose_gaussian_universe_ids"),
         ),
     )
+    selected_groups: list[torch.Tensor] = []
     for value, keys in assignments:
-        selected = torch.cat(
-            [torch.as_tensor(provenance.get(key, ())).long().reshape(-1) for key in keys]
-        )
+        chunks = []
+        for key in keys:
+            raw = torch.as_tensor(provenance[key]).detach().cpu()
+            if raw.ndim != 1 or raw.dtype == torch.bool or raw.is_floating_point():
+                raise ValueError(f"selection provenance {key} must be a 1-D integer tensor")
+            chunk = raw.long()
+            if chunk.numel() != torch.unique(chunk).numel():
+                raise ValueError(f"selection provenance {key} contains duplicates")
+            is_track_group = key in {
+                "track_core_universe_ids",
+                "coverage_track_universe_ids",
+                "pose_track_universe_ids",
+            }
+            if is_track_group and chunk.numel() and (
+                int(chunk.min()) < 0 or int(chunk.max()) >= track_count
+            ):
+                raise ValueError(f"selection provenance {key} is outside Track universe")
+            if not is_track_group and chunk.numel() and int(
+                chunk.min()
+            ) < track_count:
+                raise ValueError(
+                    f"selection provenance {key} is outside Gaussian universe"
+                )
+            chunks.append(chunk)
+        selected = torch.cat(chunks)
+        if selected.numel() != torch.unique(selected).numel():
+            raise ValueError("selection provenance groups overlap")
+        selected_groups.append(selected)
         if selected.numel():
             reason[torch.isin(unified_ids, selected)] = value
-    complete = bool((reason != SELECTION_LEGACY_UNRESOLVED).all())
-    return reason, complete
+    all_selected = torch.cat(selected_groups)
+    if all_selected.numel() != torch.unique(all_selected).numel():
+        raise ValueError("selection provenance reasons are not mutually exclusive")
+    if not torch.equal(
+        torch.sort(all_selected).values, torch.sort(unified_ids).values
+    ):
+        raise ValueError(
+            "explicit selection provenance does not exactly cover final Anchors"
+        )
+    if bool((reason == SELECTION_LEGACY_UNRESOLVED).any()):
+        raise ValueError("explicit selection provenance left unresolved Anchors")
+    return reason, True
 
 
 def build_anchor_registry(
@@ -410,6 +444,10 @@ def build_anchor_registry(
     registry = {
         "schema": SCHEMA,
         "version": VERSION,
+        "uses_test_queries": False,
+        "mapping_only": True,
+        "audit_only": True,
+        "localization_input": False,
         **copied,
         **observations,
         "query_names": query_names,
@@ -434,6 +472,8 @@ def build_anchor_registry(
             "missing_scores_are_nan": True,
             "geometry_materialization_policy": "v3_p5_compatibility",
             "surface_dependence_changes_localization_tensors": False,
+            "legacy_unresolved_is_epistemic_unknown": True,
+            "new_pipeline_requires_exact_selection_provenance": True,
         },
         "enums": {
             "identity_mode": {

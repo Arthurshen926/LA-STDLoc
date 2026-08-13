@@ -18,6 +18,32 @@ Core artifacts are:
 | compact map | stable anchor registry and topology lineage |
 | metric checkpoint | exact compact-map row order and metric config |
 
+## Neutral Anchor Registry materialization
+
+`scripts/materialize_anchor_registry.py` writes an Evidence-Grounded Anchor
+Registry as a **sibling audit artifact**.  It never replaces the trained
+`lafgs_materialized_anchor_map` consumed by `SparseLocalizer`.
+
+Every supplied parent is a paired `PATH + expected SHA-256`.  Standalone legacy
+audits require the trained map and may explicitly omit unavailable evidence;
+an unresolved legacy selection is accepted only with
+`--allow-legacy-unresolved-audit` and is never pipeline eligible.  A new
+pipeline uses `--require-pipeline-parents`, which requires the exact trained
+map, compact map, positive teacher, Track payload, query cache, raster and
+selection provenance, mapping-only scene calibration, metric state, resolved
+config, and Gaussian PLY.  Their row/query/path relationships are validated in
+addition to their file hashes.
+
+The compatibility `registry_sha256` retains its V1 identity.  New contracts
+also carry a framed `full_registry_sha256` and per-field hashes.  These bind
+field name, value kind, tensor dtype, tensor shape, and bytes across the full
+Registry schema, including observation CSR, identity, geometry, selection,
+evidence, and all localization tensors.  The artifact is saved to a temporary
+file, reloaded, checked for bitwise localization parity, and installed without
+overwrite.  Its JSON contract is installed atomically last.  An artifact
+without that completion contract is a failed partial run and must be
+quarantined rather than resumed.
+
 Large `.pt`, `.pth`, and `.ckpt` files are runtime outputs and are not committed.
 `paper_baseline/` stores only compact fixtures, hashes, manifests, and reports.
 
