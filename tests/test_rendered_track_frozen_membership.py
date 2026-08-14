@@ -50,3 +50,24 @@ def test_frozen_membership_rejects_duplicate_source_selection():
         assert "unique" in str(error)
     else:
         raise AssertionError("duplicate frozen source membership was accepted")
+
+
+def test_frozen_membership_can_keep_complementary_sibling_view_bins():
+    source = {"track_cluster_ids": torch.tensor([7])}
+    repaired = {
+        "query_bins": torch.tensor([0, 1]),
+        "tracks": {
+            "parent_source_track_ids": torch.tensor([0, 7, 7, 5, 9]),
+            "track_index": torch.tensor([2, 1]),
+            "query_index": torch.tensor([0, 1]),
+        },
+    }
+    output, diagnostics = transfer_frozen_membership(
+        source, repaired, _candidate(), maximum_children_per_source=2
+    )
+    assert output["track_cluster_ids"].tolist() == [2, 1]
+    assert diagnostics["selected_child_count"] == 2
+    assert diagnostics["multi_child_source_count"] == 1
+    assert (
+        output["rendered_track_frozen_membership"]["maximum_children_per_source"] == 2
+    )

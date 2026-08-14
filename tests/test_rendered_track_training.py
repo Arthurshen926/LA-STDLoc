@@ -6,7 +6,11 @@ import torch
 
 from common.hashing import sha256_file
 from scripts.materialize_rendered_track_training import materialize
-from scripts.evaluate_rendered_track_crossfit import _crossfit_groups, _subset_state
+from scripts.evaluate_rendered_track_crossfit import (
+    _crossfit_groups,
+    _fold_component_bank,
+    _subset_state,
+)
 from scripts.materialize_rendered_track_fullchain_inputs import (
     materialize as materialize_fullchain_inputs,
 )
@@ -124,7 +128,11 @@ def test_rendered_track_training_binds_mapping_calibration(tmp_path):
             {
                 "schema": "lafgs_mapping_only_scene_calibration",
                 "version": 2,
-                "sources": {"uses_test_queries": False},
+                "sources": {
+                    "uses_test_queries": False,
+                    "uses_source_mapping_rgb": False,
+                    "mapping_source": "gaussian_render",
+                },
                 "parameters": {
                     "positive_radius_px": 1.25,
                     "negative_radius_px": 5.0,
@@ -164,6 +172,78 @@ def test_rendered_track_training_binds_mapping_calibration(tmp_path):
             scene_calibration_path=calibration,
             expected_scene_calibration_sha256=sha256_file(calibration),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("uses_source_mapping_rgb", True),
+        ("uses_source_mapping_rgb", None),
+        ("mapping_source", "mapping_rgb"),
+        ("mapping_source", None),
+    ],
+)
+def test_rendered_track_training_rejects_non_render_calibration(tmp_path, field, value):
+    paths = _inputs(tmp_path)
+    sources = {
+        "uses_test_queries": False,
+        "uses_source_mapping_rgb": False,
+        "mapping_source": "gaussian_render",
+    }
+    if value is None:
+        sources.pop(field)
+    else:
+        sources[field] = value
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_mapping_only_scene_calibration",
+                "version": 2,
+                "sources": sources,
+                "parameters": {
+                    "positive_radius_px": 2.0,
+                    "negative_radius_px": 8.0,
+                    "evidence_depth_abs_tolerance_m": 0.05,
+                },
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="source-image-free"):
+        materialize(
+            anchor_map_path=paths["map"],
+            track_payload_path=paths["track"],
+            query_cache_path=paths["cache"],
+            output_dir=tmp_path / "out",
+            strong_radius_px=2.0,
+            ambiguous_radius_px=8.0,
+            scene_calibration_path=calibration,
+            expected_scene_calibration_sha256=sha256_file(calibration),
+        )
+
+
+def test_uncertified_exact_track_observation_is_ambiguous_not_positive(tmp_path):
+    paths = _inputs(tmp_path)
+    payload = torch.load(paths["track"], map_location="cpu", weights_only=False)
+    payload["support_repair"] = {"schema": "lafgs_rendered_track_support_repair"}
+    payload["tracks"]["identity_positive_certified"] = torch.tensor([True, False, True])
+    torch.save(payload, paths["track"])
+    report = materialize(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        output_dir=tmp_path / "graded",
+        strong_radius_px=2.0,
+        ambiguous_radius_px=8.0,
+    )
+    teacher = torch.load(
+        report["outputs"]["teacher"], map_location="cpu", weights_only=False
+    )
+    assert teacher["records"][0]["positive_indices"].tolist() == [0]
+    assert teacher["records"][1]["positive_indices"].numel() == 0
+    assert teacher["records"][1]["exact_identity_indices"].tolist() == [0]
+    assert teacher["records"][1]["ambiguous_indices"].tolist() == [0]
+    assert teacher["diagnostics"]["weak_exact_ambiguous_count"] == 1
 
 
 def test_rendered_track_training_honors_alpha_rows_and_depth_visibility(tmp_path):
@@ -304,6 +384,88 @@ def test_crossfit_fold_map_uses_support_only_retriangulated_geometry():
     assert output["anchor_position_covariance"][:, 0, 0].tolist() == [1.0, 3.0]
     assert output["track_cluster_ids"].tolist() == [4, 6]
     assert output["rendered_track_crossfit_geometry"]["support_only"] is True
+
+
+def test_crossfit_rebuilds_components_from_frozen_pairs_without_held_camera():
+    names = [f"seq-{index:02d}/frame.png" for index in range(4)]
+    queries = {}
+    for index, name in enumerate(names):
+        pose = torch.eye(4)
+        pose[0, 3] = -0.1 * index
+        queries[name] = {
+            "native_keypoints": torch.tensor([[50.0 - 5.0 * index, 50.0]]),
+            "native_descriptors": torch.tensor([[1.0, 0.0]]),
+            "native_scores": torch.tensor([1.0]),
+            "native_K": torch.tensor(
+                [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+            ),
+            "pose_w2c": pose,
+            "pixel_center_offset": 0.0,
+        }
+    pairs = [(left, right) for left in range(4) for right in range(left + 1, 4)]
+    payload = {
+        "query_names": names,
+        "query_bins": torch.arange(4),
+        "pair_sidecar": {
+            "pair": {
+                "left_query_index": torch.tensor([pair[0] for pair in pairs]),
+                "right_query_index": torch.tensor([pair[1] for pair in pairs]),
+            }
+        },
+        "support_repair": {
+            "maximum_children_per_source_track": 3,
+            "source_track_index_at_keypoint": [torch.tensor([9]) for _ in names],
+            "frozen_support_pair_matches": {
+                "schema": "lafgs_rendered_track_frozen_support_pair_matches",
+                "offsets": torch.arange(len(pairs) + 1),
+                "source_keypoint_indices": torch.zeros(len(pairs), dtype=torch.long),
+                "target_keypoint_indices": torch.zeros(len(pairs), dtype=torch.long),
+                "confidence": torch.ones(len(pairs)),
+            },
+            "track_build_contract": {
+                "pair_policy": "nearest",
+                "pair_neighbors": 3,
+                "minimum_baseline_m": 0.0,
+                "maximum_baseline_m": 5.0,
+                "maximum_axis_angle_deg": 180.0,
+                "minimum_similarity": 0.65,
+                "minimum_margin": 0.01,
+                "maximum_epipolar_error_px": 2.0,
+                "epipolar_candidate_topk": 1,
+                "minimum_track_views": 3,
+                "maximum_observations": 32,
+                "minimum_view_bins": 2,
+                "huber_delta_px": 2.0,
+                "triangulation_iterations": 3,
+                "minimum_parallax_deg": 1.0,
+                "parallax_quantile": 0.75,
+                "maximum_reprojection_px": 2.0,
+                "maximum_condition_number": 1e6,
+            },
+        },
+    }
+    state = {
+        "anchor_ids": torch.tensor([0]),
+        "parent_source_track_ids": torch.tensor([9]),
+    }
+    keep, features, geometry, diagnostics = _fold_component_bank(
+        state=state,
+        payload=payload,
+        query_cache={"queries": queries},
+        held_sequence="seq-00",
+        crossfit_groups=["seq-00", "seq-01", "seq-02", "seq-03"],
+        trim_fraction=0.0,
+    )
+    assert keep.tolist() == [True]
+    torch.testing.assert_close(features, torch.tensor([[1.0, 0.0]]))
+    torch.testing.assert_close(
+        geometry["triangulated_xyz"][0],
+        torch.tensor([0.0, 0.0, 2.0]),
+        atol=1e-4,
+        rtol=0,
+    )
+    assert diagnostics["fold_specific_component_rebuild"] is True
+    assert diagnostics["frozen_support_pair_count"] == 3
 
 
 def test_fullchain_inputs_resolve_pruned_rows_to_track_ids(tmp_path):

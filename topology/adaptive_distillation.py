@@ -141,6 +141,19 @@ def _mean_track_confidence(payload: dict) -> torch.Tensor:
     return total / count.clamp_min(1)
 
 
+def _track_only_source_capacity_ids(payload: dict, track_count: int) -> torch.Tensor:
+    """Return parent identity for repaired siblings, else one ID per Track."""
+    parents = payload.get("tracks", {}).get("parent_source_track_ids")
+    if parents is None:
+        return torch.arange(int(track_count), dtype=torch.long)
+    parents = torch.as_tensor(parents)
+    if parents.dtype != torch.long or parents.shape != (int(track_count),):
+        raise ValueError("repaired Track parent identity must be exact int64 rows")
+    if parents.numel() and int(parents.min()) < 0:
+        raise ValueError("repaired Track parent identity cannot be negative")
+    return parents.clone()
+
+
 def _candidate_matchability(
     payload: dict, graph: dict, base_count: int, track_threshold_px: float
 ) -> torch.Tensor:
@@ -380,6 +393,12 @@ def _resolve_selector_calibration(
             ),
         )
         parameters = derive_adaptive_parameters(statistics, policy)
+        rendered_track_only = payload.get("rendered_rgb_only") is True
+        uses_source_mapping_rgb = query_payload.get("uses_source_mapping_rgb")
+        if rendered_track_only and uses_source_mapping_rgb is not False:
+            raise ValueError(
+                "rendered Track calibration requires a source-image-free cache"
+            )
         return parameters, {
             "schema": "lafgs_mapping_only_scene_calibration",
             "version": 2,
@@ -390,6 +409,10 @@ def _resolve_selector_calibration(
                 "query_cache": str(query_path),
                 "track_payload": str(payload_path),
                 "uses_test_queries": False,
+                "uses_source_mapping_rgb": uses_source_mapping_rgb,
+                "mapping_source": (
+                    "gaussian_render" if rendered_track_only else "mapping_rgb"
+                ),
             },
         }
 
@@ -679,11 +702,12 @@ def main() -> None:
             canonical, deployment_payload, finite_track_indices
         )
     else:
-        # In Track-only mode each observation Track is its own source-capacity
-        # identity.  Serialized primitive lineage remains -1 in the Map, while
-        # pose completion must not collapse all candidates into one shared
-        # ``-1`` capacity bucket.
-        track_sources[finite_track_indices] = finite_track_indices
+        # Ordinary Track-only candidates retain one capacity identity per
+        # Track.  Support-repaired siblings instead share their frozen parent
+        # source identity, so pose completion cannot count correlated children
+        # as independent sources.
+        parents = _track_only_source_capacity_ids(payload, track_count)
+        track_sources[finite_track_indices] = parents[finite_track_indices]
     source_ids = torch.cat(
         (
             track_sources,

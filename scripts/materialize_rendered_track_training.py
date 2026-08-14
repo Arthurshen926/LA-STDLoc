@@ -127,14 +127,33 @@ def materialize(
     }
     tracks = payload["tracks"]
     exact: list[dict[int, set[int]]] = [defaultdict(set) for _ in names]
-    for track, query, keypoint in zip(
-        torch.as_tensor(tracks["track_index"]).long().tolist(),
-        torch.as_tensor(tracks["query_index"]).long().tolist(),
-        torch.as_tensor(tracks["keypoint_index"]).long().tolist(),
+    strong_exact: list[dict[int, set[int]]] = [defaultdict(set) for _ in names]
+    observation_count = int(torch.as_tensor(tracks["track_index"]).numel())
+    certified_value = tracks.get("identity_positive_certified")
+    if certified_value is None:
+        if payload.get("support_repair", {}).get("schema") == (
+            "lafgs_rendered_track_support_repair"
+        ):
+            raise ValueError(
+                "support-repaired payload lacks observation-level identity certification"
+            )
+        certified = torch.ones(observation_count, dtype=torch.bool)
+    else:
+        certified = torch.as_tensor(certified_value)
+        if certified.dtype != torch.bool or certified.shape != (observation_count,):
+            raise ValueError("identity-positive certification must be exact bool rows")
+    for observation, (track, query, keypoint) in enumerate(
+        zip(
+            torch.as_tensor(tracks["track_index"]).long().tolist(),
+            torch.as_tensor(tracks["query_index"]).long().tolist(),
+            torch.as_tensor(tracks["keypoint_index"]).long().tolist(),
+        )
     ):
         anchor = track_to_anchor.get(int(track))
         if anchor is not None:
             exact[int(query)][int(keypoint)].add(int(anchor))
+            if bool(certified[observation]):
+                strong_exact[int(query)][int(keypoint)].add(int(anchor))
 
     if not 0.0 <= float(alpha_minimum) <= 1.0:
         raise ValueError("alpha minimum must lie in [0, 1]")
@@ -149,11 +168,16 @@ def materialize(
         if scene_calibration_sha256 != str(expected_scene_calibration_sha256):
             raise ValueError("scene calibration SHA differs")
         calibration = json.loads(scene_calibration_path.read_text())
+        calibration_sources = calibration.get("sources", {})
         if (
             calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
-            or calibration.get("sources", {}).get("uses_test_queries") is not False
+            or calibration_sources.get("uses_test_queries") is not False
+            or calibration_sources.get("uses_source_mapping_rgb") is not False
+            or calibration_sources.get("mapping_source") != "gaussian_render"
         ):
-            raise ValueError("scene calibration is not mapping-only")
+            raise ValueError(
+                "scene calibration is not source-image-free mapping-only evidence"
+            )
         parameters = calibration.get("parameters", {})
         expected_parameters = {
             "positive_radius_px": float(strong_radius_px),
@@ -165,7 +189,7 @@ def materialize(
                 raise ValueError(f"teacher {key} differs from scene calibration")
     records = []
     positive_rows = strong_count = ambiguous_count = exact_count = 0
-    compatible_count = exact_depth_disagreement_count = 0
+    compatible_count = exact_depth_disagreement_count = weak_exact_count = 0
     masked_query_row_count = depth_visibility_rejected_anchor_count = 0
     for query_index, name in enumerate(names):
         cached = cache[name]
@@ -245,14 +269,20 @@ def materialize(
                 strong, weak = [], []
             source_row = int(query_rows[row])
             exact_values = sorted(exact[query_index].get(source_row, ()))
+            strong_exact_values = sorted(strong_exact[query_index].get(source_row, ()))
+            weak_exact_values = sorted(set(exact_values) - set(strong_exact_values))
             compatible_values = sorted(set(strong) - set(exact_values))
-            positives.append(exact_values)
+            positives.append(strong_exact_values)
             exact_positives.append(exact_values)
             support_compatible.append(compatible_values)
             ambiguous.append(
-                sorted((set(weak) | set(compatible_values)) - set(exact_values))
+                sorted(
+                    (set(weak) | set(compatible_values) | set(weak_exact_values))
+                    - set(strong_exact_values)
+                )
             )
             exact_count += len(exact_values)
+            weak_exact_count += len(weak_exact_values)
             compatible_count += len(compatible_values)
             exact_depth_disagreement_count += sum(
                 not bool(valid[anchor]) for anchor in exact_values
@@ -313,6 +343,8 @@ def materialize(
             "strong_pair_count": strong_count,
             "ambiguous_pair_count": ambiguous_count,
             "exact_track_positive_count": exact_count,
+            "strong_certified_exact_positive_count": strong_count,
+            "weak_exact_ambiguous_count": weak_exact_count,
             "support_compatible_pair_count": compatible_count,
             "exact_depth_disagreement_audit_count": (exact_depth_disagreement_count),
             "masked_query_row_count": masked_query_row_count,
@@ -331,7 +363,10 @@ def materialize(
                 if scene_calibration_path is not None
                 else "explicit_unbound_compatibility"
             ),
-            "identity_positive_policy": "exact_track_observations_only",
+            "identity_positive_policy": (
+                "cycle_seeded_observation_reprojection_certified_exact_only"
+            ),
+            "weak_exact_policy": "ambiguous_ignore_not_positive",
             "projection_compatible_policy": "ambiguous_ignore_not_positive",
             "exact_depth_policy": "audit_only_never_hard_reject",
             "geometry_source": "ray_triangulated_track_xyz_and_mapping_pose",

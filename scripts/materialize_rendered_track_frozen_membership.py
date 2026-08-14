@@ -84,13 +84,21 @@ def _atomic_json(payload: dict, path: Path) -> None:
 
 
 def transfer_frozen_membership(
-    source_selection: dict, repaired_payload: dict, candidate_map: dict
+    source_selection: dict,
+    repaired_payload: dict,
+    candidate_map: dict,
+    *,
+    maximum_children_per_source: int = 1,
 ) -> tuple[dict, dict]:
+    if not 1 <= int(maximum_children_per_source) <= 3:
+        raise ValueError("frozen membership supports one to three children per source")
     source_tracks = torch.as_tensor(source_selection["track_cluster_ids"]).long()
     candidate_tracks = torch.as_tensor(candidate_map["track_cluster_ids"]).long()
-    source_by_child = torch.as_tensor(
-        repaired_payload["tracks"]["source_track_index"]
-    ).long()
+    repaired_tracks = repaired_payload["tracks"]
+    parent_rows = repaired_tracks.get("parent_source_track_ids")
+    if parent_rows is None:
+        parent_rows = repaired_tracks["source_track_index"]
+    source_by_child = torch.as_tensor(parent_rows).long()
     if (
         source_tracks.ndim != 1
         or source_tracks.unique().numel() != source_tracks.numel()
@@ -109,19 +117,43 @@ def transfer_frozen_membership(
 
     # Candidate rows were materialized in descending frozen Track quality.
     # First occurrence is therefore the deterministic best broad child.
-    best_row_by_source: dict[int, int] = {}
+    rows_by_source: dict[int, list[int]] = {}
     for row, source in enumerate(source_by_child[candidate_tracks].tolist()):
-        best_row_by_source.setdefault(int(source), row)
+        rows_by_source.setdefault(int(source), []).append(row)
+    child_bins: dict[int, set[int]] = {}
+    if int(maximum_children_per_source) > 1:
+        track = torch.as_tensor(repaired_payload["tracks"]["track_index"]).long()
+        query = torch.as_tensor(repaired_payload["tracks"]["query_index"]).long()
+        bins = torch.as_tensor(
+            repaired_payload.get("pose_view_bins", repaired_payload["query_bins"])
+        ).long()
+        for child in candidate_tracks.tolist():
+            child_bins[int(child)] = set(bins[query[track == int(child)]].tolist())
     selected_rows = []
     retained_sources = []
     missing_sources = []
+    multi_child_source_count = 0
     for source in source_tracks.tolist():
-        row = best_row_by_source.get(int(source))
-        if row is None:
+        candidates = rows_by_source.get(int(source), ())
+        if not candidates:
             missing_sources.append(int(source))
-        else:
-            selected_rows.append(int(row))
+            continue
+        chosen = [int(candidates[0])]
+        if int(maximum_children_per_source) == 1:
+            selected_rows.extend(chosen)
             retained_sources.append(int(source))
+            continue
+        covered_bins = set(child_bins[int(candidate_tracks[chosen[0]])])
+        for row in candidates[1:]:
+            if len(chosen) >= int(maximum_children_per_source):
+                break
+            child = int(candidate_tracks[int(row)])
+            if child_bins[child] - covered_bins:
+                chosen.append(int(row))
+                covered_bins.update(child_bins[child])
+        selected_rows.extend(chosen)
+        retained_sources.append(int(source))
+        multi_child_source_count += int(len(chosen) > 1)
     rows = torch.as_tensor(selected_rows, dtype=torch.long)
     candidate_count = int(candidate_tracks.numel())
     output = dict(candidate_map)
@@ -147,7 +179,8 @@ def transfer_frozen_membership(
         "retained_source_track_ids": torch.as_tensor(retained_sources).long(),
         "missing_source_track_ids": torch.as_tensor(missing_sources).long(),
         "selected_child_track_ids": selected_children.clone(),
-        "child_policy": "highest_frozen_repaired_broad_quality_one_per_source",
+        "child_policy": ("highest_quality_then_complementary_view_bins_per_source"),
+        "maximum_children_per_source": int(maximum_children_per_source),
         "runs_sufficiency_selector": False,
         "uses_gaussian_anchors": False,
     }
@@ -159,6 +192,7 @@ def transfer_frozen_membership(
         / max(int(source_tracks.numel()), 1),
         "candidate_count": candidate_count,
         "selected_child_count": int(rows.numel()),
+        "multi_child_source_count": multi_child_source_count,
         "missing_source_track_ids": missing_sources,
     }
     return output, diagnostics
@@ -201,7 +235,12 @@ def run(args: argparse.Namespace) -> dict:
         raise ValueError("repaired payload lacks the source-component boundary")
     if int(source.get("base_anchor_count", 0)) != 0:
         raise ValueError("frozen membership accepts a Track-only source selection")
-    output, diagnostics = transfer_frozen_membership(source, repaired, candidate)
+    output, diagnostics = transfer_frozen_membership(
+        source,
+        repaired,
+        candidate,
+        maximum_children_per_source=int(args.maximum_children_per_source),
+    )
     map_path = args.output_dir / "frozen_membership_anchor_map.pt"
     _atomic_save(output, map_path)
     if _producer_identity() != identity:
@@ -233,6 +272,7 @@ def main() -> None:
     parser.add_argument("--repaired-candidate-map", type=Path, required=True)
     parser.add_argument("--expected-repaired-candidate-map-sha256", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--maximum-children-per-source", type=int, default=1)
     args = parser.parse_args()
     args.output_dir = args.output_dir.resolve()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)

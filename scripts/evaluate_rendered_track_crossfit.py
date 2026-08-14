@@ -11,13 +11,21 @@ from pathlib import Path
 import subprocess
 
 import torch
+import torch.nn.functional as F
 
 from common.hashing import sha256_file
 from evidence.tracks import robust_fuse_track_descriptors
-from evidence.triangulation import robust_triangulate_associations
+from evidence.triangulation import (
+    build_cycle_consistent_tracks,
+    robust_triangulate_associations,
+)
 from map_learning.metric import SharedLowRankMetric
 from topology.deployment_revision import collect_deployment_statistics, subset_teacher
 from topology.track_core import _eligible_tracks
+from topology.track_core import _track_quality
+from scripts.materialize_rendered_track_support_repair import (
+    _limit_children_after_triangulation,
+)
 
 
 COUNTER_NAMES = (
@@ -39,6 +47,7 @@ _PRODUCER_SOURCE_PATHS = (
     "map_learning/metric.py",
     "topology/deployment_revision.py",
     "topology/track_core.py",
+    "scripts/materialize_rendered_track_support_repair.py",
 )
 
 
@@ -247,6 +256,234 @@ def _fold_bank(
     return eligible, torch.stack(features), geometry
 
 
+def _fold_component_bank(
+    *,
+    state: dict,
+    payload: dict,
+    query_cache: dict,
+    held_sequence: str,
+    crossfit_groups: list[str],
+    trim_fraction: float,
+) -> tuple[torch.Tensor, torch.Tensor, dict, dict]:
+    """Rebuild support components from frozen pair rows without held cameras."""
+    names = list(payload["query_names"])
+    cache = query_cache.get("queries", query_cache)
+    repair = payload.get("support_repair", {})
+    frozen = repair.get("frozen_support_pair_matches", {})
+    contract = repair.get("track_build_contract", {})
+    source_lookup = repair.get("source_track_index_at_keypoint")
+    if (
+        frozen.get("schema") != "lafgs_rendered_track_frozen_support_pair_matches"
+        or source_lookup is None
+        or not contract
+    ):
+        raise ValueError("support-repaired crossfit lacks frozen component inputs")
+    pair_table = payload["pair_sidecar"]["pair"]
+    all_pairs = list(
+        zip(
+            torch.as_tensor(pair_table["left_query_index"]).long().tolist(),
+            torch.as_tensor(pair_table["right_query_index"]).long().tolist(),
+        )
+    )
+    offsets = torch.as_tensor(frozen["offsets"]).long()
+    source_rows = torch.as_tensor(frozen["source_keypoint_indices"]).long()
+    target_rows = torch.as_tensor(frozen["target_keypoint_indices"]).long()
+    confidence_rows = torch.as_tensor(frozen["confidence"]).float()
+    if (
+        offsets.shape != (len(all_pairs) + 1,)
+        or int(offsets[0]) != 0
+        or int(offsets[-1]) != int(source_rows.numel())
+        or source_rows.shape != target_rows.shape
+        or source_rows.shape != confidence_rows.shape
+    ):
+        raise ValueError("frozen support pair rows are malformed")
+
+    pairs = []
+    matches = {}
+    for pair_index, pair in enumerate(all_pairs):
+        left, right = pair
+        if (
+            crossfit_groups[int(left)] == held_sequence
+            or crossfit_groups[int(right)] == held_sequence
+        ):
+            continue
+        begin, end = int(offsets[pair_index]), int(offsets[pair_index + 1])
+        pairs.append(pair)
+        matches[pair] = (
+            source_rows[begin:end].clone(),
+            target_rows[begin:end].clone(),
+            confidence_rows[begin:end].clone(),
+        )
+    if not pairs:
+        raise RuntimeError(f"held fold {held_sequence} leaves no camera pairs")
+
+    descriptors = [
+        F.normalize(torch.as_tensor(cache[name]["native_descriptors"]).float(), dim=1)
+        for name in names
+    ]
+    keypoints = [
+        torch.as_tensor(cache[name]["native_keypoints"]).float()
+        + float(cache[name].get("pixel_center_offset", 0.5))
+        for name in names
+    ]
+    scores = [torch.as_tensor(cache[name]["native_scores"]).float() for name in names]
+    camera_K = torch.stack(
+        [torch.as_tensor(cache[name]["native_K"]).float() for name in names]
+    )
+    pose_w2c = torch.stack(
+        [torch.as_tensor(cache[name]["pose_w2c"]).float() for name in names]
+    )
+    rebuilt, diagnostics = build_cycle_consistent_tracks(
+        descriptors=descriptors,
+        keypoints=keypoints,
+        detector_scores=scores,
+        camera_K=camera_K,
+        pose_w2c=pose_w2c,
+        pair_neighbors=int(contract["pair_neighbors"]),
+        pair_policy=str(contract["pair_policy"]),
+        pair_budget=len(pairs),
+        minimum_baseline_m=float(contract["minimum_baseline_m"]),
+        maximum_baseline_m=float(contract["maximum_baseline_m"]),
+        maximum_axis_angle_deg=float(contract["maximum_axis_angle_deg"]),
+        minimum_similarity=float(contract["minimum_similarity"]),
+        minimum_margin=float(contract["minimum_margin"]),
+        maximum_epipolar_error_px=float(contract["maximum_epipolar_error_px"]),
+        epipolar_candidate_topk=int(contract["epipolar_candidate_topk"]),
+        minimum_track_views=int(contract["minimum_track_views"]),
+        require_cycle=True,
+        allow_chain_tracks=True,
+        precomputed_pairs=pairs,
+        precomputed_pair_matches=matches,
+        precomputed_confidence_includes_detector_scores=True,
+        device="cpu",
+    )
+    observation_query = torch.as_tensor(rebuilt["query_index"]).long()
+    observation_keypoint = torch.as_tensor(rebuilt["keypoint_index"]).long()
+    observation_uv = torch.stack(
+        [
+            keypoints[int(query)][int(keypoint)]
+            for query, keypoint in zip(
+                observation_query.tolist(), observation_keypoint.tolist()
+            )
+        ]
+    )
+    query_bins = torch.as_tensor(
+        payload.get("pose_view_bins", payload["query_bins"])
+    ).long()
+    geometry = robust_triangulate_associations(
+        landmark_count=int(torch.as_tensor(rebuilt["track_level"]).numel()),
+        landmark_index=torch.as_tensor(rebuilt["track_index"]).long(),
+        query_index=observation_query,
+        uv=observation_uv,
+        confidence=torch.as_tensor(rebuilt["confidence"]).float(),
+        camera_K=camera_K,
+        pose_w2c=pose_w2c,
+        query_bin=query_bins,
+        rendered_depth=None,
+        maximum_observations_per_landmark=int(contract["maximum_observations"]),
+        minimum_views=int(contract["minimum_track_views"]),
+        minimum_view_bins=int(contract["minimum_view_bins"]),
+        huber_delta_px=float(contract["huber_delta_px"]),
+        iterations=int(contract["triangulation_iterations"]),
+        minimum_parallax_deg=float(contract["minimum_parallax_deg"]),
+        parallax_quantile=float(contract["parallax_quantile"]),
+        maximum_reprojection_px=float(contract["maximum_reprojection_px"]),
+        maximum_condition_number=float(contract["maximum_condition_number"]),
+        maximum_covariance_trace_m2=float("inf"),
+        maximum_rendered_depth_residual_m=float("inf"),
+        minimum_rendered_depth_observations=0,
+        surface_support_enabled=False,
+    )
+    geometry["track_confidence_level"] = rebuilt["track_level"].clone()
+    rebuilt, geometry, _, cap = _limit_children_after_triangulation(
+        rebuilt,
+        geometry,
+        [torch.as_tensor(rows).long() for rows in source_lookup],
+        maximum_children=int(repair["maximum_children_per_source_track"]),
+    )
+
+    parent_by_child = torch.as_tensor(rebuilt["parent_source_track_ids"]).long()
+    quality = _track_quality(geometry)
+    children_by_parent: dict[int, list[int]] = defaultdict(list)
+    for child, parent in enumerate(parent_by_child.tolist()):
+        children_by_parent[int(parent)].append(child)
+    for parent in children_by_parent:
+        children_by_parent[parent].sort(
+            key=lambda child: (-float(quality[child]), child)
+        )
+    state_parents = torch.as_tensor(state.get("parent_source_track_ids"))
+    if state_parents.dtype != torch.long or state_parents.shape != (
+        int(torch.as_tensor(state["anchor_ids"]).numel()),
+    ):
+        raise ValueError("fold component rebuild requires exact map parent lineage")
+    chosen = []
+    keep_rows = []
+    for row, parent in enumerate(state_parents.tolist()):
+        candidates = children_by_parent.get(int(parent), ())
+        if candidates:
+            keep_rows.append(row)
+            chosen.append(int(candidates[0]))
+    keep = torch.zeros(state_parents.numel(), dtype=torch.bool)
+    keep[torch.as_tensor(keep_rows).long()] = True
+
+    child_track = torch.as_tensor(rebuilt["track_index"]).long()
+    child_query = torch.as_tensor(rebuilt["query_index"]).long()
+    child_keypoint = torch.as_tensor(rebuilt["keypoint_index"]).long()
+    child_confidence = torch.as_tensor(rebuilt["confidence"]).float()
+    features = []
+    for child in chosen:
+        observations = torch.nonzero(child_track == child, as_tuple=False).reshape(-1)
+        queries = child_query[observations]
+        descriptor = torch.stack(
+            [
+                torch.as_tensor(cache[names[int(query)]]["native_descriptors"])[
+                    int(keypoint)
+                ]
+                for query, keypoint in zip(
+                    queries.tolist(), child_keypoint[observations].tolist()
+                )
+            ]
+        )
+        features.append(
+            robust_fuse_track_descriptors(
+                descriptor,
+                query_bins[queries],
+                child_confidence[observations],
+                trim_fraction=float(trim_fraction),
+            )
+        )
+    if not features:
+        raise RuntimeError(f"held fold {held_sequence} rebuilds no selected parent")
+
+    aligned_geometry = {}
+    chosen_rows = torch.as_tensor(chosen).long()
+    keep_rows_tensor = torch.as_tensor(keep_rows).long()
+    for key, value in geometry.items():
+        if (
+            not torch.is_tensor(value)
+            or not value.ndim
+            or value.shape[0] != len(parent_by_child)
+        ):
+            continue
+        shape = (int(state_parents.numel()), *value.shape[1:])
+        if value.dtype == torch.bool:
+            aligned = torch.zeros(shape, dtype=torch.bool)
+        elif value.dtype.is_floating_point:
+            aligned = torch.full(shape, float("nan"), dtype=value.dtype)
+        else:
+            aligned = torch.zeros(shape, dtype=value.dtype)
+        aligned[keep_rows_tensor] = value[chosen_rows]
+        aligned_geometry[key] = aligned
+    diagnostics = {
+        **diagnostics,
+        **cap,
+        "fold_specific_component_rebuild": True,
+        "frozen_support_pair_count": len(pairs),
+        "selected_parent_count": int(keep.sum()),
+    }
+    return keep, torch.stack(features), aligned_geometry, diagnostics
+
+
 def _subset_state(
     state: dict, keep: torch.Tensor, features: torch.Tensor, geometry: dict
 ) -> dict:
@@ -332,17 +569,34 @@ def run(args) -> dict:
     }
     all_rows = []
     folds = []
+    component_rebuild = (
+        payload.get("support_repair", {})
+        .get("frozen_support_pair_matches", {})
+        .get("schema")
+        == "lafgs_rendered_track_frozen_support_pair_matches"
+    )
     for fold_index, held_sequence in enumerate(sequences):
         fold_dir = args.output_dir / held_sequence
         fold_dir.mkdir()
-        keep, features, geometry = _fold_bank(
-            state=state,
-            payload=payload,
-            query_cache=cache,
-            held_sequence=held_sequence,
-            crossfit_groups=crossfit_groups,
-            trim_fraction=args.descriptor_trim_fraction,
-        )
+        if component_rebuild:
+            keep, features, geometry, rebuild_diagnostics = _fold_component_bank(
+                state=state,
+                payload=payload,
+                query_cache=cache,
+                held_sequence=held_sequence,
+                crossfit_groups=crossfit_groups,
+                trim_fraction=args.descriptor_trim_fraction,
+            )
+        else:
+            keep, features, geometry = _fold_bank(
+                state=state,
+                payload=payload,
+                query_cache=cache,
+                held_sequence=held_sequence,
+                crossfit_groups=crossfit_groups,
+                trim_fraction=args.descriptor_trim_fraction,
+            )
+            rebuild_diagnostics = {"fold_specific_component_rebuild": False}
         fold_map = _subset_state(state, keep, features, geometry)
         map_path = fold_dir / "anchor_map.pt"
         metric_path = fold_dir / "metric_state.pt"
@@ -387,6 +641,7 @@ def run(args) -> dict:
                 ),
                 "summary": statistics["summary"],
                 "statistics": str((fold_dir / "statistics.pt").resolve()),
+                "component_rebuild": rebuild_diagnostics,
             }
         )
         print(json.dumps(folds[-1], sort_keys=True), flush=True)
@@ -397,6 +652,8 @@ def run(args) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "support_only_retriangulation": True,
+        "fold_specific_component_rebuild": component_rebuild,
+        "frozen_support_pair_matches_reused": component_rebuild,
         "producer_identity": producer_identity,
         "query_rows": all_rows,
         "counters": aggregate,
@@ -411,6 +668,8 @@ def run(args) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "support_only_retriangulation": True,
+        "fold_specific_component_rebuild": component_rebuild,
+        "frozen_support_pair_matches_reused": component_rebuild,
         "producer_identity": producer_identity,
         "sequences": sequences,
         "grouping": (

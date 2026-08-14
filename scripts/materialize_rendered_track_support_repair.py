@@ -25,6 +25,7 @@ from common.hashing import sha256_file
 from evidence.rendered_track_support import local_depth_spread, pair_support_evidence
 from evidence.tracks import fuse_track_descriptors
 from evidence.triangulation import (
+    attach_pair_triangulation_statistics,
     build_cycle_consistent_tracks,
     reciprocal_epipolar_matches,
     robust_triangulate_associations,
@@ -123,23 +124,15 @@ def _source_track_lookup(
     return lookup
 
 
-def _limit_children(
+def _source_by_child(
     tracks: dict[str, torch.Tensor],
     source_lookup: list[torch.Tensor],
-    *,
-    maximum_children: int,
-) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
-    if int(maximum_children) < 1:
-        raise ValueError("maximum children per source Track must be positive")
+) -> torch.Tensor:
     track = torch.as_tensor(tracks["track_index"]).long()
     query = torch.as_tensor(tracks["query_index"]).long()
     keypoint = torch.as_tensor(tracks["keypoint_index"]).long()
-    confidence = torch.as_tensor(tracks["confidence"]).float()
     track_count = int(torch.as_tensor(tracks["track_level"]).numel())
     source_by_child = torch.full((track_count,), -1, dtype=torch.long)
-    count = torch.bincount(track, minlength=track_count)
-    confidence_sum = torch.zeros(track_count)
-    confidence_sum.index_add_(0, track, confidence)
     for child, query_row, keypoint_row in zip(
         track.tolist(), query.tolist(), keypoint.tolist()
     ):
@@ -150,25 +143,65 @@ def _limit_children(
         if existing >= 0 and existing != source:
             raise ValueError("support repair merged different source Tracks")
         source_by_child[int(child)] = source
+    if bool((source_by_child < 0).any()):
+        raise ValueError("support repair produced an empty child Track")
+    return source_by_child
+
+
+def _limit_children_after_triangulation(
+    tracks: dict[str, torch.Tensor],
+    geometry: dict[str, torch.Tensor],
+    source_lookup: list[torch.Tensor],
+    *,
+    maximum_children: int,
+) -> tuple[
+    dict[str, torch.Tensor],
+    dict[str, torch.Tensor],
+    torch.Tensor,
+    dict[str, int],
+]:
+    """Keep geometry-eligible children only, then apply the per-parent cap."""
+    if int(maximum_children) < 1:
+        raise ValueError("maximum children per source Track must be positive")
+    track = torch.as_tensor(tracks["track_index"]).long()
+    query = torch.as_tensor(tracks["query_index"]).long()
+    keypoint = torch.as_tensor(tracks["keypoint_index"]).long()
+    confidence = torch.as_tensor(tracks["confidence"]).float()
+    track_count = int(torch.as_tensor(tracks["track_level"]).numel())
+    source_by_child = _source_by_child(tracks, source_lookup)
+    count = torch.bincount(track, minlength=track_count)
+    confidence_sum = torch.zeros(track_count)
+    confidence_sum.index_add_(0, track, confidence)
+    eligible = _eligible_tracks(geometry, "broad")
+    quality = _track_quality(geometry)
     children: dict[int, list[int]] = {}
     for child, source in enumerate(source_by_child.tolist()):
         children.setdefault(int(source), []).append(child)
-    retained = []
+    retained: list[int] = []
+    child_rank: dict[int, int] = {}
+    parent_eligible_count: dict[int, int] = {}
     split_source_count = 0
     dropped_child_count = 0
+    dropped_ineligible_count = 0
     for source in sorted(children):
+        source_children = children[source]
+        if len(source_children) > 1:
+            split_source_count += 1
         ordered = sorted(
-            children[source],
+            (child for child in source_children if bool(eligible[child])),
             key=lambda child: (
+                -float(quality[child]),
                 -int(count[child]),
                 -float(confidence_sum[child]),
                 child,
             ),
         )
-        if len(ordered) > 1:
-            split_source_count += 1
+        parent_eligible_count[source] = len(ordered)
+        for rank, child in enumerate(ordered):
+            child_rank[child] = rank
         retained.extend(ordered[: int(maximum_children)])
         dropped_child_count += max(0, len(ordered) - int(maximum_children))
+        dropped_ineligible_count += len(source_children) - len(ordered)
     retained = sorted(retained)
     retain_lookup = torch.full((track_count,), -1, dtype=torch.long)
     retain_lookup[torch.as_tensor(retained)] = torch.arange(len(retained))
@@ -180,13 +213,76 @@ def _limit_children(
         "confidence": confidence[observation_keep],
         "track_level": torch.as_tensor(tracks["track_level"])[retained].clone(),
         "source_track_index": source_by_child[retained].clone(),
+        "parent_source_track_ids": source_by_child[retained].clone(),
+        "repair_child_index": torch.as_tensor(
+            [child_rank[child] for child in retained], dtype=torch.long
+        ),
+        "repair_parent_child_count": torch.as_tensor(
+            [parent_eligible_count[int(source_by_child[child])] for child in retained],
+            dtype=torch.long,
+        ),
     }
-    return revised, {
-        "unbounded_child_track_count": track_count,
-        "retained_child_track_count": len(retained),
-        "split_source_track_count": split_source_count,
-        "dropped_excess_child_count": dropped_child_count,
+    revised_geometry = {
+        key: (
+            value[retained].clone()
+            if torch.is_tensor(value)
+            and value.ndim
+            and int(value.shape[0]) == track_count
+            else value
+        )
+        for key, value in geometry.items()
     }
+    return (
+        revised,
+        revised_geometry,
+        retain_lookup,
+        {
+            "unbounded_child_track_count": track_count,
+            "geometry_eligible_child_track_count": int(eligible.sum()),
+            "retained_child_track_count": len(retained),
+            "split_source_track_count": split_source_count,
+            "dropped_geometry_ineligible_child_count": dropped_ineligible_count,
+            "dropped_excess_child_count": dropped_child_count,
+            "child_cap_stage": "after_ray_triangulation_and_broad_geometry_gate",
+        },
+    )
+
+
+def _remap_pair_sidecar_tracks(
+    pair_sidecar: dict,
+    old_to_new: torch.Tensor,
+    tracks: dict[str, torch.Tensor],
+    geometry: dict[str, torch.Tensor],
+    poses: torch.Tensor,
+) -> dict:
+    """Make pair-to-Track CSR exact after geometry filtering/reindexing."""
+    output = {**pair_sidecar, "pair": dict(pair_sidecar["pair"])}
+    pair = output["pair"]
+    offsets = torch.as_tensor(pair["final_track_offsets"]).long()
+    indices = torch.as_tensor(pair["final_track_indices"]).long()
+    if offsets.ndim != 1 or int(offsets[-1]) != int(indices.numel()):
+        raise ValueError("pre-cap pair-to-Track CSR is malformed")
+    if indices.numel() and (
+        int(indices.min()) < 0 or int(indices.max()) >= int(old_to_new.numel())
+    ):
+        raise ValueError("pre-cap pair-to-Track CSR is outside the child registry")
+    revised_offsets = [0]
+    revised_indices: list[int] = []
+    revised_counts = []
+    for row in range(offsets.numel() - 1):
+        begin, end = int(offsets[row]), int(offsets[row + 1])
+        mapped = old_to_new[indices[begin:end]]
+        values = sorted(set(mapped[mapped >= 0].tolist()))
+        revised_indices.extend(values)
+        revised_offsets.append(len(revised_indices))
+        revised_counts.append(len(values))
+    pair["final_track_offsets"] = torch.as_tensor(revised_offsets).long()
+    pair["final_track_indices"] = torch.as_tensor(revised_indices).long()
+    # A Track has at most one observation per camera, hence at most one direct
+    # accepted edge for a fixed camera pair.
+    pair["final_component_edge_count"] = torch.as_tensor(revised_counts).long()
+    output["post_repair_track_csr_remapped"] = True
+    return attach_pair_triangulation_statistics(output, tracks, geometry, poses)
 
 
 def _coverage_certification(
@@ -195,6 +291,7 @@ def _coverage_certification(
     geometry: dict,
     support_records: list[dict],
     keypoints: list[torch.Tensor],
+    intrinsics: torch.Tensor,
     poses: torch.Tensor,
     depth_uncertainty: list[torch.Tensor],
     depth_abs_tolerance_m: float,
@@ -202,7 +299,7 @@ def _coverage_certification(
     minimum_view_bins: int,
     minimum_parallax_deg: float,
     maximum_reprojection_px: float,
-) -> torch.Tensor:
+) -> dict[str, torch.Tensor]:
     track = torch.as_tensor(tracks["track_index"]).long()
     query = torch.as_tensor(tracks["query_index"]).long()
     keypoint_index = torch.as_tensor(tracks["keypoint_index"]).long()
@@ -212,6 +309,15 @@ def _coverage_certification(
         + poses[query, :3, 3].float()
     )
     predicted_depth = camera[:, 2]
+    homogeneous = torch.bmm(intrinsics[query].float(), camera[:, :, None]).squeeze(2)
+    projected = homogeneous[:, :2] / homogeneous[:, 2:].clamp_min(1e-8)
+    observed = torch.stack(
+        [
+            keypoints[int(q)][int(k)]
+            for q, k in zip(query.tolist(), keypoint_index.tolist())
+        ]
+    ).float()
+    observation_reprojection = torch.linalg.norm(projected - observed, dim=1)
     reference_depth = torch.as_tensor(
         [
             support_records[int(q)]["depth"][int(k)]
@@ -256,9 +362,21 @@ def _coverage_certification(
             <= float(maximum_reprojection_px)
         )
     )
-    # Strong projective geometry may override uncertain expected depth, but an
-    # alpha-invalid observation never certifies mapping coverage.
-    return alpha_valid & (depth_consistent | strong_track[track])
+    observation_projective = (
+        torch.isfinite(observation_reprojection)
+        & torch.isfinite(predicted_depth)
+        & (predicted_depth > 1e-5)
+        & (observation_reprojection <= float(maximum_reprojection_px))
+    )
+    certified = (
+        alpha_valid & observation_projective & (depth_consistent | strong_track[track])
+    )
+    cycle_seeded = torch.as_tensor(tracks["track_level"]).long()[track] >= 2
+    return {
+        "coverage_certified": certified,
+        "observation_reprojection_px": observation_reprojection,
+        "identity_positive_certified": certified & cycle_seeded,
+    }
 
 
 @torch.no_grad()
@@ -490,9 +608,6 @@ def materialize(args: argparse.Namespace) -> dict:
         precomputed_confidence_includes_detector_scores=True,
         device=args.device,
     )
-    repaired, split_diagnostics = _limit_children(
-        repaired, source_lookup, maximum_children=int(args.maximum_children)
-    )
     observation_query = repaired["query_index"].long()
     observation_keypoint = repaired["keypoint_index"].long()
     observation_uv = torch.stack(
@@ -529,11 +644,23 @@ def materialize(args: argparse.Namespace) -> dict:
         surface_support_enabled=False,
     )
     geometry["track_confidence_level"] = repaired["track_level"].clone()
-    repaired["coverage_certified"] = _coverage_certification(
+    repaired, geometry, old_to_new, split_diagnostics = (
+        _limit_children_after_triangulation(
+            repaired,
+            geometry,
+            source_lookup,
+            maximum_children=int(args.maximum_children),
+        )
+    )
+    pair_sidecar = _remap_pair_sidecar_tracks(
+        pair_sidecar, old_to_new, repaired, geometry, poses_tensor
+    )
+    certification = _coverage_certification(
         tracks=repaired,
         geometry=geometry,
         support_records=support_records,
         keypoints=keypoints,
+        intrinsics=intrinsics_tensor,
         poses=poses_tensor,
         depth_uncertainty=uncertainties,
         depth_abs_tolerance_m=float(args.depth_abs_tolerance_m),
@@ -542,6 +669,17 @@ def materialize(args: argparse.Namespace) -> dict:
         minimum_parallax_deg=float(args.minimum_parallax_deg),
         maximum_reprojection_px=float(args.maximum_reprojection_px),
     )
+    repaired.update(certification)
+    frozen_offsets = [0]
+    frozen_source_rows = []
+    frozen_target_rows = []
+    frozen_confidence = []
+    for pair in pairs:
+        source, target, confidence = precomputed_matches[pair]
+        frozen_source_rows.append(source)
+        frozen_target_rows.append(target)
+        frozen_confidence.append(confidence)
+        frozen_offsets.append(frozen_offsets[-1] + int(source.numel()))
     payload = {
         "schema": "lafgs_track_first_payload",
         "version": 1,
@@ -559,7 +697,41 @@ def materialize(args: argparse.Namespace) -> dict:
             "source_track_payload_sha256": input_sha["source_track_payload"],
             "forbids_cross_source_track_merge": True,
             "maximum_children_per_source_track": int(args.maximum_children),
+            "child_cap_stage": "after_ray_triangulation_and_broad_geometry_gate",
             "uses_gaussian_geometry_for_triangulation": False,
+            "frozen_support_pair_matches": {
+                "schema": "lafgs_rendered_track_frozen_support_pair_matches",
+                "version": 1,
+                "pair_count": len(pairs),
+                "offsets": torch.as_tensor(frozen_offsets).long(),
+                "source_keypoint_indices": torch.cat(frozen_source_rows),
+                "target_keypoint_indices": torch.cat(frozen_target_rows),
+                "confidence": torch.cat(frozen_confidence),
+                "confidence_includes_detector_scores": True,
+                "support_filter_applied": True,
+                "source_match_rows_recomputed_once_then_frozen": True,
+            },
+            "source_track_index_at_keypoint": source_lookup,
+            "track_build_contract": {
+                "pair_policy": str(source_tracks["pair_sidecar"]["policy"]["name"]),
+                "pair_neighbors": int(args.pair_neighbors),
+                "minimum_baseline_m": float(args.minimum_baseline_m),
+                "maximum_baseline_m": float(args.maximum_baseline_m),
+                "maximum_axis_angle_deg": float(args.maximum_axis_angle_deg),
+                "minimum_similarity": float(args.minimum_similarity),
+                "minimum_margin": float(args.minimum_margin),
+                "maximum_epipolar_error_px": float(args.maximum_epipolar_error_px),
+                "epipolar_candidate_topk": int(args.epipolar_candidate_topk),
+                "minimum_track_views": int(args.minimum_views),
+                "maximum_observations": int(args.maximum_observations),
+                "minimum_view_bins": int(args.minimum_view_bins),
+                "huber_delta_px": float(args.huber_delta_px),
+                "triangulation_iterations": int(args.triangulation_iterations),
+                "minimum_parallax_deg": float(args.minimum_parallax_deg),
+                "parallax_quantile": float(args.parallax_quantile),
+                "maximum_reprojection_px": float(args.maximum_reprojection_px),
+                "maximum_condition_number": float(args.maximum_condition_number),
+            },
         },
     }
     broad = _eligible_tracks(geometry, "broad")
@@ -588,9 +760,20 @@ def materialize(args: argparse.Namespace) -> dict:
         "source_primitive_ids": torch.full((anchor_count,), -1, dtype=torch.long),
         "track_cluster_ids": broad_tracks,
         "anchor_type": torch.ones(anchor_count, dtype=torch.long),
-        "dependency_group_ids": torch.arange(anchor_count),
-        "coarse_dependency_group_ids": torch.arange(anchor_count),
+        "dependency_group_ids": repaired["parent_source_track_ids"][
+            broad_tracks
+        ].clone(),
+        "coarse_dependency_group_ids": repaired["parent_source_track_ids"][
+            broad_tracks
+        ].clone(),
         "fine_identity_ids": broad_tracks.clone(),
+        "parent_source_track_ids": repaired["parent_source_track_ids"][
+            broad_tracks
+        ].clone(),
+        "repair_child_index": repaired["repair_child_index"][broad_tracks].clone(),
+        "repair_parent_child_count": repaired["repair_parent_child_count"][
+            broad_tracks
+        ].clone(),
         "anchor_position_covariance": covariance,
         "anchor_matchability": torch.ones(anchor_count),
         "base_anchor_count": 0,
@@ -743,7 +926,7 @@ def materialize(args: argparse.Namespace) -> dict:
             "hard_depth_sigma": float(args.hard_depth_sigma),
             "uncertain_weight_floor": float(args.uncertain_weight_floor),
             "maximum_children_per_source_track": int(args.maximum_children),
-            "coverage_policy": "alpha_valid_and_depth_consistent_or_strong_projective_geometry",
+            "coverage_policy": "alpha_valid_and_depth_consistent_or_observation_reprojection_certified",
         },
         "inputs": {
             "source_cache": str(args.source_cache.resolve()),
@@ -756,7 +939,9 @@ def materialize(args: argparse.Namespace) -> dict:
         "timing_seconds": {"total": time.perf_counter() - started},
     }
     if _producer_identity() != producer_identity:
-        raise RuntimeError("support-repair producer identity changed during materialization")
+        raise RuntimeError(
+            "support-repair producer identity changed during materialization"
+        )
     _atomic_json(report, args.output_dir / "support_repair_report.json")
     return report
 
