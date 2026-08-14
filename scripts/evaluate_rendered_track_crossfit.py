@@ -8,6 +8,7 @@ from collections import defaultdict
 import json
 import os
 from pathlib import Path
+import subprocess
 
 import torch
 
@@ -29,6 +30,42 @@ COUNTER_NAMES = (
     "counterfactual_clean_gain",
     "information_deletion_loss",
 )
+
+_PRODUCER_SOURCE_PATHS = (
+    "scripts/evaluate_rendered_track_crossfit.py",
+    "common/hashing.py",
+    "evidence/tracks.py",
+    "evidence/triangulation.py",
+    "map_learning/metric.py",
+    "topology/deployment_revision.py",
+    "topology/track_core.py",
+)
+
+
+def _producer_identity() -> dict:
+    repository = Path(__file__).resolve().parents[1]
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    if git("status", "--porcelain=v1"):
+        raise RuntimeError("rendered Track crossfit producer worktree must be clean")
+    return {
+        "git_commit": commit,
+        "worktree_clean": True,
+        "torch_version": torch.__version__,
+        "source_sha256": {
+            relative: sha256_file(repository / relative)
+            for relative in _PRODUCER_SOURCE_PATHS
+        },
+    }
 
 
 def _combined_summary(query_rows: list[dict], counters: dict) -> dict:
@@ -274,6 +311,7 @@ def _identity_metric(anchor_count: int, descriptor_dim: int, map_path: Path) -> 
 
 
 def run(args) -> dict:
+    producer_identity = _producer_identity()
     state = torch.load(args.anchor_map, map_location="cpu", weights_only=False)
     payload = torch.load(args.track_payload, map_location="cpu", weights_only=False)
     teacher = torch.load(args.teacher, map_location="cpu", weights_only=False)
@@ -359,6 +397,7 @@ def run(args) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "support_only_retriangulation": True,
+        "producer_identity": producer_identity,
         "query_rows": all_rows,
         "counters": aggregate,
         "summary": _combined_summary(all_rows, aggregate),
@@ -371,6 +410,8 @@ def run(args) -> dict:
         "version": 1,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
+        "support_only_retriangulation": True,
+        "producer_identity": producer_identity,
         "sequences": sequences,
         "grouping": (
             "mapping_trajectory"
@@ -394,6 +435,8 @@ def run(args) -> dict:
         "statistics": str(statistics_path.resolve()),
         "statistics_sha256": sha256_file(statistics_path),
     }
+    if _producer_identity() != producer_identity:
+        raise RuntimeError("rendered Track crossfit producer identity changed")
     (args.output_dir / "crossfit_report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
