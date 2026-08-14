@@ -134,12 +134,44 @@ def test_rendered_track_training_honors_alpha_rows_and_depth_visibility(tmp_path
     teacher = torch.load(
         report["outputs"]["teacher"], map_location="cpu", weights_only=False
     )
-    assert teacher["records"][0]["query_rows"].numel() == 0
-    assert all(record["positive_indices"].numel() == 0 for record in teacher["records"])
-    assert teacher["diagnostics"]["masked_query_row_count"] == 1
+    # Exact multi-view identity is retained even when Gaussian expected depth
+    # or alpha disagrees; the disagreement is audited rather than promoted to
+    # geometric truth.
+    assert teacher["records"][0]["query_rows"].numel() == 1
+    assert all(
+        record["positive_indices"].tolist() == [0] for record in teacher["records"]
+    )
+    assert teacher["diagnostics"]["masked_query_row_count"] == 0
     assert teacher["diagnostics"]["depth_visibility_rejected_anchor_count"] == 3
+    assert teacher["diagnostics"]["exact_depth_disagreement_audit_count"] == 3
     assert teacher["config"]["uses_rendered_depth"] is True
     assert teacher["config"]["uses_rendered_alpha"] is True
+
+
+def test_projection_compatible_anchor_is_ignored_not_identity_positive(tmp_path):
+    paths = _inputs(tmp_path)
+    state = torch.load(paths["map"], map_location="cpu", weights_only=False)
+    state["anchor_ids"] = torch.tensor([0, 1])
+    state["anchor_xyz"] = torch.tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 2.0]])
+    state["anchor_features"] = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+    state["track_cluster_ids"] = torch.tensor([0, 1])
+    torch.save(state, paths["map"])
+    report = materialize(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        output_dir=tmp_path / "compatible",
+        strong_radius_px=2.0,
+        ambiguous_radius_px=8.0,
+    )
+    teacher = torch.load(
+        report["outputs"]["teacher"], map_location="cpu", weights_only=False
+    )
+    for record in teacher["records"]:
+        assert record["positive_indices"].tolist() == [0]
+        assert record["exact_identity_indices"].tolist() == [0]
+        assert record["support_compatible_indices"].tolist() == [1]
+        assert record["ambiguous_indices"].tolist() == [1]
 
 
 def test_crossfit_training_inputs_exclude_held_mapping_sequence():

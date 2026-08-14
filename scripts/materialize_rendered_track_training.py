@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Materialize train-only geometry labels for a rendered-RGB Track map.
+"""Materialize train-only labels for a rendered-RGB Track map.
 
-The teacher uses frozen mapping poses and the ray-triangulated Track map. It
-never reads source mapping RGB, test queries, rendered depth, or Gaussian
-primitive geometry. Exact Track observations are positives; additional
-projected anchors within the strong/ambiguous radii provide complete local
-geometric supervision for mapping replay and A1 metric training.
+The teacher never reads source mapping RGB or test queries.  Exact multi-view
+Track observations provide identity supervision independently of Gaussian
+depth.  Rendered alpha/depth are optional support evidence for projection-only
+nearby anchors: compatible projections are ignored as negatives, but they are
+not promoted to identity positives.  Track xyz always remains ray-triangulated.
 """
 
 from __future__ import annotations
@@ -95,6 +95,9 @@ def materialize(
     strong_radius_px: float,
     ambiguous_radius_px: float,
     blocked_folds: int = 3,
+    alpha_minimum: float = 0.05,
+    depth_abs_tolerance_m: float = 0.05,
+    depth_relative_tolerance: float = 0.02,
 ) -> dict:
     if float(strong_radius_px) <= 0 or float(ambiguous_radius_px) <= float(
         strong_radius_px
@@ -130,8 +133,13 @@ def materialize(
         if anchor is not None:
             exact[int(query)][int(keypoint)].add(int(anchor))
 
+    if not 0.0 <= float(alpha_minimum) <= 1.0:
+        raise ValueError("alpha minimum must lie in [0, 1]")
+    if float(depth_abs_tolerance_m) < 0 or float(depth_relative_tolerance) < 0:
+        raise ValueError("depth tolerances must be non-negative")
     records = []
     positive_rows = strong_count = ambiguous_count = exact_count = 0
+    compatible_count = exact_depth_disagreement_count = 0
     masked_query_row_count = depth_visibility_rejected_anchor_count = 0
     for query_index, name in enumerate(names):
         cached = cache[name]
@@ -144,8 +152,12 @@ def materialize(
                 raise ValueError("render validity mask and keypoint rows differ")
         else:
             keypoint_valid = torch.ones(all_keypoints.shape[0], dtype=torch.bool)
-        query_rows = torch.nonzero(keypoint_valid, as_tuple=False).reshape(-1)
-        masked_query_row_count += int((~keypoint_valid).sum())
+        exact_rows = torch.zeros(all_keypoints.shape[0], dtype=torch.bool)
+        for source_row in exact[query_index]:
+            exact_rows[int(source_row)] = True
+        retained_rows = keypoint_valid | exact_rows
+        query_rows = torch.nonzero(retained_rows, as_tuple=False).reshape(-1)
+        masked_query_row_count += int((~retained_rows).sum())
         keypoints = all_keypoints[query_rows]
         keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
         intrinsic = torch.as_tensor(cached["native_K"]).float()
@@ -173,11 +185,14 @@ def materialize(
             y = projected[:, 1].round().long().clamp(0, height - 1)
             reference_depth = rendered_depth[y, x]
             reference_alpha = alpha[y, x]
-            tolerance = 0.05 + 0.02 * reference_depth.abs()
+            tolerance = (
+                float(depth_abs_tolerance_m)
+                + float(depth_relative_tolerance) * reference_depth.abs()
+            )
             visible = (
                 torch.isfinite(reference_depth)
                 & (reference_depth > 1e-5)
-                & (reference_alpha >= 0.05)
+                & (reference_alpha >= float(alpha_minimum))
                 & ((depth - reference_depth).abs() <= tolerance)
             )
             depth_visibility_rejected_anchor_count += int((valid & ~visible).sum())
@@ -186,6 +201,8 @@ def materialize(
             projected, valid, keypoints, float(ambiguous_radius_px)
         )
         positives = []
+        exact_positives = []
+        support_compatible = []
         ambiguous = []
         for row, candidates in enumerate(nearby):
             candidate_tensor = torch.as_tensor(candidates, dtype=torch.long)
@@ -201,15 +218,22 @@ def materialize(
             else:
                 strong, weak = [], []
             source_row = int(query_rows[row])
-            exact_values = [
-                anchor
-                for anchor in sorted(exact[query_index].get(source_row, ()))
-                if bool(valid[anchor])
-            ]
-            positives.append(sorted(set(strong) | set(exact_values)))
-            ambiguous.append(sorted(set(weak) - set(positives[-1])))
+            exact_values = sorted(exact[query_index].get(source_row, ()))
+            compatible_values = sorted(set(strong) - set(exact_values))
+            positives.append(exact_values)
+            exact_positives.append(exact_values)
+            support_compatible.append(compatible_values)
+            ambiguous.append(
+                sorted((set(weak) | set(compatible_values)) - set(exact_values))
+            )
             exact_count += len(exact_values)
+            compatible_count += len(compatible_values)
+            exact_depth_disagreement_count += sum(
+                not bool(valid[anchor]) for anchor in exact_values
+            )
         positive_offsets, positive_indices = _csr(positives)
+        exact_offsets, exact_indices = _csr(exact_positives)
+        compatible_offsets, compatible_indices = _csr(support_compatible)
         ambiguous_offsets, ambiguous_indices = _csr(ambiguous)
         positive_rows += int(((positive_offsets[1:] - positive_offsets[:-1]) > 0).sum())
         strong_count += int(positive_indices.numel())
@@ -221,6 +245,10 @@ def materialize(
                 "query_rows": query_rows,
                 "positive_offsets": positive_offsets,
                 "positive_indices": positive_indices,
+                "exact_identity_offsets": exact_offsets,
+                "exact_identity_indices": exact_indices,
+                "support_compatible_offsets": compatible_offsets,
+                "support_compatible_indices": compatible_indices,
                 "ambiguous_offsets": ambiguous_offsets,
                 "ambiguous_indices": ambiguous_indices,
             }
@@ -253,6 +281,8 @@ def materialize(
             "strong_pair_count": strong_count,
             "ambiguous_pair_count": ambiguous_count,
             "exact_track_positive_count": exact_count,
+            "support_compatible_pair_count": compatible_count,
+            "exact_depth_disagreement_audit_count": (exact_depth_disagreement_count),
             "masked_query_row_count": masked_query_row_count,
             "depth_visibility_rejected_anchor_count": (
                 depth_visibility_rejected_anchor_count
@@ -261,6 +291,12 @@ def materialize(
         "config": {
             "strong_radius_px": float(strong_radius_px),
             "ambiguous_radius_px": float(ambiguous_radius_px),
+            "alpha_minimum": float(alpha_minimum),
+            "depth_abs_tolerance_m": float(depth_abs_tolerance_m),
+            "depth_relative_tolerance": float(depth_relative_tolerance),
+            "identity_positive_policy": "exact_track_observations_only",
+            "projection_compatible_policy": "ambiguous_ignore_not_positive",
+            "exact_depth_policy": "audit_only_never_hard_reject",
             "geometry_source": "ray_triangulated_track_xyz_and_mapping_pose",
             "uses_source_mapping_rgb": False,
             "uses_test_queries": False,
@@ -356,6 +392,9 @@ def main() -> None:
     parser.add_argument("--strong-radius-px", type=float, default=2.0)
     parser.add_argument("--ambiguous-radius-px", type=float, default=8.0)
     parser.add_argument("--blocked-folds", type=int, default=3)
+    parser.add_argument("--alpha-minimum", type=float, default=0.05)
+    parser.add_argument("--depth-abs-tolerance-m", type=float, default=0.05)
+    parser.add_argument("--depth-relative-tolerance", type=float, default=0.02)
     args = parser.parse_args()
     report = materialize(
         anchor_map_path=args.anchor_map.resolve(),
@@ -365,6 +404,9 @@ def main() -> None:
         strong_radius_px=args.strong_radius_px,
         ambiguous_radius_px=args.ambiguous_radius_px,
         blocked_folds=args.blocked_folds,
+        alpha_minimum=args.alpha_minimum,
+        depth_abs_tolerance_m=args.depth_abs_tolerance_m,
+        depth_relative_tolerance=args.depth_relative_tolerance,
     )
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
 

@@ -375,12 +375,14 @@ def materialize(args) -> dict:
     output_state["anchor_features"] = fused_tracks.float()
     output_state["v7_metric_raw_features"] = fused_tracks.float()
     output_state["anchor_appearance_dispersion"] = track_dispersion
-    source_matchability = torch.as_tensor(
-        source_map.get("anchor_matchability", torch.ones(selected_tracks.numel()))
-    ).float()
-    output_state["anchor_matchability"] = source_matchability * (
-        1.0 - track_dispersion
-    ).clamp(0.0, 1.0)
+    # Selection has already been frozen for this descriptor-only arm and the
+    # deployed global Top-1 matcher does not consume anchor_matchability.
+    # Preserve the source value instead of writing a scientifically dead
+    # dispersion adjustment that cannot affect either selection or matching.
+    if "anchor_matchability" in source_map:
+        output_state["anchor_matchability"] = torch.as_tensor(
+            source_map["anchor_matchability"]
+        ).clone()
     output_state["provenance"] = {
         **source_map.get("provenance", {}),
         "rendered_appearance_ensemble": {
@@ -436,6 +438,7 @@ def materialize(args) -> dict:
             ).median()
         ),
         "track_dispersion_median": float(track_dispersion.median()),
+        "anchor_matchability_modified": False,
         "configuration": ensemble_cache["appearance_ensemble"],
         "inputs": {
             "dataset": str(args.dataset.resolve()),

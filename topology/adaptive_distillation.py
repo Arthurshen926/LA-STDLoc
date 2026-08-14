@@ -434,6 +434,14 @@ def main() -> None:
         ),
     )
     parser.add_argument("--expected-frozen-scene-calibration-sha256")
+    parser.add_argument(
+        "--rendered-track-pose-minimum-additions",
+        type=int,
+        help=(
+            "Support-repaired Track-only override. Only zero is accepted so "
+            "observability completion stops on measured gain."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
     args = parser.parse_args()
@@ -448,13 +456,25 @@ def main() -> None:
     config = load_mainline_config(args.config).values
     if int(config["version"]) < 2:
         raise ValueError("adaptive distillation requires a V2 mainline config")
-    policy = config["adaptive"]
+    policy = dict(config["adaptive"])
 
     canonical = torch.load(canonical_path, map_location="cpu", weights_only=False)
     graph = torch.load(graph_path, map_location="cpu", weights_only=False)
     teacher = torch.load(teacher_path, map_location="cpu", weights_only=False)
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     query_payload = torch.load(query_path, map_location="cpu", weights_only=False)
+    if args.rendered_track_pose_minimum_additions is not None:
+        if payload.get("support_repair", {}).get("schema") != (
+            "lafgs_rendered_track_support_repair"
+        ):
+            raise ValueError(
+                "rendered Track pose override requires a support-repaired payload"
+            )
+        if int(args.rendered_track_pose_minimum_additions) != 0:
+            raise ValueError(
+                "support-repaired pose minimum is restricted to the frozen zero"
+            )
+        policy["pose_minimum_additions"] = 0
     query_cache = query_payload.get("queries", query_payload)
     parameters, calibration = _resolve_selector_calibration(
         query_path=query_path,

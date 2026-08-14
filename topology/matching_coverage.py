@@ -108,17 +108,24 @@ def track_candidate_edges(
     track_count = int(
         torch.as_tensor(payload["track_geometry"]["triangulated"]).numel()
     )
-    pending: list[dict[int, set[int]]] = [
-        defaultdict(set) for _ in range(track_count)
-    ]
+    pending: list[dict[int, set[int]]] = [defaultdict(set) for _ in range(track_count)]
     observations = payload["tracks"]
     track = torch.as_tensor(observations["track_index"]).long()
     query = torch.as_tensor(observations["query_index"]).long()
     row = torch.as_tensor(observations["keypoint_index"]).long()
+    certified = torch.as_tensor(
+        observations.get(
+            "coverage_certified", torch.ones(track.shape[0], dtype=torch.bool)
+        )
+    ).bool()
+    if certified.shape != track.shape:
+        raise ValueError("Track coverage certification and observations differ")
     if query_index_remap is not None:
         query = torch.as_tensor(query_index_remap).long()[query]
     for track_index, query_index, keypoint_index in zip(
-        track.tolist(), query.tolist(), row.tolist()
+        track[certified].tolist(),
+        query[certified].tolist(),
+        row[certified].tolist(),
     ):
         pending[track_index][query_index].add(keypoint_index)
     return [
@@ -204,9 +211,7 @@ def greedy_matching_reserve(
         candidate_gain = gain(anchor)
         if candidate_gain > 0:
             candidate_risk = (
-                0.0
-                if risk is None
-                else float(torch.nan_to_num(risk[anchor], nan=1.0))
+                0.0 if risk is None else float(torch.nan_to_num(risk[anchor], nan=1.0))
             )
             heapq.heappush(
                 heap,
@@ -236,7 +241,9 @@ def greedy_matching_reserve(
     report = {
         "coverage_definition": "query_anchor_bipartite_matching_rank",
         "requested_rows_per_query": (
-            int(requested[0]) if bool((requested == requested[0]).all()) else requested.tolist()
+            int(requested[0])
+            if bool((requested == requested[0]).all())
+            else requested.tolist()
         ),
         "reserve_count": len(selected),
         "feasible_target_count": int(targets.sum()),
