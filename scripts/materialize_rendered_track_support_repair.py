@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 
 import torch
@@ -31,6 +32,48 @@ from evidence.triangulation import (
 from features.multiview_fusion import PIXEL_CENTER_OFFSET
 from map_learning.metric import SharedLowRankMetric
 from topology.track_core import _eligible_tracks, _track_quality
+
+
+_PRODUCER_SOURCE_PATHS = (
+    "scripts/materialize_rendered_track_support_repair.py",
+    "evidence/rendered_track_support.py",
+    "evidence/triangulation.py",
+    "evidence/tracks.py",
+    "topology/track_core.py",
+    "features/multiview_fusion.py",
+    "common/hashing.py",
+)
+
+
+def _producer_identity() -> dict:
+    repository = Path(__file__).resolve().parents[1]
+
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    dirty = git("status", "--porcelain=v1")
+    if dirty:
+        raise RuntimeError("support-repair producer worktree must be clean")
+    source_sha256 = {}
+    for relative in _PRODUCER_SOURCE_PATHS:
+        path = repository / relative
+        if not path.is_file():
+            raise RuntimeError(f"support-repair producer source is missing: {relative}")
+        source_sha256[relative] = sha256_file(path)
+    return {
+        "git_commit": commit,
+        "worktree_clean": True,
+        "source_sha256": source_sha256,
+        "torch_version": torch.__version__,
+    }
 
 
 def _atomic_save(payload: dict, path: Path) -> None:
@@ -221,6 +264,7 @@ def _coverage_certification(
 @torch.no_grad()
 def materialize(args: argparse.Namespace) -> dict:
     started = time.perf_counter()
+    producer_identity = _producer_identity()
     for path in (args.source_cache, args.support_cache, args.source_track_payload):
         if not path.is_file():
             raise FileNotFoundError(path)
@@ -326,6 +370,7 @@ def materialize(args: argparse.Namespace) -> dict:
     total_raw = total_within_source = total_hard_reject = 0
     total_high_confidence = 0
     weight_sum = cycle_sum = depth_sigma_sum = 0.0
+    diagnostic_valid_edge_count = 0
     device = torch.device(args.device)
     for completed, (left, right) in enumerate(pairs, start=1):
         source, target, confidence, diagnostic = reciprocal_epipolar_matches(
@@ -387,9 +432,17 @@ def materialize(args: argparse.Namespace) -> dict:
         )
         if bool(same_source.any()):
             weight_sum += float(evidence["soft_weight"][same_source].sum())
-            cycle_sum += float(evidence["cycle_error_px"][same_source].sum())
+        diagnostic_valid = (
+            same_source
+            & evidence["valid_support_pair"]
+            & torch.isfinite(evidence["cycle_error_px"])
+            & torch.isfinite(evidence["depth_disagreement_sigma"])
+        )
+        if bool(diagnostic_valid.any()):
+            diagnostic_valid_edge_count += int(diagnostic_valid.sum())
+            cycle_sum += float(evidence["cycle_error_px"][diagnostic_valid].sum())
             depth_sigma_sum += float(
-                evidence["depth_disagreement_sigma"][same_source].sum()
+                evidence["depth_disagreement_sigma"][diagnostic_valid].sum()
             )
         precomputed_matches[(left, right)] = (
             source[keep],
@@ -653,6 +706,7 @@ def materialize(args: argparse.Namespace) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "uses_gaussian_geometry_for_triangulation": False,
+        "producer_identity": producer_identity,
         "pair_policy": source_tracks["pair_sidecar"]["policy"]["name"],
         "pair_count": len(pairs),
         "source_track_count": int(
@@ -672,10 +726,11 @@ def materialize(args: argparse.Namespace) -> dict:
             "within_source_component_edge_count": total_within_source,
             "high_confidence_support_edge_count": total_high_confidence,
             "hard_rejected_edge_count": total_hard_reject,
+            "valid_support_diagnostic_edge_count": diagnostic_valid_edge_count,
             "mean_soft_weight": weight_sum / max(total_within_source, 1),
-            "mean_cycle_error_px": cycle_sum / max(total_within_source, 1),
+            "mean_cycle_error_px": cycle_sum / max(diagnostic_valid_edge_count, 1),
             "mean_depth_disagreement_sigma": depth_sigma_sum
-            / max(total_within_source, 1),
+            / max(diagnostic_valid_edge_count, 1),
         },
         "split_diagnostics": split_diagnostics,
         "configuration": {
@@ -700,6 +755,8 @@ def materialize(args: argparse.Namespace) -> dict:
         "output_sha256": {name: sha256_file(path) for name, path in outputs.items()},
         "timing_seconds": {"total": time.perf_counter() - started},
     }
+    if _producer_identity() != producer_identity:
+        raise RuntimeError("support-repair producer identity changed during materialization")
     _atomic_json(report, args.output_dir / "support_repair_report.json")
     return report
 
