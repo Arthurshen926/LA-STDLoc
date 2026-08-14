@@ -5,7 +5,7 @@ import torch
 
 from common.hashing import sha256_file
 from scripts.materialize_rendered_track_training import materialize
-from scripts.evaluate_rendered_track_crossfit import _crossfit_groups
+from scripts.evaluate_rendered_track_crossfit import _crossfit_groups, _subset_state
 from scripts.materialize_rendered_track_fullchain_inputs import (
     materialize as materialize_fullchain_inputs,
 )
@@ -223,6 +223,34 @@ def test_single_mapping_trajectory_uses_contiguous_blocked_crossfit():
         "blocked_02",
         "blocked_02",
     ]
+
+
+def test_crossfit_fold_map_uses_support_only_retriangulated_geometry():
+    state = {
+        "anchor_ids": torch.arange(3),
+        "anchor_xyz": torch.full((3, 3), -1.0),
+        "anchor_features": torch.eye(3),
+        "track_cluster_ids": torch.tensor([4, 5, 6]),
+        "anchor_position_covariance": torch.zeros(3, 3, 3),
+    }
+    keep = torch.tensor([True, False, True])
+    features = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    geometry = {
+        "triangulated_xyz": torch.tensor(
+            [[10.0, 0.0, 1.0], [20.0, 0.0, 1.0], [30.0, 0.0, 1.0]]
+        ),
+        "triangulation_covariance_matrix": torch.stack(
+            [torch.eye(3), 2 * torch.eye(3), 3 * torch.eye(3)]
+        ),
+    }
+    output = _subset_state(state, keep, features, geometry)
+    assert output["anchor_xyz"].tolist() == [
+        [10.0, 0.0, 1.0],
+        [30.0, 0.0, 1.0],
+    ]
+    assert output["anchor_position_covariance"][:, 0, 0].tolist() == [1.0, 3.0]
+    assert output["track_cluster_ids"].tolist() == [4, 6]
+    assert output["rendered_track_crossfit_geometry"]["support_only"] is True
 
 
 def test_fullchain_inputs_resolve_pruned_rows_to_track_ids(tmp_path):

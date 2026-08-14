@@ -13,8 +13,10 @@ import torch
 
 from common.hashing import sha256_file
 from evidence.tracks import robust_fuse_track_descriptors
+from evidence.triangulation import robust_triangulate_associations
 from map_learning.metric import SharedLowRankMetric
 from topology.deployment_revision import collect_deployment_statistics, subset_teacher
+from topology.track_core import _eligible_tracks
 
 
 COUNTER_NAMES = (
@@ -102,7 +104,7 @@ def _fold_bank(
     held_sequence: str,
     crossfit_groups: list[str],
     trim_fraction: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
     names = list(payload["query_names"])
     cache = query_cache.get("queries", query_cache)
     tracks = payload["tracks"]
@@ -113,26 +115,78 @@ def _fold_bank(
     selected_lookup = {
         int(track): row for row, track in enumerate(selected_tracks.tolist())
     }
+    track_index = torch.as_tensor(tracks["track_index"]).long()
+    track_query = torch.as_tensor(tracks["query_index"]).long()
+    track_keypoint = torch.as_tensor(tracks["keypoint_index"]).long()
+    track_confidence = torch.as_tensor(tracks["confidence"]).float()
     observations: dict[int, list[int]] = defaultdict(list)
     for observation, (track, query) in enumerate(
-        zip(
-            torch.as_tensor(tracks["track_index"]).long().tolist(),
-            torch.as_tensor(tracks["query_index"]).long().tolist(),
-        )
+        zip(track_index.tolist(), track_query.tolist())
     ):
         row = selected_lookup.get(int(track))
         if row is not None and crossfit_groups[int(query)] != held_sequence:
             observations[row].append(observation)
 
-    eligible = torch.zeros(selected_tracks.numel(), dtype=torch.bool)
+    landmark_rows = []
+    observation_queries = []
+    observation_uv = []
+    observation_confidence = []
+    for anchor, selected_observations in observations.items():
+        for observation in selected_observations:
+            query = int(track_query[observation])
+            keypoint = int(track_keypoint[observation])
+            cached = cache[names[query]]
+            landmark_rows.append(int(anchor))
+            observation_queries.append(query)
+            observation_uv.append(
+                torch.as_tensor(cached["native_keypoints"])[keypoint].float()
+                + float(cached.get("pixel_center_offset", 0.5))
+            )
+            observation_confidence.append(float(track_confidence[observation]))
+    if not landmark_rows:
+        raise RuntimeError(f"held fold {held_sequence} has no support observations")
+    camera_K = torch.stack(
+        [torch.as_tensor(cache[name]["native_K"]).float() for name in names]
+    )
+    pose_w2c = torch.stack(
+        [torch.as_tensor(cache[name]["pose_w2c"]).float() for name in names]
+    )
+    query_bin = torch.as_tensor(
+        payload.get("pose_view_bins", payload["query_bins"])
+    ).long()
+    geometry = robust_triangulate_associations(
+        landmark_count=int(selected_tracks.numel()),
+        landmark_index=torch.as_tensor(landmark_rows).long(),
+        query_index=torch.as_tensor(observation_queries).long(),
+        uv=torch.stack(observation_uv),
+        confidence=torch.as_tensor(observation_confidence).float(),
+        camera_K=camera_K,
+        pose_w2c=pose_w2c,
+        query_bin=query_bin,
+        rendered_depth=None,
+        maximum_observations_per_landmark=32,
+        minimum_views=3,
+        minimum_view_bins=2,
+        huber_delta_px=2.0,
+        iterations=3,
+        minimum_parallax_deg=1.0,
+        parallax_quantile=0.75,
+        maximum_reprojection_px=2.0,
+        maximum_condition_number=1e6,
+        maximum_covariance_trace_m2=float("inf"),
+        maximum_rendered_depth_residual_m=float("inf"),
+        minimum_rendered_depth_observations=0,
+        surface_support_enabled=False,
+    )
+    eligible = _eligible_tracks(geometry, "broad")
     features = []
     for anchor in range(selected_tracks.numel()):
-        selected_observations = observations.get(anchor, ())
-        if not selected_observations:
+        if not bool(eligible[anchor]):
             continue
+        selected_observations = observations.get(anchor, ())
         observation_rows = torch.as_tensor(selected_observations, dtype=torch.long)
-        queries = torch.as_tensor(tracks["query_index"]).long()[observation_rows]
-        keypoints = torch.as_tensor(tracks["keypoint_index"]).long()[observation_rows]
+        queries = track_query[observation_rows]
+        keypoints = track_keypoint[observation_rows]
         descriptor = torch.stack(
             [
                 torch.as_tensor(cache[names[int(query)]]["native_descriptors"])[
@@ -145,17 +199,20 @@ def _fold_bank(
             robust_fuse_track_descriptors(
                 descriptor,
                 query_bins[queries],
-                torch.as_tensor(tracks["confidence"])[observation_rows],
+                track_confidence[observation_rows],
                 trim_fraction=float(trim_fraction),
             )
         )
-        eligible[anchor] = True
     if not features:
-        raise RuntimeError(f"held fold {held_sequence} has no train-supported anchors")
-    return eligible, torch.stack(features)
+        raise RuntimeError(
+            f"held fold {held_sequence} has no support-only broad anchors"
+        )
+    return eligible, torch.stack(features), geometry
 
 
-def _subset_state(state: dict, keep: torch.Tensor, features: torch.Tensor) -> dict:
+def _subset_state(
+    state: dict, keep: torch.Tensor, features: torch.Tensor, geometry: dict
+) -> dict:
     keep = torch.as_tensor(keep).bool()
     count = int(keep.numel())
     output = dict(state)
@@ -165,6 +222,10 @@ def _subset_state(state: dict, keep: torch.Tensor, features: torch.Tensor) -> di
     output["anchor_ids"] = torch.arange(int(keep.sum()), dtype=torch.long)
     output["anchor_features"] = features.float()
     output["v7_metric_raw_features"] = features.float()
+    output["anchor_xyz"] = torch.as_tensor(geometry["triangulated_xyz"])[keep].float()
+    output["anchor_position_covariance"] = torch.as_tensor(
+        geometry["triangulation_covariance_matrix"]
+    )[keep].float()
     selected_tracks = torch.as_tensor(state["track_cluster_ids"]).long()[keep]
     output["track_cluster_ids"] = selected_tracks
     output["track_centric_reconstruction"] = {
@@ -177,6 +238,17 @@ def _subset_state(state: dict, keep: torch.Tensor, features: torch.Tensor) -> di
     output["base_anchor_count"] = 0
     output["micro_anchor_count"] = int(keep.sum())
     output["canonical_anchor_count"] = int(keep.sum())
+    output["rendered_track_crossfit_geometry"] = {
+        "schema": "lafgs_rendered_track_support_only_retriangulation",
+        "version": 1,
+        "support_only": True,
+        "minimum_views": 3,
+        "minimum_view_bins": 2,
+        "minimum_parallax_deg": 1.0,
+        "maximum_reprojection_px": 2.0,
+        "maximum_condition_number": 1e6,
+        "uses_gaussian_geometry": False,
+    }
     return output
 
 
@@ -225,7 +297,7 @@ def run(args) -> dict:
     for fold_index, held_sequence in enumerate(sequences):
         fold_dir = args.output_dir / held_sequence
         fold_dir.mkdir()
-        keep, features = _fold_bank(
+        keep, features, geometry = _fold_bank(
             state=state,
             payload=payload,
             query_cache=cache,
@@ -233,7 +305,7 @@ def run(args) -> dict:
             crossfit_groups=crossfit_groups,
             trim_fraction=args.descriptor_trim_fraction,
         )
-        fold_map = _subset_state(state, keep, features)
+        fold_map = _subset_state(state, keep, features, geometry)
         map_path = fold_dir / "anchor_map.pt"
         metric_path = fold_dir / "metric_state.pt"
         teacher_path = fold_dir / "positive_teacher.pt"
@@ -272,6 +344,9 @@ def run(args) -> dict:
                 "held_sequence": held_sequence,
                 "query_count": len(query_indices),
                 "train_supported_anchor_count": int(keep.sum()),
+                "support_only_triangulated_anchor_count": int(
+                    torch.as_tensor(geometry["triangulated"]).sum()
+                ),
                 "summary": statistics["summary"],
                 "statistics": str((fold_dir / "statistics.pt").resolve()),
             }
@@ -283,6 +358,7 @@ def run(args) -> dict:
         "version": 1,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
+        "support_only_retriangulation": True,
         "query_rows": all_rows,
         "counters": aggregate,
         "summary": _combined_summary(all_rows, aggregate),
