@@ -113,6 +113,35 @@ def test_rendered_track_training_rejects_source_rgb_or_test_cache(tmp_path):
             raise AssertionError("forbidden training source must fail closed")
 
 
+def test_rendered_track_training_honors_alpha_rows_and_depth_visibility(tmp_path):
+    paths = _inputs(tmp_path)
+    cache = torch.load(paths["cache"], map_location="cpu", weights_only=False)
+    for record in cache["queries"].values():
+        record["native_valid_keypoint_mask"] = torch.tensor([True])
+        record["native_rendered_alpha"] = torch.ones((100, 100))
+        record["native_rendered_depth"] = torch.full((100, 100), 3.0)
+    first = next(iter(cache["queries"].values()))
+    first["native_valid_keypoint_mask"] = torch.tensor([False])
+    torch.save(cache, paths["cache"])
+    report = materialize(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        output_dir=tmp_path / "visibility",
+        strong_radius_px=2.0,
+        ambiguous_radius_px=8.0,
+    )
+    teacher = torch.load(
+        report["outputs"]["teacher"], map_location="cpu", weights_only=False
+    )
+    assert teacher["records"][0]["query_rows"].numel() == 0
+    assert all(record["positive_indices"].numel() == 0 for record in teacher["records"])
+    assert teacher["diagnostics"]["masked_query_row_count"] == 1
+    assert teacher["diagnostics"]["depth_visibility_rejected_anchor_count"] == 3
+    assert teacher["config"]["uses_rendered_depth"] is True
+    assert teacher["config"]["uses_rendered_alpha"] is True
+
+
 def test_crossfit_training_inputs_exclude_held_mapping_sequence():
     teacher = {
         "query_names": ["seq-02/a", "seq-03/b", "seq-05/c"],

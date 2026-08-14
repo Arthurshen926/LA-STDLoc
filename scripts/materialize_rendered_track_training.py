@@ -132,9 +132,21 @@ def materialize(
 
     records = []
     positive_rows = strong_count = ambiguous_count = exact_count = 0
+    masked_query_row_count = depth_visibility_rejected_anchor_count = 0
     for query_index, name in enumerate(names):
         cached = cache[name]
-        keypoints = torch.as_tensor(cached["native_keypoints"]).float()
+        all_keypoints = torch.as_tensor(cached["native_keypoints"]).float()
+        if "native_valid_keypoint_mask" in cached:
+            keypoint_valid = torch.as_tensor(
+                cached["native_valid_keypoint_mask"]
+            ).bool()
+            if keypoint_valid.shape != (all_keypoints.shape[0],):
+                raise ValueError("render validity mask and keypoint rows differ")
+        else:
+            keypoint_valid = torch.ones(all_keypoints.shape[0], dtype=torch.bool)
+        query_rows = torch.nonzero(keypoint_valid, as_tuple=False).reshape(-1)
+        masked_query_row_count += int((~keypoint_valid).sum())
+        keypoints = all_keypoints[query_rows]
         keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
         intrinsic = torch.as_tensor(cached["native_K"]).float()
         pose = torch.as_tensor(cached["pose_w2c"]).float()
@@ -149,6 +161,27 @@ def materialize(
             & (projected[:, 1] >= 0.0)
             & (projected[:, 1] < float(height))
         )
+        if "native_rendered_alpha" in cached and "native_rendered_depth" in cached:
+            alpha = torch.as_tensor(cached["native_rendered_alpha"]).float()
+            rendered_depth = torch.as_tensor(cached["native_rendered_depth"]).float()
+            if alpha.shape != (height, width) or rendered_depth.shape != (
+                height,
+                width,
+            ):
+                raise ValueError("rendered alpha/depth and native image differ")
+            x = projected[:, 0].round().long().clamp(0, width - 1)
+            y = projected[:, 1].round().long().clamp(0, height - 1)
+            reference_depth = rendered_depth[y, x]
+            reference_alpha = alpha[y, x]
+            tolerance = 0.05 + 0.02 * reference_depth.abs()
+            visible = (
+                torch.isfinite(reference_depth)
+                & (reference_depth > 1e-5)
+                & (reference_alpha >= 0.05)
+                & ((depth - reference_depth).abs() <= tolerance)
+            )
+            depth_visibility_rejected_anchor_count += int((valid & ~visible).sum())
+            valid &= visible
         nearby = _spatial_candidates(
             projected, valid, keypoints, float(ambiguous_radius_px)
         )
@@ -167,7 +200,12 @@ def materialize(
                 ].tolist()
             else:
                 strong, weak = [], []
-            exact_values = sorted(exact[query_index].get(row, ()))
+            source_row = int(query_rows[row])
+            exact_values = [
+                anchor
+                for anchor in sorted(exact[query_index].get(source_row, ()))
+                if bool(valid[anchor])
+            ]
             positives.append(sorted(set(strong) | set(exact_values)))
             ambiguous.append(sorted(set(weak) - set(positives[-1])))
             exact_count += len(exact_values)
@@ -180,7 +218,7 @@ def materialize(
             {
                 "query_index": query_index,
                 "query_name": name,
-                "query_rows": torch.arange(keypoints.shape[0], dtype=torch.long),
+                "query_rows": query_rows,
                 "positive_offsets": positive_offsets,
                 "positive_indices": positive_indices,
                 "ambiguous_offsets": ambiguous_offsets,
@@ -215,6 +253,10 @@ def materialize(
             "strong_pair_count": strong_count,
             "ambiguous_pair_count": ambiguous_count,
             "exact_track_positive_count": exact_count,
+            "masked_query_row_count": masked_query_row_count,
+            "depth_visibility_rejected_anchor_count": (
+                depth_visibility_rejected_anchor_count
+            ),
         },
         "config": {
             "strong_radius_px": float(strong_radius_px),
@@ -222,7 +264,12 @@ def materialize(
             "geometry_source": "ray_triangulated_track_xyz_and_mapping_pose",
             "uses_source_mapping_rgb": False,
             "uses_test_queries": False,
-            "uses_rendered_depth": False,
+            "uses_rendered_depth": any(
+                "native_rendered_depth" in cache[name] for name in names
+            ),
+            "uses_rendered_alpha": any(
+                "native_rendered_alpha" in cache[name] for name in names
+            ),
         },
     }
     graph = {
