@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -123,6 +124,7 @@ def collect_deployment_statistics(
     query_indices: list[int] | torch.Tensor | None = None,
     deployment_row_limit: int = 0,
     collect_anchor_statistics: bool = True,
+    anchor_bank_updater: Callable[[int, torch.Tensor], None] | None = None,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
@@ -168,6 +170,8 @@ def collect_deployment_statistics(
         raise ValueError("deployment replay query index is out of range")
     query_rows = []
     for completed, query_index in enumerate(selected_queries, start=1):
+        if anchor_bank_updater is not None:
+            anchor_bank_updater(query_index, bank)
         record = teacher["records"][query_index]
         cached = cache[names[query_index]]
         rows = torch.as_tensor(record["query_rows"]).long()

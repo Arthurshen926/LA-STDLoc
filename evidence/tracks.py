@@ -413,6 +413,170 @@ def fuse_track_descriptors(
     return torch.stack(features)
 
 
+class LeaveOneQueryOutTrackDescriptorBank:
+    """Replay a fused Track bank while excluding one mapping image at a time.
+
+    Track identity and geometry remain the full-mapping artifacts.  Only the
+    descriptor observations contributed by the current feedback query are
+    removed.  This prevents a mapping descriptor from matching a map vector
+    that contains that same descriptor without introducing held-out folds.
+    """
+
+    def __init__(
+        self,
+        *,
+        payload: dict,
+        query_cache: dict,
+        track_indices: torch.Tensor,
+        reference_features: torch.Tensor,
+        trim_fraction: float = 0.2,
+    ) -> None:
+        self.payload = payload
+        self.cache = query_cache.get("queries", query_cache)
+        self.query_names = list(payload["query_names"])
+        self.tracks = payload["tracks"]
+        self.query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
+        self.track_indices = torch.as_tensor(track_indices, dtype=torch.long).reshape(
+            -1
+        )
+        self.reference_features = torch.as_tensor(reference_features).float()
+        self.trim_fraction = float(trim_fraction)
+        if self.reference_features.ndim != 2 or self.reference_features.shape[0] != (
+            self.track_indices.numel()
+        ):
+            raise ValueError("reference features and selected Track rows differ")
+        if self.track_indices.unique().numel() != self.track_indices.numel():
+            raise ValueError("selected Track rows are not unique")
+        if list(self.cache) != self.query_names:
+            raise ValueError("Track payload and query cache order differs")
+
+        self.observation_by_track = _selected_track_observation_lookup(
+            payload, self.track_indices
+        )
+        self.cached_descriptors = {
+            name: torch.as_tensor(self.cache[name]["native_descriptors"])
+            for name in self.query_names
+        }
+        self.cached_validity = {
+            name: (
+                torch.as_tensor(self.cache[name]["native_valid_keypoint_mask"]).bool()
+                if "native_valid_keypoint_mask" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        self.cached_reliability = {
+            name: (
+                torch.as_tensor(
+                    self.cache[name]["native_appearance_reliability"]
+                ).float()
+                if "native_appearance_reliability" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        self.track_to_row = {
+            int(track): row for row, track in enumerate(self.track_indices.tolist())
+        }
+        self.rows_by_query: list[list[int]] = [[] for _ in self.query_names]
+        observation_track = torch.as_tensor(self.tracks["track_index"]).long()
+        observation_query = torch.as_tensor(self.tracks["query_index"]).long()
+        for track, query in zip(observation_track.tolist(), observation_query.tolist()):
+            row = self.track_to_row.get(int(track))
+            if row is not None:
+                self.rows_by_query[int(query)].append(row)
+        self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
+
+        replayed = fuse_track_descriptors(
+            payload=payload,
+            query_cache=query_cache,
+            track_indices=self.track_indices,
+            trim_fraction=self.trim_fraction,
+        )
+        if not torch.equal(replayed, self.reference_features):
+            maximum = float((replayed - self.reference_features).abs().max())
+            raise ValueError(
+                "reference map is not the exact full-observation fused Track bank "
+                f"(maximum absolute difference {maximum})"
+            )
+
+    def _fuse_observations(self, observations: torch.Tensor) -> torch.Tensor:
+        query_indices = torch.as_tensor(self.tracks["query_index"])[observations].long()
+        keypoint_indices = torch.as_tensor(self.tracks["keypoint_index"])[
+            observations
+        ].long()
+        valid = torch.as_tensor(
+            [
+                self.cached_validity[self.query_names[int(query)]] is None
+                or bool(
+                    self.cached_validity[self.query_names[int(query)]][int(keypoint)]
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
+        if bool(valid.any()):
+            observations = observations[valid]
+            query_indices = query_indices[valid]
+            keypoint_indices = keypoint_indices[valid]
+        descriptors = torch.stack(
+            [
+                self.cached_descriptors[self.query_names[int(query)]][int(keypoint)]
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ]
+        )
+        confidence = torch.as_tensor(self.tracks["confidence"])[observations].float()
+        reliability = torch.as_tensor(
+            [
+                (
+                    1.0
+                    if self.cached_reliability[self.query_names[int(query)]] is None
+                    else float(
+                        self.cached_reliability[self.query_names[int(query)]][
+                            int(keypoint)
+                        ]
+                    )
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ]
+        ).clamp(0.0, 1.0)
+        return robust_fuse_track_descriptors(
+            descriptors,
+            self.query_bins[query_indices],
+            confidence * reliability,
+            trim_fraction=self.trim_fraction,
+        )
+
+    def query_update(self, query_index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return map rows and fused vectors changed by excluding ``query_index``."""
+        query_index = int(query_index)
+        if not 0 <= query_index < len(self.query_names):
+            raise ValueError("leave-one-query-out index is out of range")
+        rows = torch.as_tensor(self.rows_by_query[query_index], dtype=torch.long)
+        if rows.numel() == 0:
+            return rows, self.reference_features.new_empty(
+                (0, self.reference_features.shape[1])
+            )
+        features = []
+        observation_query = torch.as_tensor(self.tracks["query_index"]).long()
+        for row in rows.tolist():
+            track = int(self.track_indices[row])
+            observations = self.observation_by_track[track]
+            remaining = observations[observation_query[observations] != query_index]
+            if remaining.numel() == 0:
+                raise ValueError(
+                    "mapping query is the sole observation of a selected Track"
+                )
+            features.append(self._fuse_observations(remaining))
+        return rows, torch.stack(features)
+
+
 @torch.no_grad()
 def compute_track_functional_statistics(
     *,
