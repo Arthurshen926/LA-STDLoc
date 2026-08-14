@@ -893,3 +893,15 @@ translation 分别恶化 0.790/6.040 cm、catastrophic 增加 6.0。故保留 re
 切默认；同一 local-support/selector 因子停止，后续只允许在 test 前冻结的 mapping-only
 deployment-rank/false-consensus 新假设。完整结果见 `docs/rendered_rgb_track_only_experiment.md`
 与 `docs/evidence/rendered_rgb_track_support_v12.json`。
+
+V1.3 corrective audit 随后修正了 V1.2 的协议和实现边界：child cap 移到全量射线三角化与
+broad gate 之后，held fold 从冻结 support-filtered pair rows 真正重建 components，exact
+observation 按自身 reprojection/cycle 证据分级，并把 sibling parent lineage 贯穿 Selector
+capacity 与 compact map。结果表明 Stairs 的 72,503 个 unbounded children 中只有 15,072
+个 broad eligible，几何后 excess cap 删除为 0；`max2` 也只比 `max1` 多 6 个 anchors。
+然而 corrected Stairs `max1/max2` 都有 324 个 catastrophic queries（相对 V1.1 新增 33、
+修复 18），recall 由 70.60% 降至 69.05/69.15%；Shop 三个 corrected arm 也都产生新的
+catastrophic identities。故 V1.3 在 mapping-only 阶段正式 STOP，未读 test，不授权默认
+切换。旧 V1.2 cross-fit 仅是 fixed-identity held-observation retriangulation，文档中曾称其
+重建 components 的表述已纠正。完整机器证据见
+`docs/evidence/rendered_rgb_track_support_v13.json`。

@@ -193,10 +193,13 @@ The resulting structure is useful but not a default accuracy improvement:
 
 ### Mapping-only support-fold audit
 
-The cross-fit evaluator removes held observations, rebuilds each fold's Track
-components, retriangulates fold xyz/covariance, and then runs mapping
-self-localization.  Thus the held observation is not present indirectly through
-the deployed Track geometry.
+The V1.2 evaluator removed held observations from already frozen full-mapping
+Track identities, retriangulated fold xyz/covariance, and then ran mapping
+self-localization.  It did **not** rebuild connected components after removing
+the held sequence.  The table below therefore measures support-only geometry
+and descriptor replay under fixed identity, not independent formation of the
+Track identity.  This limitation was discovered during the V1.3 corrective
+audit and the earlier stronger wording is withdrawn.
 
 | Scene / arm | Catastrophic | CVaR95 TE cm | Mean TE cm | Median TE cm | P90 TE cm | Raw GT precision | 5cm recall |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -246,3 +249,76 @@ example, a query-conditioned set-level Track assignment) and must be frozen
 before any further test evaluation.  Machine-readable lineage and all formal
 hashes are in
 [`docs/evidence/rendered_rgb_track_support_v12.json`](evidence/rendered_rgb_track_support_v12.json).
+
+## V1.3 corrective audit: post-geometry children and true component cross-fit
+
+V1.3 implements the review findings without introducing a new learned target
+or reading test queries:
+
+- all repaired children are ray-triangulated before the broad gate and the
+  maximum-three child limit;
+- support-filtered reciprocal match rows are serialized once and reused
+  exactly when every held fold rebuilds Track components;
+- repaired children retain parent, child index, and parent child-count lineage;
+  Selector capacity and pose completion count siblings at parent level;
+- exact observations become strong positives only when their own reprojection
+  and cycle evidence is certified; other exact rows are ambiguous/ignored;
+- source-image-free calibration now requires `uses_source_mapping_rgb=false`,
+  `uses_test_queries=false`, and `mapping_source=gaussian_render`;
+- the frozen membership audit compares one best child (`max1`) with at most two
+  complementary view-bin children (`max2`).
+
+The implementation also fixed two follow-up integration bugs found by formal
+execution: the initial `max2` view-bin registry was quadratic, and fold replay
+assigned the same rebuilt child to both sibling rows.  The registry is now
+linear in observations and fold siblings receive distinct quality-ordered
+children.  The adaptive compact map also propagates parent/child lineage to
+downstream consumers.
+
+The structural result rules out the pre-triangulation cap as the main Stairs
+failure.  ShopFacade had 37,143 unbounded children, of which 14,756 were broad
+geometry eligible; the corrected cap removed only three eligible excess
+children.  Stairs had 72,503 unbounded children and 15,072 eligible children;
+the corrected cap removed zero.  `max2` retained 131 extra ShopFacade children
+but only six extra Stairs children.
+
+Observation-level certification is a much larger change.  ShopFacade `max1`
+contains 95,852 exact observations, of which 80,206 are strong and 15,646 are
+ambiguous.  Stairs contains 371,943 exact observations, of which only 167,186
+are strong and 204,757 are ambiguous.  Thus the previous Track-level positive
+rule was certifying many chain-only or locally inconsistent observations.
+
+### Corrected mapping-only results
+
+V1.1 below is retained as a historical fixed-identity control.  V1.3 uses the
+stronger true component cross-fit, so absolute differences also include the
+corrected independence protocol.  The `max1` versus `max2` comparison is exact
+within V1.3.
+
+| Scene / arm | Catastrophic | New / fixed catastrophics vs V1.1 | CVaR95 TE cm | Mean TE cm | Median TE cm | P90 / P95 TE cm | Raw GT precision | 5cm recall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ShopFacade V1.1 fixed identity | 7 | - | 829.113 | 44.417 | 0.564 | 3.224 / 44.228 | 11.491% | 91.775% |
+| ShopFacade corrected `max1` | 8 | 3 / 2 | **583.272** | **31.805** | 0.596 | 3.242 / 45.039 | 10.269% | 90.909% |
+| ShopFacade corrected `max2` | 7 | 2 / 2 | 703.684 | 38.101 | 0.592 | 3.693 / 45.051 | 10.318% | 90.909% |
+| ShopFacade entity-aware Selector | 8 | 3 / 2 | 992.702 | 52.525 | **0.470** | 3.256 / **20.032** | **16.396%** | 91.342% |
+| Stairs V1.1 fixed identity | 309 | - | 626.787 | 62.422 | 2.042 | 272.800 / 317.555 | **3.613%** | **70.600%** |
+| Stairs corrected `max1` | 324 | 33 / 18 | **591.506** | **62.098** | 2.005 | **271.375 / 313.145** | 1.087% | 69.050% |
+| Stairs corrected `max2` | 324 | 33 / 18 | 594.905 | 62.359 | **2.000** | 271.660 / 313.573 | 1.087% | 69.150% |
+
+The corrected route therefore stops before test.  Shop `max2` keeps the total
+catastrophic count at seven but swaps in two new catastrophic queries; the
+Selector improves typical precision and P95 while worsening the extreme tail.
+Stairs `max1/max2` have the exact same 324-query catastrophic set.  The six
+extra siblings recover only 0.10 recall points and slightly worsen mean, P90,
+P95, and CVaR95.  No corrected arm satisfies the required combination of no
+new catastrophic query, non-regressed mean/P95/CVaR95, and non-regressed
+recall.  No V1.3 test evaluation was run.
+
+The first-order conclusion is now narrower and stronger: neither the child-cap
+ordering, one-versus-two child retention, nor sibling double counting explains
+the deployment tail.  The remaining failure is dominated by fold-unstable
+component identity and coherent render-domain false consensus.  Further work
+on this route should audit low-confidence chain bridges and pose-level minimal
+sets; it should not tune the same depth/cycle thresholds or add another generic
+Selector pass.  Machine evidence and artifact hashes are in
+[`docs/evidence/rendered_rgb_track_support_v13.json`](evidence/rendered_rgb_track_support_v13.json).
