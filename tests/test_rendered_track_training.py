@@ -81,6 +81,8 @@ def test_rendered_track_training_materializes_geometry_teacher(tmp_path):
     )
     assert teacher["diagnostics"]["positive_rows"] == 3
     assert teacher["diagnostics"]["exact_track_positive_count"] == 3
+    assert teacher["query_cache"] == str(paths["cache"].resolve())
+    assert teacher["query_cache_sha256"] == sha256_file(paths["cache"])
     assert all(
         record["positive_indices"].tolist() == [0] for record in teacher["records"]
     )

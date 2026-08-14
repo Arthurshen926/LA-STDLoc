@@ -111,6 +111,7 @@ def materialize(
     if cache_payload.get("uses_test_queries") is not False:
         raise ValueError("training cache contains test queries")
     cache = cache_payload["queries"]
+    query_cache_sha256 = sha256_file(query_cache_path)
     names = list(payload["query_names"])
     if names != list(cache):
         raise ValueError("Track payload and rendered cache query order differs")
@@ -272,6 +273,8 @@ def materialize(
     teacher = {
         "schema": "lafgs_v9_active_map_complete_positive_teacher",
         "version": 1,
+        "query_cache": str(query_cache_path.resolve()),
+        "query_cache_sha256": query_cache_sha256,
         "anchor_count": int(xyz.shape[0]),
         "query_names": names,
         "records": records,
@@ -373,7 +376,7 @@ def materialize(
         "input_sha256": {
             "anchor_map": sha256_file(anchor_map_path),
             "track_payload": sha256_file(track_payload_path),
-            "query_cache": sha256_file(query_cache_path),
+            "query_cache": query_cache_sha256,
         },
         "outputs": {key: str(value.resolve()) for key, value in outputs.items()},
         "output_sha256": {key: sha256_file(value) for key, value in outputs.items()},
