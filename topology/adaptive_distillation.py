@@ -154,6 +154,50 @@ def _track_only_source_capacity_ids(payload: dict, track_count: int) -> torch.Te
     return parents.clone()
 
 
+def _attach_support_repair_lineage(
+    state: dict,
+    payload: dict,
+    selected_tracks: torch.Tensor,
+    *,
+    base_count: int,
+) -> None:
+    """Propagate repaired sibling identity through compact-map materialization."""
+    tracks = payload.get("tracks", {})
+    fields = (
+        "parent_source_track_ids",
+        "repair_child_index",
+        "repair_parent_child_count",
+    )
+    present = [field in tracks for field in fields]
+    if not any(present):
+        return
+    if not all(present):
+        raise ValueError("support-repair lineage fields must be complete")
+    track_count = int(
+        torch.as_tensor(payload["track_geometry"]["triangulated"]).numel()
+    )
+    selected_tracks = torch.as_tensor(selected_tracks).long()
+    for field in fields:
+        value = torch.as_tensor(tracks[field])
+        if value.dtype != torch.long or value.shape != (track_count,):
+            raise ValueError(f"support-repair {field} must be exact int64 rows")
+        selected = value[selected_tracks]
+        state[field] = torch.cat(
+            (selected, torch.full((int(base_count),), -1, dtype=torch.long))
+        )
+    if selected_tracks.numel() and bool(
+        (state["parent_source_track_ids"][: selected_tracks.numel()] < 0).any()
+    ):
+        raise ValueError("selected support-repair parent identity cannot be negative")
+    state["track_centric_reconstruction"]["support_repair_parent_lineage"] = {
+        "schema": "lafgs_support_repair_parent_lineage",
+        "version": 1,
+        "track_rows": int(selected_tracks.numel()),
+        "base_sentinel_rows": int(base_count),
+        "base_sentinel": -1,
+    }
+
+
 def _candidate_matchability(
     payload: dict, graph: dict, base_count: int, track_threshold_px: float
 ) -> torch.Tensor:
@@ -853,6 +897,12 @@ def main() -> None:
         payload_path=payload_path,
         dependency_voxel_size=parameters.dependency_voxel_m,
         separate_spatial_dependency=True,
+    )
+    _attach_support_repair_lineage(
+        state,
+        payload,
+        selected_tracks,
+        base_count=int(selected_base.numel()),
     )
     state["track_centric_reconstruction"].update(
         {

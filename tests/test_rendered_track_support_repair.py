@@ -5,7 +5,10 @@ from scripts.materialize_rendered_track_support_repair import (
     _limit_children_after_triangulation,
     _remap_pair_sidecar_tracks,
 )
-from topology.adaptive_distillation import _track_only_source_capacity_ids
+from topology.adaptive_distillation import (
+    _attach_support_repair_lineage,
+    _track_only_source_capacity_ids,
+)
 
 
 def _geometry() -> dict:
@@ -120,3 +123,39 @@ def test_track_only_source_capacity_uses_repair_parent_identity():
     payload = {"tracks": {"parent_source_track_ids": torch.tensor([7, 7, 9])}}
     assert _track_only_source_capacity_ids(payload, 3).tolist() == [7, 7, 9]
     assert _track_only_source_capacity_ids({"tracks": {}}, 3).tolist() == [0, 1, 2]
+
+
+def test_compact_map_propagates_selected_support_repair_lineage():
+    state = {"track_centric_reconstruction": {}}
+    payload = {
+        "track_geometry": {"triangulated": torch.ones(3, dtype=torch.bool)},
+        "tracks": {
+            "parent_source_track_ids": torch.tensor([7, 7, 9]),
+            "repair_child_index": torch.tensor([0, 1, 0]),
+            "repair_parent_child_count": torch.tensor([2, 2, 1]),
+        },
+    }
+    _attach_support_repair_lineage(state, payload, torch.tensor([1, 2]), base_count=1)
+    assert state["parent_source_track_ids"].tolist() == [7, 9, -1]
+    assert state["repair_child_index"].tolist() == [1, 0, -1]
+    assert state["repair_parent_child_count"].tolist() == [2, 1, -1]
+    assert (
+        state["track_centric_reconstruction"]["support_repair_parent_lineage"][
+            "base_sentinel"
+        ]
+        == -1
+    )
+
+
+def test_compact_map_rejects_partial_support_repair_lineage():
+    state = {"track_centric_reconstruction": {}}
+    payload = {
+        "track_geometry": {"triangulated": torch.ones(1, dtype=torch.bool)},
+        "tracks": {"parent_source_track_ids": torch.tensor([7])},
+    }
+    try:
+        _attach_support_repair_lineage(state, payload, torch.tensor([0]), base_count=0)
+    except ValueError as error:
+        assert "complete" in str(error)
+    else:
+        raise AssertionError("partial support-repair lineage was accepted")
