@@ -905,3 +905,14 @@ catastrophic identities。故 V1.3 在 mapping-only 阶段正式 STOP，未读 t
 切换。旧 V1.2 cross-fit 仅是 fixed-identity held-observation retriangulation，文档中曾称其
 重建 components 的表述已纠正。完整机器证据见
 `docs/evidence/rendered_rgb_track_support_v13.json`。
+
+V1.4 随后按正式方法语义移除了 held-out fold/cross-fit：全部 mapping cameras 同时参与
+Track identity/geometry、descriptor/teacher 和自定位反馈；仅在 mapping query `q` 自定位时，
+对受影响 Track 临时排除来自 `q` 的 observation descriptor，避免 descriptor 自匹配。正式
+候选使用完整 repaired-child universe 的 parent/sibling-aware Selector，而不是固定 `max1/max2`；
+identity metric 在 test 前冻结。ShopFacade/Stairs 三种子 test 相对 V1.2 的 mean TE 分别改善
+1.196/1.503 cm，5cm recall 提升 2.589/4.367 pp，catastrophic 平均减少 1/9；Stairs P90
+改善 7.271 cm。因此 V1.4 提升为当前 source-image-free R0 实验基线，但 Stairs tail 仍落后
+mixed shared mainline，不切共享默认。下一独立因子固定为 raw/clean render artifact stability，
+不再恢复 formal cross-fit、固定 child cap map 或旧 self-matched A1。机器证据见
+`docs/evidence/rendered_rgb_track_fullmap_v14.json`。

@@ -322,3 +322,77 @@ on this route should audit low-confidence chain bridges and pose-level minimal
 sets; it should not tune the same depth/cycle thresholds or add another generic
 Selector pass.  Machine evidence and artifact hashes are in
 [`docs/evidence/rendered_rgb_track_support_v13.json`](evidence/rendered_rgb_track_support_v13.json).
+
+## V1.4: full-mapping feedback without formal cross-fit
+
+V1.4 removes held-out folds from the formal method. All mapping cameras now
+participate in Track construction, descriptor materialization, teacher
+construction, and deployment feedback. Trajectory and pose-cell labels remain
+only as balancing metadata: they prevent densely repeated views from receiving
+frame-count-proportional weight, but no sequence is held out from the map.
+
+The remaining anti-self-match rule is query-local. When mapping query `q` is
+localized, every affected Track descriptor is rebuilt after removing all
+observations from `q`:
+
+```text
+Track identity and xyz: all mapping observations
+Track descriptor for mapping query q: Fuse(observations whose query != q)
+```
+
+The implementation first proves that fusing the complete observation set with
+the same robust Track fusion routine reproduces the frozen map descriptor bank
+bitwise. It then updates only the affected rows for each query before the same
+single global Top-1 match and single PoseLib call. This is not cross-validation
+and does not test generalization; it only prevents a query descriptor from
+matching a map descriptor that contains itself.
+
+The formal candidate is the full repaired-child universe selected by the
+parent/sibling-aware sufficiency selector: 5,788 anchors on ShopFacade and
+5,811 on Stairs. It does not use the former fixed `max1`/`max2` child maps. The
+metric is frozen identity because the old A1 teacher did not implement the same
+query-local exclusion and would reintroduce self-match leakage. Original
+mapping RGB and test queries remain absent from construction and selection.
+
+### Full-mapping leave-one-query-observation-out audit
+
+| Scene | Mapping queries | Median TE cm | Mean TE cm | P90 / P95 TE cm | 5cm recall | Catastrophic >=1m |
+|---|---:|---:|---:|---:|---:|---:|
+| ShopFacade | 231 | 0.342 | 45.272 | 0.741 / 1.099 | 99.134% | 2 |
+| Stairs | 2,000 | 0.363 | 6.103 | 0.960 / 1.499 | 96.600% | 22 |
+
+The large ShopFacade mean is caused by two extreme failures: the median, P90,
+P95, and 229/231-query 5cm behavior remain sub-centimeter/centimeter scale.
+Stairs shows the same separation more mildly. For this reason V1.4 reports
+typical accuracy and tail counts together instead of treating mean error alone
+as the scene's localization scale.
+
+### Frozen real-test results
+
+The candidate map, metric, calibration, and implementation commit
+`a2d4caed3ddd995d40fc2130c232f424933f924e` were frozen before test. Test RGB
+was used only for the three final PoseLib seeds 2026/2027/2028. Entries below
+are seed means.
+
+| Scene / route | Median TE cm | Mean TE cm | P90 TE cm | Mean AE deg | 2cm recall | 5cm recall | Raw GT precision | Catastrophic |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ShopFacade V1.2 E+R identity | 2.434 | 5.929 | 8.393 | 0.292 | 40.777% | 79.612% | 6.686% | 1.0 |
+| ShopFacade V1.4 full-child identity | **2.044** | **4.733** | **8.057** | **0.225** | **49.515%** | **82.201%** | **9.752%** | **0.0** |
+| Stairs V1.2 E+R A1 | 2.458 | 12.430 | 16.606 | 4.269 | 39.233% | 78.600% | 2.756% | 24.667 |
+| Stairs V1.4 full-child identity | **2.273** | **10.926** | **9.335** | **3.142** | **42.800%** | **82.967%** | **2.954%** | **15.667** |
+
+The full-child, sibling-aware R0 candidate improves every listed accuracy
+metric on both scenes. Relative to V1.2, ShopFacade mean TE improves by
+1.196 cm, 2cm/5cm recall by 8.738/2.589 percentage points, and catastrophic
+count from one to zero. Stairs mean/P90 improve by 1.503/7.271 cm,
+2cm/5cm recall by 3.567/4.367 points, and catastrophic count by nine per seed.
+
+V1.4 is therefore promoted as the current **source-image-free R0 experimental
+baseline**. It does not replace the mixed shared mainline: Stairs still trails
+the mixed map most clearly in mean/tail error and catastrophic count. The next
+single factor is the preregistered raw/clean render artifact-stability evidence,
+followed only if useful by artifact-aware KCS support and unified GWFF-style
+observation fusion. Formal cross-fit, fixed maximum-child maps, and the old
+self-matched A1 are retired from this route. Exact paths, hashes, mapping-only
+reports, test summaries, and deltas are in
+[`docs/evidence/rendered_rgb_track_fullmap_v14.json`](evidence/rendered_rgb_track_fullmap_v14.json).
