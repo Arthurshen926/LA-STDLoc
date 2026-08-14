@@ -186,8 +186,6 @@ def run(args: argparse.Namespace) -> dict:
         trim_fraction=float(args.descriptor_trim_fraction),
     )
     affected = torch.as_tensor([len(rows) for rows in replay.rows_by_query]).long()
-    if bool((affected == 0).any()):
-        raise ValueError("a mapping query has no observation in the selected map")
     device = torch.device(args.device)
     updater = _DeviceBankUpdater(replay, device)
     parameters = calibration["parameters"]

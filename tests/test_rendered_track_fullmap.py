@@ -60,6 +60,17 @@ def test_full_mapping_loo_removes_only_current_query_descriptor() -> None:
     assert replay.rows_by_query[0] == [0]
     assert replay.rows_by_query[1] == [0, 1]
 
+    unaffected = LeaveOneQueryOutTrackDescriptorBank(
+        payload=payload,
+        query_cache=cache,
+        track_indices=torch.tensor([1]),
+        reference_features=reference[1:],
+        trim_fraction=0.0,
+    )
+    rows, features = unaffected.query_update(0)
+    assert rows.numel() == 0
+    assert features.shape == (0, 2)
+
 
 def test_device_bank_updater_restores_previous_query_rows() -> None:
     payload, cache, tracks = _fixture()
