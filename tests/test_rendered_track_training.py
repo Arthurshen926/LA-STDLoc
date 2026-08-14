@@ -5,12 +5,12 @@ import pytest
 import torch
 
 from common.hashing import sha256_file
-from scripts.materialize_rendered_track_training import materialize
 from scripts.evaluate_rendered_track_crossfit import (
     _crossfit_groups,
     _fold_component_bank,
     _subset_state,
 )
+from scripts.materialize_rendered_track_training import _mapping_groups, materialize
 from scripts.materialize_rendered_track_fullchain_inputs import (
     materialize as materialize_fullchain_inputs,
 )
@@ -356,6 +356,21 @@ def test_single_mapping_trajectory_uses_contiguous_blocked_crossfit():
         "blocked_02",
         "blocked_02",
     ]
+
+
+def test_formal_mapping_groups_use_all_views_without_crossfit() -> None:
+    names = [f"seq1/frame{index:04d}.png" for index in range(6)]
+    groups, cells, policy = _mapping_groups(names, 3)
+    assert groups == [
+        "pose_cell_00",
+        "pose_cell_00",
+        "pose_cell_01",
+        "pose_cell_01",
+        "pose_cell_02",
+        "pose_cell_02",
+    ]
+    assert cells == ["pose_cell_00", "pose_cell_01", "pose_cell_02"]
+    assert policy == "contiguous_mapping_pose_cells"
 
 
 def test_crossfit_fold_map_uses_support_only_retriangulated_geometry():

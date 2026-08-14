@@ -19,7 +19,6 @@ from pathlib import Path
 import torch
 
 from common.hashing import sha256_file
-from scripts.evaluate_rendered_track_crossfit import _crossfit_groups
 
 
 def _atomic_torch_save(payload: dict, path: Path) -> None:
@@ -37,6 +36,26 @@ def _atomic_torch_save(payload: dict, path: Path) -> None:
 
 def _sequence_name(image_name: str) -> str:
     return str(image_name).split("/", maxsplit=1)[0]
+
+
+def _mapping_groups(
+    names: list[str], single_trajectory_pose_cells: int
+) -> tuple[list[str], list[str], str]:
+    """Assign all mapping views to sequence-balanced descriptor groups."""
+    if not names:
+        raise ValueError("mapping query registry is empty")
+    sequences = [_sequence_name(name) for name in names]
+    unique = sorted(set(sequences))
+    if len(unique) >= 2:
+        return sequences, unique, "mapping_trajectory"
+    cell_count = int(single_trajectory_pose_cells)
+    if cell_count < 1:
+        raise ValueError("single-trajectory pose-cell count must be positive")
+    groups = [
+        f"pose_cell_{min(index * cell_count // len(names), cell_count - 1):02d}"
+        for index in range(len(names))
+    ]
+    return groups, sorted(set(groups)), "contiguous_mapping_pose_cells"
 
 
 def _project(xyz: torch.Tensor, intrinsic: torch.Tensor, pose: torch.Tensor):
@@ -94,7 +113,7 @@ def materialize(
     output_dir: Path,
     strong_radius_px: float,
     ambiguous_radius_px: float,
-    blocked_folds: int = 3,
+    single_trajectory_pose_cells: int = 3,
     alpha_minimum: float = 0.05,
     depth_abs_tolerance_m: float = 0.05,
     depth_relative_tolerance: float = 0.02,
@@ -321,7 +340,9 @@ def materialize(
                 flush=True,
             )
 
-    group_labels, sequence_names = _crossfit_groups(names, blocked_folds)
+    group_labels, sequence_names, mapping_grouping = _mapping_groups(
+        names, single_trajectory_pose_cells
+    )
     sequence_ids = torch.as_tensor(
         [sequence_names.index(group) for group in group_labels]
     ).long()
@@ -431,11 +452,8 @@ def materialize(
             sequence: sum(group == sequence for group in group_labels)
             for sequence in sequence_names
         },
-        "mapping_grouping": (
-            "mapping_trajectory"
-            if len(set(_sequence_name(name) for name in names)) >= 2
-            else "contiguous_mapping_blocks"
-        ),
+        "mapping_grouping": mapping_grouping,
+        "formal_method_uses_crossfit": False,
         "teacher_diagnostics": teacher["diagnostics"],
         "inputs": {
             "anchor_map": str(anchor_map_path.resolve()),
@@ -469,7 +487,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--strong-radius-px", type=float, default=2.0)
     parser.add_argument("--ambiguous-radius-px", type=float, default=8.0)
-    parser.add_argument("--blocked-folds", type=int, default=3)
+    parser.add_argument("--single-trajectory-pose-cells", type=int, default=3)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--depth-abs-tolerance-m", type=float, default=0.05)
     parser.add_argument("--depth-relative-tolerance", type=float, default=0.02)
@@ -483,7 +501,7 @@ def main() -> None:
         output_dir=args.output_dir.resolve(),
         strong_radius_px=args.strong_radius_px,
         ambiguous_radius_px=args.ambiguous_radius_px,
-        blocked_folds=args.blocked_folds,
+        single_trajectory_pose_cells=args.single_trajectory_pose_cells,
         alpha_minimum=args.alpha_minimum,
         depth_abs_tolerance_m=args.depth_abs_tolerance_m,
         depth_relative_tolerance=args.depth_relative_tolerance,
