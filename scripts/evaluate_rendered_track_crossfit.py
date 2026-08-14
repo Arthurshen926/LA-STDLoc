@@ -418,11 +418,15 @@ def _fold_component_bank(
         raise ValueError("fold component rebuild requires exact map parent lineage")
     chosen = []
     keep_rows = []
+    next_child_slot: dict[int, int] = defaultdict(int)
     for row, parent in enumerate(state_parents.tolist()):
-        candidates = children_by_parent.get(int(parent), ())
-        if candidates:
+        parent = int(parent)
+        candidates = children_by_parent.get(parent, ())
+        slot = next_child_slot[parent]
+        if slot < len(candidates):
             keep_rows.append(row)
-            chosen.append(int(candidates[0]))
+            chosen.append(int(candidates[slot]))
+            next_child_slot[parent] += 1
     keep = torch.zeros(state_parents.numel(), dtype=torch.bool)
     keep[torch.as_tensor(keep_rows).long()] = True
 
@@ -480,6 +484,7 @@ def _fold_component_bank(
         "fold_specific_component_rebuild": True,
         "frozen_support_pair_count": len(pairs),
         "selected_parent_count": int(keep.sum()),
+        "distinct_rebuilt_child_count": len(set(chosen)),
     }
     return keep, torch.stack(features), aligned_geometry, diagnostics
 

@@ -71,3 +71,19 @@ def test_frozen_membership_can_keep_complementary_sibling_view_bins():
     assert (
         output["rendered_track_frozen_membership"]["maximum_children_per_source"] == 2
     )
+
+
+def test_complementary_child_bins_are_grouped_in_one_observation_pass():
+    source = {"track_cluster_ids": torch.tensor([7])}
+    repaired = {
+        "query_bins": torch.tensor([0, 1, 2]),
+        "tracks": {
+            "parent_source_track_ids": torch.tensor([0, 7, 7, 5, 9]),
+            "track_index": torch.tensor([1, 2, 1, 2]),
+            "query_index": torch.tensor([0, 1, 0, 2]),
+        },
+    }
+    output, _ = transfer_frozen_membership(
+        source, repaired, _candidate(), maximum_children_per_source=2
+    )
+    assert output["track_cluster_ids"].tolist() == [2, 1]

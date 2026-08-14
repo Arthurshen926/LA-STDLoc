@@ -468,6 +468,83 @@ def test_crossfit_rebuilds_components_from_frozen_pairs_without_held_camera():
     assert diagnostics["frozen_support_pair_count"] == 3
 
 
+def test_crossfit_assigns_distinct_rebuilt_children_to_frozen_siblings():
+    names = [f"seq-{index:02d}/frame.png" for index in range(4)]
+    queries = {}
+    for index, name in enumerate(names):
+        pose = torch.eye(4)
+        pose[0, 3] = -0.1 * index
+        queries[name] = {
+            "native_keypoints": torch.tensor(
+                [[50.0 - 5.0 * index, 50.0], [60.0 - 5.0 * index, 50.0]]
+            ),
+            "native_descriptors": torch.eye(2),
+            "native_scores": torch.ones(2),
+            "native_K": torch.tensor(
+                [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+            ),
+            "pose_w2c": pose,
+            "pixel_center_offset": 0.0,
+        }
+    pairs = [(left, right) for left in range(4) for right in range(left + 1, 4)]
+    payload = {
+        "query_names": names,
+        "query_bins": torch.arange(4),
+        "pair_sidecar": {
+            "pair": {
+                "left_query_index": torch.tensor([pair[0] for pair in pairs]),
+                "right_query_index": torch.tensor([pair[1] for pair in pairs]),
+            }
+        },
+        "support_repair": {
+            "maximum_children_per_source_track": 3,
+            "source_track_index_at_keypoint": [torch.tensor([9, 9]) for _ in names],
+            "frozen_support_pair_matches": {
+                "schema": "lafgs_rendered_track_frozen_support_pair_matches",
+                "offsets": 2 * torch.arange(len(pairs) + 1),
+                "source_keypoint_indices": torch.tensor([0, 1] * len(pairs)),
+                "target_keypoint_indices": torch.tensor([0, 1] * len(pairs)),
+                "confidence": torch.ones(2 * len(pairs)),
+            },
+            "track_build_contract": {
+                "pair_policy": "nearest",
+                "pair_neighbors": 3,
+                "minimum_baseline_m": 0.0,
+                "maximum_baseline_m": 5.0,
+                "maximum_axis_angle_deg": 180.0,
+                "minimum_similarity": 0.65,
+                "minimum_margin": 0.01,
+                "maximum_epipolar_error_px": 2.0,
+                "epipolar_candidate_topk": 1,
+                "minimum_track_views": 3,
+                "maximum_observations": 32,
+                "minimum_view_bins": 2,
+                "huber_delta_px": 2.0,
+                "triangulation_iterations": 3,
+                "minimum_parallax_deg": 1.0,
+                "parallax_quantile": 0.75,
+                "maximum_reprojection_px": 2.0,
+                "maximum_condition_number": 1e6,
+            },
+        },
+    }
+    state = {
+        "anchor_ids": torch.tensor([0, 1]),
+        "parent_source_track_ids": torch.tensor([9, 9]),
+    }
+    keep, features, _, diagnostics = _fold_component_bank(
+        state=state,
+        payload=payload,
+        query_cache={"queries": queries},
+        held_sequence="seq-00",
+        crossfit_groups=["seq-00", "seq-01", "seq-02", "seq-03"],
+        trim_fraction=0.0,
+    )
+    assert keep.tolist() == [True, True]
+    assert diagnostics["distinct_rebuilt_child_count"] == 2
+    assert torch.unique(features, dim=0).shape[0] == 2
+
+
 def test_fullchain_inputs_resolve_pruned_rows_to_track_ids(tmp_path):
     paths = _inputs(tmp_path)
     state = torch.load(paths["map"], map_location="cpu", weights_only=False)

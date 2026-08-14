@@ -3,9 +3,9 @@
 
 This is the E+R ablation for the source-image-free pipeline.  It preserves the
 selected source-Track identity set from V1.1 and chooses, in the already frozen
-repaired-candidate quality order, at most one broad child for each source
-Track.  It does not run the sufficiency selector, fill missing identities, or
-introduce Gaussian anchors.
+repaired-candidate quality order, one or more complementary broad children for
+each source Track.  It does not run the sufficiency selector, fill missing
+identities, or introduce Gaussian anchors.
 """
 
 from __future__ import annotations
@@ -127,8 +127,18 @@ def transfer_frozen_membership(
         bins = torch.as_tensor(
             repaired_payload.get("pose_view_bins", repaired_payload["query_bins"])
         ).long()
-        for child in candidate_tracks.tolist():
-            child_bins[int(child)] = set(bins[query[track == int(child)]].tolist())
+        candidate_children = set(int(child) for child in candidate_tracks.tolist())
+        observation_bins = bins[query]
+        # Build the child-to-view-bin registry in one observation pass.  The
+        # previous implementation rescanned the complete observation tensor
+        # once per candidate child, which is mathematically equivalent but
+        # O(number_of_children * number_of_observations).
+        for child, view_bin in zip(track.tolist(), observation_bins.tolist()):
+            child = int(child)
+            if child in candidate_children:
+                child_bins.setdefault(child, set()).add(int(view_bin))
+        for child in candidate_children:
+            child_bins.setdefault(child, set())
     selected_rows = []
     retained_sources = []
     missing_sources = []
