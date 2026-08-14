@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 
+import pytest
 import torch
 
 from common.hashing import sha256_file
@@ -113,6 +114,56 @@ def test_rendered_track_training_rejects_source_rgb_or_test_cache(tmp_path):
             assert "rendered-RGB-only" in str(error) or "test queries" in str(error)
         else:
             raise AssertionError("forbidden training source must fail closed")
+
+
+def test_rendered_track_training_binds_mapping_calibration(tmp_path):
+    paths = _inputs(tmp_path)
+    calibration = tmp_path / "scene_calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "schema": "lafgs_mapping_only_scene_calibration",
+                "version": 2,
+                "sources": {"uses_test_queries": False},
+                "parameters": {
+                    "positive_radius_px": 1.25,
+                    "negative_radius_px": 5.0,
+                    "evidence_depth_abs_tolerance_m": 0.04,
+                },
+            }
+        )
+    )
+    report = materialize(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        output_dir=tmp_path / "bound",
+        strong_radius_px=1.25,
+        ambiguous_radius_px=5.0,
+        depth_abs_tolerance_m=0.04,
+        scene_calibration_path=calibration,
+        expected_scene_calibration_sha256=sha256_file(calibration),
+    )
+    teacher = torch.load(
+        report["outputs"]["teacher"], map_location="cpu", weights_only=False
+    )
+    assert teacher["scene_calibration"] == str(calibration.resolve())
+    assert teacher["scene_calibration_sha256"] == sha256_file(calibration)
+    assert teacher["config"]["threshold_lineage"] == "mapping_scene_calibration"
+
+    bad = tmp_path / "bad"
+    with pytest.raises(ValueError, match="positive_radius_px"):
+        materialize(
+            anchor_map_path=paths["map"],
+            track_payload_path=paths["track"],
+            query_cache_path=paths["cache"],
+            output_dir=bad,
+            strong_radius_px=2.0,
+            ambiguous_radius_px=5.0,
+            depth_abs_tolerance_m=0.04,
+            scene_calibration_path=calibration,
+            expected_scene_calibration_sha256=sha256_file(calibration),
+        )
 
 
 def test_rendered_track_training_honors_alpha_rows_and_depth_visibility(tmp_path):

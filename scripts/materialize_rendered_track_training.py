@@ -98,6 +98,8 @@ def materialize(
     alpha_minimum: float = 0.05,
     depth_abs_tolerance_m: float = 0.05,
     depth_relative_tolerance: float = 0.02,
+    scene_calibration_path: Path | None = None,
+    expected_scene_calibration_sha256: str | None = None,
 ) -> dict:
     if float(strong_radius_px) <= 0 or float(ambiguous_radius_px) <= float(
         strong_radius_px
@@ -138,6 +140,29 @@ def materialize(
         raise ValueError("alpha minimum must lie in [0, 1]")
     if float(depth_abs_tolerance_m) < 0 or float(depth_relative_tolerance) < 0:
         raise ValueError("depth tolerances must be non-negative")
+    if (scene_calibration_path is None) != (expected_scene_calibration_sha256 is None):
+        raise ValueError("scene calibration path and expected SHA must be paired")
+    scene_calibration_sha256 = None
+    if scene_calibration_path is not None:
+        scene_calibration_path = scene_calibration_path.resolve()
+        scene_calibration_sha256 = sha256_file(scene_calibration_path)
+        if scene_calibration_sha256 != str(expected_scene_calibration_sha256):
+            raise ValueError("scene calibration SHA differs")
+        calibration = json.loads(scene_calibration_path.read_text())
+        if (
+            calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
+            or calibration.get("sources", {}).get("uses_test_queries") is not False
+        ):
+            raise ValueError("scene calibration is not mapping-only")
+        parameters = calibration.get("parameters", {})
+        expected_parameters = {
+            "positive_radius_px": float(strong_radius_px),
+            "negative_radius_px": float(ambiguous_radius_px),
+            "evidence_depth_abs_tolerance_m": float(depth_abs_tolerance_m),
+        }
+        for key, expected in expected_parameters.items():
+            if float(parameters.get(key, float("nan"))) != expected:
+                raise ValueError(f"teacher {key} differs from scene calibration")
     records = []
     positive_rows = strong_count = ambiguous_count = exact_count = 0
     compatible_count = exact_depth_disagreement_count = 0
@@ -275,6 +300,10 @@ def materialize(
         "version": 1,
         "query_cache": str(query_cache_path.resolve()),
         "query_cache_sha256": query_cache_sha256,
+        "scene_calibration": (
+            str(scene_calibration_path) if scene_calibration_path is not None else None
+        ),
+        "scene_calibration_sha256": scene_calibration_sha256,
         "anchor_count": int(xyz.shape[0]),
         "query_names": names,
         "records": records,
@@ -297,6 +326,11 @@ def materialize(
             "alpha_minimum": float(alpha_minimum),
             "depth_abs_tolerance_m": float(depth_abs_tolerance_m),
             "depth_relative_tolerance": float(depth_relative_tolerance),
+            "threshold_lineage": (
+                "mapping_scene_calibration"
+                if scene_calibration_path is not None
+                else "explicit_unbound_compatibility"
+            ),
             "identity_positive_policy": "exact_track_observations_only",
             "projection_compatible_policy": "ambiguous_ignore_not_positive",
             "exact_depth_policy": "audit_only_never_hard_reject",
@@ -372,11 +406,17 @@ def materialize(
             "anchor_map": str(anchor_map_path.resolve()),
             "track_payload": str(track_payload_path.resolve()),
             "query_cache": str(query_cache_path.resolve()),
+            "scene_calibration": (
+                str(scene_calibration_path)
+                if scene_calibration_path is not None
+                else None
+            ),
         },
         "input_sha256": {
             "anchor_map": sha256_file(anchor_map_path),
             "track_payload": sha256_file(track_payload_path),
             "query_cache": query_cache_sha256,
+            "scene_calibration": scene_calibration_sha256,
         },
         "outputs": {key: str(value.resolve()) for key, value in outputs.items()},
         "output_sha256": {key: sha256_file(value) for key, value in outputs.items()},
@@ -398,6 +438,8 @@ def main() -> None:
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--depth-abs-tolerance-m", type=float, default=0.05)
     parser.add_argument("--depth-relative-tolerance", type=float, default=0.02)
+    parser.add_argument("--scene-calibration", type=Path)
+    parser.add_argument("--expected-scene-calibration-sha256")
     args = parser.parse_args()
     report = materialize(
         anchor_map_path=args.anchor_map.resolve(),
@@ -410,6 +452,8 @@ def main() -> None:
         alpha_minimum=args.alpha_minimum,
         depth_abs_tolerance_m=args.depth_abs_tolerance_m,
         depth_relative_tolerance=args.depth_relative_tolerance,
+        scene_calibration_path=args.scene_calibration,
+        expected_scene_calibration_sha256=(args.expected_scene_calibration_sha256),
     )
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
 
