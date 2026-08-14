@@ -158,3 +158,91 @@ the same 4,283 selected Track anchors as the learned variants.
 
 No test query selected the transforms, support thresholds, map, or metric.
 Test RGB was used only once the mapping-only artifacts were frozen.
+
+## V1.2: support-certified Track repair and full-chain validation
+
+V1.2 tests the geometric follow-up proposed by V1.1.  It still constructs the
+map without original mapping RGB and without Gaussian primitive positions.
+Rendered RGB supplies keypoints and descriptors; rendered alpha/depth supplies
+only visibility and uncertainty evidence; final xyz is recomputed from camera
+rays and feature correspondences.
+
+The repair is deliberately bounded.  Reciprocal, epipolar-filtered matches may
+split observations only inside an existing rendered Track, never merge two
+source Tracks.  A source Track may yield at most three children.  High-alpha,
+smooth-depth edges with cycle error above 8 px or depth disagreement above
+three local sigmas are hard rejected; uncertain evidence remains soft rather
+than being deleted.  Every retained child is retriangulated with the original
+minimum-view, view-bin, parallax, reprojection, and conditioning checks.
+
+Two map hypotheses were evaluated before test:
+
+- **E+R** preserves the V1.1 selected source-Track membership and maps each
+  source identity to its strongest repaired broad child.  It retains 2,504 /
+  2,521 ShopFacade anchors and 4,256 / 4,283 Stairs anchors.
+- **E+R+S** reruns the generic selector on the repaired pool.  This hypothesis
+  is mapping-only and was rejected because it improved some typical metrics
+  while worsening tail risk or recall.  It was not taken to test.
+
+The resulting structure is useful but not a default accuracy improvement:
+
+| Scene | Source Tracks | Repaired Tracks | Split sources | Broad before | Broad after | Certified observations | Frozen E+R anchors |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ShopFacade | 35,069 | 36,856 | 2,014 | 14,769 | 14,727 | 239,473 | 2,504 |
+| Stairs | 72,269 | 72,497 | 455 | 14,855 | 15,072 | 690,354 | 4,256 |
+
+### Mapping-only support-fold audit
+
+The cross-fit evaluator removes held observations, rebuilds each fold's Track
+components, retriangulates fold xyz/covariance, and then runs mapping
+self-localization.  Thus the held observation is not present indirectly through
+the deployed Track geometry.
+
+| Scene / arm | Catastrophic | CVaR95 TE cm | Mean TE cm | Median TE cm | P90 TE cm | Raw GT precision | 5cm recall |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ShopFacade V1.1 control | 7 | 829.113 | 44.417 | 0.564 | 3.224 | 11.491% | 91.775% |
+| ShopFacade E+R | 9 | **581.679** | **31.503** | 0.601 | 3.322 | 12.550% | 91.775% |
+| ShopFacade E+R+S | 9 | 932.662 | 49.399 | **0.452** | **3.077** | **17.878%** | 91.342% |
+| Stairs V1.1 control | 309 | 626.787 | 62.423 | 2.042 | 272.801 | **3.613%** | 70.600% |
+| Stairs E+R | 322 | **611.046** | **62.227** | **2.017** | **272.189** | 1.709% | 70.600% |
+| Stairs E+R+S | 366 | 752.625 | 76.221 | 2.087 | 283.853 | 1.788% | 69.750% |
+
+E+R was therefore frozen.  ShopFacade selected its exact map-bound identity
+metric; Stairs selected its mapping-trained A1 metric because mapping tail
+metrics improved while recall changed by only -0.05 percentage points.  Both
+teachers are bound to the exact query cache and mapping calibration used to
+train/evaluate them.
+
+### Frozen real-test results
+
+All rows below are means over PoseLib seeds 2026/2027/2028.  Test data was read
+only after the map, metric, and per-scene choice had been frozen.  GPU1 and
+GPU2 were used in parallel where the frontend permitted it; utilization is
+bursty because every GPU frontend batch is followed by CPU PoseLib work.
+
+| Scene / frozen route | Median TE cm | Mean TE cm | P90 TE cm | Mean AE deg | 2cm recall | 5cm recall | Raw GT precision | Catastrophic |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| ShopFacade V1.1 identity | 2.489 | **5.818** | **8.275** | **0.285** | 39.806% | 78.641% | **7.091%** | 1.0 |
+| ShopFacade V1.2 E+R identity | **2.434** | 5.929 | 8.393 | 0.292 | **40.777%** | **79.612%** | 6.686% | 1.0 |
+| Stairs V1.1 A1 | 2.491 | **11.639** | **10.566** | **3.660** | 37.733% | 77.700% | **2.767%** | **18.667** |
+| Stairs V1.2 E+R A1 | **2.458** | 12.430 | 16.606 | 4.269 | **39.233%** | **78.600%** | 2.756% | 24.667 |
+
+V1.2 raises 2cm/5cm recall by +0.971/+0.971 percentage points on ShopFacade
+and +1.500/+0.900 points on Stairs.  It simultaneously worsens ShopFacade
+mean/P90 translation slightly and worsens the Stairs tail materially: mean TE
++0.790 cm, P90 TE +6.040 cm, and catastrophic failures +6.0.  Two Stairs
+queries become seed-stable new catastrophics, and the broader failures cluster
+in `seq-01`; this is coherent global Top-1/PoseLib consensus, not a failure of
+the local triangulation checks alone.
+
+### V1.2 decision
+
+The support-repair implementation is retained as a source-image-free
+structural prototype, but V1.2 is **not promoted to the default map**.  Local
+support thresholds, a larger pair set, or another generic selector rerun are
+not justified by these results.  The next distinct hypothesis must protect
+deployment-rank / false-consensus behavior using mapping-only evidence (for
+example, a query-conditioned set-level Track assignment) and must be frozen
+before any further test evaluation.  Machine-readable lineage and all formal
+hashes are in
+[`docs/evidence/rendered_rgb_track_support_v12.json`](evidence/rendered_rgb_track_support_v12.json).

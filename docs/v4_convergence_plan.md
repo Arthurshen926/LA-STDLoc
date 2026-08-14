@@ -883,3 +883,13 @@ Pair Gate，仍禁止 Track、pose、test 和默认切换。正式 CPU-only Stai
 六层 pair forward，不属于本轮“快速收敛”的机械验证，因此未盲目启动；下一次科学算力只应
 用于这一条冻结的 Stairs Pair Gate，若 Stop 则不运行 GreatCourt。实现 registry 见
 `docs/evidence/p9_fixed_pair_matcher_ceiling_implementation.json`。
+
+Rendered-RGB Track-only V1.2 也已完成从 support repair、mapping-only cross-fit、A1/identity
+冻结选择到 ShopFacade/Stairs 三种子真实 test 的完整闭环。新实现只在原 rendered Track 内
+做最多三子分量的 support-certified split，并从相机射线重新三角化；Gaussian primitive xyz、
+原始 mapping RGB 与 test query 均不参与建图或选择。ShopFacade/Stairs 的 2cm recall 相对
+V1.1 分别提高 0.971/1.500 pp，但 ShopFacade mean/P90 translation 小幅回退，Stairs mean/P90
+translation 分别恶化 0.790/6.040 cm、catastrophic 增加 6.0。故保留 repair 为结构原型但不
+切默认；同一 local-support/selector 因子停止，后续只允许在 test 前冻结的 mapping-only
+deployment-rank/false-consensus 新假设。完整结果见 `docs/rendered_rgb_track_only_experiment.md`
+与 `docs/evidence/rendered_rgb_track_support_v12.json`。
