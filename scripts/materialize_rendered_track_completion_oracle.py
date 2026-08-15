@@ -28,8 +28,6 @@ _TRACK_TOPOLOGY_FIELDS = (
     "source_primitive_ids",
     "track_cluster_ids",
     "anchor_type",
-    "dependency_group_ids",
-    "coarse_dependency_group_ids",
     "fine_identity_ids",
     "parent_source_track_ids",
     "repair_child_index",
@@ -103,6 +101,8 @@ def _atomic_json(payload: Mapping[str, Any], path: Path) -> None:
 
 
 def materialize(args: argparse.Namespace) -> dict[str, Any]:
+    if not float(args.dependency_voxel_size) > 0.0:
+        raise ValueError("dependency voxel size must be positive")
     candidate_path = args.candidate_map.resolve()
     selected_path = args.selected_map.resolve()
     statistics_path = args.mapping_statistics.resolve()
@@ -195,6 +195,24 @@ def materialize(args: argparse.Namespace) -> dict[str, Any]:
     )
     if not bool((selected_source_dependency == -1).all()):
         raise ValueError("pure Track selection has nonempty Gaussian dependencies")
+    selected_dependency = torch.unique(
+        torch.floor(
+            torch.as_tensor(selected["anchor_xyz"]).float()
+            / float(args.dependency_voxel_size)
+        ).long(),
+        dim=0,
+        return_inverse=True,
+    )[1]
+    if not torch.equal(
+        torch.as_tensor(selected["dependency_group_ids"]).long(),
+        selected_dependency,
+    ) or not torch.equal(
+        torch.as_tensor(selected["coarse_dependency_group_ids"]).long(),
+        selected_dependency,
+    ):
+        raise ValueError(
+            "selected map does not implement the requested spatial dependency policy"
+        )
 
     query_rows = list(statistics.get("queries", ()))
     task_failure_count = sum(
@@ -206,9 +224,34 @@ def materialize(args: argparse.Namespace) -> dict[str, Any]:
     identity = _producer_identity()
     oracle = dict(candidate)
     oracle["anchor_ids"] = torch.arange(candidate_count, dtype=torch.long)
+    oracle_dependency = torch.unique(
+        torch.floor(
+            torch.as_tensor(candidate["anchor_xyz"]).float()
+            / float(args.dependency_voxel_size)
+        ).long(),
+        dim=0,
+        return_inverse=True,
+    )[1]
+    oracle["dependency_group_ids"] = oracle_dependency
+    oracle["coarse_dependency_group_ids"] = oracle_dependency.clone()
     oracle["source_dependency_group_ids"] = torch.full(
         (candidate_count,), -1, dtype=torch.long
     )
+    oracle["track_centric_reconstruction"] = {
+        "schema": "lafgs_rendered_track_completion_oracle_map",
+        "version": 1,
+        "budget": candidate_count,
+        "track_anchor_count": candidate_count,
+        "base_reserve_count": 0,
+        "quality_tier": "full_broad_track_upper_bound",
+        "dependency_voxel_size": float(args.dependency_voxel_size),
+        "dependency_group_semantics": (
+            "spatial_voxel_only_with_separate_source_lineage"
+        ),
+        "track_indices": candidate_tracks.clone(),
+        "base_canonical_rows": torch.empty(0, dtype=torch.long),
+        "base_prefix_preserved": False,
+    }
     oracle["provenance"] = {
         **candidate.get("provenance", {}),
         "rendered_track_completion_oracle": {
@@ -239,6 +282,8 @@ def materialize(args: argparse.Namespace) -> dict[str, Any]:
         "selected_anchor_count": selected_count,
         "oracle_anchor_count": candidate_count,
         "added_anchor_count": candidate_count - selected_count,
+        "dependency_voxel_size": float(args.dependency_voxel_size),
+        "dependency_group_count": int(oracle_dependency.unique().numel()),
         "control_task_failure_count": int(task_failure_count),
         "control_catastrophic_count": int(catastrophic_count),
         "producer_identity": identity,
@@ -260,6 +305,7 @@ def main() -> None:
     parser.add_argument("--mapping-statistics", type=Path, required=True)
     parser.add_argument("--expected-mapping-statistics-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--dependency-voxel-size", type=float, required=True)
     parser.add_argument("--task-translation-cm", type=float, default=5.0)
     parser.add_argument("--task-rotation-deg", type=float, default=5.0)
     args = parser.parse_args()

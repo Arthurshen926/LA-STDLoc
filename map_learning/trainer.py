@@ -616,6 +616,16 @@ def bounded_query_anchor_bank(
     )
 
 
+def track_descriptor_payload_for_loo(payload: dict) -> dict:
+    """Restore pose-view bins after training replaces them with DRO groups."""
+    if "pose_view_bins" not in payload:
+        return payload
+    pose_view_bins = torch.as_tensor(payload["pose_view_bins"]).long().reshape(-1)
+    if pose_view_bins.numel() != len(payload["query_names"]):
+        raise ValueError("LOO pose-view bins do not align with the query registry")
+    return {**payload, "query_bins": pose_view_bins}
+
+
 def _save_checkpoint(
     output_dir: Path,
     step: int,
@@ -774,7 +784,7 @@ def train(
                 "LOO Track descriptor training requires source-image-free mapping inputs"
             )
         loo_descriptor_bank = LeaveOneQueryOutTrackDescriptorBank(
-            payload=payload,
+            payload=track_descriptor_payload_for_loo(payload),
             query_cache=cache_payload,
             track_indices=state["track_cluster_ids"],
             reference_features=raw_features_cpu,

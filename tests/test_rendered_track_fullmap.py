@@ -7,7 +7,11 @@ from evidence.tracks import (
     fuse_track_descriptors,
 )
 from map_learning.metric import SharedLowRankMetric
-from map_learning.trainer import bounded_anchor_bank, bounded_query_anchor_bank
+from map_learning.trainer import (
+    bounded_anchor_bank,
+    bounded_query_anchor_bank,
+    track_descriptor_payload_for_loo,
+)
 from scripts.evaluate_rendered_track_fullmap import _DeviceBankUpdater
 
 
@@ -151,6 +155,29 @@ def test_loo_metric_applies_to_query_conditioned_raw_bank() -> None:
     untouched = torch.ones(reference.shape[0], dtype=torch.bool)
     untouched[rows] = False
     assert torch.equal(training_bank[untouched], adapted[untouched])
+
+
+def test_training_loo_uses_pose_view_bins_not_group_dro_sequence_bins() -> None:
+    payload, cache, tracks = _fixture()
+    reference = fuse_track_descriptors(
+        payload=payload,
+        query_cache=cache,
+        track_indices=tracks,
+        trim_fraction=0.0,
+    )
+    training_payload = {
+        **payload,
+        "pose_view_bins": payload["query_bins"].clone(),
+        "query_bins": torch.zeros_like(payload["query_bins"]),
+    }
+    replay = LeaveOneQueryOutTrackDescriptorBank(
+        payload=track_descriptor_payload_for_loo(training_payload),
+        query_cache=cache,
+        track_indices=tracks,
+        reference_features=reference,
+        trim_fraction=0.0,
+    )
+    assert replay.query_update(0)[0].numel() == 1
 
 
 def test_loo_rejects_non_exact_reference_and_sole_observation() -> None:
