@@ -1,8 +1,9 @@
 """Prepare official indoor relocalization datasets for LaFGS.
 
 The output is a COLMAP text model with ground-truth camera poses and an explicit
-mapping/test split. Point triangulation and Gaussian reconstruction remain
-external steps so this module does not introduce a hidden prior implementation.
+mapping/test split.  Published reference models retain their full SfM point
+cloud by default, matching the Gaussian-initialization contract used by STDLoc
+and ULF-Loc, while Gaussian RGB supervision remains mapping-only.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import hashlib
 import json
 import os
 import pickle
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -127,6 +129,51 @@ def _read_reference_model(reference_model: Path):
     if not images or not cameras:
         raise ValueError(f"Empty COLMAP reference model: {reference_model}")
     return images, cameras, image_path, camera_path
+
+
+def _reference_points_metadata(reference_model: Path) -> dict:
+    binary_path = reference_model / "points3D.bin"
+    text_path = reference_model / "points3D.txt"
+    if binary_path.is_file():
+        if binary_path.stat().st_size < 8:
+            raise ValueError(f"Truncated COLMAP point model: {binary_path}")
+        with binary_path.open("rb") as handle:
+            point_count = struct.unpack("<Q", handle.read(8))[0]
+        point_path = binary_path
+        point_format = "binary"
+    elif text_path.is_file():
+        point_count = 0
+        for line_number, line in enumerate(text_path.read_text().splitlines(), 1):
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            fields = value.split()
+            if len(fields) < 8:
+                raise ValueError(f"Malformed COLMAP point at {text_path}:{line_number}")
+            numeric = np.asarray([float(item) for item in fields[1:8]])
+            if not np.isfinite(numeric).all():
+                raise ValueError(
+                    f"Non-finite COLMAP point at {text_path}:{line_number}"
+                )
+            if any(int(value) < 0 or int(value) > 255 for value in fields[4:7]):
+                raise ValueError(
+                    f"Invalid COLMAP point color at {text_path}:{line_number}"
+                )
+            point_count += 1
+        point_path = text_path
+        point_format = "text"
+    else:
+        raise FileNotFoundError(
+            f"Reference model has no points3D.bin or points3D.txt: {reference_model}"
+        )
+    if point_count <= 0:
+        raise ValueError(f"Reference point model is empty: {point_path}")
+    return {
+        "path": point_path,
+        "format": point_format,
+        "count": int(point_count),
+        "sha256": _sha256(point_path),
+    }
 
 
 def _canonical_image_name(name: str) -> str:
@@ -357,7 +404,10 @@ def _parse_12scenes_info(path: Path) -> tuple[int, int, float, float, float, flo
     values: dict[str, list[float]] = {}
     for line in lines:
         key, _, remainder = line.partition("=")
-        numbers = [float(value) for value in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", remainder)]
+        numbers = [
+            float(value)
+            for value in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", remainder)
+        ]
         if numbers:
             values[key.strip().lower()] = numbers
 
@@ -368,7 +418,9 @@ def _parse_12scenes_info(path: Path) -> tuple[int, int, float, float, float, flo
         return None
 
     width_values = first_matching("color", "width") or first_matching("image", "width")
-    height_values = first_matching("color", "height") or first_matching("image", "height")
+    height_values = first_matching("color", "height") or first_matching(
+        "image", "height"
+    )
     intrinsics = first_matching("color", "intrinsic") or first_matching("intrinsic")
     if width_values and height_values and intrinsics and len(intrinsics) >= 9:
         # The official files flatten a 4x4 matrix; compact fixtures and some
@@ -386,7 +438,10 @@ def _parse_12scenes_info(path: Path) -> tuple[int, int, float, float, float, flo
     # Official 12Scenes info.txt stores dimensions on line 4 and a 4x4 color
     # calibration matrix on line 8. Keep this fallback explicit and validated.
     height_numbers = [float(value) for value in re.findall(r"[-+]?\d*\.?\d+", lines[3])]
-    calibration = [float(value) for value in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", lines[7])]
+    calibration = [
+        float(value)
+        for value in re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", lines[7])
+    ]
     if not height_numbers or len(calibration) < 8:
         raise ValueError(f"Unsupported 12Scenes calibration schema: {path}")
     height = int(height_numbers[-1])
@@ -397,7 +452,9 @@ def _parse_12scenes_info(path: Path) -> tuple[int, int, float, float, float, flo
 def _twelve_scene_test_end(path: Path) -> int:
     ranges = [
         tuple(map(int, match))
-        for match in re.findall(r"start\s*=\s*(\d+)\s*;\s*end\s*=\s*(\d+)", path.read_text())
+        for match in re.findall(
+            r"start\s*=\s*(\d+)\s*;\s*end\s*=\s*(\d+)", path.read_text()
+        )
     ]
     if not ranges:
         raise ValueError(f"Invalid 12Scenes split file: {path}")
@@ -461,7 +518,9 @@ def _write_colmap_scene(
         "# Mapping-only ground-truth camera poses; second lines have no SfM points."
     ]
     test_names = []
-    for image_id, frame in enumerate(sorted(frames, key=lambda item: item.image_name), 1):
+    for image_id, frame in enumerate(
+        sorted(frames, key=lambda item: item.image_name), 1
+    ):
         with Image.open(frame.source_image) as image:
             if image.size != (width, height):
                 raise ValueError(
@@ -486,10 +545,10 @@ def _write_colmap_scene(
     (sparse / "cameras.txt").write_text(camera_text)
     (prior_sparse / "cameras.txt").write_text(camera_text)
     (sparse / "images.txt").write_text("\n".join(image_lines) + "\n")
-    (prior_sparse / "images.txt").write_text(
-        "\n".join(mapping_image_lines) + "\n"
+    (prior_sparse / "images.txt").write_text("\n".join(mapping_image_lines) + "\n")
+    (sparse / "points3D.txt").write_text(
+        "# Empty before external RGB-only SfM triangulation.\n"
     )
-    (sparse / "points3D.txt").write_text("# Empty before external RGB-only SfM triangulation.\n")
     (prior_sparse / "points3D.txt").write_text(
         "# Empty before external RGB-only SfM triangulation.\n"
     )
@@ -526,18 +585,24 @@ def prepare_reference_model_scene(
     output: str | Path,
     *,
     dataset: str,
+    use_reference_points: bool = True,
 ) -> dict:
     """Prepare a scene from a published COLMAP camera registry.
 
-    Reference 3D points and feature observations are deliberately discarded.
-    The output prior tree contains mapping images and camera poses only, so an
-    external RGB reconstruction cannot inherit geometry built from test views.
+    The full reference point cloud is retained by default as Gaussian
+    initialization.  Per-image feature observations are deliberately discarded
+    and the output prior tree contains mapping RGB only.  Thus test RGB is never
+    Gaussian supervision, although the published SfM point cloud can contain
+    geometry reconstructed from the full reference registry.
     """
     source = Path(source).resolve()
     reference_model = Path(reference_model).resolve()
     output = Path(output).resolve()
     images, cameras, image_model_path, camera_model_path = _read_reference_model(
         reference_model
+    )
+    reference_points = (
+        _reference_points_metadata(reference_model) if use_reference_points else None
     )
     test_list = reference_model / "list_test.txt"
     if not test_list.is_file():
@@ -547,9 +612,7 @@ def prepare_reference_model_scene(
         for line in test_list.read_text().splitlines()
         if line.strip()
     }
-    registered = {
-        _canonical_image_name(image.name): image for image in images.values()
-    }
+    registered = {_canonical_image_name(image.name): image for image in images.values()}
     if len(registered) != len(images):
         raise ValueError("Reference model image names must be unique")
     missing_test = test_names - set(registered)
@@ -582,9 +645,9 @@ def prepare_reference_model_scene(
     (sparse / "cameras.txt").write_text(camera_text)
     (prior_sparse / "cameras.txt").write_text(camera_text)
 
-    all_lines = ["# Published pseudo-GT cameras; reference points discarded."]
+    all_lines = ["# Published pseudo-GT cameras; feature observations discarded."]
     mapping_lines = [
-        "# Mapping-only published pseudo-GT cameras; reference points discarded."
+        "# Mapping-only published pseudo-GT cameras; feature observations discarded."
     ]
     mapping_count = 0
     rectification_tasks = []
@@ -600,7 +663,9 @@ def prepare_reference_model_scene(
     for name, image in sorted(registered.items()):
         camera = cameras.get(int(image.camera_id))
         if camera is None:
-            raise ValueError(f"Image {name!r} refers to missing camera {image.camera_id}")
+            raise ValueError(
+                f"Image {name!r} refers to missing camera {image.camera_id}"
+            )
         source_image = _resolve_reference_image(source, name)
         processed_image = processed / name
         rectification_tasks.append(
@@ -642,9 +707,18 @@ def prepare_reference_model_scene(
 
     (sparse / "images.txt").write_text("\n".join(all_lines) + "\n")
     (prior_sparse / "images.txt").write_text("\n".join(mapping_lines) + "\n")
-    empty_points = "# Reference points deliberately excluded.\n"
-    (sparse / "points3D.txt").write_text(empty_points)
-    (prior_sparse / "points3D.txt").write_text(empty_points)
+    if reference_points is not None:
+        point_name = (
+            "points3D.bin"
+            if reference_points["format"] == "binary"
+            else "points3D.txt"
+        )
+        _link(reference_points["path"], sparse / point_name)
+        _link(reference_points["path"], prior_sparse / point_name)
+    else:
+        empty_points = "# Reference points explicitly excluded for legacy replay.\n"
+        (sparse / "points3D.txt").write_text(empty_points)
+        (prior_sparse / "points3D.txt").write_text(empty_points)
     ordered_test = sorted(test_names)
     (sparse / "list_test.txt").write_text("\n".join(ordered_test) + "\n")
 
@@ -685,7 +759,19 @@ def prepare_reference_model_scene(
         "mapping_frames": mapping_count,
         "test_frames": len(test_names),
         "total_frames": len(registered),
-        "reference_points_used": False,
+        "reference_points_used": reference_points is not None,
+        "reference_points": (
+            {
+                "path": str(reference_points["path"]),
+                "format": reference_points["format"],
+                "count": reference_points["count"],
+                "sha256": reference_points["sha256"],
+                "may_include_test_view_reconstruction_evidence": True,
+                "role": "gaussian_initialization_only",
+            }
+            if reference_points is not None
+            else None
+        ),
         "reference_feature_observations_used": False,
         "test_images_in_prior_input": False,
         "test_list_sha256": _sha256(sparse / "list_test.txt"),
@@ -734,12 +820,19 @@ def main() -> None:
         "--reference-model",
         type=Path,
         help=(
-            "Optional published COLMAP pseudo-GT camera model. Its 3D points "
-            "and observations are discarded; only registered poses and the "
-            "test split are imported."
+            "Optional published COLMAP pseudo-GT model. Its full 3D point cloud "
+            "initializes the Gaussian prior, while registered poses and the test "
+            "split keep RGB supervision mapping-only."
         ),
     )
+    parser.add_argument(
+        "--discard-reference-points",
+        action="store_true",
+        help="Explicit legacy replay: discard reference points and rebuild RGB-only geometry.",
+    )
     args = parser.parse_args()
+    if args.discard_reference_points and not args.reference_model:
+        parser.error("--discard-reference-points requires --reference-model")
     if args.reference_model:
         dataset_name = (
             f"7Scenes/{args.source.name}"
@@ -751,6 +844,7 @@ def main() -> None:
             args.reference_model,
             args.output,
             dataset=dataset_name,
+            use_reference_points=not args.discard_reference_points,
         )
     else:
         prepare = prepare_7scenes if args.dataset == "7scenes" else prepare_12scenes

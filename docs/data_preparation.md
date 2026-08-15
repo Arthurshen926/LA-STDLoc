@@ -53,15 +53,19 @@ python -m data.preparation \
   --output /data/lafgs_pgt/7Scenes/chess
 ```
 
-This mode imports only registered camera poses, intrinsics, and the published
-test list. Reference 3D points and feature observations are discarded. The
-camera model is normalized to its pinhole focal length and principal point,
-matching the undistorted-camera assumption used by the Gaussian renderer;
-source distortion coefficients are recorded but not applied. The
-generated `prior_input/` contains only mapping images and cameras, so the RGB
-Gaussian prior must be triangulated and reconstructed again without test
-images. Raw D-SLAM-pose and SfM-pGT results are separate protocols and must not
-be combined in one table.
+This mode imports registered camera poses, intrinsics, the published test list,
+and the complete `points3D` model. The reference point cloud initializes the
+Gaussian prior, matching the STDLoc/ULF-Loc indoor contract. Per-image SfM
+feature observations are discarded and `prior_input/images` contains mapping
+RGB only, so test RGB never supervises Gaussian training. The manifest
+explicitly records that the published point cloud may contain reconstruction
+evidence from the full reference registry. Pass `--discard-reference-points`
+only to reproduce the older pose-only/RGB-retriangulation protocol.
+
+The camera model is calibrated and rectified to a same-resolution pinhole
+domain matching the Gaussian renderer; source distortion coefficients and
+remap statistics are recorded. Raw D-SLAM-pose, pose-only pGT, and full-SfM-pGT
+results are separate protocols and must not be combined in one table.
 
 The complete published pGT registries used by the paper contain 26,000 mapping
 and 17,000 test images across seven 7Scenes scenes, and 16,989 mapping and 5,782

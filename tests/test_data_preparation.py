@@ -32,9 +32,7 @@ def test_prepare_7scenes_preserves_official_sequence_split(tmp_path: Path):
     for sequence, translation in (("seq-01", 1.0), ("seq-02", 2.0)):
         image = source / sequence / "frame-000000.color.png"
         _write_image(image)
-        _write_pose(
-            source / sequence / "frame-000000.pose.txt", translation
-        )
+        _write_pose(source / sequence / "frame-000000.pose.txt", translation)
     output = tmp_path / "prepared"
     manifest = prepare_7scenes(source, output)
     dataset = ColmapDataset(output)
@@ -121,7 +119,7 @@ def test_prepare_12scenes_reads_official_4x4_intrinsics(tmp_path: Path):
     }
 
 
-def test_prepare_reference_model_discards_points_and_test_prior_images(
+def test_prepare_reference_model_preserves_points_and_excludes_test_prior_images(
     tmp_path: Path,
 ):
     source = tmp_path / "source"
@@ -139,9 +137,7 @@ def test_prepare_reference_model_discards_points_and_test_prior_images(
         "1 1 0 0 0 1 0 0 1 seq-01/frame-000000.color.png\n\n"
         "2 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
     )
-    (reference / "points3D.txt").write_text(
-        "1 0 0 1 255 255 255 0.1 1 0\n"
-    )
+    (reference / "points3D.txt").write_text("1 0 0 1 255 255 255 0.1 1 0\n")
     (reference / "list_test.txt").write_text(test_name + "\n")
 
     output = tmp_path / "prepared"
@@ -153,16 +149,52 @@ def test_prepare_reference_model_discards_points_and_test_prior_images(
     assert manifest["pose_source"] == "published_sfm_pseudo_ground_truth"
     assert manifest["mapping_frames"] == 1
     assert manifest["test_frames"] == 1
-    assert manifest["reference_points_used"] is False
+    assert manifest["reference_points_used"] is True
+    assert manifest["reference_points"]["count"] == 1
+    assert manifest["reference_points"]["role"] == "gaussian_initialization_only"
     assert manifest["reference_feature_observations_used"] is False
     assert [camera.image_name for camera in dataset.split("test")] == [test_name]
     assert mapping_name in prior_text
     assert test_name not in prior_text
     assert (output / "prior_input/images" / mapping_name).is_symlink()
     assert not (output / "prior_input/images" / test_name).exists()
-    assert "Reference points deliberately excluded" in (
-        output / "prior_input/sparse/0/points3D.txt"
-    ).read_text()
+    prior_points = output / "prior_input/sparse/0/points3D.txt"
+    assert prior_points.is_symlink()
+    assert prior_points.resolve() == (reference / "points3D.txt").resolve()
+    assert prior_points.read_text() == (reference / "points3D.txt").read_text()
+
+
+def test_prepare_reference_model_can_explicitly_discard_points(tmp_path: Path):
+    source = tmp_path / "source"
+    mapping_name = "seq-01/frame-000000.color.png"
+    test_name = "seq-02/frame-000000.color.png"
+    _write_image(source / mapping_name)
+    _write_image(source / test_name)
+    reference = tmp_path / "reference" / "sfm_gt"
+    reference.mkdir(parents=True)
+    (reference / "cameras.txt").write_text(
+        "1 PINHOLE 640 480 527.745 527.745 320 240\n"
+    )
+    (reference / "images.txt").write_text(
+        f"1 1 0 0 0 1 0 0 1 {mapping_name}\n\n2 1 0 0 0 2 0 0 1 {test_name}\n\n"
+    )
+    (reference / "points3D.txt").write_text("1 0 0 1 255 255 255 0.1\n")
+    (reference / "list_test.txt").write_text(test_name + "\n")
+
+    output = tmp_path / "prepared"
+    manifest = prepare_reference_model_scene(
+        source,
+        reference,
+        output,
+        dataset="7Scenes/chess",
+        use_reference_points=False,
+    )
+    assert manifest["reference_points_used"] is False
+    assert manifest["reference_points"] is None
+    assert (
+        "explicitly excluded for legacy replay"
+        in (output / "prior_input/sparse/0/points3D.txt").read_text()
+    )
 
 
 def test_prepare_reference_model_reindexes_sparse_mapping_ids(tmp_path: Path):
@@ -185,7 +217,7 @@ def test_prepare_reference_model_reindexes_sparse_mapping_ids(tmp_path: Path):
         "501 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
         "900 1 0 0 0 3 0 0 1 seq-03/frame-000000.color.png\n\n"
     )
-    (reference / "points3D.txt").write_text("")
+    (reference / "points3D.txt").write_text("1 0 0 1 255 255 255 0.1\n")
     (reference / "list_test.txt").write_text(test_name + "\n")
 
     output = tmp_path / "prepared"
@@ -201,9 +233,7 @@ def test_prepare_reference_model_reindexes_sparse_mapping_ids(tmp_path: Path):
     ]
     assert [int(row[0]) for row in prior_rows] == [1, 2]
     assert [row[-1] for row in prior_rows] == mapping_names
-    assert manifest["prior_input_image_ids"] == (
-        "contiguous_mapping_only_1_based"
-    )
+    assert manifest["prior_input_image_ids"] == ("contiguous_mapping_only_1_based")
 
 
 def test_simple_radial_rectification_respects_colmap_pixel_centers():
@@ -247,14 +277,12 @@ def test_prepare_reference_model_rectifies_simple_radial_images(tmp_path: Path):
 
     reference = tmp_path / "reference" / "sfm_gt"
     reference.mkdir(parents=True)
-    (reference / "cameras.txt").write_text(
-        "1 SIMPLE_RADIAL 64 48 50 32 24 -0.1\n"
-    )
+    (reference / "cameras.txt").write_text("1 SIMPLE_RADIAL 64 48 50 32 24 -0.1\n")
     (reference / "images.txt").write_text(
         "1 1 0 0 0 1 0 0 1 seq-01/frame-000000.color.png\n\n"
         "2 1 0 0 0 2 0 0 1 seq-02/frame-000000.color.png\n\n"
     )
-    (reference / "points3D.txt").write_text("")
+    (reference / "points3D.txt").write_text("1 0 0 1 255 255 255 0.1\n")
     (reference / "list_test.txt").write_text(test_name + "\n")
 
     output = tmp_path / "prepared"
@@ -270,10 +298,9 @@ def test_prepare_reference_model_rectifies_simple_radial_images(tmp_path: Path):
         "calibrated_undistortion_to_pinhole"
     )
     assert manifest["undistortion"]["enabled"] is True
-    assert manifest["undistortion"]["camera_models"]["1"][
-        "maximum_remap_displacement_px"
-    ] > 1.0
+    assert (
+        manifest["undistortion"]["camera_models"]["1"]["maximum_remap_displacement_px"]
+        > 1.0
+    )
     assert (output / "masks.pkl").is_file()
-    assert "PINHOLE 64 48 50 50 32 24" in (
-        output / "sparse/0/cameras.txt"
-    ).read_text()
+    assert "PINHOLE 64 48 50 50 32 24" in (output / "sparse/0/cameras.txt").read_text()
