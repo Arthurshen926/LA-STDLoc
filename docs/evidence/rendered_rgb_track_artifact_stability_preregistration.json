@@ -1,0 +1,128 @@
+{
+  "schema": "lafgs_rendered_rgb_track_artifact_stability_r1_preregistration",
+  "version": 1,
+  "status": "FROZEN_BEFORE_R1_MAPPING_OR_TEST_RESULTS",
+  "scientific_question": "Does graphics-only raw/clean render stability improve the fixed V1.4 Track descriptor bank without changing topology or map size?",
+  "formal_scope": {
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries_for_construction_selection_or_parameter_choice": false,
+    "test_use": "one_final_frozen_evaluation_after_mapping_only_R1_materialization_and_LOO_audit",
+    "gaussian_type": "2dgs",
+    "anchor_geometry": "ray_triangulated_rendered_rgb_tracks_only",
+    "metric": "identity",
+    "pair_graph_changed": false,
+    "track_components_changed": false,
+    "anchor_xyz_changed": false,
+    "selector_membership_changed": false,
+    "map_cardinality_changed": false,
+    "query_keypoint_rows_changed": false,
+    "only_authorized_method_change": "multiply_existing_observation_descriptor_fusion_reliability_by_raw_clean_artifact_stability"
+  },
+  "artifact_detector": {
+    "source": "gsplat_2dgs_rendered_distortion",
+    "risk": "clamp(nonnegative_distortion / q95(nonnegative_distortion where alpha>=0.05), 0, 1)",
+    "empty_or_zero_supported_distortion": "all_zero_risk",
+    "gaussian_risk_transfer": "nearest_native_grid_sample_at_visible_projected_gaussian_centres",
+    "opacity_multiplier": "1 - 0.5 * gaussian_risk",
+    "opacity_suppression_strength": 0.5,
+    "risk_reference_quantile": 0.95,
+    "alpha_minimum": 0.05
+  },
+  "observation_stability": {
+    "descriptors": "SuperPoint raw and clean descriptors sampled at the exact frozen raw keypoint rows",
+    "descriptor_term": "clamp(cosine(raw,clean),0,1)",
+    "detector_term": "symmetric min/max ratio between frozen raw score and highest clean two-pass-NMS score within 4px",
+    "position_term": "exp(-0.5 * clean_peak_displacement_px^2 / 2.0^2)",
+    "artifact_term": "1 - risk_at_frozen_keypoint",
+    "artifact_reliability": "geometric_mean(descriptor,detector,position,artifact)",
+    "combined_reliability": "v14_appearance_reliability * artifact_reliability",
+    "clean_peak_search_radius_px": 4,
+    "position_sigma_px": 2.0,
+    "superpoint_nms_radius": 4,
+    "descriptor_trim_fraction": 0.2
+  },
+  "scenes": {
+    "shopfacade": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/ShopFacade",
+      "images": "images",
+      "mapping_query_count": 231,
+      "anchor_count": 5788,
+      "gaussian_ply": {
+        "path": "/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply",
+        "sha256": "20a9bf2d6e5b1b0be71246cd8d56cc7d95cd87467ae74f3ab192f3bbb07abedb"
+      },
+      "raw_source_cache": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_feature_cache.pt",
+        "sha256": "fbc3997d723e1f9a357aceeb88bb86e2aa05786fc3e5c6049f2a3288bc7d215f"
+      },
+      "appearance_cache": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+        "sha256": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47"
+      },
+      "track_payload": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+        "sha256": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+      },
+      "selected_map": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_training_map.pt",
+        "sha256": "059c32697358ca884a1b16749d56e89f797410314a677f4778487c79b2db6ab7"
+      }
+    },
+    "stairs": {
+      "dataset": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4/stairs",
+      "images": "images",
+      "mapping_query_count": 2000,
+      "anchor_count": 5811,
+      "gaussian_ply": {
+        "path": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4/stairs/lafgs_prior_v1/point_cloud/iteration_30000/point_cloud.ply",
+        "sha256": "23fdf046b0d1345be103be98e00cb34423f2fedca4ab06034fc56025bff71351"
+      },
+      "raw_source_cache": {
+        "path": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+        "sha256": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5"
+      },
+      "appearance_cache": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+        "sha256": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39"
+      },
+      "track_payload": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt",
+        "sha256": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+      },
+      "selected_map": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_map.pt",
+        "sha256": "a20c5209b3e07fec4f0e0b09172cc082e9acd4e72cb0743383e86deb056c2ed6"
+      }
+    }
+  },
+  "mapping_only_gate": {
+    "comparison": "R1 full-mapping query-local LOO identity versus exact V1.4 R0",
+    "stairs": {
+      "catastrophic_100cm_count": "not_higher",
+      "p90_te_cm": "not_higher",
+      "cvar95_te_cm": "not_higher",
+      "raw_gt_precision_2px_percentage_points": "not_lower_by_more_than_0.05"
+    },
+    "shopfacade": {
+      "median_te_cm_relative_ceiling": 1.02,
+      "p90_te_cm_relative_ceiling": 1.02,
+      "recall_5cm_5deg_percentage_point_floor_delta": -0.25,
+      "catastrophic_100cm_count": "not_higher"
+    },
+    "decision": "Only if both scenes pass may the already-frozen R1 map receive one final three-seed real-test evaluation. Failure stops R1 before R2."
+  },
+  "attribution": {
+    "C0": "V1.2 E+R membership + identity + full-mapping query-local LOO",
+    "C1": "V1.4 full-child membership + identity + full-mapping query-local LOO",
+    "C2": "V1.4 selector precision-order prefix budget-matched to V1.2 E+R count + identity + full-mapping query-local LOO",
+    "purpose": "separate repaired-child universe and map-cardinality effects from the protocol change",
+    "not_a_parameter_search": true
+  },
+  "authorization": {
+    "authorizes_R1_mapping_only_materialization_and_LOO": true,
+    "authorizes_R1_test_only_after_mapping_gate": true,
+    "authorizes_R2_track_identity_change": false,
+    "authorizes_KCS_or_GWFF_change": false,
+    "authorizes_shared_default": false
+  }
+}
