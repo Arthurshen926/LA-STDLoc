@@ -352,6 +352,20 @@ def fuse_track_descriptors(
         )
         for name in query_names
     }
+    cached_descriptor_keep = {
+        name: (
+            torch.as_tensor(cache[name]["native_descriptor_fusion_keep_mask"]).bool()
+            if "native_descriptor_fusion_keep_mask" in cache[name]
+            else None
+        )
+        for name in query_names
+    }
+    descriptor_policy_presence = {
+        value is not None for value in cached_descriptor_keep.values()
+    }
+    if len(descriptor_policy_presence) != 1:
+        raise ValueError("descriptor-fusion keep masks must exist for every query")
+    has_descriptor_policy = descriptor_policy_presence == {True}
     features = []
     for track in track_indices.tolist():
         observations = observation_by_track[int(track)]
@@ -367,13 +381,32 @@ def fuse_track_descriptors(
             ],
             dtype=torch.bool,
         )
+        descriptor_keep = torch.as_tensor(
+            [
+                cached_descriptor_keep[query_names[int(query)]] is None
+                or bool(cached_descriptor_keep[query_names[int(query)]][int(keypoint)])
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
         # Keep geometry fixed even when every rendered observation lies outside
         # the conservative alpha-valid region.  Such a Track retains all of its
         # observations and is explicitly down-weighted by its reliability.
         if bool(valid.any()):
+            descriptor_keep = descriptor_keep[valid]
             observations = observations[valid]
             query_indices = query_indices[valid]
             keypoint_indices = keypoint_indices[valid]
+        if has_descriptor_policy:
+            if not bool(descriptor_keep.any()):
+                raise ValueError(
+                    "descriptor-fusion policy removed every usable Track observation"
+                )
+            observations = observations[descriptor_keep]
+            query_indices = query_indices[descriptor_keep]
+            keypoint_indices = keypoint_indices[descriptor_keep]
         descriptors = torch.stack(
             [
                 cached_descriptors[query_names[int(query)]][int(keypoint)]
@@ -475,15 +508,36 @@ class LeaveOneQueryOutTrackDescriptorBank:
             )
             for name in self.query_names
         }
+        self.cached_descriptor_keep = {
+            name: (
+                torch.as_tensor(
+                    self.cache[name]["native_descriptor_fusion_keep_mask"]
+                ).bool()
+                if "native_descriptor_fusion_keep_mask" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        descriptor_policy_presence = {
+            value is not None for value in self.cached_descriptor_keep.values()
+        }
+        if len(descriptor_policy_presence) != 1:
+            raise ValueError("descriptor-fusion keep masks must exist for every query")
         self.track_to_row = {
             int(track): row for row, track in enumerate(self.track_indices.tolist())
         }
         self.rows_by_query: list[list[int]] = [[] for _ in self.query_names]
         observation_track = torch.as_tensor(self.tracks["track_index"]).long()
         observation_query = torch.as_tensor(self.tracks["query_index"]).long()
-        for track, query in zip(observation_track.tolist(), observation_query.tolist()):
+        observation_keypoint = torch.as_tensor(self.tracks["keypoint_index"]).long()
+        for track, query, keypoint in zip(
+            observation_track.tolist(),
+            observation_query.tolist(),
+            observation_keypoint.tolist(),
+        ):
             row = self.track_to_row.get(int(track))
-            if row is not None:
+            keep = self.cached_descriptor_keep[self.query_names[int(query)]]
+            if row is not None and (keep is None or bool(keep[int(keypoint)])):
                 self.rows_by_query[int(query)].append(row)
         self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
 
@@ -517,10 +571,32 @@ class LeaveOneQueryOutTrackDescriptorBank:
             ],
             dtype=torch.bool,
         )
+        descriptor_keep = torch.as_tensor(
+            [
+                self.cached_descriptor_keep[self.query_names[int(query)]] is None
+                or bool(
+                    self.cached_descriptor_keep[self.query_names[int(query)]][
+                        int(keypoint)
+                    ]
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
         if bool(valid.any()):
+            descriptor_keep = descriptor_keep[valid]
             observations = observations[valid]
             query_indices = query_indices[valid]
             keypoint_indices = keypoint_indices[valid]
+        if not bool(descriptor_keep.any()):
+            raise ValueError(
+                "descriptor-fusion policy leaves no observation after query exclusion"
+            )
+        observations = observations[descriptor_keep]
+        query_indices = query_indices[descriptor_keep]
+        keypoint_indices = keypoint_indices[descriptor_keep]
         descriptors = torch.stack(
             [
                 self.cached_descriptors[self.query_names[int(query)]][int(keypoint)]
