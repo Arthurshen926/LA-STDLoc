@@ -883,3 +883,12 @@ Pair Gate，仍禁止 Track、pose、test 和默认切换。正式 CPU-only Stai
 六层 pair forward，不属于本轮“快速收敛”的机械验证，因此未盲目启动；下一次科学算力只应
 用于这一条冻结的 Stairs Pair Gate，若 Stop 则不运行 GreatCourt。实现 registry 见
 `docs/evidence/p9_fixed_pair_matcher_ceiling_implementation.json`。
+
+室内 Gaussian 输入合同随后已与 STDLoc/ULF-Loc 对齐：7Scenes/12Scenes 默认使用公开完整
+`sfm_gt` point cloud 初始化 prior，只用 mapping RGB 做 30k Gaussian 训练；旧 pose-only
+重三角化初始化仅保留为显式 replay。Stairs 在不改 V1.4 方法、参数或 test 使用方式的条件下，
+三种子真实 test 的 mean/P90 TE 从 10.926/9.335 cm 改善到 7.193/6.560 cm，2cm/5cm recall
+从 42.80/82.97% 提升到 46.97/85.10%，灾难样本均值从 15.67 降到 9.67。故依赖旧
+Gaussian render 的 V1.4/R1/conditional-fusion 结论必须限定到旧 prior，并允许在新 prior 上
+重新验证；基于原始 mapping RGB cache 的 P8/XFeat 结论不受影响。完整证据见
+`docs/indoor_full_reference_prior_revalidation.md`。

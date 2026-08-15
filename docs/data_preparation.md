@@ -84,3 +84,10 @@ The generated `points3D.txt` is deliberately empty. `prior_input/` is a second
 COLMAP tree containing only mapping RGB and poses. Run external RGB-only SfM
 triangulation there before training an off-the-shelf vanilla 2DGS or 3DGS
 prior. The test images are not present in that tree.
+
+The canonical local full-reference layouts are recorded at
+`/mnt/pool/sqy/7scenes/DATASET_LAYOUT.json` and
+`/mnt/pool/sqy/12scenes/DATASET_LAYOUT.json`. They are non-destructive symlink
+views over the downloaded raw datasets and published reference models. The
+first end-to-end Stairs revalidation and the representative `office2/5b` prior
+rebuild are documented in `docs/indoor_full_reference_prior_revalidation.md`.

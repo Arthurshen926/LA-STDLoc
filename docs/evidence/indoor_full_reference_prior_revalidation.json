@@ -1,0 +1,202 @@
+{
+  "schema": "lafgs_indoor_full_reference_prior_revalidation",
+  "version": 1,
+  "decision": "ADOPT_FULL_REFERENCE_INITIALIZATION_AND_REOPEN_PRIOR_DEPENDENT_RENDER_ONLY_CONCLUSIONS",
+  "authorizes_test_driven_mapping": false,
+  "authorizes_claim_all_scene_priors_complete": false,
+  "implementation_commit": "6c27def3a3dba1d4d3caa719aca4181ffe92d576",
+  "render_track_replay_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+  "data_roots": {
+    "7scenes": {
+      "path": "/mnt/pool/sqy/7scenes",
+      "layout_sha256": "c07b321ab69fe5f97e393b88d71600fbe6558e5414e645d84c8a23c39525d292",
+      "reference_archive_sha256": "21f2b040d9c9cfd8432040946dc189f7b85976f80a4f3a927865a001de23e380",
+      "storage_mode": "non_destructive_symbolic_links",
+      "scene_count": 7
+    },
+    "12scenes": {
+      "path": "/mnt/pool/sqy/12scenes",
+      "layout_sha256": "a55b8b04bbdd89bd0211842df1b94a534b1afee5074753bf12e084c0d426c922",
+      "reference_archive_sha256": "be40309b7e3ee5b8c0a663ddef08a3c304996578c70ff029d1549b07264c6043",
+      "storage_mode": "non_destructive_symbolic_links",
+      "scene_count": 12
+    },
+    "cambridge": "/mnt/pool/sqy/Cambridge_stdloc"
+  },
+  "reference_point_inventory": {
+    "7scenes": {
+      "chess": 189622,
+      "fire": 295915,
+      "heads": 70211,
+      "office": 249070,
+      "pumpkin": 149756,
+      "redkitchen": 472378,
+      "stairs": 131766
+    },
+    "12scenes": {
+      "apt1/kitchen": 104486,
+      "apt1/living": 119868,
+      "apt2/bed": 170537,
+      "apt2/kitchen": 119325,
+      "apt2/living": 121284,
+      "apt2/luke": 140385,
+      "office1/gates362": 418626,
+      "office1/gates381": 470507,
+      "office1/lounge": 120366,
+      "office1/manolis": 272973,
+      "office2/5a": 201753,
+      "office2/5b": 580447
+    }
+  },
+  "preparation_contract": {
+    "reference_points_used": true,
+    "reference_feature_observations_used": false,
+    "gaussian_rgb_supervision": "mapping_only",
+    "test_rgb_in_prior_input": false,
+    "published_point_cloud_may_include_test_view_reconstruction_evidence": true,
+    "legacy_replay_flag": "--discard-reference-points"
+  },
+  "representative_priors": {
+    "stairs": {
+      "dataset_manifest": {
+        "path": "/mnt/pool/sqy/datasets/7Scenes_pgt_full_reference_v5/stairs/dataset_manifest.json",
+        "sha256": "166e3dd15d900f357d5fb2ca6c203bcf841e0eb3683a9a1b3c2c08edda1507fd"
+      },
+      "mapping_frames": 2000,
+      "test_frames": 1000,
+      "reference_points": 131766,
+      "reference_points_sha256": "3319f7a93253bc23b66fa72d71d4db65ee8ef3d223c5640b87e1955e901a81d6",
+      "training_log_sha256": "e451e1e47a15f67df8e1f0b844cd874361270039abcbe3777b22900c79620fd5",
+      "iteration_30000_ply_sha256": "467a397aa89d8f05c79212f36e61d28bd2fe267a3531b8c8ac1a75e53537c964",
+      "prior_manifest_sha256": "bdb2649a49f1e34dc1aa05f633f0bd691b75a54959718ec2d8f87fc9f0f848a1",
+      "initial_points": 131766,
+      "final_gaussians": 321622,
+      "train_psnr": 29.700497436523438,
+      "train_l1": 0.022958539240062237
+    },
+    "office2_5b": {
+      "dataset_manifest": {
+        "path": "/mnt/pool/sqy/datasets/12Scenes_pgt_full_reference_v5/office2_5b/dataset_manifest.json",
+        "sha256": "a697e013d901feddc09f68dee6340d62a9a1fc552d6e0f68b2f18f8f9b2af395"
+      },
+      "mapping_frames": 1391,
+      "test_frames": 405,
+      "reference_points": 580447,
+      "reference_points_sha256": "ac8523109bd9b187f52c5de8a875bc81d85ad1f8c4960ac9cdfee45c2269eb81",
+      "training_log_sha256": "b96af302df1dacdf4cefba1868548b92727da5e935a0aebb23f2b3fe91e83ccf",
+      "iteration_30000_ply_sha256": "3586b5d9aafe482975e3385cfb68a318064a28c33753fca8d7583e1e51033357",
+      "prior_manifest_sha256": "2d57388443527a7dc899dde1f875ef4168eeda23fcf1f58b9dce2c9d79914559",
+      "initial_points": 580447,
+      "final_gaussians": 767796,
+      "train_psnr": 19.798992919921875,
+      "train_l1": 0.07045003771781921
+    }
+  },
+  "stairs_v14_replay": {
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries_for_construction_selection_or_calibration": false,
+    "uses_gaussian_geometry_for_triangulation": false,
+    "support_repair_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repair_report.json",
+      "sha256": "6733bcd07eca0889ec901acf88cb176c0fff4b848237965c97b32d9d32d213b3"
+    },
+    "topology_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/adaptive_distillation_build.json",
+      "sha256": "37d2614f431ccd9d5217759b9f064d5cb92f274ef71caadd0d6ef97767875978"
+    },
+    "training_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_materialization.json",
+      "sha256": "a6d7b4af9846d389555c3b0628417da62152fc0cd4fd6e86e6c24ef92efe0529"
+    },
+    "metric_sha256": "e4b1d6e7e96df4ef84b9effda7af451a7767779ba8c475fe07c2e1ccfa2fae2f",
+    "structural_comparison": {
+      "old": {
+        "source_tracks": 72269,
+        "hard_rejected_edges": 6389,
+        "broad_tracks": 15072,
+        "observations": 729393,
+        "compact_anchors": 5811,
+        "matching_rank_p10": 51,
+        "strong_teacher_positives": 185887
+      },
+      "full_reference": {
+        "source_tracks": 72900,
+        "hard_rejected_edges": 3045,
+        "broad_tracks": 15210,
+        "observations": 715475,
+        "compact_anchors": 5702,
+        "matching_rank_p10": 53,
+        "strong_teacher_positives": 161460
+      }
+    },
+    "mapping_loo": {
+      "report_path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+      "report_sha256": "a4a70c83adb4a60626cf9a8c945437d1d8f846dacb2b7f5b4cdf6febd45d54d3",
+      "statistics_sha256": "84809eda76ed6a6422df67072335085b0233bc164bb8b323ffecb59dd02439d9",
+      "old": {
+        "median_te_cm": 0.3630831022746861,
+        "mean_te_cm": 6.102910034996603,
+        "p90_te_cm": 0.9597506001591686,
+        "p99_te_cm": 168.17954373359674,
+        "cvar95_te_cm": 114.27358741499484,
+        "recall_5cm_5deg_percent": 96.6,
+        "catastrophic_100cm_count": 22,
+        "raw_gt_precision_percent": 7.278662109375
+      },
+      "full_reference": {
+        "median_te_cm": 0.3636954119428992,
+        "mean_te_cm": 3.6778970594798013,
+        "p90_te_cm": 0.9279615804553039,
+        "p99_te_cm": 30.350345849990834,
+        "cvar95_te_cm": 65.74373936187476,
+        "recall_5cm_5deg_percent": 98.55000000000001,
+        "catastrophic_100cm_count": 13,
+        "raw_gt_precision_percent": 6.3263671875
+      }
+    },
+    "test": {
+      "test_use": "final_frozen_evaluation_only",
+      "seeds": [2026, 2027, 2028],
+      "summary_sha256": {
+        "2026": "be6f0bb5c8e42f0a5cc395aaa61bdcdc3f1df510aa1a8fa3250f70e45b71f704",
+        "2027": "34ec3989dbaf705c6eb7134ff2db619de9281468365d7e403afa0c631add9a58",
+        "2028": "4fb09c19d626de1a3b76fac8ed3025532db50ba307237738e0de5141f1fc5f15"
+      },
+      "old_v14_mean_over_seeds": {
+        "median_te_cm": 2.273011611153682,
+        "mean_te_cm": 10.92629123449442,
+        "p90_te_cm": 9.334736913442628,
+        "mean_ae_deg": 3.1415003819965666,
+        "recall_2cm_2deg_percent": 42.800000000000004,
+        "recall_5cm_5deg_percent": 82.96666666666665,
+        "raw_gt_precision_2px_percent": 2.953515625,
+        "inlier_gt_precision_2px_percent": 20.987688357713477,
+        "catastrophic_100cm_count": 15.666666666666666
+      },
+      "full_reference_mean_over_seeds": {
+        "median_te_cm": 2.144421016176542,
+        "mean_te_cm": 7.192658374117066,
+        "p90_te_cm": 6.560104439655942,
+        "mean_ae_deg": 1.6217124967346372,
+        "recall_2cm_2deg_percent": 46.96666666666666,
+        "recall_5cm_5deg_percent": 85.1,
+        "raw_gt_precision_2px_percent": 2.98681640625,
+        "inlier_gt_precision_2px_percent": 21.98539763220901,
+        "catastrophic_100cm_count": 9.666666666666666
+      }
+    }
+  },
+  "scope": {
+    "reopen_or_rerun": [
+      "render_only_v14",
+      "render_artifact_r1",
+      "conditional_render_track_fusion"
+    ],
+    "unchanged_because_original_mapping_rgb_based": [
+      "p8_pair_selection_v1_v2",
+      "xfeat_detector_gate",
+      "xfeat_descriptor_gate"
+    ],
+    "remaining_materialization": "train the other 17 indoor scene priors under the same fixed contract"
+  }
+}
