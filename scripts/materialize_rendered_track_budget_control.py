@@ -83,8 +83,13 @@ def budget_prefix_map(state: dict, selection: dict, target_count: int) -> dict:
         raise ValueError("target count must be inside the source map")
     selected = torch.as_tensor(selection.get("selected_universe_ids")).long()
     tracks = torch.as_tensor(state.get("track_cluster_ids")).long()
-    if selected.shape != tracks.shape or not torch.equal(selected, tracks):
-        raise ValueError("R0 map rows do not follow the frozen selector trace")
+    if (
+        selected.shape != tracks.shape
+        or selected.unique().numel() != source_count
+        or tracks.unique().numel() != source_count
+        or set(selected.tolist()) != set(tracks.tolist())
+    ):
+        raise ValueError("R0 map Track IDs are not a bijection with the selector trace")
     reasons = selection.get("primary_selection_reasons")
     if not isinstance(reasons, list) or len(reasons) != source_count:
         raise ValueError("selector reasons do not align with R0 rows")
@@ -96,6 +101,11 @@ def budget_prefix_map(state: dict, selection: dict, target_count: int) -> dict:
     if target_count > precision_count:
         raise ValueError("C2 target exceeds the reported Precision Core")
 
+    row_by_track = {int(track): row for row, track in enumerate(tracks.tolist())}
+    source_rows = torch.as_tensor(
+        [row_by_track[int(track)] for track in selected[:target_count].tolist()],
+        dtype=torch.long,
+    )
     output = {}
     for key, value in state.items():
         if (
@@ -103,13 +113,10 @@ def budget_prefix_map(state: dict, selection: dict, target_count: int) -> dict:
             and value.ndim >= 1
             and value.shape[0] == source_count
         ):
-            output[key] = value[:target_count].clone()
+            output[key] = value[source_rows].clone()
         else:
             output[key] = value
-    if not torch.equal(
-        torch.as_tensor(output["anchor_ids"]), torch.arange(target_count)
-    ):
-        raise ValueError("R0 prefix anchor IDs are not contiguous")
+    output["anchor_ids"] = torch.arange(target_count, dtype=torch.long)
     output["canonical_anchor_count"] = target_count
     output["micro_anchor_count"] = target_count
     output["requested_micro_anchor_budget"] = target_count
@@ -117,7 +124,7 @@ def budget_prefix_map(state: dict, selection: dict, target_count: int) -> dict:
     reconstruction = dict(state.get("track_centric_reconstruction", {}))
     if not torch.equal(torch.as_tensor(reconstruction.get("track_indices")), tracks):
         raise ValueError("Track reconstruction rows differ from the source map")
-    reconstruction["track_indices"] = tracks[:target_count].clone()
+    reconstruction["track_indices"] = selected[:target_count].clone()
     reconstruction["base_canonical_rows"] = torch.empty(0, dtype=torch.long)
     output["track_centric_reconstruction"] = reconstruction
     output["provenance"] = {

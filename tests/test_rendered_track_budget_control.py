@@ -40,10 +40,23 @@ def _fixture():
 
 def test_budget_control_is_exact_precision_prefix():
     state, selection = _fixture()
+    permutation = torch.tensor([2, 0, 4, 1, 3])
+    for key in ("anchor_ids", "anchor_xyz", "anchor_features", "track_cluster_ids"):
+        state[key] = state[key][permutation]
+    state["track_centric_reconstruction"]["track_indices"] = state[
+        "track_cluster_ids"
+    ].clone()
     output = budget_prefix_map(state, selection, 3)
     assert torch.equal(output["anchor_ids"], torch.arange(3))
     assert torch.equal(output["track_cluster_ids"], torch.tensor([9, 4, 7]))
-    assert torch.equal(output["anchor_xyz"], state["anchor_xyz"][:3])
+    source_by_track = {
+        int(track): state["anchor_xyz"][row]
+        for row, track in enumerate(state["track_cluster_ids"])
+    }
+    assert torch.equal(
+        output["anchor_xyz"],
+        torch.stack([source_by_track[track] for track in (9, 4, 7)]),
+    )
     assert output["canonical_anchor_count"] == 3
     assert output["track_centric_reconstruction"]["track_indices"].tolist() == [9, 4, 7]
 
@@ -64,6 +77,6 @@ def test_budget_control_rejects_noncausal_prefix(mutation):
 
 def test_budget_control_rejects_noncontiguous_source_ids():
     state, selection = _fixture()
-    state["anchor_ids"][1] = 11
-    with pytest.raises(ValueError, match="contiguous"):
+    state["track_cluster_ids"][1] = 9
+    with pytest.raises(ValueError, match="bijection"):
         budget_prefix_map(state, selection, 3)
