@@ -8,6 +8,8 @@ measure whether the frozen SuperPoint observation survives that intervention.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -195,11 +197,26 @@ def quantile_summary(values: torch.Tensor) -> dict[str, float]:
     values = torch.as_tensor(values).float().reshape(-1)
     if values.numel() == 0 or not bool(torch.isfinite(values).all()):
         raise ValueError("summary values must be non-empty and finite")
+
+    # torch.quantile rejects tensors above 2**24 elements in the formal
+    # Torch 2.0 runtime.  The projected-Gaussian diagnostic legitimately
+    # exceeds that size, so compute the same linear order-statistic
+    # interpolation without sorting or subsampling the evidence.
+    def linear_quantile(q: float) -> torch.Tensor:
+        rank = (values.numel() - 1) * float(q)
+        lower = int(math.floor(rank))
+        upper = int(math.ceil(rank))
+        lower_value = values.kthvalue(lower + 1).values
+        if upper == lower:
+            return lower_value
+        upper_value = values.kthvalue(upper + 1).values
+        return lower_value + (upper_value - lower_value) * (rank - lower)
+
     return {
         "minimum": float(values.min()),
-        "p10": float(torch.quantile(values, 0.10)),
+        "p10": float(linear_quantile(0.10)),
         "median": float(values.median()),
-        "p90": float(torch.quantile(values, 0.90)),
+        "p90": float(linear_quantile(0.90)),
         "maximum": float(values.max()),
         "mean": float(values.mean()),
     }

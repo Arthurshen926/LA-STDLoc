@@ -6,6 +6,7 @@ from evidence.render_artifact_stability import (
     local_peak_stability,
     normalized_distortion_risk,
     observation_artifact_reliability,
+    quantile_summary,
     sample_plane_nearest,
 )
 
@@ -90,3 +91,18 @@ def test_nearest_plane_sampling_uses_native_grid_round_semantics():
         plane, torch.tensor([[0.49, 0.51], [1.51, 1.49], [-3.0, 8.0]])
     )
     assert torch.equal(sampled, torch.tensor([3, 5, 6]))
+
+
+def test_quantile_summary_matches_linear_order_statistic_interpolation(monkeypatch):
+    values = torch.tensor([9.0, 0.0, 4.0, 1.0, 16.0, 25.0])
+    expected_p10 = float(torch.quantile(values, 0.10))
+    expected_p90 = float(torch.quantile(values, 0.90))
+
+    def reject_quantile(*args, **kwargs):
+        raise RuntimeError("formal Torch large-tensor quantile limit")
+
+    monkeypatch.setattr(torch, "quantile", reject_quantile)
+    summary = quantile_summary(values)
+    assert summary["p10"] == pytest.approx(expected_p10)
+    assert summary["p90"] == pytest.approx(expected_p90)
+    assert summary["median"] == 4.0
