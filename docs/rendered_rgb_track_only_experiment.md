@@ -396,3 +396,22 @@ observation fusion. Formal cross-fit, fixed maximum-child maps, and the old
 self-matched A1 are retired from this route. Exact paths, hashes, mapping-only
 reports, test summaries, and deltas are in
 [`docs/evidence/rendered_rgb_track_fullmap_v14.json`](evidence/rendered_rgb_track_fullmap_v14.json).
+
+## R1: raw/clean 2DGS artifact stability
+
+R1 was implemented as the next single factor without changing V1.4 Track
+membership, xyz, selector rows, or map size. A strict cache audit proves that
+all localization query rows and rendered geometry samples remain bitwise
+exact; only observation reliability and six artifact annotations change.
+
+ShopFacade passed its mapping-only gate and reduced CVaR95 from 864.87 cm to
+164.75 cm. Stairs improved P90 from 0.960 cm to 0.932 cm and kept the same 22
+catastrophic queries, but CVaR95 worsened from 114.27 cm to 141.14 cm and raw
+precision fell by 0.0856 percentage points. The formal dual-scene gate is
+therefore `STOP_R1_BEFORE_TEST_AND_R2`. No R1 test query was evaluated, and
+the artifact scalar is not promoted into Track identity, KCS/GWFF, A1, or the
+shared default. Full attribution, artifact statistics, exact SHA lineage, and
+the tail diagnosis are recorded in
+[`docs/rendered_rgb_track_artifact_stability_result.md`](rendered_rgb_track_artifact_stability_result.md)
+and
+[`docs/evidence/rendered_rgb_track_artifact_stability_result.json`](evidence/rendered_rgb_track_artifact_stability_result.json).

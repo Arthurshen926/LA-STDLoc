@@ -916,3 +916,14 @@ identity metric 在 test 前冻结。ShopFacade/Stairs 三种子 test 相对 V1.
 mixed shared mainline，不切共享默认。下一独立因子固定为 raw/clean render artifact stability，
 不再恢复 formal cross-fit、固定 child cap map 或旧 self-matched A1。机器证据见
 `docs/evidence/rendered_rgb_track_fullmap_v14.json`。
+
+Raw/clean 2DGS artifact-stability R1 已按该单因素合同完成双场景 mapping-only 验证。
+ShopFacade 四门全过，CVaR95 从 864.87 cm 降至 164.75 cm；Stairs 的 P90 从 0.960 cm
+改善到 0.932 cm、灾难 query 集合仍为同一 22 个，但 CVaR95 恶化到 141.14 cm，raw
+precision 下降 0.0856 pp，违反两项预注册门。正式 gate 因此为
+`STOP_R1_BEFORE_TEST_AND_R2`；未运行 R1 test，未授权 artifact-aware Track identity、
+KCS/GWFF、A1、lazy completion 或默认切换。该结果证明 artifact signal 有信息，但全局乘法
+权重会重新分配 coherent false-consensus 强度，后续若立项必须是新的 observation-conditional、
+tail-aware 假设，而不是放宽门或继续调同一 scalar。详见
+`docs/rendered_rgb_track_artifact_stability_result.md` 与
+`docs/evidence/rendered_rgb_track_artifact_stability_result.json`。
