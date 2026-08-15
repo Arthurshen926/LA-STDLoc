@@ -415,3 +415,17 @@ the tail diagnosis are recorded in
 [`docs/rendered_rgb_track_artifact_stability_result.md`](rendered_rgb_track_artifact_stability_result.md)
 and
 [`docs/evidence/rendered_rgb_track_artifact_stability_result.json`](evidence/rendered_rgb_track_artifact_stability_result.json).
+
+## Conditional fusion, LOO-A1, and completion convergence
+
+The remaining authorized method enhancements were implemented without creating
+another scientific gate: conditional artifact-aware observation fusion, a true
+leave-one-query-observation-out A1 refresh, and a mapping-only full broad-Track
+completion oracle. Conditional fusion helped ShopFacade tail recall but caused
+a large Stairs P90 regression; LOO-A1 did not remove the Stairs tail; and the
+completion oracle exposed capacity headroom without reducing catastrophic
+failures. V1.4 therefore remains the source-image-free baseline, and the
+remaining Stairs error is attributed to structured false Track/pose consensus.
+See
+[`docs/rendered_track_conditional_loo_completion_result.md`](rendered_track_conditional_loo_completion_result.md)
+for exact results and artifact lineage.
