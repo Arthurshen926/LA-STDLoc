@@ -20,6 +20,7 @@
   },
   "artifact_detector": {
     "source": "gsplat_2dgs_rendered_distortion",
+    "render_mode": "RGB; alpha and distortion are returned as independent 2DGS buffers; rendered depth is not consumed",
     "risk": "clamp(nonnegative_distortion / q95(nonnegative_distortion where alpha>=0.05), 0, 1)",
     "empty_or_zero_supported_distortion": "all_zero_risk",
     "gaussian_risk_transfer": "nearest_native_grid_sample_at_visible_projected_gaussian_centres",

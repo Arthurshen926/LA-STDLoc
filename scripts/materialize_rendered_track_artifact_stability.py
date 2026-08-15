@@ -279,7 +279,11 @@ def materialize(args: argparse.Namespace) -> dict:
             camera.width,
             camera.height,
             bg_color=torch.zeros(3, device=args.device),
-            render_mode="RGB+ED",
+            # R1 consumes RGB, alpha, and the independent 2DGS distortion
+            # buffer; it does not consume rendered depth.  Keeping the render
+            # mode at RGB also avoids the known gsplat 1.4 RGB+ED background
+            # channel mismatch without changing any signal used by R1.
+            render_mode="RGB",
             rgb_only=True,
             rasterize_mode="antialiased",
             return_rgb_meta=True,
@@ -306,7 +310,7 @@ def materialize(args: argparse.Namespace) -> dict:
             camera.width,
             camera.height,
             bg_color=torch.zeros(3, device=args.device),
-            render_mode="RGB+ED",
+            render_mode="RGB",
             rgb_only=True,
             rasterize_mode="antialiased",
             opacity_multiplier=multiplier,
