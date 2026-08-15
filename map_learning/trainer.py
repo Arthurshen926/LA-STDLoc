@@ -767,12 +767,12 @@ def train(
     density_prefixes = resolve_density_prefixes(
         records, deployment_row_limit, density_prefix_fractions
     )
-    raw_features_cpu = F.normalize(
-        torch.as_tensor(
-            state.get("v7_metric_raw_features", state["anchor_features"])
-        ).float(),
-        dim=1,
-    )
+    # Fused Track descriptors are already the exact normalized deployment raw
+    # bank.  Keep their serialized values bitwise intact for the LOO replay;
+    # SharedLowRankMetric performs the required normalization internally.
+    raw_features_cpu = torch.as_tensor(
+        state.get("v7_metric_raw_features", state["anchor_features"])
+    ).float()
     loo_descriptor_bank = None
     if leave_one_query_out_track_descriptors:
         if (
