@@ -6,6 +6,8 @@ from evidence.tracks import (
     LeaveOneQueryOutTrackDescriptorBank,
     fuse_track_descriptors,
 )
+from map_learning.metric import SharedLowRankMetric
+from map_learning.trainer import bounded_anchor_bank, bounded_query_anchor_bank
 from scripts.evaluate_rendered_track_fullmap import _DeviceBankUpdater
 
 
@@ -96,6 +98,59 @@ def test_device_bank_updater_restores_previous_query_rows() -> None:
     # no longer the q0 exclusion from the preceding feedback query.
     assert not torch.equal(bank[0], torch.tensor([0.0, 1.0]))
     assert updater.affected_anchor_updates == 3
+
+
+def test_loo_metric_applies_to_query_conditioned_raw_bank() -> None:
+    payload, cache, tracks = _fixture()
+    reference = fuse_track_descriptors(
+        payload=payload,
+        query_cache=cache,
+        track_indices=tracks,
+        trim_fraction=0.0,
+    )
+    replay = LeaveOneQueryOutTrackDescriptorBank(
+        payload=payload,
+        query_cache=cache,
+        track_indices=tracks,
+        reference_features=reference,
+        trim_fraction=0.0,
+    )
+    metric = SharedLowRankMetric(descriptor_dim=2, rank=1, max_residual_norm=0.5)
+    with torch.no_grad():
+        metric.down.weight.copy_(torch.tensor([[1.0, -0.5]]))
+        metric.down.bias.fill_(0.2)
+        metric.up.weight.copy_(torch.tensor([[0.3], [-0.4]]))
+    adapted, _, _ = bounded_anchor_bank(metric, reference, None, 0.0)
+    state = {
+        "metric_config": metric.export_config(),
+        "metric_state_dict": metric.state_dict(),
+    }
+    updater = _DeviceBankUpdater(
+        replay,
+        torch.device("cpu"),
+        metric_state=state,
+        adapted_reference_features=adapted,
+    )
+    bank = adapted.clone()
+    rows, loo_raw = replay.query_update(0)
+    expected, _, _ = bounded_anchor_bank(metric, loo_raw, None, 0.0)
+    updater(0, bank)
+    assert torch.allclose(bank[rows], expected)
+    assert not torch.allclose(bank[rows], F.normalize(loo_raw, dim=1))
+
+    training_bank, _, _, affected = bounded_query_anchor_bank(
+        metric=metric,
+        raw_features=reference,
+        query_index=0,
+        loo_descriptor_bank=replay,
+        anchor_residual_parameter=None,
+        maximum_norm=0.0,
+    )
+    assert affected == rows.numel()
+    assert torch.allclose(training_bank[rows], expected)
+    untouched = torch.ones(reference.shape[0], dtype=torch.bool)
+    untouched[rows] = False
+    assert torch.equal(training_bank[untouched], adapted[untouched])
 
 
 def test_loo_rejects_non_exact_reference_and_sole_observation() -> None:

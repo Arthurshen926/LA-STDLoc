@@ -20,6 +20,8 @@ import torch.nn.functional as F
 
 from common.hashing import sha256_file
 from evidence.tracks import LeaveOneQueryOutTrackDescriptorBank
+from map_learning.metric import SharedLowRankMetric
+from map_learning.trainer import bounded_anchor_bank
 from topology.deployment_revision import collect_deployment_statistics
 
 
@@ -93,10 +95,58 @@ def _atomic_json(payload: dict, path: Path) -> None:
 
 class _DeviceBankUpdater:
     def __init__(
-        self, replay: LeaveOneQueryOutTrackDescriptorBank, device: torch.device
+        self,
+        replay: LeaveOneQueryOutTrackDescriptorBank,
+        device: torch.device,
+        *,
+        metric_state: dict | None = None,
+        adapted_reference_features: torch.Tensor | None = None,
+        anchor_residual_parameter: torch.Tensor | None = None,
+        anchor_residual_max_norm: float = 0.0,
     ) -> None:
         self.replay = replay
-        self.base = F.normalize(replay.reference_features, dim=1).to(device)
+        self.raw_base = F.normalize(replay.reference_features, dim=1).to(device)
+        if metric_state is None:
+            metric = SharedLowRankMetric(
+                descriptor_dim=self.raw_base.shape[1],
+                rank=1,
+                max_residual_norm=0.0,
+            ).to(device)
+            with torch.no_grad():
+                for parameter in metric.parameters():
+                    parameter.zero_()
+        else:
+            metric = SharedLowRankMetric(**metric_state["metric_config"]).to(device)
+            metric.load_state_dict(metric_state["metric_state_dict"], strict=True)
+        self.metric = metric.eval()
+        self.anchor_residual_parameter = (
+            None
+            if anchor_residual_parameter is None
+            else torch.as_tensor(anchor_residual_parameter).float().to(device)
+        )
+        self.anchor_residual_max_norm = float(anchor_residual_max_norm)
+        with torch.no_grad():
+            recomputed, _, _ = bounded_anchor_bank(
+                self.metric,
+                self.raw_base,
+                self.anchor_residual_parameter,
+                self.anchor_residual_max_norm,
+            )
+        self.base = (
+            recomputed
+            if adapted_reference_features is None
+            else F.normalize(
+                torch.as_tensor(adapted_reference_features).float().to(device), dim=1
+            )
+        )
+        if self.base.shape != recomputed.shape or not torch.allclose(
+            self.base, recomputed, atol=1e-6, rtol=1e-6
+        ):
+            maximum = float((self.base - recomputed).abs().max())
+            raise ValueError(
+                "trained map is not the metric transform of its raw Track bank "
+                f"(maximum absolute difference {maximum})"
+            )
         self.previous_rows = torch.empty(0, dtype=torch.long, device=device)
         self.affected_anchor_updates = 0
 
@@ -108,7 +158,18 @@ class _DeviceBankUpdater:
         rows, features = self.replay.query_update(query_index)
         device_rows = rows.to(bank.device)
         if device_rows.numel():
-            bank[device_rows] = F.normalize(features, dim=1).to(bank.device)
+            row_residual = (
+                None
+                if self.anchor_residual_parameter is None
+                else self.anchor_residual_parameter[device_rows]
+            )
+            updates, _, _ = bounded_anchor_bank(
+                self.metric,
+                features.to(bank.device),
+                row_residual,
+                self.anchor_residual_max_norm,
+            )
+            bank[device_rows] = updates
         self.previous_rows = device_rows
         self.affected_anchor_updates += int(rows.numel())
 
@@ -186,16 +247,29 @@ def run(args: argparse.Namespace) -> dict:
     ):
         raise ValueError("scene calibration is not bound source-image-free evidence")
 
+    raw_reference_features = torch.as_tensor(
+        state.get("v7_metric_raw_features", state["anchor_features"])
+    ).float()
     replay = LeaveOneQueryOutTrackDescriptorBank(
         payload=payload,
         query_cache=cache,
         track_indices=state["track_cluster_ids"],
-        reference_features=state["anchor_features"],
+        reference_features=raw_reference_features,
         trim_fraction=float(args.descriptor_trim_fraction),
     )
     affected = torch.as_tensor([len(rows) for rows in replay.rows_by_query]).long()
     device = torch.device(args.device)
-    updater = _DeviceBankUpdater(replay, device)
+    online_config = state.get("v7_online_metric", {}).get("config", {})
+    updater = _DeviceBankUpdater(
+        replay,
+        device,
+        metric_state=metric,
+        adapted_reference_features=state["anchor_features"],
+        anchor_residual_parameter=state.get("v7_anchor_residual_parameter"),
+        anchor_residual_max_norm=float(
+            online_config.get("anchor_feature_residual_max_norm", 0.0)
+        ),
+    )
     parameters = calibration["parameters"]
     statistics = collect_deployment_statistics(
         state=state,
