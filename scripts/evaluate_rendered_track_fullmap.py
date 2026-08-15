@@ -114,6 +114,14 @@ class _DeviceBankUpdater:
 
 
 def run(args: argparse.Namespace) -> dict:
+    if int(args.cpu_threads) <= 0:
+        raise ValueError("CPU thread count must be positive")
+    # Track fusion is dominated by thousands of small tensor reductions.  A
+    # large global Torch thread pool makes those operations dramatically
+    # slower through nested scheduling overhead, especially when two scenes
+    # are replayed on separate GPUs.  The operation order and values are
+    # unchanged; this only bounds host-side parallelism explicitly.
+    torch.set_num_threads(int(args.cpu_threads))
     identity = _producer_identity()
     paths = {
         "map": args.map.resolve(),
@@ -243,6 +251,7 @@ def run(args: argparse.Namespace) -> dict:
         "producer_identity": identity,
         "seed": int(args.seed),
         "configuration": {
+            "cpu_threads": int(args.cpu_threads),
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "deployment_row_limit": int(args.deployment_row_limit),
             "one_global_top1_per_query_row": True,
@@ -279,6 +288,7 @@ def main() -> None:
     parser.add_argument("--deployment-row-limit", type=int, default=0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cpu-threads", type=int, default=1)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)
 
