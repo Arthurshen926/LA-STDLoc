@@ -112,6 +112,52 @@
     },
     "decision": "Only if both scenes pass may the already-frozen R1 map receive one final three-seed real-test evaluation. Failure stops R1 before R2."
   },
+  "calibration_reuse_contract": {
+    "scope": "R1 changes observation reliability used to materialize the candidate map, but does not change query-localization rows, rendered geometry samples, the ordered mapping registry, or the frozen Track payload. Scene calibration numbers may be rebound only after an independent exact cache-equivalence audit.",
+    "equivalence_schema": "lafgs_mapping_sparse_refresh_equivalence_v2",
+    "required_exact_query_fields": [
+      "native_keypoints",
+      "native_descriptors",
+      "native_scores",
+      "native_K",
+      "pose_w2c",
+      "native_input_hw",
+      "native_valid_keypoint_mask",
+      "native_alpha_at_keypoints",
+      "native_depth_at_keypoints",
+      "native_rendered_alpha",
+      "native_rendered_depth",
+      "native_appearance_dispersion"
+    ],
+    "only_changed_query_fields": [
+      "native_appearance_reliability",
+      "source"
+    ],
+    "only_added_query_fields": [
+      "native_artifact_reliability",
+      "native_artifact_exposure",
+      "native_raw_clean_descriptor_cosine",
+      "native_raw_clean_detector_score_stability",
+      "native_raw_clean_position_stability",
+      "native_raw_clean_position_displacement_px"
+    ],
+    "required_exact_nonquery_state": "all source-cache top-level fields except schema and the added artifact_stability contract",
+    "required_track_state": "exact ordered query_names and rendered_rgb_only=true on the frozen Track payload",
+    "reused_numeric_fields": [
+      "statistics",
+      "parameters",
+      "policy"
+    ],
+    "shopfacade_parent_calibration": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+      "sha256": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad"
+    },
+    "stairs_parent_calibration": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/topology_entity_aware_lineage/scene_calibration.json",
+      "sha256": "5e9263ccb44005ff7031f58b38bb3e19d3584a86cb1533d500863cacf74ac5b2"
+    },
+    "forbidden": "Recomputing calibration from R1 mapping outcomes, changing any numeric calibration field, or accepting a cache with altered query rows."
+  },
   "attribution": {
     "C0": "V1.2 E+R membership + identity + full-mapping query-local LOO",
     "C1": "V1.4 full-child membership + identity + full-mapping query-local LOO",
