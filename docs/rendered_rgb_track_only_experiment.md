@@ -429,3 +429,15 @@ remaining Stairs error is attributed to structured false Track/pose consensus.
 See
 [`docs/rendered_track_conditional_loo_completion_result.md`](rendered_track_conditional_loo_completion_result.md)
 for exact results and artifact lineage.
+
+## V1.5: deployment-feedback closure
+
+The former full-mapping LOO audit now feeds one bounded, matching-feasible map
+revision.  A fixed aggregate mapping PoseLib risk selects the revision or
+falls back to V1.4, after which a dedicated consumer rehashes that frozen
+choice before real-test evaluation.  Stairs rejects its 57-anchor prune;
+ShopFacade selects a 15-anchor prune, but its frozen test result is a small P90
+improvement with slightly worse mean and precision.  The pipeline gap is
+closed, but the revision is not a new cross-scene accuracy Pareto point; V1.4
+remains the cross-scene render-only default.  See
+[`docs/rendered_track_pose_feedback_closed_loop_result.md`](rendered_track_pose_feedback_closed_loop_result.md).
