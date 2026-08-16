@@ -20,7 +20,12 @@ import torch
 import torch.nn.functional as F
 
 from localization.localizer import load_shared_metric
-from localization.pose_solver import pose_error, solve_absolute_pose
+from localization.group_consensus import correlation_groups_from_map
+from localization.pose_solver import (
+    pose_error,
+    solve_absolute_pose,
+    solve_group_diverse_absolute_pose,
+)
 from map_learning.trainer import _pose_error_cm, _project_errors
 from topology.matching_coverage import (
     IncrementalBipartiteCoverage,
@@ -103,6 +108,9 @@ def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
             np.mean([row["correspondences"] for row in query_rows])
         ),
         "mean_hypotheses": float(np.mean([row["hypotheses"] for row in query_rows])),
+        "group_diverse_selected_count": int(
+            sum(bool(row.get("group_diverse_selected", False)) for row in query_rows)
+        ),
     }
 
 
@@ -125,6 +133,8 @@ def collect_deployment_statistics(
     deployment_row_limit: int = 0,
     collect_anchor_statistics: bool = True,
     anchor_bank_updater: Callable[[int, torch.Tensor], None] | None = None,
+    pose_group_field: str | None = None,
+    group_hypothesis_samples: int = 32,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
@@ -230,16 +240,31 @@ def collect_deployment_statistics(
         keypoints = torch.as_tensor(cached["native_keypoints"]).float()[rows]
         keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
         intrinsic = torch.as_tensor(cached["native_K"]).float()
-        estimate = solve_absolute_pose(
-            keypoints.numpy(),
-            xyz[winners].numpy(),
-            intrinsic.numpy(),
-            reprojection_error_px=float(ransac_reprojection_px),
-            confidence=0.99999,
-            max_iterations=100000,
-            min_iterations=1000,
-            seed=int(seed),
-        )
+        solve_kwargs = {
+            "reprojection_error_px": float(ransac_reprojection_px),
+            "confidence": 0.99999,
+            "max_iterations": 100000,
+            "min_iterations": 1000,
+            "seed": int(seed),
+        }
+        if pose_group_field is None:
+            estimate = solve_absolute_pose(
+                keypoints.numpy(),
+                xyz[winners].numpy(),
+                intrinsic.numpy(),
+                **solve_kwargs,
+            )
+        else:
+            estimate = solve_group_diverse_absolute_pose(
+                keypoints.numpy(),
+                xyz[winners].numpy(),
+                intrinsic.numpy(),
+                correlation_groups_from_map(
+                    state, winners.numpy(), field=pose_group_field
+                ),
+                group_hypothesis_samples=int(group_hypothesis_samples),
+                **solve_kwargs,
+            )
         inliers = torch.as_tensor(estimate.inliers).long().reshape(-1)
         clean_mask = torch.zeros(inliers.numel(), dtype=torch.bool)
         if inliers.numel():
@@ -304,6 +329,9 @@ def collect_deployment_statistics(
                 "inliers": int(inliers.numel()),
                 "clean_inliers": int(clean_mask.sum()),
                 "hypotheses": int(estimate.diagnostics.get("iterations", 0)),
+                "group_diverse_selected": bool(
+                    estimate.diagnostics.get("group_diverse_selected", False)
+                ),
                 "correspondences": int(rows.numel()),
             }
         )

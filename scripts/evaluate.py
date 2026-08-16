@@ -47,6 +47,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--group-aware-pose",
+        action="store_true",
+        help=(
+            "Add a bounded distinct-parent AP3P hypothesis supplement to the "
+            "single robust-pose wrapper; mapping evidence only until validated."
+        ),
+    )
+    parser.add_argument("--group-field", default="parent_source_track_ids")
+    parser.add_argument("--group-hypothesis-samples", type=int, default=32)
+    parser.add_argument(
         "--stage-state",
         type=Path,
         help="Evaluate A0 by materializing a Stage-A state with an identity metric.",
@@ -67,9 +77,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
-            parser.error(
-                "--stage-state cannot be combined with descriptor map options"
-            )
+            parser.error("--stage-state cannot be combined with descriptor map options")
         map_path, metric_path = materialize_a0(
             args.stage_state, args.output / "materialized_a0", args.config
         )
@@ -119,6 +127,9 @@ def main() -> None:
         seed=args.seed,
         suppress_duplicate_anchors=args.suppress_duplicate_anchors,
         guided_sampling=args.guided_sampling,
+        group_aware_pose=args.group_aware_pose,
+        group_field=args.group_field,
+        group_hypothesis_samples=args.group_hypothesis_samples,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -144,6 +155,11 @@ def main() -> None:
                 "pose_solves": 1,
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
+                "group_aware_pose": bool(args.group_aware_pose),
+                "group_field": args.group_field if args.group_aware_pose else None,
+                "group_hypothesis_samples": (
+                    int(args.group_hypothesis_samples) if args.group_aware_pose else 0
+                ),
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),

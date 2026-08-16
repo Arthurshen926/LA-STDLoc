@@ -21,6 +21,7 @@ from localization.pose_solver import (
     PoseEstimate,
     camera_intrinsics,
     solve_absolute_pose,
+    solve_group_diverse_absolute_pose,
 )
 from map_learning.context_metric import MapConsistentContextAdapter
 from map_learning.metric import SharedLowRankMetric
@@ -72,9 +73,7 @@ def load_context_descriptor_artifact(
         raise ValueError("context descriptor anchor index is outside the base map")
     if not torch.equal(base_anchor_ids[indices], anchor_ids):
         raise ValueError("context descriptor anchor IDs do not align with the base map")
-    features = F.normalize(
-        torch.as_tensor(artifact["anchor_features"]).float(), dim=1
-    )
+    features = F.normalize(torch.as_tensor(artifact["anchor_features"]).float(), dim=1)
     if features.shape != (indices.numel(), 256):
         raise ValueError("context descriptor bank must have shape [N, 256]")
     exported = dict(artifact["adapter_config"])
@@ -87,9 +86,7 @@ def load_context_descriptor_artifact(
             "maximum_residual_norm",
         )
     }
-    config["context_mode"] = exported.get(
-        "context_mode", "multi_scale_global"
-    )
+    config["context_mode"] = exported.get("context_mode", "multi_scale_global")
     # Artifacts produced before smooth radial trust regions used the original
     # hard clip. Preserve their exact runtime instead of silently changing it.
     config["residual_parameterization"] = exported.get(
@@ -117,6 +114,9 @@ class SparseLocalizer:
         seed: int = 2026,
         suppress_duplicate_anchors: bool = False,
         guided_sampling: bool = False,
+        group_aware_pose: bool = False,
+        group_field: str = "parent_source_track_ids",
+        group_hypothesis_samples: int = 32,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -149,9 +149,7 @@ class SparseLocalizer:
                 state["anchor_xyz"], device=self.device
             ).float()
             self.anchor_features = F.normalize(
-                torch.as_tensor(
-                    state["anchor_features"], device=self.device
-                ).float(),
+                torch.as_tensor(state["anchor_features"], device=self.device).float(),
                 dim=1,
             )
             metric = load_shared_metric(
@@ -180,6 +178,25 @@ class SparseLocalizer:
         self.seed = int(seed)
         self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
         self.guided_sampling = bool(guided_sampling)
+        self.group_aware_pose = bool(group_aware_pose)
+        self.group_hypothesis_samples = int(group_hypothesis_samples)
+        if self.group_aware_pose and self.guided_sampling:
+            raise ValueError(
+                "group-aware pose and guided sampling are separate ablations"
+            )
+        if self.group_aware_pose:
+            if group_field not in state:
+                raise ValueError(f"group-aware pose map misses {group_field}")
+            groups = torch.as_tensor(state[group_field]).long().reshape(-1)
+            if groups.shape != base_anchor_ids.shape:
+                raise ValueError("pose correlation groups do not align with the map")
+            unknown = groups < 0
+            offset = int(groups[~unknown].max()) + 1 if bool((~unknown).any()) else 0
+            groups = groups.clone()
+            groups[unknown] = offset + torch.arange(groups.numel())[unknown]
+            self.anchor_pose_groups = groups[context_indices].to(self.device)
+        else:
+            self.anchor_pose_groups = None
         self.anchor_matchability = torch.as_tensor(
             state.get("anchor_matchability", torch.ones_like(base_anchor_ids)),
             device=self.device,
@@ -265,17 +282,30 @@ class SparseLocalizer:
         intrinsic = camera_intrinsics(fov_x, fov_y, width, height)
 
         ransac_started = time.perf_counter()
-        pose = solve_absolute_pose(
-            points_2d + 0.5,
-            points_3d,
-            intrinsic,
-            reprojection_error_px=self.reprojection_error_px,
-            confidence=self.confidence,
-            max_iterations=self.max_iterations,
-            min_iterations=self.min_iterations,
-            seed=self.seed,
-            progressive_sampling=self.guided_sampling,
-        )
+        solve_kwargs = {
+            "reprojection_error_px": self.reprojection_error_px,
+            "confidence": self.confidence,
+            "max_iterations": self.max_iterations,
+            "min_iterations": self.min_iterations,
+            "seed": self.seed,
+        }
+        if self.group_aware_pose:
+            pose = solve_group_diverse_absolute_pose(
+                points_2d + 0.5,
+                points_3d,
+                intrinsic,
+                self.anchor_pose_groups[matches.anchor_indices].cpu().numpy(),
+                group_hypothesis_samples=self.group_hypothesis_samples,
+                **solve_kwargs,
+            )
+        else:
+            pose = solve_absolute_pose(
+                points_2d + 0.5,
+                points_3d,
+                intrinsic,
+                progressive_sampling=self.guided_sampling,
+                **solve_kwargs,
+            )
         ransac_ms = (time.perf_counter() - ransac_started) * 1000.0
         return LocalizationResult(
             sparse,
@@ -299,6 +329,7 @@ class SparseLocalizer:
                     - matches.scores.numel() / max(int(raw_matches.scores.numel()), 1)
                 ),
                 "guided_sampling": int(self.guided_sampling),
+                "group_aware_pose": int(self.group_aware_pose),
                 "context_adapter": int(self.frontend.context_adapter is not None),
             },
         )

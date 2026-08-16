@@ -33,6 +33,7 @@ _SOURCE_PATHS = (
     "evidence/observation_provider.py",
     "evidence/tracks.py",
     "topology/deployment_revision.py",
+    "localization/group_consensus.py",
     "localization/localizer.py",
     "localization/pose_solver.py",
 )
@@ -303,6 +304,8 @@ def run(args: argparse.Namespace) -> dict:
         collect_anchor_statistics=True,
         progress_label="rendered_track_full_mapping_loo_feedback",
         anchor_bank_updater=updater,
+        pose_group_field=(args.group_field if bool(args.group_aware_pose) else None),
+        group_hypothesis_samples=int(args.group_hypothesis_samples),
     )
     statistics = {
         "schema": "lafgs_rendered_track_full_mapping_loo_statistics",
@@ -346,7 +349,13 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "deployment_row_limit": int(args.deployment_row_limit),
             "one_global_top1_per_query_row": True,
-            "one_poselib_call_per_mapping_query": True,
+            "one_poselib_call_per_mapping_query": not bool(args.group_aware_pose),
+            "one_robust_pose_wrapper_per_mapping_query": True,
+            "group_aware_pose": bool(args.group_aware_pose),
+            "group_field": args.group_field if args.group_aware_pose else None,
+            "group_hypothesis_samples": (
+                int(args.group_hypothesis_samples) if args.group_aware_pose else 0
+            ),
         },
         "inputs": {label: str(path) for label, path in paths.items()},
         "input_sha256": input_sha256,
@@ -380,6 +389,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=1)
+    parser.add_argument("--group-aware-pose", action="store_true")
+    parser.add_argument("--group-field", default="parent_source_track_ids")
+    parser.add_argument("--group-hypothesis-samples", type=int, default=32)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)
 

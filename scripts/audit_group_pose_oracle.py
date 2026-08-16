@@ -33,6 +33,7 @@ _SOURCE_PATHS = (
     "evidence/observation_provider.py",
     "evidence/tracks.py",
     "localization/group_consensus.py",
+    "localization/pose_solver.py",
     "map_learning/trainer.py",
     "scripts/evaluate_rendered_track_fullmap.py",
 )

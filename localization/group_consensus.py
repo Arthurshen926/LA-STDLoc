@@ -242,6 +242,23 @@ def build_standard_and_group_diverse_hypotheses(
     )
 
 
+def build_group_diverse_hypotheses(
+    points_2d: np.ndarray,
+    points_3d: np.ndarray,
+    intrinsic: np.ndarray,
+    group_ids: np.ndarray,
+    *,
+    sample_count: int,
+    seed: int,
+) -> np.ndarray:
+    """Build only the bounded, distinct-group AP3P supplement."""
+
+    samples = group_diverse_minimal_sets(
+        group_ids, sample_size=4, sample_count=sample_count, seed=seed
+    )
+    return _pnp_hypotheses_for_samples(samples, points_2d, points_3d, intrinsic)
+
+
 def correlation_groups_from_map(
     state: dict, anchor_rows: np.ndarray, *, field: str | None = None
 ) -> np.ndarray:
