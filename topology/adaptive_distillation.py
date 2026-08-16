@@ -19,6 +19,10 @@ from common.calibration import (
 )
 from common.config import load_mainline_config
 from common.hashing import sha256_file
+from evidence.observation_provider import (
+    GaussianRenderObservationProvider,
+    RealRGBObservationProvider,
+)
 from evidence.tracks import fuse_track_descriptors
 from map_learning.observations import _query_index_remap
 from topology.dynamic_reserve import PoseEvidence, spatial_voxel_ids
@@ -37,6 +41,11 @@ from topology.pose_information import (
     task_scaled_pose_jacobian,
 )
 from topology.sufficiency_selector import CompatibilitySufficiencySelector
+from topology.anchor_construction import (
+    SurfaceCompletionProvider,
+    TrackAnchorProvider,
+    UnifiedAnchorConstructor,
+)
 from topology.track_core import (
     _base_utility,
     _graph_counter,
@@ -291,7 +300,7 @@ def _build_pose_evidence(
     edges,
     xyz: torch.Tensor,
     matchability: torch.Tensor,
-    track_covariance: torch.Tensor,
+    candidate_covariance: torch.Tensor,
     query_names: list[str],
     query_cache: dict,
     voxel_ids: torch.Tensor,
@@ -305,7 +314,8 @@ def _build_pose_evidence(
         for query in candidate_edges:
             query_candidates[int(query)].append(candidate)
     evidence: list[list[PoseEvidence]] = [[] for _ in edges]
-    track_count = int(track_covariance.shape[0])
+    if candidate_covariance.shape != (len(edges), 3, 3):
+        raise ValueError("candidate covariance must have shape [candidate_count,3,3]")
     for query, candidates in enumerate(query_candidates):
         if not candidates:
             continue
@@ -325,17 +335,18 @@ def _build_pose_evidence(
         covariance = torch.eye(2, dtype=torch.float64)[None].repeat(
             points.shape[0], 1, 1
         ) * float(pixel_variance)
-        track_mask = candidate_tensor < track_count
-        if bool(track_mask.any()):
-            selected_covariance = track_covariance[
-                candidate_tensor[track_mask]
-            ].double()
-            if selected_covariance.ndim == 1:
-                selected_covariance = torch.diag_embed(
-                    (selected_covariance / 3.0)[:, None].expand(-1, 3)
-                )
-            covariance[track_mask] += _project_world_covariance(
-                points[track_mask], selected_covariance, K, pose
+        selected_covariance = candidate_covariance[candidate_tensor].double()
+        finite_covariance = (
+            torch.isfinite(selected_covariance)
+            .reshape(selected_covariance.shape[0], -1)
+            .all(dim=1)
+        )
+        if bool(finite_covariance.any()):
+            covariance[finite_covariance] += _project_world_covariance(
+                points[finite_covariance],
+                selected_covariance[finite_covariance],
+                K,
+                pose,
             )
         row_matchability = []
         ordered_rows = []
@@ -543,6 +554,19 @@ def main() -> None:
             )
         policy["pose_minimum_additions"] = 0
     query_cache = query_payload.get("queries", query_payload)
+    observation_provider = (
+        GaussianRenderObservationProvider(
+            query_payload,
+            query_names=list(payload["query_names"]),
+            query_bins=payload["query_bins"],
+        )
+        if payload.get("rendered_rgb_only") is True
+        else RealRGBObservationProvider(
+            query_payload,
+            query_names=list(payload["query_names"]),
+            query_bins=payload["query_bins"],
+        )
+    )
     parameters, calibration = _resolve_selector_calibration(
         query_path=query_path,
         payload_path=payload_path,
@@ -741,7 +765,7 @@ def main() -> None:
     finite_tracks = torch.isfinite(track_xyz).all(dim=1)
     track_sources = torch.full((track_count,), -1, dtype=torch.long)
     finite_track_indices = torch.nonzero(finite_tracks, as_tuple=False).reshape(-1)
-    if base_count > 0:
+    if base_count > 0 and payload.get("rendered_rgb_only") is not True:
         track_sources[finite_track_indices] = _track_source_ids(
             canonical, deployment_payload, finite_track_indices
         )
@@ -777,6 +801,19 @@ def main() -> None:
             .clamp_min(0)
         )
         covariance_model = "isotropic_trace_fallback_projected_by_Jx"
+        track_covariance = torch.diag_embed(
+            (track_covariance / 3.0)[:, None].expand(-1, 3)
+        )
+    if base_count and "anchor_position_covariance" in canonical:
+        base_covariance = torch.as_tensor(
+            canonical["anchor_position_covariance"][:base_count]
+        ).float()
+        if base_covariance.shape != (base_count, 3, 3):
+            raise ValueError("base Anchor covariance must have shape [N,3,3]")
+        covariance_model += "+surface_completion_covariance_projected_by_Jx"
+    else:
+        base_covariance = torch.full((base_count, 3, 3), float("nan"))
+    candidate_covariance = torch.cat((track_covariance, base_covariance))
     selected_mask = torch.zeros(len(edges), dtype=torch.bool)
     selected_mask[selected] = True
     pose_candidates = reserve_candidates[
@@ -796,7 +833,7 @@ def main() -> None:
         pose_edges,
         xyz,
         matchability,
-        track_covariance,
+        candidate_covariance,
         list(teacher["query_names"]),
         query_cache,
         voxel_ids,
@@ -846,7 +883,7 @@ def main() -> None:
         torch.set_num_threads(1)
         track_features = fuse_track_descriptors(
             payload=payload,
-            query_cache=query_payload,
+            query_cache=observation_provider,
             track_indices=selected_tracks,
             trim_fraction=float(policy["descriptor_trim_fraction"]),
         )
@@ -904,6 +941,29 @@ def main() -> None:
         selected_tracks,
         base_count=int(selected_base.numel()),
     )
+    track_batch_provider = TrackAnchorProvider(
+        payload=deployment_payload,
+        observations=observation_provider,
+        track_indices=selected_tracks,
+        trim_fraction=float(policy["descriptor_trim_fraction"]),
+        features=track_features,
+        source_primitive_ids=torch.as_tensor(state["source_primitive_ids"])[
+            : selected_tracks.numel()
+        ].long(),
+        matchability=matchability[selected_tracks].float(),
+    )
+    construction_providers = [track_batch_provider]
+    if selected_base.numel():
+        construction_providers.append(
+            SurfaceCompletionProvider(
+                canonical,
+                selected_base,
+                maximum_candidates=int(selected_base.numel()),
+                matchability=matchability[track_count + selected_base].float(),
+            )
+        )
+    unified_candidates = UnifiedAnchorConstructor.materialize(construction_providers)
+    UnifiedAnchorConstructor.attach_to_map(state, unified_candidates)
     state["track_centric_reconstruction"].update(
         {
             "schema": "lafgs_v2_adaptive_topology",

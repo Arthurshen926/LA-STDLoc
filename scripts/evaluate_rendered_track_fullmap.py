@@ -19,7 +19,10 @@ import torch
 import torch.nn.functional as F
 
 from common.hashing import sha256_file
-from evidence.tracks import LeaveOneQueryOutTrackDescriptorBank
+from evidence.tracks import (
+    LeaveOneQueryOutProjectiveAnchorDescriptorBank,
+    LeaveOneQueryOutTrackDescriptorBank,
+)
 from map_learning.metric import SharedLowRankMetric
 from map_learning.trainer import bounded_anchor_bank
 from topology.deployment_revision import collect_deployment_statistics
@@ -27,6 +30,7 @@ from topology.deployment_revision import collect_deployment_statistics
 
 _SOURCE_PATHS = (
     "scripts/evaluate_rendered_track_fullmap.py",
+    "evidence/observation_provider.py",
     "evidence/tracks.py",
     "topology/deployment_revision.py",
     "localization/localizer.py",
@@ -96,7 +100,10 @@ def _atomic_json(payload: dict, path: Path) -> None:
 class _DeviceBankUpdater:
     def __init__(
         self,
-        replay: LeaveOneQueryOutTrackDescriptorBank,
+        replay: (
+            LeaveOneQueryOutTrackDescriptorBank
+            | LeaveOneQueryOutProjectiveAnchorDescriptorBank
+        ),
         device: torch.device,
         *,
         metric_state: dict | None = None,
@@ -250,13 +257,22 @@ def run(args: argparse.Namespace) -> dict:
     raw_reference_features = torch.as_tensor(
         state.get("v7_metric_raw_features", state["anchor_features"])
     ).float()
-    replay = LeaveOneQueryOutTrackDescriptorBank(
-        payload=payload,
-        query_cache=cache,
-        track_indices=state["track_cluster_ids"],
-        reference_features=raw_reference_features,
-        trim_fraction=float(args.descriptor_trim_fraction),
-    )
+    if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
+        replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+            state=state,
+            payload=payload,
+            query_cache=cache,
+            reference_features=raw_reference_features,
+            trim_fraction=float(args.descriptor_trim_fraction),
+        )
+    else:
+        replay = LeaveOneQueryOutTrackDescriptorBank(
+            payload=payload,
+            query_cache=cache,
+            track_indices=state["track_cluster_ids"],
+            reference_features=raw_reference_features,
+            trim_fraction=float(args.descriptor_trim_fraction),
+        )
     affected = torch.as_tensor([len(rows) for rows in replay.rows_by_query]).long()
     device = torch.device(args.device)
     online_config = state.get("v7_online_metric", {}).get("config", {})

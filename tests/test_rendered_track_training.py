@@ -97,6 +97,50 @@ def test_rendered_track_training_materializes_geometry_teacher(tmp_path):
     assert report["uses_test_queries"] is False
 
 
+def test_rendered_track_training_includes_surface_component_observations(tmp_path):
+    paths = _inputs(tmp_path)
+    state = torch.load(paths["map"], map_location="cpu", weights_only=False)
+    state["anchor_ids"] = torch.tensor([0, 1])
+    state["anchor_xyz"] = torch.tensor([[0.0, 0.0, 2.0], [0.0, 0.0, 2.5]])
+    state["anchor_features"] = torch.tensor([[1.0, 0.0], [0.5, 0.5]])
+    state["track_cluster_ids"] = torch.tensor([0, -1])
+    state["track_centric_reconstruction"] = {
+        "track_indices": torch.tensor([0]),
+        "base_canonical_rows": torch.tensor([7]),
+    }
+    state["projective_anchor_observations"] = {
+        "schema": "lafgs_projective_anchor_observations",
+        "version": 1,
+        "observation_offsets": torch.tensor([0, 3, 4]),
+        "query_indices": torch.tensor([0, 1, 2, 0]),
+        "keypoint_indices": torch.tensor([0, 0, 0, 0]),
+    }
+    torch.save(state, paths["map"])
+
+    report = materialize(
+        anchor_map_path=paths["map"],
+        track_payload_path=paths["track"],
+        query_cache_path=paths["cache"],
+        output_dir=tmp_path / "mixed",
+        strong_radius_px=2.0,
+        ambiguous_radius_px=8.0,
+    )
+    teacher = torch.load(
+        report["outputs"]["teacher"], map_location="cpu", weights_only=False
+    )
+    enriched = torch.load(
+        report["outputs"]["map"], map_location="cpu", weights_only=False
+    )
+    assert teacher["records"][0]["positive_indices"].tolist() == [0, 1]
+    assert teacher["records"][1]["positive_indices"].tolist() == [0]
+    assert teacher["diagnostics"]["surface_completion_exact_observation_count"] == 1
+    assert "projective_completion" in teacher["config"]["geometry_source"]
+    assert enriched["track_centric_reconstruction"]["track_indices"].tolist() == [0]
+    assert enriched["track_centric_reconstruction"]["base_canonical_rows"].tolist() == [
+        7
+    ]
+
+
 def test_rendered_track_training_rejects_source_rgb_or_test_cache(tmp_path):
     for field in ("uses_source_mapping_rgb", "uses_test_queries"):
         case = tmp_path / field

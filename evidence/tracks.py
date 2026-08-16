@@ -56,6 +56,51 @@ def robust_fuse_track_descriptors(
     return F.normalize(prototypes[keep].mean(dim=0), dim=0)
 
 
+def fuse_projective_anchor_observations(
+    descriptors: torch.Tensor,
+    query_bins: torch.Tensor,
+    *,
+    detector_weight: torch.Tensor | None = None,
+    view_weight: torch.Tensor | None = None,
+    visibility_weight: torch.Tensor | None = None,
+    sequence_weight: torch.Tensor | None = None,
+    trim_fraction: float = 0.2,
+) -> torch.Tensor:
+    """GWFF-style fusion for a projective Anchor observation equivalence class.
+
+    Compatibility mode is obtained by passing the historical Track confidence
+    as ``detector_weight`` and appearance reliability as
+    ``visibility_weight``.  Geometry-view and sequence balancing can then be
+    enabled independently without creating a parallel Gaussian landmark map.
+    """
+
+    descriptors = torch.as_tensor(descriptors)
+    count = int(descriptors.shape[0]) if descriptors.ndim else 0
+    if count == 0:
+        raise ValueError("projective Anchor fusion requires observations")
+    combined = torch.ones(count, dtype=torch.float32, device=descriptors.device)
+    for name, value in (
+        ("detector_weight", detector_weight),
+        ("view_weight", view_weight),
+        ("visibility_weight", visibility_weight),
+        ("sequence_weight", sequence_weight),
+    ):
+        if value is None:
+            continue
+        weight = torch.as_tensor(value, dtype=torch.float32, device=descriptors.device)
+        if weight.ndim != 1 or weight.shape[0] != count:
+            raise ValueError(f"{name} must have exact shape [{count}]")
+        if not torch.isfinite(weight).all() or bool((weight < 0).any()):
+            raise ValueError(f"{name} must be finite and non-negative")
+        combined = combined * weight
+    return robust_fuse_track_descriptors(
+        descriptors,
+        query_bins,
+        combined,
+        trim_fraction=trim_fraction,
+    )
+
+
 def protected_micro_anchor_descriptor_loss(
     *,
     candidate_features: torch.Tensor,
@@ -322,12 +367,18 @@ def _selected_track_observation_lookup(
 def fuse_track_descriptors(
     *,
     payload: dict,
-    query_cache: dict,
+    query_cache,
     track_indices: torch.Tensor,
     trim_fraction: float = 0.2,
 ) -> torch.Tensor:
     """Fuse every requested track independently using its native observations."""
-    cache = query_cache.get("queries", query_cache)
+    from evidence.observation_provider import ObservationProvider
+
+    cache = (
+        query_cache.records
+        if isinstance(query_cache, ObservationProvider)
+        else query_cache.get("queries", query_cache)
+    )
     query_names = payload["query_names"]
     tracks = payload["tracks"]
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
@@ -431,10 +482,11 @@ def fuse_track_descriptors(
             ]
         ).clamp(0.0, 1.0)
         features.append(
-            robust_fuse_track_descriptors(
+            fuse_projective_anchor_observations(
                 descriptors,
                 query_bins[query_indices],
-                confidence * reliability,
+                detector_weight=confidence,
+                visibility_weight=reliability,
                 trim_fraction=trim_fraction,
             )
         )
@@ -651,6 +703,195 @@ class LeaveOneQueryOutTrackDescriptorBank:
                 )
             features.append(self._fuse_observations(remaining))
         return rows, torch.stack(features)
+
+
+class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
+    """Leave-one-query-out replay for a unified Track/surface Anchor bank.
+
+    Track rows retain the historical fusion exactly.  Non-Track rows are
+    replayed from the explicit projective observation CSR using the same
+    rendered detector/alpha GWFF weights used by surface completion.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: dict,
+        payload: dict,
+        query_cache: dict,
+        reference_features: torch.Tensor,
+        trim_fraction: float = 0.2,
+    ) -> None:
+        from evidence.observation_provider import GaussianRenderObservationProvider
+
+        self.state = state
+        self.payload = payload
+        self.reference_features = torch.as_tensor(reference_features).float()
+        self.track_ids = torch.as_tensor(state["track_cluster_ids"])
+        if self.track_ids.dtype != torch.long or self.track_ids.ndim != 1:
+            raise ValueError("unified map Track IDs must be an int64 vector")
+        count = int(self.track_ids.numel())
+        if (
+            self.reference_features.ndim != 2
+            or self.reference_features.shape[0] != count
+        ):
+            raise ValueError("unified reference features do not align with map rows")
+        self.query_names = list(payload["query_names"])
+        self.query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
+        self.provider = GaussianRenderObservationProvider(
+            query_cache,
+            query_names=self.query_names,
+            query_bins=self.query_bins,
+        )
+        self.views = [
+            self.provider.build_view(index) for index in range(len(self.provider))
+        ]
+        self.trim_fraction = float(trim_fraction)
+        self.track_rows = torch.nonzero(self.track_ids >= 0, as_tuple=False).reshape(-1)
+        self.surface_rows = torch.nonzero(self.track_ids < 0, as_tuple=False).reshape(
+            -1
+        )
+        self.track_replay = (
+            LeaveOneQueryOutTrackDescriptorBank(
+                payload=payload,
+                query_cache=query_cache,
+                track_indices=self.track_ids[self.track_rows],
+                reference_features=self.reference_features[self.track_rows],
+                trim_fraction=self.trim_fraction,
+            )
+            if self.track_rows.numel()
+            else None
+        )
+
+        observations = state.get("projective_anchor_observations")
+        if observations is None:
+            if self.surface_rows.numel():
+                raise ValueError("surface Anchors lack projective observations")
+            self.offsets = torch.zeros(count + 1, dtype=torch.long)
+            self.observation_query = torch.empty(0, dtype=torch.long)
+            self.observation_keypoint = torch.empty(0, dtype=torch.long)
+        else:
+            if (
+                observations.get("schema") != "lafgs_projective_anchor_observations"
+                or int(observations.get("version", -1)) != 1
+            ):
+                raise ValueError("unsupported projective observation schema")
+            self.offsets = torch.as_tensor(observations["observation_offsets"])
+            self.observation_query = torch.as_tensor(observations["query_indices"])
+            self.observation_keypoint = torch.as_tensor(
+                observations["keypoint_indices"]
+            )
+            if self.offsets.dtype != torch.long or self.offsets.shape != (count + 1,):
+                raise ValueError("projective observation offsets must be int64 [N+1]")
+            edge_count = int(self.offsets[-1])
+            if int(self.offsets[0]) != 0 or bool(
+                (self.offsets[1:] < self.offsets[:-1]).any()
+            ):
+                raise ValueError("projective observation offsets are invalid")
+            for value in (self.observation_query, self.observation_keypoint):
+                if value.dtype != torch.long or value.shape != (edge_count,):
+                    raise ValueError("projective observation indices must be int64 [E]")
+
+        self.rows_by_query: list[list[int]] = [[] for _ in self.query_names]
+        if self.track_replay is not None:
+            for query_index, local_rows in enumerate(self.track_replay.rows_by_query):
+                self.rows_by_query[query_index].extend(
+                    self.track_rows[
+                        torch.as_tensor(local_rows, dtype=torch.long)
+                    ].tolist()
+                )
+        for row in self.surface_rows.tolist():
+            start, end = int(self.offsets[row]), int(self.offsets[row + 1])
+            if start == end:
+                raise ValueError("surface Anchor has no projective observation")
+            for query_index in torch.unique(
+                self.observation_query[start:end], sorted=True
+            ).tolist():
+                self.rows_by_query[int(query_index)].append(int(row))
+        self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
+
+        if self.surface_rows.numel():
+            replayed = torch.stack(
+                [
+                    self._fuse_surface_row(int(row), excluded_query=None)
+                    for row in self.surface_rows
+                ]
+            )
+            expected = self.reference_features[self.surface_rows]
+            if not torch.equal(replayed, expected):
+                maximum = float((replayed - expected).abs().max())
+                raise ValueError(
+                    "surface reference is not the exact full-observation fused bank "
+                    f"(maximum absolute difference {maximum})"
+                )
+
+    def _fuse_surface_row(
+        self, row: int, *, excluded_query: int | None
+    ) -> torch.Tensor:
+        start, end = int(self.offsets[row]), int(self.offsets[row + 1])
+        queries = self.observation_query[start:end]
+        keypoints = self.observation_keypoint[start:end]
+        if excluded_query is not None:
+            keep = queries != int(excluded_query)
+            queries = queries[keep]
+            keypoints = keypoints[keep]
+        if queries.numel() == 0:
+            raise ValueError("mapping query is the sole surface Anchor observation")
+        descriptors = []
+        detector = []
+        alpha = []
+        for query_index, keypoint_index in zip(queries.tolist(), keypoints.tolist()):
+            view = self.views[int(query_index)]
+            keypoint_index = int(keypoint_index)
+            descriptors.append(view.descriptors[keypoint_index])
+            detector.append(view.detector_scores[keypoint_index])
+            if view.keypoint_alpha is not None:
+                alpha.append(view.keypoint_alpha[keypoint_index])
+            elif view.alpha is not None:
+                height, width = view.image_hw
+                pixel = torch.floor(view.keypoints[keypoint_index]).long()
+                x = int(pixel[0].clamp(0, width - 1))
+                y = int(pixel[1].clamp(0, height - 1))
+                alpha.append(view.alpha[y, x])
+            else:
+                raise ValueError("surface Anchor replay requires rendered alpha")
+        return fuse_projective_anchor_observations(
+            torch.stack(descriptors),
+            self.query_bins[queries],
+            detector_weight=torch.stack(detector).float().clamp_min(0),
+            visibility_weight=torch.stack(alpha).float().clamp(0, 1),
+            trim_fraction=self.trim_fraction,
+        )
+
+    def query_update(self, query_index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        query_index = int(query_index)
+        if not 0 <= query_index < len(self.query_names):
+            raise ValueError("leave-one-query-out index is out of range")
+        rows = []
+        features = []
+        if self.track_replay is not None:
+            local_rows, track_features = self.track_replay.query_update(query_index)
+            rows.extend(self.track_rows[local_rows].tolist())
+            features.extend(track_features)
+        surface = [
+            row
+            for row in self.rows_by_query[query_index]
+            if bool(self.track_ids[row] < 0)
+        ]
+        for row in surface:
+            rows.append(int(row))
+            features.append(
+                self._fuse_surface_row(int(row), excluded_query=query_index)
+            )
+        if not rows:
+            return torch.empty(0, dtype=torch.long), self.reference_features.new_empty(
+                (0, self.reference_features.shape[1])
+            )
+        order = torch.argsort(torch.tensor(rows, dtype=torch.long), stable=True)
+        return (
+            torch.tensor(rows, dtype=torch.long)[order],
+            torch.stack(features)[order],
+        )
 
 
 @torch.no_grad()

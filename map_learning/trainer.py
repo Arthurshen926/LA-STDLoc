@@ -19,7 +19,10 @@ import torch.nn.functional as F
 from torch import nn
 
 from common.hashing import sha256_file
-from evidence.tracks import LeaveOneQueryOutTrackDescriptorBank
+from evidence.tracks import (
+    LeaveOneQueryOutProjectiveAnchorDescriptorBank,
+    LeaveOneQueryOutTrackDescriptorBank,
+)
 from map_learning.metric import SharedLowRankMetric
 from map_learning.alias_teacher import (
     RecurrentAliasTeacher,
@@ -783,13 +786,23 @@ def train(
             raise ValueError(
                 "LOO Track descriptor training requires source-image-free mapping inputs"
             )
-        loo_descriptor_bank = LeaveOneQueryOutTrackDescriptorBank(
-            payload=track_descriptor_payload_for_loo(payload),
-            query_cache=cache_payload,
-            track_indices=state["track_cluster_ids"],
-            reference_features=raw_features_cpu,
-            trim_fraction=float(loo_descriptor_trim_fraction),
-        )
+        loo_payload = track_descriptor_payload_for_loo(payload)
+        if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
+            loo_descriptor_bank = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+                state=state,
+                payload=loo_payload,
+                query_cache=cache_payload,
+                reference_features=raw_features_cpu,
+                trim_fraction=float(loo_descriptor_trim_fraction),
+            )
+        else:
+            loo_descriptor_bank = LeaveOneQueryOutTrackDescriptorBank(
+                payload=loo_payload,
+                query_cache=cache_payload,
+                track_indices=state["track_cluster_ids"],
+                reference_features=raw_features_cpu,
+                trim_fraction=float(loo_descriptor_trim_fraction),
+            )
     raw_features = raw_features_cpu.to(device)
     metric = SharedLowRankMetric(
         descriptor_dim=raw_features.shape[1],

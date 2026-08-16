@@ -214,7 +214,7 @@ def _track_source_ids(
     # universe.  Keep the absence of primitive lineage explicit instead of
     # inventing a nearest primitive solely to satisfy the historical hybrid
     # map contract.
-    if base_count == 0:
+    if base_count == 0 or payload.get("rendered_rgb_only") is True:
         return torch.full(
             (torch.as_tensor(track_indices).numel(),), -1, dtype=torch.long
         )

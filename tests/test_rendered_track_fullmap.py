@@ -3,7 +3,9 @@ import torch
 import torch.nn.functional as F
 
 from evidence.tracks import (
+    LeaveOneQueryOutProjectiveAnchorDescriptorBank,
     LeaveOneQueryOutTrackDescriptorBank,
+    fuse_projective_anchor_observations,
     fuse_track_descriptors,
 )
 from map_learning.metric import SharedLowRankMetric
@@ -76,6 +78,64 @@ def test_full_mapping_loo_removes_only_current_query_descriptor() -> None:
     rows, features = unaffected.query_update(0)
     assert rows.numel() == 0
     assert features.shape == (0, 2)
+
+
+def test_unified_mapping_loo_replays_track_and_surface_rows() -> None:
+    payload, cache, tracks = _fixture()
+    for record in cache["queries"].values():
+        record.update(
+            {
+                "native_keypoints": torch.tensor([[4.0, 4.0], [6.0, 6.0]]),
+                "native_scores": torch.ones(2),
+                "native_K": torch.eye(3),
+                "pose_w2c": torch.eye(4),
+                "native_input_hw": torch.tensor([10, 10]),
+                "native_alpha": torch.ones((10, 10)),
+                "native_depth": torch.ones((10, 10)),
+                "native_valid_mask": torch.ones((10, 10), dtype=torch.bool),
+            }
+        )
+    cache["uses_source_mapping_rgb"] = False
+    cache["uses_test_queries"] = False
+    track_reference = fuse_track_descriptors(
+        payload=payload,
+        query_cache=cache,
+        track_indices=tracks[:1],
+        trim_fraction=0.0,
+    )
+    surface_reference = fuse_projective_anchor_observations(
+        torch.stack(
+            [
+                cache["queries"][payload["query_names"][0]]["native_descriptors"][0],
+                cache["queries"][payload["query_names"][1]]["native_descriptors"][0],
+            ]
+        ),
+        torch.tensor([0, 1]),
+        detector_weight=torch.ones(2),
+        visibility_weight=torch.ones(2),
+        trim_fraction=0.0,
+    )[None]
+    reference = torch.cat((track_reference, surface_reference))
+    state = {
+        "track_cluster_ids": torch.tensor([0, -1]),
+        "projective_anchor_observations": {
+            "schema": "lafgs_projective_anchor_observations",
+            "version": 1,
+            "observation_offsets": torch.tensor([0, 3, 5]),
+            "query_indices": torch.tensor([0, 1, 2, 0, 1]),
+            "keypoint_indices": torch.tensor([0, 0, 0, 0, 0]),
+        },
+    }
+    replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+        state=state,
+        payload=payload,
+        query_cache=cache,
+        reference_features=reference,
+        trim_fraction=0.0,
+    )
+    rows, features = replay.query_update(0)
+    assert rows.tolist() == [0, 1]
+    assert torch.allclose(features[1], torch.tensor([0.0, 1.0]))
 
 
 def test_device_bank_updater_restores_previous_query_rows() -> None:

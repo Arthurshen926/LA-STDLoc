@@ -138,11 +138,17 @@ def materialize(
         raise ValueError("Track payload and rendered cache query order differs")
 
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
-    selected_tracks = torch.as_tensor(state["track_cluster_ids"]).long()
+    anchor_count = int(xyz.shape[0])
+    all_track_ids = torch.as_tensor(state["track_cluster_ids"]).long()
+    if all_track_ids.shape != (anchor_count,):
+        raise ValueError("map Track IDs do not align with Anchor rows")
+    track_anchor_rows = torch.nonzero(all_track_ids >= 0, as_tuple=False).reshape(-1)
+    selected_tracks = all_track_ids[track_anchor_rows]
     if selected_tracks.unique().numel() != selected_tracks.numel():
         raise ValueError("selected Track IDs are not unique")
     track_to_anchor = {
-        int(track): anchor for anchor, track in enumerate(selected_tracks.tolist())
+        int(track): int(anchor)
+        for anchor, track in zip(track_anchor_rows.tolist(), selected_tracks.tolist())
     }
     tracks = payload["tracks"]
     exact: list[dict[int, set[int]]] = [defaultdict(set) for _ in names]
@@ -173,6 +179,58 @@ def materialize(
             exact[int(query)][int(keypoint)].add(int(anchor))
             if bool(certified[observation]):
                 strong_exact[int(query)][int(keypoint)].add(int(anchor))
+
+    projective_observations = state.get("projective_anchor_observations")
+    surface_exact_observation_count = 0
+    if projective_observations is not None:
+        if (
+            projective_observations.get("schema")
+            != "lafgs_projective_anchor_observations"
+            or int(projective_observations.get("version", -1)) != 1
+        ):
+            raise ValueError("projective Anchor observation schema differs")
+        offsets = torch.as_tensor(projective_observations["observation_offsets"])
+        observation_queries = torch.as_tensor(projective_observations["query_indices"])
+        observation_keypoints = torch.as_tensor(
+            projective_observations["keypoint_indices"]
+        )
+        if offsets.dtype != torch.long or offsets.shape != (anchor_count + 1,):
+            raise ValueError("projective observation offsets must be int64 [N+1]")
+        if int(offsets[0]) != 0 or bool((offsets[1:] < offsets[:-1]).any()):
+            raise ValueError("projective observation offsets are not valid CSR")
+        observation_count = int(offsets[-1])
+        for field, value in (
+            ("query", observation_queries),
+            ("keypoint", observation_keypoints),
+        ):
+            if value.dtype != torch.long or value.shape != (observation_count,):
+                raise ValueError(
+                    f"projective observation {field} indices must be int64 [E]"
+                )
+            if value.numel() and int(value.min()) < 0:
+                raise ValueError(
+                    f"projective observation {field} indices cannot be negative"
+                )
+        if observation_queries.numel() and int(observation_queries.max()) >= len(names):
+            raise ValueError("projective observation query index is outside registry")
+        surface_rows = torch.nonzero(all_track_ids < 0, as_tuple=False).reshape(-1)
+        for anchor in surface_rows.tolist():
+            start, end = int(offsets[anchor]), int(offsets[anchor + 1])
+            for query, keypoint in zip(
+                observation_queries[start:end].tolist(),
+                observation_keypoints[start:end].tolist(),
+            ):
+                if int(keypoint) >= int(
+                    torch.as_tensor(cache[names[int(query)]]["native_keypoints"]).shape[
+                        0
+                    ]
+                ):
+                    raise ValueError(
+                        "projective observation keypoint is outside rendered cache"
+                    )
+                exact[int(query)][int(keypoint)].add(int(anchor))
+                strong_exact[int(query)][int(keypoint)].add(int(anchor))
+                surface_exact_observation_count += 1
 
     if not 0.0 <= float(alpha_minimum) <= 1.0:
         raise ValueError("alpha minimum must lie in [0, 1]")
@@ -372,6 +430,9 @@ def materialize(
             "depth_visibility_rejected_anchor_count": (
                 depth_visibility_rejected_anchor_count
             ),
+            "surface_completion_exact_observation_count": (
+                surface_exact_observation_count
+            ),
         },
         "config": {
             "strong_radius_px": float(strong_radius_px),
@@ -390,7 +451,11 @@ def materialize(
             "weak_exact_policy": "ambiguous_ignore_not_positive",
             "projection_compatible_policy": "ambiguous_ignore_not_positive",
             "exact_depth_policy": "audit_only_never_hard_reject",
-            "geometry_source": "ray_triangulated_track_xyz_and_mapping_pose",
+            "geometry_source": (
+                "ray_triangulated_track_xyz_plus_rendered_depth_projective_completion"
+                if bool((all_track_ids < 0).any())
+                else "ray_triangulated_track_xyz_and_mapping_pose"
+            ),
             "uses_source_mapping_rgb": False,
             "uses_test_queries": False,
             "uses_rendered_depth": any(
@@ -417,10 +482,13 @@ def materialize(
         "uses_test_queries": False,
     }
     enriched_map = dict(state)
-    enriched_map["track_centric_reconstruction"] = {
-        "track_indices": selected_tracks.clone(),
-        "base_canonical_rows": torch.empty(0, dtype=torch.long),
-    }
+    track_reconstruction = dict(state.get("track_centric_reconstruction", {}))
+    track_reconstruction["track_indices"] = selected_tracks.clone()
+    if "base_canonical_rows" not in track_reconstruction:
+        track_reconstruction["base_canonical_rows"] = torch.nonzero(
+            all_track_ids < 0, as_tuple=False
+        ).reshape(-1)
+    enriched_map["track_centric_reconstruction"] = track_reconstruction
     enriched_map["v7_metric_raw_features"] = torch.as_tensor(
         state["anchor_features"]
     ).float()

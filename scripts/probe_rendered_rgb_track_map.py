@@ -27,6 +27,7 @@ from evidence.camera_pair_policy import (
     candidate_camera_pairs,
     trajectory_balanced_camera_pairs,
 )
+from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.tracks import fuse_track_descriptors
 from evidence.triangulation import (
     build_cycle_consistent_tracks,
@@ -35,7 +36,6 @@ from evidence.triangulation import (
     robust_triangulate_associations,
 )
 from features.extractor import FeatureExtractor
-from features.multiview_fusion import PIXEL_CENTER_OFFSET
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D, GaussianModel3D
 from priors.rendering import render_from_pose_gsplat
@@ -277,26 +277,15 @@ def _trajectory_balanced_matches(
 def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     started = time.perf_counter()
     payload = _load_cache(cache_path)
-    cache = payload["queries"]
-    names = list(cache)
-    descriptors = [
-        torch.as_tensor(cache[name]["native_descriptors"]).float() for name in names
-    ]
-    keypoints = [
-        torch.as_tensor(cache[name]["native_keypoints"]).float()
-        + float(PIXEL_CENTER_OFFSET)
-        for name in names
-    ]
-    scores = [torch.as_tensor(cache[name]["native_scores"]).float() for name in names]
-    intrinsics = torch.stack(
-        [torch.as_tensor(cache[name]["native_K"]).float() for name in names]
-    )
-    poses = torch.stack(
-        [torch.as_tensor(cache[name]["pose_w2c"]).float() for name in names]
-    )
-    image_hw = torch.stack(
-        [torch.as_tensor(cache[name]["native_input_hw"]).long() for name in names]
-    )
+    provider = GaussianRenderObservationProvider(payload)
+    observations = provider.track_inputs()
+    names = observations["query_names"]
+    descriptors = observations["descriptors"]
+    keypoints = observations["keypoints"]
+    scores = observations["detector_scores"]
+    intrinsics = observations["camera_K"]
+    poses = observations["pose_w2c"]
+    image_hw = observations["image_hw"]
 
     track_started = time.perf_counter()
     precomputed_pairs = None
@@ -409,7 +398,7 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     }
     fused = fuse_track_descriptors(
         payload=track_payload,
-        query_cache=payload,
+        query_cache=provider,
         track_indices=selected,
         trim_fraction=args.descriptor_trim_fraction,
     )
