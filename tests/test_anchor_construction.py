@@ -127,8 +127,8 @@ def test_unified_constructor_keeps_track_and_surface_identity_distinct() -> None
         "anchor_type": batch.anchor_type.clone(),
     }
     UnifiedAnchorConstructor.attach_to_map(state, batch)
-    assert (
-        state["projective_anchor_construction"]["behavior_change_authorized"] is False
+    assert state["projective_anchor_construction"]["completion_policy"] == (
+        "always_candidate_selected_by_shared_sufficiency"
     )
     assert (
         state["projective_anchor_construction"]["surface_completion_anchor_count"] == 1

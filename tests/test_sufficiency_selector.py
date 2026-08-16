@@ -1,7 +1,10 @@
 import torch
 
 from topology.dynamic_reserve import PoseEvidence
-from topology.sufficiency_selector import CompatibilitySufficiencySelector
+from topology.sufficiency_selector import (
+    CompatibilitySufficiencySelector,
+    HierarchicalSufficiencySelector,
+)
 
 
 def test_compatibility_selector_uses_one_state_and_primary_reason():
@@ -43,7 +46,8 @@ def test_compatibility_selector_uses_one_state_and_primary_reason():
         "matching_completion",
     ]
     assert artifact["single_selected_state"]
-    assert not artifact["behavior_change_authorized"]
+    assert artifact["policy"] == "hierarchical_sufficiency_v4"
+    assert CompatibilitySufficiencySelector is HierarchicalSufficiencySelector
 
 
 def test_compatibility_selector_requires_stage_order():

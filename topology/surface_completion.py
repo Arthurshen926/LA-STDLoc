@@ -49,7 +49,7 @@ def materialize_gaussian_surface_completion(
 
     if not (float(voxel_size_m) > 0):
         raise ValueError("surface-completion voxel size must be positive")
-    if int(maximum_candidates) < 0 or int(maximum_rows_per_view) <= 0:
+    if int(maximum_candidates) <= 0 or int(maximum_rows_per_view) <= 0:
         raise ValueError("surface-completion capacities are invalid")
     if not (0 <= float(alpha_minimum) <= 1):
         raise ValueError("surface-completion alpha threshold must be in [0,1]")

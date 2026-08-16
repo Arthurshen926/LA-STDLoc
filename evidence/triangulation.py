@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import math
 
 import torch
 import torch.nn.functional as F
@@ -1531,6 +1532,96 @@ def _surface_supported_weak_axis_update(
     return revised_point, fused_covariance, fused_condition, report
 
 
+def _fixed_camera_reprojection_refine(
+    *,
+    point: torch.Tensor,
+    uv: torch.Tensor,
+    camera_K: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    base_weight: torch.Tensor,
+    huber_delta_px: float,
+    iterations: int,
+) -> tuple[torch.Tensor, bool, int, float, float]:
+    """Refine one 3D point while keeping every mapping camera exactly fixed."""
+
+    def linearize(candidate: torch.Tensor):
+        projected, depth = _project(candidate, camera_K, pose_w2c)
+        error = projected - uv
+        norm = torch.linalg.vector_norm(error, dim=1)
+        delta = float(huber_delta_px)
+        loss = torch.where(
+            norm <= delta,
+            0.5 * norm.square(),
+            delta * (norm - 0.5 * delta),
+        )
+        camera = candidate @ pose_w2c[:, :3, :3].transpose(1, 2) + pose_w2c[
+            :, :3, 3
+        ]
+        x, y, z = camera.unbind(dim=1)
+        inv_z = z.clamp_min(1e-12).reciprocal()
+        jacobian_camera = candidate.new_zeros((camera.shape[0], 2, 3))
+        jacobian_camera[:, 0, 0] = camera_K[:, 0, 0] * inv_z
+        jacobian_camera[:, 0, 2] = -camera_K[:, 0, 0] * x * inv_z.square()
+        jacobian_camera[:, 1, 1] = camera_K[:, 1, 1] * inv_z
+        jacobian_camera[:, 1, 2] = -camera_K[:, 1, 1] * y * inv_z.square()
+        jacobian = jacobian_camera @ pose_w2c[:, :3, :3]
+        valid = (
+            torch.isfinite(norm)
+            & torch.isfinite(jacobian).reshape(jacobian.shape[0], -1).all(dim=1)
+            & (depth > 0)
+        )
+        return error, jacobian, valid, (base_weight * loss).sum()
+
+    point = torch.as_tensor(point, dtype=torch.float64).clone()
+    error, jacobian, valid, initial_cost_tensor = linearize(point)
+    initial_cost = float(initial_cost_tensor)
+    if int(valid.sum()) < 2 or not math.isfinite(initial_cost):
+        return point, False, 0, initial_cost, initial_cost
+    current_cost = initial_cost
+    accepted = 0
+    for _ in range(max(int(iterations), 0)):
+        error, jacobian, valid, _ = linearize(point)
+        residual_norm = torch.linalg.vector_norm(error, dim=1)
+        robust = torch.where(
+            residual_norm <= float(huber_delta_px),
+            torch.ones_like(residual_norm),
+            float(huber_delta_px) / residual_norm.clamp_min(1e-12),
+        )
+        weight = base_weight * robust * valid.to(base_weight.dtype)
+        normal = torch.einsum("n,nij,nik->jk", weight, jacobian, jacobian)
+        gradient = torch.einsum("n,nij,ni->j", weight, jacobian, error)
+        damping = max(float(torch.trace(normal)) / 3.0 * 1e-8, 1e-12)
+        try:
+            step = torch.linalg.solve(
+                normal + torch.eye(3, dtype=normal.dtype) * damping,
+                -gradient,
+            )
+        except (RuntimeError, torch.linalg.LinAlgError):
+            break
+        if not bool(torch.isfinite(step).all()):
+            break
+        improved = False
+        scale = 1.0
+        for _ in range(8):
+            candidate = point + scale * step
+            _, _, candidate_valid, candidate_cost_tensor = linearize(candidate)
+            candidate_cost = float(candidate_cost_tensor)
+            if (
+                int(candidate_valid.sum()) == int(valid.sum())
+                and math.isfinite(candidate_cost)
+                and candidate_cost <= current_cost
+            ):
+                point = candidate
+                current_cost = candidate_cost
+                accepted += 1
+                improved = True
+                break
+            scale *= 0.5
+        if not improved or float(torch.linalg.vector_norm(scale * step)) < 1e-9:
+            break
+    return point, current_cost < initial_cost, accepted, initial_cost, current_cost
+
+
 def robust_triangulate_associations(
     *,
     landmark_count: int,
@@ -1561,6 +1652,7 @@ def robust_triangulate_associations(
     surface_support_minimum_depth_improvement_fraction: float = 0.10,
     surface_support_maximum_reprojection_increase_px: float = 0.05,
     surface_support_covariance_sigma_m: float = 0.02,
+    nonlinear_refinement_iterations: int = 0,
 ) -> dict[str, torch.Tensor]:
     """Robustly triangulate descriptor-only cross-view landmark associations."""
     previous_thread_count = torch.get_num_threads()
@@ -1668,6 +1760,16 @@ def robust_triangulate_associations(
     surface_reprojection_delta_px = torch.zeros(
         landmark_count, dtype=torch.float64
     )
+    nonlinear_refinement_applied = torch.zeros(landmark_count, dtype=torch.bool)
+    nonlinear_refinement_accepted_iterations = torch.zeros(
+        landmark_count, dtype=torch.long
+    )
+    nonlinear_refinement_initial_cost = torch.full(
+        (landmark_count,), float("nan"), dtype=torch.float64
+    )
+    nonlinear_refinement_final_cost = torch.full(
+        (landmark_count,), float("nan"), dtype=torch.float64
+    )
 
     unique_landmarks, counts = torch.unique_consecutive(
         landmark_index, return_counts=True
@@ -1717,6 +1819,26 @@ def robust_triangulate_associations(
                 )
         except (RuntimeError, torch.linalg.LinAlgError):
             continue
+        if int(nonlinear_refinement_iterations) > 0:
+            (
+                point,
+                refinement_applied,
+                refinement_iterations,
+                refinement_initial_cost,
+                refinement_final_cost,
+            ) = _fixed_camera_reprojection_refine(
+                point=point,
+                uv=uv[selected],
+                camera_K=camera_K[queries],
+                pose_w2c=pose_w2c[queries],
+                base_weight=base_weight,
+                huber_delta_px=huber_delta_px,
+                iterations=int(nonlinear_refinement_iterations),
+            )
+            nonlinear_refinement_applied[landmark] = refinement_applied
+            nonlinear_refinement_accepted_iterations[landmark] = refinement_iterations
+            nonlinear_refinement_initial_cost[landmark] = refinement_initial_cost
+            nonlinear_refinement_final_cost[landmark] = refinement_final_cost
         projected, depth = _project(
             point, camera_K[queries], pose_w2c[queries]
         )
@@ -1928,6 +2050,18 @@ def robust_triangulate_associations(
         ),
         "triangulation_surface_reprojection_delta_px": (
             surface_reprojection_delta_px.float()
+        ),
+        "triangulation_nonlinear_refinement_applied": (
+            nonlinear_refinement_applied
+        ),
+        "triangulation_nonlinear_refinement_accepted_iterations": (
+            nonlinear_refinement_accepted_iterations
+        ),
+        "triangulation_nonlinear_refinement_initial_cost": (
+            nonlinear_refinement_initial_cost.float()
+        ),
+        "triangulation_nonlinear_refinement_final_cost": (
+            nonlinear_refinement_final_cost.float()
         ),
     }
     torch.set_num_threads(previous_thread_count)

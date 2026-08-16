@@ -72,17 +72,20 @@ def test_rendered_surface_completion_builds_nontrack_multiview_candidate() -> No
     assert graph["provenance_harmful_solver_inlier_count"].tolist() == [0]
 
 
-def test_rendered_surface_completion_is_disabled_by_zero_capacity() -> None:
-    result = materialize_gaussian_surface_completion(
-        _provider(),
-        voxel_size_m=0.02,
-        maximum_candidates=0,
-        maximum_rows_per_view=1,
-        alpha_minimum=0.05,
-        minimum_observations=3,
-        minimum_views=3,
-        minimum_pose_bins=3,
-        descriptor_trim_fraction=0.0,
-    )
-    assert result["anchor_ids"].numel() == 0
-    assert result["surface_completion"]["eligible_surface_component_count"] == 1
+def test_rendered_surface_completion_cannot_be_disabled_by_zero_capacity() -> None:
+    try:
+        materialize_gaussian_surface_completion(
+            _provider(),
+            voxel_size_m=0.02,
+            maximum_candidates=0,
+            maximum_rows_per_view=1,
+            alpha_minimum=0.05,
+            minimum_observations=3,
+            minimum_views=3,
+            minimum_pose_bins=3,
+            descriptor_trim_fraction=0.0,
+        )
+    except ValueError as error:
+        assert "capacities are invalid" in str(error)
+    else:
+        raise AssertionError("zero capacity silently disabled Completion")

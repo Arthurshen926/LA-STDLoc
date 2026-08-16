@@ -109,6 +109,7 @@ def run(args: argparse.Namespace) -> dict:
         "map_sha256": sha256_file(output),
         "inputs": result["provenance"],
         "surface_completion": result["surface_completion"],
+        "completion_candidate_provider": "always_enabled",
         "authorizes_default_map_change": False,
         "decision": "CANDIDATE_PROVIDER_READY_REQUIRES_UNIFIED_SELECTOR_EVALUATION",
     }

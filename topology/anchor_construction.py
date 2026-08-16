@@ -462,5 +462,5 @@ class UnifiedAnchorConstructor:
             "identity_semantics": "observation_equivalence_class_or_explicit_completion",
             "gaussian_role": "support_visibility_lineage_and_bounded_completion",
             "descriptor_fusion": "gwff_style_projective_observation_fusion",
-            "behavior_change_authorized": False,
+            "completion_policy": "always_candidate_selected_by_shared_sufficiency",
         }

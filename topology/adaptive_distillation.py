@@ -40,7 +40,7 @@ from topology.pose_information import (
     pose_jacobian_analytic,
     task_scaled_pose_jacobian,
 )
-from topology.sufficiency_selector import CompatibilitySufficiencySelector
+from topology.sufficiency_selector import HierarchicalSufficiencySelector
 from topology.anchor_construction import (
     SurfaceCompletionProvider,
     TrackAnchorProvider,
@@ -119,6 +119,24 @@ def _image_only_core_eligibility(
         covariance_m2=covariance_m2,
         broad=False,
     )
+
+
+def _precision_core_eligibility(
+    geometry: dict,
+    image_only_stable: torch.Tensor,
+) -> torch.Tensor:
+    """Admit only cycle-seeded Tracks to the high-trust Precision Core.
+
+    Pure chain Tracks remain first-class candidates for matching and pose
+    sufficiency.  They simply cannot bootstrap the immutable precision set.
+    """
+    level = torch.as_tensor(geometry["track_confidence_level"])
+    stable = torch.as_tensor(image_only_stable)
+    if level.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64):
+        raise ValueError("Track confidence level must be an integer vector")
+    if level.shape != stable.shape:
+        raise ValueError("Track confidence level does not align with eligibility")
+    return stable.bool() & (level >= 2)
 
 
 def _deployment_track_geometry(
@@ -692,7 +710,7 @@ def main() -> None:
         covariance_m2=parameters.track_covariance_trace_m2,
         broad=True,
     )
-    image_only_core = _image_only_core_eligibility(
+    image_only_stable = _image_only_core_eligibility(
         geometry,
         median_px=parameters.track_reprojection_median_px,
         p90_px=parameters.track_reprojection_p90_px,
@@ -700,15 +718,18 @@ def main() -> None:
     )
     medium &= ~excluded_tracks
     broad &= ~excluded_tracks
-    image_only_core &= ~excluded_tracks
-    deployment_geometry = _deployment_track_geometry(geometry, image_only_core)
+    image_only_stable &= ~excluded_tracks
+    precision_core_eligible = _precision_core_eligibility(
+        geometry, image_only_stable
+    )
+    deployment_geometry = _deployment_track_geometry(geometry, image_only_stable)
     deployment_quality = _track_quality(deployment_geometry)
-    quality = torch.where(image_only_core, deployment_quality, quality)
+    quality = torch.where(image_only_stable, deployment_quality, quality)
     deployment_payload = dict(payload)
     deployment_payload["track_geometry"] = deployment_geometry
     order = torch.argsort(quality, descending=True, stable=True)
-    medium_order = order[(medium & image_only_core)[order]]
-    selector = CompatibilitySufficiencySelector(
+    medium_order = order[(medium & precision_core_eligible)[order]]
+    selector = HierarchicalSufficiencySelector(
         edges,
         len(teacher["query_names"]),
         track_candidate_count=track_count,
@@ -909,7 +930,7 @@ def main() -> None:
             torch.zeros(track_count, dtype=torch.bool),
         )
     ).bool()
-    surface_promoted = surface_supported & ~image_only_core
+    surface_promoted = surface_supported & ~image_only_stable
     selection_provenance_path = output_dir / "adaptive_selection_provenance.pt"
     unified_selection_path = output_dir / "unified_sufficiency_selection.pt"
     torch.save(
@@ -973,6 +994,12 @@ def main() -> None:
             "matching_feasible_coverage": coverage_report,
             "dynamic_pose_reserve": pose_report,
             "track_core_count": int(core.numel()),
+            "cycle_seeded_precision_core_candidate_count": int(
+                precision_core_eligible.sum()
+            ),
+            "chain_only_sufficiency_candidate_count": int(
+                (broad & ~precision_core_eligible).sum()
+            ),
             "coverage_reserve_count": int(coverage_selected.numel()),
             "pose_reserve_count": int(pose_selected.numel()),
             "selection_provenance": selection_provenance,
@@ -997,6 +1024,9 @@ def main() -> None:
             "surface_promoted_reserve_candidate_count": int(surface_promoted.sum()),
             "surface_promoted_selected_count": int(
                 surface_promoted[selected_tracks].sum()
+            ),
+            "completion_candidate_provider": (
+                "always_enabled" if base_count > 0 else "legacy_track_only_input"
             ),
         }
     )
@@ -1032,9 +1062,12 @@ def main() -> None:
         },
         "unified_sufficiency_selection": {
             "path": str(unified_selection_path),
-            "policy": "v3_compatibility",
+            "policy": "hierarchical_sufficiency_v4",
+            "numerical_policy": "v3_compatibility_with_cycle_core",
             "selected_count": int(selector.selected_ids.numel()),
-            "behavior_change_authorized": False,
+            "completion_candidate_provider": (
+                "always_enabled" if base_count > 0 else "legacy_track_only_input"
+            ),
         },
         "all_candidate_alias_risk": alias_risk_contract,
         "rendered_track_crossfit_exclusions": exclusion_contract,

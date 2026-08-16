@@ -492,6 +492,14 @@ def materialize(
     enriched_map["v7_metric_raw_features"] = torch.as_tensor(
         state["anchor_features"]
     ).float()
+    enriched_map["descriptor_transform_contract"] = {
+        "schema": "lafgs_rendered_track_descriptor_transform_contract",
+        "version": 1,
+        "mode": "none_identity_only",
+        "learned_query_transform": False,
+        "learned_anchor_transform": False,
+        "learned_anchor_residual": False,
+    }
     enriched_payload = dict(payload)
     enriched_payload["pose_view_bins"] = torch.as_tensor(payload["query_bins"]).clone()
     enriched_payload["query_bins"] = sequence_ids
@@ -522,6 +530,7 @@ def materialize(
         },
         "mapping_grouping": mapping_grouping,
         "formal_method_uses_crossfit": False,
+        "descriptor_transform": "none_identity_only",
         "teacher_diagnostics": teacher["diagnostics"],
         "inputs": {
             "anchor_map": str(anchor_map_path.resolve()),

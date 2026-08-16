@@ -11,7 +11,10 @@ from pathlib import Path
 import torch
 
 from common.hashing import sha256_file
-from map_learning.metric import SharedLowRankMetric
+from map_learning.metric import (
+    SharedLowRankMetric,
+    validate_map_bound_identity_metric,
+)
 
 
 def materialize(*, map_path: Path, expected_map_sha256: str, output_path: Path) -> dict:
@@ -70,16 +73,13 @@ def materialize(*, map_path: Path, expected_map_sha256: str, output_path: Path) 
     try:
         torch.save(payload, temporary)
         reloaded = torch.load(temporary, map_location="cpu", weights_only=False)
-        if (
-            reloaded.get("schema") != "lafgs_shared_metric_state"
-            or reloaded.get("map_path") != str(map_path)
-            or reloaded.get("map_sha256") != before_sha256
-            or not torch.equal(
-                torch.as_tensor(reloaded.get("landmark_indices")),
-                payload["landmark_indices"],
-            )
-        ):
-            raise RuntimeError("temporary identity metric did not reload exactly")
+        validate_map_bound_identity_metric(
+            reloaded,
+            descriptor_dim=descriptor_dim,
+            anchor_count=int(anchor_ids.numel()),
+            map_path=str(map_path),
+            map_sha256=before_sha256,
+        )
         if sha256_file(map_path) != before_sha256:
             raise RuntimeError("input map changed during identity materialization")
         os.replace(temporary, output_path)
@@ -92,6 +92,7 @@ def materialize(*, map_path: Path, expected_map_sha256: str, output_path: Path) 
         "map_sha256": before_sha256,
         "anchor_count": int(anchor_ids.numel()),
         "descriptor_dim": descriptor_dim,
+        "descriptor_transform": "none_identity_only",
         "output": str(output_path),
         "output_sha256": sha256_file(output_path),
     }

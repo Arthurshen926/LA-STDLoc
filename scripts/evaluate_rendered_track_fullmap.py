@@ -23,7 +23,7 @@ from evidence.tracks import (
     LeaveOneQueryOutProjectiveAnchorDescriptorBank,
     LeaveOneQueryOutTrackDescriptorBank,
 )
-from map_learning.metric import SharedLowRankMetric
+from map_learning.metric import SharedLowRankMetric, validate_map_bound_identity_metric
 from map_learning.trainer import bounded_anchor_bank, track_descriptor_payload_for_loo
 from topology.deployment_revision import collect_deployment_statistics
 
@@ -258,6 +258,23 @@ def run(args: argparse.Namespace) -> dict:
     raw_reference_features = torch.as_tensor(
         state.get("v7_metric_raw_features", state["anchor_features"])
     ).float()
+    anchor_features = torch.as_tensor(state["anchor_features"])
+    if (
+        raw_reference_features.dtype != anchor_features.dtype
+        or raw_reference_features.shape != anchor_features.shape
+        or not torch.equal(raw_reference_features, anchor_features)
+        or "v7_anchor_residual_parameter" in state
+    ):
+        raise ValueError(
+            "render-only V4 map must use raw fused descriptors without learned residuals"
+        )
+    validate_map_bound_identity_metric(
+        metric,
+        descriptor_dim=int(raw_reference_features.shape[1]),
+        anchor_count=int(raw_reference_features.shape[0]),
+        map_path=str(paths["map"]),
+        map_sha256=input_sha256["map"],
+    )
     loo_payload = track_descriptor_payload_for_loo(payload)
     if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
         replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
@@ -347,6 +364,7 @@ def run(args: argparse.Namespace) -> dict:
         "configuration": {
             "cpu_threads": int(args.cpu_threads),
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
+            "descriptor_transform": "none_identity_only",
             "deployment_row_limit": int(args.deployment_row_limit),
             "one_global_top1_per_query_row": True,
             "one_poselib_call_per_mapping_query": not bool(args.group_aware_pose),

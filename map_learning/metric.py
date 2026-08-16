@@ -39,3 +39,54 @@ class SharedLowRankMetric(nn.Module):
             "rank": self.rank,
             "max_residual_norm": self.max_residual_norm,
         }
+
+
+def validate_map_bound_identity_metric(
+    payload: dict,
+    *,
+    descriptor_dim: int,
+    anchor_count: int,
+    map_path: str,
+    map_sha256: str,
+) -> None:
+    """Fail closed unless ``payload`` is the V4 zero-transform metric shim.
+
+    The generic low-rank metric remains available to reproduce older and mixed
+    experiments.  The render-only V4 method deliberately has no learned
+    descriptor transform; this validator prevents the legacy interface from
+    silently reintroducing one.
+    """
+    if (
+        payload.get("schema") != "lafgs_shared_metric_state"
+        or payload.get("version") != 1
+        or payload.get("protocol") != "rendered_track_map_bound_identity"
+        or payload.get("map_path") != str(map_path)
+        or payload.get("map_sha256") != str(map_sha256)
+        or payload.get("step") != 0
+    ):
+        raise ValueError("render-only V4 requires an exact map-bound identity metric")
+    config = payload.get("metric_config")
+    if config != {
+        "descriptor_dim": int(descriptor_dim),
+        "rank": 1,
+        "max_residual_norm": 0.0,
+    }:
+        raise ValueError("render-only V4 metric configuration is not identity-only")
+    landmark_indices = torch.as_tensor(payload.get("landmark_indices"))
+    expected_indices = torch.arange(int(anchor_count), dtype=torch.long)
+    if (
+        landmark_indices.dtype != torch.long
+        or landmark_indices.shape != expected_indices.shape
+        or not torch.equal(landmark_indices, expected_indices)
+    ):
+        raise ValueError("identity metric landmark rows do not match the map")
+    metric = SharedLowRankMetric(**config)
+    state = payload.get("metric_state_dict")
+    if not isinstance(state, dict):
+        raise ValueError("identity metric state dict is missing")
+    try:
+        metric.load_state_dict(state, strict=True)
+    except RuntimeError as error:
+        raise ValueError("identity metric state dict is not exact") from error
+    if any(bool(torch.count_nonzero(parameter)) for parameter in metric.parameters()):
+        raise ValueError("render-only V4 forbids learned descriptor parameters")

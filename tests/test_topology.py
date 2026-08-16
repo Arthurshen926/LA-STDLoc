@@ -7,6 +7,7 @@ from topology.adaptive_distillation import (
     _candidate_matchability,
     _deployment_track_geometry,
     _image_only_core_eligibility,
+    _precision_core_eligibility,
     _project_world_covariance,
 )
 from topology.track_core import _materialize, _track_source_ids
@@ -161,6 +162,18 @@ def test_surface_fusion_cannot_promote_a_track_directly_into_core():
         geometry, median_px=1.0, p90_px=2.0, covariance_m2=0.1
     )
     assert eligible.tolist() == [True, False]
+
+
+def test_precision_core_requires_cycle_seed_but_keeps_chain_for_reserve():
+    stable = torch.tensor([True, True, False])
+    geometry = {
+        "track_confidence_level": torch.tensor([2, 1, 2], dtype=torch.int8)
+    }
+    core = _precision_core_eligibility(geometry, stable)
+    assert core.tolist() == [True, False, False]
+    # The helper classifies only the precision stage.  The second, chain-only
+    # candidate remains stable and can still enter matching/pose completion.
+    assert bool(stable[1]) and not bool(core[1])
 
 
 def test_image_stable_core_deploys_image_only_geometry():

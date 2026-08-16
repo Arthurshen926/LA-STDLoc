@@ -5,6 +5,7 @@ import torch
 
 from common.hashing import sha256_file
 from scripts.materialize_rendered_track_identity_metric import materialize
+from map_learning.metric import validate_map_bound_identity_metric
 
 
 def _map(path: Path) -> Path:
@@ -42,6 +43,27 @@ def test_identity_metric_is_zero_residual_and_map_bound(tmp_path: Path):
         for value in payload["metric_state_dict"].values()
     )
     assert report["output_sha256"] == sha256_file(output)
+    assert report["descriptor_transform"] == "none_identity_only"
+
+
+def test_identity_metric_validator_rejects_learned_transform(tmp_path: Path):
+    map_path = _map(tmp_path / "map.pt")
+    output = tmp_path / "identity.pt"
+    materialize(
+        map_path=map_path,
+        expected_map_sha256=sha256_file(map_path),
+        output_path=output,
+    )
+    payload = torch.load(output, map_location="cpu", weights_only=False)
+    payload["metric_state_dict"]["up.weight"][0, 0] = 1e-3
+    with pytest.raises(ValueError, match="forbids learned descriptor"):
+        validate_map_bound_identity_metric(
+            payload,
+            descriptor_dim=3,
+            anchor_count=2,
+            map_path=str(map_path.resolve()),
+            map_sha256=sha256_file(map_path),
+        )
 
 
 def test_identity_metric_rejects_wrong_sha_and_existing_output(tmp_path: Path):
