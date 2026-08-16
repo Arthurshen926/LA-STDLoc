@@ -1,0 +1,18 @@
+{
+  "calibration_split": "mapping",
+  "context_state": null,
+  "descriptor_protocol": "shared_metric",
+  "duplicate_anchor_suppression": false,
+  "evaluated_split": "test",
+  "group_aware_pose": true,
+  "group_field": "parent_source_track_ids",
+  "group_hypothesis_samples": 32,
+  "guided_sampling": false,
+  "keypoint_count": 2048,
+  "nms_radius": 4,
+  "pose_solves": 1,
+  "ransac_reprojection_px": 12.0,
+  "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+  "schema": "lafgs_sparse_deployment_contract",
+  "version": 1
+}

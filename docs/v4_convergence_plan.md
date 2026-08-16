@@ -927,3 +927,26 @@ KCS/GWFF、A1、lazy completion 或默认切换。该结果证明 artifact signa
 tail-aware 假设，而不是放宽门或继续调同一 scalar。详见
 `docs/rendered_rgb_track_artifact_stability_result.md` 与
 `docs/evidence/rendered_rgb_track_artifact_stability_result.json`。
+
+最新一轮已把 source-image-free 路线收敛为统一的 Gaussian-supported Projective Anchor
+架构，而不是继续增加局部 revision gate。Real/Render 现在共用代码级
+`ObservationProvider`；Track 与 rendered-surface completion 共用 Anchor constructor、
+候选 registry、selector、descriptor materializer 和 sparse localizer。KCS 的 visibility、
+alpha/depth、support component、Gaussian lineage 已吸收到候选证据，GWFF 风格的 detector、
+view、visibility、sequence/pose-bin 加权也成为两类 Anchor 共用的 observation fusion。
+Gaussian primitive center 不作为 PnP geometry：Track 仍由相机射线三角化，非 Track
+completion 则由多视角 rendered-depth unprojection 融合。
+
+这条统一 completion 在 Stairs 的冻结三种子 real test 上把 mean/P90 TE 从
+7.193/6.560 cm 改善到 6.557/5.995 cm，5 cm recall 从 85.10% 提高到 86.97%，且
+median、AE、2 cm recall、raw/inlier precision 与 catastrophic count 同向改善；ShopFacade
+则整体中性。因此保留 completion provider，但只在 Stairs render-only 配置启用，不切换
+跨场景或 mixed 默认。structured-outlier oracle 证明 distinct-parent hypothesis sampling
+有明显 headroom，但当前 bounded wrapper 对 mapping tail 基本无改善，并在 ShopFacade test
+增加约64.7 ms RANSAC 时间，故保持 default-off。Optional pose feedback 同样只保留为诊断。
+
+至此表示与代码结构已经闭环，下一阶段应扩大冻结架构的场景验证，而不是继续围绕阈值、
+fold 或 revision 做局部搜索。完整人类/机器结果分别见
+`docs/gaussian_supported_projective_anchor_result.md` 与
+`docs/evidence/gaussian_supported_projective_anchor_result.json`；本轮51份小型原始记录已归档到
+`docs/evidence/projective_anchor_runs`，大 tensor/cache/render/weights 仍只在外部以路径和SHA绑定。

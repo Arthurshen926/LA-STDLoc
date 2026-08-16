@@ -77,6 +77,7 @@ EXCLUDED_PATH_MARKERS = (
     "preopt_invalid",
     "execution_invalid",
     "invalid_invocation",
+    "_invalid_",
     "/smoke",
 )
 
@@ -112,10 +113,12 @@ def _is_json(payload: bytes) -> bool:
     return True
 
 
-def _archive(output: Path) -> dict[str, Any]:
+def _archive(
+    output: Path, *, source_roots: tuple[tuple[str, Path], ...] = SOURCE_ROOTS
+) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(f"archive output already exists: {output}")
-    missing = [str(root) for _, root in SOURCE_ROOTS if not root.is_dir()]
+    missing = [str(root) for _, root in source_roots if not root.is_dir()]
     if missing:
         raise FileNotFoundError(f"missing source roots: {missing}")
 
@@ -124,7 +127,7 @@ def _archive(output: Path) -> dict[str, Any]:
     temp_root = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output_parent))
     records: list[dict[str, Any]] = []
     try:
-        for stage, root in SOURCE_ROOTS:
+        for stage, root in source_roots:
             sources = sorted(path for path in root.rglob("*") if path.is_file())
             for source in sources:
                 if not _eligible(source, root):
@@ -175,13 +178,17 @@ def _archive(output: Path) -> dict[str, Any]:
         manifest: dict[str, Any] = {
             "schema": SCHEMA,
             "version": VERSION,
-            "scope": "render_only_stairs_shopfacade_history",
+            "scope": (
+                "render_only_stairs_shopfacade_history"
+                if source_roots == SOURCE_ROOTS
+                else "explicit_render_only_experiment_roots"
+            ),
             "large_artifacts_in_git": False,
             "included_extensions": [".json", ".md", ".txt"],
             "query_results_encoding": "deterministic_gzip_mtime_0",
             "excluded_path_markers": list(EXCLUDED_PATH_MARKERS),
             "source_roots": [
-                {"stage": stage, "path": str(root)} for stage, root in SOURCE_ROOTS
+                {"stage": stage, "path": str(root)} for stage, root in source_roots
             ],
             "record_count": len(records),
             "source_size_bytes": sum(item["source_size_bytes"] for item in records),
@@ -255,15 +262,42 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--check-sources", action="store_true")
+    parser.add_argument(
+        "--source-root",
+        action="append",
+        default=[],
+        metavar="STAGE=PATH",
+        help="Archive only these explicit roots instead of the historical defaults.",
+    )
     return parser.parse_args()
+
+
+def _explicit_source_roots(values: list[str]) -> tuple[tuple[str, Path], ...]:
+    roots = []
+    seen = set()
+    for value in values:
+        stage, separator, raw_path = value.partition("=")
+        if not separator or not stage or not raw_path:
+            raise ValueError("--source-root must use STAGE=PATH")
+        if stage in seen or Path(stage).name != stage or stage in {".", ".."}:
+            raise ValueError(f"invalid or duplicate archive stage: {stage}")
+        seen.add(stage)
+        roots.append((stage, Path(raw_path).resolve()))
+    return tuple(roots)
 
 
 def main() -> int:
     args = _parse_args()
+    source_roots = _explicit_source_roots(args.source_root)
+    if args.verify and source_roots:
+        raise ValueError("--source-root cannot be combined with --verify")
     manifest = (
         _verify(args.output.resolve(), check_sources=args.check_sources)
         if args.verify
-        else _archive(args.output.resolve())
+        else _archive(
+            args.output.resolve(),
+            source_roots=source_roots if source_roots else SOURCE_ROOTS,
+        )
     )
     print(
         json.dumps(

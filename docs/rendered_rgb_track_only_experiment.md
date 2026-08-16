@@ -450,3 +450,33 @@ per-query JSON results for V1.0 through V1.5.  Large tensor/cache/image artifact
 remain external and are bound by SHA.  See
 [`docs/evidence/rendered_track_runs/README.md`](evidence/rendered_track_runs/README.md)
 and its independently verifiable manifest.
+
+## Unified Projective Anchor closure
+
+The route has now moved beyond the historical revision sequence into one
+shared architecture.  Real and rendered inputs implement the same
+`ObservationProvider` contract; Track and rendered-surface completion rows
+enter one `UnifiedAnchorConstructor`; KCS-style visibility, alpha/depth,
+support-component and Gaussian-lineage evidence is consumed inside that
+constructor; and GWFF-style projective observation weighting is shared by
+both Anchor providers.  Gaussian primitive centers are not copied into the
+PnP map.  Track geometry remains ray-triangulated, while non-Track completion
+geometry is fused from multi-view rendered-depth unprojections.
+
+The bounded completion improves the frozen Stairs test over the Track-only
+map across all reported central, tail, recall and precision measures: mean TE
+falls from 7.193 cm to 6.557 cm, P90 from 6.560 cm to 5.995 cm, and 5 cm recall
+rises from 85.10% to 86.97%.  ShopFacade is neutral, so completion is retained
+as a unified candidate provider but enabled only by the scene-level
+mapping-only decision.  A structured-outlier oracle also finds substantial
+hypothesis-sampling headroom, but the bounded practical PoseLib supplement
+does not improve tail failures enough and remains default-off.
+
+The complete architecture, exact two-scene results, hashes and method boundary
+are recorded in
+[`docs/gaussian_supported_projective_anchor_result.md`](gaussian_supported_projective_anchor_result.md)
+and
+[`docs/evidence/gaussian_supported_projective_anchor_result.json`](evidence/gaussian_supported_projective_anchor_result.json).
+Its 51 compact source reports and per-query records are preserved under
+[`docs/evidence/projective_anchor_runs`](evidence/projective_anchor_runs/README.md);
+large tensors, caches, renders and weights remain external and SHA-bound.

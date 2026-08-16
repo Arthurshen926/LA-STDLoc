@@ -1,0 +1,56 @@
+{
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "anchor_map": "7e47dfb74cffec2e8d934f42c06c3a69b9064b623a2d477ad6bdf66fc296c252",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_selector/adaptive_compact_total05794.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_selector/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "contiguous_mapping_pose_cells",
+  "mapping_sequence_names": [
+    "pose_cell_00",
+    "pose_cell_01",
+    "pose_cell_02"
+  ],
+  "mapping_sequence_query_counts": {
+    "pose_cell_00": 77,
+    "pose_cell_01": 77,
+    "pose_cell_02": 77
+  },
+  "output_sha256": {
+    "graph": "b47d25e6193f4170cc73ec2a30e3e147d686bc1d3d58a7dcab9d228c2ddff46d",
+    "map": "4dcda95fe496e1f4a496fcfb6752bae61e13b166001355028a44767db74af323",
+    "teacher": "0b89b79d499e3618daeaef23fed20c42f83ebdd5ad4f05cc9e72652b705f0a00",
+    "track_payload": "d37dd357692bcacf3b3bbc408ffeb30e6e7f8624b0ae78e4c8b3588ca03166bf"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 149189,
+    "depth_visibility_rejected_anchor_count": 612194,
+    "exact_depth_disagreement_audit_count": 24369,
+    "exact_track_positive_count": 169484,
+    "masked_query_row_count": 40,
+    "positive_rows": 143062,
+    "query_count": 231,
+    "strong_certified_exact_positive_count": 143300,
+    "strong_pair_count": 143300,
+    "support_compatible_pair_count": 21715,
+    "surface_completion_exact_observation_count": 577,
+    "weak_exact_ambiguous_count": 26184
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}
