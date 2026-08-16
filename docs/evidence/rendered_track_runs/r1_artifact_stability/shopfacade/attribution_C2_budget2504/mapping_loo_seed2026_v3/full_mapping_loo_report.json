@@ -1,0 +1,74 @@
+{
+  "configuration": {
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "083550e7faa14937d4d89b7d46b4c02bf7a50f83f9535c87f0c13d42cbeb0573",
+    "metric": "6a504e551fef9f683f8a162499c6118692997963e82a4d980e59aa52b8daec1b",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "teacher": "9616cb8ac86f981fa6f930c6799c42f3963e615da8ed0f5bbc0ebe6c37f270c1",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/attribution_C2_budget2504/budget_control_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/attribution_C2_budget2504/budget_control_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/attribution_C2_budget2504/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 99845,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 770,
+    "mean_affected_anchors_per_query": 432.22943115234375,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "0c44d1c5643db438827c58430d2e60bf1c1b4584",
+    "source_sha256": {
+      "evidence/tracks.py": "2b1c18b23b9b42d50c147a0e63dc5ac65055d4c7aa0a9b725b751f3dda0c80c5",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "903163869c264be82c709614f9c9c8cfad2f5974afcb58ab49ee55ed91a2e03b",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/attribution_C2_budget2504/mapping_loo_seed2026_v3/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "446cb42c92883c01d095d80a9d98890ec11925690f829c414127938dc4482121",
+  "summary": {
+    "catastrophic_100cm_count": 2,
+    "cvar95_te_cm": 238.51871091562012,
+    "inlier_gt_precision_percent": 85.76013212345285,
+    "mean_ae_deg": 0.9189860732107281,
+    "mean_hypotheses": 15100.753246753247,
+    "mean_te_cm": 12.942617409862578,
+    "median_ae_deg": 0.028495012273710985,
+    "median_te_cm": 0.5424028262495995,
+    "p90_ae_deg": 0.07323958486151783,
+    "p90_te_cm": 1.3351771980524063,
+    "p95_ae_deg": 0.09985616838144967,
+    "p95_te_cm": 1.6871199011802673,
+    "p99_te_cm": 3.3268291689455443,
+    "query_count": 231,
+    "raw_gt_precision_percent": 14.549263499687136,
+    "recall_5cm_5deg_percent": 99.13419913419914,
+    "retained_matches_mean": 2047.82683982684,
+    "solver_inlier_ratio_percent": 22.5277350290034
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,80 @@
+{
+  "audit": {
+    "added_query_fields": [
+      "native_artifact_exposure",
+      "native_artifact_reliability",
+      "native_raw_clean_descriptor_cosine",
+      "native_raw_clean_detector_score_stability",
+      "native_raw_clean_position_displacement_px",
+      "native_raw_clean_position_stability"
+    ],
+    "artifact_only_allowed_differences": true,
+    "calibration_numeric_reuse_authorized": true,
+    "changed_query_fields": [
+      "native_appearance_reliability",
+      "source"
+    ],
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "exact_shared_query_fields": [
+      "native_K",
+      "native_alpha_at_keypoints",
+      "native_appearance_dispersion",
+      "native_depth_at_keypoints",
+      "native_descriptors",
+      "native_input_hw",
+      "native_keypoints",
+      "native_rendered_alpha",
+      "native_rendered_depth",
+      "native_scores",
+      "native_valid_keypoint_mask",
+      "pose_w2c"
+    ],
+    "localization_query_rows_bitwise_exact": true,
+    "query_count": 2000,
+    "query_order_exact": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_image_free_mapping_only": true,
+    "source_track_query_registry_exact": true
+  },
+  "checks": {
+    "artifact_only_allowed_differences": true,
+    "calibration_numeric_reuse_authorized": true,
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "localization_query_rows_bitwise_exact": true,
+    "query_order_exact": true,
+    "refreshed_cache_sha256_expected": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_cache_sha256_expected": true,
+    "source_image_free_mapping_only": true,
+    "source_track_payload_sha256_expected": true,
+    "source_track_query_registry_exact": true
+  },
+  "producer_identity": {
+    "git_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+    "source_sha256": {
+      "common/tensor_identity.py": "9566da09a0ba3c28071f43086422bcbf3a7094a11a5dc8ed26bb7a70637a01fc",
+      "docs/evidence/rendered_rgb_track_artifact_stability_preregistration.json": "cb92e23b2fd23084814112446cbe0d224548df84bd0d6d958a57a56660243d0c",
+      "scripts/audit_rendered_track_artifact_cache_equivalence.py": "8961fc436887cc2cb7f43c1daea234e61bdb403d22a06e2d59dc727958c6b416"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_mapping_sparse_refresh_equivalence",
+  "sources": {
+    "refreshed_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/artifact_R1/artifact_stability_cache.pt",
+      "sha256": "21aef3136844a4d7da3bfba36955f60aa588caf0a42f4fc1e80fd24cfe8b1700"
+    },
+    "source_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+      "sha256": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63"
+    },
+    "source_track_payload": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt",
+      "sha256": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+    }
+  },
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 2
+}

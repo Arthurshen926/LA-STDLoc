@@ -1,0 +1,130 @@
+{
+  "anchor_count": 4283,
+  "appearance_variant_count": 7,
+  "base_rerender_descriptor_cosine_median": 0.9999998807907104,
+  "base_rerender_descriptor_cosine_minimum": 0.9999902248382568,
+  "configuration": {
+    "alpha_erosion_radius": 4,
+    "alpha_minimum": 0.05,
+    "fixed_source_keypoints": true,
+    "fixed_track_identity": true,
+    "recipes": [
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "identity",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 0.8,
+        "gamma": 1.0,
+        "name": "exposure_0p80",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.2,
+        "gamma": 1.0,
+        "name": "exposure_1p20",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 0.85,
+        "name": "gamma_0p85",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 1.15,
+        "name": "gamma_1p15",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.05,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "warm",
+        "white_balance": [
+          1.08,
+          1.0,
+          0.92
+        ]
+      },
+      {
+        "contrast": 0.95,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "cool",
+        "white_balance": [
+          0.92,
+          1.0,
+          1.08
+        ]
+      }
+    ],
+    "robust_retain_fraction": 0.75
+  },
+  "fixed_track_identity_and_xyz": true,
+  "input_sha256": {
+    "gaussian_ply": "23fdf046b0d1345be103be98e00cb34423f2fedca4ab06034fc56025bff71351",
+    "selected_map": "81767c67edaf16349f92af648db098bc63461255cecc84649db19ff562f49fd8",
+    "source_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "track_payload": "89a2abc04513501f7a82ae1f6bb6a34ef6daebf4cd61c640589c13a623524881"
+  },
+  "inputs": {
+    "dataset": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4/stairs",
+    "gaussian_ply": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4/stairs/lafgs_prior_v1/point_cloud/iteration_30000/point_cloud.ply",
+    "selected_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/topology/adaptive_compact_total04283.pt",
+    "source_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt"
+  },
+  "keypoint_dispersion_median": 0.0007835229043848813,
+  "mapping_query_count": 2000,
+  "output_sha256": {
+    "anchor_map": "f790dae88d8fc06108019f728bec1f801025896c0614605a79c23d9e15bb1ad7",
+    "identity_metric": "8ef7f76c8a50690ee3c35d9d7cb9eeeb5588989a870b47fb64d2008c8f43e61e",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39"
+  },
+  "outputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_anchor_map.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt"
+  },
+  "schema": "lafgs_rendered_track_appearance_ensemble_materialization",
+  "timing_seconds": {
+    "total": 1824.6775003354996
+  },
+  "track_dispersion_median": 0.0009401245042681694,
+  "uses_gaussian_geometry_for_triangulation": false,
+  "uses_rendered_alpha_for_observation_validity": true,
+  "uses_rendered_depth_for_teacher_visibility_only": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "valid_keypoint_fraction": 1.0,
+  "version": 1
+}

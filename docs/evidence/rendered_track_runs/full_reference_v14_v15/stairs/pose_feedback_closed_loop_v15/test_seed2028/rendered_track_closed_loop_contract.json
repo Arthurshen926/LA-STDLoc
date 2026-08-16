@@ -1,0 +1,81 @@
+{
+  "closed_loop_decision": "RETAIN_V1_4_BASELINE",
+  "closed_loop_selection": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/closed_loop_selection.json",
+  "closed_loop_selection_sha256": "1da47286bfb54bb8ad74c662351a4143032cc9cabf5aebb9ca854c480196cf88",
+  "deployment": {
+    "keypoint_count": 1024,
+    "nms_radius": 4,
+    "one_global_top1_per_query_row": true,
+    "pose_solves_per_query": 1,
+    "ransac_reprojection_px": 10.284482002258306
+  },
+  "evaluated_split": "test",
+  "evaluation_code": {
+    "entrypoints": {
+      "map_learning/equal_energy_descriptor_factor.py": "a866d0abc65a6e894db0d35de1adbfc704847a00d27e9963ab6ea45d6d8c1e71",
+      "scripts/compare_mapping_pose_gate.py": "5cc791186c95fd4e405f38f54f18c9bca0706d91d1582c2f7d7dd397937870f3",
+      "scripts/evaluate_mapping_cache.py": "b4eabde12b18618a7f29f614b451410e67df97456d1eee3408ea1b3fd1a4cd4a",
+      "scripts/materialize_equal_energy_descriptor_factor.py": "f18587d43738308fd06f886223604b3a6b2dfb755de9ba2c684763ff00c8da75"
+    },
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "git_worktree_clean": true,
+    "repository": "/tmp/stdloc-wt-render-track-artifact-r1",
+    "schema": "lafgs_mapping_pose_evaluation_code",
+    "version": 1
+  },
+  "schema": "lafgs_rendered_track_closed_loop_test_contract",
+  "seed": 2028,
+  "selected_artifact_sha256": {
+    "map": "9f3a09fd7c2548d358532ec9b38829802e03cac2ecc82955c119b1af046040cb",
+    "metric": "e4b1d6e7e96df4ef84b9effda7af451a7767779ba8c475fe07c2e1ccfa2fae2f",
+    "query_cache": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63",
+    "scene_calibration": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+    "teacher": "1c9f276c33b9958f63095ba2b18e0d0c8e7975eb38054ec3775c14b4cd3a9110"
+  },
+  "selected_artifacts": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_positive_teacher.pt"
+  },
+  "selected_label": "v1_4_baseline",
+  "summary": {
+    "catastrophic_100cm_count": 11,
+    "duplicate_anchor_fraction_percent": 0.0,
+    "frontend_ms_mean": 48.13254956062883,
+    "frontend_ms_p50": 49.5221521705389,
+    "frontend_ms_p90": 59.81898130849004,
+    "inlier_gt_precision_2px_percent": 21.98856245957985,
+    "inlier_gt_precision_4px_percent": 46.59380745111432,
+    "matcher_raw_gt_precision_2px_percent": 2.98681640625,
+    "matcher_raw_gt_precision_4px_percent": 6.336328125,
+    "matching_ms_mean": 4.6145464312285185,
+    "matching_ms_p50": 5.17464242875576,
+    "matching_ms_p90": 5.5936770513653755,
+    "mean_ae_deg": 1.4977634602389858,
+    "mean_hypotheses": 36589.684,
+    "mean_te_cm": 6.908812609664165,
+    "median_ae_deg": 0.6032486574370202,
+    "median_te_cm": 2.1429693326354027,
+    "p90_ae_deg": 1.7257678466425725,
+    "p90_te_cm": 6.517579928040505,
+    "query_count": 1000,
+    "ransac_ms_mean": 247.32078373804688,
+    "ransac_ms_p50": 165.5464810319245,
+    "ransac_ms_p90": 648.169927764684,
+    "raw_gt_precision_2px_percent": 2.98681640625,
+    "raw_gt_precision_4px_percent": 6.336328125,
+    "recall_2cm_2deg_percent": 47.3,
+    "recall_5cm_5deg_percent": 85.39999999999999,
+    "retained_matches_mean": 1024.0,
+    "runtime_ms_mean": 300.12616966385394,
+    "solver_inlier_ratio_percent": 13.43916015625,
+    "total_ms_mean": 300.12616966385394,
+    "total_ms_p50": 217.8485025651753,
+    "total_ms_p90": 702.2123293019831
+  },
+  "test_used_for_construction_selection_or_calibration": false,
+  "uses_source_mapping_rgb": false,
+  "version": 1
+}

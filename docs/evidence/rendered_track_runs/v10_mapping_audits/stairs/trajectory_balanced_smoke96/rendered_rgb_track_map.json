@@ -1,0 +1,43 @@
+{
+  "artifacts": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_smoke96/rendered_rgb_track_map.pt",
+    "feature_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/smoke96/rendered_rgb_feature_cache.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_smoke96/metric_state_identity.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_smoke96/rendered_rgb_track_payload.pt"
+  },
+  "artifacts_sha256": {
+    "anchor_map": "58398224aaed535ba036ba35f3b62ccb31d6702b83e5f6bcec1017a7712a0595",
+    "feature_cache": "455ec73337b8d13957e9b6394bdbf16666a2a0ec270326202bc76473bb434982",
+    "identity_metric": "2d0628d031e7c30807882ca0025328bb86ecb1deb80e8d0e9b45b99aa504f15f",
+    "track_payload": "a57d226e631992a82a6f6c337b02494e2ecd74cf2b5071d1a274534c2406f7e6"
+  },
+  "broad_track_count": 4629,
+  "cross_trajectory_pair_count": 115,
+  "cycle_or_chain_supported_edge_count": 86113,
+  "pair_count": 350,
+  "pair_policy": "trajectory_balanced",
+  "query_count": 96,
+  "raw_match_count": 93222,
+  "schema": "lafgs_rendered_rgb_only_track_probe_report",
+  "scientific_scope": {
+    "gaussian_primitive_geometry_used_for_triangulation": false,
+    "gaussian_rendered_rgb_used": true,
+    "kcs_or_gwff_used": false,
+    "mapping_source_rgb_loaded": false,
+    "mapping_source_rgb_used": false,
+    "rendered_depth_used": false,
+    "test_queries_used_for_map_construction": false
+  },
+  "selected_map_track_count": 4629,
+  "timing_seconds": {
+    "matching_and_track_build": 8.78967679105699,
+    "pure_ray_triangulation": 15.94619295746088,
+    "total": 130.57546506170183
+  },
+  "track_count": 8908,
+  "triangulated_parallax_median_deg": 8.99048137664795,
+  "triangulated_reprojection_median_px": 0.941825270652771,
+  "triangulated_reprojection_p90_px": 2.6208248138427734,
+  "triangulated_track_count": 5062,
+  "version": 1
+}

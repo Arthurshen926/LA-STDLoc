@@ -1,0 +1,148 @@
+{
+  "combined_summary": {
+    "catastrophic_100cm_count": 212,
+    "cvar95_te_cm": 478.9268436431885,
+    "inlier_gt_precision_percent": 45.837918539510675,
+    "mean_ae_deg": 6.612901973039684,
+    "mean_hypotheses": 36353.099,
+    "mean_te_cm": 41.717821837365044,
+    "median_ae_deg": 0.4401968741263816,
+    "median_te_cm": 1.6943045891821384,
+    "p90_ae_deg": 13.979969209215408,
+    "p90_te_cm": 139.0304398536686,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 6.260205078125,
+    "recall_5cm_5deg_percent": 79.60000000000001,
+    "retained_matches_mean": 1024.0
+  },
+  "folds": [
+    {
+      "held_sequence": "seq-02",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_capacity/seq-02/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 30,
+        "cvar95_te_cm": 611.9351072311401,
+        "inlier_gt_precision_percent": 47.40577566450614,
+        "mean_ae_deg": 5.812213360710249,
+        "mean_hypotheses": 12752.968,
+        "mean_te_cm": 34.01585394460708,
+        "median_ae_deg": 0.367984352280878,
+        "median_te_cm": 1.4063433278352022,
+        "p90_ae_deg": 1.527514711760759,
+        "p90_te_cm": 5.266682952642441,
+        "p95_ae_deg": 16.501244236601853,
+        "p95_te_cm": 115.97475111484528,
+        "p99_te_cm": 957.0190448760986,
+        "query_count": 500,
+        "raw_gt_precision_percent": 8.717578125,
+        "recall_5cm_5deg_percent": 88.6,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 30.7662109375
+      },
+      "train_supported_anchor_count": 12414
+    },
+    {
+      "held_sequence": "seq-03",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_capacity/seq-03/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 8,
+        "cvar95_te_cm": 225.89239352941513,
+        "inlier_gt_precision_percent": 45.1401764771585,
+        "mean_ae_deg": 3.092577254078621,
+        "mean_hypotheses": 66460.15,
+        "mean_te_cm": 13.562503155134618,
+        "median_ae_deg": 0.5972669591888229,
+        "median_te_cm": 2.3399868980050087,
+        "p90_ae_deg": 1.3297025082785519,
+        "p90_te_cm": 5.060786679387093,
+        "p95_ae_deg": 1.9827219431124898,
+        "p95_te_cm": 7.463999427855007,
+        "p99_te_cm": 513.5792536735518,
+        "query_count": 500,
+        "raw_gt_precision_percent": 2.6302734375,
+        "recall_5cm_5deg_percent": 89.4,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 8.7431640625
+      },
+      "train_supported_anchor_count": 12543
+    },
+    {
+      "held_sequence": "seq-05",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_capacity/seq-05/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 168,
+        "cvar95_te_cm": 534.8720531463623,
+        "inlier_gt_precision_percent": 44.86681866206973,
+        "mean_ae_deg": 16.600849179146714,
+        "mean_hypotheses": 57939.082,
+        "mean_te_cm": 115.34421707128641,
+        "median_ae_deg": 1.413828347460012,
+        "median_te_cm": 58.68203938007355,
+        "p90_ae_deg": 51.11167125552996,
+        "p90_te_cm": 297.21025705337524,
+        "p95_ae_deg": 83.00626035667575,
+        "p95_te_cm": 361.20122194290093,
+        "p99_te_cm": 608.0632338523852,
+        "query_count": 500,
+        "raw_gt_precision_percent": 5.481640625,
+        "recall_5cm_5deg_percent": 42.0,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 17.5615234375
+      },
+      "train_supported_anchor_count": 12116
+    },
+    {
+      "held_sequence": "seq-06",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_capacity/seq-06/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 6,
+        "cvar95_te_cm": 56.936703361570835,
+        "inlier_gt_precision_percent": 44.973270673148136,
+        "mean_ae_deg": 0.9459680982231536,
+        "mean_hypotheses": 8260.196,
+        "mean_te_cm": 3.948713178432081,
+        "median_ae_deg": 0.2674554669620883,
+        "median_te_cm": 1.097318110987544,
+        "p90_ae_deg": 0.6461164988131805,
+        "p90_te_cm": 2.458713259547949,
+        "p95_ae_deg": 0.8828145513895573,
+        "p95_te_cm": 2.928461385890841,
+        "p99_te_cm": 131.3131064176559,
+        "query_count": 500,
+        "raw_gt_precision_percent": 8.211328125,
+        "recall_5cm_5deg_percent": 98.4,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 29.008984375
+      },
+      "train_supported_anchor_count": 8468
+    }
+  ],
+  "input_sha256": {
+    "anchor_map": "2144dd17163499a7bc97e1fe0383c83121a14054ff300f22c629d9db2510621f",
+    "query_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "teacher": "7315b13bbdae57e3f9c9b933d8c5211a496909e998ced54f5bf826e9776f64d6",
+    "track_payload": "b20ba568389656489e2fb5530e2788c7c72b608e5530b9538e140519aaf0251a"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/capacity_selection/selected_anchor_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/capacity_selection/selected_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_mapping_sequence_crossfit_report",
+  "sequences": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_capacity/crossfit_statistics.pt",
+  "statistics_sha256": "4575ddb3a0b76b972a233a8a8f5c019f49f6a57a8c9234d7ea7a42d951ad618f",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

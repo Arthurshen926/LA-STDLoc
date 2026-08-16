@@ -1,0 +1,142 @@
+{
+  "anchor_count": 5811,
+  "configuration": {
+    "artifact_alpha_minimum": 0.05,
+    "descriptors_remain_v14_appearance_descriptors": true,
+    "opacity_suppression_strength": 0.5,
+    "peak_search_radius_px": 4,
+    "position_sigma_px": 2.0,
+    "reliability_fusion": "geometric_mean_then_multiply_v14_reliability",
+    "risk_reference_quantile": 0.95,
+    "risk_source": "2dgs_rendered_distortion",
+    "topology_frozen": true
+  },
+  "distortion_reference_scale": {
+    "maximum": 0.09091676771640778,
+    "mean": 0.04794243723154068,
+    "median": 0.04577057436108589,
+    "minimum": 0.0,
+    "p10": 0.030696023255586624,
+    "p90": 0.06697580218315125
+  },
+  "fixed_anchor_xyz": true,
+  "fixed_keypoint_rows": true,
+  "fixed_map_cardinality": true,
+  "fixed_pair_graph": true,
+  "fixed_selector_membership": true,
+  "fixed_track_components": true,
+  "input_sha256": {
+    "appearance_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "gaussian_ply": "23fdf046b0d1345be103be98e00cb34423f2fedca4ab06034fc56025bff71351",
+    "raw_source_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "selected_map": "a20c5209b3e07fec4f0e0b09172cc082e9acd4e72cb0743383e86deb056c2ed6",
+    "track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+  },
+  "inputs": {
+    "appearance_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "gaussian_ply": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4/stairs/lafgs_prior_v1/point_cloud/iteration_30000/point_cloud.ply",
+    "raw_source_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "selected_map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_map.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_query_count": 2000,
+  "only_observation_fusion_weight_changes": true,
+  "output_sha256": {
+    "anchor_map": "21b3eaff5b8000560e689edcbc5cb355cb04ae9e9cd6ccff06c9b2cbc16b837c",
+    "identity_metric": "cbc6be941cca7a8327e890a3df936793301b908d33930f1a9917cded64a73b8a",
+    "query_cache": "0e7d9302629136010b93c1e48b6b38117023fd9c4e9df012ea779535ca9050d8"
+  },
+  "outputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/artifact_stability_anchor_map.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/artifact_stability_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/artifact_stability_cache.pt"
+  },
+  "producer_identity": {
+    "git_commit": "3672fb733609332336b6a05bc9f8fd1bd7fca2d0",
+    "source_sha256": {
+      "docs/evidence/rendered_rgb_track_artifact_stability_preregistration.json": "26a7fbf35d62f44db0460dc1d34b90afe3482f6a6ce9c7a7ec60d11d4b3e0321",
+      "evidence/render_artifact_stability.py": "54678ed89a626aa789559c2ab3a110249af43cdde2c1f325f45750051e444721",
+      "evidence/tracks.py": "2b1c18b23b9b42d50c147a0e63dc5ac65055d4c7aa0a9b725b751f3dda0c80c5",
+      "features/superpoint.py": "ee88d6fa99fd052f498989be94aa8ee5e2568a4cba8db57a51ff9ffc233071fc",
+      "priors/rendering.py": "d091f1187cac437d0fc2810c91f594e6311779f8b3c017886c35e251e028c323",
+      "scripts/materialize_rendered_track_artifact_stability.py": "c97dbc46716f712c9a5921602390a44bc8a89578f5a1f31925ebd6461bb695ab"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "raw_rerender_descriptor_cosine_minimum": 0.9999997615814209,
+  "schema": "lafgs_rendered_track_artifact_stability_r1_materialization",
+  "stability": {
+    "artifact_exposure": {
+      "maximum": 1.0,
+      "mean": 0.2626154124736786,
+      "median": 0.0,
+      "minimum": 0.0,
+      "p10": 0.0,
+      "p90": 1.0
+    },
+    "artifact_reliability": {
+      "maximum": 1.0,
+      "mean": 0.6248882412910461,
+      "median": 0.7520359754562378,
+      "minimum": 0.0,
+      "p10": 0.0,
+      "p90": 0.9714917540550232
+    },
+    "combined_reliability": {
+      "maximum": 0.9997971057891846,
+      "mean": 0.6241936683654785,
+      "median": 0.751243531703949,
+      "minimum": 0.0,
+      "p10": 0.0,
+      "p90": 0.9703173041343689
+    },
+    "descriptor_cosine": {
+      "maximum": 1.0,
+      "mean": 0.9699162840843201,
+      "median": 0.9877563118934631,
+      "minimum": 0.0,
+      "p10": 0.9265802502632141,
+      "p90": 0.9982243776321411
+    },
+    "detector_score_stability": {
+      "maximum": 1.0,
+      "mean": 0.577364981174469,
+      "median": 0.6467311978340149,
+      "minimum": 0.0,
+      "p10": 0.0599246583878994,
+      "p90": 0.9533930420875549
+    },
+    "gaussian_risk": {
+      "maximum": 1.0,
+      "mean": 0.4193290174007416,
+      "median": 0.3141959309577942,
+      "minimum": 1.8586254313390782e-08,
+      "p10": 0.047651756554841995,
+      "p90": 1.0
+    },
+    "position_displacement_px": {
+      "maximum": 5.656854152679443,
+      "mean": 1.2575725317001343,
+      "median": 1.0,
+      "minimum": 0.0,
+      "p10": 0.0,
+      "p90": 4.0
+    },
+    "position_stability": {
+      "maximum": 1.0,
+      "mean": 0.7625088691711426,
+      "median": 0.8824968934059143,
+      "minimum": 0.018315643072128296,
+      "p10": 0.1353352814912796,
+      "p90": 1.0
+    }
+  },
+  "timing_seconds": {
+    "total": 191.0929094934836
+  },
+  "uses_gaussian_primitive_geometry_for_anchor_xyz": false,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,42 @@
+{
+  "artifacts": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_track_map.pt",
+    "feature_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/metric_state_identity.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_track_payload.pt"
+  },
+  "artifacts_sha256": {
+    "anchor_map": "f96c20b6e6a14f0ba2a755a3610bf8082c80e9adc0321dc95ec8b51822eefc46",
+    "feature_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "identity_metric": "4c253ce946fd9ddf6f8432519f4696b5ab5627c9caf5803b671537d56d739264",
+    "report": "721868690a25cfda64843c3b46efb30c2228958b7a77dde6292f0896c9221f5c",
+    "track_payload": "e7a85f2959f606e3bf15eaacdeacc032cbfbae127baeca20edd56ba383cf6d3b"
+  },
+  "broad_track_count": 15964,
+  "cycle_or_chain_supported_edge_count": 4225646,
+  "pair_count": 7450,
+  "query_count": 2000,
+  "raw_match_count": 4588312,
+  "schema": "lafgs_rendered_rgb_only_track_probe_report",
+  "scientific_scope": {
+    "gaussian_primitive_geometry_used_for_triangulation": false,
+    "gaussian_rendered_rgb_used": true,
+    "kcs_or_gwff_used": false,
+    "mapping_source_rgb_loaded": false,
+    "mapping_source_rgb_used": false,
+    "rendered_depth_used": false,
+    "test_queries_used_for_map_construction": false
+  },
+  "selected_map_track_count": 15964,
+  "timing_seconds": {
+    "matching_and_track_build": 254.61287794914097,
+    "pure_ray_triangulation": 55.72891219612211,
+    "total": 935.8171550920233
+  },
+  "track_count": 66256,
+  "triangulated_parallax_median_deg": 3.1092007160186768,
+  "triangulated_reprojection_median_px": 0.9931568503379822,
+  "triangulated_reprojection_p90_px": 2.200594663619995,
+  "triangulated_track_count": 16587,
+  "version": 1
+}

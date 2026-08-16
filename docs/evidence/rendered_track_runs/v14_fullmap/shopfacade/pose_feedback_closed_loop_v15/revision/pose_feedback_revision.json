@@ -1,0 +1,138 @@
+{
+  "configuration": {
+    "matching_rows_target": 123,
+    "maximum_prune_fraction": 0.01,
+    "maximum_tail_nonimproving_wins": 2,
+    "minimum_counterfactual_gain": 1.0
+  },
+  "input_sha256": {
+    "baseline_report": "cf7f6d5090119648a96136d7fd890482271945d8beac19a98c864f8aeb169723",
+    "map": "059c32697358ca884a1b16749d56e89f797410314a677f4778487c79b2db6ab7",
+    "metric": "c3a9813cca49466ef62c3ab0a9fec8f5aff67dd6f8ffd23ec879567b11680705",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "statistics": "db876773b515714355330c642791a8c7a67488c1f2624fff49da0f7d17edc5c2",
+    "teacher": "0521f32340cca3160bd68a9c390ceb0cfb1dd3b59e906f23f15a0c4c24ae95c8"
+  },
+  "inputs": {
+    "baseline_report": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_statistics.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_positive_teacher.pt"
+  },
+  "output_sha256": {
+    "map": "a4c0da67bf67da542d93f778b81451ef0167499644314a1cade8bb0c3fd27c18",
+    "metric": "603d97751bdc839e434b0f07fe2d55e6466348de5fa835050f8b2dcdc90c2248",
+    "teacher": "8c28d69d306552bb174993fbd3f2388e248a0f2dc2f8921ab4f28d2409732093"
+  },
+  "outputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_identity_metric.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_positive_teacher.pt"
+  },
+  "producer_identity": {
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "source_sha256": {
+      "scripts/materialize_rendered_track_pose_feedback.py": "fb68a6f46d3263aaf54a322912bc2176a45d8c5bb8604ad17153a13b074377ee",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071",
+      "topology/matching_coverage.py": "c53aeab894da766de87b24d43b9c37589c79d204dfebf85e2dd0864aaa2bfdac"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": {
+    "descriptor_metric_changed": false,
+    "feedback_source": "full_mapping_query_local_loo_top1_poselib",
+    "geometry_changed": false,
+    "matching_rank_restored": true,
+    "revision_rounds": 1,
+    "test_used_for_selection": false
+  },
+  "pruned_anchor_count": 15,
+  "pruned_anchor_rows": [
+    1248,
+    2577,
+    4732,
+    4914,
+    5751,
+    5752,
+    5754,
+    5755,
+    5762,
+    5763,
+    5764,
+    5766,
+    5769,
+    5784,
+    5786
+  ],
+  "pruned_statistics": {
+    "ambiguous_winner_count": 108.0,
+    "clean_inlier_count": 122.0,
+    "correct_winner_count": 0.0,
+    "counterfactual_clean_gain": 32.0,
+    "false_attractor_count": 75.0,
+    "harmful_inlier_count": 72.0,
+    "information_deletion_loss": 0.9053497278056994,
+    "winner_count": 967.0
+  },
+  "pruned_track_cluster_ids": [
+    2250,
+    8180,
+    6276,
+    2205,
+    13461,
+    13494,
+    14119,
+    13262,
+    13765,
+    13651,
+    13526,
+    13225,
+    13464,
+    13532,
+    14570
+  ],
+  "retained_anchor_count": 5773,
+  "schema": "lafgs_rendered_track_pose_feedback_revision",
+  "selection": {
+    "final_prune_count": 15,
+    "information_deletion_median": 0.1956497252035625,
+    "matching_constraint": {
+      "achieved_matching_rank": 27496,
+      "alias_risk_tiebreak_enabled": false,
+      "alias_risk_unknown_policy": null,
+      "core_rank_median": 668.0,
+      "core_rank_p10": 144.0,
+      "coverage_definition": "query_anchor_bipartite_matching_rank",
+      "feasibility_limited_query_count": 18,
+      "feasible_target_count": 27496,
+      "final_rank_median": 668.0,
+      "final_rank_p10": 144.0,
+      "normalized_coverage_p10": 1.170731707317073,
+      "requested_rows_per_query": 123,
+      "reserve_count": 0,
+      "unmet_query_count": 0,
+      "unmet_rank": 0
+    },
+    "matching_rank_after_median": 668.0,
+    "matching_rank_after_p10": 144.0,
+    "matching_rank_before_median": 668.0,
+    "matching_rank_before_p10": 145.0,
+    "maximum_prune_fraction": 0.01,
+    "maximum_tail_nonimproving_wins": 2,
+    "minimum_counterfactual_gain": 1.0,
+    "proposed_prune_count": 15,
+    "restored_for_matching_count": 0,
+    "revisable_anchor_count": 5788,
+    "selection_uses_test_queries": false,
+    "tail_protected_candidate_count": 0
+  },
+  "source_anchor_count": 5788,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

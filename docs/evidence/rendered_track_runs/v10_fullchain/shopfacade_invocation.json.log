@@ -1,0 +1,69 @@
+Loaded SuperPoint model
+rendered 10/231 views; rows=2048
+rendered 20/231 views; rows=2048
+rendered 30/231 views; rows=2048
+rendered 40/231 views; rows=2048
+rendered 50/231 views; rows=2048
+rendered 60/231 views; rows=2048
+rendered 70/231 views; rows=2048
+rendered 80/231 views; rows=2048
+rendered 90/231 views; rows=2048
+rendered 100/231 views; rows=2048
+rendered 110/231 views; rows=2048
+rendered 120/231 views; rows=2048
+rendered 130/231 views; rows=2048
+rendered 140/231 views; rows=2048
+rendered 150/231 views; rows=2048
+rendered 160/231 views; rows=2048
+rendered 170/231 views; rows=2048
+rendered 180/231 views; rows=2048
+rendered 190/231 views; rows=2048
+rendered 200/231 views; rows=2048
+rendered 210/231 views; rows=2048
+rendered 220/231 views; rows=2048
+rendered 230/231 views; rows=2048
+rendered 231/231 views; rows=2048
+wrote rendered feature cache /mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_feature_cache.pt
+{
+  "artifacts": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_map.pt",
+    "feature_cache": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_feature_cache.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/metric_state_identity.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_payload.pt"
+  },
+  "artifacts_sha256": {
+    "anchor_map": "46ff7b23e55832ff198cbbafe97c4416d04c6163d02a0847bead6e5c3c485da9",
+    "feature_cache": "fbc3997d723e1f9a357aceeb88bb86e2aa05786fc3e5c6049f2a3288bc7d215f",
+    "identity_metric": "443f3c2e17d331805a2d3bfcdc3a5fe8c906c50a0c2795933eb01758e7d4f12c",
+    "track_payload": "3e83ac3dfec629dad8010b892662d3942065c37f64a0a2b6ea3a1b642135af66"
+  },
+  "broad_track_count": 14769,
+  "cross_trajectory_pair_count": 0,
+  "cycle_or_chain_supported_edge_count": 809205,
+  "pair_count": 786,
+  "pair_policy": "nearest",
+  "query_count": 231,
+  "raw_match_count": 817355,
+  "schema": "lafgs_rendered_rgb_only_track_probe_report",
+  "scientific_scope": {
+    "gaussian_primitive_geometry_used_for_triangulation": false,
+    "gaussian_rendered_rgb_used": true,
+    "kcs_or_gwff_used": false,
+    "mapping_source_rgb_loaded": false,
+    "mapping_source_rgb_used": false,
+    "rendered_depth_used": false,
+    "test_queries_used_for_map_construction": false
+  },
+  "selected_map_track_count": 14769,
+  "timing_seconds": {
+    "matching_and_track_build": 42.56217151414603,
+    "pure_ray_triangulation": 52.078934812918305,
+    "total": 768.1032884074375
+  },
+  "track_count": 35069,
+  "triangulated_parallax_median_deg": 13.939675331115723,
+  "triangulated_reprojection_median_px": 0.6738967895507812,
+  "triangulated_reprojection_p90_px": 1.5537470579147339,
+  "triangulated_track_count": 15493,
+  "version": 1
+}

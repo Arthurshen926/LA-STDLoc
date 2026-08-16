@@ -1,0 +1,74 @@
+{
+  "configuration": {
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "a20c5209b3e07fec4f0e0b09172cc082e9acd4e72cb0743383e86deb056c2ed6",
+    "metric": "e5a3a98a4c38686ac21318b33b9ffe39ceb481a3194d369afa702395925ad8b9",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "scene_calibration": "5e9263ccb44005ff7031f58b38bb3e19d3584a86cb1533d500863cacf74ac5b2",
+    "teacher": "e12a3005c08f748af76ecb616a63b4255fb27a30677341246874567bc4b1dcfe",
+    "track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 433140,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 656,
+    "mean_affected_anchors_per_query": 216.57000732421875,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "a2d4caed3ddd995d40fc2130c232f424933f924e",
+    "source_sha256": {
+      "evidence/tracks.py": "2b1c18b23b9b42d50c147a0e63dc5ac65055d4c7aa0a9b725b751f3dda0c80c5",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "903163869c264be82c709614f9c9c8cfad2f5974afcb58ab49ee55ed91a2e03b",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "b80dc774420f92d8fe4a5d3505db11dd7c17679d5f589b42ecfb9509df8d99bd",
+  "summary": {
+    "catastrophic_100cm_count": 22,
+    "cvar95_te_cm": 114.27358741499484,
+    "inlier_gt_precision_percent": 33.509061369901225,
+    "mean_ae_deg": 1.2434154809403855,
+    "mean_hypotheses": 4951.0345,
+    "mean_te_cm": 6.102910034996603,
+    "median_ae_deg": 0.10367080902258197,
+    "median_te_cm": 0.3630831022746861,
+    "p90_ae_deg": 0.2981727166338281,
+    "p90_te_cm": 0.9597506001591686,
+    "p95_ae_deg": 0.4870818725865862,
+    "p95_te_cm": 1.4992078393697734,
+    "p99_te_cm": 168.17954373359674,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 7.278662109375,
+    "recall_5cm_5deg_percent": 96.6,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 42.707373046875
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

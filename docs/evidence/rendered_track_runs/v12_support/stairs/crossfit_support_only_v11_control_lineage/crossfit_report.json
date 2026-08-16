@@ -1,0 +1,168 @@
+{
+  "combined_summary": {
+    "catastrophic_100cm_count": 309,
+    "cvar95_te_cm": 626.7872633934021,
+    "inlier_gt_precision_percent": 13.096463779818983,
+    "mean_ae_deg": 11.154873717404177,
+    "mean_hypotheses": 46044.076,
+    "mean_te_cm": 62.42249761033454,
+    "median_ae_deg": 0.5647312196753349,
+    "median_te_cm": 2.041748072952032,
+    "p90_ae_deg": 37.35252940463447,
+    "p90_te_cm": 272.8004717826844,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 3.61328125,
+    "recall_5cm_5deg_percent": 70.6,
+    "retained_matches_mean": 1024.0
+  },
+  "folds": [
+    {
+      "held_sequence": "seq-02",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/seq-02/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 28,
+        "cvar95_te_cm": 553.8978457450867,
+        "inlier_gt_precision_percent": 12.349942000053954,
+        "mean_ae_deg": 6.063715291398746,
+        "mean_hypotheses": 17000.884,
+        "mean_te_cm": 30.092046553851105,
+        "median_ae_deg": 0.3509408158263012,
+        "median_te_cm": 1.218473631888628,
+        "p90_ae_deg": 1.2254162985447417,
+        "p90_te_cm": 4.0024870634079,
+        "p95_ae_deg": 21.06836019117674,
+        "p95_te_cm": 110.94903051853146,
+        "p99_te_cm": 868.3724517822264,
+        "query_count": 500,
+        "raw_gt_precision_percent": 5.5875,
+        "recall_5cm_5deg_percent": 91.60000000000001,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 21.7201171875
+      },
+      "support_only_triangulated_anchor_count": 3864,
+      "train_supported_anchor_count": 3857
+    },
+    {
+      "held_sequence": "seq-03",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/seq-03/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 79,
+        "cvar95_te_cm": 887.1792011260986,
+        "inlier_gt_precision_percent": 13.48055592676734,
+        "mean_ae_deg": 18.933968430991655,
+        "mean_hypotheses": 83614.982,
+        "mean_te_cm": 88.07962959776633,
+        "median_ae_deg": 1.094060928552259,
+        "median_te_cm": 3.969559632241726,
+        "p90_ae_deg": 98.29969184800298,
+        "p90_te_cm": 319.81994390487716,
+        "p95_ae_deg": 123.28491520174902,
+        "p95_te_cm": 597.177269458769,
+        "p99_te_cm": 924.1737174987792,
+        "query_count": 500,
+        "raw_gt_precision_percent": 1.52265625,
+        "recall_5cm_5deg_percent": 57.599999999999994,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 5.84609375
+      },
+      "support_only_triangulated_anchor_count": 3152,
+      "train_supported_anchor_count": 3144
+    },
+    {
+      "held_sequence": "seq-05",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/seq-05/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 194,
+        "cvar95_te_cm": 520.8766460418701,
+        "inlier_gt_precision_percent": 12.888597855447328,
+        "mean_ae_deg": 17.50269977980403,
+        "mean_hypotheses": 62620.426,
+        "mean_te_cm": 121.97883396463003,
+        "median_ae_deg": 1.69856852859153,
+        "median_te_cm": 59.940242767333984,
+        "p90_ae_deg": 49.37209686449915,
+        "p90_te_cm": 303.0449151992798,
+        "p95_ae_deg": 74.47169651702947,
+        "p95_te_cm": 333.0397951602936,
+        "p99_te_cm": 615.292335510253,
+        "query_count": 500,
+        "raw_gt_precision_percent": 2.9671875,
+        "recall_5cm_5deg_percent": 41.8,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 11.9306640625
+      },
+      "support_only_triangulated_anchor_count": 3168,
+      "train_supported_anchor_count": 3155
+    },
+    {
+      "held_sequence": "seq-06",
+      "query_count": 500,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/seq-06/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 8,
+        "cvar95_te_cm": 160.0012567639351,
+        "inlier_gt_precision_percent": 13.983113300907503,
+        "mean_ae_deg": 2.119111367422277,
+        "mean_hypotheses": 20940.012,
+        "mean_te_cm": 9.539480325090699,
+        "median_ae_deg": 0.3317280940006504,
+        "median_te_cm": 1.2029873672872782,
+        "p90_ae_deg": 0.9306428469989099,
+        "p90_te_cm": 3.084512948989868,
+        "p95_ae_deg": 3.5008599897537445,
+        "p95_te_cm": 17.002492621541005,
+        "p99_te_cm": 354.80033993720997,
+        "query_count": 500,
+        "raw_gt_precision_percent": 4.37578125,
+        "recall_5cm_5deg_percent": 91.4,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 18.551953125
+      },
+      "support_only_triangulated_anchor_count": 2908,
+      "train_supported_anchor_count": 2906
+    }
+  ],
+  "grouping": "mapping_trajectory",
+  "input_sha256": {
+    "anchor_map": "b4d9f09e28ce9f8bd2b28b41758e23189920467059ef6f4930b3a97fea1db199",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "teacher": "8f0ad2ed8368eb55b798051b38a379aca7c4b3d67c7d07693f23af2c6fb93ab5",
+    "track_payload": "6b815a9c20c498262d58309f0b858dfc70ad087d31b876ec00cefb4a8d81ae5e"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/training/rendered_track_training_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/training/rendered_track_training_payload.pt"
+  },
+  "producer_identity": {
+    "git_commit": "b7b8e22f4471a8cb7a67d82adeff5af98a51b565",
+    "source_sha256": {
+      "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+      "evidence/tracks.py": "f5528196bf2815599b643fdae56599d7816c75b8a14c7b1bab1ca02168a8d113",
+      "evidence/triangulation.py": "3bf7d85e962b563129576b0b7a308642399fb2601b9fe588240018865286731c",
+      "map_learning/metric.py": "8584ff1dbc35b37a97a6a95e0ff33afa34205bab2cc2dc2e8972c9d6b145acc2",
+      "scripts/evaluate_rendered_track_crossfit.py": "4174ce17c7479db356a09c9a56c4d263c14c676034db78bbb219febcf53cda69",
+      "topology/deployment_revision.py": "6492408d74fcf669080836505e4b9473ea47b45081767029925cabd365547313",
+      "topology/track_core.py": "ee625d74ee5c8bc7a6f6bc6e8631fdbeb17b7beda46ccf679f4021366c93c183"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_mapping_sequence_crossfit_report",
+  "sequences": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/crossfit_statistics.pt",
+  "statistics_sha256": "3c35bb23a8410d13cb99f7107959901c21a1fc7e8c650fc23ad15bf5093c2815",
+  "support_only_retriangulation": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

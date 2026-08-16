@@ -1,0 +1,52 @@
+{
+  "input_sha256": {
+    "anchor_map": "d2d1532de92edac1db36e16bcc864100bb91c8f8b3f9189467869273d7017d3d",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "track_payload": "a8c2e1e68207fd887dea3602992ef18701179968f22058a4e9528fc1fd25c417"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/frozen_membership_final/frozen_membership_anchor_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/support_repair_final/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "6956b9af28c4ebc8932a0392075ff6e301f4fa715022ac469e63bbad8c40aed9",
+    "map": "c1131924f3d10a0585a2a52474e09b8611540eac8422412447bb291c95f23f16",
+    "teacher": "8df2e99ff90bf0d5b7bf6b86b9240ee372df3352f797aebf6305c9d2450967dc",
+    "track_payload": "d73b19c108d29b60ea5581d7873ebbb758033d88eed29f032a10a4c711a51e1d"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_frozen_membership/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_frozen_membership/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_frozen_membership/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_frozen_membership/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 1379286,
+    "depth_visibility_rejected_anchor_count": 1668580,
+    "exact_depth_disagreement_audit_count": 187213,
+    "exact_track_positive_count": 371943,
+    "masked_query_row_count": 0,
+    "positive_rows": 371943,
+    "query_count": 2000,
+    "strong_pair_count": 371943,
+    "support_compatible_pair_count": 192668
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

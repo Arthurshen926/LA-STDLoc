@@ -1,0 +1,46 @@
+{
+  "input_sha256": {
+    "anchor_map": "46ff7b23e55832ff198cbbafe97c4416d04c6163d02a0847bead6e5c3c485da9",
+    "query_cache": "fbc3997d723e1f9a357aceeb88bb86e2aa05786fc3e5c6049f2a3288bc7d215f",
+    "track_payload": "3e83ac3dfec629dad8010b892662d3942065c37f64a0a2b6ea3a1b642135af66"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_feature_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_payload.pt"
+  },
+  "mapping_grouping": "contiguous_mapping_blocks",
+  "mapping_sequence_names": [
+    "blocked_00",
+    "blocked_01",
+    "blocked_02"
+  ],
+  "mapping_sequence_query_counts": {
+    "blocked_00": 77,
+    "blocked_01": 77,
+    "blocked_02": 77
+  },
+  "output_sha256": {
+    "graph": "13a043ef1154a52082d6e60857c912a0f136f679ac29b642bd13d8f9d0b55d97",
+    "map": "1ef48501f57209107fc9b593036164bd03a3acfd94818df2cf68433655d8419a",
+    "teacher": "d69332895bbb844ea406de14379b763961e37e13bb4f83d79203e0f4a8a45103",
+    "track_payload": "67fad5aff450b386b9f1fc2a0d2e7d0c9073795ca2b1cea3ff70b411d764250c"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 684117,
+    "exact_track_positive_count": 259908,
+    "positive_rows": 293449,
+    "query_count": 231,
+    "strong_pair_count": 360527
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

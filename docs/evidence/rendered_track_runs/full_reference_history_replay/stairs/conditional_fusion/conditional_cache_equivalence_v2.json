@@ -1,0 +1,82 @@
+{
+  "audit": {
+    "added_query_fields": [
+      "native_artifact_exposure",
+      "native_artifact_reliability",
+      "native_raw_clean_descriptor_cosine",
+      "native_raw_clean_detector_score_stability",
+      "native_raw_clean_position_displacement_px",
+      "native_raw_clean_position_stability"
+    ],
+    "artifact_evidence_bitwise_reused": true,
+    "artifact_only_allowed_differences": true,
+    "base_appearance_reliability_bitwise_exact": true,
+    "calibration_numeric_reuse_authorized": true,
+    "changed_query_fields": [
+      "native_appearance_reliability",
+      "source"
+    ],
+    "conditional_annotations_valid": true,
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "exact_shared_query_fields": [
+      "native_K",
+      "native_alpha_at_keypoints",
+      "native_appearance_dispersion",
+      "native_depth_at_keypoints",
+      "native_descriptors",
+      "native_input_hw",
+      "native_keypoints",
+      "native_rendered_alpha",
+      "native_rendered_depth",
+      "native_scores",
+      "native_valid_keypoint_mask",
+      "pose_w2c"
+    ],
+    "localization_query_rows_bitwise_exact": true,
+    "query_count": 2000,
+    "query_order_exact": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_image_free_mapping_only": true,
+    "source_track_query_registry_exact": true
+  },
+  "checks": {
+    "artifact_evidence_bitwise_reused": true,
+    "base_appearance_reliability_bitwise_exact": true,
+    "calibration_numeric_reuse_authorized": true,
+    "conditional_annotations_valid": true,
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "localization_query_rows_bitwise_exact": true,
+    "query_order_exact": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_image_free_mapping_only": true,
+    "source_track_query_registry_exact": true
+  },
+  "producer_identity": {
+    "git_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+    "source_sha256": {
+      "evidence/conditional_track_fusion.py": "0daedfbdbc125dad84c08c5f2e346dbdd4854c0e70c5b0984f50a8163e3f143d",
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "scripts/materialize_rendered_track_conditional_fusion.py": "c9d6122c58cd0aae6cf1a7e4b1df55b6f3c6381c86df4e7b77d5c69702d7d1a5"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_mapping_sparse_refresh_equivalence",
+  "sources": {
+    "refreshed_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/conditional_fusion_cache.pt",
+      "sha256": "d895246e08b7e722bd5eecdafb494c08b0548026315a2857651fbdf2695fe6a7"
+    },
+    "source_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+      "sha256": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63"
+    },
+    "source_track_payload": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt",
+      "sha256": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+    }
+  },
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 2
+}

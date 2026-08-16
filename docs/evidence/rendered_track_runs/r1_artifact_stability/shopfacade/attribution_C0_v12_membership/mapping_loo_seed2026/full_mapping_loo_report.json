@@ -1,0 +1,74 @@
+{
+  "configuration": {
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "05fbdb2133725392937f2230cafc909845170b2053171ff2dbf38c55b365ee45",
+    "metric": "162ff05523e69f16c8fb782e642c4d2a80db5b39fcbd3c9fa00de18095a2359d",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "teacher": "ae9f5baec277b1c22e156a3c48877fd74b282ac1e44355ba088cc3ea2c2c41e3",
+    "track_payload": "c26b36271b7c7137a9a8a8ae1edb4a7e7fa378a5f59e190b75c2b469e8d1d1cb"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/training_frozen_membership_bound_v3/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/training_frozen_membership_bound_v3/rendered_track_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/training_frozen_membership_bound_v3/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/support_repair_final/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 95852,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 756,
+    "mean_affected_anchors_per_query": 414.9437255859375,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "0c44d1c5643db438827c58430d2e60bf1c1b4584",
+    "source_sha256": {
+      "evidence/tracks.py": "2b1c18b23b9b42d50c147a0e63dc5ac65055d4c7aa0a9b725b751f3dda0c80c5",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "903163869c264be82c709614f9c9c8cfad2f5974afcb58ab49ee55ed91a2e03b",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/attribution_C0_v12_membership/mapping_loo_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "38f3f6ac8ff6b034add56baf760e1a2a034d1744f58c9e1a9fc8c3b9c7697dce",
+  "summary": {
+    "catastrophic_100cm_count": 2,
+    "cvar95_te_cm": 1588.8517099355038,
+    "inlier_gt_precision_percent": 85.09292931231349,
+    "mean_ae_deg": 1.16675983872985,
+    "mean_hypotheses": 12564.800865800866,
+    "mean_te_cm": 82.99049841171005,
+    "median_ae_deg": 0.024674513611447287,
+    "median_te_cm": 0.4641080740839243,
+    "p90_ae_deg": 0.05590580538785517,
+    "p90_te_cm": 0.949628371745348,
+    "p95_ae_deg": 0.07838080298593997,
+    "p95_te_cm": 1.1001250240951777,
+    "p99_te_cm": 2.5846356153488075,
+    "query_count": 231,
+    "raw_gt_precision_percent": 15.861181106357071,
+    "recall_5cm_5deg_percent": 99.13419913419914,
+    "retained_matches_mean": 2047.82683982684,
+    "solver_inlier_ratio_percent": 22.03137947946086
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

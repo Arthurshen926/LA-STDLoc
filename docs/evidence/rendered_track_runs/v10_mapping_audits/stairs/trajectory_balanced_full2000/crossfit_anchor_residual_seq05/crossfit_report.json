@@ -1,0 +1,70 @@
+{
+  "combined_summary": {
+    "catastrophic_100cm_count": 172,
+    "cvar95_te_cm": 519.2119398117065,
+    "inlier_gt_precision_percent": 45.4312656614059,
+    "mean_ae_deg": 13.945184592408326,
+    "mean_hypotheses": 57838.66,
+    "mean_te_cm": 113.06862925062305,
+    "median_ae_deg": 1.4678701381944752,
+    "median_te_cm": 58.640336990356445,
+    "p90_ae_deg": 41.07964478941888,
+    "p90_te_cm": 295.77297925949097,
+    "query_count": 500,
+    "raw_gt_precision_percent": 5.675,
+    "recall_5cm_5deg_percent": 42.199999999999996,
+    "retained_matches_mean": 1024.0
+  },
+  "config": {
+    "anchor_feature_residual_max_norm": 0.1,
+    "anchor_feature_residual_trust_weight": 1.0,
+    "batch_size": 512,
+    "group_dro_eta": 0.03,
+    "group_dro_max_weight_ratio": 3.0,
+    "harmful_weight": 0.1,
+    "learning_rate": 0.0002,
+    "max_positives": 8,
+    "metric_residual": 0.05,
+    "rank": 16,
+    "steps": 100,
+    "temperature": 0.04,
+    "topk": 64,
+    "trust_weight": 1.0
+  },
+  "folds": [
+    {
+      "held_sequence": "seq-05",
+      "metric_state": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_anchor_residual_seq05/seq-05/a1/metric_state_step_0100.pt",
+      "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_anchor_residual_seq05/seq-05/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 172,
+        "cvar95_te_cm": 519.2119398117065,
+        "inlier_gt_precision_percent": 45.4312656614059,
+        "mean_ae_deg": 13.945184592408326,
+        "mean_hypotheses": 57838.66,
+        "mean_te_cm": 113.06862925062305,
+        "median_ae_deg": 1.4678701381944752,
+        "median_te_cm": 58.640336990356445,
+        "p90_ae_deg": 41.07964478941888,
+        "p90_te_cm": 295.77297925949097,
+        "p95_ae_deg": 55.43893418909693,
+        "p95_te_cm": 334.3371188640594,
+        "p99_te_cm": 708.6988902091978,
+        "query_count": 500,
+        "raw_gt_precision_percent": 5.675,
+        "recall_5cm_5deg_percent": 42.199999999999996,
+        "retained_matches_mean": 1024.0,
+        "solver_inlier_ratio_percent": 17.77109375
+      },
+      "train_sequence_count": 3,
+      "train_supported_anchor_count": 12116,
+      "trained_map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_anchor_residual_seq05/seq-05/a1/anchor_map_step_0100.pt"
+    }
+  ],
+  "schema": "lafgs_rendered_track_a1_mapping_sequence_crossfit_report",
+  "statistics": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/crossfit_anchor_residual_seq05/crossfit_statistics.pt",
+  "statistics_sha256": "eaf208a3be5ba86549a023c5e82ccf004d8d98778bdc1a81610b52bb645e5e26",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

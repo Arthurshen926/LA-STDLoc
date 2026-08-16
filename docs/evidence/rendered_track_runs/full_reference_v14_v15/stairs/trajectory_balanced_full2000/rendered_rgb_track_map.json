@@ -1,0 +1,43 @@
+{
+  "artifacts": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/trajectory_balanced_full2000/rendered_rgb_track_map.pt",
+    "feature_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/rendered_rgb_feature_cache.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/trajectory_balanced_full2000/metric_state_identity.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt"
+  },
+  "artifacts_sha256": {
+    "anchor_map": "fb713259d6319b478b61dec5ec76346dcada10d5f6cc95cc3b7cc451e39fed82",
+    "feature_cache": "d341a4d4584e90d6e39cf3485694122cd4c36da0ece197231ae7ea1a7acca332",
+    "identity_metric": "482e0f13eb6a38675b1aa776ca6edfeff953500d21928e2aeb68a080e1e2acd0",
+    "track_payload": "678a39960b860246d9c4ea1fc6f6a223da9024381c72921924d69ed7f277eae4"
+  },
+  "broad_track_count": 14997,
+  "cross_trajectory_pair_count": 2428,
+  "cycle_or_chain_supported_edge_count": 3157721,
+  "pair_count": 7450,
+  "pair_policy": "trajectory_balanced",
+  "query_count": 2000,
+  "raw_match_count": 3406518,
+  "schema": "lafgs_rendered_rgb_only_track_probe_report",
+  "scientific_scope": {
+    "gaussian_primitive_geometry_used_for_triangulation": false,
+    "gaussian_rendered_rgb_used": true,
+    "kcs_or_gwff_used": false,
+    "mapping_source_rgb_loaded": false,
+    "mapping_source_rgb_used": false,
+    "rendered_depth_used": false,
+    "test_queries_used_for_map_construction": false
+  },
+  "selected_map_track_count": 14997,
+  "timing_seconds": {
+    "matching_and_track_build": 224.11593134514987,
+    "pure_ray_triangulation": 54.969223568215966,
+    "total": 1762.740510147065
+  },
+  "track_count": 72900,
+  "triangulated_parallax_median_deg": 2.663315773010254,
+  "triangulated_reprojection_median_px": 0.9696566462516785,
+  "triangulated_reprojection_p90_px": 2.2114083766937256,
+  "triangulated_track_count": 15717,
+  "version": 1
+}

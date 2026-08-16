@@ -1,0 +1,10 @@
+{
+  "anchor_count": 2504,
+  "descriptor_dim": 256,
+  "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/training_frozen_membership_bound_v3/rendered_track_training_map.pt",
+  "map_sha256": "05fbdb2133725392937f2230cafc909845170b2053171ff2dbf38c55b365ee45",
+  "output": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/training_frozen_membership_bound_v3/rendered_track_identity_metric.pt",
+  "output_sha256": "162ff05523e69f16c8fb782e642c4d2a80db5b39fcbd3c9fa00de18095a2359d",
+  "schema": "lafgs_rendered_track_identity_metric_materialization",
+  "version": 1
+}

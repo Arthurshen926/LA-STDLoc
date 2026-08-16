@@ -1,0 +1,18 @@
+{
+  "candidate_track_count": 35069,
+  "excluded_track_count": 117,
+  "output_sha256": {
+    "empty_base_graph": "502ad45303d38d8f49162d20019e363d7cc7d6139f53eae7be777aabfffe4e83",
+    "empty_canonical_map": "23687bc340e6e5f6ec94336afad24b133c82dec2762dccfa41f88a22ed67a708",
+    "track_exclusions": "c8ecc1914a220dc3879fc803e656b13ea025dbaa9f30b7078871f0458a416553"
+  },
+  "outputs": {
+    "empty_base_graph": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/fullchain_inputs/empty_base_graph.pt",
+    "empty_canonical_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/fullchain_inputs/empty_canonical_map.pt",
+    "track_exclusions": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/fullchain_inputs/track_exclusions.pt"
+  },
+  "schema": "lafgs_rendered_track_fullchain_inputs",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

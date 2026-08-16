@@ -1,0 +1,68 @@
+{"completed_queries": 100, "positive_rows": 29397, "strong_pairs": 39282}
+{"completed_queries": 200, "positive_rows": 60351, "strong_pairs": 80581}
+{"completed_queries": 300, "positive_rows": 90910, "strong_pairs": 122927}
+{"completed_queries": 400, "positive_rows": 115708, "strong_pairs": 154975}
+{"completed_queries": 500, "positive_rows": 128429, "strong_pairs": 170273}
+{"completed_queries": 600, "positive_rows": 192449, "strong_pairs": 264018}
+{"completed_queries": 700, "positive_rows": 232615, "strong_pairs": 313392}
+{"completed_queries": 800, "positive_rows": 256650, "strong_pairs": 340879}
+{"completed_queries": 900, "positive_rows": 285677, "strong_pairs": 374966}
+{"completed_queries": 1000, "positive_rows": 317839, "strong_pairs": 411322}
+{"completed_queries": 1100, "positive_rows": 349050, "strong_pairs": 454026}
+{"completed_queries": 1200, "positive_rows": 392670, "strong_pairs": 506869}
+{"completed_queries": 1300, "positive_rows": 416277, "strong_pairs": 532955}
+{"completed_queries": 1400, "positive_rows": 433670, "strong_pairs": 551159}
+{"completed_queries": 1500, "positive_rows": 441310, "strong_pairs": 558950}
+{"completed_queries": 1600, "positive_rows": 466511, "strong_pairs": 591610}
+{"completed_queries": 1700, "positive_rows": 494546, "strong_pairs": 629309}
+{"completed_queries": 1800, "positive_rows": 520551, "strong_pairs": 663418}
+{"completed_queries": 1900, "positive_rows": 566899, "strong_pairs": 731936}
+{"completed_queries": 2000, "positive_rows": 595459, "strong_pairs": 770151}
+{
+  "input_sha256": {
+    "anchor_map": "81767c67edaf16349f92af648db098bc63461255cecc84649db19ff562f49fd8",
+    "query_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "track_payload": "89a2abc04513501f7a82ae1f6bb6a34ef6daebf4cd61c640589c13a623524881"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/topology/adaptive_compact_total04283.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "f2a587cc9980b057f60f31a03c4ac451d8336a84cf3038467ad3aa4bddc8ac38",
+    "map": "5b3d2f5580aa86080388f379bc238a4b8b9a86f5f79a789c6d57dec8435e25e5",
+    "teacher": "204d5bb03a1aa95cdc4c40410e9162e1d9d3a93cc9a36606c3ec7de5d9155075",
+    "track_payload": "35f65548860a4f6d4c0387d3d9bf01c00d7abe78865b8f216e25644784b386aa"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/compact_training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/compact_training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/compact_training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/stairs/compact_training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 2815445,
+    "exact_track_positive_count": 379742,
+    "positive_rows": 595459,
+    "query_count": 2000,
+    "strong_pair_count": 770151
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

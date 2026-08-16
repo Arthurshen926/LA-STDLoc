@@ -441,3 +441,12 @@ improvement with slightly worse mean and precision.  The pipeline gap is
 closed, but the revision is not a new cross-scene accuracy Pareto point; V1.4
 remains the cross-scene render-only default.  See
 [`docs/rendered_track_pose_feedback_closed_loop_result.md`](rendered_track_pose_feedback_closed_loop_result.md).
+
+## Repository record archive
+
+The concise result documents above are complemented by a checked-in archive of
+the underlying reports, contracts, summaries, invocations, exit statuses, and
+per-query JSON results for V1.0 through V1.5.  Large tensor/cache/image artifacts
+remain external and are bound by SHA.  See
+[`docs/evidence/rendered_track_runs/README.md`](evidence/rendered_track_runs/README.md)
+and its independently verifiable manifest.

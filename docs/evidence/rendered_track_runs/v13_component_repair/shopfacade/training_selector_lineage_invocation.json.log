@@ -1,0 +1,57 @@
+{"completed_queries": 100, "positive_rows": 50027, "strong_pairs": 50027}
+{"completed_queries": 200, "positive_rows": 121808, "strong_pairs": 121808}
+{"completed_queries": 231, "positive_rows": 142759, "strong_pairs": 142759}
+{
+  "input_sha256": {
+    "anchor_map": "c14119a11f7123bcb168855bd6ce57229952f356cb1ed018992d1e0a97132a17",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/adaptive_compact_total05788.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "contiguous_mapping_blocks",
+  "mapping_sequence_names": [
+    "blocked_00",
+    "blocked_01",
+    "blocked_02"
+  ],
+  "mapping_sequence_query_counts": {
+    "blocked_00": 77,
+    "blocked_01": 77,
+    "blocked_02": 77
+  },
+  "output_sha256": {
+    "graph": "0173a6b4ab044974060f015f2281bdbc99d5506b60f4ddf1999403dc314992aa",
+    "map": "b858e09f3f9253c8b22b68c8ce6e9e28e58470d9886e47375988f256515b8300",
+    "teacher": "7b89ae3f0d09198be54d385d670cbc906a2278fbfe87ffe10903fca70bba3622",
+    "track_payload": "4f669091ef7f5b47d59b27c809897295247db4ab2c4068f048bd294c7c8f810c"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/training_selector_lineage/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/training_selector_lineage/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/training_selector_lineage/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/training_selector_lineage/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 149101,
+    "depth_visibility_rejected_anchor_count": 611636,
+    "exact_depth_disagreement_audit_count": 24322,
+    "exact_track_positive_count": 168948,
+    "masked_query_row_count": 40,
+    "positive_rows": 142759,
+    "query_count": 231,
+    "strong_certified_exact_positive_count": 142759,
+    "strong_pair_count": 142759,
+    "support_compatible_pair_count": 21741,
+    "weak_exact_ambiguous_count": 26189
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,89 @@
+{
+  "broad_track_count": 15072,
+  "configuration": {
+    "alpha_minimum": 0.05,
+    "coverage_policy": "alpha_valid_and_depth_consistent_or_observation_reprojection_certified",
+    "depth_abs_tolerance_m": 0.0024172648421127408,
+    "depth_relative_tolerance": 0.02,
+    "hard_alpha_minimum": 0.2,
+    "hard_cycle_px": 8.0,
+    "hard_depth_sigma": 3.0,
+    "maximum_children_per_source_track": 3,
+    "soft_cycle_px": 4.0,
+    "uncertain_weight_floor": 0.25
+  },
+  "coverage_certified_observation_count": 471192,
+  "edge_diagnostics": {
+    "hard_rejected_edge_count": 6389,
+    "high_confidence_support_edge_count": 2380028,
+    "mean_cycle_error_px": 538840.4521901719,
+    "mean_depth_disagreement_sigma": 0.2839946805027112,
+    "mean_soft_weight": 0.9079764831476798,
+    "recomputed_raw_match_count": 3400050,
+    "valid_support_diagnostic_edge_count": 3124082,
+    "within_source_component_edge_count": 3124082
+  },
+  "input_sha256": {
+    "source_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "source_track_payload": "89a2abc04513501f7a82ae1f6bb6a34ef6daebf4cd61c640589c13a623524881",
+    "support_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39"
+  },
+  "inputs": {
+    "source_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "source_track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt",
+    "support_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt"
+  },
+  "observation_count": 729393,
+  "output_sha256": {
+    "candidate_map": "ef0863bf71e976d5a980d032f826d80fe06fb3f938828e0956e8408108beb022",
+    "empty_canonical_map": "b8335097e5865722b8be512744fb5ac178721e25118a1a5cc96f9e660744dc9c",
+    "empty_function_graph": "5bc49270b9fd28fbf78e92fa8fc5e6a78a4dd1749dbcd7fea0e6642a8c596384",
+    "identity_metric": "4a189bf38867af2a608ed9b9239d36c1ebdebc79a72e45eca62f3a70d3aca768",
+    "selector_teacher": "2073c36a8ffaeee7f9787f80548a21f0159a75dc510834967f6dacdef072fab6",
+    "track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+  },
+  "outputs": {
+    "candidate_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_candidate_map.pt",
+    "empty_canonical_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/empty_canonical_map.pt",
+    "empty_function_graph": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/empty_function_graph.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_identity_metric.pt",
+    "selector_teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/selector_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "pair_count": 7450,
+  "pair_policy": "trajectory_balanced",
+  "producer_identity": {
+    "git_commit": "e29b59f74ec6ec9cc18e195fc54adf9fb4844d87",
+    "source_sha256": {
+      "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+      "evidence/rendered_track_support.py": "a8521ee80ae35d560b08cc77e629d6a03d774ff09f33faf14eb8ea4a4627fbe0",
+      "evidence/tracks.py": "f5528196bf2815599b643fdae56599d7816c75b8a14c7b1bab1ca02168a8d113",
+      "evidence/triangulation.py": "3bf7d85e962b563129576b0b7a308642399fb2601b9fe588240018865286731c",
+      "features/multiview_fusion.py": "572400cb0edfc36fdf7b9c6c7e429a7b8fc9daeab2a0bfaceee1b6bd465d84e8",
+      "scripts/materialize_rendered_track_support_repair.py": "1b1f70ac1221a00fc6136994ce3d7f7aabfed221a1ac8792f040c72267478056",
+      "topology/track_core.py": "ee625d74ee5c8bc7a6f6bc6e8631fdbeb17b7beda46ccf679f4021366c93c183"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "repaired_track_count": 15072,
+  "schema": "lafgs_rendered_track_support_repair_report",
+  "source_track_count": 72269,
+  "split_diagnostics": {
+    "child_cap_stage": "after_ray_triangulation_and_broad_geometry_gate",
+    "dropped_excess_child_count": 0,
+    "dropped_geometry_ineligible_child_count": 57431,
+    "geometry_eligible_child_track_count": 15072,
+    "retained_child_track_count": 15072,
+    "split_source_track_count": 455,
+    "unbounded_child_track_count": 72503
+  },
+  "timing_seconds": {
+    "total": 4612.336656895466
+  },
+  "triangulated_track_count": 15072,
+  "uses_gaussian_geometry_for_triangulation": false,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

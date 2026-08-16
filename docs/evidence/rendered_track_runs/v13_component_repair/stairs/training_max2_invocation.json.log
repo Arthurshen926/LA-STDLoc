@@ -1,0 +1,76 @@
+{"completed_queries": 100, "positive_rows": 8139, "strong_pairs": 8139}
+{"completed_queries": 200, "positive_rows": 20184, "strong_pairs": 20184}
+{"completed_queries": 300, "positive_rows": 32029, "strong_pairs": 32029}
+{"completed_queries": 400, "positive_rows": 39266, "strong_pairs": 39266}
+{"completed_queries": 500, "positive_rows": 42601, "strong_pairs": 42601}
+{"completed_queries": 600, "positive_rows": 81575, "strong_pairs": 81575}
+{"completed_queries": 700, "positive_rows": 94890, "strong_pairs": 94890}
+{"completed_queries": 800, "positive_rows": 102774, "strong_pairs": 102774}
+{"completed_queries": 900, "positive_rows": 113013, "strong_pairs": 113013}
+{"completed_queries": 1000, "positive_rows": 124362, "strong_pairs": 124362}
+{"completed_queries": 1100, "positive_rows": 130822, "strong_pairs": 130822}
+{"completed_queries": 1200, "positive_rows": 140074, "strong_pairs": 140074}
+{"completed_queries": 1300, "positive_rows": 141563, "strong_pairs": 141563}
+{"completed_queries": 1400, "positive_rows": 141628, "strong_pairs": 141628}
+{"completed_queries": 1500, "positive_rows": 141628, "strong_pairs": 141628}
+{"completed_queries": 1600, "positive_rows": 145000, "strong_pairs": 145000}
+{"completed_queries": 1700, "positive_rows": 151409, "strong_pairs": 151409}
+{"completed_queries": 1800, "positive_rows": 157455, "strong_pairs": 157455}
+{"completed_queries": 1900, "positive_rows": 160804, "strong_pairs": 160804}
+{"completed_queries": 2000, "positive_rows": 167638, "strong_pairs": 167638}
+{
+  "input_sha256": {
+    "anchor_map": "de4b14f3b847e07eb01a9c1ca8f8995ccb3356c05dff1efa23bda242a111e38e",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "scene_calibration": "5e9263ccb44005ff7031f58b38bb3e19d3584a86cb1533d500863cacf74ac5b2",
+    "track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/frozen_membership_max2/frozen_membership_anchor_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "3458feaeb47658286dd7eba5034c8b28055587d273d039b27b8bf57a80fcca34",
+    "map": "5031dbb1e8cd81d38e7c9020a038e2d4fb5af8dea90d41b418cf4b9e02bd3158",
+    "teacher": "f6512138bdd4a0c7953c952b27b36321d46f9c04cd74f5b6641048c4b57cebdb",
+    "track_payload": "bad79bacb0e8506667baf3950052e6d0bd77b7643661a560f028b160ba48ca74"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/training_max2/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/training_max2/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/training_max2/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/training_max2/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 472007,
+    "depth_visibility_rejected_anchor_count": 1620553,
+    "exact_depth_disagreement_audit_count": 178444,
+    "exact_track_positive_count": 373003,
+    "masked_query_row_count": 0,
+    "positive_rows": 167638,
+    "query_count": 2000,
+    "strong_certified_exact_positive_count": 167638,
+    "strong_pair_count": 167638,
+    "support_compatible_pair_count": 39488,
+    "weak_exact_ambiguous_count": 205365
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,58 @@
+{"completed_queries": 100, "positive_rows": 50027, "strong_pairs": 50027}
+{"completed_queries": 200, "positive_rows": 121808, "strong_pairs": 121808}
+{"completed_queries": 231, "positive_rows": 142759, "strong_pairs": 142759}
+{
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "anchor_map": "6735e4a74ba79645cd4357a4e2bd54980ebb4fcb328dbe31c94772cb266e5784",
+    "query_cache": "c10dacd71745fbba59d207bef6ae415dca721f427a391a0044dcd33e28c711f8",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/artifact_stability_anchor_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/artifact_stability_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "contiguous_mapping_pose_cells",
+  "mapping_sequence_names": [
+    "pose_cell_00",
+    "pose_cell_01",
+    "pose_cell_02"
+  ],
+  "mapping_sequence_query_counts": {
+    "pose_cell_00": 77,
+    "pose_cell_01": 77,
+    "pose_cell_02": 77
+  },
+  "output_sha256": {
+    "graph": "dd2393c11f45666072f4f4b2983a86f9dda199fb93cfc34a982fe246331e0674",
+    "map": "5b4e4480fa45c36a68384602a2ef6937cfecd182608dca9e6088de419244d1e4",
+    "teacher": "05782bad63a618524d859e2032e5ca0734821eb87b92ace22751dde01ae143ba",
+    "track_payload": "9ffff565fa0c74bd6ae18bf1487efc85fe777ae8f374173806972a1c260fbd4b"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 149101,
+    "depth_visibility_rejected_anchor_count": 611636,
+    "exact_depth_disagreement_audit_count": 24322,
+    "exact_track_positive_count": 168948,
+    "masked_query_row_count": 40,
+    "positive_rows": 142759,
+    "query_count": 231,
+    "strong_certified_exact_positive_count": 142759,
+    "strong_pair_count": 142759,
+    "support_compatible_pair_count": 21741,
+    "weak_exact_ambiguous_count": 26189
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

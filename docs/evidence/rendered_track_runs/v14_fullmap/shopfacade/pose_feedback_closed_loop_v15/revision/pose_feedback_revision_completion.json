@@ -1,0 +1,28 @@
+{
+  "output_sha256": {
+    "map": "a4c0da67bf67da542d93f778b81451ef0167499644314a1cade8bb0c3fd27c18",
+    "metric": "603d97751bdc839e434b0f07fe2d55e6466348de5fa835050f8b2dcdc90c2248",
+    "teacher": "8c28d69d306552bb174993fbd3f2388e248a0f2dc2f8921ab4f28d2409732093"
+  },
+  "outputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_identity_metric.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_positive_teacher.pt"
+  },
+  "producer_identity": {
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "source_sha256": {
+      "scripts/materialize_rendered_track_pose_feedback.py": "fb68a6f46d3263aaf54a322912bc2176a45d8c5bb8604ad17153a13b074377ee",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071",
+      "topology/matching_coverage.py": "c53aeab894da766de87b24d43b9c37589c79d204dfebf85e2dd0864aaa2bfdac"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "report": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_revision.json",
+  "report_sha256": "d5d4764188a6d80420a6b6ac55d2cc3d050d23a3c4a9c830c6b6a10b452521a5",
+  "schema": "lafgs_rendered_track_pose_feedback_revision_completion",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}
