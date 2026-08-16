@@ -1,0 +1,83 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_transform": "none_identity_only",
+    "descriptor_trim_fraction": 0.2,
+    "group_aware_pose": false,
+    "group_field": null,
+    "group_hypothesis_samples": 0,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true,
+    "one_robust_pose_wrapper_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "d2ebc96fb667c7abe9fe67c4ae76586d9ea7657e1cb212fbf756fe61ef8eb5e2",
+    "metric": "c91e003a8b88f88b8fc93795715c1d45edeba2d6f428855addc0575fedb3e952",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "teacher": "7b6c21b0fbc1060536a11f1cb558d2e22c44d47bc09cb667352c0ce57d2a6d88",
+    "track_payload": "75668431f9ce398fb6106162625912e6e033e3dd5d70930c02cd358864123c46"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/training/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/selector/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/training/rendered_track_training_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 169173,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 1178,
+    "mean_affected_anchors_per_query": 732.3506469726562,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "804c9a9e22752b8f8ef4578f98bfef31f4f2b75a",
+    "source_sha256": {
+      "evidence/observation_provider.py": "ad994da4a61431242751eb2c8600b0d71082af27218eb60bc7bbd7a47da8f0b9",
+      "evidence/tracks.py": "4ed4b496b3aa70cfef717bfa159a7589440c513897ccd17a59fafe6ad0fe86cb",
+      "localization/group_consensus.py": "b6be12f593b4ce697add4d8b73ffa1996527bb85d5f1c7a590152190bdf01039",
+      "localization/localizer.py": "2c8e6fb64bfe5049743d12b1ebf1fe1d2b09b3ad22e98eec53f569af2fae2be3",
+      "localization/pose_solver.py": "89c333920112e522daa2a8a4a2d8a6c9e835fbac2cddabaf90a1a950eef70da3",
+      "scripts/evaluate_rendered_track_fullmap.py": "c6b77e1aed904c77e9953319b3bb2c6774f5127f9a8d082cff4d6878c51896ee",
+      "topology/deployment_revision.py": "95e128bede8c2d7f25009f14db6004ed8658fc37ad074565c5e0cd7e18fbd697"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/mapping_loo_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "4e5fe7bfd10b61c53869c94b446e3935476f5f5e4787caeed34ee58a0b61cc5d",
+  "summary": {
+    "catastrophic_100cm_count": 2,
+    "cvar95_te_cm": 864.8688321467489,
+    "group_diverse_selected_count": 0,
+    "inlier_gt_precision_percent": 88.63366863528826,
+    "mean_ae_deg": 1.4442296706263238,
+    "mean_hypotheses": 3574.3376623376626,
+    "mean_te_cm": 45.270033809885554,
+    "median_ae_deg": 0.0178179825228997,
+    "median_te_cm": 0.3368537873029709,
+    "p90_ae_deg": 0.0467910646828186,
+    "p90_te_cm": 0.7661027368158102,
+    "p95_ae_deg": 0.058412378091544065,
+    "p95_te_cm": 1.0987203568220139,
+    "p99_te_cm": 2.2357404232025084,
+    "query_count": 231,
+    "raw_gt_precision_percent": 24.961103312983038,
+    "recall_5cm_5deg_percent": 99.13419913419914,
+    "retained_matches_mean": 2047.82683982684,
+    "solver_inlier_ratio_percent": 36.54576279785561
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

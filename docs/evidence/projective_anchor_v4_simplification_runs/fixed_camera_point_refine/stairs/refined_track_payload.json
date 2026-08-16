@@ -1,0 +1,21 @@
+{
+  "common_triangulated_count": 15210,
+  "decision": "REFINED_PAYLOAD_REQUIRES_SHARED_SELECTOR_EVALUATION",
+  "descriptor_rows_fixed": true,
+  "input_track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt",
+  "input_track_payload_sha256": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1",
+  "mapping_cameras_fixed": true,
+  "median_point_shift_m": 0.011948127299547195,
+  "output": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/refined_track_payload.pt",
+  "output_sha256": "5939c71176a02158152edafe9bbf7ccfe94c670af2ab222078ba938ed63d491f",
+  "p90_point_shift_m": 0.11419254541397095,
+  "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+  "query_cache_sha256": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63",
+  "refinement_applied_count": 15210,
+  "schema": "lafgs_fixed_camera_track_point_refinement_report",
+  "track_count": 15210,
+  "track_graph_fixed": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -940,8 +940,9 @@ completion 则由多视角 rendered-depth unprojection 融合。
 这条统一 completion 在 Stairs 的冻结三种子 real test 上把 mean/P90 TE 从
 7.193/6.560 cm 改善到 6.557/5.995 cm，5 cm recall 从 85.10% 提高到 86.97%，且
 median、AE、2 cm recall、raw/inlier precision 与 catastrophic count 同向改善；ShopFacade
-则整体中性。因此保留 completion provider，但只在 Stairs render-only 配置启用，不切换
-跨场景或 mixed 默认。structured-outlier oracle 证明 distinct-parent hypothesis sampling
+则整体中性。因此 completion 作为统一候选 provider 在所有 render-only 场景默认可用，实际
+入图完全由同一 selector 的 matching/observability 边际收益决定，不再设置场景机制开关，
+也不切换 mixed 默认。structured-outlier oracle 证明 distinct-parent hypothesis sampling
 有明显 headroom，但当前 bounded wrapper 对 mapping tail 基本无改善，并在 ShopFacade test
 增加约64.7 ms RANSAC 时间，故保持 default-off。Optional pose feedback 同样只保留为诊断。
 
@@ -950,3 +951,15 @@ fold 或 revision 做局部搜索。完整人类/机器结果分别见
 `docs/gaussian_supported_projective_anchor_result.md` 与
 `docs/evidence/gaussian_supported_projective_anchor_result.json`；本轮51份小型原始记录已归档到
 `docs/evidence/projective_anchor_runs`，大 tensor/cache/render/weights 仍只在外部以路径和SHA绑定。
+
+V4 最终简化随后完成：正式 render-only evaluator 只接受 identity metric，学习式 descriptor
+transform/residual 不能进入该路径；selector 语义名改为
+`HierarchicalSufficiencySelector`，旧名字仅作 archive alias。cycle-core/chain-reserve 在
+ShopFacade 精确不变，但使 Stairs Anchor 5772→2055，并使 mean/CVaR95 TE 恶化
+1.740/33.225 cm、catastrophic +2，因此保持普通 cycle+chain 默认且不继续 LGCV。固定相机
+五轮非线性点优化虽降低重投影代理量，却使 Stairs mean/CVaR95 +0.468/+9.546 cm、recall
+-0.30 pp、catastrophic +1；ShopFacade 也是混合交换，故同样不提升默认且未读 test。
+3×3 row-stable subpixel API 已实现并测试，但现冻结 sparse cache 不含 dense score map，未把
+它伪装为正式实测。完整结果见 `docs/gaussian_supported_projective_anchor_v4_freeze.md` 与
+`docs/evidence/gaussian_supported_projective_anchor_v4_freeze.json`；18份小记录归档于
+`docs/evidence/projective_anchor_v4_simplification_runs`。

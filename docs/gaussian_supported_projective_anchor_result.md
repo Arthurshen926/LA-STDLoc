@@ -15,11 +15,15 @@ geometry remain observation/ray defined.  The optional pose-feedback revision
 is retained only as historical diagnostics and is not part of this method.
 
 The bounded non-Track completion is useful on Stairs and neutral on
-ShopFacade.  It is therefore retained as a unified candidate provider with a
-scene-level mapping-only enable decision, not forced into every scene.  The
+ShopFacade.  It is therefore always retained as a unified candidate provider;
+the shared selector decides whether each candidate has strict matching or
+observability value.  There is no scene-level mechanism switch.  The
 structured-outlier oracle exposes real hypothesis-generation headroom, but the
 bounded practical wrapper does not improve tail failures enough to replace
 standard PoseLib.  Its default remains off.
+
+The V4 simplification and its two final bounded ablations are documented in
+[`docs/gaussian_supported_projective_anchor_v4_freeze.md`](gaussian_supported_projective_anchor_v4_freeze.md).
 
 Machine-readable values and hashes are in
 [`docs/evidence/gaussian_supported_projective_anchor_result.json`](evidence/gaussian_supported_projective_anchor_result.json).
@@ -113,10 +117,9 @@ were frozen.
 
 Stairs improves every listed central, tail, recall and precision statistic;
 mean catastrophic count also drops by 0.67.  ShopFacade remains effectively
-neutral.  The evidence supports enabling this completion in the Stairs
-render-only configuration, while keeping the ShopFacade/default cross-scene
-capacity at zero pending a positive mapping benefit.  It does not authorize a
-shared mixed-pipeline default change.
+neutral.  Completion is nevertheless always an available candidate source in
+both scenes: the selector chose 136 Stairs and 9 ShopFacade surface Anchors.
+This changes no mixed-pipeline default and adds no online type routing.
 
 ## Structured-outlier-aware pose
 
@@ -157,7 +160,7 @@ architecture:
 - shared Real/Render observation interface;
 - observation-defined Track Anchors with ray-triangulated geometry;
 - Gaussian support/visibility/lineage and GWFF fusion inside one constructor;
-- optional rendered-surface completion inside the same registry and selector;
+- always-available rendered-surface completion inside the same registry and selector;
 - hierarchical Precision Core then Matching/Observability Sufficiency
   Completion;
 - one compact descriptor bank, global Top-1 and one robust-pose wrapper;
@@ -166,5 +169,8 @@ architecture:
 It still does not claim a joint global pose-error optimum, iterative
 feedback/descriptor/topology convergence, or a solved correlated-outlier
 estimator.  Optional pose feedback and the bounded group wrapper remain
-diagnostics.  The next useful work is broader validation of this frozen
-architecture, not another local threshold or revision loop.
+diagnostics.  The formal render-only path now also rejects learned descriptor
+transforms and uses an identity metric.  Cycle-core routing and fixed-camera
+point refinement were implemented and rejected by mapping-only localization;
+broader validation of the frozen architecture is more useful than another
+local threshold loop.

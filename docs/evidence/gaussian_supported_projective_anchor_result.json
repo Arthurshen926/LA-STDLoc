@@ -1,7 +1,7 @@
 {
   "schema": "lafgs_gaussian_supported_projective_anchor_result",
-  "version": 1,
-  "date": "2026-08-16",
+  "version": 2,
+  "date": "2026-08-17",
   "branch": "codex/render-track-artifact-r1",
   "method": {
     "core": [
@@ -25,7 +25,9 @@
     "surface_descriptor_replay": "e3d26aa",
     "bounded_oracle_threads": "adc45dc",
     "realized_oracle_winner_audit": "9847b2a",
-    "bounded_group_diverse_pose": "9fdcbc4"
+    "bounded_group_diverse_pose": "9fdcbc4",
+    "v4_simplification": "804c9a9",
+    "cycle_default_restore_and_point_refinement": "3517eda"
   },
   "architecture": {
     "observation_provider": {
@@ -61,6 +63,8 @@
     }
   },
   "surface_completion": {
+    "always_available_candidate_provider": true,
+    "scene_level_mechanism_switch": false,
     "configuration": {
       "maximum_rows_per_view": 256,
       "maximum_candidates": 512,
@@ -131,7 +135,7 @@
           "2028": "cfee511acba251fc0a36ecfac2209c93dd42f4df252832d40e7147f5f2b6d644"
         }
       },
-      "decision": "KEEP_PROVIDER_DISABLE_SCENE_CAPACITY_BY_DEFAULT"
+      "decision": "KEEP_ALWAYS_AVAILABLE_PROVIDER_SELECTOR_SELECTED_9"
     },
     "stairs": {
       "surface_map": {
@@ -194,7 +198,7 @@
           "2028": "e229ab29d0c524da0f062f81adb7796d17506ba0e150798beb4e0bf890afc238"
         }
       },
-      "decision": "PROMOTE_WITHIN_STAIRS_RENDER_ONLY_CONFIGURATION"
+      "decision": "KEEP_ALWAYS_AVAILABLE_PROVIDER_SELECTOR_SELECTED_136"
     }
   },
   "structured_outlier_pose": {
@@ -268,7 +272,7 @@
   },
   "validation": {
     "cpu_tests": {
-      "passed": 657,
+      "passed": 662,
       "skipped": 1,
       "skip_reason": "explicit CUDA renderer smoke not enabled"
     },
@@ -278,5 +282,5 @@
       "Cambridge/ShopFacade"
     ]
   },
-  "overall_decision": "FREEZE_UNIFIED_ARCHITECTURE_PROMOTE_STAIRS_COMPLETION_KEEP_GROUP_POSE_DEFAULT_OFF"
+  "overall_decision": "FREEZE_UNIFIED_ARCHITECTURE_COMPLETION_ALWAYS_AVAILABLE_IDENTITY_METRIC_GROUP_POSE_DEFAULT_OFF"
 }

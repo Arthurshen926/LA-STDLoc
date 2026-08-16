@@ -1,0 +1,234 @@
+{
+  "archive_size_bytes": 359418,
+  "excluded_path_markers": [
+    "preflight_invalid",
+    "launch_subshell_invalid",
+    "preopt_invalid",
+    "execution_invalid",
+    "invalid_invocation",
+    "_invalid_",
+    "/smoke"
+  ],
+  "included_extensions": [
+    ".json",
+    ".md",
+    ".txt"
+  ],
+  "large_artifacts_in_git": false,
+  "query_results_encoding": "deterministic_gzip_mtime_0",
+  "record_count": 18,
+  "records": [
+    {
+      "archive_path": "cycle_core/shopfacade/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "archive_sha256": "56b28cfd2bac721f7ad12cc9c58dd82cb9ecb3c7f66dc53f17bc9cb48c1fb25b",
+      "archive_size_bytes": 4395,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "source_sha256": "56b28cfd2bac721f7ad12cc9c58dd82cb9ecb3c7f66dc53f17bc9cb48c1fb25b",
+      "source_size_bytes": 4395,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/shopfacade/selector/adaptive_distillation_build.json",
+      "archive_sha256": "9478ee155789b0dcbc9e81355d05df86aae33709ba49e9b3b1010347cb2d82ea",
+      "archive_size_bytes": 117051,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/selector/adaptive_distillation_build.json",
+      "source_sha256": "9478ee155789b0dcbc9e81355d05df86aae33709ba49e9b3b1010347cb2d82ea",
+      "source_size_bytes": 117051,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/shopfacade/selector/scene_calibration.json",
+      "archive_sha256": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+      "archive_size_bytes": 3526,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/selector/scene_calibration.json",
+      "source_sha256": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+      "source_size_bytes": 3526,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/shopfacade/training/rendered_track_training_materialization.json",
+      "archive_sha256": "86198a4e6996eb1977c413d442c0a6cc79e707b7c4d8ae02c49427b5a1fd775a",
+      "archive_size_bytes": 2860,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/shopfacade/training/rendered_track_training_materialization.json",
+      "source_sha256": "86198a4e6996eb1977c413d442c0a6cc79e707b7c4d8ae02c49427b5a1fd775a",
+      "source_size_bytes": 2860,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/stairs/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "archive_sha256": "9a560aa09f0818d5c15171141e59e4d35f0620bb1aff3afb076255c2cf15c3d6",
+      "archive_size_bytes": 4335,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/stairs/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "source_sha256": "9a560aa09f0818d5c15171141e59e4d35f0620bb1aff3afb076255c2cf15c3d6",
+      "source_size_bytes": 4335,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/stairs/selector/adaptive_distillation_build.json",
+      "archive_sha256": "1f9292cb1ef096d323abe8735b4dd2c192322e722ebac7ff2aaa2f83a751e9f1",
+      "archive_size_bytes": 61970,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/stairs/selector/adaptive_distillation_build.json",
+      "source_sha256": "1f9292cb1ef096d323abe8735b4dd2c192322e722ebac7ff2aaa2f83a751e9f1",
+      "source_size_bytes": 61970,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/stairs/selector/scene_calibration.json",
+      "archive_sha256": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+      "archive_size_bytes": 3720,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/stairs/selector/scene_calibration.json",
+      "source_sha256": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+      "source_size_bytes": 3720,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "cycle_core/stairs/training/rendered_track_training_materialization.json",
+      "archive_sha256": "da0f4b9f233234ad986d3b2bfe919e74024cb3fea71f10470ea6ef8be1ba4d3f",
+      "archive_size_bytes": 2831,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816/stairs/training/rendered_track_training_materialization.json",
+      "source_sha256": "da0f4b9f233234ad986d3b2bfe919e74024cb3fea71f10470ea6ef8be1ba4d3f",
+      "source_size_bytes": 2831,
+      "stage": "cycle_core"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/shopfacade/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "archive_sha256": "fea9f06a048a786176016fd7cdda05675109b00b2078f8dc0359825166d9277d",
+      "archive_size_bytes": 4409,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/shopfacade/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "source_sha256": "fea9f06a048a786176016fd7cdda05675109b00b2078f8dc0359825166d9277d",
+      "source_size_bytes": 4409,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/shopfacade/refined_track_payload.json",
+      "archive_sha256": "04c2bbe22d456f225800efc057e82cfd55859fea0f1afebb1444382d8c91c595",
+      "archive_size_bytes": 1168,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/shopfacade/refined_track_payload.json",
+      "source_sha256": "04c2bbe22d456f225800efc057e82cfd55859fea0f1afebb1444382d8c91c595",
+      "source_size_bytes": 1168,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/shopfacade/selector/adaptive_distillation_build.json",
+      "archive_sha256": "a356b980e10c8c2f74a4e22f3de704d2caad977b060ac36ce5dd92f7b21d3514",
+      "archive_size_bytes": 117094,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/shopfacade/selector/adaptive_distillation_build.json",
+      "source_sha256": "a356b980e10c8c2f74a4e22f3de704d2caad977b060ac36ce5dd92f7b21d3514",
+      "source_size_bytes": 117094,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/shopfacade/selector/scene_calibration.json",
+      "archive_sha256": "f27a1d61001b61758c2fa857dc49b40c36bcdf3d3d6a684c484f8bd66a9389d8",
+      "archive_size_bytes": 3505,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/shopfacade/selector/scene_calibration.json",
+      "source_sha256": "f27a1d61001b61758c2fa857dc49b40c36bcdf3d3d6a684c484f8bd66a9389d8",
+      "source_size_bytes": 3505,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/shopfacade/training/rendered_track_training_materialization.json",
+      "archive_sha256": "92ab92302dc9dd43d02b638267bce49d56d24015daa34f19482508b4ea9bd149",
+      "archive_size_bytes": 2852,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/shopfacade/training/rendered_track_training_materialization.json",
+      "source_sha256": "92ab92302dc9dd43d02b638267bce49d56d24015daa34f19482508b4ea9bd149",
+      "source_size_bytes": 2852,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/stairs/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "archive_sha256": "34c97158517b2b508594995f539686e886756fc04e6d600b4048f9136d48ea4c",
+      "archive_size_bytes": 4353,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/mapping_loo_seed2026/full_mapping_loo_report.json",
+      "source_sha256": "34c97158517b2b508594995f539686e886756fc04e6d600b4048f9136d48ea4c",
+      "source_size_bytes": 4353,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/stairs/refined_track_payload.json",
+      "archive_sha256": "52d70cc9d3c82a2fed8ee514a3d8ebb9a5182b5d948c769bcb939fdd98a155c9",
+      "archive_size_bytes": 1164,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/refined_track_payload.json",
+      "source_sha256": "52d70cc9d3c82a2fed8ee514a3d8ebb9a5182b5d948c769bcb939fdd98a155c9",
+      "source_size_bytes": 1164,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/stairs/selector/adaptive_distillation_build.json",
+      "archive_sha256": "0e2cdc23c48e20bd09aa161622542f2822b7a272c1c80727f56e356d7e472c3e",
+      "archive_size_bytes": 17666,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/selector/adaptive_distillation_build.json",
+      "source_sha256": "0e2cdc23c48e20bd09aa161622542f2822b7a272c1c80727f56e356d7e472c3e",
+      "source_size_bytes": 17666,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/stairs/selector/scene_calibration.json",
+      "archive_sha256": "6fc155499c1c7f0e456193a899dc43f807dfbaf2083734e5ca0aa7be9f7e7433",
+      "archive_size_bytes": 3696,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/selector/scene_calibration.json",
+      "source_sha256": "6fc155499c1c7f0e456193a899dc43f807dfbaf2083734e5ca0aa7be9f7e7433",
+      "source_size_bytes": 3696,
+      "stage": "fixed_camera_point_refine"
+    },
+    {
+      "archive_path": "fixed_camera_point_refine/stairs/training/rendered_track_training_materialization.json",
+      "archive_sha256": "d59e6adbb4fa367e05f4050de72e34ef4ae769b35742fb36ba04996f1b9bbf3e",
+      "archive_size_bytes": 2823,
+      "content_type": "application/json",
+      "encoding": "identity",
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817/stairs/training/rendered_track_training_materialization.json",
+      "source_sha256": "d59e6adbb4fa367e05f4050de72e34ef4ae769b35742fb36ba04996f1b9bbf3e",
+      "source_size_bytes": 2823,
+      "stage": "fixed_camera_point_refine"
+    }
+  ],
+  "schema": "lafgs_rendered_track_record_archive",
+  "scope": "explicit_render_only_experiment_roots",
+  "source_roots": [
+    {
+      "path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cycle_core_20260816",
+      "stage": "cycle_core"
+    },
+    {
+      "path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_point_refine_20260817",
+      "stage": "fixed_camera_point_refine"
+    }
+  ],
+  "source_size_bytes": 359418,
+  "version": 1
+}
