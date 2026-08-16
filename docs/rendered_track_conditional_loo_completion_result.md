@@ -60,3 +60,16 @@ or a larger candidate pool. Further work should change the correspondence or
 geometric-consensus model only if a genuinely different hypothesis is proposed;
 this enhancement family is converged.
 
+## Full-reference Stairs replay
+
+The Stairs-specific conclusions above were subsequently replayed after replacing
+the retriangulated Gaussian initialization with the published full-reference
+SfM initialization.  The stronger prior greatly improves V1.4 itself, but C2,
+R1, conditional fusion, LOO-A1, and the full broad-Track oracle still fail to
+improve aggregate Stairs pose quality.  R1, conditional fusion, and LOO-A1 were
+also evaluated on the frozen official test split with three PoseLib seeds.
+
+The corrected result and exact hashes are in
+[`docs/rendered_track_full_reference_history_revalidation.md`](rendered_track_full_reference_history_revalidation.md)
+and its machine evidence.  The old results remain valid for the old prior; they
+are not used as a substitute for the new replay.
