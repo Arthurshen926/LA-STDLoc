@@ -24,7 +24,7 @@ from evidence.tracks import (
     LeaveOneQueryOutTrackDescriptorBank,
 )
 from map_learning.metric import SharedLowRankMetric
-from map_learning.trainer import bounded_anchor_bank
+from map_learning.trainer import bounded_anchor_bank, track_descriptor_payload_for_loo
 from topology.deployment_revision import collect_deployment_statistics
 
 
@@ -257,17 +257,18 @@ def run(args: argparse.Namespace) -> dict:
     raw_reference_features = torch.as_tensor(
         state.get("v7_metric_raw_features", state["anchor_features"])
     ).float()
+    loo_payload = track_descriptor_payload_for_loo(payload)
     if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
         replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
             state=state,
-            payload=payload,
+            payload=loo_payload,
             query_cache=cache,
             reference_features=raw_reference_features,
             trim_fraction=float(args.descriptor_trim_fraction),
         )
     else:
         replay = LeaveOneQueryOutTrackDescriptorBank(
-            payload=payload,
+            payload=loo_payload,
             query_cache=cache,
             track_indices=state["track_cluster_ids"],
             reference_features=raw_reference_features,

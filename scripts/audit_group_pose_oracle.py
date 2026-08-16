@@ -24,7 +24,7 @@ from localization.group_consensus import (
     correlation_groups_from_map,
 )
 from localization.localizer import load_shared_metric
-from map_learning.trainer import bounded_anchor_bank
+from map_learning.trainer import bounded_anchor_bank, track_descriptor_payload_for_loo
 from scripts.evaluate_rendered_track_fullmap import _DeviceBankUpdater
 
 
@@ -139,17 +139,18 @@ def run(args: argparse.Namespace) -> dict:
     raw_reference_features = torch.as_tensor(
         state.get("v7_metric_raw_features", state["anchor_features"])
     ).float()
+    loo_payload = track_descriptor_payload_for_loo(payload)
     if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
         replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
             state=state,
-            payload=payload,
+            payload=loo_payload,
             query_cache=cache_payload,
             reference_features=raw_reference_features,
             trim_fraction=float(args.descriptor_trim_fraction),
         )
     else:
         replay = LeaveOneQueryOutTrackDescriptorBank(
-            payload=payload,
+            payload=loo_payload,
             query_cache=cache_payload,
             track_indices=state["track_cluster_ids"],
             reference_features=raw_reference_features,
