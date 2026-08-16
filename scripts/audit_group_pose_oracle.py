@@ -90,6 +90,9 @@ def _atomic_json(payload: dict, path: Path) -> None:
 
 @torch.inference_mode()
 def run(args: argparse.Namespace) -> dict:
+    if int(args.cpu_threads) <= 0:
+        raise ValueError("CPU thread count must be positive")
+    torch.set_num_threads(int(args.cpu_threads))
     producer = _producer_identity()
     paths = {
         "map": args.map.resolve(),
@@ -295,6 +298,7 @@ def run(args: argparse.Namespace) -> dict:
             "correct_translation_cm": float(args.correct_translation_cm),
             "correct_rotation_deg": float(args.correct_rotation_deg),
             "group_fields": group_fields,
+            "cpu_threads": int(args.cpu_threads),
         },
         "producer": producer,
         "summaries": summaries,
@@ -332,6 +336,7 @@ def main() -> None:
     parser.add_argument("--correct-rotation-deg", type=float, default=5.0)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cpu-threads", type=int, default=8)
     args = parser.parse_args()
     print(json.dumps(run(args)["summaries"], indent=2, sort_keys=True))
 
