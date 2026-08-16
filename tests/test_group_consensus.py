@@ -85,6 +85,8 @@ def test_hypothesis_oracle_separates_scorer_and_sampler_headroom() -> None:
     assert scorer["category"] == "A_GROUP_SCORER_HEADROOM"
     assert scorer["standard_winner_correct"] is False
     assert scorer["group_capped_winner_correct"] is True
+    assert scorer["combined_standard_winner_correct"] is False
+    assert scorer["combined_group_capped_winner_correct"] is True
     assert scorer["authorizes_deployment_solver_change"] is False
 
     sampler = classify_hypothesis_oracle(
@@ -98,6 +100,9 @@ def test_hypothesis_oracle_separates_scorer_and_sampler_headroom() -> None:
         reprojection_threshold_px=2.0,
     )
     assert sampler["category"] == "B_GROUP_DIVERSE_SAMPLING_HEADROOM"
+    assert sampler["diverse_standard_winner_correct"] is True
+    assert sampler["combined_standard_winner_correct"] is False
+    assert sampler["combined_group_capped_winner_correct"] is True
 
 
 def test_map_correlation_group_resolution_is_fail_closed() -> None:

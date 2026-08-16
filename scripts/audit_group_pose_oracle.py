@@ -278,6 +278,18 @@ def run(args: argparse.Namespace) -> dict:
             "group_capped_winner_correct_rate": float(
                 np.mean([row["group_capped_winner_correct"] for row in rows])
             ),
+            "diverse_standard_winner_correct_rate": float(
+                np.mean([row["diverse_standard_winner_correct"] for row in rows])
+            ),
+            "diverse_group_capped_winner_correct_rate": float(
+                np.mean([row["diverse_group_capped_winner_correct"] for row in rows])
+            ),
+            "combined_standard_winner_correct_rate": float(
+                np.mean([row["combined_standard_winner_correct"] for row in rows])
+            ),
+            "combined_group_capped_winner_correct_rate": float(
+                np.mean([row["combined_group_capped_winner_correct"] for row in rows])
+            ),
             "authorizes_deployment_solver_change": False,
         }
     result = {

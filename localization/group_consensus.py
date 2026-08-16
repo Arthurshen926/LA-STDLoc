@@ -320,7 +320,7 @@ def classify_hypothesis_oracle(
         return correct, scores
 
     standard_correct, standard_scores = evaluate(standard)
-    diverse_correct, _ = evaluate(diverse)
+    diverse_correct, diverse_scores = evaluate(diverse)
     standard_has_correct = bool(standard_correct.any())
     diverse_has_correct = bool(diverse_correct.any())
     if standard.shape[0]:
@@ -331,6 +331,33 @@ def classify_hypothesis_oracle(
     else:
         standard_winner = group_winner = None
         standard_winner_correct = group_winner_correct = False
+
+    def winner_correct(
+        correct: np.ndarray, scores: HypothesisScores, *, group_capped: bool
+    ) -> bool:
+        if correct.size == 0:
+            return False
+        selector = (
+            select_group_capped_hypothesis
+            if group_capped
+            else select_standard_hypothesis
+        )
+        return bool(correct[selector(scores)])
+
+    diverse_standard_winner_correct = winner_correct(
+        diverse_correct, diverse_scores, group_capped=False
+    )
+    diverse_group_winner_correct = winner_correct(
+        diverse_correct, diverse_scores, group_capped=True
+    )
+    combined = np.concatenate((standard, diverse), axis=0)
+    combined_correct, combined_scores = evaluate(combined)
+    combined_standard_winner_correct = winner_correct(
+        combined_correct, combined_scores, group_capped=False
+    )
+    combined_group_winner_correct = winner_correct(
+        combined_correct, combined_scores, group_capped=True
+    )
     if standard_has_correct and not standard_winner_correct and group_winner_correct:
         category = "A_GROUP_SCORER_HEADROOM"
     elif not standard_has_correct and diverse_has_correct:
@@ -349,5 +376,9 @@ def classify_hypothesis_oracle(
         "group_capped_winner_index": group_winner,
         "standard_winner_correct": standard_winner_correct,
         "group_capped_winner_correct": group_winner_correct,
+        "diverse_standard_winner_correct": diverse_standard_winner_correct,
+        "diverse_group_capped_winner_correct": diverse_group_winner_correct,
+        "combined_standard_winner_correct": combined_standard_winner_correct,
+        "combined_group_capped_winner_correct": combined_group_winner_correct,
         "authorizes_deployment_solver_change": False,
     }
