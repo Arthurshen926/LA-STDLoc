@@ -538,6 +538,14 @@ def main() -> None:
             "observability completion stops on measured gain."
         ),
     )
+    parser.add_argument(
+        "--cycle-seeded-precision-core",
+        action="store_true",
+        help=(
+            "Ablation only: keep chain Tracks eligible for completion but admit "
+            "only cycle-seeded Tracks to the Precision Core."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
     args = parser.parse_args()
@@ -719,8 +727,11 @@ def main() -> None:
     medium &= ~excluded_tracks
     broad &= ~excluded_tracks
     image_only_stable &= ~excluded_tracks
-    precision_core_eligible = _precision_core_eligibility(
-        geometry, image_only_stable
+    cycle_core_eligible = _precision_core_eligibility(geometry, image_only_stable)
+    precision_core_eligible = (
+        cycle_core_eligible
+        if bool(args.cycle_seeded_precision_core)
+        else image_only_stable.clone()
     )
     deployment_geometry = _deployment_track_geometry(geometry, image_only_stable)
     deployment_quality = _track_quality(deployment_geometry)
@@ -995,10 +1006,13 @@ def main() -> None:
             "dynamic_pose_reserve": pose_report,
             "track_core_count": int(core.numel()),
             "cycle_seeded_precision_core_candidate_count": int(
-                precision_core_eligible.sum()
+                cycle_core_eligible.sum()
             ),
             "chain_only_sufficiency_candidate_count": int(
-                (broad & ~precision_core_eligible).sum()
+                (broad & ~cycle_core_eligible).sum()
+            ),
+            "cycle_seeded_precision_core_enabled": bool(
+                args.cycle_seeded_precision_core
             ),
             "coverage_reserve_count": int(coverage_selected.numel()),
             "pose_reserve_count": int(pose_selected.numel()),
@@ -1063,7 +1077,11 @@ def main() -> None:
         "unified_sufficiency_selection": {
             "path": str(unified_selection_path),
             "policy": "hierarchical_sufficiency_v4",
-            "numerical_policy": "v3_compatibility_with_cycle_core",
+            "numerical_policy": (
+                "v3_compatibility_with_cycle_core"
+                if args.cycle_seeded_precision_core
+                else "v3_compatibility"
+            ),
             "selected_count": int(selector.selected_ids.numel()),
             "completion_candidate_provider": (
                 "always_enabled" if base_count > 0 else "legacy_track_only_input"

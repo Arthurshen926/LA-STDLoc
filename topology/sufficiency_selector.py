@@ -225,7 +225,7 @@ class HierarchicalSufficiencySelector:
             "schema": "lafgs_unified_sufficiency_selection",
             "version": 1,
             "policy": "hierarchical_sufficiency_v4",
-            "numerical_policy": "v3_compatibility_with_cycle_core",
+            "numerical_policy": "declared_by_materialization_report",
             "candidate_count": len(self.edges),
             "candidate_partitions": {
                 "track_evidence_count": self.track_candidate_count,
