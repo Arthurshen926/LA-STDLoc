@@ -856,7 +856,7 @@ class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
             else:
                 raise ValueError("surface Anchor replay requires rendered alpha")
         return fuse_projective_anchor_observations(
-            torch.stack(descriptors),
+            F.normalize(torch.stack(descriptors).float(), dim=1),
             self.query_bins[queries],
             detector_weight=torch.stack(detector).float().clamp_min(0),
             visibility_weight=torch.stack(alpha).float().clamp(0, 1),
