@@ -53,6 +53,13 @@ def main() -> None:
     parser.add_argument("--gpus", default="1,2")
     parser.add_argument("--max-workers", type=int, default=2)
     parser.add_argument("--only", default="")
+    parser.add_argument(
+        "--output-override",
+        action="append",
+        default=[],
+        metavar="KEY=PATH",
+        help="Use an existing/resumable scene root for one key (for example Cambridge/KingsCollege=/mnt/pool/...).",
+    )
     args = parser.parse_args()
     args.output_root = args.output_root.expanduser().resolve()
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -61,6 +68,12 @@ def main() -> None:
         raise SystemExit("at least one GPU is required")
     workers = max(1, min(int(args.max_workers), len(gpus)))
     records = scene_records(args)
+    overrides = {}
+    for item in args.output_override:
+        if "=" not in item:
+            raise SystemExit(f"invalid --output-override {item!r}; expected KEY=PATH")
+        key, value = item.split("=", 1)
+        overrides[key] = str(Path(value).expanduser().resolve())
     state_path = args.output_root / "matrix_state.json"
     state = {}
     if state_path.exists():
@@ -81,7 +94,12 @@ def main() -> None:
         while pending and len(active) < workers:
             record = pending.pop(0)
             key = record["key"]
-            scene_root = args.output_root / record["family"] / record["scene"]
+            scene_root = Path(
+                overrides.get(
+                    record["key"],
+                    str(args.output_root / record["family"] / record["scene"]),
+                )
+            )
             scene_root.mkdir(parents=True, exist_ok=True)
             gpu = gpus[len(active) % len(gpus)]
             log_path = scene_root / "matrix_worker.stdout.log"
@@ -94,6 +112,7 @@ def main() -> None:
                 "--gpu", gpu, "--seed", str(args.seed),
             ]
             state["scenes"][key].update({"status": "running", "gpu": gpu, "attempts": int(state["scenes"][key].get("attempts", 0)) + 1, "command": command, "started": time.time()})
+            state["scenes"][key]["output"] = str(scene_root)
             atomic_json(state_path, state)
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=args.code_root.resolve(), start_new_session=True)
             active[process.pid] = (record, process, log)
@@ -105,7 +124,8 @@ def main() -> None:
                 continue
             log.close()
             key = record["key"]
-            state["scenes"][key].update({"status": "done" if returncode == 0 and (args.output_root / key.split("/")[0] / record["scene"] / "single_seed_result.json").exists() else "failed", "returncode": returncode, "finished": time.time()})
+            result_path = Path(state["scenes"][key].get("output", str(args.output_root / key.split("/")[0] / record["scene"]))) / "single_seed_result.json"
+            state["scenes"][key].update({"status": "done" if returncode == 0 and result_path.exists() else "failed", "returncode": returncode, "finished": time.time()})
             atomic_json(state_path, state)
             del active[pid]
     state["finished"] = time.time()
