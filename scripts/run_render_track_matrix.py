@@ -88,7 +88,7 @@ def main() -> None:
     atomic_json(state_path, state)
 
     pending = [r for r in records if state["scenes"][r["key"]].get("status") != "done"]
-    active: dict[int, tuple[dict, subprocess.Popen, object]] = {}
+    active: dict[int, tuple[dict, subprocess.Popen, object, str]] = {}
     next_index = 0
     while pending or active:
         while pending and len(active) < workers:
@@ -101,7 +101,11 @@ def main() -> None:
                 )
             )
             scene_root.mkdir(parents=True, exist_ok=True)
-            gpu = gpus[len(active) % len(gpus)]
+            occupied = {entry[3] for entry in active.values()}
+            free = [candidate for candidate in gpus if candidate not in occupied]
+            if not free:
+                break
+            gpu = free[0]
             log_path = scene_root / "matrix_worker.stdout.log"
             log = log_path.open("ab")
             command = [
@@ -115,10 +119,10 @@ def main() -> None:
             state["scenes"][key]["output"] = str(scene_root)
             atomic_json(state_path, state)
             process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=args.code_root.resolve(), start_new_session=True)
-            active[process.pid] = (record, process, log)
+            active[process.pid] = (record, process, log, gpu)
             next_index += 1
         time.sleep(2.0)
-        for pid, (record, process, log) in list(active.items()):
+        for pid, (record, process, log, _gpu) in list(active.items()):
             returncode = process.poll()
             if returncode is None:
                 continue
