@@ -190,6 +190,12 @@ def run_scene(args: argparse.Namespace) -> dict:
     scene_root.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(code_root)
+    env["PATH"] = f"{ENV_PYTHON.parent}:{env.get('PATH', '')}"
+    env["LD_LIBRARY_PATH"] = (
+        f"{ENV_PYTHON.parent.parent / 'lib'}:"
+        f"{ENV_PYTHON.parent.parent / 'lib/python3.9/site-packages/torch/lib'}:"
+        f"{env.get('LD_LIBRARY_PATH', '')}"
+    )
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     env["PYTHONUNBUFFERED"] = "1"
     env["OMP_NUM_THREADS"] = env.get("OMP_NUM_THREADS", "8")
