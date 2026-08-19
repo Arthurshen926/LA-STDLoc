@@ -336,6 +336,10 @@ def training_complete(model: Path) -> bool:
     )
 
 
+def gaussian_training_complete(model: Path) -> bool:
+    return (model / "point_cloud" / "iteration_30000" / "point_cloud.ply").is_file()
+
+
 def evaluation_complete(model: Path) -> bool:
     test = model / "test"
     return (test / "summary.json").is_file() and (test / "results.json").is_file()
@@ -531,7 +535,28 @@ def run_one(args: argparse.Namespace, item: Mapping[str, str]) -> int:
             "--scaling_lr",
             "0.001",
         ]
-    if not training_complete(model):
+    if gaussian_training_complete(model) and not training_complete(model):
+        recover_cmd = common + [
+            str(repo / "sample_saved_model.py"),
+            "-s",
+            str(stage),
+            "-m",
+            str(model),
+            "--iteration",
+            "30000",
+            "--data_device",
+            "cpu",
+            "-f",
+            "sp",
+            "-g",
+            "3dgs",
+            "--images",
+            "images",
+            "--cfg",
+            str(cfg),
+        ]
+        run_command(recover_cmd, repo, log, env)
+    elif not training_complete(model):
         run_command(train_cmd, repo, log, env)
     if not training_complete(model):
         raise RuntimeError(
