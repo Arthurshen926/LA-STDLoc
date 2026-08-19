@@ -110,7 +110,11 @@ def test_capacity_assignment_matches_small_graph_exhaustive_oracle():
                     for _ in range(query_count)
                 ]
             )
-            scores = torch.rand((query_count, topk), generator=generator) * 1.4 - 0.4
+            scores = torch.sort(
+                torch.rand((query_count, topk), generator=generator) * 1.4 - 0.4,
+                dim=1,
+                descending=True,
+            ).values
             dustbin = 0.1
             candidates = TopKMatches(
                 keypoint_indices=torch.arange(query_count),
@@ -149,6 +153,16 @@ def test_capacity_assignment_matches_small_graph_exhaustive_oracle():
                 )
                 best = max(best, objective)
             assert actual == pytest.approx(best, abs=1e-6)
+
+
+def test_capacity_assignment_rejects_unsorted_candidate_scores():
+    candidates = TopKMatches(
+        keypoint_indices=torch.tensor([0]),
+        anchor_indices=torch.tensor([[2, 3]]),
+        scores=torch.tensor([[0.7, 0.8]]),
+    )
+    with pytest.raises(ValueError, match="rank-sorted"):
+        maximum_weight_anchor_assignment(candidates, dustbin_score=0.0)
 
 
 def test_duplicate_anchor_suppression_keeps_best_and_query_order():
