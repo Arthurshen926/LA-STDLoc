@@ -298,14 +298,15 @@ def environment(repo: Path, gpu: str, python_bin: Path, experiment_root: Path) -
     env["TORCH_EXTENSIONS_DIR"] = f"/tmp/ulfloc_torch_extensions_{cache_tag}_gpu{gpu}"
     env["MAX_JOBS"] = env.get("MAX_JOBS", "4")
     env["TORCH_CUDA_ARCH_LIST"] = env.get("TORCH_CUDA_ARCH_LIST", "8.6")
-    # The conda cross-compiler used by this environment does not include the
-    # host system headers by default; gsplat's tiny C++ shim includes
-    # <crypt.h>.  Add only the standard system include roots, preserving any
-    # caller-provided paths.
-    for key in ("C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"):
-        prior = env.get(key, "")
-        roots = ["/usr/include", "/usr/include/x86_64-linux-gnu"]
-        env[key] = os.pathsep.join(roots + ([prior] if prior else []))
+    # The conda cross-compiler shipped in this environment has an incomplete
+    # glibc sysroot (and fails on crypt.h / bits headers).  Use the host GCC
+    # pair for nvcc's host compilation; the Torch ABI flag is still supplied
+    # by torch's extension builder, and conda's runtime libraries remain in
+    # LD_LIBRARY_PATH below.
+    env["CC"] = "/usr/bin/gcc"
+    env["CXX"] = "/usr/bin/g++"
+    env.pop("C_INCLUDE_PATH", None)
+    env.pop("CPLUS_INCLUDE_PATH", None)
     # Keep the conda extension toolchain visible; this prevents the common
     # worker-only failure where ninja is present in the shell but not PATH.
     bin_dir = str(python_bin.parent)
