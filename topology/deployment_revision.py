@@ -20,6 +20,10 @@ import torch
 import torch.nn.functional as F
 
 from localization.localizer import load_shared_metric
+from localization.matcher import (
+    TopKMatches,
+    maximum_weight_anchor_assignment,
+)
 from localization.group_consensus import correlation_groups_from_map
 from localization.pose_solver import (
     pose_error,
@@ -67,6 +71,26 @@ def _csr_contains_per_row(
     return matched, counts > 0
 
 
+def _csr_contains_at_rows(
+    record: dict,
+    prefix: str,
+    rows: torch.Tensor,
+    values: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """CSR membership for an arbitrary subset of local teacher rows."""
+    rows = torch.as_tensor(rows).long().reshape(-1)
+    values = torch.as_tensor(values).long().reshape(-1)
+    if rows.shape != values.shape:
+        raise ValueError(f"{prefix} selected rows and values do not align")
+    row_count = torch.as_tensor(record[f"{prefix}_offsets"]).numel() - 1
+    if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= row_count):
+        raise ValueError(f"{prefix} selected row is outside the CSR registry")
+    dense = torch.full((row_count,), -1, dtype=torch.long)
+    dense[rows] = values
+    matched, nonempty = _csr_contains_per_row(record, prefix, dense)
+    return matched[rows], nonempty[rows]
+
+
 def _safe_percent(numerator: int, denominator: int) -> float:
     return 100.0 * float(numerator) / max(int(denominator), 1)
 
@@ -107,6 +131,15 @@ def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
         "retained_matches_mean": float(
             np.mean([row["correspondences"] for row in query_rows])
         ),
+        "assignment_unmatched_query_rows": int(
+            sum(row.get("assignment_unmatched_queries", 0) for row in query_rows)
+        ),
+        "assignment_reassigned_query_rows": int(
+            sum(row.get("assignment_reassigned_queries", 0) for row in query_rows)
+        ),
+        "assignment_top1_collisions": int(
+            sum(row.get("assignment_top1_collisions", 0) for row in query_rows)
+        ),
         "mean_hypotheses": float(np.mean([row["hypotheses"] for row in query_rows])),
         "group_diverse_selected_count": int(
             sum(bool(row.get("group_diverse_selected", False)) for row in query_rows)
@@ -135,9 +168,18 @@ def collect_deployment_statistics(
     anchor_bank_updater: Callable[[int, torch.Tensor], None] | None = None,
     pose_group_field: str | None = None,
     group_hypothesis_samples: int = 32,
+    assignment_topk: int = 0,
+    assignment_dustbin_score: float = -1.0,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
+    assignment_topk = int(assignment_topk)
+    if assignment_topk < 0 or assignment_topk > count:
+        raise ValueError("assignment top-K must be zero or within the Anchor count")
+    if assignment_topk and pose_group_field is not None:
+        raise ValueError(
+            "capacity assignment and group-aware pose are separate ablations"
+        )
     if int(teacher["anchor_count"]) != count:
         raise ValueError("teacher and deployment map anchor counts differ")
     metric = load_shared_metric(
@@ -184,12 +226,16 @@ def collect_deployment_statistics(
             anchor_bank_updater(query_index, bank)
         record = teacher["records"][query_index]
         cached = cache[names[query_index]]
-        rows = torch.as_tensor(record["query_rows"]).long()
+        all_rows = torch.as_tensor(record["query_rows"]).long()
+        local_rows = torch.arange(all_rows.numel())
+        rows = all_rows
         if int(deployment_row_limit) > 0:
             # Native detector rows are score-ranked cache indices.  A K-prefix
             # is therefore row < K, not the first K entries of a potentially
             # sparse teacher record.
-            rows = rows[rows < int(deployment_row_limit)]
+            keep = rows < int(deployment_row_limit)
+            rows = rows[keep]
+            local_rows = local_rows[keep]
             if rows.numel() == 0:
                 raise ValueError(
                     f"query {names[query_index]} has no teacher rows in requested "
@@ -199,20 +245,39 @@ def collect_deployment_statistics(
             torch.as_tensor(cached["native_descriptors"]).float()[rows], dim=1
         ).to(device)
         adapted, _ = metric(descriptors)
-        effective_topk = int(retrieval_topk) if collect_anchor_statistics else 1
+        effective_topk = max(
+            int(retrieval_topk) if collect_anchor_statistics else 1,
+            assignment_topk,
+        )
         scores, indices = torch.topk(
             adapted @ bank.T, k=min(effective_topk, count), dim=1
         )
-        del scores
         indices_cpu = indices.cpu()
-        winners = indices_cpu[:, 0]
+        assignment = None
+        if assignment_topk:
+            assignment = maximum_weight_anchor_assignment(
+                TopKMatches(
+                    keypoint_indices=torch.arange(rows.numel(), device=device),
+                    anchor_indices=indices[:, :assignment_topk],
+                    scores=scores[:, :assignment_topk],
+                ),
+                dustbin_score=float(assignment_dustbin_score),
+            )
+            selected_positions = assignment.matches.keypoint_indices.cpu()
+            winners = assignment.matches.anchor_indices.cpu()
+            rows = rows[selected_positions]
+            local_rows = local_rows[selected_positions]
+        else:
+            winners = indices_cpu[:, 0]
         counters["winner_count"].index_add_(
             0, winners, torch.ones(winners.numel(), dtype=torch.float64)
         )
-        current_correct, has_positive = _csr_contains_per_row(
-            record, "positive", winners
+        current_correct, has_positive = _csr_contains_at_rows(
+            record, "positive", local_rows, winners
         )
-        current_ambiguous, _ = _csr_contains_per_row(record, "ambiguous", winners)
+        current_ambiguous, _ = _csr_contains_at_rows(
+            record, "ambiguous", local_rows, winners
+        )
         correct_winners = winners[current_correct]
         ambiguous_winners = winners[~current_correct & current_ambiguous]
         false_winners = winners[~current_correct & ~current_ambiguous & has_positive]
@@ -224,7 +289,7 @@ def collect_deployment_statistics(
             counters[counter_name].index_add_(
                 0, selected, torch.ones(selected.numel(), dtype=torch.float64)
             )
-        if collect_anchor_statistics:
+        if collect_anchor_statistics and not assignment_topk:
             for local, winner in enumerate(winners.tolist()):
                 positives = _csr_values(record, "positive", local)
                 replacement_correct = False
@@ -333,6 +398,16 @@ def collect_deployment_statistics(
                     estimate.diagnostics.get("group_diverse_selected", False)
                 ),
                 "correspondences": int(rows.numel()),
+                "assignment_topk": assignment_topk,
+                "assignment_unmatched_queries": (
+                    int(assignment.unmatched_query_count) if assignment else 0
+                ),
+                "assignment_reassigned_queries": (
+                    int(assignment.reassigned_query_count) if assignment else 0
+                ),
+                "assignment_top1_collisions": (
+                    int(assignment.top1_collision_count) if assignment else 0
+                ),
             }
         )
         if completed % 25 == 0 or completed == len(selected_queries):

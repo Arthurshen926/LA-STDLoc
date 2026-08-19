@@ -276,6 +276,8 @@ def maximum_weight_anchor_assignment(
             raise ValueError("top-K assignment candidates must be unique per row")
     if not torch.isfinite(scores).all():
         raise ValueError("top-K assignment scores must be finite")
+    if scores.shape[1] > 1 and bool((scores[:, 1:] > scores[:, :-1]).any()):
+        raise ValueError("top-K assignment scores must be rank-sorted")
     if not np.isfinite(float(dustbin_score)):
         raise ValueError("dustbin score must be finite")
     query_count, candidate_count = anchors.shape

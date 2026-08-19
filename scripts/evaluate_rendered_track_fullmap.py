@@ -35,6 +35,7 @@ _SOURCE_PATHS = (
     "topology/deployment_revision.py",
     "localization/group_consensus.py",
     "localization/localizer.py",
+    "localization/matcher.py",
     "localization/pose_solver.py",
 )
 
@@ -191,6 +192,12 @@ def run(args: argparse.Namespace) -> dict:
     # are replayed on separate GPUs.  The operation order and values are
     # unchanged; this only bounds host-side parallelism explicitly.
     torch.set_num_threads(int(args.cpu_threads))
+    if int(args.assignment_topk) < 0:
+        raise ValueError("assignment top-K must be zero or positive")
+    if int(args.assignment_topk) and bool(args.group_aware_pose):
+        raise ValueError(
+            "capacity assignment and group-aware pose are separate ablations"
+        )
     identity = _producer_identity()
     paths = {
         "map": args.map.resolve(),
@@ -323,6 +330,8 @@ def run(args: argparse.Namespace) -> dict:
         anchor_bank_updater=updater,
         pose_group_field=(args.group_field if bool(args.group_aware_pose) else None),
         group_hypothesis_samples=int(args.group_hypothesis_samples),
+        assignment_topk=int(args.assignment_topk),
+        assignment_dustbin_score=float(args.assignment_dustbin_score),
     )
     statistics = {
         "schema": "lafgs_rendered_track_full_mapping_loo_statistics",
@@ -366,7 +375,10 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "descriptor_transform": "none_identity_only",
             "deployment_row_limit": int(args.deployment_row_limit),
-            "one_global_top1_per_query_row": True,
+            "one_global_top1_per_query_row": not bool(args.assignment_topk),
+            "capacity_feasible_correspondence_assignment": bool(args.assignment_topk),
+            "assignment_topk": int(args.assignment_topk),
+            "assignment_dustbin_score": float(args.assignment_dustbin_score),
             "one_poselib_call_per_mapping_query": not bool(args.group_aware_pose),
             "one_robust_pose_wrapper_per_mapping_query": True,
             "group_aware_pose": bool(args.group_aware_pose),
@@ -410,6 +422,8 @@ def main() -> None:
     parser.add_argument("--group-aware-pose", action="store_true")
     parser.add_argument("--group-field", default="parent_source_track_ids")
     parser.add_argument("--group-hypothesis-samples", type=int, default=32)
+    parser.add_argument("--assignment-topk", type=int, default=0)
+    parser.add_argument("--assignment-dustbin-score", type=float, default=-1.0)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)
 
