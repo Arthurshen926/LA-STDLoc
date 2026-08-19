@@ -66,21 +66,35 @@ def _jobs(source_state: dict, only: set[str] | None) -> list[dict]:
     if len(scenes) != 24 or any(row.get("status") != "done" for row in scenes.values()):
         raise ValueError("source V4 matrix must contain 24 completed scenes")
     output = []
-    for variant in VARIANTS:
-        for key in sorted(scenes):
-            if only and key not in only and key.split("/", 1)[1] not in only:
-                continue
-            source_root = Path(scenes[key]["output"]).resolve()
-            output.append(
-                {
-                    "key": f"{key}/{variant}",
-                    "scene_key": key,
-                    "family": key.split("/", 1)[0],
-                    "scene": key.split("/", 1)[1],
-                    "variant": variant,
-                    "source_root": str(source_root),
-                }
-            )
+    ordered_scenes = sorted(scenes)
+    # Front-load one preregistered representative scene across all variants so
+    # a schema/runtime incompatibility is exposed before dispatching 69 more
+    # jobs.  This changes scheduling only; parameters and the all-24 gate do
+    # not depend on the representative result.
+    smoke = "7Scenes/stairs" if "7Scenes/stairs" in scenes else ordered_scenes[0]
+    schedule = [
+        *((variant, smoke) for variant in VARIANTS),
+        *(
+            (variant, key)
+            for variant in VARIANTS
+            for key in ordered_scenes
+            if key != smoke
+        ),
+    ]
+    for variant, key in schedule:
+        if only and key not in only and key.split("/", 1)[1] not in only:
+            continue
+        source_root = Path(scenes[key]["output"]).resolve()
+        output.append(
+            {
+                "key": f"{key}/{variant}",
+                "scene_key": key,
+                "family": key.split("/", 1)[0],
+                "scene": key.split("/", 1)[1],
+                "variant": variant,
+                "source_root": str(source_root),
+            }
+        )
     if not output:
         raise ValueError("no assignment matrix jobs selected")
     return output
