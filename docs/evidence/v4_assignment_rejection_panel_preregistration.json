@@ -1,0 +1,61 @@
+{
+  "schema": "lafgs_v4_assignment_rejection_panel_preregistration",
+  "version": 1,
+  "uses_test_queries": false,
+  "purpose": "early_rejection_only_before_all_24_scene_mapping_loo",
+  "hard_scenes": [
+    "7Scenes/stairs",
+    "Cambridge/GreatCourt",
+    "Cambridge/StMarysChurch",
+    "12Scenes/apt2_luke",
+    "12Scenes/office1_gates381",
+    "12Scenes/office1_manolis",
+    "12Scenes/office2_5a",
+    "12Scenes/office2_5b"
+  ],
+  "shared_topk": 8,
+  "candidates": {
+    "k4_regret_002": {
+      "assignment_topk": 4,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02
+    },
+    "k4_regret_005": {
+      "assignment_topk": 4,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.05
+    },
+    "k8_regret_002": {
+      "assignment_topk": 8,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02
+    },
+    "k8_regret_005": {
+      "assignment_topk": 8,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.05
+    }
+  },
+  "pose": {
+    "seed": 2026,
+    "one_standard_poselib_call_per_query": true,
+    "parallelism_changes_query_scheduling_only": true,
+    "pose_workers_per_replay": 8
+  },
+  "family_aggregate_rejection_gate": {
+    "catastrophic_100cm_count_maximum_baseline_delta": 0,
+    "recall_5cm_5deg_maximum_drop_percentage_points": 0.1,
+    "mean_te_maximum_ratio": 1.02,
+    "cvar95_te_maximum_ratio": 1.02,
+    "median_te_maximum_ratio": 1.1
+  },
+  "minimum_useful_change": {
+    "at_least_one_family_catastrophic_count_strictly_lower_or_cvar95_ratio_at_most": 0.95
+  },
+  "authorization": {
+    "panel_can_reject": true,
+    "panel_cannot_select_a_winner": true,
+    "every_survivor_must_run_all_24_mapping_scenes": true,
+    "official_test_authorized": false
+  }
+}
