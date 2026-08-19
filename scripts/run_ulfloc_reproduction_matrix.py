@@ -58,6 +58,13 @@ def atomic_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
+def atomic_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -393,6 +400,10 @@ def process_alive(pid: Any) -> bool:
 def coordinator(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    # Keep a discoverable coordinator PID for unattended monitoring.  It is
+    # refreshed on every restart; scene state remains the authoritative
+    # resumable record.
+    atomic_text(root / "coordinator.pid", f"{os.getpid()}\n")
     state_path = root / "matrix_state.json"
     if state_path.exists() and not args.reset:
         state = read_json(state_path)
