@@ -15,6 +15,8 @@ from localization.matcher import (
     Top1Matches,
     global_cosine_top1,
     global_cosine_top2,
+    global_cosine_topk,
+    maximum_weight_anchor_assignment,
     suppress_duplicate_anchor_matches,
 )
 from localization.pose_solver import (
@@ -117,6 +119,8 @@ class SparseLocalizer:
         group_aware_pose: bool = False,
         group_field: str = "parent_source_track_ids",
         group_hypothesis_samples: int = 32,
+        assignment_topk: int = 0,
+        assignment_dustbin_score: float = -1.0,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -178,11 +182,25 @@ class SparseLocalizer:
         self.seed = int(seed)
         self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
         self.guided_sampling = bool(guided_sampling)
+        self.assignment_topk = int(assignment_topk)
+        self.assignment_dustbin_score = float(assignment_dustbin_score)
+        if self.assignment_topk < 0:
+            raise ValueError("assignment top-K must be zero (disabled) or positive")
+        if self.assignment_topk > int(self.anchor_features.shape[0]):
+            raise ValueError("assignment top-K exceeds the Anchor count")
+        if self.assignment_topk and (
+            self.suppress_duplicate_anchors or self.guided_sampling
+        ):
+            raise ValueError(
+                "capacity assignment, duplicate suppression, and guided sampling "
+                "are separate deployment ablations"
+            )
         self.group_aware_pose = bool(group_aware_pose)
         self.group_hypothesis_samples = int(group_hypothesis_samples)
-        if self.group_aware_pose and self.guided_sampling:
+        if self.group_aware_pose and (self.guided_sampling or self.assignment_topk):
             raise ValueError(
-                "group-aware pose and guided sampling are separate ablations"
+                "group-aware pose, guided sampling, and capacity assignment "
+                "are separate ablations"
             )
         if self.group_aware_pose:
             if group_field not in state:
@@ -244,7 +262,23 @@ class SparseLocalizer:
 
         matching_started = time.perf_counter()
         guidance_quality = None
-        if self.guided_sampling:
+        assignment = None
+        if self.assignment_topk:
+            topk = global_cosine_topk(
+                sparse.descriptors,
+                self.anchor_features,
+                topk=self.assignment_topk,
+            )
+            raw_matches = Top1Matches(
+                keypoint_indices=topk.keypoint_indices,
+                anchor_indices=topk.anchor_indices[:, 0],
+                scores=topk.scores[:, 0],
+            )
+            assignment = maximum_weight_anchor_assignment(
+                topk, dustbin_score=self.assignment_dustbin_score
+            )
+            matches = assignment.matches
+        elif self.guided_sampling:
             top2 = global_cosine_top2(sparse.descriptors, self.anchor_features)
             raw_matches = Top1Matches(
                 keypoint_indices=top2.keypoint_indices,
@@ -258,11 +292,13 @@ class SparseLocalizer:
             guidance_quality = margin * reliability.sqrt() * certainty
         else:
             raw_matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
-        matches = (
-            suppress_duplicate_anchor_matches(raw_matches)
-            if self.suppress_duplicate_anchors
-            else raw_matches
-        )
+            matches = raw_matches
+        if not self.assignment_topk:
+            matches = (
+                suppress_duplicate_anchor_matches(raw_matches)
+                if self.suppress_duplicate_anchors
+                else raw_matches
+            )
         if self.guided_sampling:
             if self.suppress_duplicate_anchors:
                 raise ValueError(
@@ -330,6 +366,24 @@ class SparseLocalizer:
                 ),
                 "guided_sampling": int(self.guided_sampling),
                 "group_aware_pose": int(self.group_aware_pose),
+                "capacity_assignment": int(self.assignment_topk > 0),
+                "assignment_topk": int(self.assignment_topk),
+                "assignment_dustbin_score": float(self.assignment_dustbin_score),
+                "assignment_candidate_edges": (
+                    int(assignment.candidate_edge_count) if assignment else 0
+                ),
+                "assignment_eligible_edges": (
+                    int(assignment.eligible_edge_count) if assignment else 0
+                ),
+                "assignment_unmatched_queries": (
+                    int(assignment.unmatched_query_count) if assignment else 0
+                ),
+                "assignment_reassigned_queries": (
+                    int(assignment.reassigned_query_count) if assignment else 0
+                ),
+                "assignment_top1_collisions": (
+                    int(assignment.top1_collision_count) if assignment else 0
+                ),
                 "context_adapter": int(self.frontend.context_adapter is not None),
             },
         )

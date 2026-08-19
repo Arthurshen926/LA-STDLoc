@@ -74,7 +74,31 @@ def main() -> None:
             "single PoseLib solve."
         ),
     )
+    parser.add_argument(
+        "--assignment-topk",
+        type=int,
+        default=0,
+        help=(
+            "Enable sparse maximum-weight query-to-Anchor assignment over exact "
+            "global top-K candidates. Zero preserves the frozen independent top-1."
+        ),
+    )
+    parser.add_argument(
+        "--assignment-dustbin-score",
+        type=float,
+        default=-1.0,
+        help="Strict minimum cosine score for an assigned real Anchor edge.",
+    )
     args = parser.parse_args()
+    if args.assignment_topk < 0:
+        parser.error("--assignment-topk must be zero or positive")
+    if args.assignment_topk and (
+        args.suppress_duplicate_anchors or args.guided_sampling or args.group_aware_pose
+    ):
+        parser.error(
+            "--assignment-topk cannot be combined with duplicate suppression "
+            "guided sampling, or group-aware pose"
+        )
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
             parser.error("--stage-state cannot be combined with descriptor map options")
@@ -130,6 +154,8 @@ def main() -> None:
         group_aware_pose=args.group_aware_pose,
         group_field=args.group_field,
         group_hypothesis_samples=args.group_hypothesis_samples,
+        assignment_topk=args.assignment_topk,
+        assignment_dustbin_score=args.assignment_dustbin_score,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -160,6 +186,9 @@ def main() -> None:
                 "group_hypothesis_samples": (
                     int(args.group_hypothesis_samples) if args.group_aware_pose else 0
                 ),
+                "capacity_assignment": bool(args.assignment_topk > 0),
+                "assignment_topk": int(args.assignment_topk),
+                "assignment_dustbin_score": float(args.assignment_dustbin_score),
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),
