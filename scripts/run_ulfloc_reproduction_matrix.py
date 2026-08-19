@@ -83,7 +83,7 @@ def symlink_checked(dst: Path, src: Path) -> None:
     os.symlink(src, dst, target_is_directory=src.is_dir())
 
 
-def materialize_torch_masks(src: Path, dst: Path) -> Dict[str, Any]:
+def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Dict[str, Any]:
     """Convert release mask pickle arrays to the tensor contract ULF expects.
 
     The prepared indoor references contain semantically identical NumPy mask
@@ -97,8 +97,10 @@ def materialize_torch_masks(src: Path, dst: Path) -> Dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
         raise ValueError(f"invalid ULF mask mapping: {src}")
     converted: Dict[str, Any] = {}
-    tensor_cache: Dict[int, Any] = {}
-    shapes = set()
+    source_tensor_cache: Dict[int, Any] = {}
+    target_tensor_cache: Dict[Any, Any] = {}
+    source_shapes = set()
+    staged_shapes = set()
     # Import lazily so staging metadata-only commands do not require Torch.
     import torch
 
@@ -112,21 +114,45 @@ def materialize_torch_masks(src: Path, dst: Path) -> Dict[str, Any]:
             # cloning every entry (which would expand a ~1 MB pickle to many
             # gigabytes during staging).
             cache_key = id(value)
-            tensor = tensor_cache.get(cache_key)
-            if tensor is None:
-                tensor = torch.as_tensor(value)
-                if not tensor.is_contiguous():
-                    tensor = tensor.contiguous()
-                if tensor.dtype != torch.bool:
-                    tensor = tensor.to(dtype=torch.bool)
-                tensor_cache[cache_key] = tensor
-            if tensor.ndim != 2:
-                raise ValueError(f"mask {name!r} has shape {tuple(tensor.shape)}")
-            shapes.add(tuple(tensor.shape))
+            source_tensor = source_tensor_cache.get(cache_key)
+            if source_tensor is None:
+                source_tensor = torch.as_tensor(value)
+                if not source_tensor.is_contiguous():
+                    source_tensor = source_tensor.contiguous()
+                if source_tensor.dtype != torch.bool:
+                    source_tensor = source_tensor.to(dtype=torch.bool)
+                source_tensor_cache[cache_key] = source_tensor
+            if source_tensor.ndim != 2:
+                raise ValueError(f"mask {name!r} has shape {tuple(source_tensor.shape)}")
+            source_shape = tuple(source_tensor.shape)
+            source_shapes.add(source_shape)
+            height, width = source_shape
+            if max(height, width) > longest_edge:
+                if height >= width:
+                    target_shape = (longest_edge, int(width * longest_edge / height))
+                else:
+                    target_shape = (int(height * longest_edge / width), longest_edge)
+                # Match the render target without softening boolean masks.
+                target_key = (cache_key, target_shape)
+                tensor = target_tensor_cache.get(target_key)
+                if tensor is None:
+                    tensor = torch.nn.functional.interpolate(
+                        source_tensor.to(dtype=torch.float32)[None, None],
+                        size=target_shape,
+                        mode="nearest",
+                    )[0, 0].to(dtype=torch.bool).contiguous()
+                    target_tensor_cache[target_key] = tensor
+            else:
+                target_shape = source_shape
+                tensor = source_tensor
+            staged_shapes.add(tuple(target_shape))
             tensors.append(tensor)
         converted[name] = tuple(tensors)
-    if len(shapes) != 1:
-        raise ValueError(f"mask shapes are inconsistent in {src}: {sorted(shapes)}")
+    if len(source_shapes) != 1 or len(staged_shapes) != 1:
+        raise ValueError(
+            f"mask shapes are inconsistent in {src}: "
+            f"{sorted(source_shapes)} -> {sorted(staged_shapes)}"
+        )
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f".{dst.name}.tmp-{os.getpid()}-{time.time_ns()}")
     with tmp.open("wb") as handle:
@@ -137,7 +163,9 @@ def materialize_torch_masks(src: Path, dst: Path) -> Dict[str, Any]:
         "source_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
         "staged": str(dst),
         "entries": len(converted),
-        "shape": list(next(iter(shapes))),
+        "source_shape": list(next(iter(source_shapes))),
+        "staged_shape": list(next(iter(staged_shapes))),
+        "longest_edge": longest_edge,
         "dtype": "torch.bool",
     }
 
@@ -205,8 +233,24 @@ def make_staged_scene(
                     raise RuntimeError(f"staging mask link mismatch: {staged_mask}")
                 staged_mask.unlink()
             elif staged_mask.exists():
-                raise RuntimeError(f"staging mask path already exists: {staged_mask}")
-            mask_info = materialize_torch_masks(mask, staged_mask)
+                # A previous invocation may already have written our own
+                # stage-owned tensor pickle.  Reuse it only when its manifest
+                # proves the same source and target contract; otherwise fail
+                # closed instead of replacing an unrelated user file.
+                manifest_path = stage / "ulfloc_stage_manifest.json"
+                prior = read_json(manifest_path) if manifest_path.is_file() else {}
+                prior_mask = prior.get("mask") if isinstance(prior, dict) else None
+                if (
+                    isinstance(prior_mask, dict)
+                    and prior_mask.get("source") == str(mask)
+                    and prior_mask.get("longest_edge") == 640
+                    and prior_mask.get("staged_shape")
+                ):
+                    mask_info = prior_mask
+                else:
+                    raise RuntimeError(f"staging mask path already exists: {staged_mask}")
+            else:
+                mask_info = materialize_torch_masks(mask, staged_mask, longest_edge=640)
         else:
             mask_info = None
     else:
