@@ -165,6 +165,21 @@ def test_capacity_assignment_rejects_unsorted_candidate_scores():
         maximum_weight_anchor_assignment(candidates, dustbin_score=0.0)
 
 
+def test_capacity_assignment_breaks_exact_weight_ties_deterministically():
+    candidates = TopKMatches(
+        keypoint_indices=torch.tensor([0, 1]),
+        anchor_indices=torch.tensor([[0, 1], [0, 1]]),
+        scores=torch.tensor([[0.5, 0.5], [0.5, 0.5]]),
+    )
+    outputs = [
+        maximum_weight_anchor_assignment(
+            candidates, dustbin_score=0.0
+        ).matches.anchor_indices.tolist()
+        for _ in range(5)
+    ]
+    assert outputs == [[0, 1]] * 5
+
+
 def test_duplicate_anchor_suppression_keeps_best_and_query_order():
     matches = Top1Matches(
         keypoint_indices=torch.tensor([2, 5, 9, 12, 20]),
