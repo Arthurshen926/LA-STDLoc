@@ -271,7 +271,7 @@ def postprocess(scene_root: Path, item: Mapping[str, str], repo: Path, gpu: str)
     return {"sparse": sparse, "dense": dense}
 
 
-def environment(repo: Path, gpu: str, python_bin: Path) -> Dict[str, str]:
+def environment(repo: Path, gpu: str, python_bin: Path, experiment_root: Path) -> Dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
@@ -282,6 +282,15 @@ def environment(repo: Path, gpu: str, python_bin: Path) -> Dict[str, str]:
             "MKL_NUM_THREADS": env.get("MKL_NUM_THREADS", "4"),
         }
     )
+    # gsplat is JIT-compiled on the first training iteration.  Its default
+    # torch-extension cache is process-shared, so launching several GPUs at
+    # once can make concurrent ninja builds delete/replace one another's
+    # objects.  Give each GPU in this matrix its own persistent cache and
+    # bound compile parallelism; later scenes on the same GPU reuse it.
+    cache_tag = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in experiment_root.name)
+    env["TORCH_EXTENSIONS_DIR"] = f"/tmp/ulfloc_torch_extensions_{cache_tag}_gpu{gpu}"
+    env["MAX_JOBS"] = env.get("MAX_JOBS", "4")
+    env["TORCH_CUDA_ARCH_LIST"] = env.get("TORCH_CUDA_ARCH_LIST", "8.6")
     # Keep the conda extension toolchain visible; this prevents the common
     # worker-only failure where ninja is present in the shell but not PATH.
     bin_dir = str(python_bin.parent)
@@ -308,7 +317,7 @@ def run_one(args: argparse.Namespace, item: Mapping[str, str]) -> int:
     )
     cfg = config_for(item, repo)
     model = model_dir(scene_root)
-    env = environment(repo, str(args.gpu), python_bin)
+    env = environment(repo, str(args.gpu), python_bin, root)
     common = [str(python_bin)]
 
     train_cmd = common + [str(repo / "train.py"), "-s", str(stage), "-m", str(model)]
