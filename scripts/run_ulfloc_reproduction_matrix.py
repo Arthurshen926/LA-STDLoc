@@ -16,8 +16,10 @@ and makes all command lines explicit in the logs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import pickle
 import shutil
 import signal
 import subprocess
@@ -81,6 +83,65 @@ def symlink_checked(dst: Path, src: Path) -> None:
     os.symlink(src, dst, target_is_directory=src.is_dir())
 
 
+def materialize_torch_masks(src: Path, dst: Path) -> Dict[str, Any]:
+    """Convert release mask pickle arrays to the tensor contract ULF expects.
+
+    The prepared indoor references contain semantically identical NumPy mask
+    arrays, while the released ULF-Loc training loop calls ``.cuda()`` on each
+    mask.  Keep the source pickle untouched and write a stage-owned pickle of
+    bool Torch tensors.  ``pickle.load`` remains the release code's loader, so
+    this is only a representation adaptation, not a ULF source patch.
+    """
+    with src.open("rb") as handle:
+        raw = pickle.load(handle)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"invalid ULF mask mapping: {src}")
+    converted: Dict[str, Any] = {}
+    tensor_cache: Dict[int, Any] = {}
+    shapes = set()
+    # Import lazily so staging metadata-only commands do not require Torch.
+    import torch
+
+    for name, values in raw.items():
+        if not isinstance(name, str) or not isinstance(values, (tuple, list)) or len(values) != 3:
+            raise ValueError(f"invalid mask entry for {name!r} in {src}")
+        tensors = []
+        for value in values:
+            # The released mask pickle intentionally shares identical arrays
+            # across many image keys.  Preserve that sharing instead of
+            # cloning every entry (which would expand a ~1 MB pickle to many
+            # gigabytes during staging).
+            cache_key = id(value)
+            tensor = tensor_cache.get(cache_key)
+            if tensor is None:
+                tensor = torch.as_tensor(value)
+                if not tensor.is_contiguous():
+                    tensor = tensor.contiguous()
+                if tensor.dtype != torch.bool:
+                    tensor = tensor.to(dtype=torch.bool)
+                tensor_cache[cache_key] = tensor
+            if tensor.ndim != 2:
+                raise ValueError(f"mask {name!r} has shape {tuple(tensor.shape)}")
+            shapes.add(tuple(tensor.shape))
+            tensors.append(tensor)
+        converted[name] = tuple(tensors)
+    if len(shapes) != 1:
+        raise ValueError(f"mask shapes are inconsistent in {src}: {sorted(shapes)}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f".{dst.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    with tmp.open("wb") as handle:
+        pickle.dump(converted, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, dst)
+    return {
+        "source": str(src),
+        "source_sha256": hashlib.sha256(src.read_bytes()).hexdigest(),
+        "staged": str(dst),
+        "entries": len(converted),
+        "shape": list(next(iter(shapes))),
+        "dtype": "torch.bool",
+    }
+
+
 def source_path(item: Mapping[str, str], data7: Path, data12: Path, cambridge: Path) -> Path:
     if item["dataset"] == "7scenes":
         return data7 / item["scene"]
@@ -136,7 +197,20 @@ def make_staged_scene(
     if item["dataset"] in {"7scenes", "12scenes"}:
         mask = src / "masks.pkl"
         if mask.is_file():
-            symlink_checked(images / "masks.pkl", mask)
+            staged_mask = images / "masks.pkl"
+            # Older interrupted attempts may have left the source symlink.
+            # Replace only that known link; never overwrite an unrelated file.
+            if staged_mask.is_symlink():
+                if Path(os.readlink(staged_mask)) != mask:
+                    raise RuntimeError(f"staging mask link mismatch: {staged_mask}")
+                staged_mask.unlink()
+            elif staged_mask.exists():
+                raise RuntimeError(f"staging mask path already exists: {staged_mask}")
+            mask_info = materialize_torch_masks(mask, staged_mask)
+        else:
+            mask_info = None
+    else:
+        mask_info = None
 
     if item["dataset"] == "cambridge":
         for name in ("dataset_train.txt", "dataset_test.txt"):
@@ -155,6 +229,7 @@ def make_staged_scene(
             "source_images": str(processed),
             "sfm_layout": sfm_name,
             "image_layout": "processed_link_tree",
+            "mask": mask_info,
         },
     )
     return stage
