@@ -15,6 +15,8 @@ from localization.matcher import (
     Top1Matches,
     global_cosine_top1,
     global_cosine_top2,
+    global_cosine_topk,
+    maximum_weight_anchor_assignment,
     suppress_duplicate_anchor_matches,
 )
 from localization.pose_solver import (
@@ -72,9 +74,7 @@ def load_context_descriptor_artifact(
         raise ValueError("context descriptor anchor index is outside the base map")
     if not torch.equal(base_anchor_ids[indices], anchor_ids):
         raise ValueError("context descriptor anchor IDs do not align with the base map")
-    features = F.normalize(
-        torch.as_tensor(artifact["anchor_features"]).float(), dim=1
-    )
+    features = F.normalize(torch.as_tensor(artifact["anchor_features"]).float(), dim=1)
     if features.shape != (indices.numel(), 256):
         raise ValueError("context descriptor bank must have shape [N, 256]")
     exported = dict(artifact["adapter_config"])
@@ -87,9 +87,7 @@ def load_context_descriptor_artifact(
             "maximum_residual_norm",
         )
     }
-    config["context_mode"] = exported.get(
-        "context_mode", "multi_scale_global"
-    )
+    config["context_mode"] = exported.get("context_mode", "multi_scale_global")
     # Artifacts produced before smooth radial trust regions used the original
     # hard clip. Preserve their exact runtime instead of silently changing it.
     config["residual_parameterization"] = exported.get(
@@ -117,6 +115,8 @@ class SparseLocalizer:
         seed: int = 2026,
         suppress_duplicate_anchors: bool = False,
         guided_sampling: bool = False,
+        assignment_topk: int = 0,
+        assignment_dustbin_score: float = -1.0,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -149,9 +149,7 @@ class SparseLocalizer:
                 state["anchor_xyz"], device=self.device
             ).float()
             self.anchor_features = F.normalize(
-                torch.as_tensor(
-                    state["anchor_features"], device=self.device
-                ).float(),
+                torch.as_tensor(state["anchor_features"], device=self.device).float(),
                 dim=1,
             )
             metric = load_shared_metric(
@@ -180,6 +178,19 @@ class SparseLocalizer:
         self.seed = int(seed)
         self.suppress_duplicate_anchors = bool(suppress_duplicate_anchors)
         self.guided_sampling = bool(guided_sampling)
+        self.assignment_topk = int(assignment_topk)
+        self.assignment_dustbin_score = float(assignment_dustbin_score)
+        if self.assignment_topk < 0:
+            raise ValueError("assignment top-K must be zero (disabled) or positive")
+        if self.assignment_topk > int(self.anchor_features.shape[0]):
+            raise ValueError("assignment top-K exceeds the Anchor count")
+        if self.assignment_topk and (
+            self.suppress_duplicate_anchors or self.guided_sampling
+        ):
+            raise ValueError(
+                "capacity assignment, duplicate suppression, and guided sampling "
+                "are separate deployment ablations"
+            )
         self.anchor_matchability = torch.as_tensor(
             state.get("anchor_matchability", torch.ones_like(base_anchor_ids)),
             device=self.device,
@@ -227,7 +238,23 @@ class SparseLocalizer:
 
         matching_started = time.perf_counter()
         guidance_quality = None
-        if self.guided_sampling:
+        assignment = None
+        if self.assignment_topk:
+            topk = global_cosine_topk(
+                sparse.descriptors,
+                self.anchor_features,
+                topk=self.assignment_topk,
+            )
+            raw_matches = Top1Matches(
+                keypoint_indices=topk.keypoint_indices,
+                anchor_indices=topk.anchor_indices[:, 0],
+                scores=topk.scores[:, 0],
+            )
+            assignment = maximum_weight_anchor_assignment(
+                topk, dustbin_score=self.assignment_dustbin_score
+            )
+            matches = assignment.matches
+        elif self.guided_sampling:
             top2 = global_cosine_top2(sparse.descriptors, self.anchor_features)
             raw_matches = Top1Matches(
                 keypoint_indices=top2.keypoint_indices,
@@ -241,11 +268,13 @@ class SparseLocalizer:
             guidance_quality = margin * reliability.sqrt() * certainty
         else:
             raw_matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
-        matches = (
-            suppress_duplicate_anchor_matches(raw_matches)
-            if self.suppress_duplicate_anchors
-            else raw_matches
-        )
+            matches = raw_matches
+        if not self.assignment_topk:
+            matches = (
+                suppress_duplicate_anchor_matches(raw_matches)
+                if self.suppress_duplicate_anchors
+                else raw_matches
+            )
         if self.guided_sampling:
             if self.suppress_duplicate_anchors:
                 raise ValueError(
@@ -299,6 +328,24 @@ class SparseLocalizer:
                     - matches.scores.numel() / max(int(raw_matches.scores.numel()), 1)
                 ),
                 "guided_sampling": int(self.guided_sampling),
+                "capacity_assignment": int(self.assignment_topk > 0),
+                "assignment_topk": int(self.assignment_topk),
+                "assignment_dustbin_score": float(self.assignment_dustbin_score),
+                "assignment_candidate_edges": (
+                    int(assignment.candidate_edge_count) if assignment else 0
+                ),
+                "assignment_eligible_edges": (
+                    int(assignment.eligible_edge_count) if assignment else 0
+                ),
+                "assignment_unmatched_queries": (
+                    int(assignment.unmatched_query_count) if assignment else 0
+                ),
+                "assignment_reassigned_queries": (
+                    int(assignment.reassigned_query_count) if assignment else 0
+                ),
+                "assignment_top1_collisions": (
+                    int(assignment.top1_collision_count) if assignment else 0
+                ),
                 "context_adapter": int(self.frontend.context_adapter is not None),
             },
         )

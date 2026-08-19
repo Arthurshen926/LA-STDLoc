@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,23 @@ class Top2Matches:
     keypoint_indices: torch.Tensor
     anchor_indices: torch.Tensor
     scores: torch.Tensor
+
+
+@dataclass(frozen=True)
+class TopKMatches:
+    keypoint_indices: torch.Tensor
+    anchor_indices: torch.Tensor
+    scores: torch.Tensor
+
+
+@dataclass(frozen=True)
+class AnchorAssignment:
+    matches: Top1Matches
+    candidate_edge_count: int
+    eligible_edge_count: int
+    unmatched_query_count: int
+    reassigned_query_count: int
+    top1_collision_count: int
 
 
 @torch.inference_mode()
@@ -66,9 +86,11 @@ def suppress_duplicate_entity_matches(
         matches.keypoint_indices.numel() == matches.anchor_indices.numel() == count
     ):
         raise ValueError("top-1 match rows do not align")
-    components = torch.as_tensor(
-        anchor_component_ids, device=matches.anchor_indices.device
-    ).long().reshape(-1)
+    components = (
+        torch.as_tensor(anchor_component_ids, device=matches.anchor_indices.device)
+        .long()
+        .reshape(-1)
+    )
     if components.numel() == 0:
         raise ValueError("anchor component registry is empty")
     if bool((components < -1).any()):
@@ -80,9 +102,7 @@ def suppress_duplicate_entity_matches(
         raise ValueError("match references an anchor outside the component registry")
     if count < 2:
         return matches
-    component_count = (
-        int(components.max()) + 1 if bool((components >= 0).any()) else 0
-    )
+    component_count = int(components.max()) + 1 if bool((components >= 0).any()) else 0
     matched_components = components[matches.anchor_indices]
     entity_ids = torch.where(
         matched_components >= 0,
@@ -179,4 +199,162 @@ def global_cosine_top2(
         keypoint_indices=keypoints,
         anchor_indices=best_indices,
         scores=best_scores,
+    )
+
+
+@torch.inference_mode()
+def global_cosine_topk(
+    query_descriptors: torch.Tensor,
+    anchor_descriptors: torch.Tensor,
+    *,
+    topk: int,
+    chunk_size: int = 8192,
+) -> TopKMatches:
+    """Return exact global cosine top-K candidates without a dense score bank."""
+    if query_descriptors.ndim != 2 or anchor_descriptors.ndim != 2:
+        raise ValueError("query and anchor descriptors must be matrices")
+    if query_descriptors.shape[1] != anchor_descriptors.shape[1]:
+        raise ValueError("query and anchor descriptor dimensions differ")
+    count = int(anchor_descriptors.shape[0])
+    topk = int(topk)
+    if topk < 1 or topk > count:
+        raise ValueError("top-K must be between one and the anchor count")
+    chunk_size = max(int(chunk_size), 1)
+    query = F.normalize(query_descriptors.float(), dim=1)
+    best_scores = query.new_full((query.shape[0], topk), -torch.inf)
+    best_indices = torch.zeros(
+        (query.shape[0], topk), dtype=torch.long, device=query.device
+    )
+    for start in range(0, count, chunk_size):
+        stop = min(start + chunk_size, count)
+        anchors = F.normalize(anchor_descriptors[start:stop].float(), dim=1)
+        scores = query @ anchors.T
+        indices = torch.arange(start, stop, device=query.device)[None].expand(
+            query.shape[0], -1
+        )
+        merged_scores = torch.cat((best_scores, scores), dim=1)
+        merged_indices = torch.cat((best_indices, indices), dim=1)
+        best_scores, positions = torch.topk(merged_scores, topk, dim=1)
+        best_indices = torch.gather(merged_indices, 1, positions)
+    return TopKMatches(
+        keypoint_indices=torch.arange(query.shape[0], device=query.device),
+        anchor_indices=best_indices,
+        scores=best_scores,
+    )
+
+
+@torch.inference_mode()
+def maximum_weight_anchor_assignment(
+    candidates: TopKMatches,
+    *,
+    dustbin_score: float,
+) -> AnchorAssignment:
+    """Extract an Anchor-unique correspondence set from sparse top-K edges.
+
+    Each query row and each real Anchor has capacity one.  Every query also has
+    a private dustbin edge, so rows whose best feasible utility is not strictly
+    above ``dustbin_score`` remain unmatched.  The sparse bipartite optimum is
+    solved on CPU; returned tensors are restored to the candidate device and
+    remain ordered by query row for the single standard PoseLib call.
+    """
+    keypoints = torch.as_tensor(candidates.keypoint_indices)
+    anchors = torch.as_tensor(candidates.anchor_indices)
+    scores = torch.as_tensor(candidates.scores)
+    if keypoints.ndim != 1 or anchors.ndim != 2 or scores.ndim != 2:
+        raise ValueError("top-K assignment inputs have invalid ranks")
+    if anchors.shape != scores.shape or anchors.shape[0] != keypoints.numel():
+        raise ValueError("top-K assignment rows do not align")
+    if anchors.shape[1] < 1:
+        raise ValueError("top-K assignment needs at least one candidate per row")
+    if torch.unique(keypoints).numel() != keypoints.numel():
+        raise ValueError("top-K assignment query rows must be unique")
+    if anchors.numel() and bool((anchors < 0).any()):
+        raise ValueError("top-K assignment contains a negative Anchor index")
+    if anchors.shape[1] > 1:
+        ordered = torch.sort(anchors, dim=1).values
+        if bool((ordered[:, 1:] == ordered[:, :-1]).any()):
+            raise ValueError("top-K assignment candidates must be unique per row")
+    if not torch.isfinite(scores).all():
+        raise ValueError("top-K assignment scores must be finite")
+    if not np.isfinite(float(dustbin_score)):
+        raise ValueError("dustbin score must be finite")
+    query_count, candidate_count = anchors.shape
+    if query_count == 0:
+        empty_long = keypoints.new_empty((0,), dtype=torch.long)
+        empty_score = scores.new_empty((0,))
+        return AnchorAssignment(
+            Top1Matches(empty_long, empty_long.clone(), empty_score),
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+
+    anchors_cpu = anchors.detach().cpu().numpy().astype(np.int64, copy=False)
+    scores_cpu = scores.detach().cpu().numpy().astype(np.float64, copy=False)
+    # Compare in the descriptor score dtype.  This makes an exactly represented
+    # serialized threshold a strict boundary instead of promoting float32 ties
+    # through a later float64 conversion.
+    eligible = (scores > scores.new_tensor(float(dustbin_score))).detach().cpu().numpy()
+    eligible_rows, eligible_ranks = np.nonzero(eligible)
+    eligible_anchors = anchors_cpu[eligible_rows, eligible_ranks]
+    unique_anchors = np.unique(eligible_anchors)
+    real_column_count = int(unique_anchors.size)
+
+    # Every row has a private dustbin.  Positive weights are required because
+    # scipy sparse matrices remove explicit zero-weight edges.
+    rows = [np.arange(query_count, dtype=np.int64)]
+    columns = [real_column_count + np.arange(query_count, dtype=np.int64)]
+    weights = [np.full(query_count, 2.0, dtype=np.float64)]
+    if eligible_rows.size:
+        real_columns = np.searchsorted(unique_anchors, eligible_anchors)
+        rows.append(eligible_rows.astype(np.int64, copy=False))
+        columns.append(real_columns.astype(np.int64, copy=False))
+        weights.append(
+            2.0 + scores_cpu[eligible_rows, eligible_ranks] - float(dustbin_score)
+        )
+    graph = coo_matrix(
+        (np.concatenate(weights), (np.concatenate(rows), np.concatenate(columns))),
+        shape=(query_count, real_column_count + query_count),
+    ).tocsr()
+    row_indices, column_indices = min_weight_full_bipartite_matching(
+        graph, maximize=True
+    )
+    order = np.argsort(row_indices, kind="stable")
+    row_indices = row_indices[order]
+    column_indices = column_indices[order]
+    real = column_indices < real_column_count
+    matched_rows = row_indices[real]
+    matched_anchors = unique_anchors[column_indices[real]]
+
+    matched_scores = np.empty(matched_rows.size, dtype=np.float64)
+    matched_ranks = np.empty(matched_rows.size, dtype=np.int64)
+    for position, (row, anchor) in enumerate(zip(matched_rows, matched_anchors)):
+        ranks = np.flatnonzero(anchors_cpu[row] == anchor)
+        if ranks.size != 1:
+            raise RuntimeError("assignment result does not map to one candidate edge")
+        rank = int(ranks[0])
+        matched_ranks[position] = rank
+        matched_scores[position] = scores_cpu[row, rank]
+
+    device = keypoints.device
+    retained_rows = torch.as_tensor(matched_rows, dtype=torch.long, device=device)
+    matches = Top1Matches(
+        keypoint_indices=keypoints[retained_rows],
+        anchor_indices=torch.as_tensor(
+            matched_anchors, dtype=torch.long, device=anchors.device
+        ),
+        scores=torch.as_tensor(
+            matched_scores, dtype=scores.dtype, device=scores.device
+        ),
+    )
+    top1_unique = np.unique(anchors_cpu[:, 0]).size
+    return AnchorAssignment(
+        matches=matches,
+        candidate_edge_count=int(query_count * candidate_count),
+        eligible_edge_count=int(eligible_rows.size),
+        unmatched_query_count=int(query_count - matched_rows.size),
+        reassigned_query_count=int(np.count_nonzero(matched_ranks > 0)),
+        top1_collision_count=int(query_count - top1_unique),
     )

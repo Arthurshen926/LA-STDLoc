@@ -64,12 +64,34 @@ def main() -> None:
             "single PoseLib solve."
         ),
     )
+    parser.add_argument(
+        "--assignment-topk",
+        type=int,
+        default=0,
+        help=(
+            "Enable sparse maximum-weight query-to-Anchor assignment over exact "
+            "global top-K candidates. Zero preserves the frozen independent top-1."
+        ),
+    )
+    parser.add_argument(
+        "--assignment-dustbin-score",
+        type=float,
+        default=-1.0,
+        help="Strict minimum cosine score for an assigned real Anchor edge.",
+    )
     args = parser.parse_args()
+    if args.assignment_topk < 0:
+        parser.error("--assignment-topk must be zero or positive")
+    if args.assignment_topk and (
+        args.suppress_duplicate_anchors or args.guided_sampling
+    ):
+        parser.error(
+            "--assignment-topk cannot be combined with duplicate suppression "
+            "or guided sampling"
+        )
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
-            parser.error(
-                "--stage-state cannot be combined with descriptor map options"
-            )
+            parser.error("--stage-state cannot be combined with descriptor map options")
         map_path, metric_path = materialize_a0(
             args.stage_state, args.output / "materialized_a0", args.config
         )
@@ -119,6 +141,8 @@ def main() -> None:
         seed=args.seed,
         suppress_duplicate_anchors=args.suppress_duplicate_anchors,
         guided_sampling=args.guided_sampling,
+        assignment_topk=args.assignment_topk,
+        assignment_dustbin_score=args.assignment_dustbin_score,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -144,6 +168,9 @@ def main() -> None:
                 "pose_solves": 1,
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
+                "capacity_assignment": bool(args.assignment_topk > 0),
+                "assignment_topk": int(args.assignment_topk),
+                "assignment_dustbin_score": float(args.assignment_dustbin_score),
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),

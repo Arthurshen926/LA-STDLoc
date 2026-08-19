@@ -1,10 +1,15 @@
+import itertools
+
 import torch
 import pytest
 
 from localization.matcher import (
+    TopKMatches,
     Top1Matches,
     global_cosine_top1,
     global_cosine_top2,
+    global_cosine_topk,
+    maximum_weight_anchor_assignment,
     suppress_duplicate_anchor_matches,
     suppress_duplicate_entity_matches,
 )
@@ -42,6 +47,110 @@ def test_global_top2_returns_exact_margin_candidates():
     assert torch.all(matches.scores[:, 0] >= matches.scores[:, 1])
 
 
+def test_global_topk_is_exact_across_chunks():
+    query = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    bank = torch.tensor([[1.0, 0.0], [0.8, 0.2], [0.4, 0.6], [0.0, 1.0], [-1.0, 0.0]])
+    matches = global_cosine_topk(query, bank, topk=3, chunk_size=2)
+    dense = (
+        torch.nn.functional.normalize(query, dim=1)
+        @ torch.nn.functional.normalize(bank, dim=1).T
+    )
+    expected_scores, expected_indices = torch.topk(dense, 3, dim=1)
+    assert torch.equal(matches.anchor_indices, expected_indices)
+    assert torch.allclose(matches.scores, expected_scores)
+
+
+def test_capacity_assignment_can_fall_back_to_second_candidate():
+    candidates = TopKMatches(
+        keypoint_indices=torch.tensor([4, 7]),
+        anchor_indices=torch.tensor([[0, 1], [0, 1]]),
+        scores=torch.tensor([[0.90, 0.80], [0.85, 0.10]]),
+    )
+    result = maximum_weight_anchor_assignment(candidates, dustbin_score=0.0)
+    assert result.matches.keypoint_indices.tolist() == [4, 7]
+    assert result.matches.anchor_indices.tolist() == [1, 0]
+    assert result.matches.scores.tolist() == pytest.approx([0.8, 0.85])
+    assert result.reassigned_query_count == 1
+    assert result.top1_collision_count == 1
+    assert result.unmatched_query_count == 0
+
+
+def test_capacity_assignment_uses_private_dustbin_and_strict_threshold():
+    candidates = TopKMatches(
+        keypoint_indices=torch.tensor([0, 1, 2]),
+        anchor_indices=torch.tensor([[0, 1], [0, 2], [3, 4]]),
+        scores=torch.tensor([[0.8, 0.7], [0.6, 0.5], [0.2, 0.1]]),
+    )
+    result = maximum_weight_anchor_assignment(candidates, dustbin_score=0.6)
+    assert result.matches.keypoint_indices.tolist() == [0]
+    assert result.matches.anchor_indices.tolist() == [0]
+    assert result.unmatched_query_count == 2
+    assert result.eligible_edge_count == 2
+
+
+def test_capacity_assignment_rejects_duplicate_candidate_edges():
+    candidates = TopKMatches(
+        keypoint_indices=torch.tensor([0]),
+        anchor_indices=torch.tensor([[2, 2]]),
+        scores=torch.tensor([[0.8, 0.7]]),
+    )
+    with pytest.raises(ValueError, match="unique per row"):
+        maximum_weight_anchor_assignment(candidates, dustbin_score=0.0)
+
+
+def test_capacity_assignment_matches_small_graph_exhaustive_oracle():
+    generator = torch.Generator().manual_seed(20260819)
+    for query_count in range(1, 5):
+        for _ in range(20):
+            anchor_count = 5
+            topk = 3
+            anchors = torch.stack(
+                [
+                    torch.randperm(anchor_count, generator=generator)[:topk]
+                    for _ in range(query_count)
+                ]
+            )
+            scores = torch.rand((query_count, topk), generator=generator) * 1.4 - 0.4
+            dustbin = 0.1
+            candidates = TopKMatches(
+                keypoint_indices=torch.arange(query_count),
+                anchor_indices=anchors,
+                scores=scores,
+            )
+            result = maximum_weight_anchor_assignment(candidates, dustbin_score=dustbin)
+            returned = {
+                int(row): (int(anchor), float(score))
+                for row, anchor, score in zip(
+                    result.matches.keypoint_indices,
+                    result.matches.anchor_indices,
+                    result.matches.scores,
+                )
+            }
+            actual = sum(
+                returned.get(row, (-1, dustbin))[1] for row in range(query_count)
+            )
+            best = -float("inf")
+            choices = [
+                [-1]
+                + [rank for rank in range(topk) if float(scores[row, rank]) > dustbin]
+                for row in range(query_count)
+            ]
+            for ranks in itertools.product(*choices):
+                selected = [
+                    int(anchors[row, rank])
+                    for row, rank in enumerate(ranks)
+                    if rank >= 0
+                ]
+                if len(selected) != len(set(selected)):
+                    continue
+                objective = sum(
+                    dustbin if rank < 0 else float(scores[row, rank])
+                    for row, rank in enumerate(ranks)
+                )
+                best = max(best, objective)
+            assert actual == pytest.approx(best, abs=1e-6)
+
+
 def test_duplicate_anchor_suppression_keeps_best_and_query_order():
     matches = Top1Matches(
         keypoint_indices=torch.tensor([2, 5, 9, 12, 20]),
@@ -70,9 +179,7 @@ def test_duplicate_entity_suppression_keeps_isolated_anchors_distinct():
         anchor_indices=torch.tensor([0, 1, 2, 2, 3]),
         scores=torch.tensor([0.8, 0.9, 0.7, 0.6, 0.5]),
     )
-    retained = suppress_duplicate_entity_matches(
-        matches, torch.tensor([4, 4, -1, -1])
-    )
+    retained = suppress_duplicate_entity_matches(matches, torch.tensor([4, 4, -1, -1]))
     assert retained.keypoint_indices.tolist() == [1, 2, 4]
     assert retained.anchor_indices.tolist() == [1, 2, 3]
 
