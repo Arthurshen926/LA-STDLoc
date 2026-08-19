@@ -20,13 +20,11 @@ import hashlib
 import json
 import os
 import pickle
-import shutil
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 
 SCENES: List[Dict[str, str]] = []
@@ -47,7 +45,13 @@ for slug in (
     "office2_5b",
 ):
     SCENES.append({"dataset": "12scenes", "scene": slug, "slug": slug})
-for scene in ("GreatCourt", "KingsCollege", "OldHospital", "StMarysChurch", "ShopFacade"):
+for scene in (
+    "GreatCourt",
+    "KingsCollege",
+    "OldHospital",
+    "StMarysChurch",
+    "ShopFacade",
+):
     SCENES.append({"dataset": "cambridge", "scene": scene, "slug": scene})
 
 SCENE_BY_ID = {f"{item['dataset']}/{item['slug']}": item for item in SCENES}
@@ -56,7 +60,9 @@ SCENE_BY_ID = {f"{item['dataset']}/{item['slug']}": item for item in SCENES}
 def atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, path)
 
 
@@ -77,13 +83,19 @@ def symlink_checked(dst: Path, src: Path) -> None:
     if dst.is_symlink():
         if Path(os.readlink(dst)) == src:
             return
-        raise RuntimeError(f"staging link mismatch: {dst} -> {os.readlink(dst)} (wanted {src})")
+        raise RuntimeError(
+            f"staging link mismatch: {dst} -> {os.readlink(dst)} (wanted {src})"
+        )
     if dst.exists():
-        raise RuntimeError(f"staging path already exists and is not a matching link: {dst}")
+        raise RuntimeError(
+            f"staging path already exists and is not a matching link: {dst}"
+        )
     os.symlink(src, dst, target_is_directory=src.is_dir())
 
 
-def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Dict[str, Any]:
+def materialize_torch_masks(
+    src: Path, dst: Path, longest_edge: int | None = None
+) -> Dict[str, Any]:
     """Convert release mask pickle arrays to the tensor contract ULF expects.
 
     The prepared indoor references contain semantically identical NumPy mask
@@ -105,7 +117,11 @@ def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Di
     import torch
 
     for name, values in raw.items():
-        if not isinstance(name, str) or not isinstance(values, (tuple, list)) or len(values) != 3:
+        if (
+            not isinstance(name, str)
+            or not isinstance(values, (tuple, list))
+            or len(values) != 3
+        ):
             raise ValueError(f"invalid mask entry for {name!r} in {src}")
         tensors = []
         for value in values:
@@ -123,11 +139,13 @@ def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Di
                     source_tensor = source_tensor.to(dtype=torch.bool)
                 source_tensor_cache[cache_key] = source_tensor
             if source_tensor.ndim != 2:
-                raise ValueError(f"mask {name!r} has shape {tuple(source_tensor.shape)}")
+                raise ValueError(
+                    f"mask {name!r} has shape {tuple(source_tensor.shape)}"
+                )
             source_shape = tuple(source_tensor.shape)
             source_shapes.add(source_shape)
             height, width = source_shape
-            if max(height, width) > longest_edge:
+            if longest_edge is not None and max(height, width) > longest_edge:
                 if height >= width:
                     target_shape = (longest_edge, int(width * longest_edge / height))
                 else:
@@ -136,11 +154,15 @@ def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Di
                 target_key = (cache_key, target_shape)
                 tensor = target_tensor_cache.get(target_key)
                 if tensor is None:
-                    tensor = torch.nn.functional.interpolate(
-                        source_tensor.to(dtype=torch.float32)[None, None],
-                        size=target_shape,
-                        mode="nearest",
-                    )[0, 0].to(dtype=torch.bool).contiguous()
+                    tensor = (
+                        torch.nn.functional.interpolate(
+                            source_tensor.to(dtype=torch.float32)[None, None],
+                            size=target_shape,
+                            mode="nearest",
+                        )[0, 0]
+                        .to(dtype=torch.bool)
+                        .contiguous()
+                    )
                     target_tensor_cache[target_key] = tensor
             else:
                 target_shape = source_shape
@@ -170,7 +192,9 @@ def materialize_torch_masks(src: Path, dst: Path, longest_edge: int = 640) -> Di
     }
 
 
-def source_path(item: Mapping[str, str], data7: Path, data12: Path, cambridge: Path) -> Path:
+def source_path(
+    item: Mapping[str, str], data7: Path, data12: Path, cambridge: Path
+) -> Path:
     if item["dataset"] == "7scenes":
         return data7 / item["scene"]
     if item["dataset"] == "12scenes":
@@ -243,14 +267,25 @@ def make_staged_scene(
                 if (
                     isinstance(prior_mask, dict)
                     and prior_mask.get("source") == str(mask)
-                    and prior_mask.get("longest_edge") == 640
+                    and prior_mask.get("longest_edge") is None
                     and prior_mask.get("staged_shape")
                 ):
                     mask_info = prior_mask
+                elif (
+                    isinstance(prior_mask, dict)
+                    and prior_mask.get("source") == str(mask)
+                    and prior_mask.get("staged") == str(staged_mask)
+                ):
+                    # Replace only our own prior compatibility artifact.  The
+                    # ULF runtime now resizes masks at each consumer, so the
+                    # staged source must retain the native mask resolution.
+                    mask_info = materialize_torch_masks(mask, staged_mask)
                 else:
-                    raise RuntimeError(f"staging mask path already exists: {staged_mask}")
+                    raise RuntimeError(
+                        f"staging mask path already exists: {staged_mask}"
+                    )
             else:
-                mask_info = materialize_torch_masks(mask, staged_mask, longest_edge=640)
+                mask_info = materialize_torch_masks(mask, staged_mask)
         else:
             mask_info = None
     else:
@@ -294,9 +329,11 @@ def model_dir(scene_root: Path) -> Path:
 def training_complete(model: Path) -> bool:
     cloud = model / "point_cloud" / "iteration_30000" / "point_cloud.ply"
     test = model / "test"
-    return cloud.is_file() and (test / "keypoints_sampled_idx.pkl").is_file() and (
-        test / "keypoints_features.pkl"
-    ).is_file()
+    return (
+        cloud.is_file()
+        and (test / "keypoints_sampled_idx.pkl").is_file()
+        and (test / "keypoints_features.pkl").is_file()
+    )
 
 
 def evaluation_complete(model: Path) -> bool:
@@ -304,13 +341,21 @@ def evaluation_complete(model: Path) -> bool:
     return (test / "summary.json").is_file() and (test / "results.json").is_file()
 
 
-def run_command(cmd: Sequence[str], cwd: Path, log: Path, env: Mapping[str, str]) -> None:
+def run_command(
+    cmd: Sequence[str], cwd: Path, log: Path, env: Mapping[str, str]
+) -> None:
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as stream:
-        stream.write("\n$ " + " ".join(subprocess.list2cmdline([x]) for x in cmd) + "\n")
+        stream.write(
+            "\n$ " + " ".join(subprocess.list2cmdline([x]) for x in cmd) + "\n"
+        )
         stream.flush()
         proc = subprocess.Popen(
-            list(cmd), cwd=str(cwd), env=dict(env), stdout=stream, stderr=subprocess.STDOUT
+            list(cmd),
+            cwd=str(cwd),
+            env=dict(env),
+            stdout=stream,
+            stderr=subprocess.STDOUT,
         )
         rc = proc.wait()
         stream.write(f"\n[exit {rc}] {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
@@ -345,8 +390,10 @@ def summarize_mode(
     te_key = f"{mode}_TE"
     aes = [float(r[ae_key]) for r in records]
     tes = [float(r[te_key]) for r in records]
+
     def recall(te: float, ae: float) -> float:
         return sum(1 for x, y in zip(tes, aes) if x <= te and y <= ae) / len(tes)
+
     return {
         "schema": "ulfloc_reproduction_mode_summary_v1",
         "dataset": dataset,
@@ -368,7 +415,9 @@ def summarize_mode(
     }
 
 
-def postprocess(scene_root: Path, item: Mapping[str, str], repo: Path, gpu: str) -> Dict[str, Any]:
+def postprocess(
+    scene_root: Path, item: Mapping[str, str], repo: Path, gpu: str
+) -> Dict[str, Any]:
     model = model_dir(scene_root)
     official = read_json(model / "test" / "summary.json")
     raw = read_json(model / "test" / "results.json")
@@ -397,7 +446,9 @@ def postprocess(scene_root: Path, item: Mapping[str, str], repo: Path, gpu: str)
     return {"sparse": sparse, "dense": dense}
 
 
-def environment(repo: Path, gpu: str, python_bin: Path, experiment_root: Path) -> Dict[str, str]:
+def environment(
+    repo: Path, gpu: str, python_bin: Path, experiment_root: Path
+) -> Dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
@@ -413,7 +464,9 @@ def environment(repo: Path, gpu: str, python_bin: Path, experiment_root: Path) -
     # once can make concurrent ninja builds delete/replace one another's
     # objects.  Give each GPU in this matrix its own persistent cache and
     # bound compile parallelism; later scenes on the same GPU reuse it.
-    cache_tag = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in experiment_root.name)
+    cache_tag = "".join(
+        ch if ch.isalnum() or ch in "-_" else "_" for ch in experiment_root.name
+    )
     env["TORCH_EXTENSIONS_DIR"] = f"/tmp/ulfloc_torch_extensions_{cache_tag}_gpu{gpu}"
     env["MAX_JOBS"] = env.get("MAX_JOBS", "4")
     env["TORCH_CUDA_ARCH_LIST"] = env.get("TORCH_CUDA_ARCH_LIST", "8.6")
@@ -456,26 +509,52 @@ def run_one(args: argparse.Namespace, item: Mapping[str, str]) -> int:
     common = [str(python_bin)]
 
     train_cmd = common + [str(repo / "train.py"), "-s", str(stage), "-m", str(model)]
-    train_cmd += ["--iterations", "30000", "--data_device", "cpu", "-f", "sp", "-g", "3dgs"]
+    train_cmd += [
+        "--iterations",
+        "30000",
+        "--data_device",
+        "cpu",
+        "-f",
+        "sp",
+        "-g",
+        "3dgs",
+    ]
     train_cmd += ["--sample_kpts", "--images", "images", "--cfg", str(cfg)]
     if item["dataset"] == "cambridge":
         train_cmd += [
-            "-r", "1",
-            "--densify_grad_threshold", "0.0004",
-            "--position_lr_init", "0.000016",
-            "--scaling_lr", "0.001",
+            "-r",
+            "1",
+            "--densify_grad_threshold",
+            "0.0004",
+            "--position_lr_init",
+            "0.000016",
+            "--scaling_lr",
+            "0.001",
         ]
     if not training_complete(model):
         run_command(train_cmd, repo, log, env)
     if not training_complete(model):
-        raise RuntimeError(f"training exited but completion artifacts are missing: {model}")
+        raise RuntimeError(
+            f"training exited but completion artifacts are missing: {model}"
+        )
 
     eval_cmd = common + [str(repo / "ulfloc.py"), "-s", str(stage), "-m", str(model)]
-    eval_cmd += ["--data_device", "cpu", "--images", "images", "--cfg", str(cfg), "--longest_edge", "640"]
+    eval_cmd += [
+        "--data_device",
+        "cpu",
+        "--images",
+        "images",
+        "--cfg",
+        str(cfg),
+        "--longest_edge",
+        "640",
+    ]
     if not evaluation_complete(model):
         run_command(eval_cmd, repo, log, env)
     if not evaluation_complete(model):
-        raise RuntimeError(f"evaluation exited but summary/results are missing: {model / 'test'}")
+        raise RuntimeError(
+            f"evaluation exited but summary/results are missing: {model / 'test'}"
+        )
 
     metrics = postprocess(scene_root, item, repo, str(args.gpu))
     marker = {
@@ -483,7 +562,9 @@ def run_one(args: argparse.Namespace, item: Mapping[str, str]) -> int:
         "scene_id": scene_id,
         "dataset": item["dataset"],
         "scene": item["scene"],
-        "repo_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+        "repo_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+        ).strip(),
         "python": str(python_bin),
         "gpu": str(args.gpu),
         "stage": str(stage),
@@ -498,7 +579,9 @@ def run_one(args: argparse.Namespace, item: Mapping[str, str]) -> int:
 
 def initial_state(args: argparse.Namespace) -> Dict[str, Any]:
     repo = Path(args.repo).resolve()
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
     return {
         "schema": "ulfloc_reproduction_matrix_state_v1",
         "repo": str(repo),
@@ -506,10 +589,22 @@ def initial_state(args: argparse.Namespace) -> Dict[str, Any]:
         "python": str(Path(args.python).resolve()),
         "root": str(Path(args.root).resolve()),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "datasets": {"7scenes": str(Path(args.data7).resolve()), "12scenes": str(Path(args.data12).resolve()), "cambridge": str(Path(args.cambridge).resolve())},
+        "datasets": {
+            "7scenes": str(Path(args.data7).resolve()),
+            "12scenes": str(Path(args.data12).resolve()),
+            "cambridge": str(Path(args.cambridge).resolve()),
+        },
         "gpus": [str(x) for x in args.gpus],
         "scenes": {
-            f"{x['dataset']}/{x['slug']}": {"dataset": x["dataset"], "scene": x["scene"], "status": "pending", "pid": None, "gpu": None, "attempts": 0, "last_error": None}
+            f"{x['dataset']}/{x['slug']}": {
+                "dataset": x["dataset"],
+                "scene": x["scene"],
+                "status": "pending",
+                "pid": None,
+                "gpu": None,
+                "attempts": 0,
+                "last_error": None,
+            }
             for x in SCENES
         },
     }
@@ -535,8 +630,15 @@ def coordinator(args: argparse.Namespace) -> int:
     state_path = root / "matrix_state.json"
     if state_path.exists() and not args.reset:
         state = read_json(state_path)
-        if state.get("repo_commit") != subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.repo, text=True).strip():
-            raise RuntimeError("existing matrix state belongs to a different ULF-Loc commit; use a new --root")
+        if (
+            state.get("repo_commit")
+            != subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=args.repo, text=True
+            ).strip()
+        ):
+            raise RuntimeError(
+                "existing matrix state belongs to a different ULF-Loc commit; use a new --root"
+            )
     else:
         state = initial_state(args)
         atomic_json(state_path, state)
@@ -552,13 +654,28 @@ def coordinator(args: argparse.Namespace) -> int:
     while True:
         # Reconcile adopted workers by their completion marker or dead PID.
         for scene_id, rec in state["scenes"].items():
-            if rec.get("status") in {"running", "adopted_running"} and scene_id not in running:
+            if (
+                rec.get("status") in {"running", "adopted_running"}
+                and scene_id not in running
+            ):
                 item = SCENE_BY_ID[scene_id]
-                marker = root / "scenes" / item["dataset"] / item["slug"] / "scene_complete.json"
+                marker = (
+                    root
+                    / "scenes"
+                    / item["dataset"]
+                    / item["slug"]
+                    / "scene_complete.json"
+                )
                 if marker.exists():
                     rec.update({"status": "done", "pid": None})
                 elif not process_alive(rec.get("pid")):
-                    rec.update({"status": "failed", "pid": None, "last_error": "worker disappeared; rerun resumes this scene"})
+                    rec.update(
+                        {
+                            "status": "failed",
+                            "pid": None,
+                            "last_error": "worker disappeared; rerun resumes this scene",
+                        }
+                    )
 
         finished = []
         for scene_id, proc in list(running.items()):
@@ -572,7 +689,12 @@ def coordinator(args: argparse.Namespace) -> int:
                 rec["status"] = "done"
                 rec["last_error"] = None
             else:
-                rec["status"] = "failed_final" if args.no_retry or int(rec.get("attempts", 0)) >= int(args.max_retries) else "failed"
+                rec["status"] = (
+                    "failed_final"
+                    if args.no_retry
+                    or int(rec.get("attempts", 0)) >= int(args.max_retries)
+                    else "failed"
+                )
                 rec["last_error"] = f"worker exit {rc}"
         for scene_id in finished:
             del running[scene_id]
@@ -588,7 +710,8 @@ def coordinator(args: argparse.Namespace) -> int:
         occupied_gpus = {
             str(rec.get("gpu"))
             for rec in state["scenes"].values()
-            if rec.get("status") in {"running", "adopted_running"} and process_alive(rec.get("pid"))
+            if rec.get("status") in {"running", "adopted_running"}
+            and process_alive(rec.get("pid"))
         }
         free_gpus = [str(x) for x in args.gpus if str(x) not in occupied_gpus]
         for scene_id, rec in state["scenes"].items():
@@ -598,25 +721,74 @@ def coordinator(args: argparse.Namespace) -> int:
                 continue
             gpu = free_gpus.pop(0)
             item = SCENE_BY_ID[scene_id]
-            cmd = [str(Path(args.python).resolve()), str(Path(__file__).resolve()), "--worker", "--scene-id", scene_id,
-                   "--root", str(root), "--repo", str(Path(args.repo).resolve()), "--python", str(Path(args.python).resolve()),
-                   "--data7", str(Path(args.data7).resolve()), "--data12", str(Path(args.data12).resolve()),
-                   "--cambridge", str(Path(args.cambridge).resolve()), "--gpu", gpu]
+            cmd = [
+                str(Path(args.python).resolve()),
+                str(Path(__file__).resolve()),
+                "--worker",
+                "--scene-id",
+                scene_id,
+                "--root",
+                str(root),
+                "--repo",
+                str(Path(args.repo).resolve()),
+                "--python",
+                str(Path(args.python).resolve()),
+                "--data7",
+                str(Path(args.data7).resolve()),
+                "--data12",
+                str(Path(args.data12).resolve()),
+                "--cambridge",
+                str(Path(args.cambridge).resolve()),
+                "--gpu",
+                gpu,
+            ]
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = gpu
             log = root / "scenes" / item["dataset"] / item["slug"] / "coordinator.log"
             log.parent.mkdir(parents=True, exist_ok=True)
             stream = log.open("a", encoding="utf-8")
-            proc = subprocess.Popen(cmd, cwd=str(Path(__file__).resolve().parents[1]), env=env, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                env=env,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
             running[scene_id] = proc
-            rec.update({"status": "running", "pid": proc.pid, "gpu": gpu, "attempts": int(rec.get("attempts", 0)) + 1, "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+            rec.update(
+                {
+                    "status": "running",
+                    "pid": proc.pid,
+                    "gpu": gpu,
+                    "attempts": int(rec.get("attempts", 0)) + 1,
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }
+            )
         state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        state["counts"] = {status: sum(1 for r in state["scenes"].values() if r.get("status") == status) for status in ("pending", "running", "adopted_running", "done", "failed", "failed_final")}
+        state["counts"] = {
+            status: sum(
+                1 for r in state["scenes"].values() if r.get("status") == status
+            )
+            for status in (
+                "pending",
+                "running",
+                "adopted_running",
+                "done",
+                "failed",
+                "failed_final",
+            )
+        }
         atomic_json(state_path, state)
-        if not running and all(r.get("status") == "done" for r in state["scenes"].values()):
+        if not running and all(
+            r.get("status") == "done" for r in state["scenes"].values()
+        ):
             print(json.dumps(state["counts"], indent=2))
             return 0
-        if not running and not any(r.get("status") in {"pending", "failed", "running", "adopted_running"} for r in state["scenes"].values()):
+        if not running and not any(
+            r.get("status") in {"pending", "failed", "running", "adopted_running"}
+            for r in state["scenes"].values()
+        ):
             print(json.dumps(state["counts"], indent=2), file=sys.stderr)
             return 1
         time.sleep(max(5, int(args.poll_seconds)))
@@ -624,11 +796,19 @@ def coordinator(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="/mnt/pool/sqy/ulfloc_reproduction_matrix_20260819")
+    parser.add_argument(
+        "--root", default="/mnt/pool/sqy/ulfloc_reproduction_matrix_20260819"
+    )
     parser.add_argument("--repo", default="/tmp/ULF-Loc-repro-b28d532")
-    parser.add_argument("--python", default="/root/miniconda3/envs/ulfloc_repro/bin/python")
-    parser.add_argument("--data7", default="/mnt/pool/sqy/datasets/7Scenes_pgt_full_reference_v5")
-    parser.add_argument("--data12", default="/mnt/pool/sqy/datasets/12Scenes_pgt_full_reference_v5")
+    parser.add_argument(
+        "--python", default="/root/miniconda3/envs/ulfloc_repro/bin/python"
+    )
+    parser.add_argument(
+        "--data7", default="/mnt/pool/sqy/datasets/7Scenes_pgt_full_reference_v5"
+    )
+    parser.add_argument(
+        "--data12", default="/mnt/pool/sqy/datasets/12Scenes_pgt_full_reference_v5"
+    )
     parser.add_argument("--cambridge", default="/mnt/pool/sqy/Cambridge_stdloc")
     parser.add_argument("--gpus", nargs="+", default=["0", "1", "2"])
     parser.add_argument("--poll-seconds", type=int, default=15)
@@ -652,8 +832,16 @@ def main() -> int:
             root = Path(args.root).resolve()
             item = SCENE_BY_ID[args.scene_id]
             atomic_json(
-                root / "scenes" / item["dataset"] / item["slug"] / "worker_failure.json",
-                {"scene_id": args.scene_id, "error": repr(exc), "time": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                root
+                / "scenes"
+                / item["dataset"]
+                / item["slug"]
+                / "worker_failure.json",
+                {
+                    "scene_id": args.scene_id,
+                    "error": repr(exc),
+                    "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                },
             )
             print(f"WORKER FAILURE: {exc}", file=sys.stderr)
             return 1
