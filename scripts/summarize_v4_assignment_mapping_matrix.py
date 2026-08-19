@@ -133,6 +133,29 @@ def main() -> None:
             ),
             "families": family_gates,
         }
+    eligible = [
+        variant for variant, gate in gates.items() if gate["passed_all_three_datasets"]
+    ]
+
+    def selection_key(variant: str) -> tuple[float, float, int]:
+        cvar_ratios = []
+        mean_ratios = []
+        for family in families:
+            baseline = family_summaries[family]["top1"]
+            candidate = family_summaries[family][variant]
+            cvar_ratios.append(
+                candidate["cvar95_te_cm"] / max(baseline["cvar95_te_cm"], 1e-12)
+            )
+            mean_ratios.append(
+                candidate["mean_te_cm"] / max(baseline["mean_te_cm"], 1e-12)
+            )
+        return (
+            max(cvar_ratios),
+            max(mean_ratios),
+            int(variant.rsplit("k", 1)[-1]),
+        )
+
+    selected_variant = min(eligible, key=selection_key) if eligible else None
     output = {
         "schema": "lafgs_v4_assignment_mapping_loo_summary",
         "version": 1,
@@ -143,11 +166,17 @@ def main() -> None:
             "selection": "full_mapping_leave_one_query_descriptor_out",
             "pose": "one_standard_poselib_call",
             "dataset_gate": "mean_p90_cvar95_recall_all_nonregression",
+            "selection_rule": (
+                "eligible_all_three_datasets_then_minimize_worst_family_cvar_ratio_"
+                "then_worst_family_mean_ratio_then_smaller_k"
+            ),
         },
         "matrix_state": str(args.matrix_state.resolve()),
         "family_summaries": family_summaries,
         "scene_summaries": scene_summaries,
         "gates": gates,
+        "selected_variant": selected_variant,
+        "authorizes_one_frozen_24_scene_test_matrix": selected_variant is not None,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     _atomic_json(args.output.resolve(), output)

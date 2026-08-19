@@ -65,6 +65,11 @@ The automation entrypoint is
 one frozen official-test run per scene only if mean translation error, P90,
 CVaR95, and 5cm/5deg recall are all non-regressive separately on Cambridge,
 7Scenes, and 12Scenes.  There is no pooled compensation across datasets.
+If both K values pass, selection minimizes the worst-dataset CVaR95 ratio,
+then the worst-dataset mean-error ratio, then prefers the smaller K.  This rule
+is frozen before results are read.  Only that one selected variant is permitted
+one official-test run per scene through
+`scripts/run_v4_assignment_test_matrix.py`.
 
 ## Scope boundary
 
@@ -73,4 +78,3 @@ residual positive-in-Top-K headroom after capacity matching.  If needed, a
 future K=2 prototype experiment must collapse prototypes to one Anchor identity
 before assignment, retain a shared xyz, and still produce only one PnP vote.
 It cannot be mixed into the present assignment factor.
-
