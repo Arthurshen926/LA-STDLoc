@@ -31,6 +31,15 @@ Track 与 Gaussian 不应继续作为两类可部署地标并行扩张。更简�
 4. 精度优化必须优先处理错误对应和身份混淆；继续增加候选、训练步数或 Pose Reserve 不能解决这个根因。
 5. 所有超参数、去重阈值和 selector 约束只能由 mapping split 校准；test split 只在方案冻结后使用一次。
 
+## 当前全 24 场景增强：容量可行对应分配
+
+最新部署审计不再只在单个场景调试。`top1`、`assignment_k4` 和
+`assignment_k8` 使用完全相同的 24 场景地图、LOO 描述子与 PoseLib，仅改变
+query-row 到 Anchor 的集合级分配。精确定义、一次 PnP 边界和三数据集独立
+非退化门见 [`v4_capacity_feasible_assignment.md`](v4_capacity_feasible_assignment.md)。
+在 24 场景 mapping-LOO 结果完成前，默认发布路径仍保持独立 global Top-1，
+multi-prototype 与 dustbin 阈值学习均不并入本次因果轴。
+
 ## 已确认的当前实现事实
 
 - Coverage 与 Pose 已经在 `leftover_tracks_plus_gaussian_base` 共享候选宇宙、匹配状态和姿态状态；不存在必须再造一个“统一候选分支”的必要。
