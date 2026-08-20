@@ -12,6 +12,8 @@ MAPPING_POSE_ENTRYPOINTS = (
     "map_learning/equal_energy_descriptor_factor.py",
     "scripts/materialize_equal_energy_descriptor_factor.py",
     "scripts/evaluate_mapping_cache.py",
+    "evaluation/mapping_shards.py",
+    "scripts/merge_mapping_cache_evaluations.py",
     "scripts/compare_mapping_pose_gate.py",
 )
 FRONTEND_DESCRIPTOR_ENTRYPOINTS = (

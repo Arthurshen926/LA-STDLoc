@@ -74,7 +74,13 @@ def test_mapping_cache_report_self_binds_inputs_seed_and_query_subset(
 
     def collect_stub(**kwargs):
         captured.update(kwargs)
+        indices = [int(value) for value in kwargs["query_indices"].tolist()]
         return {
+            "queries": [
+                {"query_index": index, "image_name": query_names[index]}
+                for index in indices
+            ],
+            "counters": {"winner_count": torch.zeros(1, dtype=torch.float64)},
             "summary": {
                 "query_count": 256,
                 "median_te_cm": 1.0,
@@ -139,7 +145,7 @@ def test_mapping_cache_report_self_binds_inputs_seed_and_query_subset(
         .tolist()
     )
     expected_names = [query_names[index] for index in expected_indices]
-    assert report["version"] == 2
+    assert report["version"] == 3
     assert report["uses_test_queries"] is False
     assert report["seed"] == 2027
     assert report["evaluation_code"] == EVALUATION_CODE
@@ -159,8 +165,17 @@ def test_mapping_cache_report_self_binds_inputs_seed_and_query_subset(
         "descriptor_protocol": {
             "kind": "canonical_query_cache_shared_metric",
             "descriptor_cache_equals_query_cache": True,
+            "one_global_top1": True,
+            "one_poselib_call_per_query": True,
+        },
+        "query_shard": {
+            "kind": "unsharded",
+            "start": 0,
+            "stop": 256,
+            "registry_count": 256,
         },
     }
+    assert Path(report["statistics"]["path"]).is_file()
     assert report["descriptor_cache"] == str(paths["query_cache"].resolve())
     assert report["descriptor_factor_contract"] is None
     for role, path in paths.items():

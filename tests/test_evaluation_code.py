@@ -20,9 +20,11 @@ def test_mapping_pose_code_identity_binds_commit_and_entrypoint_bytes() -> None:
         for relative in (
             "map_learning/equal_energy_descriptor_factor.py",
             "scripts/materialize_equal_energy_descriptor_factor.py",
-            "scripts/evaluate_mapping_cache.py",
-            "scripts/compare_mapping_pose_gate.py",
-        )
+                "scripts/evaluate_mapping_cache.py",
+                "scripts/compare_mapping_pose_gate.py",
+                "evaluation/mapping_shards.py",
+                "scripts/merge_mapping_cache_evaluations.py",
+            )
     }
 
 

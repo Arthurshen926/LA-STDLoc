@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
@@ -12,6 +11,12 @@ import torch
 
 from common.evaluation_code import mapping_pose_evaluation_code_identity
 from common.hashing import sha256_file
+from evaluation.mapping_shards import (
+    atomic_json_save,
+    json_sha256,
+    resolve_query_range,
+    write_statistics,
+)
 from map_learning.equal_energy_descriptor_factor import (
     validate_descriptor_factor_contract,
 )
@@ -25,13 +30,6 @@ ARTIFACT_PATH_ARGUMENTS = {
     "query_cache": "query_cache",
     "calibration": "scene_calibration",
 }
-
-
-def _json_sha256(value) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _artifact_records(args: argparse.Namespace) -> tuple[dict[str, Path], dict]:
@@ -74,6 +72,10 @@ def main() -> None:
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--query-start", type=int)
+    parser.add_argument("--query-stop", type=int)
+    parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--shard-count", type=int)
     args = parser.parse_args()
 
     evaluation_code = mapping_pose_evaluation_code_identity(require_clean=True)
@@ -138,13 +140,29 @@ def main() -> None:
             .long()
             .unique(sorted=True)
         )
-    selected_query_indices = (
+    registry_query_indices = (
         list(range(total_queries))
         if query_indices is None
         else [int(value) for value in query_indices.tolist()]
     )
+    query_start, query_stop, shard_kind = resolve_query_range(
+        len(registry_query_indices),
+        query_start=args.query_start,
+        query_stop=args.query_stop,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+    )
+    selected_query_indices = registry_query_indices[query_start:query_stop]
+    registry_query_names = [query_names[index] for index in registry_query_indices]
     selected_query_names = [query_names[index] for index in selected_query_indices]
     query_selection = "all" if query_indices is None else "uniform_mapping_gate"
+    deployment_query_indices = (
+        None
+        if query_indices is None
+        and query_start == 0
+        and query_stop == len(registry_query_indices)
+        else torch.tensor(selected_query_indices, dtype=torch.long)
+    )
     statistics = collect_deployment_statistics(
         state=state,
         metric_state_path=artifact_paths["metric"],
@@ -156,14 +174,51 @@ def main() -> None:
         task_translation_m=float(parameters["task_translation_m"]),
         task_rotation_deg=float(parameters["task_rotation_deg"]),
         seed=args.seed,
-        query_indices=query_indices,
+        query_indices=deployment_query_indices,
         deployment_row_limit=args.deployment_row_limit,
         collect_anchor_statistics=False,
         progress_label="mapping_cache_evaluation",
     )
+    descriptor_protocol = (
+        {
+            "kind": "equal_energy_descriptor_factor",
+            "factor_id": descriptor_factor["factor_id"],
+            "source_descriptor_dim": 256,
+            "xfeat_descriptor_dim": 64,
+            "effective_descriptor_dim": 320,
+            "strict_identity_metric": True,
+            "one_materialized_bank": True,
+            "one_global_top1": True,
+            "one_poselib_call_per_query": True,
+        }
+        if descriptor_factor is not None
+        else {
+            "kind": "canonical_query_cache_shared_metric",
+            "descriptor_cache_equals_query_cache": True,
+            "one_global_top1": True,
+            "one_poselib_call_per_query": True,
+        }
+    )
+    evaluation_contract = {
+        "schema": "lafgs_mapping_cache_evaluation_contract",
+        "version": 1,
+        "evaluation_code": evaluation_code,
+        "artifacts": artifact_records,
+        "seed": int(args.seed),
+        "device": str(args.device),
+        "deployment_row_limit": int(args.deployment_row_limit),
+        "requested_query_count": int(args.query_count),
+        "teacher_query_count": total_queries,
+        "ordered_teacher_query_names_sha256": json_sha256(query_names),
+        "selected_query_indices": registry_query_indices,
+        "selected_query_indices_sha256": json_sha256(registry_query_indices),
+        "selected_query_names_sha256": json_sha256(registry_query_names),
+        "calibration_parameters": parameters,
+        "descriptor_protocol": descriptor_protocol,
+    }
     report = {
         "schema": "lafgs_mapping_cache_evaluation",
-        "version": 2,
+        "version": 3,
         "uses_test_queries": False,
         "seed": int(args.seed),
         "evaluation_code": evaluation_code,
@@ -185,42 +240,38 @@ def main() -> None:
         "pose_error_units": {"translation": "cm", "rotation": "deg"},
         "query_count": len(selected_query_indices),
         "query_selection": query_selection,
+        "evaluation_contract": evaluation_contract,
+        "evaluation_contract_sha256": json_sha256(evaluation_contract),
         "evaluation_protocol": {
             "split": "mapping_only",
             "query_selection": query_selection,
             "requested_query_count": int(args.query_count),
             "evaluated_query_count": len(selected_query_indices),
             "teacher_query_count": total_queries,
-            "ordered_teacher_query_names_sha256": _json_sha256(query_names),
+            "ordered_teacher_query_names_sha256": json_sha256(query_names),
             "selected_query_indices": selected_query_indices,
-            "selected_query_indices_sha256": _json_sha256(selected_query_indices),
-            "selected_query_names_sha256": _json_sha256(selected_query_names),
+            "selected_query_indices_sha256": json_sha256(selected_query_indices),
+            "selected_query_names_sha256": json_sha256(selected_query_names),
             "deployment_row_limit": int(args.deployment_row_limit),
-            "descriptor_protocol": (
-                {
-                    "kind": "equal_energy_descriptor_factor",
-                    "factor_id": descriptor_factor["factor_id"],
-                    "source_descriptor_dim": 256,
-                    "xfeat_descriptor_dim": 64,
-                    "effective_descriptor_dim": 320,
-                    "strict_identity_metric": True,
-                    "one_materialized_bank": True,
-                    "one_global_top1": True,
-                    "one_poselib_call_per_query": True,
-                }
-                if descriptor_factor is not None
-                else {
-                    "kind": "canonical_query_cache_shared_metric",
-                    "descriptor_cache_equals_query_cache": True,
-                }
-            ),
+            "descriptor_protocol": descriptor_protocol,
+            "query_shard": {
+                "kind": shard_kind,
+                "start": query_start,
+                "stop": query_stop,
+                "registry_count": len(registry_query_indices),
+            },
         },
         "summary": statistics["summary"],
     }
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / "mapping_cache_summary.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n"
+    report["statistics"] = write_statistics(
+        output=args.output,
+        statistics=statistics,
+        evaluation_contract=evaluation_contract,
+        query_range=(query_start, query_stop),
+        selected_query_indices=selected_query_indices,
     )
+    atomic_json_save(report, args.output / "mapping_cache_summary.json")
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

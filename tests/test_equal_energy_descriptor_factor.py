@@ -883,7 +883,15 @@ def test_evaluator_consumes_candidate_cache_and_self_binds_factor(
 
     def collect_stub(**kwargs):
         captured.update(kwargs)
-        return {"summary": _metrics()}
+        indices = [int(value) for value in kwargs["query_indices"].tolist()]
+        return {
+            "summary": _metrics(),
+            "queries": [
+                {"query_index": index, "image_name": bundle["names"][index]}
+                for index in indices
+            ],
+            "counters": {"winner_count": torch.zeros(1, dtype=torch.float64)},
+        }
 
     monkeypatch.setattr(
         evaluate_mapping_cache, "collect_deployment_statistics", collect_stub
