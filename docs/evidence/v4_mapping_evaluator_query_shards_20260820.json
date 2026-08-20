@@ -1,0 +1,42 @@
+{
+  "schema": "lafgs_v4_mapping_evaluator_query_shard_evidence",
+  "version": 1,
+  "implementation_commit": "3a033fe3d4f0d990005ce12e72ae5f8fe16c0883",
+  "scene": "Cambridge/ShopFacade",
+  "mapping_query_count": 231,
+  "seed": 2026,
+  "method_change": false,
+  "unsharded": {
+    "gpu_count": 1,
+    "wall_seconds": 111.39810415450484
+  },
+  "two_shards": {
+    "gpu_count": 2,
+    "evaluation_wall_seconds": 87.51144488621503,
+    "merge_wall_seconds": 2.17279633320868,
+    "end_to_end_wall_seconds": 89.68424121942371,
+    "end_to_end_speedup": 1.2421145860169063,
+    "summary_field_count": 22,
+    "summary_exact": true,
+    "ordered_query_rows_exact": true,
+    "counter_tensors_exact": true
+  },
+  "four_shards": {
+    "gpu_count": 2,
+    "processes_per_gpu": 2,
+    "evaluation_wall_seconds": 85.01732254680246,
+    "merge_wall_seconds": 2.1888579428195953,
+    "end_to_end_wall_seconds": 87.20618048962206,
+    "end_to_end_speedup": 1.2774106551743971,
+    "summary_field_count": 22,
+    "summary_exact": true,
+    "ordered_query_rows_exact": true,
+    "counter_tensors_exact": true
+  },
+  "failure_tests": {
+    "partial_shard_set": "fail_closed",
+    "tampered_statistics": "fail_closed",
+    "missing_statistics": "fail_closed"
+  },
+  "benchmark_output_root": "/mnt/pool/sqy/lafgs_mapping_eval_shard_probe_20260820_3a033fe"
+}

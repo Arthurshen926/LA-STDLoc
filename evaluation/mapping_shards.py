@@ -213,6 +213,8 @@ def merge_reports(summary_paths: Sequence[Path], output: Path) -> dict:
             name: torch.as_tensor(value).cpu()
             for name, value in statistics["counters"].items()
         }
+        if _summary(rows, shard_counters) != statistics.get("summary"):
+            raise ValueError("mapping shard summary is stale or inconsistent")
         if counters is None:
             counters = {name: value.clone() for name, value in shard_counters.items()}
         else:
@@ -234,6 +236,11 @@ def merge_reports(summary_paths: Sequence[Path], output: Path) -> dict:
         cursor = end
     if cursor != len(full_indices) or counters is None:
         raise ValueError("mapping shard set is incomplete")
+    if (
+        json_sha256([row["image_name"] for row in query_rows])
+        != expected_contract["selected_query_names_sha256"]
+    ):
+        raise ValueError("mapping shard image names differ from the fixed registry")
     summary = _summary(query_rows, counters)
     first = loaded[0][1]
     merged = {
