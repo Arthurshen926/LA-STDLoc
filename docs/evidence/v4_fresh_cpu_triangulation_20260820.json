@@ -32,6 +32,17 @@
     "all_25_fields_bitwise_equal": true,
     "decision": "serial_below_5000_tracks"
   },
+  "real_shopfacade_full_14753_tracks": {
+    "scene": "Cambridge/ShopFacade",
+    "frozen_track_count": 14753,
+    "observation_count": 261363,
+    "triangulated_track_count": 8863,
+    "serial_seconds": 25.068178962916136,
+    "fresh_two_worker_seconds": 17.667616240680218,
+    "speedup": 1.418877262298459,
+    "all_25_fields_bitwise_equal": true,
+    "decision": "retain_5000_track_threshold"
+  },
   "failure_recovery": {
     "one_completed_one_failed_shard": "fail_closed",
     "partial_shards_escape_temporary_run": false,
@@ -43,5 +54,10 @@
     "measured_compile_advantage": false,
     "measured_memory_advantage": false,
     "decision": "stop"
+  },
+  "lineage_scope": {
+    "v4_bootstrap_parallel_enabled": true,
+    "frozen_p8_track_factor_parallel_enabled": false,
+    "worker_checkout_binding": "module_repo_root_cwd_and_pythonpath"
   }
 }

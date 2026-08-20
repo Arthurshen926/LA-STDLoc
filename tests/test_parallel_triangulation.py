@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -9,6 +10,11 @@ from evidence.parallel_triangulation import (
     robust_triangulate_associations_fresh_cpu,
 )
 from evidence.triangulation import robust_triangulate_associations
+from map_learning.bootstrap import _track_triangulation_backend
+from scripts.materialize_cycle_verified_fisher_coverage_track_factor import (
+    _build_arm as build_p8_track_arm,
+)
+import inspect
 
 
 def _look_at_pose(center: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
@@ -106,3 +112,34 @@ def test_fresh_cpu_triangulation_recovers_after_partial_worker_failure():
         **arguments, worker_count=2
     )
     _assert_bitwise_equal(serial, recovered)
+
+
+def test_fresh_cpu_worker_resolves_defining_checkout_outside_repo(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    arguments = _arguments()
+    serial = robust_triangulate_associations(**arguments)
+    parallel = robust_triangulate_associations_fresh_cpu(
+        **arguments, worker_count=2
+    )
+    _assert_bitwise_equal(serial, parallel)
+
+
+def test_v4_bootstrap_uses_two_workers_only_above_threshold():
+    args = SimpleNamespace(
+        geometry_teacher_triangulation_cpu_workers=2,
+        geometry_teacher_parallel_triangulation_min_tracks=5000,
+    )
+    small_backend, small_extra = _track_triangulation_backend(args, 4999)
+    large_backend, large_extra = _track_triangulation_backend(args, 5000)
+    assert small_backend is robust_triangulate_associations
+    assert small_extra == {}
+    assert large_backend is robust_triangulate_associations_fresh_cpu
+    assert large_extra == {"worker_count": 2}
+
+
+def test_frozen_p8_track_factor_keeps_serial_triangulation():
+    source = inspect.getsource(build_p8_track_arm)
+    assert "triangulation.robust_triangulate_associations(" in source
+    assert "fresh_cpu" not in source

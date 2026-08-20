@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -113,10 +114,21 @@ def _run_fresh_processes(
     shard_count: int,
     command_builder: Callable[[Path, int], Sequence[str]] = _default_command,
 ) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    worker_environment = {
+        **os.environ,
+        "PYTHONPATH": str(repository_root),
+    }
     processes: list[subprocess.Popen] = []
     try:
         for shard in range(shard_count):
-            processes.append(subprocess.Popen(command_builder(job, shard)))
+            processes.append(
+                subprocess.Popen(
+                    command_builder(job, shard),
+                    cwd=repository_root,
+                    env=worker_environment,
+                )
+            )
         failures = []
         for shard, process in enumerate(processes):
             code = process.wait()

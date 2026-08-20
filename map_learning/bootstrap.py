@@ -2671,6 +2671,20 @@ def _assign_tracks_by_splat_provenance(
     )
 
 
+def _track_triangulation_backend(args, track_count: int):
+    if (
+        int(args.geometry_teacher_triangulation_cpu_workers) > 1
+        and int(track_count)
+        >= int(args.geometry_teacher_parallel_triangulation_min_tracks)
+    ):
+        return robust_triangulate_associations_fresh_cpu, {
+            "worker_count": int(
+                args.geometry_teacher_triangulation_cpu_workers
+            )
+        }
+    return robust_triangulate_associations, {}
+
+
 @torch.no_grad()
 def _collect_track_first_geometry_teacher(
     query_names,
@@ -2847,17 +2861,9 @@ def _collect_track_first_geometry_teacher(
         int(args.geometry_teacher_view_bins),
         direction_weight=float(args.geometry_teacher_view_direction_weight),
     )
-    triangulate = robust_triangulate_associations
-    triangulation_extra = {}
-    if (
-        int(args.geometry_teacher_triangulation_cpu_workers) > 1
-        and int(track_diagnostics["track_count"])
-        >= int(args.geometry_teacher_parallel_triangulation_min_tracks)
-    ):
-        triangulate = robust_triangulate_associations_fresh_cpu
-        triangulation_extra["worker_count"] = int(
-            args.geometry_teacher_triangulation_cpu_workers
-        )
+    triangulate, triangulation_extra = _track_triangulation_backend(
+        args, int(track_diagnostics["track_count"])
+    )
     track_geometry = triangulate(
         landmark_count=int(track_diagnostics["track_count"]),
         landmark_index=tracks["track_index"],

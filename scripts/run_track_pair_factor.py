@@ -25,9 +25,6 @@ from evidence.triangulation import (
     camera_pose_bins,
     robust_triangulate_associations,
 )
-from evidence.parallel_triangulation import (
-    robust_triangulate_associations_fresh_cpu,
-)
 from features.multiview_fusion import PIXEL_CENTER_OFFSET
 from topology.track_core import _eligible_tracks
 
@@ -503,8 +500,6 @@ def main() -> None:
         "--maximum-baseline-depth-ratio", type=float, default=0.5
     )
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--triangulation-cpu-workers", type=int, default=2)
-    parser.add_argument("--parallel-triangulation-min-tracks", type=int, default=5000)
     args = parser.parse_args()
     started = time.perf_counter()
     stage_seconds = {}
@@ -702,16 +697,7 @@ def main() -> None:
             manifest.get("geometry_teacher_view_direction_weight", 0.5)
         ),
     )
-    triangulate = robust_triangulate_associations
-    triangulation_extra = {}
-    if (
-        int(args.triangulation_cpu_workers) > 1
-        and int(diagnostics["track_count"])
-        >= int(args.parallel_triangulation_min_tracks)
-    ):
-        triangulate = robust_triangulate_associations_fresh_cpu
-        triangulation_extra["worker_count"] = int(args.triangulation_cpu_workers)
-    geometry = triangulate(
+    geometry = robust_triangulate_associations(
         landmark_count=int(diagnostics["track_count"]),
         landmark_index=tracks["track_index"],
         query_index=observation_query,
@@ -750,7 +736,6 @@ def main() -> None:
             manifest.get("geometry_teacher_min_rendered_depth_observations", 0)
         ),
         surface_support_enabled=False,
-        **triangulation_extra,
     )
     stage_seconds["robust_triangulation"] = (
         time.perf_counter() - started - sum(stage_seconds.values())
