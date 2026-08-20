@@ -27,9 +27,7 @@ def _legacy_global_match(query, bank, *, topk, chunk_size):
     """Pre-acceleration kernel retained as a strict non-tie test oracle."""
     query = torch.nn.functional.normalize(query.float(), dim=1)
     scores = query.new_full((query.shape[0], topk), -torch.inf)
-    indices = torch.zeros(
-        (query.shape[0], topk), dtype=torch.long, device=query.device
-    )
+    indices = torch.zeros((query.shape[0], topk), dtype=torch.long, device=query.device)
     for start in range(0, bank.shape[0], chunk_size):
         stop = min(start + chunk_size, bank.shape[0])
         chunk = torch.nn.functional.normalize(bank[start:stop].float(), dim=1)
@@ -133,6 +131,15 @@ def test_global_topk_is_exact_across_chunks():
     expected_scores, expected_indices = torch.topk(dense, 3, dim=1)
     assert torch.equal(matches.anchor_indices, expected_indices)
     assert torch.allclose(matches.scores, expected_scores)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 4, 8])
+def test_global_topk_ties_are_chunk_independent_and_anchor_stable(chunk_size):
+    query = torch.tensor([[0.0, 0.0], [1.0, 0.0]])
+    bank = torch.tensor([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]])
+    matches = global_cosine_topk(query, bank, topk=4, chunk_size=chunk_size)
+    assert matches.anchor_indices.tolist() == [[0, 1, 2, 3], [0, 1, 2, 3]]
+    assert matches.scores[0].tolist() == [0.0, 0.0, 0.0, 0.0]
 
 
 def test_capacity_assignment_can_fall_back_to_second_candidate():

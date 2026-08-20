@@ -261,8 +261,17 @@ def global_cosine_topk(
         )
         merged_scores = torch.cat((best_scores, scores), dim=1)
         merged_indices = torch.cat((best_indices, indices), dim=1)
-        best_scores, positions = torch.topk(merged_scores, topk, dim=1)
-        best_indices = torch.gather(merged_indices, 1, positions)
+        # Canonicalize exact ties by Anchor row.  ``torch.topk`` does not
+        # provide a stable tie contract across devices or chunk sizes, and a
+        # tie at the K boundary can otherwise even change the candidate set.
+        index_order = torch.argsort(merged_indices, dim=1, stable=True)
+        merged_scores = torch.gather(merged_scores, 1, index_order)
+        merged_indices = torch.gather(merged_indices, 1, index_order)
+        score_order = torch.argsort(merged_scores, dim=1, descending=True, stable=True)[
+            :, :topk
+        ]
+        best_scores = torch.gather(merged_scores, 1, score_order)
+        best_indices = torch.gather(merged_indices, 1, score_order)
     return TopKMatches(
         keypoint_indices=torch.arange(query.shape[0], device=query.device),
         anchor_indices=best_indices,
