@@ -35,6 +35,8 @@ selection.
 The focused suite covers diminishing returns, monotonicity with a larger
 budget, deterministic ties, duplicate-family attacks, bounded six-source
 candidate generation, and rejection of test/source-RGB inputs: `5 passed`.
+The clean-commit repository suite is `764 passed, 1 skipped` in `184.61 s`;
+the skip is the opt-in CUDA renderer smoke test.
 
 ## ShopFacade read-only headroom
 
@@ -56,4 +58,3 @@ does not prove that the Gaussian will render repeatable SuperPoint evidence at
 those views.  The next authorized experiment would render only the 32 frozen
 views, then measure mapping-only repeatability/Track gain while preserving pose
 family capacity.  It does not justify full-scene rendering yet.
-

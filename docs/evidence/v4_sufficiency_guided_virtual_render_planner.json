@@ -37,6 +37,11 @@
     "selected_unique_pose_families": 32
   },
   "synthetic_tests_passed": 5,
+  "full_tests": {
+    "passed": 764,
+    "seconds": 184.61,
+    "skipped": 1
+  },
   "uses_source_mapping_rgb": false,
   "uses_test_queries": false,
   "version": 1
