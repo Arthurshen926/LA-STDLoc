@@ -92,6 +92,7 @@ def main() -> None:
                     args.panel_root.resolve()
                     / family
                     / name
+                    / "candidate_batch"
                     / candidate
                     / "mapping_topk_replay_report.json"
                 )

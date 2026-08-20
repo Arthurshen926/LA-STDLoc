@@ -74,8 +74,9 @@ def main() -> None:
         ),
     )
     parser.add_argument("--gpus", default="0,1,2")
-    parser.add_argument("--replay-workers", type=int, default=4)
-    parser.add_argument("--pose-workers", type=int, default=8)
+    parser.add_argument("--replay-workers", type=int, default=2)
+    parser.add_argument("--candidate-workers", type=int, default=4)
+    parser.add_argument("--pose-workers", type=int, default=4)
     parser.add_argument(
         "--reuse-sidecar",
         action="append",
@@ -92,7 +93,6 @@ def main() -> None:
     if prereg.get("uses_test_queries") is not False:
         raise ValueError("panel preregistration must be mapping-only")
     scenes = list(prereg["hard_scenes"])
-    candidates = dict(prereg["candidates"])
     source_scenes = source.get("scenes", {})
     if any(
         scene not in source_scenes or source_scenes[scene].get("status") != "done"
@@ -215,41 +215,28 @@ def main() -> None:
             },
         )
 
-    replay_jobs = [
-        (scene, candidate, configuration)
-        for scene in scenes
-        for candidate, configuration in candidates.items()
-    ]
-
-    def replay_partition(assigned: list[tuple]) -> None:
-        for scene, candidate, configuration in assigned:
+    def replay_partition(assigned: list[str]) -> None:
+        for scene in assigned:
             family, name = scene.split("/", 1)
             sidecar = sidecar_by_scene[scene]
-            output = root / family / name / candidate
             command = [
                 str(PYTHON),
                 "-u",
                 "-m",
-                "scripts.evaluate_v4_mapping_topk_sidecar",
+                "scripts.evaluate_v4_mapping_topk_candidates",
                 *common_by_scene[scene],
                 "--sidecar",
                 str(sidecar),
                 "--expected-sidecar-sha256",
                 _sha256(sidecar),
-                "--output-dir",
-                str(output),
-                "--assignment-topk",
-                str(configuration["assignment_topk"]),
-                "--assignment-dustbin-score",
-                str(configuration["assignment_dustbin_score"]),
-                "--assignment-maximum-regret",
-                str(configuration["assignment_maximum_regret"]),
-                "--assignment-minimum-top1-margin",
-                str(configuration["assignment_minimum_top1_margin"]),
-                "--pose-workers",
+                "--preregistration",
+                str(root / "preregistration.json"),
+                "--output-root",
+                str(root / family / name / "candidate_batch"),
+                "--candidate-workers",
+                str(args.candidate_workers),
+                "--pose-workers-per-candidate",
                 str(args.pose_workers),
-                "--seed",
-                str(prereg["pose"]["seed"]),
                 "--device",
                 "cpu",
                 "--cpu-threads",
@@ -267,13 +254,13 @@ def main() -> None:
             run_checked(
                 command,
                 code_root=code_root,
-                log=root / family / name / f"{candidate}.log",
+                log=root / family / name / "candidate_batch.log",
                 env=env,
             )
 
-    replay_workers = min(max(int(args.replay_workers), 1), len(replay_jobs))
+    replay_workers = min(max(int(args.replay_workers), 1), len(scenes))
     replay_partitions = [
-        replay_jobs[index::replay_workers] for index in range(replay_workers)
+        scenes[index::replay_workers] for index in range(replay_workers)
     ]
     with ThreadPoolExecutor(max_workers=replay_workers) as pool:
         futures = [

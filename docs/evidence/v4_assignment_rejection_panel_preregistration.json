@@ -44,7 +44,7 @@
     "seed": 2026,
     "one_standard_poselib_call_per_query": true,
     "parallelism_changes_query_scheduling_only": true,
-    "pose_workers_per_replay": 8
+    "pose_workers_per_replay": 4
   },
   "pooled_hard_scene_rejection_gate": {
     "catastrophic_100cm_count_maximum_baseline_delta": 0,
