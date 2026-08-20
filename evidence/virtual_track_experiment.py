@@ -60,7 +60,11 @@ def enforce_one_observation_per_family(
         "confidence": confidence[keep],
         "track_level": level[unique_track],
     }
-    pair = result["track_index"] * max(int(family.numel()), 1) + family[result["query_index"]]
+    _, compact_family = torch.unique(family, sorted=True, return_inverse=True)
+    pair = (
+        result["track_index"] * max(int(torch.unique(family).numel()), 1)
+        + compact_family[result["query_index"]]
+    )
     if pair.unique().numel() != pair.numel():
         raise AssertionError("family observation contract was not enforced")
     return result, {

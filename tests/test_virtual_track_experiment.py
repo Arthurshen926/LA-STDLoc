@@ -16,7 +16,7 @@ def test_duplicate_pose_family_cannot_supply_two_track_observations():
         "track_level": torch.tensor([2, 1], dtype=torch.int8),
     }
     filtered, audit = enforce_one_observation_per_family(
-        tracks, torch.tensor([10, 10, 11, 12])
+        tracks, torch.tensor([249, 249, 281, 283])
     )
     assert filtered["query_index"].tolist() == [1, 2, 0, 2, 3]
     assert audit["duplicate_family_observation_count"] == 1
