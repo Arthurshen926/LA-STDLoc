@@ -16,8 +16,12 @@ The RGB-only Gaussian loader did expose one genuine loading defect. A
 an unused `[N,256]` random localization bank. The legacy probe exceeded 145 s
 and about 2.7 GiB RSS before it was aborted. The explicit zero-dimensional
 RGB-only contract loaded the same prior in 40.25 s under a busy shared host and
-retained `[N,1,0]`; the render path never consumes that tensor. This contract
-is retained with a focused regression test.
+retained `[N,1,0]`. The formal `priors.provenance` raster-provenance process
+only performs `rgb_only` renders and consumes RGB raster metadata, so it now
+requests this mode explicitly. Other Gaussian consumers retain their existing
+256D/default contracts. Loader parity, present-`loc_*` precedence, negative
+dimensions, RNG skipping, and the production call argument are regression
+tested.
 
 Renderer batching is not promoted. The prior full 231-view cache spent only
 13.10 s rendering, while exact end-to-end batching is already blocked by the

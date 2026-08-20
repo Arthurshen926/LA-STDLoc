@@ -52,7 +52,10 @@
     "legacy_probe": "aborted_after_more_than_145_seconds_with_about_2.7_GiB_RSS",
     "rgb_only_zero_dim_load_seconds_under_shared_host_load": 40.25295719131827,
     "rgb_only_loc_feature_shape": [1202378, 1, 0],
-    "decision": "retain_zero_dim_rgb_only_loader_contract"
+    "production_caller": "priors.provenance._load_rgb_only_gaussians",
+    "caller_only_uses_rgb_only_render_and_rgb_raster_meta": true,
+    "other_gaussian_callers_changed": false,
+    "decision": "enable_zero_dim_load_only_in_the_formal_rgb_only_raster_provenance_process"
   },
   "render_batch": {
     "historical_full_231_view_render_seconds": 13.101095882244408,

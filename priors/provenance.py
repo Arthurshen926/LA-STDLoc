@@ -21,6 +21,19 @@ from priors.models import GaussianModel2D, GaussianModel3D
 from data.masks import deployment_valid_mask
 
 
+def _load_rgb_only_gaussians(gaussian_type, sh_degree, gaussian_ply):
+    """Load the raster-provenance prior without an unused localization bank."""
+    gaussians = (
+        GaussianModel2D(sh_degree)
+        if gaussian_type == "2dgs"
+        else GaussianModel3D(sh_degree)
+    )
+    # This process invokes only rgb_only renders and consumes RGB raster meta;
+    # it never renders or reads get_loc_feature.
+    gaussians.load_ply(gaussian_ply, loc_feature_dim=0)
+    return gaussians.cuda().eval()
+
+
 def _anchor_source_csr(
     state: dict,
     track_payload: dict | None,
@@ -105,13 +118,9 @@ def main() -> None:
     if args.deployment_mask_cache:
         with Path(args.deployment_mask_cache).open("rb") as handle:
             deployment_masks = pickle.load(handle)
-    gaussians = (
-        GaussianModel2D(args.sh_degree)
-        if args.gaussian_type == "2dgs"
-        else GaussianModel3D(args.sh_degree)
+    gaussians = _load_rgb_only_gaussians(
+        args.gaussian_type, args.sh_degree, args.gaussian_ply
     )
-    gaussians.load_ply(args.gaussian_ply)
-    gaussians = gaussians.cuda().eval()
     primitive_count = int(gaussians.get_xyz.shape[0])
     if int(source_universe.max()) >= primitive_count:
         raise ValueError(
