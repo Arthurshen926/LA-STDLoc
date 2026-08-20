@@ -301,3 +301,41 @@ def test_mapping_statistics_replays_capacity_assignment_with_fallback(monkeypatc
     assert statistics["summary"]["raw_gt_precision_percent"] == 100.0
     assert statistics["summary"]["assignment_reassigned_query_rows"] == 1
     assert statistics["summary"]["assignment_top1_collisions"] == 1
+
+
+def test_mapping_statistics_view_mixture_callback_calls_one_solver(monkeypatch):
+    from localization.matcher import TopKMatches
+
+    teacher = {
+        "anchor_count": 1,
+        "query_names": ["q"],
+        "records": [{
+            "query_rows": torch.tensor([0]),
+            "positive_offsets": torch.tensor([0, 1]),
+            "positive_indices": torch.tensor([0]),
+            "ambiguous_offsets": torch.tensor([0, 0]),
+            "ambiguous_indices": torch.empty(0, dtype=torch.long),
+        }],
+    }
+    cache = {"queries": {"q": {
+        "native_descriptors": torch.tensor([[1.0, 0.0]]),
+        "native_keypoints": torch.tensor([[0.0, 0.0]]),
+        "native_K": torch.eye(3), "pose_w2c": torch.eye(4),
+    }}}
+    monkeypatch.setattr(deployment_revision, "load_shared_metric", lambda *a, **k: _IdentityMetric())
+    calls = {"matcher": 0, "solver": 0}
+    def matcher(query_index, descriptors, topk):
+        calls["matcher"] += 1
+        return TopKMatches(torch.tensor([0]), torch.tensor([[0]]), torch.tensor([[1.0]]))
+    def solver(*args, **kwargs):
+        calls["solver"] += 1
+        return SimpleNamespace(pose_w2c=np.eye(4), inliers=np.array([0]), diagnostics={"iterations": 1})
+    monkeypatch.setattr(deployment_revision, "solve_absolute_pose", solver)
+    collect_deployment_statistics(
+        state={"anchor_ids": torch.tensor([0]), "anchor_xyz": torch.tensor([[0.,0.,1.]]), "anchor_features": torch.tensor([[1.,0.]])},
+        metric_state_path="unused.pt", teacher=teacher, query_cache=cache,
+        device=torch.device("cpu"), ransac_reprojection_px=12., clean_reprojection_px=4.,
+        task_translation_m=.05, task_rotation_deg=5., seed=2026,
+        collect_anchor_statistics=False, view_mixture_matcher=matcher,
+    )
+    assert calls == {"matcher": 1, "solver": 1}

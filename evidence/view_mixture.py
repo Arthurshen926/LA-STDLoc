@@ -209,6 +209,9 @@ class LeaveOneQueryOutViewMixtureMatcher:
         self.priors = self.base_priors.clone()
         self.previous_rows = torch.empty(0, dtype=torch.long, device=self.device)
         self.maximum_query_local_eligible = len(self.base_eligible)
+        self.anchor_count = count
+        self.base_eligible_k2_count = len(self.base_eligible)
+        self.base_prototype_ratio = (count + len(self.base_eligible)) / count
 
     def _observations(self, local_row: int):
         replay = self.track_replay
@@ -248,7 +251,10 @@ class LeaveOneQueryOutViewMixtureMatcher:
         rows, features = self.replay.query_update(query_index)
         device_rows = rows.to(self.device)
         if rows.numel():
-            self.prototypes[device_rows].zero_(); self.priors[device_rows].zero_()
+            # Advanced indexing returns a copy, so ``.zero_()`` on that result
+            # would leave stale K2 slots behind when a Track becomes K1.
+            self.prototypes[device_rows] = 0
+            self.priors[device_rows] = 0
             self.prototypes[device_rows, 0] = F.normalize(features.float(), dim=1).to(self.device)
             self.priors[device_rows, 0] = 1
         affected = self.track_replay.rows_by_query[int(query_index)]

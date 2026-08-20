@@ -38,7 +38,6 @@ _SOURCE_PATHS = (
     "topology/deployment_revision.py",
     "localization/group_consensus.py",
     "localization/localizer.py",
-    "localization/matcher.py",
     "localization/pose_solver.py",
 )
 
@@ -201,6 +200,10 @@ def run(args: argparse.Namespace) -> dict:
         raise ValueError(
             "capacity assignment and group-aware pose are separate ablations"
         )
+    if bool(args.view_mixture) and bool(args.group_aware_pose):
+        raise ValueError("view-mixture and group-aware pose are separate methods")
+    if bool(args.view_mixture) and int(args.assignment_topk):
+        raise ValueError("view-mixture and capacity assignment are separate methods")
     identity = _producer_identity()
     paths = {
         "map": args.map.resolve(),
@@ -391,6 +394,28 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "descriptor_transform": "none_identity_only",
             "view_mixture": bool(args.view_mixture),
+            "view_mixture_contract": (
+                {
+                    "minimum_cluster_observations": 2,
+                    "minimum_cluster_view_bins": 2,
+                    "minimum_angle_degrees": 12.0,
+                    "minimum_loss_improvement": 0.015,
+                    "temperature": 0.05,
+                    "maximum_prototype_ratio": 1.2,
+                    "base_eligible_k2_count": mixture_matcher.base_eligible_k2_count,
+                    "base_prototype_ratio": mixture_matcher.base_prototype_ratio,
+                    "maximum_query_local_eligible_k2_count": mixture_matcher.maximum_query_local_eligible,
+                    "maximum_query_local_prototype_ratio": (
+                        mixture_matcher.anchor_count
+                        + mixture_matcher.maximum_query_local_eligible
+                    ) / mixture_matcher.anchor_count,
+                    "one_prototype_gemm": True,
+                    "one_anchor_score_after_mixture_aggregation": True,
+                    "surface_completion_remains_k1": True,
+                    "query_local_eligibility_recomputed": True,
+                }
+                if mixture_matcher is not None else None
+            ),
             "deployment_row_limit": int(args.deployment_row_limit),
             "one_global_top1_per_query_row": not bool(args.assignment_topk),
             "capacity_feasible_correspondence_assignment": bool(args.assignment_topk),
