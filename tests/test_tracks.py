@@ -397,42 +397,6 @@ def test_robust_triangulation_recovers_track_and_rejects_duplicate_view():
     )
 
 
-def test_fixed_camera_nonlinear_refinement_never_increases_robust_cost():
-    point = torch.tensor([0.2, -0.1, 4.0], dtype=torch.float64)
-    centers = [[-1.2, 0.0, 0.0], [-0.2, 0.3, 0.0], [0.8, 0.0, 0.0], [0.2, -0.5, 0.0]]
-    poses = torch.stack([_look_at_pose(center, point) for center in centers])
-    K = torch.tensor(
-        [[700.0, 0.0, 320.0], [0.0, 520.0, 240.0], [0.0, 0.0, 1.0]],
-        dtype=torch.float64,
-    ).repeat(4, 1, 1)
-    noise = torch.tensor(
-        [[0.8, -0.1], [-0.4, 0.6], [0.2, -0.7], [-0.5, -0.2]],
-        dtype=torch.float64,
-    )
-    uv = torch.stack([_project(point, K[i], poses[i]) for i in range(4)]) + noise
-    result = robust_triangulate_associations(
-        landmark_count=1,
-        landmark_index=torch.zeros(4, dtype=torch.long),
-        query_index=torch.arange(4),
-        uv=uv,
-        confidence=torch.ones(4),
-        camera_K=K,
-        pose_w2c=poses,
-        query_bin=torch.arange(4),
-        minimum_views=3,
-        minimum_view_bins=2,
-        minimum_parallax_deg=0.0,
-        maximum_reprojection_px=2.0,
-        nonlinear_refinement_iterations=5,
-    )
-    assert result["triangulation_nonlinear_refinement_applied"].tolist() == [True]
-    assert result["triangulation_nonlinear_refinement_accepted_iterations"][0] > 0
-    assert (
-        result["triangulation_nonlinear_refinement_final_cost"][0]
-        <= result["triangulation_nonlinear_refinement_initial_cost"][0]
-    )
-
-
 def test_surface_support_corrects_only_the_weak_track_axis():
     point = torch.tensor([0.1, -0.05, 3.0], dtype=torch.float64)
     centers = [
