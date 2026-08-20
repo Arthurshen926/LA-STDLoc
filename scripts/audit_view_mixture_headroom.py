@@ -185,6 +185,11 @@ def run(args) -> dict:
     budget_extra = int(math.floor(float(args.maximum_prototype_ratio - 1.0) * anchor_count))
     eligible.sort(key=lambda row: (-row[0], row[1]))
     selected_local = {row[2] for row in eligible[:max(0, budget_extra)]}
+    base_eligible_local = {row[2] for row in eligible}
+    if len(base_eligible_local) > budget_extra:
+        raise ValueError(
+            "strict query-local eligibility audit requires an unsaturated prototype budget"
+        )
     for local_row in selected_local:
         global_row = int(local_row)
         mixture = diagnostics[local_row]
@@ -199,6 +204,7 @@ def run(args) -> dict:
     selective_base, prior_base = selective.to(device), selective_prior.to(device)
     selective_bank, prior_bank = selective_base.clone(), prior_base.clone()
     previous_rows = torch.empty(0, dtype=torch.long, device=device)
+    maximum_query_local_eligible = len(base_eligible_local)
     records = {name: {"rank": [], "margin": [], "false": []} for name in ("single", "view_bin_oracle", "selective_k2")}
     query_rows = []
     positive_query_ids: list[int] = []
@@ -213,23 +219,30 @@ def run(args) -> dict:
     )
     if not 0 <= requested_start < query_limit:
         raise ValueError("invalid mapping-query audit range")
-    query_start = requested_start
+    selected_queries = list(range(requested_start, query_limit, int(args.query_stride)))
+    if not selected_queries:
+        raise ValueError("mapping-query audit sampling is empty")
+    query_position = 0
     if progress_path.is_file():
         progress = torch.load(progress_path, map_location="cpu", weights_only=False)
         if progress.get("schema") != "lafgs_view_mixture_audit_progress":
             raise ValueError("unsupported view-mixture progress sidecar")
-        query_start = int(progress["next_query_index"])
-        if query_start < requested_start or query_start > query_limit:
-            raise ValueError("progress sidecar lies outside requested query range")
+        if int(progress.get("version", 0)) != 2:
+            raise ValueError("progress sidecar predates query-sampling contract")
+        if progress.get("selected_queries") != selected_queries:
+            raise ValueError("progress sidecar query sampling differs")
+        query_position = int(progress["next_query_position"])
         records = progress["records"]
         query_rows = progress["query_rows"]
         positive_query_ids = progress["positive_query_ids"]
         positive_anchor_rows = progress["positive_anchor_rows"]
         latency = progress["latency"]
-    for query_index in range(query_start, query_limit):
-        if query_index % 100 == 0:
+    for position in range(query_position, len(selected_queries)):
+        query_index = selected_queries[position]
+        if position % 100 == 0:
             print(
-                f"view-mixture mapping LOO query {query_index}/{query_limit}",
+                f"view-mixture mapping LOO query {position}/{len(selected_queries)} "
+                f"(global {query_index})",
                 flush=True,
             )
         if previous_rows.numel():
@@ -269,6 +282,9 @@ def run(args) -> dict:
             selective_bank[changed_device].zero_(); prior_bank[changed_device].zero_()
             selective_bank[changed_device, 0] = normalized; prior_bank[changed_device, 0] = 1
         positive_descriptors, positive_rows = [], []
+        query_local_eligible = len(base_eligible_local) - sum(
+            int(int(row) in base_eligible_local) for row in affected_local
+        )
         for local_row in affected_local:
             global_row = int(local_row)
             full = full_observations[int(local_row)]
@@ -287,17 +303,24 @@ def run(args) -> dict:
                 proto = F.normalize((descriptors_r[chosen] * weights_r[chosen, None].clamp_min(1e-8)).sum(0), dim=0)
                 oracle_bank[global_row, int(view_bin)] = proto.to(device)
                 oracle_mask[global_row, int(view_bin)] = True
-            if int(local_row) in selected_local:
-                mixture = build_view_mixture(
-                    descriptors_r, bins_r, weights_r,
-                    minimum_cluster_observations=args.minimum_cluster_observations,
-                    minimum_cluster_view_bins=args.minimum_cluster_view_bins,
-                    minimum_angle_degrees=args.minimum_angle_degrees,
-                    minimum_loss_improvement=args.minimum_loss_improvement,
-                )
-                if mixture.eligible:
-                    selective_bank[global_row, :2] = mixture.prototypes.to(device)
-                    prior_bank[global_row, :2] = mixture.priors.to(device)
+            mixture = build_view_mixture(
+                descriptors_r, bins_r, weights_r,
+                minimum_cluster_observations=args.minimum_cluster_observations,
+                minimum_cluster_view_bins=args.minimum_cluster_view_bins,
+                minimum_angle_degrees=args.minimum_angle_degrees,
+                minimum_loss_improvement=args.minimum_loss_improvement,
+            )
+            if mixture.eligible:
+                query_local_eligible += 1
+                selective_bank[global_row, :2] = mixture.prototypes.to(device)
+                prior_bank[global_row, :2] = mixture.priors.to(device)
+        if query_local_eligible > budget_extra:
+            raise ValueError(
+                "query-local K2 eligibility saturates the preregistered prototype budget"
+            )
+        maximum_query_local_eligible = max(
+            maximum_query_local_eligible, query_local_eligible
+        )
         previous_rows = changed_device
         if not positive_rows:
             continue
@@ -339,12 +362,13 @@ def run(args) -> dict:
             records[name]["false"].extend(false.cpu().tolist())
             query_record[name] = {"r1": float((rank <= 1).float().mean()), "zero_correct_top1": bool((rank > 1).all())}
         query_rows.append(query_record)
-        if (query_index + 1) % 100 == 0:
+        if (position + 1) % 100 == 0:
             temporary = progress_path.with_name(f".{progress_path.name}.{os.getpid()}.tmp")
             torch.save({
                 "schema": "lafgs_view_mixture_audit_progress",
-                "version": 1,
-                "next_query_index": query_index + 1,
+                "version": 2,
+                "selected_queries": selected_queries,
+                "next_query_position": position + 1,
                 "records": records,
                 "query_rows": query_rows,
                 "positive_query_ids": positive_query_ids,
@@ -388,8 +412,8 @@ def run(args) -> dict:
         "inputs": {"map": str(args.map.resolve()), "track_payload": str(args.track_payload.resolve()), "query_cache": str(args.query_cache.resolve())},
         "input_sha256": {"map": sha256_file(args.map), "track_payload": sha256_file(args.track_payload), "query_cache": sha256_file(args.query_cache)},
         "configuration": vars(args) | {"map": str(args.map), "track_payload": str(args.track_payload), "query_cache": str(args.query_cache), "output": str(args.output)},
-        "query_range": {"start": requested_start, "end": query_limit, "full_query_count": len(replay.query_names)},
-        "prototype_budget": {"anchor_count": anchor_count, "eligible_k2_count": len(eligible), "selected_k2_count": len(selected_local), "prototype_count": anchor_count + len(selected_local), "prototype_ratio": (anchor_count + len(selected_local)) / anchor_count},
+        "query_range": {"start": requested_start, "end": query_limit, "stride": int(args.query_stride), "selected_query_count": len(selected_queries), "full_query_count": len(replay.query_names)},
+        "prototype_budget": {"anchor_count": anchor_count, "eligible_k2_count": len(eligible), "selected_k2_count": len(selected_local), "prototype_count": anchor_count + len(selected_local), "prototype_ratio": (anchor_count + len(selected_local)) / anchor_count, "query_local_eligibility_recomputed": True, "maximum_query_local_eligible_k2_count": maximum_query_local_eligible, "budget_unsaturated_for_every_query": maximum_query_local_eligible <= budget_extra},
         "summary": summary,
         "query_guard": {"mapping_query_count": len(query_rows), "queries": query_rows},
     }
@@ -427,6 +451,7 @@ def main():
     parser.add_argument("--anchor-chunk-size", type=int, default=2048)
     parser.add_argument("--query-start", type=int, default=0)
     parser.add_argument("--query-end", type=int, default=0)
+    parser.add_argument("--query-stride", type=int, default=1)
     args = parser.parse_args()
     print(json.dumps(run(args)["summary"], indent=2, sort_keys=True))
 

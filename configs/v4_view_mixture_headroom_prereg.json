@@ -36,4 +36,11 @@
     "matching_latency"
   ],
   "pose_gate": "Only after a frozen candidate passes retrieval headroom; catastrophe means pose error only in that later replay."
+  ,
+  "chess_runtime_fallback": {
+    "trigger": "two-GPU full Chess projection exceeds 40 minutes",
+    "sampling": "global ordered mapping registry indices 0,10,20,...,3990",
+    "sample_count": 400,
+    "role": "protection-scene diagnostic only"
+  }
 }
