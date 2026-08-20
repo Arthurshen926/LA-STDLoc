@@ -51,6 +51,7 @@ def project_gt_visible_anchors(
     alpha_minimum: float = 0.05,
     depth_abs_tolerance_m: float = 0.05,
     depth_relative_tolerance: float = 0.02,
+    depth_policy: str = "hard",
 ) -> ProjectedAnchors:
     """Project map geometry and apply the frozen nearest-pixel visibility test."""
 
@@ -81,6 +82,8 @@ def project_gt_visible_anchors(
     depth_supported = np.ones(xyz.shape[0], dtype=bool)
     if (rendered_alpha is None) != (rendered_depth is None):
         raise ValueError("rendered alpha and depth must be supplied together")
+    if depth_policy not in {"hard", "audit_only"}:
+        raise ValueError("depth policy must be 'hard' or 'audit_only'")
     if rendered_alpha is not None:
         alpha = np.asarray(rendered_alpha, dtype=np.float64).squeeze()
         reference_depth = np.asarray(rendered_depth, dtype=np.float64).squeeze()
@@ -101,7 +104,9 @@ def project_gt_visible_anchors(
             & (sampled_depth > 1e-5)
             & (np.abs(depth - sampled_depth) <= tolerance)
         )
-    visible = in_frame & alpha_supported & depth_supported
+    visible = in_frame & alpha_supported
+    if depth_policy == "hard":
+        visible &= depth_supported
     return ProjectedAnchors(
         uv=uv,
         depth=depth,

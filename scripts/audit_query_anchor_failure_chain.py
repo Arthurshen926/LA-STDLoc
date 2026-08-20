@@ -339,6 +339,12 @@ def run(args: argparse.Namespace) -> dict:
             alpha_minimum=float(teacher["config"]["alpha_minimum"]),
             depth_abs_tolerance_m=float(teacher["config"]["depth_abs_tolerance_m"]),
             depth_relative_tolerance=float(teacher["config"]["depth_relative_tolerance"]),
+            depth_policy=(
+                "audit_only"
+                if teacher["config"].get("exact_depth_policy")
+                == "audit_only_never_hard_reject"
+                else "hard"
+            ),
         )
         visible_rows = np.flatnonzero(projected.visible)
         visible_geometry = geometry_diagnostics(
@@ -436,6 +442,9 @@ def run(args: argparse.Namespace) -> dict:
                     ),
                     "depth_rejected_in_frame_count": int(
                         (projected.in_frame & ~projected.depth_supported).sum()
+                    ),
+                    "depth_visibility_policy": teacher["config"].get(
+                        "exact_depth_policy", "hard"
                     ),
                     "grid_coverage_4x4": grid_coverage(
                         projected.uv[visible_rows], (width, height)

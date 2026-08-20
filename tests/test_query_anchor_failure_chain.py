@@ -45,6 +45,14 @@ def test_gt_visibility_applies_alpha_depth_and_positive_depth() -> None:
     )
     assert result.in_frame.all()
     assert result.visible.tolist() == [True, False, False, True, True, True]
+    audit_only = project_gt_visible_anchors(
+        xyz, intrinsic, pose, image_size=(100, 80),
+        rendered_alpha=alpha, rendered_depth=depth,
+        alpha_minimum=0.05, depth_abs_tolerance_m=0.1,
+        depth_relative_tolerance=0.0, depth_policy="audit_only",
+    )
+    assert audit_only.visible.tolist() == [True, False, True, True, True, True]
+    assert not bool(audit_only.depth_supported[2])
 
 
 def test_maximum_matching_prioritizes_cardinality_then_distance() -> None:
