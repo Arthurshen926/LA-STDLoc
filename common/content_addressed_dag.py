@@ -31,12 +31,31 @@ def _safe_name(value: str) -> str:
     return value
 
 
+def _absolute_path(path: str | Path) -> Path:
+    """Make a path absolute without silently dereferencing a symlink parent."""
+    return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+
+
+def _reject_symlink_boundary(path: str | Path) -> Path:
+    """Fail closed when any existing component of ``path`` is a symlink."""
+    absolute = _absolute_path(path)
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(
+                f"DAG path crosses a symlink (symbolic-link boundary): {current}"
+            )
+    return absolute
+
+
 def path_content_record(path: str | Path) -> dict:
     """Hash a file or directory tree without following symbolic links."""
-    path = Path(path).expanduser()
-    if path.is_symlink():
-        raise ValueError(f"DAG input is a symbolic link: {path}")
-    path = path.resolve()
+    path = _reject_symlink_boundary(path)
     if path.is_file():
         return {
             "kind": "file",
@@ -72,16 +91,31 @@ def path_content_record(path: str | Path) -> dict:
 
 def source_identity(root: str | Path, relative_paths: tuple[str, ...]) -> dict:
     """Return a commit-independent identity for exactly the node-producing code."""
-    root = Path(root).expanduser().resolve()
+    root = _reject_symlink_boundary(root)
     if not relative_paths or len(relative_paths) != len(set(relative_paths)):
         raise ValueError("DAG producer paths must be nonempty and unique")
     sources = {}
     for relative in relative_paths:
         path = root / relative
+        _reject_symlink_boundary(path)
         if not path.is_file():
             raise FileNotFoundError(path)
         sources[relative] = sha256_file(path)
     return {"schema": "lafgs_dag_source_identity", "version": 1, "sources": sources}
+
+
+def _distribution_identity(module: str, distributions: tuple[str, ...]) -> dict:
+    """Record the installed distribution supplying one numerical module."""
+    for distribution in distributions:
+        try:
+            return {
+                "module": module,
+                "distribution": distribution,
+                "version": importlib.metadata.version(distribution),
+            }
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return {"module": module, "distribution": None, "version": None}
 
 
 def runtime_identity() -> dict:
@@ -108,9 +142,25 @@ def runtime_identity() -> dict:
                     "total_memory": properties.total_memory,
                 }
             )
+    numerical_dependencies = {
+        "torchvision": _distribution_identity("torchvision", ("torchvision",)),
+        "numpy": _distribution_identity("numpy", ("numpy",)),
+        "scipy": _distribution_identity("scipy", ("scipy",)),
+        "opencv": _distribution_identity(
+            "cv2",
+            (
+                "opencv-python",
+                "opencv-python-headless",
+                "opencv-contrib-python",
+                "opencv-contrib-python-headless",
+            ),
+        ),
+        "pillow": _distribution_identity("PIL", ("Pillow",)),
+        "plyfile": _distribution_identity("plyfile", ("plyfile",)),
+    }
     return {
         "schema": "lafgs_dag_runtime_identity",
-        "version": 1,
+        "version": 2,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": str(torch.__version__),
@@ -120,6 +170,7 @@ def runtime_identity() -> dict:
         "visible_cuda_devices": cuda_devices,
         "gsplat": gsplat_version,
         "gsplat_binary_sha256": binaries,
+        "numerical_dependencies": numerical_dependencies,
     }
 
 
@@ -171,7 +222,7 @@ class ContentAddressedStore:
         maximum_node_bytes: int,
         maximum_store_bytes: int,
     ) -> None:
-        self.root = Path(root).expanduser().resolve()
+        self.root = _reject_symlink_boundary(root)
         self.maximum_node_bytes = int(maximum_node_bytes)
         self.maximum_store_bytes = int(maximum_store_bytes)
         if self.maximum_node_bytes <= 0 or self.maximum_store_bytes <= 0:
@@ -197,17 +248,20 @@ class ContentAddressedStore:
         return self.node_path(spec) / "artifacts" / _safe_name(name)
 
     def _store_size(self) -> int:
-        return sum(
-            path.stat().st_size
-            for path in self.root.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        )
+        descendants = list(self.root.rglob("*"))
+        if any(path.is_symlink() for path in descendants):
+            raise ValueError(f"DAG store contains a symbolic link: {self.root}")
+        return sum(path.stat().st_size for path in descendants if path.is_file())
 
-    def load(self, spec: Mapping) -> dict[str, Path] | None:
+    def _load_unlocked(
+        self, spec: Mapping
+    ) -> tuple[dict[str, Path], dict[str, dict]] | None:
         node = self.node_path(spec)
+        _reject_symlink_boundary(node)
         manifest_path = node / "manifest.json"
         if not manifest_path.is_file():
             return None
+        _reject_symlink_boundary(manifest_path)
         manifest = json.loads(manifest_path.read_text())
         if (
             manifest.get("schema") != SCHEMA
@@ -221,12 +275,14 @@ class ContentAddressedStore:
             raise ValueError(f"DAG manifest has no artifacts: {manifest_path}")
         expected_files = {"manifest.json"}
         resolved = {}
+        normalized_records = {}
         for name, record in records.items():
             _safe_name(name)
             file_name = _safe_name(str(record.get("file", "")))
             if file_name != name:
                 raise ValueError(f"DAG artifact name/file mismatch: {name}")
             path = node / "artifacts" / file_name
+            _reject_symlink_boundary(path)
             expected_files.add(str(path.relative_to(node)))
             if (
                 path.is_symlink()
@@ -235,13 +291,43 @@ class ContentAddressedStore:
                 or sha256_file(path) != record["sha256"]
             ):
                 raise ValueError(f"DAG artifact failed SHA/size verification: {path}")
-            resolved[name] = path.resolve()
+            resolved[name] = path
+            normalized_records[name] = {
+                "sha256": str(record["sha256"]),
+                "size_bytes": int(record["size_bytes"]),
+            }
+        descendants = list(node.rglob("*"))
+        if any(path.is_symlink() for path in descendants):
+            raise ValueError(f"DAG node contains a symbolic link: {node}")
         actual_files = {
-            str(path.relative_to(node)) for path in node.rglob("*") if path.is_file()
+            str(path.relative_to(node)) for path in descendants if path.is_file()
         }
         if actual_files != expected_files:
             raise ValueError(f"DAG node contains unregistered files: {node}")
-        return resolved
+        node_bytes = sum(
+            path.stat().st_size for path in descendants if path.is_file()
+        )
+        if node_bytes > self.maximum_node_bytes:
+            raise ValueError(
+                f"cached DAG node is {node_bytes} bytes, above current node limit "
+                f"{self.maximum_node_bytes}"
+            )
+        store_bytes = self._store_size()
+        if store_bytes > self.maximum_store_bytes:
+            raise ValueError(
+                f"DAG cache is {store_bytes} bytes, above current store limit "
+                f"{self.maximum_store_bytes}; prune it explicitly"
+            )
+        return resolved, normalized_records
+
+    def load(self, spec: Mapping) -> dict[str, Path] | None:
+        """Load and verify a node under the store's shared mutation lock."""
+        lock_path = self.root / ".publish.lock"
+        _reject_symlink_boundary(lock_path)
+        with lock_path.open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            loaded = self._load_unlocked(spec)
+            return None if loaded is None else loaded[0]
 
     def materialize(
         self,
@@ -249,35 +335,43 @@ class ContentAddressedStore:
         destination: str | Path,
     ) -> tuple[dict[str, Path], dict[str, str]]:
         """Create a run-owned, cache-prune-safe snapshot of one verified node."""
-        cached = self.load(spec)
-        if cached is None:
-            raise FileNotFoundError(self.node_path(spec))
-        destination = Path(destination).expanduser().resolve()
+        destination = _reject_symlink_boundary(destination)
         if destination.exists():
             raise FileExistsError(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(
             f".{destination.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
         )
-        temporary.mkdir()
-        modes = {}
-        try:
-            for name, source in cached.items():
-                target = temporary / name
-                modes[name] = _clone_or_copy(source, target)
-                if (
-                    target.stat().st_size != source.stat().st_size
-                    or sha256_file(target) != sha256_file(source)
-                ):
-                    raise ValueError(f"run-local DAG materialization differs: {target}")
-            temporary.rename(destination)
-            return (
-                {name: (destination / name).resolve() for name in cached},
-                modes,
-            )
-        finally:
-            if temporary.exists():
-                shutil.rmtree(temporary)
+        lock_path = self.root / ".publish.lock"
+        _reject_symlink_boundary(lock_path)
+        with lock_path.open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            loaded = self._load_unlocked(spec)
+            if loaded is None:
+                raise FileNotFoundError(self.node_path(spec))
+            cached, expected_records = loaded
+            temporary.mkdir()
+            modes = {}
+            try:
+                for name, source in cached.items():
+                    target = temporary / name
+                    modes[name] = _clone_or_copy(source, target)
+                    expected = expected_records[name]
+                    if (
+                        target.stat().st_size != expected["size_bytes"]
+                        or sha256_file(target) != expected["sha256"]
+                    ):
+                        raise ValueError(
+                            f"run-local DAG materialization failed manifest SHA/size: {target}"
+                        )
+                temporary.rename(destination)
+                return (
+                    {name: destination / name for name in cached},
+                    modes,
+                )
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
 
     def publish(self, spec: Mapping, artifacts: Mapping[str, str | Path]) -> dict[str, Path]:
         """Atomically install one immutable node, refusing unbounded growth."""
@@ -289,10 +383,7 @@ class ContentAddressedStore:
             return existing
         sources = {}
         for name, raw_path in artifacts.items():
-            raw = Path(raw_path).expanduser()
-            if raw.is_symlink():
-                raise ValueError(f"DAG artifact source is a symlink: {raw}")
-            sources[name] = raw.resolve()
+            sources[name] = _reject_symlink_boundary(raw_path)
         if len(set(sources.values())) != len(sources):
             raise ValueError("DAG artifacts must have unique source paths")
         source_inodes = []
@@ -305,11 +396,12 @@ class ContentAddressedStore:
                 raise ValueError("DAG artifacts must not alias one source inode")
             source_inodes.append(identity)
         lock_path = self.root / ".publish.lock"
+        _reject_symlink_boundary(lock_path)
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            existing = self.load(spec)
-            if existing is not None:
-                return existing
+            loaded = self._load_unlocked(spec)
+            if loaded is not None:
+                return loaded[0]
             if final.exists():
                 # A node without its atomic-last manifest is incomplete derived
                 # state. Remove only this exact content-addressed directory.
@@ -350,6 +442,7 @@ class ContentAddressedStore:
                     "DAG cache capacity including manifest would be exceeded; "
                     "prune it explicitly"
                 )
+            _reject_symlink_boundary(final.parent)
             final.parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(
                 tempfile.mkdtemp(prefix=f".{final.name}.", dir=final.parent)
@@ -405,10 +498,10 @@ class ContentAddressedStore:
                         "prune it explicitly"
                     )
                 temporary.rename(final)
-                result = self.load(spec)
-                if result is None:
+                loaded = self._load_unlocked(spec)
+                if loaded is None:
                     raise RuntimeError("DAG node publication did not become visible")
-                return result
+                return loaded[0]
             finally:
                 if temporary.exists():
                     shutil.rmtree(temporary)

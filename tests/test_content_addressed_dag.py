@@ -1,4 +1,6 @@
+import ast
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from common import content_addressed_dag
 from common.content_addressed_dag import (
     ContentAddressedStore,
     node_spec,
@@ -68,6 +71,17 @@ def test_producer_source_change_invalidates_key(tmp_path: Path):
 def test_runtime_and_rasterizer_abi_are_keyed(tmp_path: Path):
     runtime = runtime_identity()
     assert {"torch", "torch_cuda", "cudnn", "gsplat", "gsplat_binary_sha256"} <= set(runtime)
+    assert set(runtime["numerical_dependencies"]) == {
+        "torchvision",
+        "numpy",
+        "scipy",
+        "opencv",
+        "pillow",
+        "plyfile",
+    }
+    for name, identity in runtime["numerical_dependencies"].items():
+        assert identity["module"]
+        assert {"distribution", "version"} <= set(identity), name
     first = _spec(tmp_path)
     changed_producer = dict(first["producer"])
     changed_producer["runtime"] = runtime
@@ -78,6 +92,31 @@ def test_runtime_and_rasterizer_abi_are_keyed(tmp_path: Path):
         producer=changed_producer,
     )
     assert first["key_sha256"] != second["key_sha256"]
+
+
+def test_each_runtime_dependency_version_field_invalidates_key(tmp_path: Path):
+    runtime = runtime_identity()
+    baseline = _spec(tmp_path)
+    producer = dict(baseline["producer"])
+    producer["runtime"] = runtime
+    keyed = node_spec(
+        node=baseline["node"],
+        config=baseline["config"],
+        upstream=baseline["upstream"],
+        producer=producer,
+    )
+    for name in runtime["numerical_dependencies"]:
+        changed_runtime = deepcopy(runtime)
+        changed_runtime["numerical_dependencies"][name]["version"] = "EVIL"
+        changed_producer = dict(baseline["producer"])
+        changed_producer["runtime"] = changed_runtime
+        changed = node_spec(
+            node=baseline["node"],
+            config=baseline["config"],
+            upstream=baseline["upstream"],
+            producer=changed_producer,
+        )
+        assert changed["key_sha256"] != keyed["key_sha256"], name
 
 
 def test_sha_tamper_fails_closed(tmp_path: Path):
@@ -143,6 +182,33 @@ def test_capacity_includes_manifest_overhead(tmp_path: Path):
         store.publish(spec, {"track_payload.pt": payload})
 
 
+def test_cache_hit_obeys_current_node_limit(tmp_path: Path):
+    spec = _spec(tmp_path)
+    payload = tmp_path / "payload.pt"
+    payload.write_bytes(b"payload")
+    store = _store(tmp_path)
+    store.publish(spec, {"track_payload.pt": payload})
+    bounded = ContentAddressedStore(
+        store.root, maximum_node_bytes=1, maximum_store_bytes=65536
+    )
+    with pytest.raises(ValueError, match="current node limit"):
+        bounded.load(spec)
+
+
+def test_cache_hit_obeys_current_store_limit(tmp_path: Path):
+    spec = _spec(tmp_path)
+    payload = tmp_path / "payload.pt"
+    payload.write_bytes(b"payload")
+    store = _store(tmp_path)
+    store.publish(spec, {"track_payload.pt": payload})
+    (store.root / "capacity-filler").write_bytes(b"x" * 9000)
+    bounded = ContentAddressedStore(
+        store.root, maximum_node_bytes=8192, maximum_store_bytes=8192
+    )
+    with pytest.raises(ValueError, match="current store limit"):
+        bounded.load(spec)
+
+
 def test_directory_identity_rejects_symlink(tmp_path: Path):
     tree = tmp_path / "tree"
     tree.mkdir()
@@ -151,7 +217,7 @@ def test_directory_identity_rejects_symlink(tmp_path: Path):
     (tree / "link").symlink_to(tree / "value")
     with pytest.raises(ValueError, match="symlink"):
         path_content_record(tree)
-    with pytest.raises(ValueError, match="symbolic link"):
+    with pytest.raises(ValueError, match="symlink"):
         path_content_record(tree / "link")
 
 
@@ -163,6 +229,20 @@ def test_publish_rejects_symlink_source(tmp_path: Path):
     alias.symlink_to(payload)
     with pytest.raises(ValueError, match="symlink"):
         _store(tmp_path).publish(spec, {"track_payload.pt": alias})
+
+
+def test_symlinked_parent_boundaries_fail_closed(tmp_path: Path):
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    (real / "payload.pt").write_bytes(b"payload")
+    with pytest.raises(ValueError, match="symbolic-link boundary"):
+        path_content_record(linked / "payload.pt")
+    with pytest.raises(ValueError, match="symbolic-link boundary"):
+        ContentAddressedStore(
+            linked / "cache", maximum_node_bytes=8192, maximum_store_bytes=65536
+        )
 
 
 def test_partial_final_node_is_recovered_under_publish_lock(tmp_path: Path):
@@ -213,6 +293,43 @@ def test_run_local_materialization_survives_cache_prune(tmp_path: Path):
     local, _ = store.materialize(spec, tmp_path / "run-local")
     shutil.rmtree(store.root)
     assert local["track_payload.pt"].read_bytes() == b"payload"
+
+
+def test_materialize_rejects_load_copy_evil_toctou(tmp_path: Path, monkeypatch):
+    spec = _spec(tmp_path)
+    payload = tmp_path / "payload.pt"
+    payload.write_bytes(b"GOOD")
+    store = _store(tmp_path)
+    store.publish(spec, {"track_payload.pt": payload})
+    original = content_addressed_dag._clone_or_copy
+    injected = False
+
+    def inject_evil(source_path, target_path):
+        nonlocal injected
+        if not injected:
+            source_path.write_bytes(b"EVIL")
+            injected = True
+        return original(source_path, target_path)
+
+    monkeypatch.setattr(content_addressed_dag, "_clone_or_copy", inject_evil)
+    destination = tmp_path / "run-local"
+    with pytest.raises(ValueError, match="manifest SHA/size"):
+        store.materialize(spec, destination)
+    assert not destination.exists()
+
+
+def test_materialize_rejects_symlinked_destination_parent(tmp_path: Path):
+    spec = _spec(tmp_path)
+    payload = tmp_path / "payload.pt"
+    payload.write_bytes(b"payload")
+    store = _store(tmp_path)
+    store.publish(spec, {"track_payload.pt": payload})
+    real = tmp_path / "real-destination"
+    real.mkdir()
+    linked = tmp_path / "linked-destination"
+    linked.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic-link boundary"):
+        store.materialize(spec, linked / "snapshot")
 
 
 def test_every_declared_bootstrap_source_invalidates_identity(tmp_path: Path):
@@ -389,4 +506,3 @@ def test_pipeline_rejects_input_toctou_before_publish(tmp_path: Path, monkeypatc
     with pytest.raises(RuntimeError, match="changed during DAG build"):
         run_pipeline._build_or_reuse_bootstrap(args=args, config=tmp_path / "c.yaml")
     assert not (Path(args.artifact_cache) / first_spec["node"] / first_spec["key_sha256"]).exists()
-import ast
