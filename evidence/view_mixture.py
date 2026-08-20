@@ -14,6 +14,9 @@ import math
 import torch
 import torch.nn.functional as F
 
+from evidence.tracks import LeaveOneQueryOutProjectiveAnchorDescriptorBank
+from localization.matcher import global_view_mixture_topk
+
 
 @dataclass(frozen=True)
 class ViewMixture:
@@ -152,3 +155,124 @@ def mixture_scores(
         # unused padded slot cannot move ties at the last floating-point bit.
         output[:, single] = query @ prototypes[single, 0].T
     return output
+
+
+class LeaveOneQueryOutViewMixtureMatcher:
+    """Strict mapping-LOO matcher over a unified Track/surface Anchor map."""
+
+    def __init__(self, *, state: dict, payload: dict, query_cache: dict,
+                 device: torch.device, trim_fraction: float = 0.2,
+                 minimum_cluster_observations: int = 2,
+                 minimum_cluster_view_bins: int = 2,
+                 minimum_angle_degrees: float = 12.0,
+                 minimum_loss_improvement: float = 0.015,
+                 maximum_prototype_ratio: float = 1.2,
+                 temperature: float = 0.05) -> None:
+        self.device = torch.device(device)
+        self.temperature = float(temperature)
+        self.trim_fraction = float(trim_fraction)
+        self.thresholds = dict(
+            minimum_cluster_observations=int(minimum_cluster_observations),
+            minimum_cluster_view_bins=int(minimum_cluster_view_bins),
+            minimum_angle_degrees=float(minimum_angle_degrees),
+            minimum_loss_improvement=float(minimum_loss_improvement),
+        )
+        features = torch.as_tensor(state["anchor_features"]).float()
+        self.replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+            state=state, payload=payload, query_cache=query_cache,
+            reference_features=features, trim_fraction=self.trim_fraction,
+        )
+        if self.replay.track_replay is None:
+            raise ValueError("view-mixture map has no Track Anchors")
+        self.track_replay = self.replay.track_replay
+        count, dim = features.shape
+        self.budget_extra = int(math.floor((float(maximum_prototype_ratio) - 1.0) * count))
+        prototypes = torch.zeros((count, 2, dim), dtype=torch.float32)
+        priors = torch.zeros((count, 2), dtype=torch.float32)
+        prototypes[:, 0] = F.normalize(features, dim=1)
+        priors[:, 0] = 1
+        self.observations = {}
+        self.base_eligible = set()
+        for local_row, global_row in enumerate(self.replay.track_rows.tolist()):
+            item = self._observations(local_row)
+            self.observations[local_row] = item
+            mixture = build_view_mixture(item[0], item[1], item[2], **self.thresholds)
+            if mixture.eligible:
+                self.base_eligible.add(local_row)
+                prototypes[global_row] = mixture.prototypes
+                priors[global_row] = mixture.priors
+        if len(self.base_eligible) > self.budget_extra:
+            raise ValueError("view-mixture prototype budget is saturated")
+        self.base_prototypes = prototypes.to(self.device)
+        self.base_priors = priors.to(self.device)
+        self.prototypes = self.base_prototypes.clone()
+        self.priors = self.base_priors.clone()
+        self.previous_rows = torch.empty(0, dtype=torch.long, device=self.device)
+        self.maximum_query_local_eligible = len(self.base_eligible)
+
+    def _observations(self, local_row: int):
+        replay = self.track_replay
+        track = int(replay.track_indices[int(local_row)])
+        observations = replay.observation_by_track[track]
+        queries = torch.as_tensor(replay.tracks["query_index"])[observations].long()
+        keypoints = torch.as_tensor(replay.tracks["keypoint_index"])[observations].long()
+        valid = torch.tensor([
+            replay.cached_validity[replay.query_names[int(q)]] is None
+            or bool(replay.cached_validity[replay.query_names[int(q)]][int(k)])
+            for q, k in zip(queries.tolist(), keypoints.tolist())
+        ])
+        keep = torch.tensor([
+            replay.cached_descriptor_keep[replay.query_names[int(q)]] is None
+            or bool(replay.cached_descriptor_keep[replay.query_names[int(q)]][int(k)])
+            for q, k in zip(queries.tolist(), keypoints.tolist())
+        ])
+        if bool(valid.any()):
+            observations, queries, keypoints, keep = observations[valid], queries[valid], keypoints[valid], keep[valid]
+        observations, queries, keypoints = observations[keep], queries[keep], keypoints[keep]
+        descriptors = F.normalize(torch.stack([
+            replay.cached_descriptors[replay.query_names[int(q)]][int(k)].float()
+            for q, k in zip(queries.tolist(), keypoints.tolist())
+        ]), dim=1)
+        confidence = torch.as_tensor(replay.tracks["confidence"])[observations].float()
+        reliability = torch.tensor([
+            1.0 if replay.cached_reliability[replay.query_names[int(q)]] is None
+            else float(replay.cached_reliability[replay.query_names[int(q)]][int(k)])
+            for q, k in zip(queries.tolist(), keypoints.tolist())
+        ]).clamp(0, 1)
+        return descriptors, replay.query_bins[queries], confidence * reliability, queries
+
+    def _update(self, query_index: int) -> None:
+        if self.previous_rows.numel():
+            self.prototypes[self.previous_rows] = self.base_prototypes[self.previous_rows]
+            self.priors[self.previous_rows] = self.base_priors[self.previous_rows]
+        rows, features = self.replay.query_update(query_index)
+        device_rows = rows.to(self.device)
+        if rows.numel():
+            self.prototypes[device_rows].zero_(); self.priors[device_rows].zero_()
+            self.prototypes[device_rows, 0] = F.normalize(features.float(), dim=1).to(self.device)
+            self.priors[device_rows, 0] = 1
+        affected = self.track_replay.rows_by_query[int(query_index)]
+        eligible = len(self.base_eligible) - sum(int(row in self.base_eligible) for row in affected)
+        for local_row in affected:
+            descriptors, bins, weights, queries = self.observations[int(local_row)]
+            keep = queries != int(query_index)
+            if not bool(keep.any()):
+                continue
+            mixture = build_view_mixture(descriptors[keep], bins[keep], weights[keep], **self.thresholds)
+            if mixture.eligible:
+                eligible += 1
+                global_row = int(self.replay.track_rows[int(local_row)])
+                self.prototypes[global_row] = mixture.prototypes.to(self.device)
+                self.priors[global_row] = mixture.priors.to(self.device)
+        if eligible > self.budget_extra:
+            raise ValueError("query-local view-mixture eligibility saturates budget")
+        self.maximum_query_local_eligible = max(self.maximum_query_local_eligible, eligible)
+        self.previous_rows = device_rows
+
+    @torch.inference_mode()
+    def __call__(self, query_index: int, descriptors: torch.Tensor, topk: int):
+        self._update(int(query_index))
+        return global_view_mixture_topk(
+            descriptors, self.prototypes, self.priors, topk=int(topk),
+            temperature=self.temperature,
+        )

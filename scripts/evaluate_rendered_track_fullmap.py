@@ -23,6 +23,7 @@ from evidence.tracks import (
     LeaveOneQueryOutProjectiveAnchorDescriptorBank,
     LeaveOneQueryOutTrackDescriptorBank,
 )
+from evidence.view_mixture import LeaveOneQueryOutViewMixtureMatcher
 from map_learning.metric import SharedLowRankMetric, validate_map_bound_identity_metric
 from map_learning.trainer import bounded_anchor_bank, track_descriptor_payload_for_loo
 from topology.deployment_revision import collect_deployment_statistics
@@ -32,6 +33,8 @@ _SOURCE_PATHS = (
     "scripts/evaluate_rendered_track_fullmap.py",
     "evidence/observation_provider.py",
     "evidence/tracks.py",
+    "evidence/view_mixture.py",
+    "localization/matcher.py",
     "topology/deployment_revision.py",
     "localization/group_consensus.py",
     "localization/localizer.py",
@@ -283,35 +286,40 @@ def run(args: argparse.Namespace) -> dict:
         map_sha256=input_sha256["map"],
     )
     loo_payload = track_descriptor_payload_for_loo(payload)
-    if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
-        replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
-            state=state,
-            payload=loo_payload,
-            query_cache=cache,
-            reference_features=raw_reference_features,
-            trim_fraction=float(args.descriptor_trim_fraction),
-        )
-    else:
-        replay = LeaveOneQueryOutTrackDescriptorBank(
-            payload=loo_payload,
-            query_cache=cache,
-            track_indices=state["track_cluster_ids"],
-            reference_features=raw_reference_features,
-            trim_fraction=float(args.descriptor_trim_fraction),
-        )
-    affected = torch.as_tensor([len(rows) for rows in replay.rows_by_query]).long()
     device = torch.device(args.device)
-    online_config = state.get("v7_online_metric", {}).get("config", {})
-    updater = _DeviceBankUpdater(
-        replay,
-        device,
-        metric_state=metric,
-        adapted_reference_features=state["anchor_features"],
-        anchor_residual_parameter=state.get("v7_anchor_residual_parameter"),
-        anchor_residual_max_norm=float(
-            online_config.get("anchor_feature_residual_max_norm", 0.0)
-        ),
-    )
+    mixture_matcher = None
+    if bool(args.view_mixture):
+        replay = None
+        updater = None
+        mixture_matcher = LeaveOneQueryOutViewMixtureMatcher(
+            state=state, payload=loo_payload, query_cache=cache, device=device,
+            trim_fraction=float(args.descriptor_trim_fraction),
+        )
+        affected = torch.as_tensor(
+            [len(rows) for rows in mixture_matcher.replay.rows_by_query]
+        ).long()
+    else:
+        if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
+            replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+                state=state, payload=loo_payload, query_cache=cache,
+                reference_features=raw_reference_features,
+                trim_fraction=float(args.descriptor_trim_fraction),
+            )
+        else:
+            replay = LeaveOneQueryOutTrackDescriptorBank(
+                payload=loo_payload, query_cache=cache,
+                track_indices=state["track_cluster_ids"],
+                reference_features=raw_reference_features,
+                trim_fraction=float(args.descriptor_trim_fraction),
+            )
+        affected = torch.as_tensor([len(rows) for rows in replay.rows_by_query]).long()
+        online_config = state.get("v7_online_metric", {}).get("config", {})
+        updater = _DeviceBankUpdater(
+            replay, device, metric_state=metric,
+            adapted_reference_features=state["anchor_features"],
+            anchor_residual_parameter=state.get("v7_anchor_residual_parameter"),
+            anchor_residual_max_norm=float(online_config.get("anchor_feature_residual_max_norm", 0.0)),
+        )
     parameters = calibration["parameters"]
     statistics = collect_deployment_statistics(
         state=state,
@@ -332,6 +340,7 @@ def run(args: argparse.Namespace) -> dict:
         group_hypothesis_samples=int(args.group_hypothesis_samples),
         assignment_topk=int(args.assignment_topk),
         assignment_dustbin_score=float(args.assignment_dustbin_score),
+        view_mixture_matcher=mixture_matcher,
     )
     statistics = {
         "schema": "lafgs_rendered_track_full_mapping_loo_statistics",
@@ -345,7 +354,14 @@ def run(args: argparse.Namespace) -> dict:
             "construction_uses_all_mapping_observations": True,
             "track_identity_and_geometry_remain_full_mapping": True,
             "query_descriptor_excluded_from_affected_anchor_fusion": True,
-            "affected_anchor_updates": updater.affected_anchor_updates,
+            "affected_anchor_updates": (
+                int(affected.sum()) if updater is None else updater.affected_anchor_updates
+            ),
+            "query_local_view_mixture_eligibility_recomputed": bool(args.view_mixture),
+            "maximum_query_local_eligible_k2_count": (
+                mixture_matcher.maximum_query_local_eligible
+                if mixture_matcher is not None else 0
+            ),
             "minimum_affected_anchors_per_query": int(affected.min()),
             "maximum_affected_anchors_per_query": int(affected.max()),
             "mean_affected_anchors_per_query": float(affected.float().mean()),
@@ -374,6 +390,7 @@ def run(args: argparse.Namespace) -> dict:
             "cpu_threads": int(args.cpu_threads),
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "descriptor_transform": "none_identity_only",
+            "view_mixture": bool(args.view_mixture),
             "deployment_row_limit": int(args.deployment_row_limit),
             "one_global_top1_per_query_row": not bool(args.assignment_topk),
             "capacity_feasible_correspondence_assignment": bool(args.assignment_topk),
@@ -424,6 +441,7 @@ def main() -> None:
     parser.add_argument("--group-hypothesis-samples", type=int, default=32)
     parser.add_argument("--assignment-topk", type=int, default=0)
     parser.add_argument("--assignment-dustbin-score", type=float, default=-1.0)
+    parser.add_argument("--view-mixture", action="store_true")
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)
 

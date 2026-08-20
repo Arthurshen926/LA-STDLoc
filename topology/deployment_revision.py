@@ -170,6 +170,7 @@ def collect_deployment_statistics(
     group_hypothesis_samples: int = 32,
     assignment_topk: int = 0,
     assignment_dustbin_score: float = -1.0,
+    view_mixture_matcher: Callable[[int, torch.Tensor, int], TopKMatches] | None = None,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
@@ -180,6 +181,8 @@ def collect_deployment_statistics(
         raise ValueError(
             "capacity assignment and group-aware pose are separate ablations"
         )
+    if view_mixture_matcher is not None and assignment_topk:
+        raise ValueError("view-mixture matching and assignment are separate methods")
     if int(teacher["anchor_count"]) != count:
         raise ValueError("teacher and deployment map anchor counts differ")
     metric = load_shared_metric(
@@ -249,9 +252,16 @@ def collect_deployment_statistics(
             int(retrieval_topk) if collect_anchor_statistics else 1,
             assignment_topk,
         )
-        scores, indices = torch.topk(
-            adapted @ bank.T, k=min(effective_topk, count), dim=1
-        )
+        if view_mixture_matcher is None:
+            scores, indices = torch.topk(
+                adapted @ bank.T, k=min(effective_topk, count), dim=1
+            )
+        else:
+            mixture_matches = view_mixture_matcher(
+                query_index, adapted, min(effective_topk, count)
+            )
+            scores = mixture_matches.scores
+            indices = mixture_matches.anchor_indices
         indices_cpu = indices.cpu()
         assignment = None
         if assignment_topk:
