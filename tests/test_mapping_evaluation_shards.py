@@ -7,7 +7,13 @@ import sys
 import pytest
 import torch
 
-from evaluation.mapping_shards import merge_reports, resolve_query_range
+from common.hashing import sha256_file
+from evaluation.mapping_shards import (
+    atomic_torch_save,
+    json_sha256,
+    merge_reports,
+    resolve_query_range,
+)
 from scripts import evaluate_mapping_cache
 from topology.deployment_revision import _summary
 
@@ -227,3 +233,158 @@ def test_query_shard_merge_rejects_partial_tampered_and_missing_statistics(
     statistics_path.unlink()
     with pytest.raises(ValueError, match="missing"):
         merge_reports(shard_paths, tmp_path / "missing")
+
+
+def _write_fullmap_shard(
+    root: Path,
+    names: list[str],
+    *,
+    begin: int,
+    end: int,
+) -> Path:
+    indices = list(range(begin, end))
+    core = _statistics(indices, names)
+    affected = torch.tensor([index % 5 + 1 for index in indices])
+    maximum_eligible = max(index % 3 + 2 for index in indices)
+    contract = {
+        "schema": "lafgs_rendered_track_full_mapping_loo_evaluation_contract",
+        "version": 1,
+        "producer_identity": CODE_IDENTITY,
+        "inputs": {"map": "/fixed/map.pt"},
+        "input_sha256": {"map": "c" * 64},
+        "seed": 2026,
+        "device": "cuda",
+        "anchor_count": 10,
+        "configuration": {
+            "cpu_threads": 1,
+            "descriptor_trim_fraction": 0.2,
+            "deployment_row_limit": 0,
+            "view_mixture": True,
+            "group_aware_pose": False,
+            "group_field": None,
+            "group_hypothesis_samples": 0,
+            "assignment_topk": 0,
+            "assignment_dustbin_score": -1.0,
+        },
+        "calibration_parameters": {"ransac_reprojection_px": 12.0},
+        "selected_query_indices": list(range(len(names))),
+        "selected_query_indices_sha256": json_sha256(list(range(len(names)))),
+        "selected_query_names_sha256": json_sha256(names),
+    }
+    loo = {
+        "construction_uses_all_mapping_observations": True,
+        "track_identity_and_geometry_remain_full_mapping": True,
+        "query_descriptor_excluded_from_affected_anchor_fusion": True,
+        "affected_anchor_updates": int(affected.sum()),
+        "query_local_view_mixture_eligibility_recomputed": True,
+        "maximum_query_local_eligible_k2_count": maximum_eligible,
+        "minimum_affected_anchors_per_query": int(affected.min()),
+        "maximum_affected_anchors_per_query": int(affected.max()),
+        "mean_affected_anchors_per_query": float(affected.float().mean()),
+    }
+    statistics = {
+        "schema": "lafgs_rendered_track_full_mapping_loo_statistics",
+        "version": 1,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        **core,
+        "loo": loo,
+        "evaluation_contract": contract,
+        "evaluation_contract_sha256": json_sha256(contract),
+        "query_range": {"start": begin, "stop": end},
+        "selected_query_indices": indices,
+        "affected_anchor_count_by_query": affected,
+    }
+    root.mkdir(parents=True)
+    statistics_path = root / "full_mapping_loo_statistics.pt"
+    atomic_torch_save(statistics, statistics_path)
+    report = {
+        "schema": "lafgs_rendered_track_full_mapping_loo_report",
+        "version": 1,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "producer_identity": CODE_IDENTITY,
+        "seed": 2026,
+        "configuration": {
+            **contract["configuration"],
+            "view_mixture_contract": {
+                "maximum_query_local_eligible_k2_count": maximum_eligible,
+                "maximum_query_local_prototype_ratio": (
+                    10 + maximum_eligible
+                ) / 10,
+            },
+        },
+        "inputs": contract["inputs"],
+        "input_sha256": contract["input_sha256"],
+        "statistics": str(statistics_path.resolve()),
+        "statistics_sha256": sha256_file(statistics_path),
+        "statistics_size_bytes": statistics_path.stat().st_size,
+        "evaluation_contract": contract,
+        "evaluation_contract_sha256": json_sha256(contract),
+        "query_shard": {
+            "kind": "unsharded" if (begin, end) == (0, len(names)) else "indexed_shard",
+            "start": begin,
+            "stop": end,
+            "registry_count": len(names),
+        },
+        "loo": loo,
+        "summary": core["summary"],
+    }
+    report_path = root / "full_mapping_loo_report.json"
+    report_path.write_text(json.dumps(report))
+    return report_path
+
+
+@pytest.mark.parametrize("shard_count", [2, 4])
+def test_view_mixture_fullmap_two_and_four_shards_are_exact(
+    tmp_path, shard_count
+):
+    names = [f"q{index:03d}" for index in range(12)]
+    unsharded_path = _write_fullmap_shard(
+        tmp_path / "unsharded", names, begin=0, end=len(names)
+    )
+    shards = []
+    for index in range(shard_count):
+        begin = len(names) * index // shard_count
+        end = len(names) * (index + 1) // shard_count
+        shards.append(
+            _write_fullmap_shard(
+                tmp_path / f"shard-{index}", names, begin=begin, end=end
+            )
+        )
+    merged = merge_reports(shards, tmp_path / "merged")
+    unsharded = json.loads(unsharded_path.read_text())
+    assert merged["summary"] == unsharded["summary"]
+    assert merged["loo"] == unsharded["loo"]
+    assert merged["configuration"] == unsharded["configuration"]
+    merged_statistics = torch.load(
+        merged["statistics"], map_location="cpu", weights_only=False
+    )
+    unsharded_statistics = torch.load(
+        unsharded["statistics"], map_location="cpu", weights_only=False
+    )
+    assert merged_statistics["queries"] == unsharded_statistics["queries"]
+    for name in unsharded_statistics["counters"]:
+        assert torch.equal(
+            merged_statistics["counters"][name],
+            unsharded_statistics["counters"][name],
+        )
+
+
+def test_view_mixture_fullmap_merge_fails_closed_on_partial_and_tamper(
+    tmp_path,
+):
+    names = [f"q{index:03d}" for index in range(8)]
+    shards = [
+        _write_fullmap_shard(
+            tmp_path / f"shard-{index}", names, begin=index * 4, end=(index + 1) * 4
+        )
+        for index in range(2)
+    ]
+    with pytest.raises(ValueError, match="incomplete"):
+        merge_reports(shards[:1], tmp_path / "partial")
+    report = json.loads(shards[1].read_text())
+    statistics = Path(report["statistics"])
+    statistics.write_bytes(statistics.read_bytes() + b"tamper")
+    with pytest.raises(ValueError, match="size changed"):
+        merge_reports(shards, tmp_path / "tamper")

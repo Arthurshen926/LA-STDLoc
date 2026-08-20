@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed exact merge of mapping-cache query-shard evaluations."""
+"""Fail-closed exact merge of mapping-cache or rendered-fullmap query shards."""
 
 from __future__ import annotations
 

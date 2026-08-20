@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from common.hashing import sha256_file
+from evaluation.mapping_shards import json_sha256, resolve_query_range
 from evidence.tracks import (
     LeaveOneQueryOutProjectiveAnchorDescriptorBank,
     LeaveOneQueryOutTrackDescriptorBank,
@@ -32,6 +33,8 @@ from topology.anchor_registry import build_anchor_registry
 
 _SOURCE_PATHS = (
     "scripts/evaluate_rendered_track_fullmap.py",
+    "evaluation/mapping_shards.py",
+    "scripts/merge_mapping_cache_evaluations.py",
     "evidence/observation_provider.py",
     "evidence/tracks.py",
     "evidence/view_mixture.py",
@@ -247,6 +250,14 @@ def run(args: argparse.Namespace) -> dict:
         cache.get("queries", cache)
     ):
         raise ValueError("mapping query registries are not exact and ordered")
+    query_start, query_stop, shard_kind = resolve_query_range(
+        len(names),
+        query_start=args.query_start,
+        query_stop=args.query_stop,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+    )
+    selected_query_indices = list(range(query_start, query_stop))
     if int(teacher.get("anchor_count", -1)) != int(state["anchor_ids"].numel()):
         raise ValueError("teacher and map anchor counts differ")
     if (
@@ -353,6 +364,34 @@ def run(args: argparse.Namespace) -> dict:
             anchor_residual_max_norm=float(online_config.get("anchor_feature_residual_max_norm", 0.0)),
         )
     parameters = calibration["parameters"]
+    static_configuration = {
+        "cpu_threads": int(args.cpu_threads),
+        "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
+        "deployment_row_limit": int(args.deployment_row_limit),
+        "view_mixture": bool(args.view_mixture),
+        "group_aware_pose": bool(args.group_aware_pose),
+        "group_field": args.group_field if args.group_aware_pose else None,
+        "group_hypothesis_samples": (
+            int(args.group_hypothesis_samples) if args.group_aware_pose else 0
+        ),
+        "assignment_topk": int(args.assignment_topk),
+        "assignment_dustbin_score": float(args.assignment_dustbin_score),
+    }
+    evaluation_contract = {
+        "schema": "lafgs_rendered_track_full_mapping_loo_evaluation_contract",
+        "version": 1,
+        "producer_identity": identity,
+        "inputs": {label: str(path) for label, path in paths.items()},
+        "input_sha256": input_sha256,
+        "seed": int(args.seed),
+        "device": str(args.device),
+        "anchor_count": int(state["anchor_ids"].numel()),
+        "configuration": static_configuration,
+        "calibration_parameters": parameters,
+        "selected_query_indices": list(range(len(names))),
+        "selected_query_indices_sha256": json_sha256(list(range(len(names)))),
+        "selected_query_names_sha256": json_sha256(names),
+    }
     statistics = collect_deployment_statistics(
         state=state,
         metric_state_path=paths["metric"],
@@ -364,6 +403,11 @@ def run(args: argparse.Namespace) -> dict:
         task_translation_m=float(parameters["task_translation_m"]),
         task_rotation_deg=float(parameters["task_rotation_deg"]),
         seed=int(args.seed),
+        query_indices=(
+            None
+            if query_start == 0 and query_stop == len(names)
+            else torch.tensor(selected_query_indices, dtype=torch.long)
+        ),
         deployment_row_limit=int(args.deployment_row_limit),
         collect_anchor_statistics=True,
         progress_label="rendered_track_full_mapping_loo_feedback",
@@ -374,6 +418,7 @@ def run(args: argparse.Namespace) -> dict:
         assignment_dustbin_score=float(args.assignment_dustbin_score),
         view_mixture_matcher=mixture_matcher,
     )
+    selected_affected = affected[query_start:query_stop]
     statistics = {
         "schema": "lafgs_rendered_track_full_mapping_loo_statistics",
         "version": 1,
@@ -382,21 +427,29 @@ def run(args: argparse.Namespace) -> dict:
         "queries": statistics["queries"],
         "counters": statistics["counters"],
         "summary": statistics["summary"],
+        "evaluation_contract": evaluation_contract,
+        "evaluation_contract_sha256": json_sha256(evaluation_contract),
+        "query_range": {"start": query_start, "stop": query_stop},
+        "selected_query_indices": selected_query_indices,
+        "affected_anchor_count_by_query": selected_affected,
         "loo": {
             "construction_uses_all_mapping_observations": True,
             "track_identity_and_geometry_remain_full_mapping": True,
             "query_descriptor_excluded_from_affected_anchor_fusion": True,
             "affected_anchor_updates": (
-                int(affected.sum()) if updater is None else updater.affected_anchor_updates
+                int(selected_affected.sum())
+                if updater is None else updater.affected_anchor_updates
             ),
             "query_local_view_mixture_eligibility_recomputed": bool(args.view_mixture),
             "maximum_query_local_eligible_k2_count": (
                 mixture_matcher.maximum_query_local_eligible
                 if mixture_matcher is not None else 0
             ),
-            "minimum_affected_anchors_per_query": int(affected.min()),
-            "maximum_affected_anchors_per_query": int(affected.max()),
-            "mean_affected_anchors_per_query": float(affected.float().mean()),
+            "minimum_affected_anchors_per_query": int(selected_affected.min()),
+            "maximum_affected_anchors_per_query": int(selected_affected.max()),
+            "mean_affected_anchors_per_query": float(
+                selected_affected.float().mean()
+            ),
         },
     }
     args.output_dir.mkdir(parents=True, exist_ok=False)
@@ -418,6 +471,14 @@ def run(args: argparse.Namespace) -> dict:
         ),
         "producer_identity": identity,
         "seed": int(args.seed),
+        "evaluation_contract": evaluation_contract,
+        "evaluation_contract_sha256": json_sha256(evaluation_contract),
+        "query_shard": {
+            "kind": shard_kind,
+            "start": query_start,
+            "stop": query_stop,
+            "registry_count": len(names),
+        },
         "configuration": {
             "cpu_threads": int(args.cpu_threads),
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
@@ -467,6 +528,7 @@ def run(args: argparse.Namespace) -> dict:
         "input_sha256": input_sha256,
         "statistics": str(statistics_path.resolve()),
         "statistics_sha256": sha256_file(statistics_path),
+        "statistics_size_bytes": statistics_path.stat().st_size,
         "loo": statistics["loo"],
         "summary": statistics["summary"],
     }
@@ -501,6 +563,10 @@ def main() -> None:
     parser.add_argument("--assignment-topk", type=int, default=0)
     parser.add_argument("--assignment-dustbin-score", type=float, default=-1.0)
     parser.add_argument("--view-mixture", action="store_true")
+    parser.add_argument("--query-start", type=int)
+    parser.add_argument("--query-stop", type=int)
+    parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--shard-count", type=int)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, sort_keys=True), flush=True)
 
