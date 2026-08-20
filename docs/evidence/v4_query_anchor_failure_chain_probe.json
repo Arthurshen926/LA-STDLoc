@@ -1,0 +1,41 @@
+{
+  "decision": "DIAGNOSTIC_ONLY_NO_MAP_OR_SOLVER_CHANGE",
+  "depth_visibility_policy": "audit_only_never_hard_reject",
+  "mapping_only_development": true,
+  "producer_commit": "e29536b5f2d39490152b6382fde4ea08b0543fb1",
+  "reports": {
+    "shopfacade_guard": {
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/shopfacade_guard1.json",
+      "json_sha256": "13b72db0aa60e34bfaf941d6bbb6b7a953535930006a848ef9a5ae04020af4e2",
+      "sidecar_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/shopfacade_guard1.sidecar.pt",
+      "sidecar_sha256": "b37f013ae81308f5663cbe91b134446fdc5d8ff63b12761e563c295cde80ebb1"
+    },
+    "shopfacade_tail2": {
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/shopfacade_tail2.json",
+      "json_sha256": "d00f3089b819de6e2b5ecacd294544c0ad465ae3e4ea55a112491a0dd4fb9966",
+      "sidecar_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/shopfacade_tail2.sidecar.pt",
+      "sidecar_sha256": "40e6a8eec49d6bc4f1a06daa22b747482b6844dc0fcc6794494b81fc28b6bf67"
+    },
+    "stairs_guard1_tail4": {
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/stairs_guard1_tail4.json",
+      "json_sha256": "133ce8cf0bf7946eeb1b11f4a4c48df154e8ecf6449ed028467a5ae64e79043e",
+      "sidecar_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_e29536b_20260821/stairs_guard1_tail4.sidecar.pt",
+      "sidecar_sha256": "312c8f48fc1e55792ceefef79734b840e71d304f42716bf76c32fd6eed02a65e"
+    }
+  },
+  "results": {
+    "shopfacade": {
+      "PASS_OR_UNEXPLAINED_NONFAILURE": 1,
+      "L1_MAP_COVERAGE_OR_GEOMETRY": 2
+    },
+    "stairs": {
+      "PASS_OR_UNEXPLAINED_NONFAILURE": 1,
+      "L3_DESCRIPTOR_RECALL": 1,
+      "L4_CANDIDATE_SELECTION_OR_STRUCTURE": 3
+    }
+  },
+  "results_may_not_update_map_or_hyperparameters": true,
+  "schema": "lafgs_query_anchor_failure_chain_probe_manifest",
+  "uses_test_queries": false,
+  "version": 1
+}
