@@ -1,0 +1,164 @@
+{
+  "artifact_policy": {
+    "binary_artifacts_committed": false,
+    "official_test_used_for_build_or_tuning": false,
+    "official_test_used_only_after_arm_freeze": true
+  },
+  "descriptor_gap_attribution": {
+    "boundary": {
+      "mapping_rgb_is_offline_oracle_label_only": true,
+      "strict_mapping_query_local_loo": true,
+      "uses_test_queries": false
+    },
+    "conclusion": "No mapping-only factor predicted RGB-repaired queries; simple alpha/depth/border/grid/view reliability was rejected.",
+    "scenes": {
+      "7Scenes/stairs": {
+        "artifact": "/mnt/pool/sqy/lafgs_descriptor_gap_attribution_20260821/7Scenes/stairs/attribution_strict_loo_stride32.json",
+        "artifact_sha256": "b81e10e415d3975f25cc8d02099be7cbea8318cbf3e2d2c1e38719bfed20dd9b",
+        "harmed_query_count": 63,
+        "observation_count": 713302,
+        "paired_cosine_mean": 0.8242877125740051,
+        "paired_cosine_median": 0.8877115249633789,
+        "query_stride": 32,
+        "repaired_query_count": 0
+      },
+      "Cambridge/ShopFacade": {
+        "artifact": "/mnt/pool/sqy/lafgs_descriptor_gap_attribution_20260821/Cambridge/ShopFacade/attribution_strict_loo_stride8.json",
+        "artifact_sha256": "7accb25a788925ac3baeeda75b4be1e42a48c09bf8631d7eb47c4fee4f5445c6",
+        "harmed_query_count": 29,
+        "observation_count": 169484,
+        "paired_cosine_mean": 0.78642737865448,
+        "paired_cosine_median": 0.87409508228302,
+        "query_stride": 8,
+        "repaired_query_count": 0
+      }
+    }
+  },
+  "g_plus_rgb_descriptor_oracle": {
+    "boundary": {
+      "anchor_ids_xyz_selection_and_rows_fixed": true,
+      "mapping_uses_source_rgb": true,
+      "mapping_uses_test_queries": false,
+      "test_evaluation_after_descriptor_arm_freeze": true
+    },
+    "conclusion": "Real mapping-RGB descriptors expose material domain headroom on Stairs and small R5/tail headroom on ShopFacade, without restoring RGB-Full topology.",
+    "scenes": {
+      "7Scenes/stairs": {
+        "baseline": {
+          "catastrophic_100cm": 4,
+          "median_te_cm": 2.040279284119606,
+          "r2_percent": 49.0,
+          "r5_percent": 87.0,
+          "results": "/mnt/pool/sqy/lafgs_projective_anchor_v4_single_seed_20260818/7Scenes/stairs/surface_unified_test_seed2026/results.json",
+          "results_sha256": "532ed5e5010472b990a6567f8b758c28239f3570c686b441af83526d7e6e7819"
+        },
+        "g_plus_rgb_descriptor": {
+          "anchor_map_sha256": "c24e324b317d7c5b6e21b03e661b5766fee32e4c1f79d7b7afc8504150bebfd1",
+          "catastrophic_100cm": 3,
+          "identity_metric_sha256": "d7216367f657f01a6d508923e6b9c5ce02d77b523e1e1657d6cb4e0457ade47f",
+          "materialization_report": "/mnt/pool/sqy/lafgs_resource_reverse_ablation_20260821/7Scenes/stairs/g_plus_rgb_desc/mapping_rgb_descriptor_report.json",
+          "materialization_report_sha256": "17e3cdaa8bca7b87a31ac3e4ca0a7b53b1dd7046921fcc6725e44e89d1701edc",
+          "median_te_cm": 1.8895412795245647,
+          "r2_percent": 53.5,
+          "r5_percent": 88.4,
+          "results": "/mnt/pool/sqy/lafgs_resource_reverse_ablation_20260821/7Scenes/stairs/g_plus_rgb_desc_test_seed2026/results.json",
+          "results_sha256": "d19a0d2200ec2688606e67a40d0ede08ab41da7f03d962e88404d73ef476746b"
+        }
+      },
+      "Cambridge/ShopFacade": {
+        "baseline": {
+          "catastrophic_100cm": 0,
+          "median_te_cm": 2.0390622317790985,
+          "r2_percent": 49.51456310679612,
+          "r5_percent": 82.52427184466019,
+          "results": "/mnt/pool/sqy/lafgs_projective_anchor_v4_single_seed_20260818/Cambridge/ShopFacade/surface_unified_test_seed2026/results.json",
+          "results_sha256": "3b785584170f0fc72811a753cc6631bc6ffb63dabe45e7c7809d2facef0dc79b"
+        },
+        "g_plus_rgb_descriptor": {
+          "anchor_map_sha256": "9762c3944827c01d5bae18b055e29a9db789810e26e5e2b94f0bedf5b8c68673",
+          "catastrophic_100cm": 0,
+          "identity_metric_sha256": "80b39638a91b365f143e71e315b2dc3c190a6c8c14fb2ee149e1deccca89d1ae",
+          "materialization_report": "/mnt/pool/sqy/lafgs_resource_reverse_ablation_20260821/Cambridge/ShopFacade/g_plus_rgb_desc/mapping_rgb_descriptor_report.json",
+          "materialization_report_sha256": "afcfbe397922397a50ba1a139ba234304e474daa345062c5e035522472ce64a5",
+          "median_te_cm": 2.019522897899151,
+          "r2_percent": 49.51456310679612,
+          "r5_percent": 84.46601941747572,
+          "results": "/mnt/pool/sqy/lafgs_resource_reverse_ablation_20260821/Cambridge/ShopFacade/g_plus_rgb_desc_test_seed2026/results.json",
+          "results_sha256": "73574c575050ca7d427b407cc289a2e45c0f7c9724d94df1725e767ffe8fd43d"
+        }
+      }
+    }
+  },
+  "photometric_no_go": {
+    "boundary": {
+      "arms_preregistered_before_test": true,
+      "mapping_uses_source_rgb": false,
+      "mapping_uses_test_queries": false,
+      "test_used_only_for_frozen_arm_evaluation": true
+    },
+    "clahe_clip_1p5": {
+      "7Scenes/stairs": {
+        "catastrophic_100cm": 6,
+        "median_te_cm": 1.9913389347493649,
+        "r2_percent": 50.1,
+        "r5_percent": 87.1,
+        "results": "/mnt/pool/sqy/lafgs_symmetric_photometric_clahe_v1_20260821/7Scenes/stairs_test_seed2026/results.json",
+        "results_sha256": "f8148f471d2999a84e31ab03c3ad0c0d9383d7cd2898a183bb8f19f2a4f93cd5"
+      },
+      "Cambridge/ShopFacade": {
+        "catastrophic_100cm": 0,
+        "median_te_cm": 2.1314388141036034,
+        "r2_percent": 45.63106796116505,
+        "r5_percent": 83.49514563106796,
+        "results": "/mnt/pool/sqy/lafgs_symmetric_photometric_clahe_v1_20260821/Cambridge/ShopFacade_test_seed2026/results.json",
+        "results_sha256": "0ef7b1f6411760409c046916882e54875554fb8c3efafed738da0f87e68487f0"
+      }
+    },
+    "conclusion": "Neither symmetric photometric arm is deployable: percentile hurts R5 in both scenes; CLAHE trades small recall changes for Shop R2 and Stairs tail regressions.",
+    "percentile_grayscale_q01_q99": {
+      "7Scenes/stairs": {
+        "catastrophic_100cm": 0,
+        "median_te_cm": 2.0361452363431454,
+        "r2_percent": 48.7,
+        "r5_percent": 85.8,
+        "results": "/mnt/pool/sqy/lafgs_symmetric_photometric_v1_20260821/7Scenes/stairs_test_seed2026/results.json",
+        "results_sha256": "a049eb2a3ac4a67a20906cf2d36e5ffdbdf9998084ba8dc1b7d4379d947004ad"
+      },
+      "Cambridge/ShopFacade": {
+        "catastrophic_100cm": 0,
+        "median_te_cm": 2.0048655569553375,
+        "r2_percent": 49.51456310679612,
+        "r5_percent": 81.55339805825243,
+        "results": "/mnt/pool/sqy/lafgs_symmetric_photometric_v1_20260821/Cambridge/ShopFacade_test_seed2026/results.json",
+        "results_sha256": "fdb8d2e6e994797c026104409682308a3f8dce6b10677acf94fb5d0ee9af36ce"
+      }
+    }
+  },
+  "render_perturbation_stability_stop": {
+    "boundary": {
+      "map_mutated": false,
+      "predictor_uses_source_mapping_rgb": false,
+      "test_evaluation_run": false,
+      "uses_test_queries": false
+    },
+    "conclusion": "Small render perturbation stability is too weak and non-monotonic across scenes to serve as source-free observation reliability.",
+    "scenes": {
+      "7Scenes/stairs": {
+        "artifact": "/mnt/pool/sqy/lafgs_render_perturbation_stability_20260821/7Scenes/stairs.json",
+        "artifact_sha256": "9234c194f97265b47c5b3b2d6f47b73d2343e05e49123c208ab6518170b6aadb",
+        "go": false,
+        "variance_rho": 0.19959616301524866,
+        "worst_cosine_rho": 0.10136401472493106
+      },
+      "Cambridge/ShopFacade": {
+        "artifact": "/mnt/pool/sqy/lafgs_render_perturbation_stability_20260821/Cambridge/ShopFacade.json",
+        "artifact_sha256": "c5604983f668b17d8f1bf4445104aea4b7f1595df09dcc906776412866cc54da",
+        "go": false,
+        "variance_rho": 0.13171860642001548,
+        "worst_cosine_rho": 0.10670601174209206
+      }
+    }
+  },
+  "schema": "lafgs_render_real_descriptor_audit_evidence",
+  "version": 1
+}
