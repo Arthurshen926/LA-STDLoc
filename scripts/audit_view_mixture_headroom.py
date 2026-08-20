@@ -196,6 +196,51 @@ def run(args) -> dict:
         selective[global_row] = mixture.prototypes
         selective_prior[global_row] = mixture.priors
 
+    if bool(getattr(args, "sensitivity_only", False)):
+        fallback_pairs = []
+        for local_row in sorted(base_eligible_local):
+            descriptors, bins, weights, queries, _ = full_observations[local_row]
+            for query_index in torch.unique(queries, sorted=True).tolist():
+                retained = queries != int(query_index)
+                eligible_without_query = False
+                if bool(retained.any()):
+                    eligible_without_query = build_view_mixture(
+                        descriptors[retained], bins[retained], weights[retained],
+                        minimum_cluster_observations=args.minimum_cluster_observations,
+                        minimum_cluster_view_bins=args.minimum_cluster_view_bins,
+                        minimum_angle_degrees=args.minimum_angle_degrees,
+                        minimum_loss_improvement=args.minimum_loss_improvement,
+                    ).eligible
+                if not eligible_without_query:
+                    fallback_pairs.append((int(query_index), int(local_row)))
+        result = {
+            "schema": "lafgs_view_mixture_k2_fallback_sensitivity",
+            "version": 1,
+            "uses_test_queries": False,
+            "audit_only": True,
+            "inputs": {
+                "map": str(args.map.resolve()),
+                "track_payload": str(args.track_payload.resolve()),
+                "query_cache": str(args.query_cache.resolve()),
+            },
+            "input_sha256": {
+                "map": sha256_file(args.map),
+                "track_payload": sha256_file(args.track_payload),
+                "query_cache": sha256_file(args.query_cache),
+            },
+            "configuration": vars(args) | {
+                "map": str(args.map), "track_payload": str(args.track_payload),
+                "query_cache": str(args.query_cache), "output": str(args.output),
+            },
+            "base_eligible_k2_count": len(base_eligible_local),
+            "query_local_k2_to_k1_fallback_count": len(fallback_pairs),
+            "affected_query_count": len({row[0] for row in fallback_pairs}),
+            "affected_anchor_count": len({row[1] for row in fallback_pairs}),
+            "fallback_pairs": fallback_pairs,
+        }
+        _atomic_json(args.output, result)
+        return result
+
     device = torch.device(args.device)
     single_base = F.normalize(track_features, dim=1).to(device)
     single = single_base.clone()
@@ -277,9 +322,9 @@ def run(args) -> dict:
             normalized = F.normalize(changed_features.float(), dim=1).to(device)
             single[changed_device] = normalized
             # Surface/non-selected-K2 rows remain exact single-descriptor LOO.
-            oracle_bank[changed_device].zero_(); oracle_mask[changed_device].zero_()
+            oracle_bank[changed_device] = 0; oracle_mask[changed_device] = False
             oracle_bank[changed_device, 0] = normalized; oracle_mask[changed_device, 0] = True
-            selective_bank[changed_device].zero_(); prior_bank[changed_device].zero_()
+            selective_bank[changed_device] = 0; prior_bank[changed_device] = 0
             selective_bank[changed_device, 0] = normalized; prior_bank[changed_device, 0] = 1
         positive_descriptors, positive_rows = [], []
         query_local_eligible = len(base_eligible_local) - sum(
@@ -297,7 +342,7 @@ def run(args) -> dict:
             if not bool(retained.any()):
                 continue
             descriptors_r, bins_r, weights_r = descriptors[retained], full[1][retained], full[2][retained]
-            oracle_bank[global_row].zero_(); oracle_mask[global_row].zero_()
+            oracle_bank[global_row] = 0; oracle_mask[global_row] = False
             for view_bin in torch.unique(bins_r, sorted=True).tolist():
                 chosen = bins_r == int(view_bin)
                 proto = F.normalize((descriptors_r[chosen] * weights_r[chosen, None].clamp_min(1e-8)).sum(0), dim=0)
@@ -452,8 +497,10 @@ def main():
     parser.add_argument("--query-start", type=int, default=0)
     parser.add_argument("--query-end", type=int, default=0)
     parser.add_argument("--query-stride", type=int, default=1)
+    parser.add_argument("--sensitivity-only", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(run(args)["summary"], indent=2, sort_keys=True))
+    result = run(args)
+    print(json.dumps(result.get("summary", result), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
