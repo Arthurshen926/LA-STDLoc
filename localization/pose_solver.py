@@ -28,6 +28,22 @@ def camera_intrinsics(
     )
 
 
+def poselib_camera(intrinsic: np.ndarray) -> dict:
+    """Materialize the immutable PoseLib PINHOLE camera for one calibration."""
+    intrinsic = np.asarray(intrinsic)
+    return {
+        "model": "PINHOLE",
+        "width": int(intrinsic[0, 2] * 2),
+        "height": int(intrinsic[1, 2] * 2),
+        "params": [
+            intrinsic[0, 0],
+            intrinsic[1, 1],
+            intrinsic[0, 2],
+            intrinsic[1, 2],
+        ],
+    }
+
+
 def solve_absolute_pose(
     points_2d: np.ndarray,
     points_3d: np.ndarray,
@@ -39,6 +55,7 @@ def solve_absolute_pose(
     min_iterations: int = 1000,
     seed: int = 2026,
     progressive_sampling: bool = False,
+    camera: dict | None = None,
 ) -> PoseEstimate:
     points_2d = np.asarray(points_2d)
     points_3d = np.asarray(points_3d)
@@ -49,17 +66,8 @@ def solve_absolute_pose(
             np.empty(0, dtype=np.int64),
             {"iterations": 0, "num_inliers": 0},
         )
-    camera = {
-        "model": "PINHOLE",
-        "width": int(intrinsic[0, 2] * 2),
-        "height": int(intrinsic[1, 2] * 2),
-        "params": [
-            intrinsic[0, 0],
-            intrinsic[1, 1],
-            intrinsic[0, 2],
-            intrinsic[1, 2],
-        ],
-    }
+    if camera is None:
+        camera = poselib_camera(intrinsic)
     pose, info = poselib.estimate_absolute_pose(
         points_2d,
         points_3d,

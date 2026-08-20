@@ -79,6 +79,14 @@ def main() -> None:
         default=-1.0,
         help="Strict minimum cosine score for an assigned real Anchor edge.",
     )
+    parser.add_argument(
+        "--deployment-mode",
+        action="store_true",
+        help=(
+            "Avoid per-stage CUDA synchronization. Total latency remains strict; "
+            "frontend/matching use CUDA-event timings."
+        ),
+    )
     args = parser.parse_args()
     if args.assignment_topk < 0:
         parser.error("--assignment-topk must be zero or positive")
@@ -143,6 +151,7 @@ def main() -> None:
         guided_sampling=args.guided_sampling,
         assignment_topk=args.assignment_topk,
         assignment_dustbin_score=args.assignment_dustbin_score,
+        profile_mode=not args.deployment_mode,
     )
     result = evaluate_dataset(
         dataset=dataset,
@@ -171,6 +180,7 @@ def main() -> None:
                 "capacity_assignment": bool(args.assignment_topk > 0),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),
+                "timing_mode": "deployment" if args.deployment_mode else "profile",
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),

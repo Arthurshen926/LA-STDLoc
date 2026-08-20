@@ -1,0 +1,100 @@
+{
+  "anchor_count": 5794,
+  "descriptor_rows_per_query": 2048,
+  "matcher": {
+    "anchor_ids_exact": true,
+    "exact_accelerated": {
+      "mean_ms": 0.537067341307799,
+      "p50_ms": 0.5220444872975349,
+      "p90_ms": 0.5641879513859749
+    },
+    "legacy": {
+      "mean_ms": 1.2680791939298313,
+      "p50_ms": 1.2170486152172089,
+      "p90_ms": 1.3445138931274414
+    },
+    "scores_exact": true,
+    "serial_queries_per_second": 1861.9638974228549,
+    "speedup_mean": 2.361117678170421
+  },
+  "measured_query_count": 3,
+  "scene": "ShopFacade",
+  "schema": "lafgs_online_exact_acceleration_benchmark",
+  "single_query": {
+    "anchor_ids_exact": true,
+    "exact_deployment": {
+      "frontend_ms": {
+        "mean_ms": 55.914878845214844,
+        "p50_ms": 55.60947036743164,
+        "p90_ms": 59.67190933227539
+      },
+      "matching_ms": {
+        "mean_ms": 0.6038186550140381,
+        "p50_ms": 0.5938559770584106,
+        "p90_ms": 0.6273663759231567
+      },
+      "ransac_ms": {
+        "mean_ms": 27.827667072415352,
+        "p50_ms": 28.48488837480545,
+        "p90_ms": 28.607048839330673
+      },
+      "total_ms": {
+        "mean_ms": 84.6676208699743,
+        "p50_ms": 85.07063426077366,
+        "p90_ms": 87.37520836293697
+      }
+    },
+    "exact_profile": {
+      "frontend_ms": {
+        "mean_ms": 50.7508780186375,
+        "p50_ms": 53.81985753774643,
+        "p90_ms": 54.56754341721535
+      },
+      "matching_ms": {
+        "mean_ms": 0.5916301161050797,
+        "p50_ms": 0.5937134847044945,
+        "p90_ms": 0.5941374227404594
+      },
+      "ransac_ms": {
+        "mean_ms": 28.07755333681901,
+        "p50_ms": 28.779031708836555,
+        "p90_ms": 29.010088369250298
+      },
+      "total_ms": {
+        "mean_ms": 79.44056484848261,
+        "p50_ms": 80.8227863162756,
+        "p90_ms": 83.4758210927248
+      }
+    },
+    "legacy_profile": {
+      "frontend_ms": {
+        "mean_ms": 55.96296302974224,
+        "p50_ms": 52.15573776513338,
+        "p90_ms": 61.345543153584
+      },
+      "matching_ms": {
+        "mean_ms": 1.3392362743616104,
+        "p50_ms": 1.2922193855047226,
+        "p90_ms": 1.418476179242134
+      },
+      "ransac_ms": {
+        "mean_ms": 27.869259628156822,
+        "p50_ms": 28.521140106022358,
+        "p90_ms": 28.806686587631702
+      },
+      "total_ms": {
+        "mean_ms": 85.29240886370341,
+        "p50_ms": 82.27318897843361,
+        "p90_ms": 91.59587472677231
+      }
+    },
+    "pose_matrices_exact": true,
+    "scores_exact": true
+  },
+  "streaming_overlap_boundary": {
+    "definition": "max(frontend_plus_matching, ransac); not yet pipelined",
+    "frames_per_second": 17.693259827793277,
+    "mean_cycle_ms": 56.51869750022888
+  },
+  "version": 1
+}

@@ -129,6 +129,7 @@ def global_cosine_top1(
     anchor_descriptors: torch.Tensor,
     *,
     chunk_size: int = 8192,
+    anchor_descriptors_normalized: bool = False,
 ) -> Top1Matches:
     if query_descriptors.ndim != 2 or anchor_descriptors.ndim != 2:
         raise ValueError("query and anchor descriptors must be matrices")
@@ -139,26 +140,27 @@ def global_cosine_top1(
         raise ValueError("anchor map is empty")
     chunk_size = max(int(chunk_size), 1)
     query = F.normalize(query_descriptors.float(), dim=1)
-    best_scores = query.new_full((query.shape[0], 1), -torch.inf)
-    best_indices = torch.zeros(
-        (query.shape[0], 1), dtype=torch.long, device=query.device
-    )
+    best_scores = query.new_full((query.shape[0],), -torch.inf)
+    best_indices = torch.zeros(query.shape[0], dtype=torch.long, device=query.device)
     for start in range(0, count, chunk_size):
         stop = min(start + chunk_size, count)
-        anchors = F.normalize(anchor_descriptors[start:stop].float(), dim=1)
+        anchors = anchor_descriptors[start:stop].float()
+        if not anchor_descriptors_normalized:
+            anchors = F.normalize(anchors, dim=1)
         scores = query @ anchors.T
-        indices = torch.arange(start, stop, device=query.device)[None].expand(
-            query.shape[0], -1
-        )
-        merged_scores = torch.cat((best_scores, scores), dim=1)
-        merged_indices = torch.cat((best_indices, indices), dim=1)
-        best_scores, positions = torch.topk(merged_scores, 1, dim=1)
-        best_indices = torch.gather(merged_indices, 1, positions)
+        local_scores, local_positions = scores.max(dim=1)
+        local_indices = local_positions + start
+        # torch.max returns the first occurrence.  Keeping the previous winner
+        # on equality therefore defines one chunk-independent tie contract:
+        # the lower Anchor row wins equal cosine scores.
+        update = local_scores > best_scores
+        best_scores = torch.where(update, local_scores, best_scores)
+        best_indices = torch.where(update, local_indices, best_indices)
     keypoints = torch.arange(query.shape[0], device=query.device)
     return Top1Matches(
         keypoint_indices=keypoints,
-        anchor_indices=best_indices[:, 0],
-        scores=best_scores[:, 0],
+        anchor_indices=best_indices,
+        scores=best_scores,
     )
 
 
@@ -168,6 +170,7 @@ def global_cosine_top2(
     anchor_descriptors: torch.Tensor,
     *,
     chunk_size: int = 8192,
+    anchor_descriptors_normalized: bool = False,
 ) -> Top2Matches:
     """Return exact global top-2 rows for margin-aware one-shot sampling."""
     if query_descriptors.ndim != 2 or anchor_descriptors.ndim != 2:
@@ -185,15 +188,36 @@ def global_cosine_top2(
     )
     for start in range(0, count, chunk_size):
         stop = min(start + chunk_size, count)
-        anchors = F.normalize(anchor_descriptors[start:stop].float(), dim=1)
+        anchors = anchor_descriptors[start:stop].float()
+        if not anchor_descriptors_normalized:
+            anchors = F.normalize(anchors, dim=1)
         scores = query @ anchors.T
-        indices = torch.arange(start, stop, device=query.device)[None].expand(
-            query.shape[0], -1
-        )
-        merged_scores = torch.cat((best_scores, scores), dim=1)
-        merged_indices = torch.cat((best_indices, indices), dim=1)
-        best_scores, positions = torch.topk(merged_scores, 2, dim=1)
-        best_indices = torch.gather(merged_indices, 1, positions)
+        local_first_scores, local_first_positions = scores.max(dim=1)
+        local_first_indices = local_first_positions + start
+        if stop - start > 1:
+            scores.scatter_(1, local_first_positions[:, None], -torch.inf)
+            local_second_scores, local_second_positions = scores.max(dim=1)
+            local_second_indices = local_second_positions + start
+        else:
+            local_second_scores = local_first_scores.new_full(
+                local_first_scores.shape, -torch.inf
+            )
+            local_second_indices = local_first_indices
+        local_scores = torch.stack((local_first_scores, local_second_scores), dim=1)
+        local_indices = torch.stack((local_first_indices, local_second_indices), dim=1)
+        candidate_scores = torch.cat((best_scores, local_scores), dim=1)
+        candidate_indices = torch.cat((best_indices, local_indices), dim=1)
+        # Canonicalize equal scores by Anchor row before the stable score sort.
+        # Only four candidates per row are sorted; the old implementation
+        # sorted the complete score chunk at every iteration.
+        index_order = torch.argsort(candidate_indices, dim=1, stable=True)
+        candidate_scores = torch.gather(candidate_scores, 1, index_order)
+        candidate_indices = torch.gather(candidate_indices, 1, index_order)
+        score_order = torch.argsort(
+            candidate_scores, dim=1, descending=True, stable=True
+        )[:, :2]
+        best_scores = torch.gather(candidate_scores, 1, score_order)
+        best_indices = torch.gather(candidate_indices, 1, score_order)
     keypoints = torch.arange(query.shape[0], device=query.device)
     return Top2Matches(
         keypoint_indices=keypoints,
@@ -209,6 +233,7 @@ def global_cosine_topk(
     *,
     topk: int,
     chunk_size: int = 8192,
+    anchor_descriptors_normalized: bool = False,
 ) -> TopKMatches:
     """Return exact global cosine top-K candidates without a dense score bank."""
     if query_descriptors.ndim != 2 or anchor_descriptors.ndim != 2:
@@ -227,7 +252,9 @@ def global_cosine_topk(
     )
     for start in range(0, count, chunk_size):
         stop = min(start + chunk_size, count)
-        anchors = F.normalize(anchor_descriptors[start:stop].float(), dim=1)
+        anchors = anchor_descriptors[start:stop].float()
+        if not anchor_descriptors_normalized:
+            anchors = F.normalize(anchors, dim=1)
         scores = query @ anchors.T
         indices = torch.arange(start, stop, device=query.device)[None].expand(
             query.shape[0], -1

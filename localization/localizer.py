@@ -22,6 +22,7 @@ from localization.matcher import (
 from localization.pose_solver import (
     PoseEstimate,
     camera_intrinsics,
+    poselib_camera,
     solve_absolute_pose,
 )
 from map_learning.context_metric import MapConsistentContextAdapter
@@ -117,6 +118,8 @@ class SparseLocalizer:
         guided_sampling: bool = False,
         assignment_topk: int = 0,
         assignment_dustbin_score: float = -1.0,
+        profile_mode: bool = True,
+        reuse_correspondence_buffers: bool = True,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -158,6 +161,9 @@ class SparseLocalizer:
                 device=self.device,
             )
             context_adapter = None
+        # This is the exact normalization that the historical matcher applied
+        # to every map chunk for every query.  Materialize it once instead.
+        self.anchor_features = F.normalize(self.anchor_features.float(), dim=1)
         if not (
             self.anchor_ids.numel()
             == self.anchor_xyz.shape[0]
@@ -180,6 +186,25 @@ class SparseLocalizer:
         self.guided_sampling = bool(guided_sampling)
         self.assignment_topk = int(assignment_topk)
         self.assignment_dustbin_score = float(assignment_dustbin_score)
+        self.profile_mode = bool(profile_mode)
+        self.reuse_correspondence_buffers = bool(reuse_correspondence_buffers)
+        self._camera_cache: dict[tuple[float, float, int, int], tuple[np.ndarray, dict]] = {}
+        self._deployment_timing_events = None
+        if self.device.type == "cuda" and not self.profile_mode:
+            self._deployment_timing_events = tuple(
+                torch.cuda.Event(enable_timing=True) for _ in range(3)
+            )
+        self._points_2d_host = None
+        self._points_3d_host = None
+        if self.device.type == "cuda" and self.reuse_correspondence_buffers:
+            # PoseLib consumes NumPy arrays immediately and localize is serial,
+            # so these pinned buffers can safely be reused between queries.
+            self._points_2d_host = torch.empty(
+                (keypoint_count, 2), dtype=torch.float32, pin_memory=True
+            )
+            self._points_3d_host = torch.empty(
+                (keypoint_count, 3), dtype=torch.float32, pin_memory=True
+            )
         if self.assignment_topk < 0:
             raise ValueError("assignment top-K must be zero (disabled) or positive")
         if self.assignment_topk > int(self.anchor_features.shape[0]):
@@ -229,12 +254,27 @@ class SparseLocalizer:
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
 
-        synchronize()
+        if self.profile_mode:
+            synchronize()
         total_started = time.perf_counter()
         frontend_started = total_started
+        frontend_start_event = frontend_end_event = matching_end_event = None
+        if self._deployment_timing_events is not None:
+            (
+                frontend_start_event,
+                frontend_end_event,
+                matching_end_event,
+            ) = self._deployment_timing_events
+            frontend_start_event.record()
         sparse = self.frontend(image, valid_mask=valid_mask)
-        synchronize()
-        frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
+        if self.profile_mode:
+            synchronize()
+            frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
+        elif frontend_end_event is not None:
+            frontend_end_event.record()
+            frontend_ms = 0.0
+        else:
+            frontend_ms = (time.perf_counter() - frontend_started) * 1000.0
 
         matching_started = time.perf_counter()
         guidance_quality = None
@@ -244,6 +284,7 @@ class SparseLocalizer:
                 sparse.descriptors,
                 self.anchor_features,
                 topk=self.assignment_topk,
+                anchor_descriptors_normalized=True,
             )
             raw_matches = Top1Matches(
                 keypoint_indices=topk.keypoint_indices,
@@ -255,7 +296,11 @@ class SparseLocalizer:
             )
             matches = assignment.matches
         elif self.guided_sampling:
-            top2 = global_cosine_top2(sparse.descriptors, self.anchor_features)
+            top2 = global_cosine_top2(
+                sparse.descriptors,
+                self.anchor_features,
+                anchor_descriptors_normalized=True,
+            )
             raw_matches = Top1Matches(
                 keypoint_indices=top2.keypoint_indices,
                 anchor_indices=top2.anchor_indices[:, 0],
@@ -267,7 +312,11 @@ class SparseLocalizer:
             certainty = (1.0 + self.anchor_uncertainty[winner]).reciprocal()
             guidance_quality = margin * reliability.sqrt() * certainty
         else:
-            raw_matches = global_cosine_top1(sparse.descriptors, self.anchor_features)
+            raw_matches = global_cosine_top1(
+                sparse.descriptors,
+                self.anchor_features,
+                anchor_descriptors_normalized=True,
+            )
             matches = raw_matches
         if not self.assignment_topk:
             matches = (
@@ -286,12 +335,39 @@ class SparseLocalizer:
                 anchor_indices=matches.anchor_indices[order],
                 scores=matches.scores[order],
             )
-        points_2d = sparse.keypoints[matches.keypoint_indices].cpu().numpy()
-        points_3d = self.anchor_xyz[matches.anchor_indices].cpu().numpy()
-        synchronize()
-        matching_ms = (time.perf_counter() - matching_started) * 1000.0
+        selected_2d = sparse.keypoints[matches.keypoint_indices]
+        selected_3d = self.anchor_xyz[matches.anchor_indices]
+        count = int(selected_2d.shape[0])
+        if self._points_2d_host is not None and count <= self._points_2d_host.shape[0]:
+            points_2d_tensor = self._points_2d_host[:count]
+            points_3d_tensor = self._points_3d_host[:count]
+            points_2d_tensor.copy_(selected_2d, non_blocking=True)
+            points_3d_tensor.copy_(selected_3d, non_blocking=True)
+            if matching_end_event is not None:
+                matching_end_event.record()
+            synchronize()
+            points_2d = points_2d_tensor.numpy()
+            points_3d = points_3d_tensor.numpy()
+        else:
+            points_2d = selected_2d.cpu().numpy()
+            points_3d = selected_3d.cpu().numpy()
+            if matching_end_event is not None:
+                matching_end_event.record()
+            synchronize()
+        if frontend_start_event is not None:
+            frontend_ms = float(frontend_start_event.elapsed_time(frontend_end_event))
+            matching_ms = float(frontend_end_event.elapsed_time(matching_end_event))
+        else:
+            matching_ms = (time.perf_counter() - matching_started) * 1000.0
         height, width = sparse.image_hw
-        intrinsic = camera_intrinsics(fov_x, fov_y, width, height)
+        camera_key = (float(fov_x), float(fov_y), int(width), int(height))
+        cached_camera = self._camera_cache.get(camera_key)
+        if cached_camera is None:
+            intrinsic = camera_intrinsics(fov_x, fov_y, width, height)
+            pose_camera = poselib_camera(intrinsic)
+            self._camera_cache[camera_key] = (intrinsic, pose_camera)
+        else:
+            intrinsic, pose_camera = cached_camera
 
         ransac_started = time.perf_counter()
         pose = solve_absolute_pose(
@@ -304,6 +380,7 @@ class SparseLocalizer:
             min_iterations=self.min_iterations,
             seed=self.seed,
             progressive_sampling=self.guided_sampling,
+            camera=pose_camera,
         )
         ransac_ms = (time.perf_counter() - ransac_started) * 1000.0
         return LocalizationResult(
@@ -347,5 +424,9 @@ class SparseLocalizer:
                     int(assignment.top1_collision_count) if assignment else 0
                 ),
                 "context_adapter": int(self.frontend.context_adapter is not None),
+                "profile_mode": int(self.profile_mode),
+                "reused_correspondence_buffers": int(
+                    self._points_2d_host is not None
+                ),
             },
         )

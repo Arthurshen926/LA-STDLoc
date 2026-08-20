@@ -23,6 +23,27 @@ from map_learning.trainer import (
 from common.config import load_mainline_config
 
 
+def _legacy_global_match(query, bank, *, topk, chunk_size):
+    """Pre-acceleration kernel retained as a strict non-tie test oracle."""
+    query = torch.nn.functional.normalize(query.float(), dim=1)
+    scores = query.new_full((query.shape[0], topk), -torch.inf)
+    indices = torch.zeros(
+        (query.shape[0], topk), dtype=torch.long, device=query.device
+    )
+    for start in range(0, bank.shape[0], chunk_size):
+        stop = min(start + chunk_size, bank.shape[0])
+        chunk = torch.nn.functional.normalize(bank[start:stop].float(), dim=1)
+        chunk_scores = query @ chunk.T
+        chunk_indices = torch.arange(start, stop, device=query.device)[None].expand(
+            query.shape[0], -1
+        )
+        merged_scores = torch.cat((scores, chunk_scores), dim=1)
+        merged_indices = torch.cat((indices, chunk_indices), dim=1)
+        scores, positions = torch.topk(merged_scores, topk, dim=1)
+        indices = torch.gather(merged_indices, 1, positions)
+    return scores, indices
+
+
 def test_shared_metric_starts_as_identity_and_is_bounded():
     metric = SharedLowRankMetric(descriptor_dim=8, rank=2, max_residual_norm=0.05)
     descriptor = torch.nn.functional.normalize(torch.randn(5, 8), dim=1)
@@ -45,6 +66,60 @@ def test_global_top2_returns_exact_margin_candidates():
     matches = global_cosine_top2(query, bank, chunk_size=2)
     assert matches.anchor_indices.tolist() == [[0, 1], [2, 1]]
     assert torch.all(matches.scores[:, 0] >= matches.scores[:, 1])
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 31])
+def test_exact_top1_acceleration_matches_legacy_non_tie_oracle(chunk_size):
+    generator = torch.Generator().manual_seed(20260820)
+    query = torch.randn(19, 16, generator=generator)
+    bank = torch.randn(67, 16, generator=generator)
+    expected_scores, expected_indices = _legacy_global_match(
+        query, bank, topk=1, chunk_size=chunk_size
+    )
+    actual = global_cosine_top1(query, bank, chunk_size=chunk_size)
+    assert torch.equal(actual.anchor_indices[:, None], expected_indices)
+    assert torch.equal(actual.scores[:, None], expected_scores)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 7, 31])
+def test_exact_top2_acceleration_matches_legacy_non_tie_oracle(chunk_size):
+    generator = torch.Generator().manual_seed(20260820)
+    query = torch.randn(19, 16, generator=generator)
+    bank = torch.randn(67, 16, generator=generator)
+    expected_scores, expected_indices = _legacy_global_match(
+        query, bank, topk=2, chunk_size=chunk_size
+    )
+    actual = global_cosine_top2(query, bank, chunk_size=chunk_size)
+    assert torch.equal(actual.anchor_indices, expected_indices)
+    assert torch.equal(actual.scores, expected_scores)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 8])
+def test_exact_matcher_ties_are_chunk_independent_and_anchor_stable(chunk_size):
+    query = torch.tensor([[1.0, 0.0], [0.0, 0.0], [-0.0, 1.0]])
+    bank = torch.tensor(
+        [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [-1.0, 0.0], [-1.0, 0.0], [0.0, 1.0]]
+    )
+    top1 = global_cosine_top1(query, bank, chunk_size=chunk_size)
+    top2 = global_cosine_top2(query, bank, chunk_size=chunk_size)
+    assert top1.anchor_indices.tolist() == [0, 0, 5]
+    assert top2.anchor_indices.tolist() == [[0, 1], [0, 1], [5, 0]]
+
+
+def test_pre_normalized_bank_reuses_exact_historical_matching_values():
+    generator = torch.Generator().manual_seed(7)
+    query = torch.randn(13, 32, generator=generator)
+    raw_bank = torch.randn(71, 32, generator=generator)
+    cached_bank = torch.nn.functional.normalize(raw_bank.float(), dim=1)
+    expected = global_cosine_top1(query, raw_bank, chunk_size=11)
+    actual = global_cosine_top1(
+        query,
+        cached_bank,
+        chunk_size=11,
+        anchor_descriptors_normalized=True,
+    )
+    assert torch.equal(actual.anchor_indices, expected.anchor_indices)
+    assert torch.equal(actual.scores, expected.scores)
 
 
 def test_global_topk_is_exact_across_chunks():

@@ -1,0 +1,100 @@
+{
+  "anchor_count": 18279,
+  "descriptor_rows_per_query": 2048,
+  "matcher": {
+    "anchor_ids_exact": true,
+    "exact_accelerated": {
+      "mean_ms": 1.2878517930706341,
+      "p50_ms": 1.285298727452755,
+      "p90_ms": 1.294066570699215
+    },
+    "legacy": {
+      "mean_ms": 3.488838983078798,
+      "p50_ms": 3.440531902015209,
+      "p90_ms": 3.559868596494198
+    },
+    "scores_exact": true,
+    "serial_queries_per_second": 776.486863923754,
+    "speedup_mean": 2.7090376407057946
+  },
+  "measured_query_count": 3,
+  "scene": "GreatCourt",
+  "schema": "lafgs_online_exact_acceleration_benchmark",
+  "single_query": {
+    "anchor_ids_exact": true,
+    "exact_deployment": {
+      "frontend_ms": {
+        "mean_ms": 45.06766891479492,
+        "p50_ms": 45.06963348388672,
+        "p90_ms": 49.779954528808595
+      },
+      "matching_ms": {
+        "mean_ms": 1.3469546635945637,
+        "p50_ms": 1.347648024559021,
+        "p90_ms": 1.3492607831954957
+      },
+      "ransac_ms": {
+        "mean_ms": 140.32571421315274,
+        "p50_ms": 146.0113376379013,
+        "p90_ms": 213.49214911460876
+      },
+      "total_ms": {
+        "mean_ms": 187.03994185974202,
+        "p50_ms": 198.576339520514,
+        "p90_ms": 261.4187138155103
+      }
+    },
+    "exact_profile": {
+      "frontend_ms": {
+        "mean_ms": 59.4865387926499,
+        "p50_ms": 62.43693735450506,
+        "p90_ms": 63.00911661237478
+      },
+      "matching_ms": {
+        "mean_ms": 1.3795044894019763,
+        "p50_ms": 1.370117999613285,
+        "p90_ms": 1.3963894918560982
+      },
+      "ransac_ms": {
+        "mean_ms": 141.86734209458032,
+        "p50_ms": 146.8088598921895,
+        "p90_ms": 216.44373182207346
+      },
+      "total_ms": {
+        "mean_ms": 202.75608512262502,
+        "p50_ms": 201.07693504542112,
+        "p90_ms": 278.3597035333514
+      }
+    },
+    "legacy_profile": {
+      "frontend_ms": {
+        "mean_ms": 56.88694709291061,
+        "p50_ms": 55.79112097620964,
+        "p90_ms": 62.32791766524315
+      },
+      "matching_ms": {
+        "mean_ms": 3.5320265839497247,
+        "p50_ms": 3.530890680849552,
+        "p90_ms": 3.5477781668305397
+      },
+      "ransac_ms": {
+        "mean_ms": 141.69170738508305,
+        "p50_ms": 146.424257196486,
+        "p90_ms": 216.58230517059565
+      },
+      "total_ms": {
+        "mean_ms": 202.2277945652604,
+        "p50_ms": 200.97017008811235,
+        "p90_ms": 281.5629968419671
+      }
+    },
+    "pose_matrices_exact": true,
+    "scores_exact": true
+  },
+  "streaming_overlap_boundary": {
+    "definition": "max(frontend_plus_matching, ransac); not yet pipelined",
+    "frames_per_second": 7.126277643461799,
+    "mean_cycle_ms": 140.32571421315274
+  },
+  "version": 1
+}
