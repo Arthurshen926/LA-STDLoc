@@ -1,0 +1,14 @@
+{
+  "decision": "expand_top8_to_top32_only_if_all_mapping_only_thresholds_pass",
+  "gt_visible_diagnostic": null,
+  "maximum_evidence_per_pose_family": 1,
+  "minimum_distinct_view_bins": 2,
+  "minimum_median_detector_rows": 512,
+  "minimum_median_supported_detector_rows": 256,
+  "minimum_new_anchor_count": 20,
+  "minimum_raw_track_count": 50,
+  "minimum_stable_broad_track_count": 20,
+  "plan_sha256": "ce5036b83e45c0069282fc1f676bacc2fd15cc26a15404209dbf8c045deda59d",
+  "selected_view_count": 8,
+  "test_queries_used_for_decision": false
+}
