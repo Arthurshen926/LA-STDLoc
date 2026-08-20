@@ -15,7 +15,11 @@ import torch
 from common.hashing import sha256_file
 from data.datasets import ColmapDataset
 from features.extractor import FeatureExtractor
-from features.photometric import canonicalize_image, percentile_grayscale_contract
+from features.photometric import (
+    canonicalize_image,
+    clahe_grayscale_contract,
+    percentile_grayscale_contract,
+)
 from features.superpoint import SUPERPOINT_WEIGHT_SHA256, resolve_superpoint_weights, sample_descriptors
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D, GaussianModel3D
@@ -73,7 +77,11 @@ def materialize(args) -> dict:
     model = model.cuda().eval()
     extractor = FeatureExtractor("sp", nms_radius=args.nms_radius).cuda().eval()
     extractor.requires_grad_(False)
-    contract = percentile_grayscale_contract()
+    contract = (
+        percentile_grayscale_contract()
+        if args.mode == "percentile"
+        else clahe_grayscale_contract()
+    )
     records = {}
     for index, camera in enumerate(cameras):
         source = source_cache["queries"][camera.image_name]
@@ -186,6 +194,7 @@ def main() -> None:
     parser.add_argument("--descriptor-trim-fraction", type=float, default=0.2)
     parser.add_argument("--progress-interval", type=int, default=25)
     parser.add_argument("--cpu-threads", type=int, default=4)
+    parser.add_argument("--mode", choices=("percentile", "clahe"), default="percentile")
     args = parser.parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("symmetric photometric materialization requires CUDA")

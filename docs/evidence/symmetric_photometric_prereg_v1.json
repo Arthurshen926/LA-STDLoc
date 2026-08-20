@@ -16,7 +16,9 @@
   "candidate_2": {
     "clip_limit": 1.5,
     "eligible_only_if": "candidate_1_is_clearly_invalid_without_parameter_tuning",
-    "mode": "clahe_luminance_v1"
+    "input_quantization": "clamp_round_uint8",
+    "mode": "clahe_luminance_v1",
+    "tile_grid_size": [8, 8]
   },
   "evaluation_order": ["7Scenes/stairs", "Cambridge/ShopFacade"],
   "frozen_before_test": true,

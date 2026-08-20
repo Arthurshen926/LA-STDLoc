@@ -3,6 +3,7 @@ import torch
 
 from features.photometric import (
     canonicalize_image,
+    clahe_grayscale_contract,
     percentile_grayscale_contract,
     validate_photometric_contract,
 )
@@ -56,3 +57,13 @@ def test_contract_is_fail_closed():
     modified["upper_percentile"] = 0.98
     with pytest.raises(ValueError, match="unsupported or modified"):
         validate_photometric_contract(modified)
+
+
+def test_clahe_is_deterministic_and_channel_symmetric():
+    image = torch.rand(3, 24, 32, generator=torch.Generator().manual_seed(8))
+    first = canonicalize_image(image, clahe_grayscale_contract())
+    second = canonicalize_image(image, clahe_grayscale_contract())
+    assert torch.equal(first, second)
+    assert torch.equal(first[0], first[1])
+    assert torch.equal(first[1], first[2])
+    assert float(first.min()) >= 0.0 and float(first.max()) <= 1.0
