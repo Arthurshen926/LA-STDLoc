@@ -1,6 +1,6 @@
 {
   "schema": "lafgs_v4_offline_acceleration_evidence",
-  "version": 1,
+  "version": 2,
   "date": "2026-08-20",
   "scope": "offline_build_only_no_localization_method_change",
   "changes": {
@@ -27,6 +27,56 @@
       "oom_fallback": "historical_per_pair_transfer",
       "matcher_dtype_or_formula_changed": false
     },
+    "in_memory_feature_cache_handoff": {
+      "definition": "the initial Track build consumes the just-materialized validated feature-cache payload instead of immediately torch-loading its 2 GiB serialization",
+      "reuse_feature_cache_runs_still_load_from_disk": true,
+      "warm_cache_load_seconds": {
+        "stairs": 1.6977519700303674,
+        "shopfacade": 0.18444391898810863
+      }
+    },
+    "ragged_observation_gather": {
+      "definition": "concatenate per-query keypoint rows once and gather Track observations by offsets",
+      "stairs": {
+        "observation_count": 1813047,
+        "python_loop_seconds": 8.406748121604323,
+        "packed_gather_seconds": 0.05218841973692179,
+        "speedup": 161.0845502504609,
+        "bitwise_exact": true
+      },
+      "shopfacade": {
+        "observation_count": 375254,
+        "python_loop_seconds": 1.5430072452872992,
+        "packed_gather_seconds": 0.07696941681206226,
+        "speedup": 20.04701749338819,
+        "bitwise_exact": true
+      }
+    },
+    "bounded_cpu_threads": {
+      "formal_default": 8,
+      "reason": "small per-Track tensor kernels become pathologically slow under host-wide 32-to-96-thread scheduling",
+      "shopfacade_full_fusion": {
+        "previous_seconds": 37.19043746963143,
+        "four_thread_seconds": 12.378097585402429,
+        "speedup": 3.0045358111807388,
+        "bitwise_exact": true
+      },
+      "stairs_3000_track_scan_seconds": {
+        "1": 5.8581,
+        "2": 5.5798,
+        "4": 5.4622,
+        "8": 5.378,
+        "16": 5.9018
+      },
+      "shopfacade_3000_track_scan_seconds": {
+        "1": 3.4731,
+        "2": 3.2742,
+        "4": 3.2637,
+        "8": 3.3452,
+        "16": 3.7001,
+        "32": "terminated_after_more_than_60_seconds"
+      }
+    },
     "gpu_shard_bound": {
       "cli": "--gpu-workers-per-device",
       "default": 0,
@@ -37,17 +87,58 @@
   },
   "historical_stage_evidence_seconds": {
     "stairs": {
-      "render_track_total": 1384.1530386479571,
+      "feature_cache_total": 336.0301383435726,
+      "gaussian_render": 113.98641150910407,
+      "superpoint": 11.699626476503909,
+      "track_map_total": 1384.1530386479571,
       "matching_and_track_build": 241.09055867791176,
       "pure_ray_triangulation": 55.19858612213284,
-      "unattributed_frontend_and_serial_overhead": 1087.8638938479125
+      "previously_unprofiled_track_postprocessing_and_io": 1087.8638938479125
     },
     "shopfacade": {
-      "render_track_total": 768.1032884074375,
+      "feature_cache_total": 38.967404793947935,
+      "gaussian_render": 13.101095882244408,
+      "superpoint": 7.618984802626073,
+      "track_map_total": 768.1032884074375,
       "matching_and_track_build": 42.56217151414603,
       "pure_ray_triangulation": 52.078934812918305,
-      "unattributed_frontend_and_serial_overhead": 673.4629450803732
+      "previously_unprofiled_track_postprocessing_and_io": 673.4629450803732
     }
+  },
+  "rejected_optimization": {
+    "name": "eager_pack_all_descriptor_fusion_rows",
+    "shopfacade_old_seconds": 37.19043746963143,
+    "shopfacade_candidate_seconds": 41.553279156796634,
+    "speedup": 0.895006079527382,
+    "output_bitwise_exact": true,
+    "decision": "reverted_because_slower"
+  },
+  "shopfacade_real_mapping_only_replay": {
+    "output_root": "/mnt/pool/sqy/lafgs_offline_accel_probe_20260820/shopfacade_threads8",
+    "historical_track_map_seconds": 768.1032884074375,
+    "optimized_track_map_seconds": 105.73845392651856,
+    "observed_speedup": 7.264181193165733,
+    "timing_seconds": {
+      "cache_load": 0.7822263035923243,
+      "observation_provider": 0.013963398523628712,
+      "matching_and_components": 43.054779780097306,
+      "observation_uv_gather": 0.005544108338654041,
+      "pose_bins": 0.0014579473063349724,
+      "triangulation": 49.79029105231166,
+      "selection": 0.005787848494946957,
+      "descriptor_fusion": 11.969315592199564,
+      "serialization": 0.10868628975003958
+    },
+    "historical_track_fields_bitwise_exact": true,
+    "anchor_scientific_tensors_bitwise_exact": true,
+    "scientific_report_metrics_exact": true,
+    "current_only_additional_fields": [
+      "triangulation_nonlinear_refinement_accepted_iterations",
+      "triangulation_nonlinear_refinement_applied",
+      "triangulation_nonlinear_refinement_final_cost",
+      "triangulation_nonlinear_refinement_initial_cost"
+    ],
+    "causal_limit": "historical and optimized runs differ in code age and runtime state; the 7.26x number is an observed end-to-end replay difference, while individual microbenchmarks isolate the retained changes"
   },
   "synthetic_gpu_descriptor_reuse_benchmark": {
     "gpu": "NVIDIA_GeForce_RTX_3090",
@@ -76,7 +167,7 @@
     "test_queries_used": false
   },
   "remaining_priority": [
-    "measure_real_scene build_timing.json before further optimization",
+    "use the new fine-grained Track timing on the next hard-scene rebuild",
     "content-address observation and pair-match artifacts across experiments",
     "batch render and SuperPoint only after bitwise or pose-equivalence validation",
     "persistent GPU workers only for stages proven dominated by repeated model loading"

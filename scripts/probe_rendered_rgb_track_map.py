@@ -85,6 +85,22 @@ def _intrinsic(camera) -> torch.Tensor:
     )
 
 
+def _gather_query_keypoints(
+    keypoints: list[torch.Tensor],
+    query_index: torch.Tensor,
+    keypoint_index: torch.Tensor,
+) -> torch.Tensor:
+    """Gather ragged query rows without a per-observation Python loop."""
+    query_index = torch.as_tensor(query_index, dtype=torch.long).reshape(-1)
+    keypoint_index = torch.as_tensor(keypoint_index, dtype=torch.long).reshape(-1)
+    if query_index.numel() != keypoint_index.numel():
+        raise ValueError("query and keypoint observation columns must align")
+    counts = torch.as_tensor([value.shape[0] for value in keypoints], dtype=torch.long)
+    offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    packed = torch.cat(keypoints, dim=0)
+    return packed[offsets[query_index] + keypoint_index]
+
+
 @torch.inference_mode()
 def _render_feature_cache(args, output: Path) -> dict:
     started = time.perf_counter()
@@ -193,6 +209,10 @@ def _render_feature_cache(args, output: Path) -> dict:
 
 def _load_cache(path: Path) -> dict:
     payload = torch.load(path, map_location="cpu", weights_only=False)
+    return _validate_cache(payload)
+
+
+def _validate_cache(payload: dict) -> dict:
     if payload.get("schema") != "lafgs_rendered_rgb_only_sparse_mapping_cache":
         raise ValueError("unexpected rendered-RGB cache schema")
     if payload.get("uses_source_mapping_rgb") is not False:
@@ -274,9 +294,22 @@ def _trajectory_balanced_matches(
     return pairs, matches, diagnostics
 
 
-def _build_track_map(args, cache_path: Path, output: Path) -> dict:
+def _build_track_map(
+    args,
+    cache_path: Path,
+    output: Path,
+    *,
+    cache_payload: dict | None = None,
+) -> dict:
     started = time.perf_counter()
-    payload = _load_cache(cache_path)
+    cache_started = time.perf_counter()
+    payload = (
+        _load_cache(cache_path)
+        if cache_payload is None
+        else _validate_cache(cache_payload)
+    )
+    cache_seconds = time.perf_counter() - cache_started
+    input_started = time.perf_counter()
     provider = GaussianRenderObservationProvider(payload)
     observations = provider.track_inputs()
     names = observations["query_names"]
@@ -286,6 +319,7 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     intrinsics = observations["camera_K"]
     poses = observations["pose_w2c"]
     image_hw = observations["image_hw"]
+    input_seconds = time.perf_counter() - input_started
 
     track_started = time.perf_counter()
     precomputed_pairs = None
@@ -332,25 +366,25 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         precomputed_pair_matches=precomputed_matches,
         precomputed_pair_match_diagnostics=precomputed_diagnostics,
         precomputed_confidence_includes_detector_scores=(precomputed_pairs is not None),
+        preload_descriptors_to_device=args.preload_pair_descriptors,
         device=args.device,
     )
     track_seconds = time.perf_counter() - track_started
     if int(diagnostics["track_count"]) == 0:
         raise RuntimeError("rendered RGB produced no cycle/chain Tracks")
 
+    observation_started = time.perf_counter()
     observation_query = tracks["query_index"].long()
     observation_keypoint = tracks["keypoint_index"].long()
-    observation_uv = torch.stack(
-        [
-            keypoints[int(query)][int(keypoint)]
-            for query, keypoint in zip(
-                observation_query.tolist(), observation_keypoint.tolist()
-            )
-        ]
+    observation_uv = _gather_query_keypoints(
+        keypoints, observation_query, observation_keypoint
     )
+    observation_seconds = time.perf_counter() - observation_started
+    pose_bin_started = time.perf_counter()
     query_bins = camera_pose_bins(
         poses, args.view_bins, direction_weight=args.view_direction_weight
     )
+    pose_bin_seconds = time.perf_counter() - pose_bin_started
     triangulation_started = time.perf_counter()
     geometry = robust_triangulate_associations(
         landmark_count=int(diagnostics["track_count"]),
@@ -379,12 +413,14 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     triangulation_seconds = time.perf_counter() - triangulation_started
     geometry["track_confidence_level"] = tracks["track_level"].clone()
 
+    selection_started = time.perf_counter()
     broad = _eligible_tracks(geometry, "broad")
     quality = _track_quality(geometry)
     quality_order = torch.argsort(quality, descending=True, stable=True)
     selected = quality_order[broad[quality_order]][: args.map_capacity]
     if selected.numel() == 0:
         raise RuntimeError("rendered RGB produced no broad triangulated Tracks")
+    selection_seconds = time.perf_counter() - selection_started
     track_payload = {
         "schema": "lafgs_track_first_payload",
         "version": 1,
@@ -396,12 +432,14 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
         "pair_sidecar": sidecar,
         "rendered_rgb_only": True,
     }
+    fusion_started = time.perf_counter()
     fused = fuse_track_descriptors(
         payload=track_payload,
         query_cache=provider,
         track_indices=selected,
         trim_fraction=args.descriptor_trim_fraction,
     )
+    fusion_seconds = time.perf_counter() - fusion_started
     xyz = torch.as_tensor(geometry["triangulated_xyz"])[selected].float()
     covariance = torch.as_tensor(geometry["triangulation_covariance_matrix"])[
         selected
@@ -454,9 +492,11 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
     }
     metric_path = output.with_name("metric_state_identity.pt")
     track_path = output.with_name("rendered_rgb_track_payload.pt")
+    serialization_started = time.perf_counter()
     _atomic_torch_save(track_payload, track_path)
     _atomic_torch_save(anchor_map, output)
     _atomic_torch_save(metric_state, metric_path)
+    serialization_seconds = time.perf_counter() - serialization_started
 
     triangulated = torch.as_tensor(geometry["triangulated"]).bool()
     reprojection = torch.as_tensor(geometry["triangulation_reprojection_median_px"])[
@@ -505,8 +545,15 @@ def _build_track_map(args, cache_path: Path, output: Path) -> dict:
             float(parallax.median()) if parallax.numel() else None
         ),
         "timing_seconds": {
+            "cache_load_or_in_memory_validation": cache_seconds,
+            "observation_provider_materialization": input_seconds,
             "matching_and_track_build": track_seconds,
+            "observation_uv_gather": observation_seconds,
+            "camera_pose_bins": pose_bin_seconds,
             "pure_ray_triangulation": triangulation_seconds,
+            "eligibility_and_selection": selection_seconds,
+            "descriptor_fusion": fusion_seconds,
+            "artifact_serialization": serialization_seconds,
             "total": time.perf_counter() - started,
         },
         "artifacts": {
@@ -576,25 +623,46 @@ def main() -> None:
     parser.add_argument("--descriptor-trim-fraction", type=float, default=0.2)
     parser.add_argument("--map-capacity", type=int, default=16000)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=8,
+        help="Bound PyTorch CPU threads for small per-Track fusion kernels.",
+    )
+    parser.add_argument(
+        "--preload-pair-descriptors",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep immutable mapping descriptors resident on the matching GPU.",
+    )
     parser.add_argument("--progress-interval", type=int, default=25)
     args = parser.parse_args()
+    if int(args.cpu_threads) < 1:
+        parser.error("--cpu-threads must be positive")
+    torch.set_num_threads(int(args.cpu_threads))
     if not torch.cuda.is_available():
         raise RuntimeError("rendered-RGB Track probe requires CUDA")
     args.output_dir = args.output_dir.expanduser().resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     cache_path = args.output_dir / "rendered_rgb_feature_cache.pt"
     map_path = args.output_dir / "rendered_rgb_track_map.pt"
+    cache_payload = None
     if args.reuse_feature_cache:
         if not cache_path.is_file():
             raise FileNotFoundError(cache_path)
     else:
         if cache_path.exists():
             raise FileExistsError(cache_path)
-        _render_feature_cache(args, cache_path)
+        cache_payload = _render_feature_cache(args, cache_path)
     if not args.render_only:
         if map_path.exists():
             raise FileExistsError(map_path)
-        _build_track_map(args, cache_path, map_path)
+        _build_track_map(
+            args,
+            cache_path,
+            map_path,
+            cache_payload=cache_payload,
+        )
 
 
 if __name__ == "__main__":

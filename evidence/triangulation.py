@@ -682,6 +682,7 @@ def build_cycle_consistent_tracks(
     precomputed_pair_match_diagnostics: dict[tuple[int, int], dict[str, int]]
     | None = None,
     precomputed_confidence_includes_detector_scores: bool = False,
+    preload_descriptors_to_device: bool = True,
     device: str | torch.device = "cuda",
 ) -> (
     tuple[dict[str, torch.Tensor], dict[str, float | int]]
@@ -760,7 +761,11 @@ def build_cycle_consistent_tracks(
     # The conservative free-memory guard falls back to the historical
     # per-pair transfer path without changing any matching semantics.
     resident_descriptors = None
-    if device.type == "cuda" and torch.cuda.is_available():
+    if (
+        bool(preload_descriptors_to_device)
+        and device.type == "cuda"
+        and torch.cuda.is_available()
+    ):
         descriptor_bytes = sum(
             int(value.numel()) * int(value.element_size()) for value in descriptors
         )
