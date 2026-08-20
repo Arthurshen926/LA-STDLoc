@@ -183,7 +183,13 @@ def generate_candidate_poses(
         order = torch.argsort(torch.linalg.norm(deficits - centers.mean(0), dim=1),
                               descending=True, stable=True)
         for deficit in deficits[order[: min(32, deficits.shape[0])]]:
-            parent = int(torch.argmin(torch.linalg.norm(centers - deficit, dim=1)))
+            delta = deficit - centers
+            distance_to_deficit = torch.linalg.norm(delta, dim=1).clamp_min(1e-8)
+            rays = delta / distance_to_deficit[:, None]
+            forwards = poses[:, :3, :3].transpose(1, 2)[:, :, 2]
+            alignment = (rays * forwards).sum(1)
+            normalized_distance = distance_to_deficit / distance_to_deficit.median().clamp_min(1e-8)
+            parent = int(torch.argmax(alignment - 0.05 * normalized_distance))
             directed = _look_at_pose(centers[parent], deficit)
             if directed is not None:
                 proposals.append((directed, parent, "deficit_directed", (parent,), 0.35))
@@ -213,8 +219,26 @@ def generate_candidate_poses(
         seen.add(signature)
         family = parent if kind in {"small_translation", "small_rotation"} else count + len(kept)
         kept.append((pose.float(), parent, kind, family, family_members, risk))
-        if len(kept) == int(policy.maximum_candidates):
-            break
+    if len(kept) > int(policy.maximum_candidates):
+        by_kind: dict[str, list[tuple]] = defaultdict(list)
+        for row in kept:
+            by_kind[row[2]].append(row)
+        kind_order = sorted(by_kind)
+        positions = {kind: 0 for kind in kind_order}
+        bounded = []
+        while len(bounded) < int(policy.maximum_candidates):
+            progress = False
+            for kind in kind_order:
+                position = positions[kind]
+                if position < len(by_kind[kind]):
+                    bounded.append(by_kind[kind][position])
+                    positions[kind] += 1
+                    progress = True
+                    if len(bounded) == int(policy.maximum_candidates):
+                        break
+            if not progress:
+                break
+        kept = bounded
     return {
         "pose_w2c": torch.stack([row[0] for row in kept]) if kept else torch.empty(0, 4, 4),
         "parent_camera_index": torch.tensor([row[1] for row in kept], dtype=torch.long),
@@ -300,4 +324,3 @@ def validate_mapping_inputs(query_payload: Mapping, track_payload: Mapping) -> N
         raise ValueError("virtual rendering planner requires rendered-RGB evidence")
     if track_payload.get("rendered_rgb_only") is not True:
         raise ValueError("virtual rendering planner requires rendered-RGB-only Tracks")
-

@@ -69,8 +69,12 @@ def build_coverage_field(
     stride = int(policy.surface_stride)
     for query, name in enumerate(names):
         record = cache[name]
-        depth = torch.as_tensor(record["native_depth"]).float()
-        alpha = torch.as_tensor(record["native_alpha"]).float()
+        depth_source = record.get("native_depth", record.get("native_rendered_depth"))
+        alpha_source = record.get("native_alpha", record.get("native_rendered_alpha"))
+        if depth_source is None or alpha_source is None:
+            raise ValueError("planner cache requires rendered alpha/depth rasters")
+        depth = torch.as_tensor(depth_source).float()
+        alpha = torch.as_tensor(alpha_source).float()
         if depth.shape != alpha.shape:
             raise ValueError("mapping alpha/depth rasters must align")
         y = torch.arange(stride // 2, depth.shape[0], stride)
@@ -128,8 +132,9 @@ def build_coverage_field(
     centers /= count[:, None].clamp_min(1)
     family_count = _pair_distinct_count(inverse, family, voxel_count)
     bin_count = _pair_distinct_count(inverse, view_bin, voxel_count)
-    stable_count = torch.zeros(voxel_count, dtype=torch.long)
-    stable_count.index_add_(0, inverse[is_stable], torch.ones(int(is_stable.sum()), dtype=torch.long))
+    stable_count = _pair_distinct_count(
+        inverse[is_stable], family[is_stable], voxel_count
+    )
     surface_count = torch.zeros(voxel_count, dtype=torch.long)
     surface_count.index_add_(0, inverse[is_surface], torch.ones(int(is_surface.sum()), dtype=torch.long))
     selected_count = torch.zeros(voxel_count, dtype=torch.long)
@@ -168,9 +173,13 @@ def candidate_coverage(
 ):
     names = list(track_payload["query_names"])
     cache = query_payload.get("queries", query_payload)
-    xyz = field["voxel_center_xyz"].double()
+    full_xyz = field["voxel_center_xyz"].double()
     demand = field["deficit_demand"]
     source_supported = field["surface_support_count"] > 0
+    active_index = torch.nonzero(
+        source_supported & (demand > 0), as_tuple=False
+    ).reshape(-1)
+    xyz = full_xyz[active_index]
     source_centers = camera_centers(poses)
     cells = []
     parallax = []
@@ -192,22 +201,25 @@ def candidate_coverage(
         candidate_ray = torch.nn.functional.normalize(xyz - center, dim=1)
         angle = torch.rad2deg(torch.acos((parent_ray * candidate_ray).sum(1).clamp(-1, 1)))
         valid = (
-            source_supported
-            & (demand > 0)
-            & (depth > 0)
+            (depth > 0)
             & (uv[:, 0] >= 0) & (uv[:, 0] < width)
             & (uv[:, 1] >= 0) & (uv[:, 1] < height)
             & (ratio >= 0.5) & (ratio <= 2.0)
             & (angle <= float(policy.maximum_view_change_deg))
         )
-        index = torch.nonzero(valid, as_tuple=False).reshape(-1)
+        local_index = torch.nonzero(valid, as_tuple=False).reshape(-1)
+        index = active_index[local_index]
         cells.append(index)
-        parallax.append(float((angle[index] / 30.0).clamp_max(1).mean()) if index.numel() else 0.0)
-        appearance.append(float(source_supported[index].float().mean()) if index.numel() else 0.0)
+        parallax.append(float((angle[local_index] / 30.0).clamp_max(1).mean()) if index.numel() else 0.0)
+        appearance.append(
+            float(torch.cos(torch.deg2rad(angle[local_index])).clamp_min(0).mean())
+            if index.numel() else 0.0
+        )
     return cells, torch.tensor(parallax), torch.tensor(appearance)
 
 
 def run(args) -> dict:
+    torch.set_num_threads(max(1, int(getattr(args, "cpu_threads", 8))))
     query_path = args.query_cache.resolve()
     track_path = args.track_payload.resolve()
     query_payload = _load(query_path)
@@ -304,6 +316,7 @@ def main(argv=None):
     parser.add_argument("--maximum-candidates", type=int, default=512)
     parser.add_argument("--voxel-size-m", type=float, default=0.25)
     parser.add_argument("--surface-stride", type=int, default=24)
+    parser.add_argument("--cpu-threads", type=int, default=8)
     args = parser.parse_args(argv)
     if min(args.view_budget, args.maximum_candidates, args.surface_stride) <= 0:
         parser.error("budgets and surface stride must be positive")
