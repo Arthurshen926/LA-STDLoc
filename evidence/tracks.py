@@ -515,6 +515,7 @@ class LeaveOneQueryOutTrackDescriptorBank:
         track_indices: torch.Tensor,
         reference_features: torch.Tensor,
         trim_fraction: float = 0.2,
+        validate_reference: bool = True,
     ) -> None:
         self.payload = payload
         self.cache = query_cache.get("queries", query_cache)
@@ -593,18 +594,19 @@ class LeaveOneQueryOutTrackDescriptorBank:
                 self.rows_by_query[int(query)].append(row)
         self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
 
-        replayed = fuse_track_descriptors(
-            payload=payload,
-            query_cache=query_cache,
-            track_indices=self.track_indices,
-            trim_fraction=self.trim_fraction,
-        )
-        if not torch.equal(replayed, self.reference_features):
-            maximum = float((replayed - self.reference_features).abs().max())
-            raise ValueError(
-                "reference map is not the exact full-observation fused Track bank "
-                f"(maximum absolute difference {maximum})"
+        if bool(validate_reference):
+            replayed = fuse_track_descriptors(
+                payload=payload,
+                query_cache=query_cache,
+                track_indices=self.track_indices,
+                trim_fraction=self.trim_fraction,
             )
+            if not torch.equal(replayed, self.reference_features):
+                maximum = float((replayed - self.reference_features).abs().max())
+                raise ValueError(
+                    "reference map is not the exact full-observation fused Track bank "
+                    f"(maximum absolute difference {maximum})"
+                )
 
     def _fuse_observations(self, observations: torch.Tensor) -> torch.Tensor:
         query_indices = torch.as_tensor(self.tracks["query_index"])[observations].long()

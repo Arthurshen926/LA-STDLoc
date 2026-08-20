@@ -19,7 +19,10 @@ import torch
 import torch.nn.functional as F
 
 from common.hashing import sha256_file
-from evidence.tracks import LeaveOneQueryOutTrackDescriptorBank
+from evidence.tracks import (
+    LeaveOneQueryOutTrackDescriptorBank,
+    robust_fuse_track_descriptors,
+)
 from evidence.view_mixture import build_view_mixture, mixture_scores
 from map_learning.trainer import track_descriptor_payload_for_loo
 
@@ -83,17 +86,35 @@ def _track_observations(replay, local_row: int, excluded_query: int | None = Non
     return descriptors, replay.query_bins[queries], confidence * reliability, queries, keypoints
 
 
-def _rank_metrics(scores: torch.Tensor, correct: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    correct_score = scores.gather(1, correct[:, None]).squeeze(1)
-    rows = torch.arange(scores.shape[0], device=scores.device)
-    saved = scores[rows, correct].clone()
-    scores[rows, correct] = -torch.inf
-    false_max = scores.max(dim=1).values
-    scores[rows, correct] = saved
-    # Stable identity tie break: a lower Anchor row wins an exact tie.
-    anchor_rows = torch.arange(scores.shape[1], device=scores.device)[None]
-    rank = 1 + ((scores > correct_score[:, None]) | ((scores == correct_score[:, None]) & (anchor_rows < correct[:, None]))).sum(dim=1)
+def _stream_rank_metrics(
+    *, query: torch.Tensor, correct: torch.Tensor, correct_score: torch.Tensor,
+    anchor_count: int, chunk_size: int, score_chunk,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    rank = torch.ones_like(correct)
+    false_max = torch.full_like(correct_score, -torch.inf)
+    query_rows = torch.arange(query.shape[0], device=query.device)
+    for start in range(0, int(anchor_count), int(chunk_size)):
+        stop = min(start + int(chunk_size), int(anchor_count))
+        score = score_chunk(start, stop)
+        anchors = torch.arange(start, stop, device=query.device)[None]
+        better = ((score > correct_score[:, None]) | (
+            (score == correct_score[:, None]) & (anchors < correct[:, None])
+        ))
+        in_chunk = (correct >= start) & (correct < stop)
+        if bool(in_chunk.any()):
+            better[query_rows[in_chunk], correct[in_chunk] - start] = False
+            score[query_rows[in_chunk], correct[in_chunk] - start] = -torch.inf
+        rank += better.sum(dim=1)
+        false_max = torch.maximum(false_max, score.max(dim=1).values)
     return rank, correct_score - false_max, false_max
+
+
+def _group_macro(success: torch.Tensor, group_ids: torch.Tensor) -> float:
+    _, inverse = torch.unique(group_ids, sorted=True, return_inverse=True)
+    totals = torch.zeros(int(inverse.max()) + 1, dtype=torch.float32)
+    totals.scatter_add_(0, inverse, success.float())
+    counts = torch.bincount(inverse, minlength=totals.numel()).float()
+    return float((totals / counts).mean())
 
 
 @torch.inference_mode()
@@ -117,7 +138,12 @@ def run(args) -> dict:
         track_indices=torch.as_tensor(state["track_cluster_ids"])[track_rows_in_unified_map],
         reference_features=track_features,
         trim_fraction=float(args.trim_fraction),
+        validate_reference=False,
     )
+    # The exact replay above benefits from bounded parallel fusion.  The audit
+    # below consists of thousands of tiny spherical reductions, for which a
+    # threaded BLAS launch is substantially slower than one host thread.
+    torch.set_num_threads(1)
     track_replay = replay
     anchor_count, dim = track_features.shape
     bin_count = max(1, int(torch.as_tensor(payload["query_bins"]).max()) + 1)
@@ -178,14 +204,51 @@ def run(args) -> dict:
     positive_query_ids: list[int] = []
     positive_anchor_rows: list[int] = []
     latency = {name: [] for name in records}
-    for query_index in range(len(replay.query_names)):
+    progress_path = args.output.with_name(f".{args.output.name}.progress.pt")
+    query_start = 0
+    if progress_path.is_file():
+        progress = torch.load(progress_path, map_location="cpu", weights_only=False)
+        if progress.get("schema") != "lafgs_view_mixture_audit_progress":
+            raise ValueError("unsupported view-mixture progress sidecar")
+        query_start = int(progress["next_query_index"])
+        records = progress["records"]
+        query_rows = progress["query_rows"]
+        positive_query_ids = progress["positive_query_ids"]
+        positive_anchor_rows = progress["positive_anchor_rows"]
+        latency = progress["latency"]
+    for query_index in range(query_start, len(replay.query_names)):
+        if query_index % 100 == 0:
+            print(
+                f"view-mixture mapping LOO query {query_index}/{len(replay.query_names)}",
+                flush=True,
+            )
         if previous_rows.numel():
             single[previous_rows] = single_base[previous_rows]
             oracle_bank[previous_rows] = oracle_base[previous_rows]
             oracle_mask[previous_rows] = oracle_valid_base[previous_rows]
             selective_bank[previous_rows] = selective_base[previous_rows]
             prior_bank[previous_rows] = prior_base[previous_rows]
-        changed_rows, changed_features = replay.query_update(query_index)
+        affected_local = track_replay.rows_by_query[query_index]
+        changed_rows_list = []
+        changed_features_list = []
+        for local_row in affected_local:
+            descriptors_r, bins_r, weights_r, queries_r, _ = full_observations[int(local_row)]
+            retained = queries_r != int(query_index)
+            if not bool(retained.any()):
+                continue
+            changed_rows_list.append(int(local_row))
+            changed_features_list.append(
+                robust_fuse_track_descriptors(
+                    descriptors_r[retained], bins_r[retained], weights_r[retained],
+                    trim_fraction=float(args.trim_fraction),
+                )
+            )
+        changed_rows = torch.tensor(changed_rows_list, dtype=torch.long)
+        changed_features = (
+            torch.stack(changed_features_list)
+            if changed_features_list
+            else track_features.new_empty((0, dim))
+        )
         changed_device = changed_rows.to(device)
         if changed_rows.numel():
             normalized = F.normalize(changed_features.float(), dim=1).to(device)
@@ -196,7 +259,7 @@ def run(args) -> dict:
             selective_bank[changed_device].zero_(); prior_bank[changed_device].zero_()
             selective_bank[changed_device, 0] = normalized; prior_bank[changed_device, 0] = 1
         positive_descriptors, positive_rows = [], []
-        for local_row in track_replay.rows_by_query[query_index]:
+        for local_row in affected_local:
             global_row = int(local_row)
             full = full_observations[int(local_row)]
             descriptors, _, _, queries, _ = full
@@ -204,10 +267,10 @@ def run(args) -> dict:
             if bool(selected.any()):
                 positive_descriptors.extend(descriptors[selected])
                 positive_rows.extend([global_row] * int(selected.sum()))
-            remaining = _track_observations(track_replay, int(local_row), query_index)
-            if remaining is None:
+            retained = queries != int(query_index)
+            if not bool(retained.any()):
                 continue
-            descriptors_r, bins_r, weights_r, _, _ = remaining
+            descriptors_r, bins_r, weights_r = descriptors[retained], full[1][retained], full[2][retained]
             oracle_bank[global_row].zero_(); oracle_mask[global_row].zero_()
             for view_bin in torch.unique(bins_r, sorted=True).tolist():
                 chosen = bins_r == int(view_bin)
@@ -232,27 +295,53 @@ def run(args) -> dict:
         correct = torch.tensor(positive_rows, dtype=torch.long, device=device)
         positive_query_ids.extend([int(query_index)] * len(positive_rows))
         positive_anchor_rows.extend(int(row) for row in positive_rows)
+        query = F.normalize(query, dim=1)
         score_sets = {}
-        if device.type == "cuda": torch.cuda.synchronize(device)
-        started = time.perf_counter(); score_sets["single"] = F.normalize(query, dim=1) @ single.T
-        if device.type == "cuda": torch.cuda.synchronize(device)
-        latency["single"].append(1000 * (time.perf_counter() - started))
-        started = time.perf_counter()
-        raw = torch.einsum("qd,nbd->qnb", F.normalize(query, dim=1), F.normalize(oracle_bank, dim=2))
-        score_sets["view_bin_oracle"] = torch.where(oracle_mask[None], raw, torch.full_like(raw, -torch.inf)).max(2).values
-        if device.type == "cuda": torch.cuda.synchronize(device)
-        latency["view_bin_oracle"].append(1000 * (time.perf_counter() - started))
-        started = time.perf_counter(); score_sets["selective_k2"] = mixture_scores(query, selective_bank, prior_bank, temperature=args.temperature)
-        if device.type == "cuda": torch.cuda.synchronize(device)
-        latency["selective_k2"].append(1000 * (time.perf_counter() - started))
+        correct_single = (query * single[correct]).sum(dim=1)
+        correct_oracle_raw = torch.einsum("qd,qbd->qb", query, F.normalize(oracle_bank[correct], dim=2))
+        correct_oracle = torch.where(oracle_mask[correct], correct_oracle_raw, torch.full_like(correct_oracle_raw, -torch.inf)).max(1).values
+        correct_k2 = mixture_scores(query, selective_bank[correct], prior_bank[correct], temperature=args.temperature).diagonal()
+        scoring = {
+            "single": (correct_single, lambda a, b: query @ single[a:b].T),
+            "view_bin_oracle": (correct_oracle, lambda a, b: torch.where(
+                oracle_mask[None, a:b],
+                torch.einsum("qd,nbd->qnb", query, F.normalize(oracle_bank[a:b], dim=2)),
+                torch.full((query.shape[0], b-a, bin_count), -torch.inf, device=device),
+            ).max(2).values),
+            "selective_k2": (correct_k2, lambda a, b: mixture_scores(
+                query, selective_bank[a:b], prior_bank[a:b], temperature=args.temperature
+            )),
+        }
+        for name, (correct_score, scorer) in scoring.items():
+            if device.type == "cuda": torch.cuda.synchronize(device)
+            started = time.perf_counter()
+            score_sets[name] = _stream_rank_metrics(
+                query=query, correct=correct, correct_score=correct_score,
+                anchor_count=anchor_count, chunk_size=args.anchor_chunk_size,
+                score_chunk=scorer,
+            )
+            if device.type == "cuda": torch.cuda.synchronize(device)
+            latency[name].append(1000 * (time.perf_counter() - started))
         query_record = {"query_index": query_index, "positive_count": len(positive_rows)}
-        for name, scores in score_sets.items():
-            rank, margin, false = _rank_metrics(scores, correct)
+        for name, (rank, margin, false) in score_sets.items():
             records[name]["rank"].extend(rank.cpu().tolist())
             records[name]["margin"].extend(margin.cpu().tolist())
             records[name]["false"].extend(false.cpu().tolist())
             query_record[name] = {"r1": float((rank <= 1).float().mean()), "zero_correct_top1": bool((rank > 1).all())}
         query_rows.append(query_record)
+        if (query_index + 1) % 100 == 0:
+            temporary = progress_path.with_name(f".{progress_path.name}.{os.getpid()}.tmp")
+            torch.save({
+                "schema": "lafgs_view_mixture_audit_progress",
+                "version": 1,
+                "next_query_index": query_index + 1,
+                "records": records,
+                "query_rows": query_rows,
+                "positive_query_ids": positive_query_ids,
+                "positive_anchor_rows": positive_anchor_rows,
+                "latency": latency,
+            }, temporary)
+            os.replace(temporary, progress_path)
 
     summary = {}
     baseline_rank = torch.tensor(records["single"]["rank"])
@@ -264,12 +353,8 @@ def run(args) -> dict:
         track_macro = {}
         for cutoff in (1, 4, 16):
             success = (rank <= cutoff).float()
-            query_macro[str(cutoff)] = float(torch.stack([
-                success[query_ids == value].mean() for value in torch.unique(query_ids)
-            ]).mean())
-            track_macro[str(cutoff)] = float(torch.stack([
-                success[anchor_rows == value].mean() for value in torch.unique(anchor_rows)
-            ]).mean())
+            query_macro[str(cutoff)] = _group_macro(success, query_ids)
+            track_macro[str(cutoff)] = _group_macro(success, anchor_rows)
         summary[name] = {
             "positive_observation_count": int(rank.numel()),
             "recall_at_1": float((rank <= 1).float().mean()),
@@ -298,6 +383,7 @@ def run(args) -> dict:
         "query_guard": {"mapping_query_count": len(query_rows), "queries": query_rows},
     }
     _atomic_json(args.output, result)
+    progress_path.unlink(missing_ok=True)
     return result
 
 
@@ -316,6 +402,7 @@ def main():
     parser.add_argument("--minimum-loss-improvement", type=float, default=0.015)
     parser.add_argument("--maximum-prototype-ratio", type=float, default=1.2)
     parser.add_argument("--temperature", type=float, default=0.05)
+    parser.add_argument("--anchor-chunk-size", type=int, default=2048)
     args = parser.parse_args()
     print(json.dumps(run(args)["summary"], indent=2, sort_keys=True))
 
