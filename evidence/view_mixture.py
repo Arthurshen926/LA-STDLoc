@@ -144,4 +144,11 @@ def mixture_scores(
         raise ValueError("prototype and prior shapes do not align")
     logits = torch.einsum("qd,nkd->qnk", query, prototypes) / float(temperature)
     log_prior = torch.where(priors > 0, priors.log(), torch.full_like(priors, -torch.inf))
-    return float(temperature) * torch.logsumexp(logits + log_prior[None], dim=2)
+    output = float(temperature) * torch.logsumexp(logits + log_prior[None], dim=2)
+    single = (priors > 0).sum(dim=1) == 1
+    if bool(single.any()):
+        # K=1 is a compatibility path, not a one-component approximation to
+        # it.  Route it through the exact deployed cosine GEMM so adding an
+        # unused padded slot cannot move ties at the last floating-point bit.
+        output[:, single] = query @ prototypes[single, 0].T
+    return output

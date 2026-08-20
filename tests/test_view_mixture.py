@@ -32,3 +32,7 @@ def test_mixture_aggregation_preserves_one_anchor_score():
     scores = mixture_scores(query, prototypes, priors, temperature=0.05)
     assert scores.shape == (1, 2)
     assert scores[0, 0] > scores[0, 1]
+    expected = torch.nn.functional.normalize(query, dim=1) @ torch.nn.functional.normalize(
+        prototypes[1, 0][None].float(), dim=1
+    ).T
+    assert torch.equal(scores[:, 1], expected[:, 0])
