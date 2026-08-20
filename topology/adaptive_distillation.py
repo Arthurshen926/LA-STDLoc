@@ -18,6 +18,11 @@ from common.calibration import (
     validate_frozen_numeric_scene_calibration,
 )
 from common.config import load_mainline_config
+from common.hashing import sha256_file
+from evidence.observation_provider import (
+    GaussianRenderObservationProvider,
+    RealRGBObservationProvider,
+)
 from evidence.tracks import fuse_track_descriptors
 from map_learning.observations import _query_index_remap
 from topology.dynamic_reserve import PoseEvidence, spatial_voxel_ids
@@ -35,7 +40,12 @@ from topology.pose_information import (
     pose_jacobian_analytic,
     task_scaled_pose_jacobian,
 )
-from topology.sufficiency_selector import CompatibilitySufficiencySelector
+from topology.sufficiency_selector import HierarchicalSufficiencySelector
+from topology.anchor_construction import (
+    SurfaceCompletionProvider,
+    TrackAnchorProvider,
+    UnifiedAnchorConstructor,
+)
 from topology.track_core import (
     _base_utility,
     _graph_counter,
@@ -59,10 +69,7 @@ def _adaptive_track_eligibility(
     return (
         torch.as_tensor(geometry["triangulated"]).bool()
         & torch.isfinite(xyz).all(dim=1)
-        & (
-            torch.as_tensor(geometry["triangulation_distinct_view_bin_count"])
-            >= 2
-        )
+        & (torch.as_tensor(geometry["triangulation_distinct_view_bin_count"]) >= 2)
         & (
             torch.as_tensor(geometry["triangulation_reprojection_median_px"])
             <= float(median_px) * (4.0 / 3.0 if broad else 1.0)
@@ -75,10 +82,7 @@ def _adaptive_track_eligibility(
             torch.as_tensor(geometry["triangulation_covariance_trace"])
             <= float(covariance_m2) * factor
         )
-        & (
-            torch.as_tensor(geometry["triangulation_parallax_deg"])
-            >= parallax
-        )
+        & (torch.as_tensor(geometry["triangulation_parallax_deg"]) >= parallax)
     )
 
 
@@ -117,6 +121,24 @@ def _image_only_core_eligibility(
     )
 
 
+def _precision_core_eligibility(
+    geometry: dict,
+    image_only_stable: torch.Tensor,
+) -> torch.Tensor:
+    """Admit only cycle-seeded Tracks to the high-trust Precision Core.
+
+    Pure chain Tracks remain first-class candidates for matching and pose
+    sufficiency.  They simply cannot bootstrap the immutable precision set.
+    """
+    level = torch.as_tensor(geometry["track_confidence_level"])
+    stable = torch.as_tensor(image_only_stable)
+    if level.dtype not in (torch.int8, torch.int16, torch.int32, torch.int64):
+        raise ValueError("Track confidence level must be an integer vector")
+    if level.shape != stable.shape:
+        raise ValueError("Track confidence level does not align with eligibility")
+    return stable.bool() & (level >= 2)
+
+
 def _deployment_track_geometry(
     geometry: dict,
     image_only_core: torch.Tensor,
@@ -129,9 +151,7 @@ def _deployment_track_geometry(
     PnP geometry.  Surface-fused geometry remains available to weak tracks and
     must still pass the matching/pose reserve selection.
     """
-    return materialize_track_geometry_compatibility(
-        geometry, image_only_core
-    )
+    return materialize_track_geometry_compatibility(geometry, image_only_core)
 
 
 def _mean_track_confidence(payload: dict) -> torch.Tensor:
@@ -148,6 +168,63 @@ def _mean_track_confidence(payload: dict) -> torch.Tensor:
     return total / count.clamp_min(1)
 
 
+def _track_only_source_capacity_ids(payload: dict, track_count: int) -> torch.Tensor:
+    """Return parent identity for repaired siblings, else one ID per Track."""
+    parents = payload.get("tracks", {}).get("parent_source_track_ids")
+    if parents is None:
+        return torch.arange(int(track_count), dtype=torch.long)
+    parents = torch.as_tensor(parents)
+    if parents.dtype != torch.long or parents.shape != (int(track_count),):
+        raise ValueError("repaired Track parent identity must be exact int64 rows")
+    if parents.numel() and int(parents.min()) < 0:
+        raise ValueError("repaired Track parent identity cannot be negative")
+    return parents.clone()
+
+
+def _attach_support_repair_lineage(
+    state: dict,
+    payload: dict,
+    selected_tracks: torch.Tensor,
+    *,
+    base_count: int,
+) -> None:
+    """Propagate repaired sibling identity through compact-map materialization."""
+    tracks = payload.get("tracks", {})
+    fields = (
+        "parent_source_track_ids",
+        "repair_child_index",
+        "repair_parent_child_count",
+    )
+    present = [field in tracks for field in fields]
+    if not any(present):
+        return
+    if not all(present):
+        raise ValueError("support-repair lineage fields must be complete")
+    track_count = int(
+        torch.as_tensor(payload["track_geometry"]["triangulated"]).numel()
+    )
+    selected_tracks = torch.as_tensor(selected_tracks).long()
+    for field in fields:
+        value = torch.as_tensor(tracks[field])
+        if value.dtype != torch.long or value.shape != (track_count,):
+            raise ValueError(f"support-repair {field} must be exact int64 rows")
+        selected = value[selected_tracks]
+        state[field] = torch.cat(
+            (selected, torch.full((int(base_count),), -1, dtype=torch.long))
+        )
+    if selected_tracks.numel() and bool(
+        (state["parent_source_track_ids"][: selected_tracks.numel()] < 0).any()
+    ):
+        raise ValueError("selected support-repair parent identity cannot be negative")
+    state["track_centric_reconstruction"]["support_repair_parent_lineage"] = {
+        "schema": "lafgs_support_repair_parent_lineage",
+        "version": 1,
+        "track_rows": int(selected_tracks.numel()),
+        "base_sentinel_rows": int(base_count),
+        "base_sentinel": -1,
+    }
+
+
 def _candidate_matchability(
     payload: dict, graph: dict, base_count: int, track_threshold_px: float
 ) -> torch.Tensor:
@@ -157,14 +234,22 @@ def _candidate_matchability(
     level_factor = torch.where(
         level >= 2,
         torch.ones_like(confidence),
-        torch.where(level == 1, 0.8 * torch.ones_like(confidence), 0.6 * torch.ones_like(confidence)),
+        torch.where(
+            level == 1,
+            0.8 * torch.ones_like(confidence),
+            0.6 * torch.ones_like(confidence),
+        ),
     )
     reprojection = torch.as_tensor(
         geometry["triangulation_reprojection_median_px"]
     ).float()
-    track_probability = confidence * level_factor * torch.exp(
-        -reprojection / max(float(track_threshold_px), 1e-6)
+    track_probability = (
+        confidence
+        * level_factor
+        * torch.exp(-reprojection / max(float(track_threshold_px), 1e-6))
     )
+    if int(base_count) == 0:
+        return track_probability.clamp(0.02, 0.98)
     opportunity = torch.as_tensor(
         graph["provenance_opportunity_count"][:base_count]
     ).float()
@@ -233,7 +318,7 @@ def _build_pose_evidence(
     edges,
     xyz: torch.Tensor,
     matchability: torch.Tensor,
-    track_covariance: torch.Tensor,
+    candidate_covariance: torch.Tensor,
     query_names: list[str],
     query_cache: dict,
     voxel_ids: torch.Tensor,
@@ -247,7 +332,8 @@ def _build_pose_evidence(
         for query in candidate_edges:
             query_candidates[int(query)].append(candidate)
     evidence: list[list[PoseEvidence]] = [[] for _ in edges]
-    track_count = int(track_covariance.shape[0])
+    if candidate_covariance.shape != (len(edges), 3, 3):
+        raise ValueError("candidate covariance must have shape [candidate_count,3,3]")
     for query, candidates in enumerate(query_candidates):
         if not candidates:
             continue
@@ -267,17 +353,18 @@ def _build_pose_evidence(
         covariance = torch.eye(2, dtype=torch.float64)[None].repeat(
             points.shape[0], 1, 1
         ) * float(pixel_variance)
-        track_mask = candidate_tensor < track_count
-        if bool(track_mask.any()):
-            selected_covariance = track_covariance[
-                candidate_tensor[track_mask]
-            ].double()
-            if selected_covariance.ndim == 1:
-                selected_covariance = torch.diag_embed(
-                    (selected_covariance / 3.0)[:, None].expand(-1, 3)
-                )
-            covariance[track_mask] += _project_world_covariance(
-                points[track_mask], selected_covariance, K, pose
+        selected_covariance = candidate_covariance[candidate_tensor].double()
+        finite_covariance = (
+            torch.isfinite(selected_covariance)
+            .reshape(selected_covariance.shape[0], -1)
+            .all(dim=1)
+        )
+        if bool(finite_covariance.any()):
+            covariance[finite_covariance] += _project_world_covariance(
+                points[finite_covariance],
+                selected_covariance[finite_covariance],
+                K,
+                pose,
             )
         row_matchability = []
         ordered_rows = []
@@ -379,6 +466,12 @@ def _resolve_selector_calibration(
             ),
         )
         parameters = derive_adaptive_parameters(statistics, policy)
+        rendered_track_only = payload.get("rendered_rgb_only") is True
+        uses_source_mapping_rgb = query_payload.get("uses_source_mapping_rgb")
+        if rendered_track_only and uses_source_mapping_rgb is not False:
+            raise ValueError(
+                "rendered Track calibration requires a source-image-free cache"
+            )
         return parameters, {
             "schema": "lafgs_mapping_only_scene_calibration",
             "version": 2,
@@ -389,6 +482,10 @@ def _resolve_selector_calibration(
                 "query_cache": str(query_path),
                 "track_payload": str(payload_path),
                 "uses_test_queries": False,
+                "uses_source_mapping_rgb": uses_source_mapping_rgb,
+                "mapping_source": (
+                    "gaussian_render" if rendered_track_only else "mapping_rgb"
+                ),
             },
         }
 
@@ -419,6 +516,13 @@ def main() -> None:
     parser.add_argument("--query-cache", required=True)
     parser.add_argument("--alias-risk-audit")
     parser.add_argument(
+        "--excluded-track-ids",
+        help=(
+            "Mapping-crossfit Track exclusion artifact. It is accepted only "
+            "for a rendered-RGB Track-only candidate universe."
+        ),
+    )
+    parser.add_argument(
         "--frozen-scene-calibration",
         help=(
             "Exact variant-bound calibration sidecar for a pre-registered "
@@ -426,6 +530,22 @@ def main() -> None:
         ),
     )
     parser.add_argument("--expected-frozen-scene-calibration-sha256")
+    parser.add_argument(
+        "--rendered-track-pose-minimum-additions",
+        type=int,
+        help=(
+            "Support-repaired Track-only override. Only zero is accepted so "
+            "observability completion stops on measured gain."
+        ),
+    )
+    parser.add_argument(
+        "--cycle-seeded-precision-core",
+        action="store_true",
+        help=(
+            "Ablation only: keep chain Tracks eligible for completion but admit "
+            "only cycle-seeded Tracks to the Precision Core."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default="configs/paper_mainline.yaml")
     args = parser.parse_args()
@@ -440,14 +560,39 @@ def main() -> None:
     config = load_mainline_config(args.config).values
     if int(config["version"]) < 2:
         raise ValueError("adaptive distillation requires a V2 mainline config")
-    policy = config["adaptive"]
+    policy = dict(config["adaptive"])
 
     canonical = torch.load(canonical_path, map_location="cpu", weights_only=False)
     graph = torch.load(graph_path, map_location="cpu", weights_only=False)
     teacher = torch.load(teacher_path, map_location="cpu", weights_only=False)
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
     query_payload = torch.load(query_path, map_location="cpu", weights_only=False)
+    if args.rendered_track_pose_minimum_additions is not None:
+        if payload.get("support_repair", {}).get("schema") != (
+            "lafgs_rendered_track_support_repair"
+        ):
+            raise ValueError(
+                "rendered Track pose override requires a support-repaired payload"
+            )
+        if int(args.rendered_track_pose_minimum_additions) != 0:
+            raise ValueError(
+                "support-repaired pose minimum is restricted to the frozen zero"
+            )
+        policy["pose_minimum_additions"] = 0
     query_cache = query_payload.get("queries", query_payload)
+    observation_provider = (
+        GaussianRenderObservationProvider(
+            query_payload,
+            query_names=list(payload["query_names"]),
+            query_bins=payload["query_bins"],
+        )
+        if payload.get("rendered_rgb_only") is True
+        else RealRGBObservationProvider(
+            query_payload,
+            query_names=list(payload["query_names"]),
+            query_bins=payload["query_bins"],
+        )
+    )
     parameters, calibration = _resolve_selector_calibration(
         query_path=query_path,
         payload_path=payload_path,
@@ -494,9 +639,7 @@ def main() -> None:
     )
     query_groups = torch.empty_like(torch.as_tensor(payload["query_bins"]))
     query_groups[payload_to_teacher] = torch.as_tensor(payload["query_bins"])
-    track_edges = track_candidate_edges(
-        payload, query_index_remap=payload_to_teacher
-    )
+    track_edges = track_candidate_edges(payload, query_index_remap=payload_to_teacher)
     base_edges = base_candidate_edges(teacher, base_count)
     edges = [*track_edges, *base_edges]
     alias_risk = None
@@ -530,6 +673,36 @@ def main() -> None:
         }
 
     geometry = payload["track_geometry"]
+    excluded_tracks = torch.zeros(track_count, dtype=torch.bool)
+    exclusion_contract = None
+    if args.excluded_track_ids:
+        if base_count != 0 or payload.get("rendered_rgb_only") is not True:
+            raise ValueError(
+                "crossfit Track exclusions require rendered-RGB Track-only mode"
+            )
+        exclusion_path = Path(args.excluded_track_ids).resolve()
+        exclusion = torch.load(exclusion_path, map_location="cpu", weights_only=False)
+        ids = torch.as_tensor(exclusion.get("excluded_track_ids", ())).long()
+        if (
+            exclusion.get("schema") != "lafgs_rendered_track_crossfit_exclusions"
+            or exclusion.get("version") != 1
+            or exclusion.get("uses_test_queries") is not False
+            or Path(str(exclusion.get("track_payload", ""))).resolve() != payload_path
+            or exclusion.get("track_payload_sha256") != sha256_file(payload_path)
+        ):
+            raise ValueError("invalid rendered Track crossfit exclusion artifact")
+        if ids.ndim != 1 or torch.unique(ids).numel() != ids.numel():
+            raise ValueError("excluded Track IDs must be a unique vector")
+        if ids.numel() and (int(ids.min()) < 0 or int(ids.max()) >= track_count):
+            raise ValueError("excluded Track ID is outside the candidate universe")
+        excluded_tracks[ids] = True
+        exclusion_contract = {
+            "path": str(exclusion_path),
+            "sha256": sha256_file(exclusion_path),
+            "excluded_track_count": int(ids.numel()),
+            "selection_split": "mapping_crossfit_only",
+            "uses_test_queries": False,
+        }
     quality = _track_quality(geometry)
     medium = _adaptive_track_eligibility(
         geometry,
@@ -545,20 +718,29 @@ def main() -> None:
         covariance_m2=parameters.track_covariance_trace_m2,
         broad=True,
     )
-    image_only_core = _image_only_core_eligibility(
+    image_only_stable = _image_only_core_eligibility(
         geometry,
         median_px=parameters.track_reprojection_median_px,
         p90_px=parameters.track_reprojection_p90_px,
         covariance_m2=parameters.track_covariance_trace_m2,
     )
-    deployment_geometry = _deployment_track_geometry(geometry, image_only_core)
+    medium &= ~excluded_tracks
+    broad &= ~excluded_tracks
+    image_only_stable &= ~excluded_tracks
+    cycle_core_eligible = _precision_core_eligibility(geometry, image_only_stable)
+    precision_core_eligible = (
+        cycle_core_eligible
+        if bool(args.cycle_seeded_precision_core)
+        else image_only_stable.clone()
+    )
+    deployment_geometry = _deployment_track_geometry(geometry, image_only_stable)
     deployment_quality = _track_quality(deployment_geometry)
-    quality = torch.where(image_only_core, deployment_quality, quality)
+    quality = torch.where(image_only_stable, deployment_quality, quality)
     deployment_payload = dict(payload)
     deployment_payload["track_geometry"] = deployment_geometry
     order = torch.argsort(quality, descending=True, stable=True)
-    medium_order = order[(medium & image_only_core)[order]]
-    selector = CompatibilitySufficiencySelector(
+    medium_order = order[(medium & precision_core_eligible)[order]]
+    selector = HierarchicalSufficiencySelector(
         edges,
         len(teacher["query_names"]),
         track_candidate_count=track_count,
@@ -571,27 +753,33 @@ def main() -> None:
         check_interval=int(policy["track_core_check_interval"]),
     )
 
-    opportunity = torch.as_tensor(
-        graph["provenance_opportunity_count"][:base_count]
-    ).float()
-    harmful = torch.as_tensor(
-        graph["provenance_harmful_solver_inlier_count"][:base_count]
-    ).float()
-    harmful_rate = harmful / opportunity.clamp_min(1)
-    base_eligible = (
-        _graph_counter(
-            graph,
-            "provenance_legal_hit_strong_count",
-            "provenance_legal_hit_2px_count",
-        )[:base_count]
-        > 0
-    ) & (harmful_rate <= float(policy["maximum_harmful_rate"]))
+    if base_count:
+        opportunity = torch.as_tensor(
+            graph["provenance_opportunity_count"][:base_count]
+        ).float()
+        harmful = torch.as_tensor(
+            graph["provenance_harmful_solver_inlier_count"][:base_count]
+        ).float()
+        harmful_rate = harmful / opportunity.clamp_min(1)
+        base_eligible = (
+            _graph_counter(
+                graph,
+                "provenance_legal_hit_strong_count",
+                "provenance_legal_hit_2px_count",
+            )[:base_count]
+            > 0
+        ) & (harmful_rate <= float(policy["maximum_harmful_rate"]))
+        base_utility = _base_utility(graph, base_count)
+    else:
+        base_eligible = torch.empty(0, dtype=torch.bool)
+        base_utility = torch.empty(0, dtype=quality.dtype)
     core_mask = torch.zeros(track_count, dtype=torch.bool)
     core_mask[core] = True
     reserve_track_ids = torch.nonzero(broad & ~core_mask, as_tuple=False).reshape(-1)
-    reserve_base_ids = torch.nonzero(base_eligible, as_tuple=False).reshape(-1) + track_count
+    reserve_base_ids = (
+        torch.nonzero(base_eligible, as_tuple=False).reshape(-1) + track_count
+    )
     reserve_candidates = torch.cat((reserve_track_ids, reserve_base_ids))
-    base_utility = _base_utility(graph, base_count)
     utility = torch.cat((quality, base_utility))
     coverage_selected, matching, coverage_report = selector.complete_matching(
         reserve_candidates,
@@ -603,19 +791,23 @@ def main() -> None:
     )
     selected = selector.compatibility_materialization_ids
 
-    track_xyz = torch.as_tensor(
-        deployment_geometry["triangulated_xyz"]
-    ).float()
+    track_xyz = torch.as_tensor(deployment_geometry["triangulated_xyz"]).float()
     base_xyz = torch.as_tensor(canonical["anchor_xyz"][:base_count]).float()
     xyz = torch.cat((track_xyz, base_xyz))
     finite_tracks = torch.isfinite(track_xyz).all(dim=1)
     track_sources = torch.full((track_count,), -1, dtype=torch.long)
-    finite_track_indices = torch.nonzero(
-        finite_tracks, as_tuple=False
-    ).reshape(-1)
-    track_sources[finite_track_indices] = _track_source_ids(
-        canonical, deployment_payload, finite_track_indices
-    )
+    finite_track_indices = torch.nonzero(finite_tracks, as_tuple=False).reshape(-1)
+    if base_count > 0 and payload.get("rendered_rgb_only") is not True:
+        track_sources[finite_track_indices] = _track_source_ids(
+            canonical, deployment_payload, finite_track_indices
+        )
+    else:
+        # Ordinary Track-only candidates retain one capacity identity per
+        # Track.  Support-repaired siblings instead share their frozen parent
+        # source identity, so pose completion cannot count correlated children
+        # as independent sources.
+        parents = _track_only_source_capacity_ids(payload, track_count)
+        track_sources[finite_track_indices] = parents[finite_track_indices]
     source_ids = torch.cat(
         (
             track_sources,
@@ -635,10 +827,25 @@ def main() -> None:
         ).float()
         covariance_model = "anisotropic_triangulation_covariance_projected_by_Jx"
     else:
-        track_covariance = torch.as_tensor(
-            deployment_geometry["triangulation_covariance_trace"]
-        ).float().clamp_min(0)
+        track_covariance = (
+            torch.as_tensor(deployment_geometry["triangulation_covariance_trace"])
+            .float()
+            .clamp_min(0)
+        )
         covariance_model = "isotropic_trace_fallback_projected_by_Jx"
+        track_covariance = torch.diag_embed(
+            (track_covariance / 3.0)[:, None].expand(-1, 3)
+        )
+    if base_count and "anchor_position_covariance" in canonical:
+        base_covariance = torch.as_tensor(
+            canonical["anchor_position_covariance"][:base_count]
+        ).float()
+        if base_covariance.shape != (base_count, 3, 3):
+            raise ValueError("base Anchor covariance must have shape [N,3,3]")
+        covariance_model += "+surface_completion_covariance_projected_by_Jx"
+    else:
+        base_covariance = torch.full((base_count, 3, 3), float("nan"))
+    candidate_covariance = torch.cat((track_covariance, base_covariance))
     selected_mask = torch.zeros(len(edges), dtype=torch.bool)
     selected_mask[selected] = True
     pose_candidates = reserve_candidates[
@@ -658,7 +865,7 @@ def main() -> None:
         pose_edges,
         xyz,
         matchability,
-        track_covariance,
+        candidate_covariance,
         list(teacher["query_names"]),
         query_cache,
         voxel_ids,
@@ -696,15 +903,19 @@ def main() -> None:
     selected = selector.compatibility_materialization_ids
     selected_tracks = selected[selected < track_count]
     selected_base = selected[selected >= track_count] - track_count
-    selected_tracks = selected_tracks[torch.argsort(quality[selected_tracks], descending=True)]
-    selected_base = selected_base[torch.argsort(base_utility[selected_base], descending=True)]
+    selected_tracks = selected_tracks[
+        torch.argsort(quality[selected_tracks], descending=True)
+    ]
+    selected_base = selected_base[
+        torch.argsort(base_utility[selected_base], descending=True)
+    ]
 
     original_threads = torch.get_num_threads()
     try:
         torch.set_num_threads(1)
         track_features = fuse_track_descriptors(
             payload=payload,
-            query_cache=query_payload,
+            query_cache=observation_provider,
             track_indices=selected_tracks,
             trim_fraction=float(policy["descriptor_trim_fraction"]),
         )
@@ -719,9 +930,7 @@ def main() -> None:
         "coverage_gaussian_universe_ids": coverage_selected[
             coverage_selected >= track_count
         ].clone(),
-        "pose_track_universe_ids": pose_selected[
-            pose_selected < track_count
-        ].clone(),
+        "pose_track_universe_ids": pose_selected[pose_selected < track_count].clone(),
         "pose_gaussian_universe_ids": pose_selected[
             pose_selected >= track_count
         ].clone(),
@@ -732,7 +941,7 @@ def main() -> None:
             torch.zeros(track_count, dtype=torch.bool),
         )
     ).bool()
-    surface_promoted = surface_supported & ~image_only_core
+    surface_promoted = surface_supported & ~image_only_stable
     selection_provenance_path = output_dir / "adaptive_selection_provenance.pt"
     unified_selection_path = output_dir / "unified_sufficiency_selection.pt"
     torch.save(
@@ -758,6 +967,35 @@ def main() -> None:
         dependency_voxel_size=parameters.dependency_voxel_m,
         separate_spatial_dependency=True,
     )
+    _attach_support_repair_lineage(
+        state,
+        payload,
+        selected_tracks,
+        base_count=int(selected_base.numel()),
+    )
+    track_batch_provider = TrackAnchorProvider(
+        payload=deployment_payload,
+        observations=observation_provider,
+        track_indices=selected_tracks,
+        trim_fraction=float(policy["descriptor_trim_fraction"]),
+        features=track_features,
+        source_primitive_ids=torch.as_tensor(state["source_primitive_ids"])[
+            : selected_tracks.numel()
+        ].long(),
+        matchability=matchability[selected_tracks].float(),
+    )
+    construction_providers = [track_batch_provider]
+    if selected_base.numel():
+        construction_providers.append(
+            SurfaceCompletionProvider(
+                canonical,
+                selected_base,
+                maximum_candidates=int(selected_base.numel()),
+                matchability=matchability[track_count + selected_base].float(),
+            )
+        )
+    unified_candidates = UnifiedAnchorConstructor.materialize(construction_providers)
+    UnifiedAnchorConstructor.attach_to_map(state, unified_candidates)
     state["track_centric_reconstruction"].update(
         {
             "schema": "lafgs_v2_adaptive_topology",
@@ -767,21 +1005,42 @@ def main() -> None:
             "matching_feasible_coverage": coverage_report,
             "dynamic_pose_reserve": pose_report,
             "track_core_count": int(core.numel()),
+            "cycle_seeded_precision_core_candidate_count": int(
+                cycle_core_eligible.sum()
+            ),
+            "chain_only_sufficiency_candidate_count": int(
+                (broad & ~cycle_core_eligible).sum()
+            ),
+            "cycle_seeded_precision_core_enabled": bool(
+                args.cycle_seeded_precision_core
+            ),
             "coverage_reserve_count": int(coverage_selected.numel()),
             "pose_reserve_count": int(pose_selected.numel()),
             "selection_provenance": selection_provenance,
             "unified_sufficiency_selection": selector.artifact(),
             "all_candidate_alias_risk": alias_risk_contract,
+            "rendered_track_crossfit_exclusions": exclusion_contract,
             "final_track_count": int(selected_tracks.numel()),
             "final_base_count": int(selected_base.numel()),
-            "reserve_candidate_pool": "leftover_tracks_plus_gaussian_base",
-            "geometry_policy": "hybrid_triangulated_tracks_and_canonical_gaussian_reserve",
+            "reserve_candidate_pool": (
+                "leftover_tracks_only"
+                if base_count == 0
+                else "leftover_tracks_plus_gaussian_base"
+            ),
+            "geometry_policy": (
+                "ray_triangulated_tracks_only"
+                if base_count == 0
+                else "hybrid_triangulated_tracks_and_canonical_gaussian_reserve"
+            ),
             "track_core_geometry_source": "image_only_triangulation",
             "surface_geometry_scope": "functionally_selected_promoted_reserve",
             "surface_supported_candidate_count": int(surface_supported.sum()),
             "surface_promoted_reserve_candidate_count": int(surface_promoted.sum()),
             "surface_promoted_selected_count": int(
                 surface_promoted[selected_tracks].sum()
+            ),
+            "completion_candidate_provider": (
+                "always_enabled" if base_count > 0 else "legacy_track_only_input"
             ),
         }
     )
@@ -817,17 +1076,23 @@ def main() -> None:
         },
         "unified_sufficiency_selection": {
             "path": str(unified_selection_path),
-            "policy": "v3_compatibility",
+            "policy": "hierarchical_sufficiency_v4",
+            "numerical_policy": (
+                "v3_compatibility_with_cycle_core"
+                if args.cycle_seeded_precision_core
+                else "v3_compatibility"
+            ),
             "selected_count": int(selector.selected_ids.numel()),
-            "behavior_change_authorized": False,
+            "completion_candidate_provider": (
+                "always_enabled" if base_count > 0 else "legacy_track_only_input"
+            ),
         },
         "all_candidate_alias_risk": alias_risk_contract,
+        "rendered_track_crossfit_exclusions": exclusion_contract,
         "surface_supported": {
             "candidate_count": int(surface_supported.sum()),
             "promoted_reserve_candidate_count": int(surface_promoted.sum()),
-            "promoted_selected_count": int(
-                surface_promoted[selected_tracks].sum()
-            ),
+            "promoted_selected_count": int(surface_promoted[selected_tracks].sum()),
             "core_requires_image_only_geometry": True,
             "track_core_geometry_source": "image_only_triangulation",
             "surface_geometry_scope": "functionally_selected_promoted_reserve",

@@ -21,27 +21,17 @@ def _normalized_log_score(value: torch.Tensor) -> torch.Tensor:
 
 
 def _track_quality(geometry: dict) -> torch.Tensor:
-    observation = torch.as_tensor(
-        geometry["triangulation_observation_count"]
-    ).float()
+    observation = torch.as_tensor(geometry["triangulation_observation_count"]).float()
     view_bins = torch.as_tensor(
         geometry["triangulation_distinct_view_bin_count"]
     ).float()
     reprojection = torch.as_tensor(
         geometry["triangulation_reprojection_median_px"]
     ).float()
-    p90 = torch.as_tensor(
-        geometry["triangulation_reprojection_p90_px"]
-    ).float()
-    parallax = torch.as_tensor(
-        geometry["triangulation_parallax_deg"]
-    ).float()
-    covariance = torch.as_tensor(
-        geometry["triangulation_covariance_trace"]
-    ).float()
-    confidence = torch.as_tensor(
-        geometry["track_confidence_level"]
-    ).float()
+    p90 = torch.as_tensor(geometry["triangulation_reprojection_p90_px"]).float()
+    parallax = torch.as_tensor(geometry["triangulation_parallax_deg"]).float()
+    covariance = torch.as_tensor(geometry["triangulation_covariance_trace"]).float()
+    confidence = torch.as_tensor(geometry["track_confidence_level"]).float()
     return (
         1.5 * _normalized_log_score(observation)
         + 0.8 * view_bins.clamp_max(4) / 4.0
@@ -66,32 +56,14 @@ def _eligible_tracks(geometry: dict, quality_tier: str) -> torch.Tensor:
     return (
         torch.as_tensor(geometry["triangulated"]).bool()
         & torch.isfinite(xyz).all(dim=1)
+        & (torch.as_tensor(geometry["triangulation_distinct_view_bin_count"]) >= 2)
         & (
-            torch.as_tensor(
-                geometry["triangulation_distinct_view_bin_count"]
-            )
-            >= 2
-        )
-        & (
-            torch.as_tensor(
-                geometry["triangulation_reprojection_median_px"]
-            )
+            torch.as_tensor(geometry["triangulation_reprojection_median_px"])
             <= median_px
         )
-        & (
-            torch.as_tensor(
-                geometry["triangulation_reprojection_p90_px"]
-            )
-            <= p90_px
-        )
-        & (
-            torch.as_tensor(geometry["triangulation_covariance_trace"])
-            <= covariance
-        )
-        & (
-            torch.as_tensor(geometry["triangulation_parallax_deg"])
-            >= parallax
-        )
+        & (torch.as_tensor(geometry["triangulation_reprojection_p90_px"]) <= p90_px)
+        & (torch.as_tensor(geometry["triangulation_covariance_trace"]) <= covariance)
+        & (torch.as_tensor(geometry["triangulation_parallax_deg"]) >= parallax)
     )
 
 
@@ -173,12 +145,8 @@ def _group_balanced_base_utility(
         valid = ((flags & 2) != 0) & (indices >= 0) & (indices < base_count)
         selected = indices[valid]
         if selected.numel():
-            legal_hits[group].index_add_(
-                0, selected, torch.ones(selected.numel())
-            )
-    normalized = torch.stack(
-        [_normalized_log_score(row) for row in legal_hits], dim=0
-    )
+            legal_hits[group].index_add_(0, selected, torch.ones(selected.numel()))
+    normalized = torch.stack([_normalized_log_score(row) for row in legal_hits], dim=0)
     group_peak = normalized.max(dim=0).values
     group_breadth = (legal_hits > 0).float().mean(dim=0)
     balanced = utility + 1.5 * group_peak + 0.5 * group_breadth
@@ -242,19 +210,21 @@ def _track_source_ids(
     canonical: dict, payload: dict, track_indices: torch.Tensor
 ) -> torch.Tensor:
     base_count = int(canonical["base_anchor_count"])
+    # A rendered-RGB Track-only map deliberately has no Gaussian/base Anchor
+    # universe.  Keep the absence of primitive lineage explicit instead of
+    # inventing a nearest primitive solely to satisfy the historical hybrid
+    # map contract.
+    if base_count == 0 or payload.get("rendered_rgb_only") is True:
+        return torch.full(
+            (torch.as_tensor(track_indices).numel(),), -1, dtype=torch.long
+        )
     base_xyz = torch.as_tensor(canonical["anchor_xyz"][:base_count]).float()
     base_sources = torch.as_tensor(
         canonical["source_primitive_ids"][:base_count]
     ).long()
-    track_xyz = torch.as_tensor(
-        payload["track_geometry"]["triangulated_xyz"]
-    ).float()
-    assignment = torch.as_tensor(
-        payload["assignment"]["track_landmark_index"]
-    ).long()
-    nearest = cKDTree(base_xyz.numpy()).query(
-        track_xyz[track_indices].numpy(), k=1
-    )[1]
+    track_xyz = torch.as_tensor(payload["track_geometry"]["triangulated_xyz"]).float()
+    assignment = torch.as_tensor(payload["assignment"]["track_landmark_index"]).long()
+    nearest = cKDTree(base_xyz.numpy()).query(track_xyz[track_indices].numpy(), k=1)[1]
     source = base_sources[torch.as_tensor(nearest).long()].clone()
     assigned = assignment[track_indices]
     valid = (assigned >= 0) & (assigned < base_count)
@@ -279,9 +249,7 @@ def _materialize(
     base_rows = torch.as_tensor(base_rows).long()
     track_indices = torch.as_tensor(track_indices).long()
     geometry = payload["track_geometry"]
-    track_xyz = torch.as_tensor(geometry["triangulated_xyz"]).float()[
-        track_indices
-    ]
+    track_xyz = torch.as_tensor(geometry["triangulated_xyz"]).float()[track_indices]
     track_sources = _track_source_ids(canonical, payload, track_indices)
     fields = {
         "source_primitive_ids": torch.cat(
@@ -313,9 +281,7 @@ def _materialize(
         ),
     }
     all_xyz = fields["anchor_xyz"]
-    dependency_voxel = torch.floor(
-        all_xyz / float(dependency_voxel_size)
-    ).long()
+    dependency_voxel = torch.floor(all_xyz / float(dependency_voxel_size)).long()
     dependency_key = (
         dependency_voxel
         if separate_spatial_dependency
@@ -370,12 +336,10 @@ def _materialize(
         },
     }
     if separate_spatial_dependency:
-        state["source_dependency_group_ids"] = fields[
-            "source_primitive_ids"
-        ].long()
-        state["track_centric_reconstruction"][
-            "dependency_group_semantics"
-        ] = "spatial_voxel_only_with_separate_source_lineage"
+        state["source_dependency_group_ids"] = fields["source_primitive_ids"].long()
+        state["track_centric_reconstruction"]["dependency_group_semantics"] = (
+            "spatial_voxel_only_with_separate_source_lineage"
+        )
     return state
 
 
@@ -419,9 +383,7 @@ def main() -> None:
     canonical = torch.load(source_map, map_location="cpu", weights_only=False)
     graph = torch.load(graph_path, map_location="cpu", weights_only=False)
     payload = torch.load(payload_path, map_location="cpu", weights_only=False)
-    query_cache = torch.load(
-        query_path, map_location="cpu", weights_only=False
-    )
+    query_cache = torch.load(query_path, map_location="cpu", weights_only=False)
     base_count = int(canonical["base_anchor_count"])
     if int(graph["anchor_count"]) != int(canonical["anchor_xyz"].shape[0]):
         raise ValueError("function graph and canonical map do not align")
@@ -488,8 +450,7 @@ def main() -> None:
         trim_fraction=args.descriptor_trim_fraction,
     )
     feature_by_track = {
-        int(track): fused[row]
-        for row, track in enumerate(ordered_tracks.tolist())
+        int(track): fused[row] for row, track in enumerate(ordered_tracks.tolist())
     }
 
     summary = {
@@ -522,10 +483,7 @@ def main() -> None:
             payload_path=payload_path,
             dependency_voxel_size=args.dependency_voxel_size,
         )
-        tag = (
-            f"b{budget:05d}_t{track_budget:05d}_{tier}_"
-            f"{args.base_selection}"
-        )
+        tag = f"b{budget:05d}_t{track_budget:05d}_{tier}_{args.base_selection}"
         path = output_dir / f"track_centric_{tag}.pt"
         torch.save(state, path)
         summary["maps"][tag] = {
@@ -544,9 +502,7 @@ def main() -> None:
                 ),
                 "median_parallax_deg": float(
                     torch.median(
-                        torch.as_tensor(
-                            geometry["triangulation_parallax_deg"]
-                        )[tracks]
+                        torch.as_tensor(geometry["triangulation_parallax_deg"])[tracks]
                     )
                 ),
             },

@@ -10,9 +10,12 @@ import json
 import math
 import os
 from pathlib import Path
+import resource
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
+from typing import Iterator
 
 from common.calibration import (
     calibrate_scene,
@@ -28,6 +31,90 @@ from common.hashing import sha256_file
 from common.pipeline_completion import atomic_json_install
 from data.datasets import ColmapDataset
 from map_learning.trainer import full_refresh_interval, train
+
+
+_BUILD_TIMING_PATH: Path | None = None
+_BUILD_TIMING_STARTED: float | None = None
+_BUILD_TIMING_EVENTS: list[dict[str, object]] = []
+
+
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def configure_build_timing(path: str | Path) -> Path:
+    """Start a per-run, append-only-in-memory offline build timing ledger."""
+    global _BUILD_TIMING_PATH, _BUILD_TIMING_STARTED, _BUILD_TIMING_EVENTS
+    _BUILD_TIMING_PATH = Path(path).expanduser().resolve()
+    _BUILD_TIMING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _BUILD_TIMING_STARTED = time.perf_counter()
+    _BUILD_TIMING_EVENTS = []
+    _flush_build_timing(complete=False)
+    return _BUILD_TIMING_PATH
+
+
+def _flush_build_timing(*, complete: bool) -> None:
+    if _BUILD_TIMING_PATH is None or _BUILD_TIMING_STARTED is None:
+        return
+    elapsed = time.perf_counter() - _BUILD_TIMING_STARTED
+    payload: dict[str, object] = {
+        "schema": "lafgs_offline_build_timing",
+        "version": 1,
+        "complete": bool(complete),
+        "wall_seconds": float(elapsed),
+        "parent_peak_rss_kib": int(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        ),
+        "events": list(_BUILD_TIMING_EVENTS),
+    }
+    _atomic_write_json(_BUILD_TIMING_PATH, payload)
+
+
+def _record_build_timing(event: dict[str, object]) -> None:
+    if _BUILD_TIMING_PATH is None:
+        return
+    _BUILD_TIMING_EVENTS.append(dict(event))
+    _flush_build_timing(complete=False)
+
+
+@contextmanager
+def timed_pipeline_stage(name: str) -> Iterator[None]:
+    """Record one coarse method stage without changing its execution path."""
+    started = time.perf_counter()
+    try:
+        yield
+    except BaseException:
+        _record_build_timing(
+            {
+                "kind": "stage",
+                "name": str(name),
+                "status": "failed",
+                "wall_seconds": float(time.perf_counter() - started),
+            }
+        )
+        raise
+    _record_build_timing(
+        {
+            "kind": "stage",
+            "name": str(name),
+            "status": "complete",
+            "wall_seconds": float(time.perf_counter() - started),
+        }
+    )
+
+
+def finalize_build_timing() -> Path:
+    global _BUILD_TIMING_PATH, _BUILD_TIMING_STARTED, _BUILD_TIMING_EVENTS
+    if _BUILD_TIMING_PATH is None:
+        raise RuntimeError("build timing was not configured")
+    path = _BUILD_TIMING_PATH
+    _flush_build_timing(complete=True)
+    _BUILD_TIMING_PATH = None
+    _BUILD_TIMING_STARTED = None
+    _BUILD_TIMING_EVENTS = []
+    return path
 
 
 def _read_exact_scene_calibration(
@@ -64,7 +151,8 @@ def _read_exact_scene_calibration(
                 and sources.get("uses_test_queries") is False
             ):
                 if not frozen_pair_factor and (
-                    cached.get("lineage") or any(
+                    cached.get("lineage")
+                    or any(
                         name in sources
                         for name in (
                             "query_cache_sha256",
@@ -104,55 +192,120 @@ def _load_or_compute_scene_calibration(
 
 def _run(module: str, *arguments: object) -> None:
     command = [sys.executable, "-m", module, *(str(value) for value in arguments)]
-    subprocess.run(command, check=True)
+    started = time.perf_counter()
+    try:
+        subprocess.run(command, check=True)
+    except BaseException:
+        _record_build_timing(
+            {
+                "kind": "subprocess",
+                "module": module,
+                "status": "failed",
+                "wall_seconds": float(time.perf_counter() - started),
+            }
+        )
+        raise
+    _record_build_timing(
+        {
+            "kind": "subprocess",
+            "module": module,
+            "status": "complete",
+            "wall_seconds": float(time.perf_counter() - started),
+        }
+    )
 
 
 def _run_parallel(module: str, argument_sets: list[list[object]]) -> None:
+    if not argument_sets:
+        return
     visible_devices = [
         value.strip()
         for value in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
         if value.strip()
     ]
-    processes = [
-        subprocess.Popen(
+    # Long, memory-heavy shards may benefit from an explicit per-GPU bound,
+    # while short shards can be slower when process startup is serialized.
+    # Preserve historical concurrency unless the caller requests a bound.
+    workers_per_device = int(os.environ.get("LAFGS_GPU_WORKERS_PER_DEVICE", "0"))
+    if workers_per_device < 0:
+        raise ValueError("LAFGS_GPU_WORKERS_PER_DEVICE cannot be negative")
+    concurrency = len(argument_sets)
+    if visible_devices and workers_per_device:
+        concurrency = min(concurrency, len(visible_devices) * workers_per_device)
+    next_index = 0
+    active: list[tuple[subprocess.Popen, int, float]] = []
+    group_started = time.perf_counter()
+
+    def launch(index: int) -> tuple[subprocess.Popen, int, float]:
+        arguments = argument_sets[index]
+        environment = None
+        if visible_devices:
+            environment = {
+                **os.environ,
+                "CUDA_VISIBLE_DEVICES": visible_devices[index % len(visible_devices)],
+            }
+        process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
                 module,
                 *(str(value) for value in arguments),
             ],
-            env=(
-                {
-                    **os.environ,
-                    "CUDA_VISIBLE_DEVICES": visible_devices[
-                        index % len(visible_devices)
-                    ],
-                }
-                if visible_devices
-                else None
-            ),
+            env=environment,
         )
-        for index, arguments in enumerate(argument_sets)
-    ]
+        return process, index, time.perf_counter()
+
+    while next_index < min(concurrency, len(argument_sets)):
+        active.append(launch(next_index))
+        next_index += 1
     try:
-        pending = set(processes)
-        while pending:
-            for process in tuple(pending):
+        while active:
+            progressed = False
+            for item in tuple(active):
+                process, index, started = item
                 status = process.poll()
                 if status is None:
                     continue
-                pending.remove(process)
+                progressed = True
+                active.remove(item)
+                _record_build_timing(
+                    {
+                        "kind": "parallel_shard",
+                        "module": module,
+                        "shard_index": int(index),
+                        "status": "complete" if status == 0 else "failed",
+                        "wall_seconds": float(time.perf_counter() - started),
+                        "device": (
+                            visible_devices[index % len(visible_devices)]
+                            if visible_devices
+                            else "cpu"
+                        ),
+                    }
+                )
                 if status:
                     raise subprocess.CalledProcessError(status, process.args)
-            if pending:
+                if next_index < len(argument_sets):
+                    active.append(launch(next_index))
+                    next_index += 1
+            if active and not progressed:
                 time.sleep(0.1)
     except BaseException:
-        for process in processes:
+        for process, _, _ in active:
             if process.poll() is None:
                 process.terminate()
-        for process in processes:
+        for process, _, _ in active:
             process.wait()
         raise
+    _record_build_timing(
+        {
+            "kind": "parallel_group",
+            "module": module,
+            "status": "complete",
+            "shard_count": int(len(argument_sets)),
+            "maximum_concurrency": int(concurrency),
+            "wall_seconds": float(time.perf_counter() - group_started),
+        }
+    )
 
 
 def _run_query_shards(
@@ -500,9 +653,7 @@ def build_bootstrap_and_tracks(
         resolve_mapping_keypoint_count(cfg, mapping_cameras)
         if adaptive and has_camera_model
         else int(
-            cfg.get("mapping", {}).get(
-                "keypoints", initialization["kcs_keypoints"]
-            )
+            cfg.get("mapping", {}).get("keypoints", initialization["kcs_keypoints"])
         )
     )
     native_nms_radius = resolve_mapping_nms_radius(cfg)
@@ -912,35 +1063,19 @@ def build_bootstrap_and_tracks(
             "--geometry_teacher_track_pair_min_overlap_jaccard",
             float(geometry_policy.get("track_pair_min_overlap_jaccard", 0.15)),
             "--geometry_teacher_track_pair_min_joint_visibility_points",
-            int(
-                geometry_policy.get(
-                    "track_pair_min_joint_visibility_points", 8
-                )
-            ),
+            int(geometry_policy.get("track_pair_min_joint_visibility_points", 8)),
             "--geometry_teacher_track_pair_parallax_saturation_deg",
-            float(
-                geometry_policy.get("track_pair_parallax_saturation_deg", 2.0)
-            ),
+            float(geometry_policy.get("track_pair_parallax_saturation_deg", 2.0)),
             "--geometry_teacher_track_pair_diversity_weight",
             float(geometry_policy.get("track_pair_diversity_weight", 0.20)),
             "--geometry_teacher_track_pair_candidate_pool_per_camera",
-            int(
-                geometry_policy.get(
-                    "track_pair_candidate_pool_per_camera", 48
-                )
-            ),
+            int(geometry_policy.get("track_pair_candidate_pool_per_camera", 48)),
             "--geometry_teacher_track_pair_scene_points_per_camera",
-            int(
-                geometry_policy.get("track_pair_scene_points_per_camera", 8)
-            ),
+            int(geometry_policy.get("track_pair_scene_points_per_camera", 8)),
             "--geometry_teacher_track_pair_maximum_scene_points",
             int(geometry_policy.get("track_pair_maximum_scene_points", 4096)),
             "--geometry_teacher_track_pair_scene_point_voxel_size_m",
-            float(
-                geometry_policy.get(
-                    "track_pair_scene_point_voxel_size_m", 0.02
-                )
-            ),
+            float(geometry_policy.get("track_pair_scene_point_voxel_size_m", 0.02)),
         ]
         if bool(geometry_policy.get("surface_supported_tracks", False)):
             depth_sigma = float(
@@ -1306,17 +1441,14 @@ def distill_compact_map(
             else None
         )
         calibration_sha256 = (
-            sha256_file(calibration_path)
-            if calibration_path is not None
-            else None
+            sha256_file(calibration_path) if calibration_path is not None else None
         )
         if report_path.is_file() and calibration_path is not None:
             existing = json.loads(report_path.read_text())
             contract = dict(existing.get("calibration_contract", {}))
             if (
                 contract.get("mode") != "frozen_numeric_pair_factor"
-                or Path(str(contract.get("input", ""))).resolve()
-                != calibration_path
+                or Path(str(contract.get("input", ""))).resolve() != calibration_path
                 or contract.get("input_sha256") != calibration_sha256
             ):
                 raise RuntimeError(

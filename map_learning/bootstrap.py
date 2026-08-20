@@ -116,8 +116,7 @@ def _load_rgb_prior_contract(dataset, args, primitive_count):
     if not manifest_path.is_file():
         if bool(args.require_rgb_prior_manifest):
             raise FileNotFoundError(
-                "RGB Gaussian prior manifest is required but missing: "
-                f"{manifest_path}"
+                f"RGB Gaussian prior manifest is required but missing: {manifest_path}"
             )
         return {
             "validated": False,
@@ -131,19 +130,16 @@ def _load_rgb_prior_contract(dataset, args, primitive_count):
         raise ValueError("RGB prior manifest still contains localization state")
     if bool(manifest.get("detector_state_present", True)):
         raise ValueError("RGB prior manifest still contains detector state")
-    if str(manifest.get("gaussian_type", "")).lower() != str(
-        dataset.gaussian_type
-    ).lower():
-        raise ValueError(
-            "RGB prior Gaussian type does not match the requested loader"
-        )
+    if (
+        str(manifest.get("gaussian_type", "")).lower()
+        != str(dataset.gaussian_type).lower()
+    ):
+        raise ValueError("RGB prior Gaussian type does not match the requested loader")
     if int(manifest.get("primitive_count", -1)) != int(primitive_count):
         raise ValueError(
             "RGB prior primitive count does not match the loaded checkpoint"
         )
-    used_feature_loss = bool(
-        manifest.get("prior_training_used_feature_loss", True)
-    )
+    used_feature_loss = bool(manifest.get("prior_training_used_feature_loss", True))
     if used_feature_loss and not bool(args.allow_feature_stripped_prior):
         raise ValueError(
             "The prior geometry/topology was trained with feature loss. "
@@ -451,7 +447,9 @@ def _squeeze_render_map(value):
 
 
 @torch.no_grad()
-def _render_depth_alpha(gaussians, camera, height, width, background, norm_before_render):
+def _render_depth_alpha(
+    gaussians, camera, height, width, background, norm_before_render
+):
     pose_w2c = camera.world_view_transform.transpose(0, 1).cuda()
     render_pkg = render_from_pose_gsplat(
         gaussians,
@@ -512,8 +510,8 @@ def _pose_diverse_subsample_cameras(cameras, maximum):
         centers.append(center)
     centers = torch.stack(centers, dim=0)
     squared_distance_to_centroid = (
-        centers - centers.mean(dim=0, keepdim=True)
-    ).square().sum(dim=1)
+        (centers - centers.mean(dim=0, keepdim=True)).square().sum(dim=1)
+    )
     selected_mask = torch.zeros(len(cameras), dtype=torch.bool)
     selected_indices = []
     first_index = int(torch.argmax(squared_distance_to_centroid).item())
@@ -556,25 +554,37 @@ def _camera_view_bin_ids(cameras, bin_count):
         if center is None:
             # A temporal fallback is deterministic, but callers record it so it
             # can never be mistaken for genuine pose-space coverage.
-            labels = [min(bin_count - 1, index * bin_count // len(cameras)) for index in range(len(cameras))]
+            labels = [
+                min(bin_count - 1, index * bin_count // len(cameras))
+                for index in range(len(cameras))
+            ]
             return labels, bin_count
         center = torch.as_tensor(center).detach().float().cpu().reshape(-1)
         if center.numel() != 3 or not bool(torch.isfinite(center).all().item()):
-            labels = [min(bin_count - 1, index * bin_count // len(cameras)) for index in range(len(cameras))]
+            labels = [
+                min(bin_count - 1, index * bin_count // len(cameras))
+                for index in range(len(cameras))
+            ]
             return labels, bin_count
         centers.append(center)
     centers = torch.stack(centers, dim=0)
     selected = []
     selected_mask = torch.zeros(len(cameras), dtype=torch.bool)
-    first = int(torch.argmax((centers - centers.mean(dim=0)).square().sum(dim=1)).item())
+    first = int(
+        torch.argmax((centers - centers.mean(dim=0)).square().sum(dim=1)).item()
+    )
     selected.append(first)
     selected_mask[first] = True
     nearest = (centers - centers[first]).square().sum(dim=1)
     for _ in range(1, bin_count):
-        next_index = int(torch.argmax(nearest.masked_fill(selected_mask, -torch.inf)).item())
+        next_index = int(
+            torch.argmax(nearest.masked_fill(selected_mask, -torch.inf)).item()
+        )
         selected.append(next_index)
         selected_mask[next_index] = True
-        nearest = torch.minimum(nearest, (centers - centers[next_index]).square().sum(dim=1))
+        nearest = torch.minimum(
+            nearest, (centers - centers[next_index]).square().sum(dim=1)
+        )
     prototypes = centers[torch.as_tensor(selected, dtype=torch.long)]
     labels = torch.cdist(centers, prototypes).argmin(dim=1).tolist()
     return [int(label) for label in labels], int(bin_count)
@@ -599,7 +609,9 @@ def _camera_trajectory_bin_ids(cameras, bin_count):
         records.sort(key=lambda item: item[0])
         local_bins = min(bin_count, len(records))
         for rank, (_, index) in enumerate(records):
-            labels[index] = offset + min(local_bins - 1, rank * local_bins // len(records))
+            labels[index] = offset + min(
+                local_bins - 1, rank * local_bins // len(records)
+            )
         offset += local_bins
     return labels, offset
 
@@ -704,8 +716,7 @@ def _cache_payload_compatible(cached_payload, expected_payload):
         "native_sparse_coordinate_convention",
     )
     return all(
-        cached_payload.get(key) == expected_payload.get(key)
-        for key in required_keys
+        cached_payload.get(key) == expected_payload.get(key) for key in required_keys
     )
 
 
@@ -755,8 +766,12 @@ def _build_query_cache(
         )
         cache[name] = {
             "feature_map": feature_map.detach().to(device="cpu", dtype=torch.float16),
-            "depth": torch.as_tensor(depth).detach().to(device="cpu", dtype=torch.float32),
-            "alpha": torch.as_tensor(alpha).detach().to(device="cpu", dtype=torch.float16),
+            "depth": torch.as_tensor(depth)
+            .detach()
+            .to(device="cpu", dtype=torch.float32),
+            "alpha": torch.as_tensor(alpha)
+            .detach()
+            .to(device="cpu", dtype=torch.float16),
             "K": K.detach().cpu(),
             "pose_w2c": camera.world_view_transform.transpose(0, 1).detach().cpu(),
             "valid_mask": valid_mask.detach().cpu(),
@@ -878,9 +893,7 @@ def _load_or_build_query_cache(
                     "Detector-free query cache is incompatible with the current "
                     f"dataset/frontend protocol: {path}"
                 )
-            print(
-                f"Ignoring incompatible detector-free query cache: {path}"
-            )
+            print(f"Ignoring incompatible detector-free query cache: {path}")
             cached = {}
         else:
             cached = payload.get("queries", {})
@@ -890,8 +903,7 @@ def _load_or_build_query_cache(
             if _camera_cache_key(camera) not in cached
             or (
                 require_proposal_scores
-                and "proposal_score_map"
-                not in cached[_camera_cache_key(camera)]
+                and "proposal_score_map" not in cached[_camera_cache_key(camera)]
             )
             or (
                 require_native_sparse
@@ -908,6 +920,10 @@ def _load_or_build_query_cache(
             )
         ]
         if not missing:
+            if require_native_sparse:
+                from evidence.observation_provider import RealRGBObservationProvider
+
+                RealRGBObservationProvider({"queries": cached})
             print(f"Loaded detector-free query cache: {path} queries={len(cached)}")
             write_query_calibration_sidecar(path, {"queries": cached})
             return cached
@@ -919,8 +935,7 @@ def _load_or_build_query_cache(
     else:
         if cache_policy == "readonly":
             raise ValueError(
-                "Read-only detector-free query cache does not exist: "
-                f"{path}"
+                f"Read-only detector-free query cache does not exist: {path}"
             )
         cached = {}
     missing_cameras = [
@@ -957,6 +972,10 @@ def _load_or_build_query_cache(
         native_keypoint_count=native_keypoint_count,
         existing=cached,
     )
+    if require_native_sparse:
+        from evidence.observation_provider import RealRGBObservationProvider
+
+        RealRGBObservationProvider({"queries": cache})
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
@@ -1004,7 +1023,10 @@ def _cached_native_observations(
         )
     native_height, native_width = map(int, cached["native_input_hw"])
     frontend_metadata = cached["frontend_metadata"]
-    if str(frontend_metadata.get("query_feature_contract")) != _QUERY_FEATURE_CONTRACT_NATIVE:
+    if (
+        str(frontend_metadata.get("query_feature_contract"))
+        != _QUERY_FEATURE_CONTRACT_NATIVE
+    ):
         raise ValueError(
             "Native semidense supervision requires a dense SuperPoint map "
             "computed from the same resized RGB input as detectAndCompute"
@@ -1353,9 +1375,8 @@ def _build_ulf_robust_consensus_landmark_indices(
     base_eligible = finite_opacity & (opacity >= opacity_threshold)
     if int(args.scaffold_budget) <= 0:
         raise ValueError("Robust ULF consensus requires a positive scaffold budget")
-    if (
-        int(base_eligible.sum().item()) < int(args.scaffold_budget)
-        and not bool(args.ulf_consensus_allow_underfill)
+    if int(base_eligible.sum().item()) < int(args.scaffold_budget) and not bool(
+        args.ulf_consensus_allow_underfill
     ):
         raise ValueError(
             "Robust ULF consensus budget exceeds the opacity-eligible primitive pool"
@@ -1372,7 +1393,9 @@ def _build_ulf_robust_consensus_landmark_indices(
         cameras, args.ulf_consensus_trajectory_bins
     )
     if int(args.ulf_consensus_min_distinct_view_bins) > 0 and view_bin_count <= 0:
-        raise ValueError("robust KCS distinct-view gate requires --ulf_consensus_view_bins")
+        raise ValueError(
+            "robust KCS distinct-view gate requires --ulf_consensus_view_bins"
+        )
     if (
         int(args.ulf_consensus_min_distinct_trajectory_bins) > 0
         and trajectory_bin_count <= 0
@@ -1383,16 +1406,12 @@ def _build_ulf_robust_consensus_landmark_indices(
     votes = torch.zeros(xyz.shape[0], dtype=torch.int32, device=xyz.device)
     visibility_counts = torch.zeros_like(votes)
     view_vote_mask = (
-        torch.zeros(
-            (xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device
-        )
+        torch.zeros((xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device)
         if view_bin_count > 0
         else None
     )
     view_visibility_mask = (
-        torch.zeros(
-            (xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device
-        )
+        torch.zeros((xyz.shape[0], view_bin_count), dtype=torch.bool, device=xyz.device)
         if view_bin_count > 0
         else None
     )
@@ -1454,7 +1473,11 @@ def _build_ulf_robust_consensus_landmark_indices(
         )
         visible = base_eligible & projected & render_visible & valid_projection
         visible_indices = torch.nonzero(visible, as_tuple=False).reshape(-1)
-        if visible_indices.numel() > int(args.ulf_consensus_max_candidates_per_view) > 0:
+        if (
+            visible_indices.numel()
+            > int(args.ulf_consensus_max_candidates_per_view)
+            > 0
+        ):
             _, keep = torch.topk(
                 opacity[visible_indices],
                 int(args.ulf_consensus_max_candidates_per_view),
@@ -1465,9 +1488,7 @@ def _build_ulf_robust_consensus_landmark_indices(
         if visible_indices.numel() > 0:
             visibility_counts[visible_indices] += 1
             if view_visibility_mask is not None:
-                view_visibility_mask[
-                    visible_indices, view_labels[view_index]
-                ] = True
+                view_visibility_mask[visible_indices, view_labels[view_index]] = True
             if trajectory_visibility_mask is not None:
                 trajectory_visibility_mask[
                     visible_indices, trajectory_labels[view_index]
@@ -1571,7 +1592,10 @@ def _build_ulf_robust_consensus_landmark_indices(
             "minimum_visible_views",
             consensus_visibility >= int(args.ulf_consensus_min_visible_views),
         ),
-        ("minimum_consensus_rate", consensus_rate >= float(args.ulf_consensus_min_rate)),
+        (
+            "minimum_consensus_rate",
+            consensus_rate >= float(args.ulf_consensus_min_rate),
+        ),
     ]
     if int(args.ulf_consensus_min_distinct_view_bins) > 0:
         gate_masks.append(
@@ -1598,7 +1622,14 @@ def _build_ulf_robust_consensus_landmark_indices(
     def _gate_stat(values):
         values = values[base_eligible].float()
         if values.numel() == 0:
-            return {"count": 0, "mean": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
+            return {
+                "count": 0,
+                "mean": 0.0,
+                "p10": 0.0,
+                "p50": 0.0,
+                "p90": 0.0,
+                "max": 0.0,
+            }
         quantiles = torch.quantile(
             values, torch.tensor([0.1, 0.5, 0.9], device=values.device)
         )
@@ -1639,8 +1670,7 @@ def _build_ulf_robust_consensus_landmark_indices(
             ),
             "minimum_distinct_view_bins": (
                 _eligible_count(
-                    distinct_views
-                    >= int(args.ulf_consensus_min_distinct_view_bins)
+                    distinct_views >= int(args.ulf_consensus_min_distinct_view_bins)
                 )
                 if int(args.ulf_consensus_min_distinct_view_bins) > 0
                 else None
@@ -1675,9 +1705,7 @@ def _build_ulf_robust_consensus_landmark_indices(
         "visibility_statistics_over_base_eligible": _gate_stat(visibility_counts),
         "consensus_evidence": consensus_evidence,
         "independent_bin_scoring": independent_bin_scoring,
-        "independent_vote_statistics_over_base_eligible": _gate_stat(
-            consensus_votes
-        ),
+        "independent_vote_statistics_over_base_eligible": _gate_stat(consensus_votes),
         "independent_visibility_statistics_over_base_eligible": _gate_stat(
             consensus_visibility
         ),
@@ -1723,9 +1751,7 @@ def _build_ulf_robust_consensus_landmark_indices(
     # Rate only becomes a score after it has first been enforced as a gate.
     vote_score = (
         consensus_votes.float()
-        + 0.25
-        * consensus_votes.float().max().clamp_min(1.0)
-        * consensus_rate
+        + 0.25 * consensus_votes.float().max().clamp_min(1.0) * consensus_rate
     )
     vote_score += 0.01 * consensus_visibility.float()
     voxel_size = float(args.ulf_consensus_voxel_size)
@@ -1739,9 +1765,7 @@ def _build_ulf_robust_consensus_landmark_indices(
         # Preserve every primitive that passed the named consensus gates.
         # Capacity-only fallback points fill the remaining fixed protocol
         # budget without displacing that reliable core.
-        consensus_core = torch.nonzero(
-            consensus_eligible, as_tuple=False
-        ).reshape(-1)
+        consensus_core = torch.nonzero(consensus_eligible, as_tuple=False).reshape(-1)
         fill_budget = requested_budget - int(consensus_core.numel())
         coverage_fill = coverage_balanced_score(
             xyz,
@@ -1779,16 +1803,13 @@ def _build_ulf_robust_consensus_landmark_indices(
         "resolved_budget": effective_budget,
         "capacity_policy": capacity_policy,
         "underfilled_to_consensus_saturation": bool(
-            effective_budget < requested_budget
-            and not fallback_to_non_consensus
+            effective_budget < requested_budget and not fallback_to_non_consensus
         ),
         "eligible_primitives": int(base_eligible.sum().item()),
         "consensus_eligible_primitives": int(consensus_eligible.sum().item()),
         "fallback_to_non_consensus": bool(fallback_to_non_consensus),
         "fallback_nonconsensus_count": int(
-            requested_budget - consensus_count
-            if fallback_to_non_consensus
-            else 0
+            requested_budget - consensus_count if fallback_to_non_consensus else 0
         ),
         "effective_minimum_opacity": opacity_threshold,
         "opacity_keep_quantile": opacity_quantile,
@@ -1796,7 +1817,9 @@ def _build_ulf_robust_consensus_landmark_indices(
         "selected_vote_mean": float(selected_votes.float().mean().item()),
         "selected_vote_max": int(selected_votes.max().item()),
         "selected_consensus_rate_mean": float(selected_rates.mean().item()),
-        "selected_consensus_rate_p10": float(torch.quantile(selected_rates, 0.1).item()),
+        "selected_consensus_rate_p10": float(
+            torch.quantile(selected_rates, 0.1).item()
+        ),
         "minimum_votes": min_votes,
         "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
         "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
@@ -1995,9 +2018,7 @@ def _build_ulf_robust_geometry_features(
         return records
 
     accumulator_leading_shape = (
-        (fusion_view_bin_count, bank_count)
-        if exact_bin_balance
-        else (bank_count,)
+        (fusion_view_bin_count, bank_count) if exact_bin_balance else (bank_count,)
     )
     prototype_sum = torch.zeros(
         (*accumulator_leading_shape, feature_dim),
@@ -2019,9 +2040,7 @@ def _build_ulf_robust_geometry_features(
         view_bin,
     ):
         if exact_bin_balance:
-            descriptor_sum[view_bin].index_add_(
-                0, indices, sampled * weights[:, None]
-            )
+            descriptor_sum[view_bin].index_add_(0, indices, sampled * weights[:, None])
             weight_sum[view_bin].index_add_(0, indices, weights)
         else:
             descriptor_sum.index_add_(0, indices, sampled * weights[:, None])
@@ -2042,14 +2061,13 @@ def _build_ulf_robust_geometry_features(
         result = F.normalize(fallback.float(), dim=-1).clone()
         if bool(observed.any().item()):
             per_bin = F.normalize(
-                descriptor_sum
-                / weight_sum.clamp_min(1e-8)[..., None],
+                descriptor_sum / weight_sum.clamp_min(1e-8)[..., None],
                 dim=-1,
             )
             per_bin = per_bin * observed_by_bin[..., None]
-            equal_bin_mean = per_bin.sum(dim=0) / observed_by_bin.sum(
-                dim=0
-            ).clamp_min(1)[..., None]
+            equal_bin_mean = (
+                per_bin.sum(dim=0) / observed_by_bin.sum(dim=0).clamp_min(1)[..., None]
+            )
             result[observed] = F.normalize(equal_bin_mean[observed], dim=-1)
         return result, observed
 
@@ -2097,9 +2115,7 @@ def _build_ulf_robust_geometry_features(
             histogram.copy_(accumulate_cosine_histogram(histogram, indices, cosine))
 
         for_each_observation("Robust ULF GWFF cosine histogram", accumulate_histogram)
-        thresholds = cosine_histogram_trim_thresholds(
-            histogram, trim_fractions
-        ).to(
+        thresholds = cosine_histogram_trim_thresholds(histogram, trim_fractions).to(
             device=bank_xyz.device
         )
         thresholds = torch.maximum(
@@ -2156,7 +2172,12 @@ def _build_ulf_robust_geometry_features(
         "descriptor_trim_histogram_bins": int(args.ulf_fusion_trim_histogram_bins),
         "fusion_reference_mode": "mean",
         "reference_to_prototype_cosine_mean": (
-            float((reference[reference_observed] * prototype[reference_observed]).sum(dim=1).mean().item())
+            float(
+                (reference[reference_observed] * prototype[reference_observed])
+                .sum(dim=1)
+                .mean()
+                .item()
+            )
             if bool(reference_observed.any().item())
             else None
         ),
@@ -2208,11 +2229,15 @@ def _load_or_build_landmark_indices(
             args.landmark_path,
             point_count=gaussians.get_xyz.shape[0],
         )
-        return indices, path, {
-            "mode": "file",
-            "path": str(path),
-            "budget": int(indices.numel()),
-        }
+        return (
+            indices,
+            path,
+            {
+                "mode": "file",
+                "path": str(path),
+                "budget": int(indices.numel()),
+            },
+        )
 
     output_path = Path(args.generated_landmark_path)
     if not output_path.is_absolute():
@@ -2251,8 +2276,7 @@ def _load_or_build_landmark_indices(
     with metadata_path.open("w") as handle:
         json.dump(diagnostics, handle, indent=2, sort_keys=True)
     print(
-        "Saved robust KCS localization scaffold: "
-        f"{output_path} count={indices.numel()}"
+        f"Saved robust KCS localization scaffold: {output_path} count={indices.numel()}"
     )
     return indices.cpu(), output_path, diagnostics
 
@@ -2271,18 +2295,12 @@ def _assert_cached_consensus_scaffold(metadata, args):
         "minimum_visible_views": int(args.ulf_consensus_min_visible_views),
         "minimum_consensus_rate": float(args.ulf_consensus_min_rate),
         "distinct_view_bins": int(args.ulf_consensus_view_bins),
-        "minimum_distinct_view_bins": int(
-            args.ulf_consensus_min_distinct_view_bins
-        ),
+        "minimum_distinct_view_bins": int(args.ulf_consensus_min_distinct_view_bins),
         "minimum_distinct_trajectory_bins": int(
             args.ulf_consensus_min_distinct_trajectory_bins
         ),
-        "independent_bin_scoring": bool(
-            args.ulf_consensus_independent_bin_scoring
-        ),
-        "candidate_cap_per_view": int(
-            args.ulf_consensus_max_candidates_per_view
-        ),
+        "independent_bin_scoring": bool(args.ulf_consensus_independent_bin_scoring),
+        "candidate_cap_per_view": int(args.ulf_consensus_max_candidates_per_view),
         "max_per_voxel": int(args.ulf_consensus_max_per_voxel),
         "voxel_extent_quantile": float(args.ulf_consensus_extent_quantile),
         "support_view_sampling": str(args.ulf_support_view_sampling),
@@ -2295,9 +2313,7 @@ def _assert_cached_consensus_scaffold(metadata, args):
             )
         value = metadata[key]
         if isinstance(target, float):
-            matches = math.isclose(
-                float(value), target, rel_tol=1e-7, abs_tol=1e-7
-            )
+            matches = math.isclose(float(value), target, rel_tol=1e-7, abs_tol=1e-7)
         else:
             matches = value == target
         if not matches:
@@ -2308,7 +2324,9 @@ def _assert_cached_consensus_scaffold(metadata, args):
     target_trajectory_bins = int(args.ulf_consensus_trajectory_bins)
     cached_trajectory_bins = metadata.get("trajectory_bins_per_group")
     if cached_trajectory_bins is not None:
-        trajectory_policy_matches = int(cached_trajectory_bins) == target_trajectory_bins
+        trajectory_policy_matches = (
+            int(cached_trajectory_bins) == target_trajectory_bins
+        )
     else:
         # Legacy diagnostics stored the realized total across all sequences in
         # ``distinct_trajectory_bins``.  Reconstruct the per-sequence policy
@@ -2465,22 +2483,14 @@ def _load_initial_features(
         mvinit_observation_count = torch.as_tensor(
             mvinit_observation_count, dtype=torch.long
         ).reshape(-1)
-        mvinit_count_valid = (
-            mvinit_observation_count.numel() == state_indices.numel()
-        )
+        mvinit_count_valid = mvinit_observation_count.numel() == state_indices.numel()
     raw_anchor_offset = state.get("raw_anchor_offset")
     raw_offset_valid = False
     if raw_anchor_offset is not None:
-        raw_anchor_offset = torch.as_tensor(
-            raw_anchor_offset, dtype=torch.float32
-        )
-        raw_offset_valid = (
-            raw_anchor_offset.numel() == state_indices.numel() * 3
-        )
+        raw_anchor_offset = torch.as_tensor(raw_anchor_offset, dtype=torch.float32)
+        raw_offset_valid = raw_anchor_offset.numel() == state_indices.numel() * 3
         if raw_offset_valid:
-            raw_anchor_offset = raw_anchor_offset.reshape(
-                state_indices.numel(), 3
-            )
+            raw_anchor_offset = raw_anchor_offset.reshape(state_indices.numel(), 3)
     if not torch.equal(state_indices, landmark_indices_cpu):
         raise ValueError("Initial state landmark IDs do not match the fixed scaffold")
     if mvinit_count_valid:
@@ -2489,8 +2499,10 @@ def _load_initial_features(
     if raw_offset_valid:
         state["raw_anchor_offset"] = raw_anchor_offset
     state["_raw_anchor_offset_alignment_valid"] = raw_offset_valid
-    return F.normalize(features.to(device), dim=-1), state, int(
-        landmark_indices.numel()
+    return (
+        F.normalize(features.to(device), dim=-1),
+        state,
+        int(landmark_indices.numel()),
     )
 
 
@@ -2590,20 +2602,14 @@ def _stable_clip_grad_norm(parameters, max_norm):
     samples receive the intended bounded update instead of being discarded.
     """
     gradients = [
-        parameter.grad
-        for parameter in parameters
-        if parameter.grad is not None
+        parameter.grad for parameter in parameters if parameter.grad is not None
     ]
     if not gradients:
         return torch.zeros((), dtype=torch.float64), False
 
     norms = []
     for gradient in gradients:
-        values = (
-            gradient.coalesce().values()
-            if gradient.is_sparse
-            else gradient
-        )
+        values = gradient.coalesce().values() if gradient.is_sparse else gradient
         norms.append(torch.linalg.vector_norm(values.detach(), dtype=torch.float64))
     total_norm = torch.linalg.vector_norm(torch.stack(norms), dtype=torch.float64)
     if not bool(torch.isfinite(total_norm).item()):
@@ -2649,13 +2655,9 @@ def _assign_tracks_by_splat_provenance(
         landmark_global_indices=landmark_global_indices,
         background=background,
         topk=args.geometry_teacher_provenance_topk,
-        minimum_consensus_rate=(
-            args.geometry_teacher_provenance_min_consensus_rate
-        ),
+        minimum_consensus_rate=(args.geometry_teacher_provenance_min_consensus_rate),
         minimum_views=args.geometry_teacher_provenance_min_views,
-        group_maximum_landmarks=(
-            args.geometry_teacher_provenance_group_max_landmarks
-        ),
+        group_maximum_landmarks=(args.geometry_teacher_provenance_group_max_landmarks),
         group_minimum_relative_mass=(
             args.geometry_teacher_provenance_group_min_relative_mass
         ),
@@ -2665,9 +2667,7 @@ def _assign_tracks_by_splat_provenance(
         depth_absolute_tolerance_m=(
             args.geometry_teacher_provenance_depth_abs_tolerance_m
         ),
-        depth_relative_tolerance=(
-            args.geometry_teacher_provenance_depth_rel_tolerance
-        ),
+        depth_relative_tolerance=(args.geometry_teacher_provenance_depth_rel_tolerance),
     )
 
 
@@ -2678,9 +2678,7 @@ def _track_triangulation_backend(args, track_count: int):
         >= int(args.geometry_teacher_parallel_triangulation_min_tracks)
     ):
         return robust_triangulate_associations_fresh_cpu, {
-            "worker_count": int(
-                args.geometry_teacher_triangulation_cpu_workers
-            )
+            "worker_count": int(args.geometry_teacher_triangulation_cpu_workers)
         }
     return robust_triangulate_associations, {}
 
@@ -2719,9 +2717,7 @@ def _collect_track_first_geometry_teacher(
             )
         )
         if depth_sources[-1] is None:
-            raise ValueError(
-                f"Geometry teacher cache lacks native depth for {name}"
-            )
+            raise ValueError(f"Geometry teacher cache lacks native depth for {name}")
         native_hw = cached.get("native_input_hw")
         if native_hw is None:
             depth = cached.get("native_depth")
@@ -2765,12 +2761,8 @@ def _collect_track_first_geometry_teacher(
             points_per_camera=(
                 args.geometry_teacher_track_pair_scene_points_per_camera
             ),
-            maximum_points=(
-                args.geometry_teacher_track_pair_maximum_scene_points
-            ),
-            voxel_size_m=(
-                args.geometry_teacher_track_pair_scene_point_voxel_size_m
-            ),
+            maximum_points=(args.geometry_teacher_track_pair_maximum_scene_points),
+            voxel_size_m=(args.geometry_teacher_track_pair_scene_point_voxel_size_m),
         )
     track_result = build_cycle_consistent_tracks(
         descriptors=descriptors,
@@ -2791,9 +2783,7 @@ def _collect_track_first_geometry_teacher(
         pair_parallax_saturation_deg=(
             args.geometry_teacher_track_pair_parallax_saturation_deg
         ),
-        pair_diversity_weight=(
-            args.geometry_teacher_track_pair_diversity_weight
-        ),
+        pair_diversity_weight=(args.geometry_teacher_track_pair_diversity_weight),
         pair_candidate_pool_per_camera=(
             args.geometry_teacher_track_pair_candidate_pool_per_camera
         ),
@@ -2802,12 +2792,8 @@ def _collect_track_first_geometry_teacher(
         maximum_axis_angle_deg=args.geometry_teacher_track_max_axis_angle_deg,
         minimum_similarity=args.geometry_teacher_track_min_similarity,
         minimum_margin=args.geometry_teacher_track_min_margin,
-        maximum_epipolar_error_px=(
-            args.geometry_teacher_track_max_epipolar_error_px
-        ),
-        epipolar_candidate_topk=(
-            args.geometry_teacher_track_epipolar_candidate_topk
-        ),
+        maximum_epipolar_error_px=(args.geometry_teacher_track_max_epipolar_error_px),
+        epipolar_candidate_topk=(args.geometry_teacher_track_epipolar_candidate_topk),
         epipolar_recovered_minimum_similarity=(
             args.geometry_teacher_track_epipolar_recovered_min_similarity
         ),
@@ -2816,9 +2802,7 @@ def _collect_track_first_geometry_teacher(
         ),
         minimum_track_views=args.geometry_teacher_min_views,
         require_cycle=args.geometry_teacher_track_require_cycle,
-        allow_chain_tracks=(
-            args.geometry_teacher_track_allow_chain_tracks
-        ),
+        allow_chain_tracks=(args.geometry_teacher_track_allow_chain_tracks),
         return_pair_sidecar=pair_sidecar_requested,
         device="cuda",
     )
@@ -2841,9 +2825,7 @@ def _collect_track_first_geometry_teacher(
     )
     rendered_depth = torch.empty(observation_query.numel(), dtype=torch.float32)
     observation_order = torch.argsort(observation_query, stable=True)
-    observation_counts = torch.bincount(
-        observation_query, minlength=len(keypoints)
-    )
+    observation_counts = torch.bincount(observation_query, minlength=len(keypoints))
     observation_offsets = torch.cat(
         (torch.zeros(1, dtype=torch.long), observation_counts.cumsum(0))
     )
@@ -2853,9 +2835,7 @@ def _collect_track_first_geometry_teacher(
         if begin == end:
             continue
         rows = observation_order[begin:end]
-        rendered_depth[rows] = depth_at_keypoints[query][
-            observation_keypoint[rows]
-        ]
+        rendered_depth[rows] = depth_at_keypoints[query][observation_keypoint[rows]]
     query_bins = camera_pose_bins(
         camera_poses,
         int(args.geometry_teacher_view_bins),
@@ -2885,9 +2865,7 @@ def _collect_track_first_geometry_teacher(
         parallax_quantile=args.geometry_teacher_parallax_quantile,
         maximum_reprojection_px=args.geometry_teacher_max_reprojection_px,
         maximum_condition_number=args.geometry_teacher_max_condition_number,
-        maximum_covariance_trace_m2=(
-            args.geometry_teacher_max_covariance_trace_m2
-        ),
+        maximum_covariance_trace_m2=(args.geometry_teacher_max_covariance_trace_m2),
         maximum_rendered_depth_residual_m=(
             args.geometry_teacher_max_rendered_depth_residual_m
         ),
@@ -2913,9 +2891,7 @@ def _collect_track_first_geometry_teacher(
         ),
         **triangulation_extra,
     )
-    track_geometry["track_confidence_level"] = tracks[
-        "track_level"
-    ].clone()
+    track_geometry["track_confidence_level"] = tracks["track_level"].clone()
     if track_pair_sidecar is not None:
         track_pair_sidecar = attach_pair_triangulation_statistics(
             track_pair_sidecar, tracks, track_geometry, camera_poses
@@ -2923,9 +2899,7 @@ def _collect_track_first_geometry_teacher(
     provenance_diagnostics = {}
     if str(args.geometry_teacher_identity_mode) == "track_first_provenance":
         if provenance_context is None:
-            raise ValueError(
-                "track_first_provenance requires frozen renderer context"
-            )
+            raise ValueError("track_first_provenance requires frozen renderer context")
         geometry, assignment, provenance_diagnostics = (
             _assign_tracks_by_splat_provenance(
                 tracks=tracks,
@@ -2942,33 +2916,23 @@ def _collect_track_first_geometry_teacher(
         geometry, assignment = assign_triangulated_tracks_to_landmarks(
             track_geometry,
             bank_xyz,
-            maximum_distance_m=(
-                args.geometry_teacher_track_assignment_max_distance_m
-            ),
-            minimum_margin_m=(
-                args.geometry_teacher_track_assignment_min_margin_m
-            ),
+            maximum_distance_m=(args.geometry_teacher_track_assignment_max_distance_m),
+            minimum_margin_m=(args.geometry_teacher_track_assignment_min_margin_m),
             require_high_confidence=True,
             device="cuda",
         )
     track_landmark = assignment["track_landmark_index"]
-    track_high_confidence = track_geometry[
-        "triangulation_high_confidence"
-    ]
+    track_high_confidence = track_geometry["triangulation_high_confidence"]
     support_by_query = [[] for _ in query_names]
     track_group_offsets = assignment.get("track_landmark_offsets")
     track_group_indices = assignment.get("track_landmark_indices")
-    for track, query in zip(
-        tracks["track_index"].tolist(), observation_query.tolist()
-    ):
+    for track, query in zip(tracks["track_index"].tolist(), observation_query.tolist()):
         if not bool(track_high_confidence[track]):
             continue
         if track_group_offsets is not None and track_group_indices is not None:
             begin = int(track_group_offsets[track])
             end = int(track_group_offsets[track + 1])
-            support_by_query[query].extend(
-                track_group_indices[begin:end].tolist()
-            )
+            support_by_query[query].extend(track_group_indices[begin:end].tolist())
         else:
             landmark = int(track_landmark[track])
             if landmark >= 0:
@@ -2985,9 +2949,7 @@ def _collect_track_first_geometry_teacher(
         else torch.zeros(0, dtype=torch.long)
     )
     statistics = {
-        "query_support_offsets": torch.as_tensor(
-            support_offsets, dtype=torch.long
-        ),
+        "query_support_offsets": torch.as_tensor(support_offsets, dtype=torch.long),
         "query_support_indices": support_indices,
         "query_support_query_count": torch.as_tensor(
             len(query_names), dtype=torch.long
@@ -2995,9 +2957,7 @@ def _collect_track_first_geometry_teacher(
     }
     diagnostics = {
         **track_diagnostics,
-        "geometry_teacher_identity_mode": str(
-            args.geometry_teacher_identity_mode
-        ),
+        "geometry_teacher_identity_mode": str(args.geometry_teacher_identity_mode),
         "geometry_teacher_triangulated_track_count": int(
             track_geometry["triangulated"].sum().item()
         ),
@@ -3010,9 +2970,7 @@ def _collect_track_first_geometry_teacher(
         "geometry_teacher_high_confidence_landmark_count": int(
             geometry["triangulation_high_confidence"].sum().item()
         ),
-        "geometry_teacher_query_support_edge_count": int(
-            support_indices.numel()
-        ),
+        "geometry_teacher_query_support_edge_count": int(support_indices.numel()),
         **provenance_diagnostics,
     }
     if "landmark_track_count" in geometry:
@@ -3020,9 +2978,7 @@ def _collect_track_first_geometry_teacher(
         assigned_landmarks = track_count_per_landmark > 0
         multi_track = track_count_per_landmark > 1
         effective_support = geometry["landmark_effective_track_support"]
-        xyz_max_residual = geometry[
-            "landmark_track_xyz_max_residual_m"
-        ]
+        xyz_max_residual = geometry["landmark_track_xyz_max_residual_m"]
         diagnostics.update(
             {
                 "geometry_teacher_multi_track_landmark_count": int(
@@ -3038,19 +2994,13 @@ def _collect_track_first_geometry_teacher(
                     else 0.0
                 ),
                 "geometry_teacher_track_conflict_gt_1cm_count": int(
-                    (
-                        multi_track & (xyz_max_residual > 0.01)
-                    ).sum().item()
+                    (multi_track & (xyz_max_residual > 0.01)).sum().item()
                 ),
                 "geometry_teacher_track_conflict_gt_3cm_count": int(
-                    (
-                        multi_track & (xyz_max_residual > 0.03)
-                    ).sum().item()
+                    (multi_track & (xyz_max_residual > 0.03)).sum().item()
                 ),
                 "geometry_teacher_track_conflict_gt_5cm_count": int(
-                    (
-                        multi_track & (xyz_max_residual > 0.05)
-                    ).sum().item()
+                    (multi_track & (xyz_max_residual > 0.05)).sum().item()
                 ),
             }
         )
@@ -3104,9 +3054,7 @@ def _csr_positive_responsibilities(
         return rows, errors
     sigma = max(float(sigma_px), 1e-6)
     unnormalized = torch.exp(-0.5 * (errors / sigma).square())
-    denominator = torch.zeros(
-        counts.numel(), device=errors.device, dtype=errors.dtype
-    )
+    denominator = torch.zeros(counts.numel(), device=errors.device, dtype=errors.dtype)
     denominator.index_add_(0, rows, unnormalized)
     weights = unnormalized / denominator[rows].clamp_min(1e-12)
     return rows, weights
@@ -3140,9 +3088,7 @@ def _collect_native_global_attractor_statistics(
     ambiguous_count = torch.zeros(landmark_count, device=device)
     false_count = torch.zeros(landmark_count, device=device)
     correct_count = torch.zeros(landmark_count, device=device)
-    visible_proposal_opportunity_count = torch.zeros(
-        landmark_count, device=device
-    )
+    visible_proposal_opportunity_count = torch.zeros(landmark_count, device=device)
     normalized_features = F.normalize(features.detach(), dim=1)
     records = []
     observation_limit = (
@@ -3163,13 +3109,10 @@ def _collect_native_global_attractor_statistics(
         )
         if observations.query_features.numel() == 0:
             continue
-        query = F.normalize(
-            observations.query_features.detach(), dim=1
-        )
+        query = F.normalize(observations.query_features.detach(), dim=1)
         top1 = (query @ normalized_features.T).argmax(dim=1)
         top1_distance = torch.linalg.norm(
-            observations.bank_uv[top1]
-            - observations.query_uv,
+            observations.bank_uv[top1] - observations.query_uv,
             dim=1,
         )
         clean = observations.bank_visible[top1] & (
@@ -3200,9 +3143,7 @@ def _collect_native_global_attractor_statistics(
 
     observed = decisive_count > 0
     false_incoming_rate = torch.zeros_like(incoming_count)
-    false_incoming_rate[observed] = (
-        false_count[observed] / decisive_count[observed]
-    )
+    false_incoming_rate[observed] = false_count[observed] / decisive_count[observed]
     opportunity_observed = visible_proposal_opportunity_count > 0
     false_rate = torch.zeros_like(incoming_count)
     false_rate[opportunity_observed] = (
@@ -3219,8 +3160,7 @@ def _collect_native_global_attractor_statistics(
     support = torch.zeros_like(incoming_count)
     if bool(eligible.any().item()):
         support[eligible] = (
-            torch.log1p(incoming_count[eligible])
-            / support_reference.clamp_min(1e-8)
+            torch.log1p(incoming_count[eligible]) / support_reference.clamp_min(1e-8)
         ).pow(float(args.native_global_attractor_support_power))
     raw_score = false_rate * support
     score = torch.zeros_like(raw_score)
@@ -3238,15 +3178,12 @@ def _collect_native_global_attractor_statistics(
             "native_global_attractor_prior_incoming_count": int(
                 incoming_count.sum().item()
             ),
-            "native_global_attractor_prior_false_count": int(
-                false_count.sum().item()
-            ),
+            "native_global_attractor_prior_false_count": int(false_count.sum().item()),
             "native_global_attractor_prior_ambiguous_count": int(
                 ambiguous_count.sum().item()
             ),
             "native_global_attractor_prior_raw_false_rate": float(
-                false_count.sum().item()
-                / decisive_count.sum().clamp_min(1.0).item()
+                false_count.sum().item() / decisive_count.sum().clamp_min(1.0).item()
             ),
             "native_global_attractor_prior_visible_opportunities": float(
                 visible_proposal_opportunity_count.sum().item()
@@ -3380,12 +3317,8 @@ def _state_config(
             "kcs_min_distinct_trajectory_bins": int(
                 args.ulf_consensus_min_distinct_trajectory_bins
             ),
-            "gwff_trim_fraction": float(
-                args.ulf_fusion_descriptor_trim_fraction
-            ),
-            "gwff_descriptor_min_cosine": float(
-                args.ulf_fusion_descriptor_min_cosine
-            ),
+            "gwff_trim_fraction": float(args.ulf_fusion_descriptor_trim_fraction),
+            "gwff_descriptor_min_cosine": float(args.ulf_fusion_descriptor_min_cosine),
             "gwff_reference_mode": "mean",
             "gwff_view_bins": int(args.ulf_fusion_view_bins),
         },
@@ -3408,22 +3341,16 @@ def _state_config(
             "swap_margin": float(args.native_swap_margin),
             "miss_weight": float(args.native_miss_weight),
             "miss_margin": float(args.native_miss_margin),
-            "global_attractor_weight": float(
-                args.native_global_attractor_weight
-            ),
+            "global_attractor_weight": float(args.native_global_attractor_weight),
             "local_peak_weight": float(args.native_semidense_weight),
             "local_peak_start_step": int(args.native_semidense_start_step),
             "local_peak_interval": int(args.native_semidense_interval),
-            "local_identity_weight": float(
-                args.native_semidense_local_identity_weight
-            ),
+            "local_identity_weight": float(args.native_semidense_local_identity_weight),
             "margin_preservation_weight": float(
                 args.native_semidense_margin_preservation_weight
             ),
             "protected_set_weight": float(args.native_protected_set_weight),
-            "protected_set_start_step": int(
-                args.native_protected_set_start_step
-            ),
+            "protected_set_start_step": int(args.native_protected_set_start_step),
             "protected_set_interval": int(args.native_protected_set_interval),
         },
         "track_first_evidence": {
@@ -3439,9 +3366,7 @@ def _state_config(
             "train_camera_count": int(len(train_names)),
             "validation_camera_count": int(len(validation_names)),
             "train_camera_names_sha256": _camera_names_sha256(train_names),
-            "validation_camera_names_sha256": _camera_names_sha256(
-                validation_names
-            ),
+            "validation_camera_names_sha256": _camera_names_sha256(validation_names),
         },
         "input": {
             "model_path": os.path.abspath(dataset.model_path),
@@ -3539,9 +3464,11 @@ def train(dataset, args):
         f"primitives={gaussians.get_xyz.shape[0]}"
     )
 
-    feature_extractor = FeatureExtractor(
-        dataset.feature_type, nms_radius=args.native_nms_radius
-    ).cuda().eval()
+    feature_extractor = (
+        FeatureExtractor(dataset.feature_type, nms_radius=args.native_nms_radius)
+        .cuda()
+        .eval()
+    )
     for parameter in feature_extractor.parameters():
         parameter.requires_grad_(False)
 
@@ -3559,9 +3486,7 @@ def train(dataset, args):
             seed=args.split_seed + 1,
             mode=args.split_mode,
         )
-    train_cameras = _uniformly_subsample_cameras(
-        train_cameras, args.max_train_views
-    )
+    train_cameras = _uniformly_subsample_cameras(train_cameras, args.max_train_views)
     validation_cameras = _uniformly_subsample_cameras(
         validation_cameras, args.max_validation_views
     )
@@ -3619,12 +3544,8 @@ def train(dataset, args):
     landmark_indices_cuda = landmark_indices.cuda()
     rgb_bank_xyz = gaussians.get_xyz[landmark_indices_cuda].detach().float()
     base_bank_xyz = rgb_bank_xyz
-    base_bank_rotation = (
-        gaussians.get_rotation[landmark_indices_cuda].detach().float()
-    )
-    base_bank_scaling = (
-        gaussians.get_scaling[landmark_indices_cuda].detach().float()
-    )
+    base_bank_rotation = gaussians.get_rotation[landmark_indices_cuda].detach().float()
+    base_bank_scaling = gaussians.get_scaling[landmark_indices_cuda].detach().float()
     prior_geometry = GaussianPriorGeometry(
         str(dataset.gaussian_type),
         xyz=base_bank_xyz,
@@ -3686,11 +3607,13 @@ def train(dataset, args):
         }
     initial_state = None
     if args.initial_state_path:
-        prior_features, initial_state, initial_state_match_count = _load_initial_features(
-            args.initial_state_path,
-            landmark_indices,
-            feature_extractor.feature_dim,
-            base_bank_xyz.device,
+        prior_features, initial_state, initial_state_match_count = (
+            _load_initial_features(
+                args.initial_state_path,
+                landmark_indices,
+                feature_extractor.feature_dim,
+                base_bank_xyz.device,
+            )
         )
         blend = float(max(0.0, min(1.0, args.initial_state_blend)))
         initial_features = F.normalize(
@@ -3702,15 +3625,9 @@ def train(dataset, args):
             args.initial_state_path
         )
         mvinit_diagnostics["initial_state_blend"] = blend
-        mvinit_diagnostics["initial_state_match_count"] = int(
-            initial_state_match_count
-        )
+        mvinit_diagnostics["initial_state_match_count"] = int(initial_state_match_count)
         mvinit_diagnostics["initial_state_alignment"] = "exact"
-        if bool(
-            initial_state.get(
-                "_mvinit_observation_count_alignment_valid", False
-            )
-        ):
+        if bool(initial_state.get("_mvinit_observation_count_alignment_valid", False)):
             inherited_mvinit_count = torch.as_tensor(
                 initial_state["mvinit_observation_count"],
                 dtype=torch.long,
@@ -3731,9 +3648,7 @@ def train(dataset, args):
                     "observation_count_median": float(
                         mvinit_observation_count.float().median().item()
                     ),
-                    "observation_count_max": int(
-                        mvinit_observation_count.max().item()
-                    ),
+                    "observation_count_max": int(mvinit_observation_count.max().item()),
                     "observed_landmarks": int(
                         (mvinit_observation_count > 0).sum().item()
                     ),
@@ -3762,9 +3677,7 @@ def train(dataset, args):
         and "raw_anchor_offset" in initial_state
         and torch.as_tensor(initial_state["raw_anchor_offset"]).numel()
         == raw_anchor_offset.numel()
-        and bool(
-            initial_state.get("_raw_anchor_offset_alignment_valid", False)
-        )
+        and bool(initial_state.get("_raw_anchor_offset_alignment_valid", False))
     ):
         initial_raw_offset = torch.as_tensor(
             initial_state["raw_anchor_offset"],
@@ -3898,9 +3811,7 @@ def train(dataset, args):
             useful_grid_rows=args.native_protected_set_grid_rows,
             useful_grid_cols=args.native_protected_set_grid_cols,
             useful_depth_bins=args.native_protected_set_depth_bins,
-            useful_surface_voxel_m=(
-                args.native_protected_set_surface_voxel_m
-            ),
+            useful_surface_voxel_m=(args.native_protected_set_surface_voxel_m),
             useful_max_per_surface_group=(
                 args.native_protected_set_max_per_surface_group
             ),
@@ -3957,9 +3868,7 @@ def train(dataset, args):
             args,
             max_observations=args.max_observations,
             bank_visibility_mask=(
-                None
-                if visibility_cache is None
-                else visibility_cache[query_name]
+                None if visibility_cache is None else visibility_cache[query_name]
             ),
             prediction_bank_xyz=current_xyz,
         )
@@ -4016,41 +3925,25 @@ def train(dataset, args):
             descriptor_active
             and protected_set_teacher is not None
             and step >= int(args.native_protected_set_start_step)
-            and step
-            % max(int(args.native_protected_set_interval), 1)
-            == 0
+            and step % max(int(args.native_protected_set_interval), 1) == 0
         )
         if protected_set_active:
-            normalized_query = F.normalize(
-                observations.query_features.detach(), dim=1
-            )
-            protected_scores = normalized_query @ F.normalize(
-                features, dim=1
-            ).T
-            protected_top1_scores, protected_top1_indices = (
-                protected_scores.max(dim=1)
-            )
+            normalized_query = F.normalize(observations.query_features.detach(), dim=1)
+            protected_scores = normalized_query @ F.normalize(features, dim=1).T
+            protected_top1_scores, protected_top1_indices = protected_scores.max(dim=1)
             protected_distance = torch.linalg.norm(
-                observations.bank_uv[protected_top1_indices]
-                - observations.query_uv,
+                observations.bank_uv[protected_top1_indices] - observations.query_uv,
                 dim=1,
             )
-            protected_projected = observations.bank_projected[
-                protected_top1_indices
-            ]
-            protected_visible = observations.bank_visible[
-                protected_top1_indices
-            ]
+            protected_projected = observations.bank_projected[protected_top1_indices]
+            protected_visible = observations.bank_visible[protected_top1_indices]
             protected_correct = protected_visible & (
                 protected_distance <= float(args.positive_radius_px)
             )
             protected_neutral = (
                 ~protected_correct
                 & protected_projected
-                & (
-                    protected_distance
-                    < float(args.negative_radius_px)
-                )
+                & (protected_distance < float(args.negative_radius_px))
             )
             protected_rows = torch.arange(
                 observations.query_uv.shape[0],
@@ -4064,9 +3957,7 @@ def train(dataset, args):
                 candidate_keypoint_idx=protected_rows,
                 candidate_landmark_idx=protected_top1_indices.detach(),
                 candidate_scores=protected_top1_scores.detach(),
-                deployment_mask=torch.ones_like(
-                    protected_rows, dtype=torch.bool
-                ),
+                deployment_mask=torch.ones_like(protected_rows, dtype=torch.bool),
                 gt_correct_mask=protected_correct.detach(),
                 gt_neutral_mask=protected_neutral.detach(),
                 landmark_xyz=current_xyz.detach(),
@@ -4094,9 +3985,7 @@ def train(dataset, args):
             }
         else:
             protected_set_loss = features.sum() * 0.0
-            protected_set_diagnostics = {
-                "native_protected_set_active": 0.0
-            }
+            protected_set_diagnostics = {"native_protected_set_active": 0.0}
         native_semidense_active = (
             descriptor_active
             and float(args.native_semidense_weight) > 0.0
@@ -4127,21 +4016,13 @@ def train(dataset, args):
                 measurement_max_reprojection_px=(
                     args.native_semidense_measurement_max_reprojection_px
                 ),
-                surface_point_plane_m=(
-                    args.native_semidense_surface_point_plane_m
-                ),
-                surface_max_distance_m=(
-                    args.native_semidense_surface_max_distance_m
-                ),
-                surface_normal_cosine=(
-                    args.native_semidense_surface_normal_cosine
-                ),
+                surface_point_plane_m=(args.native_semidense_surface_point_plane_m),
+                surface_max_distance_m=(args.native_semidense_surface_max_distance_m),
+                surface_normal_cosine=(args.native_semidense_surface_normal_cosine),
                 projected_neighbor_radius_px=(
                     args.native_semidense_projected_neighbor_radius_px
                 ),
-                local_identity_weight=(
-                    args.native_semidense_local_identity_weight
-                ),
+                local_identity_weight=(args.native_semidense_local_identity_weight),
                 margin_preservation_weight=(
                     args.native_semidense_margin_preservation_weight
                 ),
@@ -4149,9 +4030,7 @@ def train(dataset, args):
             )
         else:
             native_semidense_loss = features.sum() * 0.0
-            native_semidense_diagnostics = {
-                "native_semidense_active": 0.0
-            }
+            native_semidense_diagnostics = {"native_semidense_active": 0.0}
         semidense_gradient_diagnostics = {
             "native_semidense_gradient_audit_active": 0.0,
             "native_semidense_global_grad_norm": 0.0,
@@ -4161,8 +4040,7 @@ def train(dataset, args):
             "native_semidense_effective_weight_scale": 1.0,
             "native_semidense_gradient_ratio_after_cap": 0.0,
             "native_semidense_alternating_local_step": float(
-                native_semidense_active
-                and args.native_semidense_alternate_global
+                native_semidense_active and args.native_semidense_alternate_global
             ),
         }
         semidense_weight_scale = 1.0
@@ -4189,9 +4067,7 @@ def train(dataset, args):
                 local_norm = torch.linalg.norm(local_flat)
                 denominator = (global_norm * local_norm).clamp_min(1e-12)
                 cosine = torch.dot(global_flat, local_flat) / denominator
-                maximum_ratio = float(
-                    args.native_semidense_max_gradient_ratio
-                )
+                maximum_ratio = float(args.native_semidense_max_gradient_ratio)
                 if maximum_ratio > 0.0:
                     if float(local_norm.item()) <= 0.0:
                         semidense_weight_scale = 1.0
@@ -4206,18 +4082,10 @@ def train(dataset, args):
                         )
                 semidense_gradient_diagnostics = {
                     "native_semidense_gradient_audit_active": 1.0,
-                    "native_semidense_global_grad_norm": float(
-                        global_norm.item()
-                    ),
-                    "native_semidense_local_grad_norm": float(
-                        local_norm.item()
-                    ),
-                    "native_semidense_global_local_grad_cosine": float(
-                        cosine.item()
-                    ),
-                    "native_semidense_gradient_conflict": float(
-                        cosine.item() < 0.0
-                    ),
+                    "native_semidense_global_grad_norm": float(global_norm.item()),
+                    "native_semidense_local_grad_norm": float(local_norm.item()),
+                    "native_semidense_global_local_grad_cosine": float(cosine.item()),
+                    "native_semidense_gradient_conflict": float(cosine.item() < 0.0),
                     "native_semidense_effective_weight_scale": float(
                         semidense_weight_scale
                     ),
@@ -4232,23 +4100,16 @@ def train(dataset, args):
                 }
         global_retrieval_scale = float(
             not (
-                native_semidense_active
-                and bool(args.native_semidense_alternate_global)
+                native_semidense_active and bool(args.native_semidense_alternate_global)
             )
         )
-        loss = (
-            descriptor_scale
-            * (
-                global_retrieval_scale
-                * args.retrieval_weight
-                * retrieval_loss
-                + semidense_weight_scale
-                * args.native_semidense_weight
-                * native_semidense_loss
-                + args.trust_weight * trust_loss
-                + args.native_protected_set_weight
-                * protected_set_loss
-            )
+        loss = descriptor_scale * (
+            global_retrieval_scale * args.retrieval_weight * retrieval_loss
+            + semidense_weight_scale
+            * args.native_semidense_weight
+            * native_semidense_loss
+            + args.trust_weight * trust_loss
+            + args.native_protected_set_weight * protected_set_loss
         )
         loss_finite = bool(torch.isfinite(loss.detach()).item())
         optimizer.zero_grad(set_to_none=True)
@@ -4276,10 +4137,7 @@ def train(dataset, args):
             if (
                 gradients_finite
                 and native_semidense_active
-                and step
-                % max(
-                    int(args.native_semidense_reference_refresh_steps), 1
-                )
+                and step % max(int(args.native_semidense_reference_refresh_steps), 1)
                 == 0
             ):
                 semidense_reference_features.copy_(
@@ -4300,13 +4158,9 @@ def train(dataset, args):
             "loss": loss_value if math.isfinite(loss_value) else 0.0,
             "loss_nonfinite": float(not math.isfinite(loss_value)),
             "retrieval_loss": float(retrieval_loss.detach().item()),
-            "native_semidense_loss": float(
-                native_semidense_loss.detach().item()
-            ),
+            "native_semidense_loss": float(native_semidense_loss.detach().item()),
             "trust_loss": float(trust_loss.detach().item()),
-            "native_protected_set_loss": float(
-                protected_set_loss.detach().item()
-            ),
+            "native_protected_set_loss": float(protected_set_loss.detach().item()),
             "grad_norm": grad_norm_value if grad_norm_finite else 0.0,
             "grad_norm_nonfinite": float(not grad_norm_finite),
             "gradient_clip_applied": float(gradient_clipped),
@@ -4411,8 +4265,7 @@ def train(dataset, args):
             provenance_context = {
                 "gaussians": gaussians,
                 "cameras_by_name": {
-                    _camera_cache_key(camera): camera
-                    for camera in train_cameras
+                    _camera_cache_key(camera): camera for camera in train_cameras
                 },
                 "landmark_global_indices": landmark_indices_cuda,
                 "background": background,
@@ -4460,8 +4313,7 @@ def train(dataset, args):
         )
     with torch.no_grad():
         feature_cosine = (
-            F.normalize(final_features, dim=-1)
-            * F.normalize(initial_features, dim=-1)
+            F.normalize(final_features, dim=-1) * F.normalize(initial_features, dim=-1)
         ).sum(dim=-1)
         anchor_displacement = final_xyz - base_bank_xyz
         local_anchor_displacement = torch.einsum(
@@ -4470,14 +4322,10 @@ def train(dataset, args):
             anchor_displacement,
         )
         if str(dataset.gaussian_type).lower() == "2dgs":
-            tangent_norm = torch.linalg.norm(
-                local_anchor_displacement[:, :2], dim=1
-            )
+            tangent_norm = torch.linalg.norm(local_anchor_displacement[:, :2], dim=1)
             normal_abs = local_anchor_displacement[:, 2].abs()
         else:
-            tangent_norm = torch.linalg.norm(
-                local_anchor_displacement, dim=1
-            )
+            tangent_norm = torch.linalg.norm(local_anchor_displacement, dim=1)
             normal_abs = local_anchor_displacement.abs().max(dim=1).values
         summary = {
             "config": config,
@@ -4528,9 +4376,7 @@ def train(dataset, args):
                     torch.quantile(tangent_norm, 0.95).item()
                 ),
                 "tangent_displacement_max_m": float(tangent_norm.max().item()),
-                "normal_displacement_abs_mean_m": float(
-                    normal_abs.mean().item()
-                ),
+                "normal_displacement_abs_mean_m": float(normal_abs.mean().item()),
                 "normal_displacement_abs_p95_m": float(
                     torch.quantile(normal_abs, 0.95).item()
                 ),
@@ -4552,7 +4398,7 @@ def train(dataset, args):
         {
             **mvinit_diagnostics,
             **native_global_attractor_diagnostics,
-            **_mean_diagnostics(history[-min(len(history), 200):]),
+            **_mean_diagnostics(history[-min(len(history), 200) :]),
             **final_validation,
         },
         mvinit_observation_count,
@@ -4590,212 +4436,458 @@ def build_parser():
         description="Build the frozen LaFGS paper localization map"
     )
     model_params = ModelParams(parser)
-    parser.add_argument('--load_iteration', type=int, default=30000)
-    parser.add_argument('--output_dir', required=True)
-    parser.add_argument('--rgb_prior_manifest_path', default='')
-    parser.add_argument('--require_rgb_prior_manifest', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--allow_feature_stripped_prior', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--query_feature_contract', choices=['native_resized_input'], default='native_resized_input')
-    parser.add_argument('--scaffold_mode', choices=['file', 'ulf_robust_consensus'], default='ulf_robust_consensus')
-    parser.add_argument('--landmark_path', default='sampled_idx.pkl')
-    parser.add_argument('--generated_landmark_path', default='robust_kcs_ids.pkl')
+    parser.add_argument("--load_iteration", type=int, default=30000)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--rgb_prior_manifest_path", default="")
     parser.add_argument(
-        '--regenerate_scaffold',
+        "--require_rgb_prior_manifest",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument('--scaffold_budget', type=int, default=16384)
-    parser.add_argument('--scaffold_min_opacity', type=float, default=0.05)
-    parser.add_argument('--scaffold_opacity_keep_quantile', type=float, default=0.0)
-    parser.add_argument('--ulf_consensus_keypoints', type=int, default=2048)
-    parser.add_argument('--ulf_consensus_radius_px', type=float, default=1.0)
-    parser.add_argument('--ulf_consensus_min_votes', type=int, default=1)
-    parser.add_argument('--ulf_consensus_min_visible_views', type=int, default=0)
-    parser.add_argument('--ulf_consensus_min_rate', type=float, default=0.0)
-    parser.add_argument('--ulf_consensus_view_bins', type=int, default=0)
-    parser.add_argument('--ulf_consensus_min_distinct_view_bins', type=int, default=0)
-    parser.add_argument('--ulf_consensus_trajectory_bins', type=int, default=0)
-    parser.add_argument('--ulf_consensus_min_distinct_trajectory_bins', type=int, default=0)
-    parser.add_argument('--ulf_consensus_independent_bin_scoring', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--ulf_consensus_allow_nonconsensus_fallback', action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument('--ulf_consensus_allow_underfill', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--ulf_consensus_max_views', type=int, default=0)
-    parser.add_argument('--ulf_support_view_sampling', choices=['uniform', 'pose_diverse'], default='uniform')
-    parser.add_argument('--ulf_consensus_distance_chunk', type=int, default=8192)
-    parser.add_argument('--ulf_consensus_max_candidates_per_view', type=int, default=0)
-    parser.add_argument('--ulf_consensus_voxel_size', type=float, default=0.0)
-    parser.add_argument('--ulf_consensus_extent_quantile', type=float, default=0.0)
-    parser.add_argument('--ulf_consensus_max_per_voxel', type=int, default=8)
-    parser.add_argument('--ulf_support_mask_policy', choices=['support_rgb_only'], default='support_rgb_only')
-    parser.add_argument('--initialization_mode', choices=['ulf_robust_geometry'], default='ulf_robust_geometry')
-    parser.add_argument('--ulf_fusion_max_views', type=int, default=0)
-    parser.add_argument('--ulf_fusion_view_bins', type=int, default=0)
-    parser.add_argument('--ulf_fusion_exact_bin_balance', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--ulf_fusion_min_cosine', type=float, default=0.0)
-    parser.add_argument('--ulf_fusion_descriptor_min_cosine', type=float, default=-1.0)
-    parser.add_argument('--ulf_fusion_descriptor_trim_fraction', type=float, default=0.0)
-    parser.add_argument('--ulf_fusion_trim_histogram_bins', type=int, default=64)
-    parser.add_argument('--initial_state_path', default='')
-    parser.add_argument('--initial_state_blend', type=float, default=0.0)
-    parser.add_argument('--query_cache_path', default='')
-    parser.add_argument('--query_cache_policy', choices=['reuse_or_build', 'readonly', 'refresh'], default='reuse_or_build')
-    parser.add_argument('--visibility_mode', choices=['rasterizer'], default='rasterizer')
-    parser.add_argument('--visibility_cache_path', default='')
-    parser.add_argument('--observation_source', choices=['native'], default='native')
-    parser.add_argument('--native_keypoint_count', type=int, default=2048)
-    parser.add_argument('--native_nms_radius', type=int, default=4)
-    parser.add_argument('--native_association_radius_px', type=float, default=2.0)
-    parser.add_argument('--native_unmatched_fraction', type=float, default=0.25)
-    parser.add_argument('--native_sampling_mode', choices=['detector_grid'], default='detector_grid')
-    parser.add_argument('--objective', choices=['hard'], default='hard')
-    parser.add_argument('--steps', type=int, default=5000)
-    parser.add_argument('--save_steps', type=int, nargs='*', default=[1000, 2000, 3000, 4000, 5000])
-    parser.add_argument('--feature_lr', type=float, default=0.00015)
-    parser.add_argument('--weight_decay', type=float, default=0.0001)
-    parser.add_argument('--gradient_clip_norm', type=float, default=10.0)
-    parser.add_argument('--residual_scale', type=float, default=1.0)
-    parser.add_argument('--max_residual_norm', type=float, default=0.0)
-    parser.add_argument('--retrieval_weight', type=float, default=0.5)
-    parser.add_argument('--trust_weight', type=float, default=0.02)
-    parser.add_argument('--trust_observation_power', type=float, default=0.5)
-    parser.add_argument('--trust_weight_min', type=float, default=0.25)
-    parser.add_argument('--trust_weight_max', type=float, default=4.0)
-    parser.add_argument('--native_semidense_weight', type=float, default=0.0)
-    parser.add_argument('--native_semidense_start_step', type=int, default=2500)
-    parser.add_argument('--native_semidense_interval', type=int, default=1)
-    parser.add_argument('--native_semidense_max_anchors', type=int, default=64)
-    parser.add_argument('--native_semidense_neighbors', type=int, default=1)
-    parser.add_argument('--native_semidense_neighborhood_radius_m', type=float, default=0.25)
-    parser.add_argument('--native_semidense_normal_cosine', type=float, default=0.8)
-    parser.add_argument('--native_semidense_local_radius_px', type=float, default=8.0)
-    parser.add_argument('--native_semidense_target_sigma_px', type=float, default=2.0)
-    parser.add_argument('--native_semidense_temperature', type=float, default=0.07)
-    parser.add_argument('--native_semidense_protected_v2', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--native_semidense_measurement_min_reprojection_px', type=float, default=2.0)
-    parser.add_argument('--native_semidense_measurement_max_reprojection_px', type=float, default=8.0)
-    parser.add_argument('--native_semidense_surface_point_plane_m', type=float, default=0.03)
-    parser.add_argument('--native_semidense_surface_max_distance_m', type=float, default=0.15)
-    parser.add_argument('--native_semidense_surface_normal_cosine', type=float, default=0.95)
-    parser.add_argument('--native_semidense_projected_neighbor_radius_px', type=float, default=64.0)
-    parser.add_argument('--native_semidense_local_identity_weight', type=float, default=0.0)
-    parser.add_argument('--native_semidense_margin_preservation_weight', type=float, default=0.0)
-    parser.add_argument('--native_semidense_gradient_audit', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--native_semidense_reference_refresh_steps', type=int, default=500)
-    parser.add_argument('--native_semidense_alternate_global', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--native_semidense_max_gradient_ratio', type=float, default=0.0)
-    parser.add_argument('--native_protected_set_weight', type=float, default=0.0)
-    parser.add_argument('--native_protected_set_start_step', type=int, default=1000)
-    parser.add_argument('--native_protected_set_interval', type=int, default=5)
-    parser.add_argument('--native_protected_set_refresh_visits', type=int, default=1)
-    parser.add_argument('--native_protected_set_ransac_seed', type=int, default=0)
-    parser.add_argument('--native_protected_set_ransac_reprojection_px', type=float, default=8.0)
-    parser.add_argument('--native_protected_set_ransac_max_iterations', type=int, default=5000)
-    parser.add_argument('--native_protected_set_ransac_min_iterations', type=int, default=100)
-    parser.add_argument('--native_protected_set_max_pose_error_cm', type=float, default=100.0)
-    parser.add_argument('--native_protected_set_max_useful', type=int, default=96)
-    parser.add_argument('--native_protected_set_max_harmful', type=int, default=96)
-    parser.add_argument('--native_protected_set_grid_rows', type=int, default=4)
-    parser.add_argument('--native_protected_set_grid_cols', type=int, default=4)
-    parser.add_argument('--native_protected_set_depth_bins', type=int, default=4)
-    parser.add_argument('--native_protected_set_surface_voxel_m', type=float, default=0.25)
-    parser.add_argument('--native_protected_set_max_per_surface_group', type=int, default=2)
-    parser.add_argument('--native_protected_set_temperature', type=float, default=0.05)
-    parser.add_argument('--native_protected_set_margin', type=float, default=0.05)
-    parser.add_argument('--native_protected_set_score_target', type=float, default=0.5)
-    parser.add_argument('--temperature', type=float, default=0.07)
-    parser.add_argument('--hypothesis_topk', type=int, default=32)
-    parser.add_argument('--positive_radius_px', type=float, default=2.0)
-    parser.add_argument('--negative_radius_px', type=float, default=6.0)
-    parser.add_argument('--retrieval_margin', type=float, default=0.05)
-    parser.add_argument('--missed_positive_weight', type=float, default=1.0)
-    parser.add_argument('--missed_positive_margin', type=float, default=0.05)
-    parser.add_argument('--unmatched_rejection_weight', type=float, default=0.0)
-    parser.add_argument('--unmatched_max_similarity', type=float, default=0.5)
-    parser.add_argument('--native_outcome_mode', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--native_keep_weight', type=float, default=1.0)
-    parser.add_argument('--native_keep_margin', type=float, default=0.05)
-    parser.add_argument('--native_swap_weight', type=float, default=1.0)
-    parser.add_argument('--native_swap_margin', type=float, default=0.05)
-    parser.add_argument('--native_miss_weight', type=float, default=1.0)
-    parser.add_argument('--native_miss_margin', type=float, default=0.05)
-    parser.add_argument('--native_global_attractor_weight', type=float, default=0.0)
-    parser.add_argument('--native_global_attractor_min_incoming', type=int, default=4)
-    parser.add_argument('--native_global_attractor_support_power', type=float, default=0.5)
-    parser.add_argument('--native_global_attractor_max_score', type=float, default=4.0)
-    parser.add_argument('--save_independent_geometry_teacher', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--save_track_micro_anchor_payload', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--save_track_pair_sidecar', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--geometry_teacher_max_observations_per_landmark', type=int, default=32)
-    parser.add_argument('--geometry_teacher_triangulation_cpu_workers', type=int, default=2)
-    parser.add_argument('--geometry_teacher_parallel_triangulation_min_tracks', type=int, default=5000)
-    parser.add_argument('--geometry_teacher_min_views', type=int, default=3)
-    parser.add_argument('--geometry_teacher_view_bins', type=int, default=8)
-    parser.add_argument('--geometry_teacher_min_view_bins', type=int, default=2)
-    parser.add_argument('--geometry_teacher_huber_delta_px', type=float, default=2.0)
-    parser.add_argument('--geometry_teacher_iterations', type=int, default=3)
-    parser.add_argument('--geometry_teacher_min_parallax_deg', type=float, default=1.0)
-    parser.add_argument('--geometry_teacher_max_reprojection_px', type=float, default=2.0)
-    parser.add_argument('--geometry_teacher_max_condition_number', type=float, default=1000000.0)
-    parser.add_argument('--geometry_teacher_identity_mode', choices=['track_first', 'track_first_provenance'], default='track_first')
-    parser.add_argument('--geometry_teacher_view_direction_weight', type=float, default=0.5)
-    parser.add_argument('--geometry_teacher_parallax_quantile', type=float, default=0.75)
-    parser.add_argument('--geometry_teacher_max_covariance_trace_m2', type=float, default=0.01)
-    parser.add_argument('--geometry_teacher_max_rendered_depth_residual_m', type=float, default=0.15)
-    parser.add_argument('--geometry_teacher_min_rendered_depth_observations', type=int, default=2)
-    parser.add_argument('--geometry_teacher_surface_support', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--geometry_teacher_surface_huber_m', type=float, default=0.02)
-    parser.add_argument('--geometry_teacher_surface_max_correction_m', type=float, default=0.08)
-    parser.add_argument('--geometry_teacher_surface_max_weak_information_ratio', type=float, default=0.25)
-    parser.add_argument('--geometry_teacher_surface_min_depth_improvement_fraction', type=float, default=0.10)
-    parser.add_argument('--geometry_teacher_surface_max_reprojection_increase_px', type=float, default=0.05)
-    parser.add_argument('--geometry_teacher_surface_covariance_sigma_m', type=float, default=0.02)
-    parser.add_argument('--geometry_teacher_track_pair_neighbors', type=int, default=6)
-    parser.add_argument('--geometry_teacher_track_pair_policy', choices=['nearest', 'parallax_diverse'], default='nearest')
-    parser.add_argument('--geometry_teacher_track_pair_min_overlap_jaccard', type=float, default=0.15)
-    parser.add_argument('--geometry_teacher_track_pair_min_joint_visibility_points', type=int, default=8)
-    parser.add_argument('--geometry_teacher_track_pair_parallax_saturation_deg', type=float, default=2.0)
-    parser.add_argument('--geometry_teacher_track_pair_diversity_weight', type=float, default=0.20)
-    parser.add_argument('--geometry_teacher_track_pair_candidate_pool_per_camera', type=int, default=48)
-    parser.add_argument('--geometry_teacher_track_pair_scene_points_per_camera', type=int, default=8)
-    parser.add_argument('--geometry_teacher_track_pair_maximum_scene_points', type=int, default=4096)
-    parser.add_argument('--geometry_teacher_track_pair_scene_point_voxel_size_m', type=float, default=0.02)
-    parser.add_argument('--geometry_teacher_track_min_baseline_m', type=float, default=0.03)
-    parser.add_argument('--geometry_teacher_track_max_baseline_m', type=float, default=5.0)
-    parser.add_argument('--geometry_teacher_track_max_axis_angle_deg', type=float, default=75.0)
-    parser.add_argument('--geometry_teacher_track_min_similarity', type=float, default=0.65)
-    parser.add_argument('--geometry_teacher_track_min_margin', type=float, default=0.01)
-    parser.add_argument('--geometry_teacher_track_max_epipolar_error_px', type=float, default=2.0)
-    parser.add_argument('--geometry_teacher_track_epipolar_candidate_topk', type=int, default=1)
-    parser.add_argument('--geometry_teacher_track_epipolar_recovered_min_similarity', type=float, default=-1.0)
-    parser.add_argument('--geometry_teacher_track_epipolar_recovered_min_margin', type=float, default=-1.0)
-    parser.add_argument('--geometry_teacher_track_require_cycle', action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument('--geometry_teacher_track_allow_chain_tracks', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--geometry_teacher_track_assignment_max_distance_m', type=float, default=0.2)
-    parser.add_argument('--geometry_teacher_track_assignment_min_margin_m', type=float, default=0.0)
-    parser.add_argument('--geometry_teacher_provenance_topk', type=int, default=4)
-    parser.add_argument('--geometry_teacher_provenance_min_consensus_rate', type=float, default=0.35)
-    parser.add_argument('--geometry_teacher_provenance_min_views', type=int, default=2)
-    parser.add_argument('--geometry_teacher_provenance_group_max_landmarks', type=int, default=1)
-    parser.add_argument('--geometry_teacher_provenance_group_min_relative_mass', type=float, default=0.25)
-    parser.add_argument('--geometry_teacher_provenance_group_min_consensus_rate', type=float, default=0.1)
-    parser.add_argument('--geometry_teacher_provenance_depth_abs_tolerance_m', type=float, default=0.05)
-    parser.add_argument('--geometry_teacher_provenance_depth_rel_tolerance', type=float, default=0.02)
-    parser.add_argument('--max_observations', type=int, default=2048)
-    parser.add_argument('--validation_observations', type=int, default=2048)
-    parser.add_argument('--grid_rows', type=int, default=8)
-    parser.add_argument('--grid_cols', type=int, default=8)
-    parser.add_argument('--alpha_threshold', type=float, default=0.2)
-    parser.add_argument('--depth_abs_tolerance', type=float, default=0.001)
-    parser.add_argument('--depth_rel_tolerance', type=float, default=0.01)
-    parser.add_argument('--validation_ratio', type=float, default=0.2)
-    parser.add_argument('--split_mode', choices=['random', 'sequence_block', 'temporal_block', 'stratified_temporal_block'], default='temporal_block')
-    parser.add_argument('--split_seed', type=int, default=2026)
-    parser.add_argument('--train_seed', type=int, default=2026)
-    parser.add_argument('--max_train_views', type=int, default=0)
-    parser.add_argument('--max_validation_views', type=int, default=0)
-    parser.add_argument('--log_interval', type=int, default=25)
-    parser.add_argument('--quiet', action="store_true")
+    parser.add_argument(
+        "--allow_feature_stripped_prior",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--query_feature_contract",
+        choices=["native_resized_input"],
+        default="native_resized_input",
+    )
+    parser.add_argument(
+        "--scaffold_mode",
+        choices=["file", "ulf_robust_consensus"],
+        default="ulf_robust_consensus",
+    )
+    parser.add_argument("--landmark_path", default="sampled_idx.pkl")
+    parser.add_argument("--generated_landmark_path", default="robust_kcs_ids.pkl")
+    parser.add_argument(
+        "--regenerate_scaffold",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--scaffold_budget", type=int, default=16384)
+    parser.add_argument("--scaffold_min_opacity", type=float, default=0.05)
+    parser.add_argument("--scaffold_opacity_keep_quantile", type=float, default=0.0)
+    parser.add_argument("--ulf_consensus_keypoints", type=int, default=2048)
+    parser.add_argument("--ulf_consensus_radius_px", type=float, default=1.0)
+    parser.add_argument("--ulf_consensus_min_votes", type=int, default=1)
+    parser.add_argument("--ulf_consensus_min_visible_views", type=int, default=0)
+    parser.add_argument("--ulf_consensus_min_rate", type=float, default=0.0)
+    parser.add_argument("--ulf_consensus_view_bins", type=int, default=0)
+    parser.add_argument("--ulf_consensus_min_distinct_view_bins", type=int, default=0)
+    parser.add_argument("--ulf_consensus_trajectory_bins", type=int, default=0)
+    parser.add_argument(
+        "--ulf_consensus_min_distinct_trajectory_bins", type=int, default=0
+    )
+    parser.add_argument(
+        "--ulf_consensus_independent_bin_scoring",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--ulf_consensus_allow_nonconsensus_fallback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--ulf_consensus_allow_underfill",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--ulf_consensus_max_views", type=int, default=0)
+    parser.add_argument(
+        "--ulf_support_view_sampling",
+        choices=["uniform", "pose_diverse"],
+        default="uniform",
+    )
+    parser.add_argument("--ulf_consensus_distance_chunk", type=int, default=8192)
+    parser.add_argument("--ulf_consensus_max_candidates_per_view", type=int, default=0)
+    parser.add_argument("--ulf_consensus_voxel_size", type=float, default=0.0)
+    parser.add_argument("--ulf_consensus_extent_quantile", type=float, default=0.0)
+    parser.add_argument("--ulf_consensus_max_per_voxel", type=int, default=8)
+    parser.add_argument(
+        "--ulf_support_mask_policy",
+        choices=["support_rgb_only"],
+        default="support_rgb_only",
+    )
+    parser.add_argument(
+        "--initialization_mode",
+        choices=["ulf_robust_geometry"],
+        default="ulf_robust_geometry",
+    )
+    parser.add_argument("--ulf_fusion_max_views", type=int, default=0)
+    parser.add_argument("--ulf_fusion_view_bins", type=int, default=0)
+    parser.add_argument(
+        "--ulf_fusion_exact_bin_balance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--ulf_fusion_min_cosine", type=float, default=0.0)
+    parser.add_argument("--ulf_fusion_descriptor_min_cosine", type=float, default=-1.0)
+    parser.add_argument(
+        "--ulf_fusion_descriptor_trim_fraction", type=float, default=0.0
+    )
+    parser.add_argument("--ulf_fusion_trim_histogram_bins", type=int, default=64)
+    parser.add_argument("--initial_state_path", default="")
+    parser.add_argument("--initial_state_blend", type=float, default=0.0)
+    parser.add_argument("--query_cache_path", default="")
+    parser.add_argument(
+        "--query_cache_policy",
+        choices=["reuse_or_build", "readonly", "refresh"],
+        default="reuse_or_build",
+    )
+    parser.add_argument(
+        "--visibility_mode", choices=["rasterizer"], default="rasterizer"
+    )
+    parser.add_argument("--visibility_cache_path", default="")
+    parser.add_argument("--observation_source", choices=["native"], default="native")
+    parser.add_argument("--native_keypoint_count", type=int, default=2048)
+    parser.add_argument("--native_nms_radius", type=int, default=4)
+    parser.add_argument("--native_association_radius_px", type=float, default=2.0)
+    parser.add_argument("--native_unmatched_fraction", type=float, default=0.25)
+    parser.add_argument(
+        "--native_sampling_mode", choices=["detector_grid"], default="detector_grid"
+    )
+    parser.add_argument("--objective", choices=["hard"], default="hard")
+    parser.add_argument("--steps", type=int, default=5000)
+    parser.add_argument(
+        "--save_steps", type=int, nargs="*", default=[1000, 2000, 3000, 4000, 5000]
+    )
+    parser.add_argument("--feature_lr", type=float, default=0.00015)
+    parser.add_argument("--weight_decay", type=float, default=0.0001)
+    parser.add_argument("--gradient_clip_norm", type=float, default=10.0)
+    parser.add_argument("--residual_scale", type=float, default=1.0)
+    parser.add_argument("--max_residual_norm", type=float, default=0.0)
+    parser.add_argument("--retrieval_weight", type=float, default=0.5)
+    parser.add_argument("--trust_weight", type=float, default=0.02)
+    parser.add_argument("--trust_observation_power", type=float, default=0.5)
+    parser.add_argument("--trust_weight_min", type=float, default=0.25)
+    parser.add_argument("--trust_weight_max", type=float, default=4.0)
+    parser.add_argument("--native_semidense_weight", type=float, default=0.0)
+    parser.add_argument("--native_semidense_start_step", type=int, default=2500)
+    parser.add_argument("--native_semidense_interval", type=int, default=1)
+    parser.add_argument("--native_semidense_max_anchors", type=int, default=64)
+    parser.add_argument("--native_semidense_neighbors", type=int, default=1)
+    parser.add_argument(
+        "--native_semidense_neighborhood_radius_m", type=float, default=0.25
+    )
+    parser.add_argument("--native_semidense_normal_cosine", type=float, default=0.8)
+    parser.add_argument("--native_semidense_local_radius_px", type=float, default=8.0)
+    parser.add_argument("--native_semidense_target_sigma_px", type=float, default=2.0)
+    parser.add_argument("--native_semidense_temperature", type=float, default=0.07)
+    parser.add_argument(
+        "--native_semidense_protected_v2",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--native_semidense_measurement_min_reprojection_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--native_semidense_measurement_max_reprojection_px", type=float, default=8.0
+    )
+    parser.add_argument(
+        "--native_semidense_surface_point_plane_m", type=float, default=0.03
+    )
+    parser.add_argument(
+        "--native_semidense_surface_max_distance_m", type=float, default=0.15
+    )
+    parser.add_argument(
+        "--native_semidense_surface_normal_cosine", type=float, default=0.95
+    )
+    parser.add_argument(
+        "--native_semidense_projected_neighbor_radius_px", type=float, default=64.0
+    )
+    parser.add_argument(
+        "--native_semidense_local_identity_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--native_semidense_margin_preservation_weight", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--native_semidense_gradient_audit",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--native_semidense_reference_refresh_steps", type=int, default=500
+    )
+    parser.add_argument(
+        "--native_semidense_alternate_global",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--native_semidense_max_gradient_ratio", type=float, default=0.0
+    )
+    parser.add_argument("--native_protected_set_weight", type=float, default=0.0)
+    parser.add_argument("--native_protected_set_start_step", type=int, default=1000)
+    parser.add_argument("--native_protected_set_interval", type=int, default=5)
+    parser.add_argument("--native_protected_set_refresh_visits", type=int, default=1)
+    parser.add_argument("--native_protected_set_ransac_seed", type=int, default=0)
+    parser.add_argument(
+        "--native_protected_set_ransac_reprojection_px", type=float, default=8.0
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_max_iterations", type=int, default=5000
+    )
+    parser.add_argument(
+        "--native_protected_set_ransac_min_iterations", type=int, default=100
+    )
+    parser.add_argument(
+        "--native_protected_set_max_pose_error_cm", type=float, default=100.0
+    )
+    parser.add_argument("--native_protected_set_max_useful", type=int, default=96)
+    parser.add_argument("--native_protected_set_max_harmful", type=int, default=96)
+    parser.add_argument("--native_protected_set_grid_rows", type=int, default=4)
+    parser.add_argument("--native_protected_set_grid_cols", type=int, default=4)
+    parser.add_argument("--native_protected_set_depth_bins", type=int, default=4)
+    parser.add_argument(
+        "--native_protected_set_surface_voxel_m", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--native_protected_set_max_per_surface_group", type=int, default=2
+    )
+    parser.add_argument("--native_protected_set_temperature", type=float, default=0.05)
+    parser.add_argument("--native_protected_set_margin", type=float, default=0.05)
+    parser.add_argument("--native_protected_set_score_target", type=float, default=0.5)
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--hypothesis_topk", type=int, default=32)
+    parser.add_argument("--positive_radius_px", type=float, default=2.0)
+    parser.add_argument("--negative_radius_px", type=float, default=6.0)
+    parser.add_argument("--retrieval_margin", type=float, default=0.05)
+    parser.add_argument("--missed_positive_weight", type=float, default=1.0)
+    parser.add_argument("--missed_positive_margin", type=float, default=0.05)
+    parser.add_argument("--unmatched_rejection_weight", type=float, default=0.0)
+    parser.add_argument("--unmatched_max_similarity", type=float, default=0.5)
+    parser.add_argument(
+        "--native_outcome_mode", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument("--native_keep_weight", type=float, default=1.0)
+    parser.add_argument("--native_keep_margin", type=float, default=0.05)
+    parser.add_argument("--native_swap_weight", type=float, default=1.0)
+    parser.add_argument("--native_swap_margin", type=float, default=0.05)
+    parser.add_argument("--native_miss_weight", type=float, default=1.0)
+    parser.add_argument("--native_miss_margin", type=float, default=0.05)
+    parser.add_argument("--native_global_attractor_weight", type=float, default=0.0)
+    parser.add_argument("--native_global_attractor_min_incoming", type=int, default=4)
+    parser.add_argument(
+        "--native_global_attractor_support_power", type=float, default=0.5
+    )
+    parser.add_argument("--native_global_attractor_max_score", type=float, default=4.0)
+    parser.add_argument(
+        "--save_independent_geometry_teacher",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--save_track_micro_anchor_payload",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--save_track_pair_sidecar",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_observations_per_landmark", type=int, default=32
+    )
+    parser.add_argument(
+        "--geometry_teacher_triangulation_cpu_workers", type=int, default=2
+    )
+    parser.add_argument(
+        "--geometry_teacher_parallel_triangulation_min_tracks",
+        type=int,
+        default=5000,
+    )
+    parser.add_argument("--geometry_teacher_min_views", type=int, default=3)
+    parser.add_argument("--geometry_teacher_view_bins", type=int, default=8)
+    parser.add_argument("--geometry_teacher_min_view_bins", type=int, default=2)
+    parser.add_argument("--geometry_teacher_huber_delta_px", type=float, default=2.0)
+    parser.add_argument("--geometry_teacher_iterations", type=int, default=3)
+    parser.add_argument("--geometry_teacher_min_parallax_deg", type=float, default=1.0)
+    parser.add_argument(
+        "--geometry_teacher_max_reprojection_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_condition_number", type=float, default=1000000.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_identity_mode",
+        choices=["track_first", "track_first_provenance"],
+        default="track_first",
+    )
+    parser.add_argument(
+        "--geometry_teacher_view_direction_weight", type=float, default=0.5
+    )
+    parser.add_argument(
+        "--geometry_teacher_parallax_quantile", type=float, default=0.75
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_covariance_trace_m2", type=float, default=0.01
+    )
+    parser.add_argument(
+        "--geometry_teacher_max_rendered_depth_residual_m", type=float, default=0.15
+    )
+    parser.add_argument(
+        "--geometry_teacher_min_rendered_depth_observations", type=int, default=2
+    )
+    parser.add_argument(
+        "--geometry_teacher_surface_support",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--geometry_teacher_surface_huber_m", type=float, default=0.02)
+    parser.add_argument(
+        "--geometry_teacher_surface_max_correction_m", type=float, default=0.08
+    )
+    parser.add_argument(
+        "--geometry_teacher_surface_max_weak_information_ratio",
+        type=float,
+        default=0.25,
+    )
+    parser.add_argument(
+        "--geometry_teacher_surface_min_depth_improvement_fraction",
+        type=float,
+        default=0.10,
+    )
+    parser.add_argument(
+        "--geometry_teacher_surface_max_reprojection_increase_px",
+        type=float,
+        default=0.05,
+    )
+    parser.add_argument(
+        "--geometry_teacher_surface_covariance_sigma_m", type=float, default=0.02
+    )
+    parser.add_argument("--geometry_teacher_track_pair_neighbors", type=int, default=6)
+    parser.add_argument(
+        "--geometry_teacher_track_pair_policy",
+        choices=["nearest", "parallax_diverse"],
+        default="nearest",
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_min_overlap_jaccard", type=float, default=0.15
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_min_joint_visibility_points", type=int, default=8
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_parallax_saturation_deg", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_diversity_weight", type=float, default=0.20
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_candidate_pool_per_camera", type=int, default=48
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_scene_points_per_camera", type=int, default=8
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_maximum_scene_points", type=int, default=4096
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_pair_scene_point_voxel_size_m",
+        type=float,
+        default=0.02,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_min_baseline_m", type=float, default=0.03
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_max_baseline_m", type=float, default=5.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_max_axis_angle_deg", type=float, default=75.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_min_similarity", type=float, default=0.65
+    )
+    parser.add_argument("--geometry_teacher_track_min_margin", type=float, default=0.01)
+    parser.add_argument(
+        "--geometry_teacher_track_max_epipolar_error_px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_epipolar_candidate_topk", type=int, default=1
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_epipolar_recovered_min_similarity",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_epipolar_recovered_min_margin",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_require_cycle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_allow_chain_tracks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_assignment_max_distance_m", type=float, default=0.2
+    )
+    parser.add_argument(
+        "--geometry_teacher_track_assignment_min_margin_m", type=float, default=0.0
+    )
+    parser.add_argument("--geometry_teacher_provenance_topk", type=int, default=4)
+    parser.add_argument(
+        "--geometry_teacher_provenance_min_consensus_rate", type=float, default=0.35
+    )
+    parser.add_argument("--geometry_teacher_provenance_min_views", type=int, default=2)
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_max_landmarks", type=int, default=1
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_min_relative_mass",
+        type=float,
+        default=0.25,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_group_min_consensus_rate",
+        type=float,
+        default=0.1,
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_depth_abs_tolerance_m", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--geometry_teacher_provenance_depth_rel_tolerance", type=float, default=0.02
+    )
+    parser.add_argument("--max_observations", type=int, default=2048)
+    parser.add_argument("--validation_observations", type=int, default=2048)
+    parser.add_argument("--grid_rows", type=int, default=8)
+    parser.add_argument("--grid_cols", type=int, default=8)
+    parser.add_argument("--alpha_threshold", type=float, default=0.2)
+    parser.add_argument("--depth_abs_tolerance", type=float, default=0.001)
+    parser.add_argument("--depth_rel_tolerance", type=float, default=0.01)
+    parser.add_argument("--validation_ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--split_mode",
+        choices=[
+            "random",
+            "sequence_block",
+            "temporal_block",
+            "stratified_temporal_block",
+        ],
+        default="temporal_block",
+    )
+    parser.add_argument("--split_seed", type=int, default=2026)
+    parser.add_argument("--train_seed", type=int, default=2026)
+    parser.add_argument("--max_train_views", type=int, default=0)
+    parser.add_argument("--max_validation_views", type=int, default=0)
+    parser.add_argument("--log_interval", type=int, default=25)
+    parser.add_argument("--quiet", action="store_true")
     return parser, model_params
+
 
 def main() -> None:
     parser, model_params = build_parser()

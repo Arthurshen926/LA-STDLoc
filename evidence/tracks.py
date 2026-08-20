@@ -56,6 +56,51 @@ def robust_fuse_track_descriptors(
     return F.normalize(prototypes[keep].mean(dim=0), dim=0)
 
 
+def fuse_projective_anchor_observations(
+    descriptors: torch.Tensor,
+    query_bins: torch.Tensor,
+    *,
+    detector_weight: torch.Tensor | None = None,
+    view_weight: torch.Tensor | None = None,
+    visibility_weight: torch.Tensor | None = None,
+    sequence_weight: torch.Tensor | None = None,
+    trim_fraction: float = 0.2,
+) -> torch.Tensor:
+    """GWFF-style fusion for a projective Anchor observation equivalence class.
+
+    Compatibility mode is obtained by passing the historical Track confidence
+    as ``detector_weight`` and appearance reliability as
+    ``visibility_weight``.  Geometry-view and sequence balancing can then be
+    enabled independently without creating a parallel Gaussian landmark map.
+    """
+
+    descriptors = torch.as_tensor(descriptors)
+    count = int(descriptors.shape[0]) if descriptors.ndim else 0
+    if count == 0:
+        raise ValueError("projective Anchor fusion requires observations")
+    combined = torch.ones(count, dtype=torch.float32, device=descriptors.device)
+    for name, value in (
+        ("detector_weight", detector_weight),
+        ("view_weight", view_weight),
+        ("visibility_weight", visibility_weight),
+        ("sequence_weight", sequence_weight),
+    ):
+        if value is None:
+            continue
+        weight = torch.as_tensor(value, dtype=torch.float32, device=descriptors.device)
+        if weight.ndim != 1 or weight.shape[0] != count:
+            raise ValueError(f"{name} must have exact shape [{count}]")
+        if not torch.isfinite(weight).all() or bool((weight < 0).any()):
+            raise ValueError(f"{name} must be finite and non-negative")
+        combined = combined * weight
+    return robust_fuse_track_descriptors(
+        descriptors,
+        query_bins,
+        combined,
+        trim_fraction=trim_fraction,
+    )
+
+
 def protected_micro_anchor_descriptor_loss(
     *,
     candidate_features: torch.Tensor,
@@ -96,9 +141,7 @@ def protected_micro_anchor_descriptor_loss(
     temperature = max(float(temperature), 1e-6)
 
     positive_logits = positive_descriptors @ candidate_features.T
-    target_score = positive_logits.gather(
-        1, positive_targets[:, None]
-    ).squeeze(1)
+    target_score = positive_logits.gather(1, positive_targets[:, None]).squeeze(1)
     if candidate_features.shape[0] > 1:
         competing_logits = positive_logits.clone()
         competing_logits.scatter_(1, positive_targets[:, None], -torch.inf)
@@ -114,31 +157,22 @@ def protected_micro_anchor_descriptor_loss(
     )
 
     if guard_descriptors.shape[0] > 0:
-        guard_new_best = (
-            guard_descriptors @ candidate_features.T
-        ).max(dim=1).values
+        guard_new_best = (guard_descriptors @ candidate_features.T).max(dim=1).values
         guard_loss = (
             F.softplus(
-                (
-                    guard_new_best
-                    + float(guard_margin)
-                    - guard_old_best
-                )
-                / temperature
+                (guard_new_best + float(guard_margin) - guard_old_best) / temperature
             ).mean()
             * temperature
         )
         guard_violation = (
-            guard_new_best + float(guard_margin) > guard_old_best
-        ).float().mean()
+            (guard_new_best + float(guard_margin) > guard_old_best).float().mean()
+        )
     else:
         guard_new_best = candidate_features.new_zeros((0,))
         guard_loss = candidate_features.sum() * 0.0
         guard_violation = candidate_features.new_zeros(())
 
-    trust_loss = (
-        1.0 - (candidate_features * initial_features).sum(dim=1)
-    ).mean()
+    trust_loss = (1.0 - (candidate_features * initial_features).sum(dim=1)).mean()
     total = (
         positive_loss
         + float(guard_weight) * guard_loss
@@ -149,9 +183,7 @@ def protected_micro_anchor_descriptor_loss(
         "positive_loss": positive_loss.detach(),
         "guard_loss": guard_loss.detach(),
         "trust_loss": trust_loss.detach(),
-        "positive_win_rate": (
-            target_score >= competitor + float(positive_margin)
-        )
+        "positive_win_rate": (target_score >= competitor + float(positive_margin))
         .float()
         .mean()
         .detach(),
@@ -191,9 +223,7 @@ def compute_track_coverage_gain(
     gain = torch.zeros(track_count, dtype=torch.long)
     represented = torch.zeros(track_count, dtype=torch.long)
     valid_observations = torch.zeros(track_count, dtype=torch.long)
-    observation_gap = torch.zeros(
-        tracks["track_index"].numel(), dtype=torch.bool
-    )
+    observation_gap = torch.zeros(tracks["track_index"].numel(), dtype=torch.bool)
     gap_view_bins = [set() for _ in range(track_count)]
     gap_sequences = [set() for _ in range(track_count)]
     if candidate_track_mask is None:
@@ -234,11 +264,7 @@ def compute_track_coverage_gain(
         )
         positive_depth = (projected_depth > 0) & visible
         positive_indices = np.nonzero(positive_depth)[0]
-        tree = (
-            cKDTree(projected[positive_depth])
-            if positive_indices.size
-            else None
-        )
+        tree = cKDTree(projected[positive_depth]) if positive_indices.size else None
         keypoint_indices = tracks["keypoint_index"][observations].long()
         keypoints = (
             torch.as_tensor(cached["native_keypoints"])[keypoint_indices]
@@ -266,12 +292,13 @@ def compute_track_coverage_gain(
                 np.asarray(neighbors[local_row], dtype=np.int64)
             ]
             if candidate_indices.size:
-                tolerance = float(depth_abs_tolerance_m) + float(
-                    depth_rel_tolerance
-                ) * reference
-                depth_clean = np.abs(
-                    projected_depth[candidate_indices] - reference
-                ) <= tolerance
+                tolerance = (
+                    float(depth_abs_tolerance_m)
+                    + float(depth_rel_tolerance) * reference
+                )
+                depth_clean = (
+                    np.abs(projected_depth[candidate_indices] - reference) <= tolerance
+                )
                 has_existing = bool(np.any(depth_clean))
             else:
                 has_existing = False
@@ -284,9 +311,7 @@ def compute_track_coverage_gain(
                 gap_view_bins[track].add(
                     int(torch.as_tensor(payload["query_bins"])[query_index])
                 )
-                gap_sequences[track].add(
-                    str(query_names[query_index]).split("/", 1)[0]
-                )
+                gap_sequences[track].add(str(query_names[query_index]).split("/", 1)[0])
     return {
         "coverage_gain": gain,
         "represented_observations": represented,
@@ -298,17 +323,13 @@ def compute_track_coverage_gain(
         "coverage_gain_distinct_sequences": torch.as_tensor(
             [len(value) for value in gap_sequences], dtype=torch.long
         ),
-        "raster_visibility_enabled": torch.tensor(
-            visibility_cache is not None
-        ),
+        "raster_visibility_enabled": torch.tensor(visibility_cache is not None),
     }
 
 
 def _track_observation_lookup(payload: dict) -> dict[int, list[int]]:
     observations = defaultdict(list)
-    for observation, track in enumerate(
-        payload["tracks"]["track_index"].tolist()
-    ):
+    for observation, track in enumerate(payload["tracks"]["track_index"].tolist()):
         observations[int(track)].append(observation)
     return observations
 
@@ -330,9 +351,7 @@ def _selected_track_observation_lookup(
         dtype=torch.bool,
     )
     selected_track[requested] = True
-    observations = torch.nonzero(
-        selected_track[track_rows], as_tuple=False
-    ).reshape(-1)
+    observations = torch.nonzero(selected_track[track_rows], as_tuple=False).reshape(-1)
     selected_rows = track_rows[observations]
     order = torch.argsort(selected_rows, stable=True)
     observations = observations[order]
@@ -348,28 +367,97 @@ def _selected_track_observation_lookup(
 def fuse_track_descriptors(
     *,
     payload: dict,
-    query_cache: dict,
+    query_cache,
     track_indices: torch.Tensor,
     trim_fraction: float = 0.2,
 ) -> torch.Tensor:
     """Fuse every requested track independently using its native observations."""
-    cache = query_cache.get("queries", query_cache)
+    from evidence.observation_provider import ObservationProvider
+
+    cache = (
+        query_cache.records
+        if isinstance(query_cache, ObservationProvider)
+        else query_cache.get("queries", query_cache)
+    )
     query_names = payload["query_names"]
     tracks = payload["tracks"]
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
     track_indices = torch.as_tensor(track_indices, dtype=torch.long).reshape(-1)
-    observation_by_track = _selected_track_observation_lookup(
-        payload, track_indices
-    )
+    observation_by_track = _selected_track_observation_lookup(payload, track_indices)
     cached_descriptors = {
-        name: torch.as_tensor(cache[name]["native_descriptors"])
+        name: torch.as_tensor(cache[name]["native_descriptors"]) for name in query_names
+    }
+    cached_validity = {
+        name: (
+            torch.as_tensor(cache[name]["native_valid_keypoint_mask"]).bool()
+            if "native_valid_keypoint_mask" in cache[name]
+            else None
+        )
         for name in query_names
     }
+    cached_reliability = {
+        name: (
+            torch.as_tensor(cache[name]["native_appearance_reliability"]).float()
+            if "native_appearance_reliability" in cache[name]
+            else None
+        )
+        for name in query_names
+    }
+    cached_descriptor_keep = {
+        name: (
+            torch.as_tensor(cache[name]["native_descriptor_fusion_keep_mask"]).bool()
+            if "native_descriptor_fusion_keep_mask" in cache[name]
+            else None
+        )
+        for name in query_names
+    }
+    descriptor_policy_presence = {
+        value is not None for value in cached_descriptor_keep.values()
+    }
+    if len(descriptor_policy_presence) != 1:
+        raise ValueError("descriptor-fusion keep masks must exist for every query")
+    has_descriptor_policy = descriptor_policy_presence == {True}
     features = []
     for track in track_indices.tolist():
         observations = observation_by_track[int(track)]
         query_indices = tracks["query_index"][observations].long()
         keypoint_indices = tracks["keypoint_index"][observations].long()
+        valid = torch.as_tensor(
+            [
+                cached_validity[query_names[int(query)]] is None
+                or bool(cached_validity[query_names[int(query)]][int(keypoint)])
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
+        descriptor_keep = torch.as_tensor(
+            [
+                cached_descriptor_keep[query_names[int(query)]] is None
+                or bool(cached_descriptor_keep[query_names[int(query)]][int(keypoint)])
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
+        # Keep geometry fixed even when every rendered observation lies outside
+        # the conservative alpha-valid region.  Such a Track retains all of its
+        # observations and is explicitly down-weighted by its reliability.
+        if bool(valid.any()):
+            descriptor_keep = descriptor_keep[valid]
+            observations = observations[valid]
+            query_indices = query_indices[valid]
+            keypoint_indices = keypoint_indices[valid]
+        if has_descriptor_policy:
+            if not bool(descriptor_keep.any()):
+                raise ValueError(
+                    "descriptor-fusion policy removed every usable Track observation"
+                )
+            observations = observations[descriptor_keep]
+            query_indices = query_indices[descriptor_keep]
+            keypoint_indices = keypoint_indices[descriptor_keep]
         descriptors = torch.stack(
             [
                 cached_descriptors[query_names[int(query)]][int(keypoint)]
@@ -378,22 +466,434 @@ def fuse_track_descriptors(
                 )
             ]
         )
+        confidence = torch.as_tensor(tracks["confidence"])[observations].float()
+        reliability = torch.as_tensor(
+            [
+                (
+                    1.0
+                    if cached_reliability[query_names[int(query)]] is None
+                    else float(
+                        cached_reliability[query_names[int(query)]][int(keypoint)]
+                    )
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ]
+        ).clamp(0.0, 1.0)
         features.append(
-            robust_fuse_track_descriptors(
+            fuse_projective_anchor_observations(
                 descriptors,
                 query_bins[query_indices],
-                torch.as_tensor(tracks["confidence"])[observations],
+                detector_weight=confidence,
+                visibility_weight=reliability,
                 trim_fraction=trim_fraction,
             )
         )
     if not features:
         descriptor_dim = int(
-            torch.as_tensor(
-                next(iter(cache.values()))["native_descriptors"]
-            ).shape[1]
+            torch.as_tensor(next(iter(cache.values()))["native_descriptors"]).shape[1]
         )
         return torch.zeros((0, descriptor_dim), dtype=torch.float32)
     return torch.stack(features)
+
+
+class LeaveOneQueryOutTrackDescriptorBank:
+    """Replay a fused Track bank while excluding one mapping image at a time.
+
+    Track identity and geometry remain the full-mapping artifacts.  Only the
+    descriptor observations contributed by the current feedback query are
+    removed.  This prevents a mapping descriptor from matching a map vector
+    that contains that same descriptor without introducing held-out folds.
+    """
+
+    def __init__(
+        self,
+        *,
+        payload: dict,
+        query_cache: dict,
+        track_indices: torch.Tensor,
+        reference_features: torch.Tensor,
+        trim_fraction: float = 0.2,
+        validate_reference: bool = True,
+    ) -> None:
+        self.payload = payload
+        self.cache = query_cache.get("queries", query_cache)
+        self.query_names = list(payload["query_names"])
+        self.tracks = payload["tracks"]
+        self.query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
+        self.track_indices = torch.as_tensor(track_indices, dtype=torch.long).reshape(
+            -1
+        )
+        self.reference_features = torch.as_tensor(reference_features).float()
+        self.trim_fraction = float(trim_fraction)
+        if self.reference_features.ndim != 2 or self.reference_features.shape[0] != (
+            self.track_indices.numel()
+        ):
+            raise ValueError("reference features and selected Track rows differ")
+        if self.track_indices.unique().numel() != self.track_indices.numel():
+            raise ValueError("selected Track rows are not unique")
+        if list(self.cache) != self.query_names:
+            raise ValueError("Track payload and query cache order differs")
+
+        self.observation_by_track = _selected_track_observation_lookup(
+            payload, self.track_indices
+        )
+        self.cached_descriptors = {
+            name: torch.as_tensor(self.cache[name]["native_descriptors"])
+            for name in self.query_names
+        }
+        self.cached_validity = {
+            name: (
+                torch.as_tensor(self.cache[name]["native_valid_keypoint_mask"]).bool()
+                if "native_valid_keypoint_mask" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        self.cached_reliability = {
+            name: (
+                torch.as_tensor(
+                    self.cache[name]["native_appearance_reliability"]
+                ).float()
+                if "native_appearance_reliability" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        self.cached_descriptor_keep = {
+            name: (
+                torch.as_tensor(
+                    self.cache[name]["native_descriptor_fusion_keep_mask"]
+                ).bool()
+                if "native_descriptor_fusion_keep_mask" in self.cache[name]
+                else None
+            )
+            for name in self.query_names
+        }
+        descriptor_policy_presence = {
+            value is not None for value in self.cached_descriptor_keep.values()
+        }
+        if len(descriptor_policy_presence) != 1:
+            raise ValueError("descriptor-fusion keep masks must exist for every query")
+        self.track_to_row = {
+            int(track): row for row, track in enumerate(self.track_indices.tolist())
+        }
+        self.rows_by_query: list[list[int]] = [[] for _ in self.query_names]
+        observation_track = torch.as_tensor(self.tracks["track_index"]).long()
+        observation_query = torch.as_tensor(self.tracks["query_index"]).long()
+        observation_keypoint = torch.as_tensor(self.tracks["keypoint_index"]).long()
+        for track, query, keypoint in zip(
+            observation_track.tolist(),
+            observation_query.tolist(),
+            observation_keypoint.tolist(),
+        ):
+            row = self.track_to_row.get(int(track))
+            keep = self.cached_descriptor_keep[self.query_names[int(query)]]
+            if row is not None and (keep is None or bool(keep[int(keypoint)])):
+                self.rows_by_query[int(query)].append(row)
+        self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
+
+        if bool(validate_reference):
+            replayed = fuse_track_descriptors(
+                payload=payload,
+                query_cache=query_cache,
+                track_indices=self.track_indices,
+                trim_fraction=self.trim_fraction,
+            )
+            if not torch.equal(replayed, self.reference_features):
+                maximum = float((replayed - self.reference_features).abs().max())
+                raise ValueError(
+                    "reference map is not the exact full-observation fused Track bank "
+                    f"(maximum absolute difference {maximum})"
+                )
+
+    def _fuse_observations(self, observations: torch.Tensor) -> torch.Tensor:
+        query_indices = torch.as_tensor(self.tracks["query_index"])[observations].long()
+        keypoint_indices = torch.as_tensor(self.tracks["keypoint_index"])[
+            observations
+        ].long()
+        valid = torch.as_tensor(
+            [
+                self.cached_validity[self.query_names[int(query)]] is None
+                or bool(
+                    self.cached_validity[self.query_names[int(query)]][int(keypoint)]
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
+        descriptor_keep = torch.as_tensor(
+            [
+                self.cached_descriptor_keep[self.query_names[int(query)]] is None
+                or bool(
+                    self.cached_descriptor_keep[self.query_names[int(query)]][
+                        int(keypoint)
+                    ]
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ],
+            dtype=torch.bool,
+        )
+        if bool(valid.any()):
+            descriptor_keep = descriptor_keep[valid]
+            observations = observations[valid]
+            query_indices = query_indices[valid]
+            keypoint_indices = keypoint_indices[valid]
+        if not bool(descriptor_keep.any()):
+            raise ValueError(
+                "descriptor-fusion policy leaves no observation after query exclusion"
+            )
+        observations = observations[descriptor_keep]
+        query_indices = query_indices[descriptor_keep]
+        keypoint_indices = keypoint_indices[descriptor_keep]
+        descriptors = torch.stack(
+            [
+                self.cached_descriptors[self.query_names[int(query)]][int(keypoint)]
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ]
+        )
+        confidence = torch.as_tensor(self.tracks["confidence"])[observations].float()
+        reliability = torch.as_tensor(
+            [
+                (
+                    1.0
+                    if self.cached_reliability[self.query_names[int(query)]] is None
+                    else float(
+                        self.cached_reliability[self.query_names[int(query)]][
+                            int(keypoint)
+                        ]
+                    )
+                )
+                for query, keypoint in zip(
+                    query_indices.tolist(), keypoint_indices.tolist()
+                )
+            ]
+        ).clamp(0.0, 1.0)
+        return robust_fuse_track_descriptors(
+            descriptors,
+            self.query_bins[query_indices],
+            confidence * reliability,
+            trim_fraction=self.trim_fraction,
+        )
+
+    def query_update(self, query_index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return map rows and fused vectors changed by excluding ``query_index``."""
+        query_index = int(query_index)
+        if not 0 <= query_index < len(self.query_names):
+            raise ValueError("leave-one-query-out index is out of range")
+        rows = torch.as_tensor(self.rows_by_query[query_index], dtype=torch.long)
+        if rows.numel() == 0:
+            return rows, self.reference_features.new_empty(
+                (0, self.reference_features.shape[1])
+            )
+        features = []
+        observation_query = torch.as_tensor(self.tracks["query_index"]).long()
+        for row in rows.tolist():
+            track = int(self.track_indices[row])
+            observations = self.observation_by_track[track]
+            remaining = observations[observation_query[observations] != query_index]
+            if remaining.numel() == 0:
+                raise ValueError(
+                    "mapping query is the sole observation of a selected Track"
+                )
+            features.append(self._fuse_observations(remaining))
+        return rows, torch.stack(features)
+
+
+class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
+    """Leave-one-query-out replay for a unified Track/surface Anchor bank.
+
+    Track rows retain the historical fusion exactly.  Non-Track rows are
+    replayed from the explicit projective observation CSR using the same
+    rendered detector/alpha GWFF weights used by surface completion.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: dict,
+        payload: dict,
+        query_cache: dict,
+        reference_features: torch.Tensor,
+        trim_fraction: float = 0.2,
+    ) -> None:
+        from evidence.observation_provider import GaussianRenderObservationProvider
+
+        self.state = state
+        self.payload = payload
+        self.reference_features = torch.as_tensor(reference_features).float()
+        self.track_ids = torch.as_tensor(state["track_cluster_ids"])
+        if self.track_ids.dtype != torch.long or self.track_ids.ndim != 1:
+            raise ValueError("unified map Track IDs must be an int64 vector")
+        count = int(self.track_ids.numel())
+        if (
+            self.reference_features.ndim != 2
+            or self.reference_features.shape[0] != count
+        ):
+            raise ValueError("unified reference features do not align with map rows")
+        self.query_names = list(payload["query_names"])
+        self.query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
+        self.provider = GaussianRenderObservationProvider(
+            query_cache,
+            query_names=self.query_names,
+            query_bins=self.query_bins,
+        )
+        self.views = [
+            self.provider.build_view(index) for index in range(len(self.provider))
+        ]
+        self.trim_fraction = float(trim_fraction)
+        self.track_rows = torch.nonzero(self.track_ids >= 0, as_tuple=False).reshape(-1)
+        self.surface_rows = torch.nonzero(self.track_ids < 0, as_tuple=False).reshape(
+            -1
+        )
+        self.track_replay = (
+            LeaveOneQueryOutTrackDescriptorBank(
+                payload=payload,
+                query_cache=query_cache,
+                track_indices=self.track_ids[self.track_rows],
+                reference_features=self.reference_features[self.track_rows],
+                trim_fraction=self.trim_fraction,
+            )
+            if self.track_rows.numel()
+            else None
+        )
+
+        observations = state.get("projective_anchor_observations")
+        if observations is None:
+            if self.surface_rows.numel():
+                raise ValueError("surface Anchors lack projective observations")
+            self.offsets = torch.zeros(count + 1, dtype=torch.long)
+            self.observation_query = torch.empty(0, dtype=torch.long)
+            self.observation_keypoint = torch.empty(0, dtype=torch.long)
+        else:
+            if (
+                observations.get("schema") != "lafgs_projective_anchor_observations"
+                or int(observations.get("version", -1)) != 1
+            ):
+                raise ValueError("unsupported projective observation schema")
+            self.offsets = torch.as_tensor(observations["observation_offsets"])
+            self.observation_query = torch.as_tensor(observations["query_indices"])
+            self.observation_keypoint = torch.as_tensor(
+                observations["keypoint_indices"]
+            )
+            if self.offsets.dtype != torch.long or self.offsets.shape != (count + 1,):
+                raise ValueError("projective observation offsets must be int64 [N+1]")
+            edge_count = int(self.offsets[-1])
+            if int(self.offsets[0]) != 0 or bool(
+                (self.offsets[1:] < self.offsets[:-1]).any()
+            ):
+                raise ValueError("projective observation offsets are invalid")
+            for value in (self.observation_query, self.observation_keypoint):
+                if value.dtype != torch.long or value.shape != (edge_count,):
+                    raise ValueError("projective observation indices must be int64 [E]")
+
+        self.rows_by_query: list[list[int]] = [[] for _ in self.query_names]
+        if self.track_replay is not None:
+            for query_index, local_rows in enumerate(self.track_replay.rows_by_query):
+                self.rows_by_query[query_index].extend(
+                    self.track_rows[
+                        torch.as_tensor(local_rows, dtype=torch.long)
+                    ].tolist()
+                )
+        for row in self.surface_rows.tolist():
+            start, end = int(self.offsets[row]), int(self.offsets[row + 1])
+            if start == end:
+                raise ValueError("surface Anchor has no projective observation")
+            for query_index in torch.unique(
+                self.observation_query[start:end], sorted=True
+            ).tolist():
+                self.rows_by_query[int(query_index)].append(int(row))
+        self.rows_by_query = [sorted(set(rows)) for rows in self.rows_by_query]
+
+        if self.surface_rows.numel():
+            replayed = torch.stack(
+                [
+                    self._fuse_surface_row(int(row), excluded_query=None)
+                    for row in self.surface_rows
+                ]
+            )
+            expected = self.reference_features[self.surface_rows]
+            if not torch.equal(replayed, expected):
+                maximum = float((replayed - expected).abs().max())
+                raise ValueError(
+                    "surface reference is not the exact full-observation fused bank "
+                    f"(maximum absolute difference {maximum})"
+                )
+
+    def _fuse_surface_row(
+        self, row: int, *, excluded_query: int | None
+    ) -> torch.Tensor:
+        start, end = int(self.offsets[row]), int(self.offsets[row + 1])
+        queries = self.observation_query[start:end]
+        keypoints = self.observation_keypoint[start:end]
+        if excluded_query is not None:
+            keep = queries != int(excluded_query)
+            queries = queries[keep]
+            keypoints = keypoints[keep]
+        if queries.numel() == 0:
+            raise ValueError("mapping query is the sole surface Anchor observation")
+        descriptors = []
+        detector = []
+        alpha = []
+        for query_index, keypoint_index in zip(queries.tolist(), keypoints.tolist()):
+            view = self.views[int(query_index)]
+            keypoint_index = int(keypoint_index)
+            descriptors.append(view.descriptors[keypoint_index])
+            detector.append(view.detector_scores[keypoint_index])
+            if view.keypoint_alpha is not None:
+                alpha.append(view.keypoint_alpha[keypoint_index])
+            elif view.alpha is not None:
+                height, width = view.image_hw
+                pixel = torch.floor(view.keypoints[keypoint_index]).long()
+                x = int(pixel[0].clamp(0, width - 1))
+                y = int(pixel[1].clamp(0, height - 1))
+                alpha.append(view.alpha[y, x])
+            else:
+                raise ValueError("surface Anchor replay requires rendered alpha")
+        return fuse_projective_anchor_observations(
+            F.normalize(torch.stack(descriptors).float(), dim=1),
+            self.query_bins[queries],
+            detector_weight=torch.stack(detector).float().clamp_min(0),
+            visibility_weight=torch.stack(alpha).float().clamp(0, 1),
+            trim_fraction=self.trim_fraction,
+        )
+
+    def query_update(self, query_index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        query_index = int(query_index)
+        if not 0 <= query_index < len(self.query_names):
+            raise ValueError("leave-one-query-out index is out of range")
+        rows = []
+        features = []
+        if self.track_replay is not None:
+            local_rows, track_features = self.track_replay.query_update(query_index)
+            rows.extend(self.track_rows[local_rows].tolist())
+            features.extend(track_features)
+        surface = [
+            row
+            for row in self.rows_by_query[query_index]
+            if bool(self.track_ids[row] < 0)
+        ]
+        for row in surface:
+            rows.append(int(row))
+            features.append(
+                self._fuse_surface_row(int(row), excluded_query=query_index)
+            )
+        if not rows:
+            return torch.empty(0, dtype=torch.long), self.reference_features.new_empty(
+                (0, self.reference_features.shape[1])
+            )
+        order = torch.argsort(torch.tensor(rows, dtype=torch.long), stable=True)
+        return (
+            torch.tensor(rows, dtype=torch.long)[order],
+            torch.stack(features)[order],
+        )
 
 
 @torch.no_grad()
@@ -416,37 +916,25 @@ def compute_track_functional_statistics(
     query_names = payload["query_names"]
     tracks = payload["tracks"]
     track_indices = torch.as_tensor(track_indices, dtype=torch.long).reshape(-1)
-    track_features = F.normalize(
-        torch.as_tensor(track_features).float(), dim=1
-    )
+    track_features = F.normalize(torch.as_tensor(track_features).float(), dim=1)
     if track_features.shape[0] != track_indices.numel():
         raise ValueError("track indices and fused features must align")
     track_count = int(payload["track_geometry"]["triangulated_xyz"].shape[0])
     track_to_row = torch.full((track_count,), -1, dtype=torch.long)
     track_to_row[track_indices] = torch.arange(track_indices.numel())
     selected = track_to_row[tracks["track_index"].long()] >= 0
-    selected_observations = torch.nonzero(
-        selected, as_tuple=False
-    ).reshape(-1)
+    selected_observations = torch.nonzero(selected, as_tuple=False).reshape(-1)
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
     old_xyz = torch.as_tensor(base_xyz).float().to(device)
-    old_features = F.normalize(
-        torch.as_tensor(base_features).float(), dim=1
-    ).to(device)
+    old_features = F.normalize(torch.as_tensor(base_features).float(), dim=1).to(device)
     candidate_features = track_features.to(device)
 
-    observation_gap = torch.zeros(
-        tracks["track_index"].numel(), dtype=torch.bool
-    )
-    observation_old_best = torch.full(
-        (tracks["track_index"].numel(),), -torch.inf
-    )
+    observation_gap = torch.zeros(tracks["track_index"].numel(), dtype=torch.bool)
+    observation_old_best = torch.full((tracks["track_index"].numel(),), -torch.inf)
     observation_self_score = torch.full_like(observation_old_best, -torch.inf)
-    observation_candidate_best = torch.full_like(
-        observation_old_best, -torch.inf
-    )
+    observation_candidate_best = torch.full_like(observation_old_best, -torch.inf)
     observation_candidate_row = torch.full(
         (tracks["track_index"].numel(),), -1, dtype=torch.long
     )
@@ -460,9 +948,7 @@ def compute_track_functional_statistics(
         observation_tensor = torch.as_tensor(observations, dtype=torch.long)
         keypoint_index = tracks["keypoint_index"][observation_tensor].long()
         descriptors = F.normalize(
-            torch.as_tensor(cached["native_descriptors"]).float()[
-                keypoint_index
-            ],
+            torch.as_tensor(cached["native_descriptors"]).float()[keypoint_index],
             dim=1,
         ).to(device)
         old_score, old_index = (descriptors @ old_features.T).max(dim=1)
@@ -471,20 +957,15 @@ def compute_track_functional_statistics(
             cached["native_K"],
             cached["pose_w2c"],
         )
-        native_keypoints = torch.as_tensor(
-            cached["native_keypoints"]
-        ).float()[keypoint_index.cpu()]
+        native_keypoints = torch.as_tensor(cached["native_keypoints"]).float()[
+            keypoint_index.cpu()
+        ]
         physical = (
-            native_keypoints
-            + float(cached.get("pixel_center_offset", 0.5))
+            native_keypoints + float(cached.get("pixel_center_offset", 0.5))
         ).numpy()
         native_depth = torch.as_tensor(cached["native_depth"]).float()
-        x = native_keypoints[:, 0].round().long().clamp(
-            0, native_depth.shape[1] - 1
-        )
-        y = native_keypoints[:, 1].round().long().clamp(
-            0, native_depth.shape[0] - 1
-        )
+        x = native_keypoints[:, 0].round().long().clamp(0, native_depth.shape[1] - 1)
+        y = native_keypoints[:, 1].round().long().clamp(0, native_depth.shape[0] - 1)
         reference_depth = native_depth[y, x].numpy()
         tolerance = float(depth_abs_tolerance_m) + (
             float(depth_rel_tolerance) * np.abs(reference_depth)
@@ -508,19 +989,14 @@ def compute_track_functional_statistics(
             & np.isfinite(reference_depth)
             & (reference_depth > 0)
             & (np.abs(depth - reference_depth) <= tolerance)
-            & (
-                np.linalg.norm(projected - physical, axis=1)
-                <= float(radius_px)
-            )
+            & (np.linalg.norm(projected - physical, axis=1) <= float(radius_px))
         )
-        target_row = track_to_row[
-            tracks["track_index"][observation_tensor].long()
-        ].to(device)
+        target_row = track_to_row[tracks["track_index"][observation_tensor].long()].to(
+            device
+        )
         candidate_score = descriptors @ candidate_features.T
         best_score, best_row = candidate_score.max(dim=1)
-        self_score = candidate_score.gather(
-            1, target_row[:, None]
-        ).squeeze(1)
+        self_score = candidate_score.gather(1, target_row[:, None]).squeeze(1)
         observation_gap[observation_tensor] = torch.from_numpy(~clean)
         observation_old_best[observation_tensor] = old_score.cpu()
         observation_self_score[observation_tensor] = self_score.cpu()
@@ -541,20 +1017,16 @@ def compute_track_functional_statistics(
         query = int(tracks["query_index"][observation])
         positive_count[track] += 1
         positive_margin_sum[track] += (
-            observation_self_score[observation]
-            - observation_old_best[observation]
+            observation_self_score[observation] - observation_old_best[observation]
         )
         if bool(observation_gap[observation]):
             functional_gain[track] += 1
             functional_bins[track].add(int(query_bins[query]))
-            functional_sequences[track].add(
-                str(query_names[query]).split("/", 1)[0]
-            )
+            functional_sequences[track].add(str(query_names[query]).split("/", 1)[0])
         predicted_row = int(observation_candidate_row[observation])
         target_row = int(track_to_row[track])
         beats_old = bool(
-            observation_candidate_best[observation]
-            > observation_old_best[observation]
+            observation_candidate_best[observation] > observation_old_best[observation]
         )
         if beats_old and predicted_row >= 0:
             predicted_track = int(track_indices[predicted_row])
@@ -577,8 +1049,7 @@ def compute_track_functional_statistics(
         "false_attractor_incoming_count": false_incoming,
         "candidate_opportunity_count": candidate_opportunities,
         "false_attractor_opportunity_rate": (
-            false_incoming.float()
-            / candidate_opportunities.clamp_min(1).float()
+            false_incoming.float() / candidate_opportunities.clamp_min(1).float()
         ),
         "promoted_correct_count": promoted_correct,
         "observation_count": positive_count,
@@ -597,9 +1068,7 @@ def _canonical_base_tensors(
     base_source_ids = torch.as_tensor(
         base_state["landmark_indices"], dtype=torch.long
     ).reshape(-1)
-    if not (
-        base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()
-    ):
+    if not (base_features.shape[0] == base_xyz.shape[0] == base_source_ids.numel()):
         raise ValueError("base state tensors are not row-aligned")
     return base_features, base_xyz, base_source_ids
 
@@ -644,12 +1113,8 @@ def _build_add_only_anchor_map_schema(
     return {
         "version": 1,
         "schema": "lafgs_materialized_anchor_map",
-        "anchor_ids": torch.arange(
-            base_count + selected_count, dtype=torch.long
-        ),
-        "source_primitive_ids": torch.cat(
-            (base_source_ids, source_extension)
-        ),
+        "anchor_ids": torch.arange(base_count + selected_count, dtype=torch.long),
+        "source_primitive_ids": torch.cat((base_source_ids, source_extension)),
         "track_cluster_ids": torch.cat(
             (
                 torch.full((base_count,), -1, dtype=torch.long),
@@ -698,9 +1163,7 @@ def build_add_only_materialized_anchor_map(
     """Create a frozen old bank plus Level-A track-derived micro-anchors."""
     if str(payload.get("schema", "")) != "lafgs_track_first_payload":
         raise ValueError("unsupported Track-First payload schema")
-    base_features, base_xyz, base_source_ids = _canonical_base_tensors(
-        base_state
-    )
+    base_features, base_xyz, base_source_ids = _canonical_base_tensors(base_state)
     cache = query_cache.get("queries", query_cache)
     tracks = payload["tracks"]
     geometry = payload["track_geometry"]
@@ -710,12 +1173,8 @@ def build_add_only_materialized_anchor_map(
     high_confidence = torch.as_tensor(
         geometry["triangulation_high_confidence"], dtype=torch.bool
     )
-    level = torch.as_tensor(
-        geometry["track_confidence_level"], dtype=torch.int8
-    )
-    source_rows = torch.as_tensor(
-        assignment["track_landmark_index"], dtype=torch.long
-    )
+    level = torch.as_tensor(geometry["track_confidence_level"], dtype=torch.int8)
+    source_rows = torch.as_tensor(assignment["track_landmark_index"], dtype=torch.long)
     if coverage is None:
         coverage = compute_track_coverage_gain(
             payload=payload,
@@ -728,9 +1187,7 @@ def build_add_only_materialized_anchor_map(
         & (level == 2)
         & (source_rows >= 0)
         & (
-            torch.as_tensor(
-                geometry["triangulation_distinct_view_bin_count"]
-            )
+            torch.as_tensor(geometry["triangulation_distinct_view_bin_count"])
             >= int(minimum_distinct_view_bins)
         )
         & (coverage["coverage_gain"] >= int(minimum_coverage_gain))
@@ -738,16 +1195,10 @@ def build_add_only_materialized_anchor_map(
     candidate_indices = torch.nonzero(candidate, as_tuple=False).reshape(-1)
     score = (
         coverage["coverage_gain"].float() * 1000.0
-        + torch.as_tensor(
-            geometry["triangulation_distinct_view_bin_count"]
-        ).float()
+        + torch.as_tensor(geometry["triangulation_distinct_view_bin_count"]).float()
         * 10.0
-        + torch.as_tensor(
-            geometry["triangulation_observation_count"]
-        ).float()
-        - torch.as_tensor(
-            geometry["triangulation_reprojection_median_px"]
-        ).float()
+        + torch.as_tensor(geometry["triangulation_observation_count"]).float()
+        - torch.as_tensor(geometry["triangulation_reprojection_median_px"]).float()
     )
     order = candidate_indices[
         torch.argsort(score[candidate_indices], descending=True, stable=True)
@@ -762,8 +1213,8 @@ def build_add_only_materialized_anchor_map(
         source_row = int(source_rows[track])
         xyz = track_xyz[track]
         duplicate = any(
-            float(torch.linalg.norm(xyz - track_xyz[other])) <
-            float(minimum_separation_m)
+            float(torch.linalg.norm(xyz - track_xyz[other]))
+            < float(minimum_separation_m)
             for other in selected_by_source[source_row]
         )
         if duplicate:
@@ -780,9 +1231,9 @@ def build_add_only_materialized_anchor_map(
         keypoint_indices = tracks["keypoint_index"][observations].long()
         descriptors = torch.stack(
             [
-                torch.as_tensor(
-                    cache[query_names[int(query)]]["native_descriptors"]
-                )[int(keypoint)]
+                torch.as_tensor(cache[query_names[int(query)]]["native_descriptors"])[
+                    int(keypoint)
+                ]
                 for query, keypoint in zip(
                     query_indices.tolist(), keypoint_indices.tolist()
                 )
@@ -839,15 +1290,11 @@ def build_add_only_materialized_anchor_map(
         "base_anchor_count": int(base_source_ids.numel()),
         "eligible_track_count": int(candidate.sum()),
         "selected_micro_anchor_count": int(selected_tensor.numel()),
-        "selected_source_primitive_count": int(
-            torch.unique(source_extension).numel()
-        ),
+        "selected_source_primitive_count": int(torch.unique(source_extension).numel()),
         "selected_multi_anchor_source_count": int(
             sum(len(value) > 1 for value in selected_by_source.values())
         ),
-        "coverage_gain_sum": int(
-            coverage["coverage_gain"][selected_tensor].sum()
-        ),
+        "coverage_gain_sum": int(coverage["coverage_gain"][selected_tensor].sum()),
         "coverage_gain_mean": float(
             coverage["coverage_gain"][selected_tensor].float().mean()
             if selected_tensor.numel()
@@ -875,9 +1322,7 @@ def build_canonical_base_anchor_map(
     makes that contract explicit.  It reports eligibility as unevaluated rather
     than incorrectly treating it as zero.
     """
-    base_features, base_xyz, base_source_ids = _canonical_base_tensors(
-        base_state
-    )
+    base_features, base_xyz, base_source_ids = _canonical_base_tensors(base_state)
 
     base_count = int(base_source_ids.numel())
     selected_track_ids = torch.empty(0, dtype=torch.long)
@@ -962,20 +1407,11 @@ def build_v2_materialized_anchor_map(
         assignment["track_landmark_costs"], dtype=torch.float32
     )
     candidate_mask = (
-        torch.as_tensor(
-            geometry["triangulation_high_confidence"], dtype=torch.bool
-        )
-        & (
-            torch.as_tensor(
-                geometry["track_confidence_level"], dtype=torch.int8
-            )
-            == 2
-        )
+        torch.as_tensor(geometry["triangulation_high_confidence"], dtype=torch.bool)
+        & (torch.as_tensor(geometry["track_confidence_level"], dtype=torch.int8) == 2)
         & (group_offsets[1:] > group_offsets[:-1])
     )
-    track_indices = torch.nonzero(
-        candidate_mask, as_tuple=False
-    ).reshape(-1)
+    track_indices = torch.nonzero(candidate_mask, as_tuple=False).reshape(-1)
     track_features = fuse_track_descriptors(
         payload=payload,
         query_cache=query_cache,
@@ -1015,9 +1451,7 @@ def build_v2_materialized_anchor_map(
     }
 
     parent = {int(track): int(track) for track in track_indices.tolist()}
-    component_members = {
-        int(track): {int(track)} for track in track_indices.tolist()
-    }
+    component_members = {int(track): {int(track)} for track in track_indices.tolist()}
 
     def find(value):
         root = value
@@ -1035,28 +1469,20 @@ def build_v2_materialized_anchor_map(
             return
         if left_root < right_root:
             parent[right_root] = left_root
-            component_members[left_root].update(
-                component_members.pop(right_root)
-            )
+            component_members[left_root].update(component_members.pop(right_root))
         else:
             parent[left_root] = right_root
-            component_members[right_root].update(
-                component_members.pop(left_root)
-            )
+            component_members[right_root].update(component_members.pop(left_root))
 
     selected_xyz_np = track_xyz[track_indices].numpy()
-    spatial_pairs = cKDTree(selected_xyz_np).query_pairs(
-        r=float(cluster_radius_m)
-    )
+    spatial_pairs = cKDTree(selected_xyz_np).query_pairs(r=float(cluster_radius_m))
     eligible_pairs = set()
     for left_row, right_row in sorted(spatial_pairs):
         left = int(track_indices[left_row])
         right = int(track_indices[right_row])
         if source_groups[left].isdisjoint(source_groups[right]):
             continue
-        cosine = float(
-            torch.dot(feature_by_track[left], feature_by_track[right])
-        )
+        cosine = float(torch.dot(feature_by_track[left], feature_by_track[right]))
         if cosine < float(cluster_min_descriptor_cosine):
             continue
         eligible_pairs.add((min(left, right), max(left, right)))
@@ -1084,9 +1510,7 @@ def build_v2_materialized_anchor_map(
     query_names = payload["query_names"]
     query_bins = torch.as_tensor(payload["query_bins"], dtype=torch.long)
     cache = query_cache.get("queries", query_cache)
-    covariance = torch.as_tensor(
-        geometry["triangulation_covariance_trace"]
-    ).float()
+    covariance = torch.as_tensor(geometry["triangulation_covariance_trace"]).float()
     view_bin_count = torch.as_tensor(
         geometry["triangulation_distinct_view_bin_count"]
     ).long()
@@ -1099,26 +1523,20 @@ def build_v2_materialized_anchor_map(
         member_tensor = torch.as_tensor(members, dtype=torch.long)
         weight = torch.reciprocal(covariance[member_tensor].clamp_min(1e-8))
         weight /= weight.sum()
-        xyz = (
-            track_xyz[member_tensor] * weight[:, None]
-        ).sum(dim=0)
+        xyz = (track_xyz[member_tensor] * weight[:, None]).sum(dim=0)
         observations = [
             observation
             for member in members
             for observation in observation_by_track[member]
         ]
         observation_tensor = torch.as_tensor(observations, dtype=torch.long)
-        observation_queries = tracks["query_index"][
-            observation_tensor
-        ].long()
-        observation_keypoints = tracks["keypoint_index"][
-            observation_tensor
-        ].long()
+        observation_queries = tracks["query_index"][observation_tensor].long()
+        observation_keypoints = tracks["keypoint_index"][observation_tensor].long()
         descriptors = torch.stack(
             [
-                torch.as_tensor(
-                    cache[query_names[int(query)]]["native_descriptors"]
-                )[int(keypoint)]
+                torch.as_tensor(cache[query_names[int(query)]]["native_descriptors"])[
+                    int(keypoint)
+                ]
                 for query, keypoint in zip(
                     observation_queries.tolist(),
                     observation_keypoints.tolist(),
@@ -1151,44 +1569,32 @@ def build_v2_materialized_anchor_map(
             {
                 int(query_bins[int(tracks["query_index"][observation])])
                 for observation in observations
-                if bool(
-                    coverage["coverage_gap_observation_mask"][observation]
-                )
+                if bool(coverage["coverage_gap_observation_mask"][observation])
             }
         )
         func_bins = len(
             {
                 int(query_bins[int(tracks["query_index"][observation])])
                 for observation in observations
-                if bool(
-                    functional["functional_gap_observation_mask"][observation]
-                )
+                if bool(functional["functional_gap_observation_mask"][observation])
             }
         )
         geo_sequences = len(
             {
-                str(
-                    query_names[
-                        int(tracks["query_index"][observation])
-                    ]
-                ).split("/", 1)[0]
+                str(query_names[int(tracks["query_index"][observation])]).split("/", 1)[
+                    0
+                ]
                 for observation in observations
-                if bool(
-                    coverage["coverage_gap_observation_mask"][observation]
-                )
+                if bool(coverage["coverage_gap_observation_mask"][observation])
             }
         )
         func_sequences = len(
             {
-                str(
-                    query_names[
-                        int(tracks["query_index"][observation])
-                    ]
-                ).split("/", 1)[0]
+                str(query_names[int(tracks["query_index"][observation])]).split("/", 1)[
+                    0
+                ]
                 for observation in observations
-                if bool(
-                    functional["functional_gap_observation_mask"][observation]
-                )
+                if bool(functional["functional_gap_observation_mask"][observation])
             }
         )
         false_incoming = int(
@@ -1197,17 +1603,11 @@ def build_v2_materialized_anchor_map(
         candidate_opportunities = int(
             functional["candidate_opportunity_count"][member_tensor].sum()
         )
-        promoted = int(
-            functional["promoted_correct_count"][member_tensor].sum()
-        )
-        observation_count = int(
-            functional["observation_count"][member_tensor].sum()
-        )
+        promoted = int(functional["promoted_correct_count"][member_tensor].sum())
+        observation_count = int(functional["observation_count"][member_tensor].sum())
         margin = float(
             (
-                functional["positive_hardnegative_margin_mean"][
-                    member_tensor
-                ]
+                functional["positive_hardnegative_margin_mean"][member_tensor]
                 * functional["observation_count"][member_tensor]
             ).sum()
             / functional["observation_count"][member_tensor].sum().clamp_min(1)
@@ -1219,9 +1619,7 @@ def build_v2_materialized_anchor_map(
             if member_tensor.numel() > 1
             else 0.0
         )
-        cluster_features = torch.stack(
-            [feature_by_track[member] for member in members]
-        )
+        cluster_features = torch.stack([feature_by_track[member] for member in members])
         cluster_min_cosine = float(
             (cluster_features @ cluster_features.T).min()
             if member_tensor.numel() > 1
@@ -1260,9 +1658,7 @@ def build_v2_materialized_anchor_map(
                 - float(reprojection[member_tensor].mean())
             )
         anchor_kind = 1 if geo_gain > 0 else 2
-        if geo_gain <= 0 and (
-            not include_identity_split or func_gain <= 0
-        ):
+        if geo_gain <= 0 and (not include_identity_split or func_gain <= 0):
             continue
         clusters.append(
             {
@@ -1287,12 +1683,8 @@ def build_v2_materialized_anchor_map(
                 "cluster_diameter_m": cluster_diameter,
                 "cluster_min_descriptor_cosine": cluster_min_cosine,
                 "same_query_collision_count": same_query_collisions,
-                "covariance_trace": float(
-                    covariance[member_tensor].mean()
-                ),
-                "reprojection_median_px": float(
-                    reprojection[member_tensor].mean()
-                ),
+                "covariance_trace": float(covariance[member_tensor].mean()),
+                "reprojection_median_px": float(reprojection[member_tensor].mean()),
             }
         )
     clusters.sort(
@@ -1303,13 +1695,15 @@ def build_v2_materialized_anchor_map(
     )
     selected_clusters = clusters[: max(int(budget), 0)]
 
-    new_xyz = torch.stack(
-        [value["xyz"] for value in selected_clusters]
-    ) if selected_clusters else base_xyz.new_zeros((0, 3))
-    new_features = torch.stack(
-        [value["feature"] for value in selected_clusters]
-    ) if selected_clusters else base_features.new_zeros(
-        (0, base_features.shape[1])
+    new_xyz = (
+        torch.stack([value["xyz"] for value in selected_clusters])
+        if selected_clusters
+        else base_xyz.new_zeros((0, 3))
+    )
+    new_features = (
+        torch.stack([value["feature"] for value in selected_clusters])
+        if selected_clusters
+        else base_features.new_zeros((0, base_features.shape[1]))
     )
     representative_rows = torch.as_tensor(
         [value["representative_row"] for value in selected_clusters],
@@ -1349,14 +1743,10 @@ def build_v2_materialized_anchor_map(
         "version": 2,
         "schema": "lafgs_materialized_anchor_map",
         "anchor_ids": torch.arange(total, dtype=torch.long),
-        "source_primitive_ids": torch.cat(
-            (base_source_ids, source_extension)
-        ),
+        "source_primitive_ids": torch.cat((base_source_ids, source_extension)),
         "track_cluster_ids": torch.cat(
             (
-                torch.full(
-                    (base_source_ids.numel(),), -1, dtype=torch.long
-                ),
+                torch.full((base_source_ids.numel(),), -1, dtype=torch.long),
                 torch.as_tensor(
                     [value["cluster_id"] for value in selected_clusters],
                     dtype=torch.long,
@@ -1366,12 +1756,8 @@ def build_v2_materialized_anchor_map(
         "track_cluster_member_offsets": torch.as_tensor(
             member_offsets, dtype=torch.long
         ),
-        "track_cluster_member_ids": torch.as_tensor(
-            member_ids, dtype=torch.long
-        ),
-        "source_group_offsets": torch.as_tensor(
-            source_group_offsets, dtype=torch.long
-        ),
+        "track_cluster_member_ids": torch.as_tensor(member_ids, dtype=torch.long),
+        "source_group_offsets": torch.as_tensor(source_group_offsets, dtype=torch.long),
         "source_group_primitive_ids": torch.as_tensor(
             source_group_ids, dtype=torch.long
         ),
@@ -1391,12 +1777,8 @@ def build_v2_materialized_anchor_map(
             "include_identity_split": bool(include_identity_split),
             "score_mode": score_mode,
             "cluster_radius_m": float(cluster_radius_m),
-            "cluster_min_descriptor_cosine": float(
-                cluster_min_descriptor_cosine
-            ),
-            "descriptor_trim_fraction": float(
-                descriptor_trim_fraction
-            ),
+            "cluster_min_descriptor_cosine": float(cluster_min_descriptor_cosine),
+            "descriptor_trim_fraction": float(descriptor_trim_fraction),
             "coverage_radius_px": float(radius_px),
         },
         "micro_anchor_quality": {
@@ -1419,15 +1801,11 @@ def build_v2_materialized_anchor_map(
                 [value["false_incoming"] for value in selected_clusters]
             ),
             "candidate_opportunity_count": torch.as_tensor(
-                [
-                    value["candidate_opportunities"]
-                    for value in selected_clusters
-                ]
+                [value["candidate_opportunities"] for value in selected_clusters]
             ),
             "false_attractor_opportunity_rate": torch.as_tensor(
                 [
-                    value["false_incoming"]
-                    / max(value["candidate_opportunities"], 1)
+                    value["false_incoming"] / max(value["candidate_opportunities"], 1)
                     for value in selected_clusters
                 ]
             ),
@@ -1441,31 +1819,19 @@ def build_v2_materialized_anchor_map(
                 [value["covariance_trace"] for value in selected_clusters]
             ),
             "reprojection_median_px": torch.as_tensor(
-                [
-                    value["reprojection_median_px"]
-                    for value in selected_clusters
-                ]
+                [value["reprojection_median_px"] for value in selected_clusters]
             ),
             "cluster_track_count": torch.as_tensor(
                 [value["track_count"] for value in selected_clusters]
             ),
             "cluster_diameter_m": torch.as_tensor(
-                [
-                    value["cluster_diameter_m"]
-                    for value in selected_clusters
-                ]
+                [value["cluster_diameter_m"] for value in selected_clusters]
             ),
             "cluster_min_descriptor_cosine": torch.as_tensor(
-                [
-                    value["cluster_min_descriptor_cosine"]
-                    for value in selected_clusters
-                ]
+                [value["cluster_min_descriptor_cosine"] for value in selected_clusters]
             ),
             "cluster_same_query_collision_count": torch.as_tensor(
-                [
-                    value["same_query_collision_count"]
-                    for value in selected_clusters
-                ]
+                [value["same_query_collision_count"] for value in selected_clusters]
             ),
         },
     }
@@ -1475,9 +1841,7 @@ def build_v2_materialized_anchor_map(
         "cluster_count": len(members_by_root),
         "clustered_pair_count": clustered_pair_count,
         "eligible_cluster_pair_count": len(eligible_pairs),
-        "rejected_single_linkage_pair_count": (
-            rejected_single_linkage_pair_count
-        ),
+        "rejected_single_linkage_pair_count": (rejected_single_linkage_pair_count),
         "multi_track_cluster_count": sum(
             len(value) > 1 for value in members_by_root.values()
         ),
@@ -1496,24 +1860,16 @@ def build_v2_materialized_anchor_map(
         "selected_identity_split_anchor_count": sum(
             value["anchor_kind"] == 2 for value in selected_clusters
         ),
-        "selected_source_primitive_count": int(
-            torch.unique(source_extension).numel()
-        ),
-        "coverage_gain_sum": sum(
-            value["geo_gain"] for value in selected_clusters
-        ),
-        "functional_gain_sum": sum(
-            value["func_gain"] for value in selected_clusters
-        ),
+        "selected_source_primitive_count": int(torch.unique(source_extension).numel()),
+        "coverage_gain_sum": sum(value["geo_gain"] for value in selected_clusters),
+        "functional_gain_sum": sum(value["func_gain"] for value in selected_clusters),
         "raster_visibility_enabled": visibility_cache is not None,
         "score_mode": score_mode,
     }
     return output, diagnostics
 
 
-def truncate_materialized_anchor_map(
-    state: dict, micro_anchor_budget: int
-) -> dict:
+def truncate_materialized_anchor_map(state: dict, micro_anchor_budget: int) -> dict:
     """Take a deterministic prefix of a scored materialized anchor map."""
     if state.get("schema") != "lafgs_materialized_anchor_map":
         raise ValueError("unsupported materialized anchor schema")
@@ -1556,9 +1912,7 @@ def truncate_materialized_anchor_map(
     return output
 
 
-def truncate_materialized_anchor_extension(
-    state: dict, extension_budget: int
-) -> dict:
+def truncate_materialized_anchor_extension(state: dict, extension_budget: int) -> dict:
     """Keep a frozen canonical prefix and a deterministic extension prefix."""
     if state.get("schema") != "lafgs_materialized_anchor_map":
         raise ValueError("unsupported materialized anchor schema")
@@ -1607,9 +1961,7 @@ def truncate_materialized_anchor_extension(
         for suffix in ("responsibilities", "costs"):
             aligned_key = f"{prefix}_{suffix}"
             if aligned_key in state:
-                output[aligned_key] = torch.as_tensor(
-                    state[aligned_key]
-                )[:end].clone()
+                output[aligned_key] = torch.as_tensor(state[aligned_key])[:end].clone()
     base_count = int(state["base_anchor_count"])
     output["anchor_ids"] = torch.arange(keep_rows, dtype=torch.long)
     output["requested_extension_budget"] = int(extension_budget)
@@ -1628,21 +1980,17 @@ def select_function_preserving_base_rows(
     remove_count: int,
 ) -> tuple[torch.Tensor, torch.Tensor, dict]:
     """Retire unsupported base rows while preserving every tracked identity."""
-    base_sources = torch.as_tensor(
-        base_source_primitive_ids, dtype=torch.long
-    ).reshape(-1)
+    base_sources = torch.as_tensor(base_source_primitive_ids, dtype=torch.long).reshape(
+        -1
+    )
     extension_sources = torch.as_tensor(
         extension_source_primitive_ids, dtype=torch.long
     ).reshape(-1)
     best_tracks = torch.as_tensor(
         landmark_best_track_indices, dtype=torch.long
     ).reshape(-1)
-    visibility = torch.as_tensor(
-        visibility_counts, dtype=torch.long
-    ).reshape(-1)
-    if not (
-        base_sources.numel() == best_tracks.numel() == visibility.numel()
-    ):
+    visibility = torch.as_tensor(visibility_counts, dtype=torch.long).reshape(-1)
+    if not (base_sources.numel() == best_tracks.numel() == visibility.numel()):
         raise ValueError("base support tensors must be row-aligned")
     requested = max(int(remove_count), 0)
     unsupported = best_tracks < 0
@@ -1673,13 +2021,9 @@ def select_function_preserving_base_rows(
         "removed_count": int(removed.numel()),
         "unsupported_candidate_count": int(unsupported.sum()),
         "removed_supported_count": int((best_tracks[removed] >= 0).sum()),
-        "removed_parent_redundant_count": int(
-            parent_redundant[removed].sum()
-        ),
+        "removed_parent_redundant_count": int(parent_redundant[removed].sum()),
         "removed_visibility_count_mean": float(
-            visibility[removed].float().mean()
-            if removed.numel()
-            else 0.0
+            visibility[removed].float().mean() if removed.numel() else 0.0
         ),
         "removed_visibility_count_max": int(
             visibility[removed].max() if removed.numel() else 0
@@ -1733,9 +2077,7 @@ def select_micro_anchor_set(
         if false_attractor_costs.numel() != candidate_count:
             raise ValueError("false-attractor costs must align with candidates")
     if candidate_functional_gap_observations is None:
-        candidate_functional_gap_observations = [
-            [] for _ in range(candidate_count)
-        ]
+        candidate_functional_gap_observations = [[] for _ in range(candidate_count)]
     if len(candidate_functional_gap_observations) != candidate_count:
         raise ValueError("functional gap lists must align with candidates")
 
@@ -1744,15 +2086,11 @@ def select_micro_anchor_set(
     functional_covered = torch.zeros(observation_count, dtype=torch.bool)
     selected_query_count = torch.zeros(query_count, dtype=torch.long)
     sequence_count = (
-        int(query_sequence_indices.max()) + 1
-        if query_sequence_indices.numel()
-        else 0
+        int(query_sequence_indices.max()) + 1 if query_sequence_indices.numel() else 0
     )
     sequence_event_count = torch.zeros(sequence_count, dtype=torch.float32)
     if observation_count:
-        observation_sequences = query_sequence_indices[
-            observation_query_indices
-        ]
+        observation_sequences = query_sequence_indices[observation_query_indices]
         sequence_event_count.scatter_add_(
             0,
             observation_sequences,
@@ -1760,19 +2098,12 @@ def select_micro_anchor_set(
         )
     else:
         observation_sequences = torch.zeros(0, dtype=torch.long)
-    positive_sequence_counts = sequence_event_count[
-        sequence_event_count > 0
-    ]
+    positive_sequence_counts = sequence_event_count[sequence_event_count > 0]
     sequence_reference = float(
-        positive_sequence_counts.mean()
-        if positive_sequence_counts.numel()
-        else 1.0
+        positive_sequence_counts.mean() if positive_sequence_counts.numel() else 1.0
     )
     sequence_weight = (
-        (
-            sequence_reference
-            / sequence_event_count.clamp_min(1.0)
-        )
+        (sequence_reference / sequence_event_count.clamp_min(1.0))
         .sqrt()
         .clamp(0.5, 3.0)
     )
@@ -1797,9 +2128,7 @@ def select_micro_anchor_set(
         if tensor.numel() and (
             int(tensor.min()) < 0 or int(tensor.max()) >= observation_count
         ):
-            raise ValueError(
-                "candidate references an invalid functional observation"
-            )
+            raise ValueError("candidate references an invalid functional observation")
         candidate_functional_observations.append(tensor)
 
     def marginal_gain(candidate: int) -> float:
@@ -1809,30 +2138,22 @@ def select_micro_anchor_set(
             gain = 0.0
         else:
             queries = observation_query_indices[observations]
-            saturation = (
-                selected_query_count[queries].float() + 1.0
-            ).pow(-query_alpha)
+            saturation = (selected_query_count[queries].float() + 1.0).pow(-query_alpha)
             weight = saturation
             if profile == "sequence_tail":
-                weight = weight * sequence_weight[
-                    observation_sequences[observations]
-                ]
+                weight = weight * sequence_weight[observation_sequences[observations]]
             gain = float(weight.sum())
             if query_first_bonus:
                 unique_queries = torch.unique(queries)
                 gain += query_first_bonus * float(
                     (selected_query_count[unique_queries] == 0).sum()
                 )
-        functional_observations = candidate_functional_observations[
-            candidate
-        ]
+        functional_observations = candidate_functional_observations[candidate]
         functional_observations = functional_observations[
             ~functional_covered[functional_observations]
         ]
         if functional_observations.numel():
-            functional_queries = observation_query_indices[
-                functional_observations
-            ]
+            functional_queries = observation_query_indices[functional_observations]
             functional_saturation = (
                 selected_query_count[functional_queries].float() + 1.0
             ).pow(-query_alpha)
@@ -1848,9 +2169,8 @@ def select_micro_anchor_set(
                 )
             gain += float(functional_gap_weight) * functional_gain
         if false_attractor_costs is None:
-            harmful_incoming = (
-                float(false_attractor_rates[candidate])
-                * max(int(candidate_observations[candidate].numel()), 1)
+            harmful_incoming = float(false_attractor_rates[candidate]) * max(
+                int(candidate_observations[candidate].numel()), 1
             )
         else:
             harmful_incoming = float(false_attractor_costs[candidate])
@@ -1867,9 +2187,7 @@ def select_micro_anchor_set(
                 observation_query_indices[new_observations],
                 torch.ones(new_observations.numel(), dtype=torch.long),
             )
-        functional_observations = candidate_functional_observations[
-            candidate
-        ]
+        functional_observations = candidate_functional_observations[candidate]
         new_functional = functional_observations[
             ~functional_covered[functional_observations]
         ]
@@ -1892,9 +2210,7 @@ def select_micro_anchor_set(
         if candidate not in seen_initial:
             stable_initial.append(candidate)
             seen_initial.add(candidate)
-    initial_selected_indices = torch.as_tensor(
-        stable_initial, dtype=torch.long
-    )
+    initial_selected_indices = torch.as_tensor(stable_initial, dtype=torch.long)
     if initial_selected_indices.numel() and (
         int(initial_selected_indices.min()) < 0
         or int(initial_selected_indices.max()) >= candidate_count
@@ -1945,9 +2261,7 @@ def select_micro_anchor_set(
         "initial_selected_count": int(initial_selected_indices.numel()),
         "greedy_selected_count": len(selection_gain),
         "covered_gap_observation_count": int(covered.sum()),
-        "covered_functional_gap_observation_count": int(
-            functional_covered.sum()
-        ),
+        "covered_functional_gap_observation_count": int(functional_covered.sum()),
         "covered_query_count": int((selected_query_count > 0).sum()),
         "selection_gain_sum": float(sum(selection_gain)),
         "selection_gain_min": float(min(selection_gain, default=0.0)),

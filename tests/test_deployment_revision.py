@@ -100,6 +100,34 @@ def test_revision_subsets_teacher_and_map_consistently(tmp_path):
     assert revised_metric["map_path"] == str((tmp_path / "map.pt").resolve())
 
 
+def test_revision_subsets_track_only_map_without_selector_metadata(tmp_path):
+    state = {
+        "anchor_ids": torch.arange(3),
+        "anchor_xyz": torch.randn(3, 3),
+        "anchor_features": torch.randn(3, 4),
+        "anchor_type": torch.ones(3, dtype=torch.long),
+        "source_primitive_ids": torch.full((3,), -1, dtype=torch.long),
+        "track_cluster_ids": torch.arange(3),
+        "base_anchor_count": 0,
+        "micro_anchor_count": 3,
+        "canonical_anchor_count": 3,
+    }
+    metric = {"landmark_indices": torch.arange(3)}
+    revised_map, revised_metric = subset_map_and_metric(
+        state,
+        metric,
+        torch.tensor([True, False, True]),
+        output_map=tmp_path / "map.pt",
+    )
+    assert revised_map["anchor_ids"].tolist() == [0, 1]
+    assert revised_map["anchor_type"].tolist() == [1, 1]
+    assert revised_map["source_primitive_ids"].tolist() == [-1, -1]
+    assert "track_centric_reconstruction" not in revised_map
+    assert revised_map["base_anchor_count"] == 0
+    assert revised_map["micro_anchor_count"] == 2
+    assert revised_metric["landmark_indices"].tolist() == [0, 1]
+
+
 def test_revision_teacher_refuses_to_remove_track_core(tmp_path):
     with pytest.raises(ValueError, match="Track Core"):
         subset_teacher(
@@ -208,3 +236,106 @@ def test_mapping_statistics_report_rotation_tails_and_joint_recall(monkeypatch):
     assert summary["p95_ae_deg"] == pytest.approx(np.percentile([4.0, 1.0, 6.0], 95))
     assert summary["recall_5cm_5deg_percent"] == pytest.approx(100.0 / 3.0)
     assert summary["raw_gt_precision_percent"] == 100.0
+
+
+def test_mapping_statistics_replays_capacity_assignment_with_fallback(monkeypatch):
+    teacher = {
+        "anchor_count": 2,
+        "query_names": ["q"],
+        "records": [
+            {
+                "query_rows": torch.tensor([0, 1]),
+                "positive_offsets": torch.tensor([0, 1, 2]),
+                "positive_indices": torch.tensor([1, 0]),
+                "ambiguous_offsets": torch.tensor([0, 0, 0]),
+                "ambiguous_indices": torch.empty(0, dtype=torch.long),
+            }
+        ],
+    }
+    cache = {
+        "queries": {
+            "q": {
+                "native_descriptors": torch.tensor([[1.0, 0.0], [0.99, -0.1]]),
+                "native_keypoints": torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+                "native_K": torch.eye(3),
+                "pose_w2c": torch.eye(4),
+            }
+        }
+    }
+    captured = {}
+    monkeypatch.setattr(
+        deployment_revision,
+        "load_shared_metric",
+        lambda *args, **kwargs: _IdentityMetric(),
+    )
+
+    def solve(points_2d, points_3d, *args, **kwargs):
+        captured["points_3d"] = np.asarray(points_3d)
+        return SimpleNamespace(
+            pose_w2c=np.eye(4),
+            inliers=np.empty(0, dtype=np.int64),
+            diagnostics={"iterations": 1},
+        )
+
+    monkeypatch.setattr(deployment_revision, "solve_absolute_pose", solve)
+    statistics = collect_deployment_statistics(
+        state={
+            "anchor_ids": torch.tensor([0, 1]),
+            "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+            "anchor_features": torch.tensor([[1.0, 0.0], [0.8, 0.6]]),
+        },
+        metric_state_path="unused.pt",
+        teacher=teacher,
+        query_cache=cache,
+        device=torch.device("cpu"),
+        ransac_reprojection_px=12.0,
+        clean_reprojection_px=4.0,
+        task_translation_m=0.05,
+        task_rotation_deg=5.0,
+        seed=2026,
+        collect_anchor_statistics=False,
+        assignment_topk=2,
+        assignment_dustbin_score=-1.0,
+    )
+    assert captured["points_3d"].tolist() == [[1.0, 0.0, 1.0], [0.0, 0.0, 1.0]]
+    assert statistics["summary"]["raw_gt_precision_percent"] == 100.0
+    assert statistics["summary"]["assignment_reassigned_query_rows"] == 1
+    assert statistics["summary"]["assignment_top1_collisions"] == 1
+
+
+def test_mapping_statistics_view_mixture_callback_calls_one_solver(monkeypatch):
+    from localization.matcher import TopKMatches
+
+    teacher = {
+        "anchor_count": 1,
+        "query_names": ["q"],
+        "records": [{
+            "query_rows": torch.tensor([0]),
+            "positive_offsets": torch.tensor([0, 1]),
+            "positive_indices": torch.tensor([0]),
+            "ambiguous_offsets": torch.tensor([0, 0]),
+            "ambiguous_indices": torch.empty(0, dtype=torch.long),
+        }],
+    }
+    cache = {"queries": {"q": {
+        "native_descriptors": torch.tensor([[1.0, 0.0]]),
+        "native_keypoints": torch.tensor([[0.0, 0.0]]),
+        "native_K": torch.eye(3), "pose_w2c": torch.eye(4),
+    }}}
+    monkeypatch.setattr(deployment_revision, "load_shared_metric", lambda *a, **k: _IdentityMetric())
+    calls = {"matcher": 0, "solver": 0}
+    def matcher(query_index, descriptors, topk):
+        calls["matcher"] += 1
+        return TopKMatches(torch.tensor([0]), torch.tensor([[0]]), torch.tensor([[1.0]]))
+    def solver(*args, **kwargs):
+        calls["solver"] += 1
+        return SimpleNamespace(pose_w2c=np.eye(4), inliers=np.array([0]), diagnostics={"iterations": 1})
+    monkeypatch.setattr(deployment_revision, "solve_absolute_pose", solver)
+    collect_deployment_statistics(
+        state={"anchor_ids": torch.tensor([0]), "anchor_xyz": torch.tensor([[0.,0.,1.]]), "anchor_features": torch.tensor([[1.,0.]])},
+        metric_state_path="unused.pt", teacher=teacher, query_cache=cache,
+        device=torch.device("cpu"), ransac_reprojection_px=12., clean_reprojection_px=4.,
+        task_translation_m=.05, task_rotation_deg=5., seed=2026,
+        collect_anchor_statistics=False, view_mixture_matcher=matcher,
+    )
+    assert calls == {"matcher": 1, "solver": 1}

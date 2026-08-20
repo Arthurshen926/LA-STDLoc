@@ -31,6 +31,22 @@ Track 与 Gaussian 不应继续作为两类可部署地标并行扩张。更简�
 4. 精度优化必须优先处理错误对应和身份混淆；继续增加候选、训练步数或 Pose Reserve 不能解决这个根因。
 5. 所有超参数、去重阈值和 selector 约束只能由 mapping split 校准；test split 只在方案冻结后使用一次。
 
+## 当前难例场景增强：带拒配的容量可行对应分配
+
+Stairs 已明确否决 dustbin=-1 的强制 K4/K8：mean/CVaR95 约翻倍，Recall
+下降 0.5pp，PoseLib hypotheses 显著增加。共享 Top-8 sidecar 因逐 query 与
+summary exact parity而保留。无 Pose 审计显示正确候选 R@1 到 R@8 仍有
+14.77pp headroom，因此下一步只在固定八个难例场景检验“Top-1/Top-2 margin
+拒配 + fallback regret + Anchor capacity”，不再要求每轮扩展 24 场景。完整
+数值与 SHA 见 `docs/evidence/v4_assignment_stairs_result.json`。默认发布路径仍
+保持独立 global Top-1；只有难例面板得到实际 pose/tail 改善后才替换。
+
+真实 margin dustbin 面板随后也在首个难例 Stairs 停止。四个候选虽把 raw
+precision 提高到 14.90--16.46%、把平均 hypotheses 降到 2918--3160，却使
+mean TE 恶化至 6.48--7.58 cm、CVaR95 恶化至 122.43--144.39 cm。说明
+Top-K oracle headroom 不能由局部 cosine margin 可靠兑现；不再继续调 K、margin
+或 dustbin。证据见 `docs/evidence/v4_assignment_margin_stairs_result.json`。
+
 ## 已确认的当前实现事实
 
 - Coverage 与 Pose 已经在 `leftover_tracks_plus_gaussian_base` 共享候选宇宙、匹配状态和姿态状态；不存在必须再造一个“统一候选分支”的必要。
@@ -892,3 +908,83 @@ Pair Gate，仍禁止 Track、pose、test 和默认切换。正式 CPU-only Stai
 Gaussian render 的 V1.4/R1/conditional-fusion 结论必须限定到旧 prior，并允许在新 prior 上
 重新验证；基于原始 mapping RGB cache 的 P8/XFeat 结论不受影响。完整证据见
 `docs/indoor_full_reference_prior_revalidation.md`。
+
+Rendered-RGB Track-only V1.2 也已完成从 support repair、mapping-only cross-fit、A1/identity
+冻结选择到 ShopFacade/Stairs 三种子真实 test 的完整闭环。新实现只在原 rendered Track 内
+做最多三子分量的 support-certified split，并从相机射线重新三角化；Gaussian primitive xyz、
+原始 mapping RGB 与 test query 均不参与建图或选择。ShopFacade/Stairs 的 2cm recall 相对
+V1.1 分别提高 0.971/1.500 pp，但 ShopFacade mean/P90 translation 小幅回退，Stairs mean/P90
+translation 分别恶化 0.790/6.040 cm、catastrophic 增加 6.0。故保留 repair 为结构原型但不
+切默认；同一 local-support/selector 因子停止，后续只允许在 test 前冻结的 mapping-only
+deployment-rank/false-consensus 新假设。完整结果见 `docs/rendered_rgb_track_only_experiment.md`
+与 `docs/evidence/rendered_rgb_track_support_v12.json`。
+
+V1.3 corrective audit 随后修正了 V1.2 的协议和实现边界：child cap 移到全量射线三角化与
+broad gate 之后，held fold 从冻结 support-filtered pair rows 真正重建 components，exact
+observation 按自身 reprojection/cycle 证据分级，并把 sibling parent lineage 贯穿 Selector
+capacity 与 compact map。结果表明 Stairs 的 72,503 个 unbounded children 中只有 15,072
+个 broad eligible，几何后 excess cap 删除为 0；`max2` 也只比 `max1` 多 6 个 anchors。
+然而 corrected Stairs `max1/max2` 都有 324 个 catastrophic queries（相对 V1.1 新增 33、
+修复 18），recall 由 70.60% 降至 69.05/69.15%；Shop 三个 corrected arm 也都产生新的
+catastrophic identities。故 V1.3 在 mapping-only 阶段正式 STOP，未读 test，不授权默认
+切换。旧 V1.2 cross-fit 仅是 fixed-identity held-observation retriangulation，文档中曾称其
+重建 components 的表述已纠正。完整机器证据见
+`docs/evidence/rendered_rgb_track_support_v13.json`。
+
+V1.4 随后按正式方法语义移除了 held-out fold/cross-fit：全部 mapping cameras 同时参与
+Track identity/geometry、descriptor/teacher 和自定位反馈；仅在 mapping query `q` 自定位时，
+对受影响 Track 临时排除来自 `q` 的 observation descriptor，避免 descriptor 自匹配。正式
+候选使用完整 repaired-child universe 的 parent/sibling-aware Selector，而不是固定 `max1/max2`；
+identity metric 在 test 前冻结。ShopFacade/Stairs 三种子 test 相对 V1.2 的 mean TE 分别改善
+1.196/1.503 cm，5cm recall 提升 2.589/4.367 pp，catastrophic 平均减少 1/9；Stairs P90
+改善 7.271 cm。因此 V1.4 提升为当前 source-image-free R0 实验基线，但 Stairs tail 仍落后
+mixed shared mainline，不切共享默认。下一独立因子固定为 raw/clean render artifact stability，
+不再恢复 formal cross-fit、固定 child cap map 或旧 self-matched A1。机器证据见
+`docs/evidence/rendered_rgb_track_fullmap_v14.json`。
+
+Raw/clean 2DGS artifact-stability R1 已按该单因素合同完成双场景 mapping-only 验证。
+ShopFacade 四门全过，CVaR95 从 864.87 cm 降至 164.75 cm；Stairs 的 P90 从 0.960 cm
+改善到 0.932 cm、灾难 query 集合仍为同一 22 个，但 CVaR95 恶化到 141.14 cm，raw
+precision 下降 0.0856 pp，违反两项预注册门。正式 gate 因此为
+`STOP_R1_BEFORE_TEST_AND_R2`；未运行 R1 test，未授权 artifact-aware Track identity、
+KCS/GWFF、A1、lazy completion 或默认切换。该结果证明 artifact signal 有信息，但全局乘法
+权重会重新分配 coherent false-consensus 强度，后续若立项必须是新的 observation-conditional、
+tail-aware 假设，而不是放宽门或继续调同一 scalar。详见
+`docs/rendered_rgb_track_artifact_stability_result.md` 与
+`docs/evidence/rendered_rgb_track_artifact_stability_result.json`。
+
+最新一轮已把 source-image-free 路线收敛为统一的 Gaussian-supported Projective Anchor
+架构，而不是继续增加局部 revision gate。Real/Render 现在共用代码级
+`ObservationProvider`；Track 与 rendered-surface completion 共用 Anchor constructor、
+候选 registry、selector、descriptor materializer 和 sparse localizer。KCS 的 visibility、
+alpha/depth、support component、Gaussian lineage 已吸收到候选证据，GWFF 风格的 detector、
+view、visibility、sequence/pose-bin 加权也成为两类 Anchor 共用的 observation fusion。
+Gaussian primitive center 不作为 PnP geometry：Track 仍由相机射线三角化，非 Track
+completion 则由多视角 rendered-depth unprojection 融合。
+
+这条统一 completion 在 Stairs 的冻结三种子 real test 上把 mean/P90 TE 从
+7.193/6.560 cm 改善到 6.557/5.995 cm，5 cm recall 从 85.10% 提高到 86.97%，且
+median、AE、2 cm recall、raw/inlier precision 与 catastrophic count 同向改善；ShopFacade
+则整体中性。因此 completion 作为统一候选 provider 在所有 render-only 场景默认可用，实际
+入图完全由同一 selector 的 matching/observability 边际收益决定，不再设置场景机制开关，
+也不切换 mixed 默认。structured-outlier oracle 证明 distinct-parent hypothesis sampling
+有明显 headroom，但当前 bounded wrapper 对 mapping tail 基本无改善，并在 ShopFacade test
+增加约64.7 ms RANSAC 时间，故保持 default-off。Optional pose feedback 同样只保留为诊断。
+
+至此表示与代码结构已经闭环，下一阶段应扩大冻结架构的场景验证，而不是继续围绕阈值、
+fold 或 revision 做局部搜索。完整人类/机器结果分别见
+`docs/gaussian_supported_projective_anchor_result.md` 与
+`docs/evidence/gaussian_supported_projective_anchor_result.json`；本轮51份小型原始记录已归档到
+`docs/evidence/projective_anchor_runs`，大 tensor/cache/render/weights 仍只在外部以路径和SHA绑定。
+
+V4 最终简化随后完成：正式 render-only evaluator 只接受 identity metric，学习式 descriptor
+transform/residual 不能进入该路径；selector 语义名改为
+`HierarchicalSufficiencySelector`，旧名字仅作 archive alias。cycle-core/chain-reserve 在
+ShopFacade 精确不变，但使 Stairs Anchor 5772→2055，并使 mean/CVaR95 TE 恶化
+1.740/33.225 cm、catastrophic +2，因此保持普通 cycle+chain 默认且不继续 LGCV。固定相机
+五轮非线性点优化虽降低重投影代理量，却使 Stairs mean/CVaR95 +0.468/+9.546 cm、recall
+-0.30 pp、catastrophic +1；ShopFacade 也是混合交换，故同样不提升默认且未读 test。
+3×3 row-stable subpixel API 已实现并测试，但现冻结 sparse cache 不含 dense score map，未把
+它伪装为正式实测。完整结果见 `docs/gaussian_supported_projective_anchor_v4_freeze.md` 与
+`docs/evidence/gaussian_supported_projective_anchor_v4_freeze.json`；18份小记录归档于
+`docs/evidence/projective_anchor_v4_simplification_runs`。

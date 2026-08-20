@@ -1,0 +1,122 @@
+{
+  "combined_summary": {
+    "catastrophic_100cm_count": 5,
+    "cvar95_te_cm": 483.0561928451061,
+    "inlier_gt_precision_percent": 87.26289746174288,
+    "mean_ae_deg": 1.7630165000387674,
+    "mean_hypotheses": 11477.597402597403,
+    "mean_te_cm": 25.615584703881844,
+    "median_ae_deg": 0.015186432031634113,
+    "median_te_cm": 0.3316218964755535,
+    "p90_ae_deg": 0.07202016264093915,
+    "p90_te_cm": 1.4770503155887127,
+    "query_count": 231,
+    "raw_gt_precision_percent": 33.51025602002164,
+    "recall_5cm_5deg_percent": 93.07359307359307,
+    "retained_matches_mean": 2048.0
+  },
+  "folds": [
+    {
+      "held_sequence": "blocked_00",
+      "query_count": 77,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/crossfit_identity/blocked_00/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 5,
+        "cvar95_te_cm": 1377.3843467235565,
+        "inlier_gt_precision_percent": 85.39071804913499,
+        "mean_ae_deg": 5.254386708817169,
+        "mean_hypotheses": 31718.584415584417,
+        "mean_te_cm": 76.14665844359786,
+        "median_ae_deg": 0.026467103095718415,
+        "median_te_cm": 0.5049992352724075,
+        "p90_ae_deg": 1.3612458159695524,
+        "p90_te_cm": 13.471400737762455,
+        "p95_ae_deg": 11.282650837103947,
+        "p95_te_cm": 143.28593730926545,
+        "p99_te_cm": 1695.3731040954544,
+        "query_count": 77,
+        "raw_gt_precision_percent": 26.284116274350648,
+        "recall_5cm_5deg_percent": 79.22077922077922,
+        "retained_matches_mean": 2048.0,
+        "solver_inlier_ratio_percent": 31.41297179383117
+      },
+      "train_supported_anchor_count": 12554
+    },
+    {
+      "held_sequence": "blocked_01",
+      "query_count": 77,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/crossfit_identity/blocked_01/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 0,
+        "cvar95_te_cm": 0.7442600908689201,
+        "inlier_gt_precision_percent": 87.72312521614217,
+        "mean_ae_deg": 0.013890494389596652,
+        "mean_hypotheses": 1051.6623376623377,
+        "mean_te_cm": 0.25840533349032563,
+        "median_ae_deg": 0.01166848106762756,
+        "median_te_cm": 0.22101732902228832,
+        "p90_ae_deg": 0.024809022981371595,
+        "p90_te_cm": 0.4603238683193922,
+        "p95_ae_deg": 0.0378500695828369,
+        "p95_te_cm": 0.576426824554801,
+        "p99_te_cm": 0.7456100452691287,
+        "query_count": 77,
+        "raw_gt_precision_percent": 41.42083502435065,
+        "recall_5cm_5deg_percent": 100.0,
+        "retained_matches_mean": 2048.0,
+        "solver_inlier_ratio_percent": 47.6752739448052
+      },
+      "train_supported_anchor_count": 13586
+    },
+    {
+      "held_sequence": "blocked_02",
+      "query_count": 77,
+      "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/crossfit_identity/blocked_02/statistics.pt",
+      "summary": {
+        "catastrophic_100cm_count": 0,
+        "cvar95_te_cm": 1.6767598921433091,
+        "inlier_gt_precision_percent": 88.21913752837078,
+        "mean_ae_deg": 0.020772296909536532,
+        "mean_hypotheses": 1662.5454545454545,
+        "mean_te_cm": 0.44169033455735,
+        "median_ae_deg": 0.016068388545845275,
+        "median_te_cm": 0.36456091329455376,
+        "p90_ae_deg": 0.036044671826345326,
+        "p90_te_cm": 0.7306811772286893,
+        "p95_ae_deg": 0.04906828243562325,
+        "p95_te_cm": 0.9786458872258663,
+        "p99_te_cm": 1.8272531814873143,
+        "query_count": 77,
+        "raw_gt_precision_percent": 32.82581676136363,
+        "recall_5cm_5deg_percent": 100.0,
+        "retained_matches_mean": 2048.0,
+        "solver_inlier_ratio_percent": 38.55646306818182
+      },
+      "train_supported_anchor_count": 12662
+    }
+  ],
+  "grouping": "contiguous_mapping_blocks",
+  "input_sha256": {
+    "anchor_map": "46ff7b23e55832ff198cbbafe97c4416d04c6163d02a0847bead6e5c3c485da9",
+    "query_cache": "fbc3997d723e1f9a357aceeb88bb86e2aa05786fc3e5c6049f2a3288bc7d215f",
+    "teacher": "d69332895bbb844ea406de14379b763961e37e13bb4f83d79203e0f4a8a45103",
+    "track_payload": "3e83ac3dfec629dad8010b892662d3942065c37f64a0a2b6ea3a1b642135af66"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_feature_cache.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_mapping_sequence_crossfit_report",
+  "sequences": [
+    "blocked_00",
+    "blocked_01",
+    "blocked_02"
+  ],
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/crossfit_identity/crossfit_statistics.pt",
+  "statistics_sha256": "6289b170bdcbbdd8a79baede0a0e3c69e01903ba7cfa64394eb45e9e49a84ce5",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

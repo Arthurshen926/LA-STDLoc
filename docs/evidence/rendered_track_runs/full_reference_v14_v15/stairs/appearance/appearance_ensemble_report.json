@@ -1,0 +1,131 @@
+{
+  "anchor_count": 14997,
+  "anchor_matchability_modified": false,
+  "appearance_variant_count": 7,
+  "base_rerender_descriptor_cosine_median": 0.9999998807907104,
+  "base_rerender_descriptor_cosine_minimum": 0.9999918341636658,
+  "configuration": {
+    "alpha_erosion_radius": 4,
+    "alpha_minimum": 0.05,
+    "fixed_source_keypoints": true,
+    "fixed_track_identity": true,
+    "recipes": [
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "identity",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 0.8,
+        "gamma": 1.0,
+        "name": "exposure_0p80",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.2,
+        "gamma": 1.0,
+        "name": "exposure_1p20",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 0.85,
+        "name": "gamma_0p85",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.0,
+        "exposure": 1.0,
+        "gamma": 1.15,
+        "name": "gamma_1p15",
+        "white_balance": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "contrast": 1.05,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "warm",
+        "white_balance": [
+          1.08,
+          1.0,
+          0.92
+        ]
+      },
+      {
+        "contrast": 0.95,
+        "exposure": 1.0,
+        "gamma": 1.0,
+        "name": "cool",
+        "white_balance": [
+          0.92,
+          1.0,
+          1.08
+        ]
+      }
+    ],
+    "robust_retain_fraction": 0.75
+  },
+  "fixed_track_identity_and_xyz": true,
+  "input_sha256": {
+    "gaussian_ply": "467a397aa89d8f05c79212f36e61d28bd2fe267a3531b8c8ac1a75e53537c964",
+    "selected_map": "fb713259d6319b478b61dec5ec76346dcada10d5f6cc95cc3b7cc451e39fed82",
+    "source_cache": "d341a4d4584e90d6e39cf3485694122cd4c36da0ece197231ae7ea1a7acca332",
+    "track_payload": "678a39960b860246d9c4ea1fc6f6a223da9024381c72921924d69ed7f277eae4"
+  },
+  "inputs": {
+    "dataset": "/mnt/pool/sqy/datasets/7Scenes_pgt_full_reference_v5/stairs",
+    "gaussian_ply": "/mnt/pool/sqy/indoor_priors_pgt_full_reference_v5/7Scenes/stairs/vanilla_2dgs_v1/point_cloud/iteration_30000/point_cloud.ply",
+    "selected_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/trajectory_balanced_full2000/rendered_rgb_track_map.pt",
+    "source_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/rendered_rgb_feature_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt"
+  },
+  "keypoint_dispersion_median": 0.000775198161136359,
+  "mapping_query_count": 2000,
+  "output_sha256": {
+    "anchor_map": "8003fcba55014e6fdba645b3d26e0a35edc2fb65ab58448fef04cd051a5f2bc8",
+    "identity_metric": "a59911fe913fb9995bb2355001a94900cb11cb329909d9572f3eba1bff14eb0e",
+    "query_cache": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63"
+  },
+  "outputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_anchor_map.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt"
+  },
+  "schema": "lafgs_rendered_track_appearance_ensemble_materialization",
+  "timing_seconds": {
+    "total": 1755.751234024763
+  },
+  "track_dispersion_median": 0.0008055281941778958,
+  "uses_gaussian_geometry_for_triangulation": false,
+  "uses_rendered_alpha_for_observation_validity": true,
+  "uses_rendered_depth_for_teacher_visibility_only": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "valid_keypoint_fraction": 1.0,
+  "version": 1
+}

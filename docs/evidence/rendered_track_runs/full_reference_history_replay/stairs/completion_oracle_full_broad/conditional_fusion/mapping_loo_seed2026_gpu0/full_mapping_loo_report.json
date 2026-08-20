@@ -1,0 +1,75 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "8beee94ce029e7a11b8a2a4a149bb088e54eedc21e84daf5005383e3a6574c82",
+    "metric": "5e8812540864ff2759b298d0a8435153251bb4c7871de90b0613df2bad5390e7",
+    "query_cache": "c262cd0fc7e162b7f278ebe7589161797204a3d30d918b6e44ee79a0948206cd",
+    "scene_calibration": "531a0b6a1f2264e898fd617bc0e860acd2a68478a0a0938eca5c3adb96aa9988",
+    "teacher": "2dd883110f96bd36ecca2e9c765f7835e9e6bc198e5f01ffe18bdb6972a9c2ad",
+    "track_payload": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/conditional_fusion_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/conditional_fusion_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/conditional_fusion_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/scene_calibration_rebound.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 626685,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 787,
+    "mean_affected_anchors_per_query": 313.3424987792969,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+    "source_sha256": {
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "08ad6052ea2cf965c9ecc1229ebeaed590bdbbc12f4f7d736a410e95df4a0dfd",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/completion_oracle_full_broad/conditional_fusion/mapping_loo_seed2026_gpu0/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "7cbdeed0e21f2f9d9d0f4434eac2b6cb94de0f8b878f7c79f3405e4c580b4878",
+  "summary": {
+    "catastrophic_100cm_count": 13,
+    "cvar95_te_cm": 70.09589521586895,
+    "inlier_gt_precision_percent": 33.15883335280494,
+    "mean_ae_deg": 0.7033267056600824,
+    "mean_hypotheses": 2969.342,
+    "mean_te_cm": 3.9309087575198647,
+    "median_ae_deg": 0.0997836076266782,
+    "median_te_cm": 0.39085426833480597,
+    "p90_ae_deg": 0.3426340784959493,
+    "p90_te_cm": 1.080967914313078,
+    "p95_ae_deg": 0.5280007675078511,
+    "p95_te_cm": 1.5813660714775322,
+    "p99_te_cm": 30.24612706899643,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 7.7037109375,
+    "recall_5cm_5deg_percent": 97.05,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 56.840234375
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

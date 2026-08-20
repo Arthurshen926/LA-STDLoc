@@ -96,6 +96,144 @@ def solve_absolute_pose(
     return PoseEstimate(pose_w2c, inliers, dict(info))
 
 
+def solve_group_diverse_absolute_pose(
+    points_2d: np.ndarray,
+    points_3d: np.ndarray,
+    intrinsic: np.ndarray,
+    group_ids: np.ndarray,
+    *,
+    reprojection_error_px: float = 12.0,
+    confidence: float = 0.99999,
+    max_iterations: int = 100000,
+    min_iterations: int = 1000,
+    seed: int = 2026,
+    group_hypothesis_samples: int = 32,
+) -> PoseEstimate:
+    """Supplement standard PoseLib with bounded distinct-group AP3P samples.
+
+    The standard PoseLib result remains an explicit candidate and is returned
+    byte-for-byte when no group-diverse candidate has a better standard inlier
+    score.  This keeps one robust-pose wrapper and changes only hypothesis
+    generation; it does not install the unsupported group-capped scorer.
+    """
+
+    points_2d = np.asarray(points_2d)
+    points_3d = np.asarray(points_3d)
+    intrinsic = np.asarray(intrinsic)
+    groups = np.asarray(group_ids)
+    if groups.dtype.kind not in "iu" or groups.shape != (points_2d.shape[0],):
+        raise ValueError("one integer correlation group is required per match")
+    if int(group_hypothesis_samples) <= 0:
+        raise ValueError("group hypothesis sample count must be positive")
+    baseline = solve_absolute_pose(
+        points_2d,
+        points_3d,
+        intrinsic,
+        reprojection_error_px=reprojection_error_px,
+        confidence=confidence,
+        max_iterations=max_iterations,
+        min_iterations=min_iterations,
+        seed=seed,
+    )
+    if points_2d.shape[0] < 4:
+        return baseline
+
+    # Runtime import avoids a module cycle: the offline oracle uses pose_error
+    # from this module, while this bounded deployment experiment reuses its
+    # audited sampler and standard scorer.
+    from localization.group_consensus import (
+        build_group_diverse_hypotheses,
+        reprojection_residuals,
+        score_hypothesis_residuals,
+        select_standard_hypothesis,
+    )
+
+    diverse = build_group_diverse_hypotheses(
+        points_2d,
+        points_3d,
+        intrinsic,
+        groups,
+        sample_count=int(group_hypothesis_samples),
+        seed=int(seed),
+    )
+    if diverse.shape[0] == 0:
+        return baseline
+    candidates = np.concatenate((baseline.pose_w2c[None], diverse), axis=0)
+    residuals = reprojection_residuals(candidates, points_2d, points_3d, intrinsic)
+    scores = score_hypothesis_residuals(
+        residuals,
+        groups,
+        threshold_px=float(reprojection_error_px),
+    )
+    winner = select_standard_hypothesis(scores)
+    if winner == 0:
+        diagnostics = dict(baseline.diagnostics)
+        diagnostics.update(
+            {
+                "group_diverse_candidates": int(diverse.shape[0]),
+                "group_diverse_selected": False,
+            }
+        )
+        return PoseEstimate(baseline.pose_w2c, baseline.inliers, diagnostics)
+
+    selected = candidates[winner]
+    inliers = np.flatnonzero(residuals[winner] <= float(reprojection_error_px))
+    if inliers.size >= 4:
+        camera = {
+            "model": "PINHOLE",
+            "width": int(intrinsic[0, 2] * 2),
+            "height": int(intrinsic[1, 2] * 2),
+            "params": [
+                intrinsic[0, 0],
+                intrinsic[1, 1],
+                intrinsic[0, 2],
+                intrinsic[1, 2],
+            ],
+        }
+        initial = poselib.CameraPose()
+        initial.R = selected[:3, :3]
+        initial.t = selected[:3, 3]
+        refined, refine_info = poselib.refine_absolute_pose(
+            points_2d[inliers], points_3d[inliers], initial, camera, {"verbose": False}
+        )
+        selected = np.concatenate(
+            (refined.Rt, np.asarray([[0, 0, 0, 1]], dtype=np.float64)), axis=0
+        )
+        refined_residual = reprojection_residuals(
+            selected[None], points_2d, points_3d, intrinsic
+        )[0]
+        inliers = np.flatnonzero(refined_residual <= float(reprojection_error_px))
+    else:
+        refine_info = {}
+    final_candidates = np.stack((baseline.pose_w2c, selected), axis=0)
+    final_residuals = reprojection_residuals(
+        final_candidates, points_2d, points_3d, intrinsic
+    )
+    final_scores = score_hypothesis_residuals(
+        final_residuals, groups, threshold_px=float(reprojection_error_px)
+    )
+    if select_standard_hypothesis(final_scores) == 0:
+        diagnostics = dict(baseline.diagnostics)
+        diagnostics.update(
+            {
+                "group_diverse_candidates": int(diverse.shape[0]),
+                "group_diverse_selected": False,
+                "group_diverse_refinement_rejected": True,
+            }
+        )
+        return PoseEstimate(baseline.pose_w2c, baseline.inliers, diagnostics)
+    diagnostics = dict(baseline.diagnostics)
+    diagnostics.update(
+        {
+            "num_inliers": int(inliers.size),
+            "group_diverse_candidates": int(diverse.shape[0]),
+            "group_diverse_selected": True,
+            "group_diverse_refinement": dict(refine_info),
+        }
+    )
+    return PoseEstimate(selected.astype(np.float32), inliers, diagnostics)
+
+
 def solve_pose(
     points_2d,
     points_3d,

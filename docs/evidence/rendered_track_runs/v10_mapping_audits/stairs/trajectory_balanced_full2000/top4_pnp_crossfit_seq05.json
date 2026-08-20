@@ -1,0 +1,5048 @@
+{
+  "candidate_topk": 4,
+  "combined_summary": {
+    "catastrophic_100cm_count": 158,
+    "cvar95_te_cm": 643.2839660644531,
+    "mean_ae_deg": 14.9874327582229,
+    "mean_candidate_correspondences": 4096.0,
+    "mean_clean_inliers": 192.498,
+    "mean_hypotheses": 62599.85,
+    "mean_inliers": 534.152,
+    "mean_te_cm": 121.14974806666142,
+    "median_ae_deg": 1.1698831786936879,
+    "median_te_cm": 60.667404532432556,
+    "p90_ae_deg": 51.13685962715113,
+    "p90_te_cm": 315.5368161201477,
+    "query_count": 500,
+    "recall_5cm_5deg_percent": 42.6
+  },
+  "folds": [
+    {
+      "held_sequence": "seq-05",
+      "queries": [
+        {
+          "ae_deg": 0.10326699743327811,
+          "clean_inliers": 423,
+          "correspondences": 4096,
+          "hypotheses": 2082,
+          "inliers": 1042,
+          "query_index": 1000,
+          "query_name": "seq-05/frame-000000.color.png",
+          "te_cm": 0.6092944648116827
+        },
+        {
+          "ae_deg": 0.20603153573552394,
+          "clean_inliers": 429,
+          "correspondences": 4096,
+          "hypotheses": 2052,
+          "inliers": 1047,
+          "query_index": 1001,
+          "query_name": "seq-05/frame-000001.color.png",
+          "te_cm": 1.0826840996742249
+        },
+        {
+          "ae_deg": 0.16315575693249612,
+          "clean_inliers": 416,
+          "correspondences": 4096,
+          "hypotheses": 2208,
+          "inliers": 1022,
+          "query_index": 1002,
+          "query_name": "seq-05/frame-000002.color.png",
+          "te_cm": 0.9610583074390888
+        },
+        {
+          "ae_deg": 0.20753272326968547,
+          "clean_inliers": 428,
+          "correspondences": 4096,
+          "hypotheses": 2029,
+          "inliers": 1051,
+          "query_index": 1003,
+          "query_name": "seq-05/frame-000003.color.png",
+          "te_cm": 0.960257276892662
+        },
+        {
+          "ae_deg": 0.295078259409714,
+          "clean_inliers": 420,
+          "correspondences": 4096,
+          "hypotheses": 2094,
+          "inliers": 1040,
+          "query_index": 1004,
+          "query_name": "seq-05/frame-000004.color.png",
+          "te_cm": 1.3782388530671597
+        },
+        {
+          "ae_deg": 0.30245699814744337,
+          "clean_inliers": 421,
+          "correspondences": 4096,
+          "hypotheses": 2094,
+          "inliers": 1040,
+          "query_index": 1005,
+          "query_name": "seq-05/frame-000005.color.png",
+          "te_cm": 1.2500114738941193
+        },
+        {
+          "ae_deg": 0.28931830218570403,
+          "clean_inliers": 437,
+          "correspondences": 4096,
+          "hypotheses": 2058,
+          "inliers": 1046,
+          "query_index": 1006,
+          "query_name": "seq-05/frame-000006.color.png",
+          "te_cm": 1.2683666311204433
+        },
+        {
+          "ae_deg": 0.2699230729029537,
+          "clean_inliers": 429,
+          "correspondences": 4096,
+          "hypotheses": 2188,
+          "inliers": 1025,
+          "query_index": 1007,
+          "query_name": "seq-05/frame-000007.color.png",
+          "te_cm": 1.1379314586520195
+        },
+        {
+          "ae_deg": 0.2535259231398687,
+          "clean_inliers": 434,
+          "correspondences": 4096,
+          "hypotheses": 2058,
+          "inliers": 1046,
+          "query_index": 1008,
+          "query_name": "seq-05/frame-000008.color.png",
+          "te_cm": 1.0753003880381584
+        },
+        {
+          "ae_deg": 0.2463032648968447,
+          "clean_inliers": 425,
+          "correspondences": 4096,
+          "hypotheses": 1988,
+          "inliers": 1058,
+          "query_index": 1009,
+          "query_name": "seq-05/frame-000009.color.png",
+          "te_cm": 0.9200089611113071
+        },
+        {
+          "ae_deg": 0.31427002376039204,
+          "clean_inliers": 441,
+          "correspondences": 4096,
+          "hypotheses": 1949,
+          "inliers": 1065,
+          "query_index": 1010,
+          "query_name": "seq-05/frame-000010.color.png",
+          "te_cm": 1.2078795582056046
+        },
+        {
+          "ae_deg": 0.2856097229097987,
+          "clean_inliers": 451,
+          "correspondences": 4096,
+          "hypotheses": 1955,
+          "inliers": 1064,
+          "query_index": 1011,
+          "query_name": "seq-05/frame-000011.color.png",
+          "te_cm": 0.9781393222510815
+        },
+        {
+          "ae_deg": 0.24301623635877606,
+          "clean_inliers": 420,
+          "correspondences": 4096,
+          "hypotheses": 2131,
+          "inliers": 1034,
+          "query_index": 1012,
+          "query_name": "seq-05/frame-000012.color.png",
+          "te_cm": 1.1262429878115654
+        },
+        {
+          "ae_deg": 0.19690478883858695,
+          "clean_inliers": 469,
+          "correspondences": 4096,
+          "hypotheses": 1734,
+          "inliers": 1107,
+          "query_index": 1013,
+          "query_name": "seq-05/frame-000013.color.png",
+          "te_cm": 0.6631749682128429
+        },
+        {
+          "ae_deg": 0.18101780884977695,
+          "clean_inliers": 458,
+          "correspondences": 4096,
+          "hypotheses": 1683,
+          "inliers": 1118,
+          "query_index": 1014,
+          "query_name": "seq-05/frame-000014.color.png",
+          "te_cm": 0.6913311779499054
+        },
+        {
+          "ae_deg": 0.20739557253754307,
+          "clean_inliers": 463,
+          "correspondences": 4096,
+          "hypotheses": 1822,
+          "inliers": 1089,
+          "query_index": 1015,
+          "query_name": "seq-05/frame-000015.color.png",
+          "te_cm": 0.8519456721842289
+        },
+        {
+          "ae_deg": 0.24868387930728503,
+          "clean_inliers": 453,
+          "correspondences": 4096,
+          "hypotheses": 1807,
+          "inliers": 1092,
+          "query_index": 1016,
+          "query_name": "seq-05/frame-000016.color.png",
+          "te_cm": 0.8267842233181
+        },
+        {
+          "ae_deg": 0.21201080606491474,
+          "clean_inliers": 426,
+          "correspondences": 4096,
+          "hypotheses": 1812,
+          "inliers": 1091,
+          "query_index": 1017,
+          "query_name": "seq-05/frame-000017.color.png",
+          "te_cm": 0.7560134399682283
+        },
+        {
+          "ae_deg": 0.15930606488112126,
+          "clean_inliers": 432,
+          "correspondences": 4096,
+          "hypotheses": 2125,
+          "inliers": 1035,
+          "query_index": 1018,
+          "query_name": "seq-05/frame-000018.color.png",
+          "te_cm": 0.4912031814455986
+        },
+        {
+          "ae_deg": 0.22850104383586758,
+          "clean_inliers": 434,
+          "correspondences": 4096,
+          "hypotheses": 1911,
+          "inliers": 1072,
+          "query_index": 1019,
+          "query_name": "seq-05/frame-000019.color.png",
+          "te_cm": 0.8154112845659256
+        },
+        {
+          "ae_deg": 0.20167208745648396,
+          "clean_inliers": 444,
+          "correspondences": 4096,
+          "hypotheses": 1701,
+          "inliers": 1114,
+          "query_index": 1020,
+          "query_name": "seq-05/frame-000020.color.png",
+          "te_cm": 0.2712606219574809
+        },
+        {
+          "ae_deg": 0.11260487321478385,
+          "clean_inliers": 467,
+          "correspondences": 4096,
+          "hypotheses": 1642,
+          "inliers": 1127,
+          "query_index": 1021,
+          "query_name": "seq-05/frame-000021.color.png",
+          "te_cm": 0.5361429415643215
+        },
+        {
+          "ae_deg": 0.23168540609297447,
+          "clean_inliers": 452,
+          "correspondences": 4096,
+          "hypotheses": 1807,
+          "inliers": 1092,
+          "query_index": 1022,
+          "query_name": "seq-05/frame-000022.color.png",
+          "te_cm": 0.928756408393383
+        },
+        {
+          "ae_deg": 0.17995147224603517,
+          "clean_inliers": 465,
+          "correspondences": 4096,
+          "hypotheses": 1509,
+          "inliers": 1159,
+          "query_index": 1023,
+          "query_name": "seq-05/frame-000023.color.png",
+          "te_cm": 0.5996625404804945
+        },
+        {
+          "ae_deg": 0.14709779543081103,
+          "clean_inliers": 476,
+          "correspondences": 4096,
+          "hypotheses": 1501,
+          "inliers": 1161,
+          "query_index": 1024,
+          "query_name": "seq-05/frame-000024.color.png",
+          "te_cm": 0.7479104213416576
+        },
+        {
+          "ae_deg": 0.1427986449155376,
+          "clean_inliers": 491,
+          "correspondences": 4096,
+          "hypotheses": 1574,
+          "inliers": 1143,
+          "query_index": 1025,
+          "query_name": "seq-05/frame-000025.color.png",
+          "te_cm": 0.8059650659561157
+        },
+        {
+          "ae_deg": 0.17206915379936277,
+          "clean_inliers": 444,
+          "correspondences": 4096,
+          "hypotheses": 1642,
+          "inliers": 1127,
+          "query_index": 1026,
+          "query_name": "seq-05/frame-000026.color.png",
+          "te_cm": 0.6323219276964664
+        },
+        {
+          "ae_deg": 0.18255465477388272,
+          "clean_inliers": 469,
+          "correspondences": 4096,
+          "hypotheses": 1425,
+          "inliers": 1181,
+          "query_index": 1027,
+          "query_name": "seq-05/frame-000027.color.png",
+          "te_cm": 0.4823570139706135
+        },
+        {
+          "ae_deg": 0.13289456379411496,
+          "clean_inliers": 483,
+          "correspondences": 4096,
+          "hypotheses": 1525,
+          "inliers": 1155,
+          "query_index": 1028,
+          "query_name": "seq-05/frame-000028.color.png",
+          "te_cm": 0.5914608016610146
+        },
+        {
+          "ae_deg": 0.10462472431444293,
+          "clean_inliers": 478,
+          "correspondences": 4096,
+          "hypotheses": 1455,
+          "inliers": 1173,
+          "query_index": 1029,
+          "query_name": "seq-05/frame-000029.color.png",
+          "te_cm": 0.21517009008675814
+        },
+        {
+          "ae_deg": 0.10040188648890983,
+          "clean_inliers": 479,
+          "correspondences": 4096,
+          "hypotheses": 1354,
+          "inliers": 1201,
+          "query_index": 1030,
+          "query_name": "seq-05/frame-000030.color.png",
+          "te_cm": 0.3643717849627137
+        },
+        {
+          "ae_deg": 0.16987823722094897,
+          "clean_inliers": 460,
+          "correspondences": 4096,
+          "hypotheses": 1432,
+          "inliers": 1179,
+          "query_index": 1031,
+          "query_name": "seq-05/frame-000031.color.png",
+          "te_cm": 0.6017339881509542
+        },
+        {
+          "ae_deg": 0.14192148587550663,
+          "clean_inliers": 472,
+          "correspondences": 4096,
+          "hypotheses": 1459,
+          "inliers": 1172,
+          "query_index": 1032,
+          "query_name": "seq-05/frame-000032.color.png",
+          "te_cm": 0.29600318521261215
+        },
+        {
+          "ae_deg": 0.19413089160212874,
+          "clean_inliers": 507,
+          "correspondences": 4096,
+          "hypotheses": 1229,
+          "inliers": 1240,
+          "query_index": 1033,
+          "query_name": "seq-05/frame-000033.color.png",
+          "te_cm": 0.6034085527062416
+        },
+        {
+          "ae_deg": 0.1271614604193223,
+          "clean_inliers": 529,
+          "correspondences": 4096,
+          "hypotheses": 1208,
+          "inliers": 1247,
+          "query_index": 1034,
+          "query_name": "seq-05/frame-000034.color.png",
+          "te_cm": 0.534724211320281
+        },
+        {
+          "ae_deg": 0.12178301995326782,
+          "clean_inliers": 516,
+          "correspondences": 4096,
+          "hypotheses": 1116,
+          "inliers": 1280,
+          "query_index": 1035,
+          "query_name": "seq-05/frame-000035.color.png",
+          "te_cm": 0.3837729571387172
+        },
+        {
+          "ae_deg": 0.18181492661047183,
+          "clean_inliers": 520,
+          "correspondences": 4096,
+          "hypotheses": 1132,
+          "inliers": 1274,
+          "query_index": 1036,
+          "query_name": "seq-05/frame-000036.color.png",
+          "te_cm": 0.49816854298114777
+        },
+        {
+          "ae_deg": 0.12149819306075035,
+          "clean_inliers": 554,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1355,
+          "query_index": 1037,
+          "query_name": "seq-05/frame-000037.color.png",
+          "te_cm": 0.3900185227394104
+        },
+        {
+          "ae_deg": 0.18264025892213268,
+          "clean_inliers": 571,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1361,
+          "query_index": 1038,
+          "query_name": "seq-05/frame-000038.color.png",
+          "te_cm": 0.6383264437317848
+        },
+        {
+          "ae_deg": 0.1160445938333993,
+          "clean_inliers": 557,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1365,
+          "query_index": 1039,
+          "query_name": "seq-05/frame-000039.color.png",
+          "te_cm": 0.4942301195114851
+        },
+        {
+          "ae_deg": 0.05283093293077344,
+          "clean_inliers": 584,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1355,
+          "query_index": 1040,
+          "query_name": "seq-05/frame-000040.color.png",
+          "te_cm": 0.5590267013758421
+        },
+        {
+          "ae_deg": 0.07300923939980179,
+          "clean_inliers": 579,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1387,
+          "query_index": 1041,
+          "query_name": "seq-05/frame-000041.color.png",
+          "te_cm": 0.5754353012889624
+        },
+        {
+          "ae_deg": 0.10183576597725631,
+          "clean_inliers": 559,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1370,
+          "query_index": 1042,
+          "query_name": "seq-05/frame-000042.color.png",
+          "te_cm": 0.6616060622036457
+        },
+        {
+          "ae_deg": 0.16063693791306882,
+          "clean_inliers": 558,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1361,
+          "query_index": 1043,
+          "query_name": "seq-05/frame-000043.color.png",
+          "te_cm": 0.6950384471565485
+        },
+        {
+          "ae_deg": 0.08579123140017984,
+          "clean_inliers": 596,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1406,
+          "query_index": 1044,
+          "query_name": "seq-05/frame-000044.color.png",
+          "te_cm": 0.437969621270895
+        },
+        {
+          "ae_deg": 0.06245583006987178,
+          "clean_inliers": 656,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1434,
+          "query_index": 1045,
+          "query_name": "seq-05/frame-000045.color.png",
+          "te_cm": 0.379254505969584
+        },
+        {
+          "ae_deg": 0.145107675741825,
+          "clean_inliers": 619,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1421,
+          "query_index": 1046,
+          "query_name": "seq-05/frame-000046.color.png",
+          "te_cm": 0.6238902453333139
+        },
+        {
+          "ae_deg": 0.23477894817846134,
+          "clean_inliers": 635,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1441,
+          "query_index": 1047,
+          "query_name": "seq-05/frame-000047.color.png",
+          "te_cm": 0.8402128703892231
+        },
+        {
+          "ae_deg": 0.07852288292686814,
+          "clean_inliers": 605,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1448,
+          "query_index": 1048,
+          "query_name": "seq-05/frame-000048.color.png",
+          "te_cm": 0.21516543347388506
+        },
+        {
+          "ae_deg": 0.1768877988979539,
+          "clean_inliers": 657,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1525,
+          "query_index": 1049,
+          "query_name": "seq-05/frame-000049.color.png",
+          "te_cm": 0.7160491775721312
+        },
+        {
+          "ae_deg": 0.16419482614041075,
+          "clean_inliers": 690,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1546,
+          "query_index": 1050,
+          "query_name": "seq-05/frame-000050.color.png",
+          "te_cm": 0.6984782870858908
+        },
+        {
+          "ae_deg": 0.2372385633316064,
+          "clean_inliers": 661,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1500,
+          "query_index": 1051,
+          "query_name": "seq-05/frame-000051.color.png",
+          "te_cm": 0.8092333562672138
+        },
+        {
+          "ae_deg": 0.13969796581597657,
+          "clean_inliers": 654,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1521,
+          "query_index": 1052,
+          "query_name": "seq-05/frame-000052.color.png",
+          "te_cm": 0.5580187775194645
+        },
+        {
+          "ae_deg": 0.21861655948766912,
+          "clean_inliers": 699,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1548,
+          "query_index": 1053,
+          "query_name": "seq-05/frame-000053.color.png",
+          "te_cm": 0.8873702026903629
+        },
+        {
+          "ae_deg": 0.10589151763217534,
+          "clean_inliers": 630,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1476,
+          "query_index": 1054,
+          "query_name": "seq-05/frame-000054.color.png",
+          "te_cm": 0.5302151199430227
+        },
+        {
+          "ae_deg": 0.0651423288994016,
+          "clean_inliers": 645,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1492,
+          "query_index": 1055,
+          "query_name": "seq-05/frame-000055.color.png",
+          "te_cm": 0.36161006428301334
+        },
+        {
+          "ae_deg": 0.09885176038254088,
+          "clean_inliers": 679,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1533,
+          "query_index": 1056,
+          "query_name": "seq-05/frame-000056.color.png",
+          "te_cm": 0.4285484552383423
+        },
+        {
+          "ae_deg": 0.07255087634357707,
+          "clean_inliers": 656,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1541,
+          "query_index": 1057,
+          "query_name": "seq-05/frame-000057.color.png",
+          "te_cm": 0.42622475884854794
+        },
+        {
+          "ae_deg": 0.12784760094621767,
+          "clean_inliers": 670,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1509,
+          "query_index": 1058,
+          "query_name": "seq-05/frame-000058.color.png",
+          "te_cm": 0.5900707561522722
+        },
+        {
+          "ae_deg": 0.09497467420331322,
+          "clean_inliers": 645,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1508,
+          "query_index": 1059,
+          "query_name": "seq-05/frame-000059.color.png",
+          "te_cm": 0.44703735038638115
+        },
+        {
+          "ae_deg": 0.06717151540281023,
+          "clean_inliers": 665,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1560,
+          "query_index": 1060,
+          "query_name": "seq-05/frame-000060.color.png",
+          "te_cm": 0.4397881217300892
+        },
+        {
+          "ae_deg": 0.09536847729764678,
+          "clean_inliers": 664,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1595,
+          "query_index": 1061,
+          "query_name": "seq-05/frame-000061.color.png",
+          "te_cm": 0.431958120316267
+        },
+        {
+          "ae_deg": 0.11792146845233797,
+          "clean_inliers": 673,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1583,
+          "query_index": 1062,
+          "query_name": "seq-05/frame-000062.color.png",
+          "te_cm": 0.5690219346433878
+        },
+        {
+          "ae_deg": 0.13652963849516336,
+          "clean_inliers": 684,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1623,
+          "query_index": 1063,
+          "query_name": "seq-05/frame-000063.color.png",
+          "te_cm": 0.5907615646719933
+        },
+        {
+          "ae_deg": 0.07363330124446542,
+          "clean_inliers": 696,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1633,
+          "query_index": 1064,
+          "query_name": "seq-05/frame-000064.color.png",
+          "te_cm": 0.2946044085547328
+        },
+        {
+          "ae_deg": 0.11089862659306987,
+          "clean_inliers": 705,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1664,
+          "query_index": 1065,
+          "query_name": "seq-05/frame-000065.color.png",
+          "te_cm": 0.5860246252268553
+        },
+        {
+          "ae_deg": 0.0738123202358072,
+          "clean_inliers": 693,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1601,
+          "query_index": 1066,
+          "query_name": "seq-05/frame-000066.color.png",
+          "te_cm": 0.44265794567763805
+        },
+        {
+          "ae_deg": 0.15418240914740677,
+          "clean_inliers": 709,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1658,
+          "query_index": 1067,
+          "query_name": "seq-05/frame-000067.color.png",
+          "te_cm": 0.6869170349091291
+        },
+        {
+          "ae_deg": 0.1526520465669272,
+          "clean_inliers": 735,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1739,
+          "query_index": 1068,
+          "query_name": "seq-05/frame-000068.color.png",
+          "te_cm": 0.6571679376065731
+        },
+        {
+          "ae_deg": 0.13355276991452206,
+          "clean_inliers": 774,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1761,
+          "query_index": 1069,
+          "query_name": "seq-05/frame-000069.color.png",
+          "te_cm": 0.615799380466342
+        },
+        {
+          "ae_deg": 0.12920695533339566,
+          "clean_inliers": 753,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1774,
+          "query_index": 1070,
+          "query_name": "seq-05/frame-000070.color.png",
+          "te_cm": 0.5956668872386217
+        },
+        {
+          "ae_deg": 0.11182803924829407,
+          "clean_inliers": 825,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1860,
+          "query_index": 1071,
+          "query_name": "seq-05/frame-000071.color.png",
+          "te_cm": 0.4678277298808098
+        },
+        {
+          "ae_deg": 0.12383818652192763,
+          "clean_inliers": 832,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1878,
+          "query_index": 1072,
+          "query_name": "seq-05/frame-000072.color.png",
+          "te_cm": 0.5508557427674532
+        },
+        {
+          "ae_deg": 0.11419673417821995,
+          "clean_inliers": 813,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1900,
+          "query_index": 1073,
+          "query_name": "seq-05/frame-000073.color.png",
+          "te_cm": 0.45103407464921474
+        },
+        {
+          "ae_deg": 0.05148695980944121,
+          "clean_inliers": 803,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1901,
+          "query_index": 1074,
+          "query_name": "seq-05/frame-000074.color.png",
+          "te_cm": 0.2653296571224928
+        },
+        {
+          "ae_deg": 0.04159172658443854,
+          "clean_inliers": 840,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1938,
+          "query_index": 1075,
+          "query_name": "seq-05/frame-000075.color.png",
+          "te_cm": 0.13129806611686945
+        },
+        {
+          "ae_deg": 0.03141647227873188,
+          "clean_inliers": 843,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1945,
+          "query_index": 1076,
+          "query_name": "seq-05/frame-000076.color.png",
+          "te_cm": 0.17118006944656372
+        },
+        {
+          "ae_deg": 0.014422394664678189,
+          "clean_inliers": 867,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1956,
+          "query_index": 1077,
+          "query_name": "seq-05/frame-000077.color.png",
+          "te_cm": 0.08659031009301543
+        },
+        {
+          "ae_deg": 0.04973166122370743,
+          "clean_inliers": 850,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1945,
+          "query_index": 1078,
+          "query_name": "seq-05/frame-000078.color.png",
+          "te_cm": 0.14184628380462527
+        },
+        {
+          "ae_deg": 0.04600538949001549,
+          "clean_inliers": 898,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1989,
+          "query_index": 1079,
+          "query_name": "seq-05/frame-000079.color.png",
+          "te_cm": 0.08414439507760108
+        },
+        {
+          "ae_deg": 0.05316815684577629,
+          "clean_inliers": 891,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 2011,
+          "query_index": 1080,
+          "query_name": "seq-05/frame-000080.color.png",
+          "te_cm": 0.12697407510131598
+        },
+        {
+          "ae_deg": 0.04984434266974611,
+          "clean_inliers": 878,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1998,
+          "query_index": 1081,
+          "query_name": "seq-05/frame-000081.color.png",
+          "te_cm": 0.09695757180452347
+        },
+        {
+          "ae_deg": 0.08308684334471843,
+          "clean_inliers": 898,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1985,
+          "query_index": 1082,
+          "query_name": "seq-05/frame-000082.color.png",
+          "te_cm": 0.22485065273940563
+        },
+        {
+          "ae_deg": 0.06848111746477423,
+          "clean_inliers": 871,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 2035,
+          "query_index": 1083,
+          "query_name": "seq-05/frame-000083.color.png",
+          "te_cm": 0.244030449539423
+        },
+        {
+          "ae_deg": 0.06823298949883236,
+          "clean_inliers": 887,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1987,
+          "query_index": 1084,
+          "query_name": "seq-05/frame-000084.color.png",
+          "te_cm": 0.24372623302042484
+        },
+        {
+          "ae_deg": 0.07269395680049694,
+          "clean_inliers": 865,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1983,
+          "query_index": 1085,
+          "query_name": "seq-05/frame-000085.color.png",
+          "te_cm": 0.3204269567504525
+        },
+        {
+          "ae_deg": 0.08442782825828878,
+          "clean_inliers": 849,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1969,
+          "query_index": 1086,
+          "query_name": "seq-05/frame-000086.color.png",
+          "te_cm": 0.2725736703723669
+        },
+        {
+          "ae_deg": 0.08841232983438546,
+          "clean_inliers": 816,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1930,
+          "query_index": 1087,
+          "query_name": "seq-05/frame-000087.color.png",
+          "te_cm": 0.2999857533723116
+        },
+        {
+          "ae_deg": 0.06085192956400221,
+          "clean_inliers": 829,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1904,
+          "query_index": 1088,
+          "query_name": "seq-05/frame-000088.color.png",
+          "te_cm": 0.25493460707366467
+        },
+        {
+          "ae_deg": 0.03974729869911073,
+          "clean_inliers": 846,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1898,
+          "query_index": 1089,
+          "query_name": "seq-05/frame-000089.color.png",
+          "te_cm": 0.16168756410479546
+        },
+        {
+          "ae_deg": 0.05378972073551398,
+          "clean_inliers": 815,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1838,
+          "query_index": 1090,
+          "query_name": "seq-05/frame-000090.color.png",
+          "te_cm": 0.21368986926972866
+        },
+        {
+          "ae_deg": 0.048163062257078386,
+          "clean_inliers": 792,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1815,
+          "query_index": 1091,
+          "query_name": "seq-05/frame-000091.color.png",
+          "te_cm": 0.1825692248530686
+        },
+        {
+          "ae_deg": 0.05732144213461965,
+          "clean_inliers": 793,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1813,
+          "query_index": 1092,
+          "query_name": "seq-05/frame-000092.color.png",
+          "te_cm": 0.12801230186596513
+        },
+        {
+          "ae_deg": 0.07763864023361594,
+          "clean_inliers": 779,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1805,
+          "query_index": 1093,
+          "query_name": "seq-05/frame-000093.color.png",
+          "te_cm": 0.10883702198043466
+        },
+        {
+          "ae_deg": 0.0697000127469306,
+          "clean_inliers": 788,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1810,
+          "query_index": 1094,
+          "query_name": "seq-05/frame-000094.color.png",
+          "te_cm": 0.18042708979919553
+        },
+        {
+          "ae_deg": 0.041719132290821755,
+          "clean_inliers": 749,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1749,
+          "query_index": 1095,
+          "query_name": "seq-05/frame-000095.color.png",
+          "te_cm": 0.1576955197378993
+        },
+        {
+          "ae_deg": 0.11212622636435406,
+          "clean_inliers": 739,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1747,
+          "query_index": 1096,
+          "query_name": "seq-05/frame-000096.color.png",
+          "te_cm": 0.3469356335699558
+        },
+        {
+          "ae_deg": 0.0940374842037802,
+          "clean_inliers": 718,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1711,
+          "query_index": 1097,
+          "query_name": "seq-05/frame-000097.color.png",
+          "te_cm": 0.26418466586619616
+        },
+        {
+          "ae_deg": 0.07843012842433084,
+          "clean_inliers": 730,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1698,
+          "query_index": 1098,
+          "query_name": "seq-05/frame-000098.color.png",
+          "te_cm": 0.315073668025434
+        },
+        {
+          "ae_deg": 0.12380095398682313,
+          "clean_inliers": 708,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1681,
+          "query_index": 1099,
+          "query_name": "seq-05/frame-000099.color.png",
+          "te_cm": 0.48628682270646095
+        },
+        {
+          "ae_deg": 0.07341877727563148,
+          "clean_inliers": 710,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1663,
+          "query_index": 1100,
+          "query_name": "seq-05/frame-000100.color.png",
+          "te_cm": 0.15967186773195863
+        },
+        {
+          "ae_deg": 0.1622603218003501,
+          "clean_inliers": 653,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1605,
+          "query_index": 1101,
+          "query_name": "seq-05/frame-000101.color.png",
+          "te_cm": 0.5893026012927294
+        },
+        {
+          "ae_deg": 0.020809488652499587,
+          "clean_inliers": 637,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1563,
+          "query_index": 1102,
+          "query_name": "seq-05/frame-000102.color.png",
+          "te_cm": 0.126192020252347
+        },
+        {
+          "ae_deg": 0.09325637469895255,
+          "clean_inliers": 621,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1493,
+          "query_index": 1103,
+          "query_name": "seq-05/frame-000103.color.png",
+          "te_cm": 0.265238038264215
+        },
+        {
+          "ae_deg": 0.03313179691554389,
+          "clean_inliers": 622,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1509,
+          "query_index": 1104,
+          "query_name": "seq-05/frame-000104.color.png",
+          "te_cm": 0.07079776842147112
+        },
+        {
+          "ae_deg": 0.06970223389243219,
+          "clean_inliers": 652,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1542,
+          "query_index": 1105,
+          "query_name": "seq-05/frame-000105.color.png",
+          "te_cm": 0.20262147299945354
+        },
+        {
+          "ae_deg": 0.10418843931110175,
+          "clean_inliers": 608,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1502,
+          "query_index": 1106,
+          "query_name": "seq-05/frame-000106.color.png",
+          "te_cm": 0.3465598449110985
+        },
+        {
+          "ae_deg": 0.12422792085122826,
+          "clean_inliers": 599,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1473,
+          "query_index": 1107,
+          "query_name": "seq-05/frame-000107.color.png",
+          "te_cm": 0.4497864283621311
+        },
+        {
+          "ae_deg": 0.16017335216336742,
+          "clean_inliers": 617,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1461,
+          "query_index": 1108,
+          "query_name": "seq-05/frame-000108.color.png",
+          "te_cm": 0.4942473489791155
+        },
+        {
+          "ae_deg": 0.14601986618177873,
+          "clean_inliers": 626,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1483,
+          "query_index": 1109,
+          "query_name": "seq-05/frame-000109.color.png",
+          "te_cm": 0.48841172829270363
+        },
+        {
+          "ae_deg": 0.18736276110402791,
+          "clean_inliers": 591,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1460,
+          "query_index": 1110,
+          "query_name": "seq-05/frame-000110.color.png",
+          "te_cm": 0.5528863053768873
+        },
+        {
+          "ae_deg": 0.2427458302367523,
+          "clean_inliers": 597,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1459,
+          "query_index": 1111,
+          "query_name": "seq-05/frame-000111.color.png",
+          "te_cm": 0.6691367831081152
+        },
+        {
+          "ae_deg": 0.1999884991869287,
+          "clean_inliers": 602,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1458,
+          "query_index": 1112,
+          "query_name": "seq-05/frame-000112.color.png",
+          "te_cm": 0.6233875174075365
+        },
+        {
+          "ae_deg": 0.18681446500036247,
+          "clean_inliers": 596,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1390,
+          "query_index": 1113,
+          "query_name": "seq-05/frame-000113.color.png",
+          "te_cm": 0.6213818211108446
+        },
+        {
+          "ae_deg": 0.20123620932964606,
+          "clean_inliers": 575,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1345,
+          "query_index": 1114,
+          "query_name": "seq-05/frame-000114.color.png",
+          "te_cm": 0.5757371429353952
+        },
+        {
+          "ae_deg": 0.18406778179887856,
+          "clean_inliers": 582,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1356,
+          "query_index": 1115,
+          "query_name": "seq-05/frame-000115.color.png",
+          "te_cm": 0.5467136856168509
+        },
+        {
+          "ae_deg": 0.14599862856232823,
+          "clean_inliers": 570,
+          "correspondences": 4096,
+          "hypotheses": 1001,
+          "inliers": 1329,
+          "query_index": 1116,
+          "query_name": "seq-05/frame-000116.color.png",
+          "te_cm": 0.4498542286455631
+        },
+        {
+          "ae_deg": 0.25566241164833403,
+          "clean_inliers": 556,
+          "correspondences": 4096,
+          "hypotheses": 1014,
+          "inliers": 1321,
+          "query_index": 1117,
+          "query_name": "seq-05/frame-000117.color.png",
+          "te_cm": 0.7601538673043251
+        },
+        {
+          "ae_deg": 0.17082341800820236,
+          "clean_inliers": 560,
+          "correspondences": 4096,
+          "hypotheses": 1095,
+          "inliers": 1288,
+          "query_index": 1118,
+          "query_name": "seq-05/frame-000118.color.png",
+          "te_cm": 0.5296960007399321
+        },
+        {
+          "ae_deg": 0.2833203021969486,
+          "clean_inliers": 519,
+          "correspondences": 4096,
+          "hypotheses": 1263,
+          "inliers": 1229,
+          "query_index": 1119,
+          "query_name": "seq-05/frame-000119.color.png",
+          "te_cm": 0.8407318964600563
+        },
+        {
+          "ae_deg": 0.17137498246410734,
+          "clean_inliers": 531,
+          "correspondences": 4096,
+          "hypotheses": 1146,
+          "inliers": 1269,
+          "query_index": 1120,
+          "query_name": "seq-05/frame-000120.color.png",
+          "te_cm": 0.587031152099371
+        },
+        {
+          "ae_deg": 0.12582759917961286,
+          "clean_inliers": 517,
+          "correspondences": 4096,
+          "hypotheses": 1185,
+          "inliers": 1255,
+          "query_index": 1121,
+          "query_name": "seq-05/frame-000121.color.png",
+          "te_cm": 0.5869980901479721
+        },
+        {
+          "ae_deg": 0.04729739914579208,
+          "clean_inliers": 522,
+          "correspondences": 4096,
+          "hypotheses": 1266,
+          "inliers": 1228,
+          "query_index": 1122,
+          "query_name": "seq-05/frame-000122.color.png",
+          "te_cm": 0.4233613144606352
+        },
+        {
+          "ae_deg": 0.24206534596026336,
+          "clean_inliers": 477,
+          "correspondences": 4096,
+          "hypotheses": 1553,
+          "inliers": 1148,
+          "query_index": 1123,
+          "query_name": "seq-05/frame-000123.color.png",
+          "te_cm": 0.9775963611900806
+        },
+        {
+          "ae_deg": 0.07967482367885988,
+          "clean_inliers": 451,
+          "correspondences": 4096,
+          "hypotheses": 1848,
+          "inliers": 1084,
+          "query_index": 1124,
+          "query_name": "seq-05/frame-000124.color.png",
+          "te_cm": 0.5255076568573713
+        },
+        {
+          "ae_deg": 0.10004228770127922,
+          "clean_inliers": 441,
+          "correspondences": 4096,
+          "hypotheses": 1916,
+          "inliers": 1071,
+          "query_index": 1125,
+          "query_name": "seq-05/frame-000125.color.png",
+          "te_cm": 0.6860099267214537
+        },
+        {
+          "ae_deg": 0.5749234894230071,
+          "clean_inliers": 419,
+          "correspondences": 4096,
+          "hypotheses": 2034,
+          "inliers": 1050,
+          "query_index": 1126,
+          "query_name": "seq-05/frame-000126.color.png",
+          "te_cm": 2.0872391760349274
+        },
+        {
+          "ae_deg": 0.2262415585614892,
+          "clean_inliers": 405,
+          "correspondences": 4096,
+          "hypotheses": 2064,
+          "inliers": 1045,
+          "query_index": 1127,
+          "query_name": "seq-05/frame-000127.color.png",
+          "te_cm": 0.9988472796976566
+        },
+        {
+          "ae_deg": 0.04419789064994136,
+          "clean_inliers": 390,
+          "correspondences": 4096,
+          "hypotheses": 2744,
+          "inliers": 951,
+          "query_index": 1128,
+          "query_name": "seq-05/frame-000128.color.png",
+          "te_cm": 0.5683761555701494
+        },
+        {
+          "ae_deg": 0.422720754577633,
+          "clean_inliers": 383,
+          "correspondences": 4096,
+          "hypotheses": 2684,
+          "inliers": 958,
+          "query_index": 1129,
+          "query_name": "seq-05/frame-000129.color.png",
+          "te_cm": 1.5874650329351425
+        },
+        {
+          "ae_deg": 0.46327070722592595,
+          "clean_inliers": 373,
+          "correspondences": 4096,
+          "hypotheses": 3262,
+          "inliers": 898,
+          "query_index": 1130,
+          "query_name": "seq-05/frame-000130.color.png",
+          "te_cm": 1.6831381246447563
+        },
+        {
+          "ae_deg": 0.55559698891878,
+          "clean_inliers": 359,
+          "correspondences": 4096,
+          "hypotheses": 3103,
+          "inliers": 913,
+          "query_index": 1131,
+          "query_name": "seq-05/frame-000131.color.png",
+          "te_cm": 2.0014753565192223
+        },
+        {
+          "ae_deg": 0.4169348106182652,
+          "clean_inliers": 358,
+          "correspondences": 4096,
+          "hypotheses": 3306,
+          "inliers": 894,
+          "query_index": 1132,
+          "query_name": "seq-05/frame-000132.color.png",
+          "te_cm": 1.496635377407074
+        },
+        {
+          "ae_deg": 0.48462726801752776,
+          "clean_inliers": 334,
+          "correspondences": 4096,
+          "hypotheses": 3385,
+          "inliers": 887,
+          "query_index": 1133,
+          "query_name": "seq-05/frame-000133.color.png",
+          "te_cm": 1.7598047852516174
+        },
+        {
+          "ae_deg": 0.232007198716332,
+          "clean_inliers": 339,
+          "correspondences": 4096,
+          "hypotheses": 3362,
+          "inliers": 889,
+          "query_index": 1134,
+          "query_name": "seq-05/frame-000134.color.png",
+          "te_cm": 1.1050764471292496
+        },
+        {
+          "ae_deg": 0.4461194352093628,
+          "clean_inliers": 337,
+          "correspondences": 4096,
+          "hypotheses": 3729,
+          "inliers": 859,
+          "query_index": 1135,
+          "query_name": "seq-05/frame-000135.color.png",
+          "te_cm": 1.6007507219910622
+        },
+        {
+          "ae_deg": 0.24232937546036665,
+          "clean_inliers": 316,
+          "correspondences": 4096,
+          "hypotheses": 4227,
+          "inliers": 824,
+          "query_index": 1136,
+          "query_name": "seq-05/frame-000136.color.png",
+          "te_cm": 0.9941675700247288
+        },
+        {
+          "ae_deg": 0.4444328053711928,
+          "clean_inliers": 326,
+          "correspondences": 4096,
+          "hypotheses": 4003,
+          "inliers": 839,
+          "query_index": 1137,
+          "query_name": "seq-05/frame-000137.color.png",
+          "te_cm": 1.597568765282631
+        },
+        {
+          "ae_deg": 0.6128936849578716,
+          "clean_inliers": 315,
+          "correspondences": 4096,
+          "hypotheses": 5123,
+          "inliers": 773,
+          "query_index": 1138,
+          "query_name": "seq-05/frame-000138.color.png",
+          "te_cm": 1.9145775586366653
+        },
+        {
+          "ae_deg": 0.45084109695782504,
+          "clean_inliers": 317,
+          "correspondences": 4096,
+          "hypotheses": 4967,
+          "inliers": 781,
+          "query_index": 1139,
+          "query_name": "seq-05/frame-000139.color.png",
+          "te_cm": 1.4534895308315754
+        },
+        {
+          "ae_deg": 0.6088559759413362,
+          "clean_inliers": 282,
+          "correspondences": 4096,
+          "hypotheses": 6161,
+          "inliers": 727,
+          "query_index": 1140,
+          "query_name": "seq-05/frame-000140.color.png",
+          "te_cm": 2.006743475794792
+        },
+        {
+          "ae_deg": 0.497058692554627,
+          "clean_inliers": 291,
+          "correspondences": 4096,
+          "hypotheses": 5747,
+          "inliers": 744,
+          "query_index": 1141,
+          "query_name": "seq-05/frame-000141.color.png",
+          "te_cm": 1.644987240433693
+        },
+        {
+          "ae_deg": 0.46614301521532786,
+          "clean_inliers": 284,
+          "correspondences": 4096,
+          "hypotheses": 6994,
+          "inliers": 697,
+          "query_index": 1142,
+          "query_name": "seq-05/frame-000142.color.png",
+          "te_cm": 1.3692090287804604
+        },
+        {
+          "ae_deg": 0.5301052288324114,
+          "clean_inliers": 278,
+          "correspondences": 4096,
+          "hypotheses": 6787,
+          "inliers": 704,
+          "query_index": 1143,
+          "query_name": "seq-05/frame-000143.color.png",
+          "te_cm": 1.6178082674741745
+        },
+        {
+          "ae_deg": 0.606332914734104,
+          "clean_inliers": 261,
+          "correspondences": 4096,
+          "hypotheses": 7466,
+          "inliers": 682,
+          "query_index": 1144,
+          "query_name": "seq-05/frame-000144.color.png",
+          "te_cm": 1.758800819516182
+        },
+        {
+          "ae_deg": 0.4820735776807364,
+          "clean_inliers": 259,
+          "correspondences": 4096,
+          "hypotheses": 8954,
+          "inliers": 642,
+          "query_index": 1145,
+          "query_name": "seq-05/frame-000145.color.png",
+          "te_cm": 1.3282462023198605
+        },
+        {
+          "ae_deg": 0.37113780526394796,
+          "clean_inliers": 231,
+          "correspondences": 4096,
+          "hypotheses": 10441,
+          "inliers": 610,
+          "query_index": 1146,
+          "query_name": "seq-05/frame-000146.color.png",
+          "te_cm": 1.057604979723692
+        },
+        {
+          "ae_deg": 0.4256478908433801,
+          "clean_inliers": 244,
+          "correspondences": 4096,
+          "hypotheses": 10441,
+          "inliers": 610,
+          "query_index": 1147,
+          "query_name": "seq-05/frame-000147.color.png",
+          "te_cm": 1.2633729726076126
+        },
+        {
+          "ae_deg": 0.6515291302457247,
+          "clean_inliers": 228,
+          "correspondences": 4096,
+          "hypotheses": 10339,
+          "inliers": 612,
+          "query_index": 1148,
+          "query_name": "seq-05/frame-000148.color.png",
+          "te_cm": 2.0405177026987076
+        },
+        {
+          "ae_deg": 0.5188571879298698,
+          "clean_inliers": 235,
+          "correspondences": 4096,
+          "hypotheses": 11195,
+          "inliers": 596,
+          "query_index": 1149,
+          "query_name": "seq-05/frame-000149.color.png",
+          "te_cm": 1.5649385750293732
+        },
+        {
+          "ae_deg": 0.5305232043931045,
+          "clean_inliers": 234,
+          "correspondences": 4096,
+          "hypotheses": 11366,
+          "inliers": 593,
+          "query_index": 1150,
+          "query_name": "seq-05/frame-000150.color.png",
+          "te_cm": 1.5700031071901321
+        },
+        {
+          "ae_deg": 0.5782472302278645,
+          "clean_inliers": 230,
+          "correspondences": 4096,
+          "hypotheses": 10493,
+          "inliers": 609,
+          "query_index": 1151,
+          "query_name": "seq-05/frame-000151.color.png",
+          "te_cm": 1.7438290640711784
+        },
+        {
+          "ae_deg": 0.41448010466358615,
+          "clean_inliers": 208,
+          "correspondences": 4096,
+          "hypotheses": 12600,
+          "inliers": 573,
+          "query_index": 1152,
+          "query_name": "seq-05/frame-000152.color.png",
+          "te_cm": 1.213335432112217
+        },
+        {
+          "ae_deg": 0.3169265137802774,
+          "clean_inliers": 203,
+          "correspondences": 4096,
+          "hypotheses": 15057,
+          "inliers": 540,
+          "query_index": 1153,
+          "query_name": "seq-05/frame-000153.color.png",
+          "te_cm": 0.901554524898529
+        },
+        {
+          "ae_deg": 0.2997368219496329,
+          "clean_inliers": 213,
+          "correspondences": 4096,
+          "hypotheses": 13214,
+          "inliers": 564,
+          "query_index": 1154,
+          "query_name": "seq-05/frame-000154.color.png",
+          "te_cm": 0.8702057413756847
+        },
+        {
+          "ae_deg": 0.8399678595874411,
+          "clean_inliers": 195,
+          "correspondences": 4096,
+          "hypotheses": 13005,
+          "inliers": 567,
+          "query_index": 1155,
+          "query_name": "seq-05/frame-000155.color.png",
+          "te_cm": 2.5314945727586746
+        },
+        {
+          "ae_deg": 0.6596377920901463,
+          "clean_inliers": 206,
+          "correspondences": 4096,
+          "hypotheses": 13645,
+          "inliers": 558,
+          "query_index": 1156,
+          "query_name": "seq-05/frame-000156.color.png",
+          "te_cm": 1.9319383427500725
+        },
+        {
+          "ae_deg": 0.31000038179676714,
+          "clean_inliers": 202,
+          "correspondences": 4096,
+          "hypotheses": 14250,
+          "inliers": 550,
+          "query_index": 1157,
+          "query_name": "seq-05/frame-000157.color.png",
+          "te_cm": 0.9031230583786964
+        },
+        {
+          "ae_deg": 0.3729605586378422,
+          "clean_inliers": 190,
+          "correspondences": 4096,
+          "hypotheses": 16767,
+          "inliers": 521,
+          "query_index": 1158,
+          "query_name": "seq-05/frame-000158.color.png",
+          "te_cm": 1.0601730085909367
+        },
+        {
+          "ae_deg": 0.1707597318302773,
+          "clean_inliers": 181,
+          "correspondences": 4096,
+          "hypotheses": 23591,
+          "inliers": 465,
+          "query_index": 1159,
+          "query_name": "seq-05/frame-000159.color.png",
+          "te_cm": 0.7665844168514013
+        },
+        {
+          "ae_deg": 0.22757224483045163,
+          "clean_inliers": 178,
+          "correspondences": 4096,
+          "hypotheses": 18859,
+          "inliers": 501,
+          "query_index": 1160,
+          "query_name": "seq-05/frame-000160.color.png",
+          "te_cm": 0.8501864038407803
+        },
+        {
+          "ae_deg": 0.4544691547067183,
+          "clean_inliers": 189,
+          "correspondences": 4096,
+          "hypotheses": 15837,
+          "inliers": 531,
+          "query_index": 1161,
+          "query_name": "seq-05/frame-000161.color.png",
+          "te_cm": 1.3603691011667252
+        },
+        {
+          "ae_deg": 0.39708761491153044,
+          "clean_inliers": 180,
+          "correspondences": 4096,
+          "hypotheses": 21180,
+          "inliers": 482,
+          "query_index": 1162,
+          "query_name": "seq-05/frame-000162.color.png",
+          "te_cm": 1.3095080852508545
+        },
+        {
+          "ae_deg": 0.07346352035078035,
+          "clean_inliers": 181,
+          "correspondences": 4096,
+          "hypotheses": 21180,
+          "inliers": 482,
+          "query_index": 1163,
+          "query_name": "seq-05/frame-000163.color.png",
+          "te_cm": 0.7781324442476034
+        },
+        {
+          "ae_deg": 0.1209793388076674,
+          "clean_inliers": 186,
+          "correspondences": 4096,
+          "hypotheses": 18859,
+          "inliers": 501,
+          "query_index": 1164,
+          "query_name": "seq-05/frame-000164.color.png",
+          "te_cm": 0.4900634754449129
+        },
+        {
+          "ae_deg": 0.4038272773946141,
+          "clean_inliers": 182,
+          "correspondences": 4096,
+          "hypotheses": 25016,
+          "inliers": 456,
+          "query_index": 1165,
+          "query_name": "seq-05/frame-000165.color.png",
+          "te_cm": 1.1382533237338066
+        },
+        {
+          "ae_deg": 0.17299820626882995,
+          "clean_inliers": 180,
+          "correspondences": 4096,
+          "hypotheses": 23898,
+          "inliers": 463,
+          "query_index": 1166,
+          "query_name": "seq-05/frame-000166.color.png",
+          "te_cm": 0.6602946668863297
+        },
+        {
+          "ae_deg": 0.49663602123887957,
+          "clean_inliers": 177,
+          "correspondences": 4096,
+          "hypotheses": 21716,
+          "inliers": 478,
+          "query_index": 1167,
+          "query_name": "seq-05/frame-000167.color.png",
+          "te_cm": 1.564817689359188
+        },
+        {
+          "ae_deg": 0.4457393191737957,
+          "clean_inliers": 175,
+          "correspondences": 4096,
+          "hypotheses": 24852,
+          "inliers": 457,
+          "query_index": 1168,
+          "query_name": "seq-05/frame-000168.color.png",
+          "te_cm": 1.335308700799942
+        },
+        {
+          "ae_deg": 0.6678822573051748,
+          "clean_inliers": 170,
+          "correspondences": 4096,
+          "hypotheses": 23591,
+          "inliers": 465,
+          "query_index": 1169,
+          "query_name": "seq-05/frame-000169.color.png",
+          "te_cm": 2.1019281819462776
+        },
+        {
+          "ae_deg": 0.6479619572299797,
+          "clean_inliers": 169,
+          "correspondences": 4096,
+          "hypotheses": 24528,
+          "inliers": 459,
+          "query_index": 1170,
+          "query_name": "seq-05/frame-000170.color.png",
+          "te_cm": 2.0751001313328743
+        },
+        {
+          "ae_deg": 0.7207850072738325,
+          "clean_inliers": 175,
+          "correspondences": 4096,
+          "hypotheses": 24053,
+          "inliers": 462,
+          "query_index": 1171,
+          "query_name": "seq-05/frame-000171.color.png",
+          "te_cm": 2.135152742266655
+        },
+        {
+          "ae_deg": 0.8908975920204644,
+          "clean_inliers": 178,
+          "correspondences": 4096,
+          "hypotheses": 24053,
+          "inliers": 462,
+          "query_index": 1172,
+          "query_name": "seq-05/frame-000172.color.png",
+          "te_cm": 2.693197689950466
+        },
+        {
+          "ae_deg": 0.5085945085368083,
+          "clean_inliers": 180,
+          "correspondences": 4096,
+          "hypotheses": 23743,
+          "inliers": 464,
+          "query_index": 1173,
+          "query_name": "seq-05/frame-000173.color.png",
+          "te_cm": 1.6656052321195602
+        },
+        {
+          "ae_deg": 0.4488496699279432,
+          "clean_inliers": 172,
+          "correspondences": 4096,
+          "hypotheses": 24369,
+          "inliers": 460,
+          "query_index": 1174,
+          "query_name": "seq-05/frame-000174.color.png",
+          "te_cm": 1.305315550416708
+        },
+        {
+          "ae_deg": 0.6623538061414312,
+          "clean_inliers": 174,
+          "correspondences": 4096,
+          "hypotheses": 24053,
+          "inliers": 462,
+          "query_index": 1175,
+          "query_name": "seq-05/frame-000175.color.png",
+          "te_cm": 2.02877689152956
+        },
+        {
+          "ae_deg": 0.603788829350833,
+          "clean_inliers": 172,
+          "correspondences": 4096,
+          "hypotheses": 26738,
+          "inliers": 446,
+          "query_index": 1176,
+          "query_name": "seq-05/frame-000176.color.png",
+          "te_cm": 1.9021188840270042
+        },
+        {
+          "ae_deg": 0.36509810376865837,
+          "clean_inliers": 189,
+          "correspondences": 4096,
+          "hypotheses": 24053,
+          "inliers": 462,
+          "query_index": 1177,
+          "query_name": "seq-05/frame-000177.color.png",
+          "te_cm": 1.174464076757431
+        },
+        {
+          "ae_deg": 0.3360602748838632,
+          "clean_inliers": 167,
+          "correspondences": 4096,
+          "hypotheses": 26381,
+          "inliers": 448,
+          "query_index": 1178,
+          "query_name": "seq-05/frame-000178.color.png",
+          "te_cm": 1.2116260826587677
+        },
+        {
+          "ae_deg": 0.3960814960302758,
+          "clean_inliers": 171,
+          "correspondences": 4096,
+          "hypotheses": 27847,
+          "inliers": 440,
+          "query_index": 1179,
+          "query_name": "seq-05/frame-000179.color.png",
+          "te_cm": 1.4400914311408997
+        },
+        {
+          "ae_deg": 0.4900343232409449,
+          "clean_inliers": 170,
+          "correspondences": 4096,
+          "hypotheses": 31567,
+          "inliers": 422,
+          "query_index": 1180,
+          "query_name": "seq-05/frame-000180.color.png",
+          "te_cm": 1.49843730032444
+        },
+        {
+          "ae_deg": 0.3699074640788465,
+          "clean_inliers": 158,
+          "correspondences": 4096,
+          "hypotheses": 34931,
+          "inliers": 408,
+          "query_index": 1181,
+          "query_name": "seq-05/frame-000181.color.png",
+          "te_cm": 1.3590365648269653
+        },
+        {
+          "ae_deg": 0.21776540052320914,
+          "clean_inliers": 167,
+          "correspondences": 4096,
+          "hypotheses": 30686,
+          "inliers": 426,
+          "query_index": 1182,
+          "query_name": "seq-05/frame-000182.color.png",
+          "te_cm": 0.8950137533247471
+        },
+        {
+          "ae_deg": 0.2635333775735539,
+          "clean_inliers": 166,
+          "correspondences": 4096,
+          "hypotheses": 26205,
+          "inliers": 449,
+          "query_index": 1183,
+          "query_name": "seq-05/frame-000183.color.png",
+          "te_cm": 0.975500326603651
+        },
+        {
+          "ae_deg": 0.19442250866317656,
+          "clean_inliers": 172,
+          "correspondences": 4096,
+          "hypotheses": 25016,
+          "inliers": 456,
+          "query_index": 1184,
+          "query_name": "seq-05/frame-000184.color.png",
+          "te_cm": 0.9288152679800987
+        },
+        {
+          "ae_deg": 0.14010244108088826,
+          "clean_inliers": 174,
+          "correspondences": 4096,
+          "hypotheses": 26738,
+          "inliers": 446,
+          "query_index": 1185,
+          "query_name": "seq-05/frame-000185.color.png",
+          "te_cm": 0.6011020392179489
+        },
+        {
+          "ae_deg": 0.21301656476041234,
+          "clean_inliers": 164,
+          "correspondences": 4096,
+          "hypotheses": 35189,
+          "inliers": 407,
+          "query_index": 1186,
+          "query_name": "seq-05/frame-000186.color.png",
+          "te_cm": 0.8748466148972511
+        },
+        {
+          "ae_deg": 0.28960471656359504,
+          "clean_inliers": 170,
+          "correspondences": 4096,
+          "hypotheses": 32250,
+          "inliers": 419,
+          "query_index": 1187,
+          "query_name": "seq-05/frame-000187.color.png",
+          "te_cm": 1.1104200035333633
+        },
+        {
+          "ae_deg": 0.22093154004905385,
+          "clean_inliers": 173,
+          "correspondences": 4096,
+          "hypotheses": 30046,
+          "inliers": 429,
+          "query_index": 1188,
+          "query_name": "seq-05/frame-000188.color.png",
+          "te_cm": 0.7100479211658239
+        },
+        {
+          "ae_deg": 0.34772487728449625,
+          "clean_inliers": 173,
+          "correspondences": 4096,
+          "hypotheses": 32482,
+          "inliers": 418,
+          "query_index": 1189,
+          "query_name": "seq-05/frame-000189.color.png",
+          "te_cm": 1.1985311284661293
+        },
+        {
+          "ae_deg": 0.25944636312894753,
+          "clean_inliers": 151,
+          "correspondences": 4096,
+          "hypotheses": 30903,
+          "inliers": 425,
+          "query_index": 1190,
+          "query_name": "seq-05/frame-000190.color.png",
+          "te_cm": 1.1152733117341995
+        },
+        {
+          "ae_deg": 0.3325024133369477,
+          "clean_inliers": 179,
+          "correspondences": 4096,
+          "hypotheses": 30257,
+          "inliers": 428,
+          "query_index": 1191,
+          "query_name": "seq-05/frame-000191.color.png",
+          "te_cm": 1.1000595055520535
+        },
+        {
+          "ae_deg": 0.49438339283409766,
+          "clean_inliers": 163,
+          "correspondences": 4096,
+          "hypotheses": 32953,
+          "inliers": 416,
+          "query_index": 1192,
+          "query_name": "seq-05/frame-000192.color.png",
+          "te_cm": 1.6367709264159203
+        },
+        {
+          "ae_deg": 0.6387642003780584,
+          "clean_inliers": 149,
+          "correspondences": 4096,
+          "hypotheses": 37632,
+          "inliers": 398,
+          "query_index": 1193,
+          "query_name": "seq-05/frame-000193.color.png",
+          "te_cm": 2.0296456292271614
+        },
+        {
+          "ae_deg": 0.8270181410862143,
+          "clean_inliers": 152,
+          "correspondences": 4096,
+          "hypotheses": 31793,
+          "inliers": 421,
+          "query_index": 1194,
+          "query_name": "seq-05/frame-000194.color.png",
+          "te_cm": 2.3590579628944397
+        },
+        {
+          "ae_deg": 0.9882083109818409,
+          "clean_inliers": 144,
+          "correspondences": 4096,
+          "hypotheses": 38496,
+          "inliers": 395,
+          "query_index": 1195,
+          "query_name": "seq-05/frame-000195.color.png",
+          "te_cm": 2.928829938173294
+        },
+        {
+          "ae_deg": 0.8796646522392908,
+          "clean_inliers": 140,
+          "correspondences": 4096,
+          "hypotheses": 41902,
+          "inliers": 384,
+          "query_index": 1196,
+          "query_name": "seq-05/frame-000196.color.png",
+          "te_cm": 2.449234761297703
+        },
+        {
+          "ae_deg": 0.8254716902085882,
+          "clean_inliers": 145,
+          "correspondences": 4096,
+          "hypotheses": 41902,
+          "inliers": 384,
+          "query_index": 1197,
+          "query_name": "seq-05/frame-000197.color.png",
+          "te_cm": 2.4260781705379486
+        },
+        {
+          "ae_deg": 0.7337454513064904,
+          "clean_inliers": 131,
+          "correspondences": 4096,
+          "hypotheses": 53036,
+          "inliers": 355,
+          "query_index": 1198,
+          "query_name": "seq-05/frame-000198.color.png",
+          "te_cm": 2.0210132002830505
+        },
+        {
+          "ae_deg": 0.9619027978888889,
+          "clean_inliers": 129,
+          "correspondences": 4096,
+          "hypotheses": 57285,
+          "inliers": 346,
+          "query_index": 1199,
+          "query_name": "seq-05/frame-000199.color.png",
+          "te_cm": 2.725946344435215
+        },
+        {
+          "ae_deg": 0.9741788889832231,
+          "clean_inliers": 125,
+          "correspondences": 4096,
+          "hypotheses": 55343,
+          "inliers": 350,
+          "query_index": 1200,
+          "query_name": "seq-05/frame-000200.color.png",
+          "te_cm": 2.86971777677536
+        },
+        {
+          "ae_deg": 1.1573034109855524,
+          "clean_inliers": 113,
+          "correspondences": 4096,
+          "hypotheses": 64844,
+          "inliers": 332,
+          "query_index": 1201,
+          "query_name": "seq-05/frame-000201.color.png",
+          "te_cm": 3.2721728086471558
+        },
+        {
+          "ae_deg": 0.9245428370676827,
+          "clean_inliers": 113,
+          "correspondences": 4096,
+          "hypotheses": 67864,
+          "inliers": 327,
+          "query_index": 1202,
+          "query_name": "seq-05/frame-000202.color.png",
+          "te_cm": 2.550392411649227
+        },
+        {
+          "ae_deg": 1.1107722136563116,
+          "clean_inliers": 122,
+          "correspondences": 4096,
+          "hypotheses": 54404,
+          "inliers": 352,
+          "query_index": 1203,
+          "query_name": "seq-05/frame-000203.color.png",
+          "te_cm": 3.1838007271289825
+        },
+        {
+          "ae_deg": 1.1297022963844134,
+          "clean_inliers": 106,
+          "correspondences": 4096,
+          "hypotheses": 73101,
+          "inliers": 319,
+          "query_index": 1204,
+          "query_name": "seq-05/frame-000204.color.png",
+          "te_cm": 3.080594167113304
+        },
+        {
+          "ae_deg": 1.1926743993761098,
+          "clean_inliers": 113,
+          "correspondences": 4096,
+          "hypotheses": 75203,
+          "inliers": 316,
+          "query_index": 1205,
+          "query_name": "seq-05/frame-000205.color.png",
+          "te_cm": 3.2088518142700195
+        },
+        {
+          "ae_deg": 1.0140380587104194,
+          "clean_inliers": 111,
+          "correspondences": 4096,
+          "hypotheses": 71742,
+          "inliers": 321,
+          "query_index": 1206,
+          "query_name": "seq-05/frame-000206.color.png",
+          "te_cm": 2.7943985536694527
+        },
+        {
+          "ae_deg": 1.1697675457254737,
+          "clean_inliers": 97,
+          "correspondences": 4096,
+          "hypotheses": 92437,
+          "inliers": 295,
+          "query_index": 1207,
+          "query_name": "seq-05/frame-000207.color.png",
+          "te_cm": 3.188898041844368
+        },
+        {
+          "ae_deg": 1.205314731652276,
+          "clean_inliers": 105,
+          "correspondences": 4096,
+          "hypotheses": 78133,
+          "inliers": 312,
+          "query_index": 1208,
+          "query_name": "seq-05/frame-000208.color.png",
+          "te_cm": 3.2657332718372345
+        },
+        {
+          "ae_deg": 1.2707526396560527,
+          "clean_inliers": 100,
+          "correspondences": 4096,
+          "hypotheses": 92437,
+          "inliers": 295,
+          "query_index": 1209,
+          "query_name": "seq-05/frame-000209.color.png",
+          "te_cm": 3.263363242149353
+        },
+        {
+          "ae_deg": 1.7546225570885023,
+          "clean_inliers": 106,
+          "correspondences": 4096,
+          "hypotheses": 89673,
+          "inliers": 298,
+          "query_index": 1210,
+          "query_name": "seq-05/frame-000210.color.png",
+          "te_cm": 4.72264289855957
+        },
+        {
+          "ae_deg": 0.4475372597510958,
+          "clean_inliers": 89,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 270,
+          "query_index": 1211,
+          "query_name": "seq-05/frame-000211.color.png",
+          "te_cm": 1.1757943779230118
+        },
+        {
+          "ae_deg": 2.0194252559501944,
+          "clean_inliers": 89,
+          "correspondences": 4096,
+          "hypotheses": 85306,
+          "inliers": 303,
+          "query_index": 1212,
+          "query_name": "seq-05/frame-000212.color.png",
+          "te_cm": 5.508827418088913
+        },
+        {
+          "ae_deg": 2.5991390558589074,
+          "clean_inliers": 87,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 275,
+          "query_index": 1213,
+          "query_name": "seq-05/frame-000213.color.png",
+          "te_cm": 6.881343573331833
+        },
+        {
+          "ae_deg": 1.2433122479438206,
+          "clean_inliers": 78,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 246,
+          "query_index": 1214,
+          "query_name": "seq-05/frame-000214.color.png",
+          "te_cm": 3.3783815801143646
+        },
+        {
+          "ae_deg": 2.5421769857282936,
+          "clean_inliers": 66,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 230,
+          "query_index": 1215,
+          "query_name": "seq-05/frame-000215.color.png",
+          "te_cm": 6.632820516824722
+        },
+        {
+          "ae_deg": 1.9324218794157488,
+          "clean_inliers": 74,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 234,
+          "query_index": 1216,
+          "query_name": "seq-05/frame-000216.color.png",
+          "te_cm": 5.3359560668468475
+        },
+        {
+          "ae_deg": 3.6222486730041616,
+          "clean_inliers": 62,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 234,
+          "query_index": 1217,
+          "query_name": "seq-05/frame-000217.color.png",
+          "te_cm": 9.834818542003632
+        },
+        {
+          "ae_deg": 3.527385883169147,
+          "clean_inliers": 58,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 228,
+          "query_index": 1218,
+          "query_name": "seq-05/frame-000218.color.png",
+          "te_cm": 9.263379871845245
+        },
+        {
+          "ae_deg": 3.2064431914764757,
+          "clean_inliers": 64,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 226,
+          "query_index": 1219,
+          "query_name": "seq-05/frame-000219.color.png",
+          "te_cm": 8.367310464382172
+        },
+        {
+          "ae_deg": 3.3659253338319233,
+          "clean_inliers": 66,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 221,
+          "query_index": 1220,
+          "query_name": "seq-05/frame-000220.color.png",
+          "te_cm": 8.568374812602997
+        },
+        {
+          "ae_deg": 3.704963544513485,
+          "clean_inliers": 53,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 205,
+          "query_index": 1221,
+          "query_name": "seq-05/frame-000221.color.png",
+          "te_cm": 9.488334506750107
+        },
+        {
+          "ae_deg": 4.412519489221208,
+          "clean_inliers": 46,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 199,
+          "query_index": 1222,
+          "query_name": "seq-05/frame-000222.color.png",
+          "te_cm": 11.323928833007812
+        },
+        {
+          "ae_deg": 4.161621881570898,
+          "clean_inliers": 45,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 182,
+          "query_index": 1223,
+          "query_name": "seq-05/frame-000223.color.png",
+          "te_cm": 10.74298694729805
+        },
+        {
+          "ae_deg": 0.7724408741929928,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 164,
+          "query_index": 1224,
+          "query_name": "seq-05/frame-000224.color.png",
+          "te_cm": 60.13379693031311
+        },
+        {
+          "ae_deg": 0.21169921870467256,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 171,
+          "query_index": 1225,
+          "query_name": "seq-05/frame-000225.color.png",
+          "te_cm": 59.06488299369812
+        },
+        {
+          "ae_deg": 0.9824147097400834,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 177,
+          "query_index": 1226,
+          "query_name": "seq-05/frame-000226.color.png",
+          "te_cm": 59.68545079231262
+        },
+        {
+          "ae_deg": 110.69304414227229,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 112,
+          "query_index": 1227,
+          "query_name": "seq-05/frame-000227.color.png",
+          "te_cm": 453.61852645874023
+        },
+        {
+          "ae_deg": 3.6686269381290177,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 145,
+          "query_index": 1228,
+          "query_name": "seq-05/frame-000228.color.png",
+          "te_cm": 56.67756795883179
+        },
+        {
+          "ae_deg": 1.6200055049630748,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 161,
+          "query_index": 1229,
+          "query_name": "seq-05/frame-000229.color.png",
+          "te_cm": 60.38042902946472
+        },
+        {
+          "ae_deg": 2.654263378215965,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 150,
+          "query_index": 1230,
+          "query_name": "seq-05/frame-000230.color.png",
+          "te_cm": 61.138564348220825
+        },
+        {
+          "ae_deg": 2.139342033434462,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 167,
+          "query_index": 1231,
+          "query_name": "seq-05/frame-000231.color.png",
+          "te_cm": 60.6250524520874
+        },
+        {
+          "ae_deg": 1.5821926172225322,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 161,
+          "query_index": 1232,
+          "query_name": "seq-05/frame-000232.color.png",
+          "te_cm": 61.315083503723145
+        },
+        {
+          "ae_deg": 2.6768779211144653,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 142,
+          "query_index": 1233,
+          "query_name": "seq-05/frame-000233.color.png",
+          "te_cm": 55.36981225013733
+        },
+        {
+          "ae_deg": 5.088796582624857,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 147,
+          "query_index": 1234,
+          "query_name": "seq-05/frame-000234.color.png",
+          "te_cm": 60.796743631362915
+        },
+        {
+          "ae_deg": 16.331552626296183,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 155,
+          "query_index": 1235,
+          "query_name": "seq-05/frame-000235.color.png",
+          "te_cm": 145.47865390777588
+        },
+        {
+          "ae_deg": 1.0914497152160514,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 172,
+          "query_index": 1236,
+          "query_name": "seq-05/frame-000236.color.png",
+          "te_cm": 61.2235963344574
+        },
+        {
+          "ae_deg": 1.9631028757240345,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 177,
+          "query_index": 1237,
+          "query_name": "seq-05/frame-000237.color.png",
+          "te_cm": 61.40449643135071
+        },
+        {
+          "ae_deg": 2.413818734760125,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 173,
+          "query_index": 1238,
+          "query_name": "seq-05/frame-000238.color.png",
+          "te_cm": 61.64430379867554
+        },
+        {
+          "ae_deg": 2.502289321305654,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 204,
+          "query_index": 1239,
+          "query_name": "seq-05/frame-000239.color.png",
+          "te_cm": 62.693578004837036
+        },
+        {
+          "ae_deg": 2.201177870424703,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 180,
+          "query_index": 1240,
+          "query_name": "seq-05/frame-000240.color.png",
+          "te_cm": 61.165010929107666
+        },
+        {
+          "ae_deg": 2.2246376492329927,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 179,
+          "query_index": 1241,
+          "query_name": "seq-05/frame-000241.color.png",
+          "te_cm": 60.54397225379944
+        },
+        {
+          "ae_deg": 2.0776250844244615,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 152,
+          "query_index": 1242,
+          "query_name": "seq-05/frame-000242.color.png",
+          "te_cm": 61.848098039627075
+        },
+        {
+          "ae_deg": 2.7605584106177,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 139,
+          "query_index": 1243,
+          "query_name": "seq-05/frame-000243.color.png",
+          "te_cm": 61.71839237213135
+        },
+        {
+          "ae_deg": 3.9826192720109663,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 171,
+          "query_index": 1244,
+          "query_name": "seq-05/frame-000244.color.png",
+          "te_cm": 66.22449159622192
+        },
+        {
+          "ae_deg": 6.282627418404815,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 159,
+          "query_index": 1245,
+          "query_name": "seq-05/frame-000245.color.png",
+          "te_cm": 69.81443762779236
+        },
+        {
+          "ae_deg": 2.3688295593577204,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 160,
+          "query_index": 1246,
+          "query_name": "seq-05/frame-000246.color.png",
+          "te_cm": 60.27250289916992
+        },
+        {
+          "ae_deg": 42.83966364418283,
+          "clean_inliers": 1,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 147,
+          "query_index": 1247,
+          "query_name": "seq-05/frame-000247.color.png",
+          "te_cm": 950.5803108215332
+        },
+        {
+          "ae_deg": 31.7969348129972,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 143,
+          "query_index": 1248,
+          "query_name": "seq-05/frame-000248.color.png",
+          "te_cm": 912.038516998291
+        },
+        {
+          "ae_deg": 39.36303246984922,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 96,
+          "query_index": 1249,
+          "query_name": "seq-05/frame-000249.color.png",
+          "te_cm": 1007.145881652832
+        },
+        {
+          "ae_deg": 109.4124929559216,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 117,
+          "query_index": 1250,
+          "query_name": "seq-05/frame-000250.color.png",
+          "te_cm": 968.6129570007324
+        },
+        {
+          "ae_deg": 2.2898510147678053,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1251,
+          "query_name": "seq-05/frame-000251.color.png",
+          "te_cm": 93.39761734008789
+        },
+        {
+          "ae_deg": 38.2144405382632,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 148,
+          "query_index": 1252,
+          "query_name": "seq-05/frame-000252.color.png",
+          "te_cm": 709.4657897949219
+        },
+        {
+          "ae_deg": 36.63895836845679,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 152,
+          "query_index": 1253,
+          "query_name": "seq-05/frame-000253.color.png",
+          "te_cm": 621.7699527740479
+        },
+        {
+          "ae_deg": 34.06316767394534,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 129,
+          "query_index": 1254,
+          "query_name": "seq-05/frame-000254.color.png",
+          "te_cm": 655.7953834533691
+        },
+        {
+          "ae_deg": 12.30207825657893,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1255,
+          "query_name": "seq-05/frame-000255.color.png",
+          "te_cm": 483.32653045654297
+        },
+        {
+          "ae_deg": 31.6606827843392,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1256,
+          "query_name": "seq-05/frame-000256.color.png",
+          "te_cm": 437.8904342651367
+        },
+        {
+          "ae_deg": 3.2822395082433995,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 133,
+          "query_index": 1257,
+          "query_name": "seq-05/frame-000257.color.png",
+          "te_cm": 65.63668847084045
+        },
+        {
+          "ae_deg": 3.8479676420528657,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 132,
+          "query_index": 1258,
+          "query_name": "seq-05/frame-000258.color.png",
+          "te_cm": 54.832923412323
+        },
+        {
+          "ae_deg": 5.558924052725536,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 146,
+          "query_index": 1259,
+          "query_name": "seq-05/frame-000259.color.png",
+          "te_cm": 52.813172340393066
+        },
+        {
+          "ae_deg": 3.6652361760929293,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 137,
+          "query_index": 1260,
+          "query_name": "seq-05/frame-000260.color.png",
+          "te_cm": 54.33443784713745
+        },
+        {
+          "ae_deg": 0.7995288174718815,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 149,
+          "query_index": 1261,
+          "query_name": "seq-05/frame-000261.color.png",
+          "te_cm": 59.096622467041016
+        },
+        {
+          "ae_deg": 5.7354605371082705,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 163,
+          "query_index": 1262,
+          "query_name": "seq-05/frame-000262.color.png",
+          "te_cm": 52.91270613670349
+        },
+        {
+          "ae_deg": 4.520007029963345,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 151,
+          "query_index": 1263,
+          "query_name": "seq-05/frame-000263.color.png",
+          "te_cm": 39.205679297447205
+        },
+        {
+          "ae_deg": 0.49647860672285193,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 154,
+          "query_index": 1264,
+          "query_name": "seq-05/frame-000264.color.png",
+          "te_cm": 59.88764762878418
+        },
+        {
+          "ae_deg": 0.61722920089439,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 146,
+          "query_index": 1265,
+          "query_name": "seq-05/frame-000265.color.png",
+          "te_cm": 59.81448292732239
+        },
+        {
+          "ae_deg": 4.513410774772406,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1266,
+          "query_name": "seq-05/frame-000266.color.png",
+          "te_cm": 39.17803764343262
+        },
+        {
+          "ae_deg": 0.46285806775052196,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 153,
+          "query_index": 1267,
+          "query_name": "seq-05/frame-000267.color.png",
+          "te_cm": 60.10299324989319
+        },
+        {
+          "ae_deg": 0.8471899842219363,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 145,
+          "query_index": 1268,
+          "query_name": "seq-05/frame-000268.color.png",
+          "te_cm": 59.998512268066406
+        },
+        {
+          "ae_deg": 0.9804144248086217,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 137,
+          "query_index": 1269,
+          "query_name": "seq-05/frame-000269.color.png",
+          "te_cm": 60.88840961456299
+        },
+        {
+          "ae_deg": 1.6631227816460727,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1270,
+          "query_name": "seq-05/frame-000270.color.png",
+          "te_cm": 90.97830653190613
+        },
+        {
+          "ae_deg": 1.6539734230877234,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 136,
+          "query_index": 1271,
+          "query_name": "seq-05/frame-000271.color.png",
+          "te_cm": 90.17404913902283
+        },
+        {
+          "ae_deg": 1.0149729408530648,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 134,
+          "query_index": 1272,
+          "query_name": "seq-05/frame-000272.color.png",
+          "te_cm": 89.55186009407043
+        },
+        {
+          "ae_deg": 1.1375577609818686,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 143,
+          "query_index": 1273,
+          "query_name": "seq-05/frame-000273.color.png",
+          "te_cm": 88.43442797660828
+        },
+        {
+          "ae_deg": 1.0419548561172598,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 137,
+          "query_index": 1274,
+          "query_name": "seq-05/frame-000274.color.png",
+          "te_cm": 59.2195987701416
+        },
+        {
+          "ae_deg": 0.7923712594693841,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 148,
+          "query_index": 1275,
+          "query_name": "seq-05/frame-000275.color.png",
+          "te_cm": 60.78125834465027
+        },
+        {
+          "ae_deg": 0.7341070778065308,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 145,
+          "query_index": 1276,
+          "query_name": "seq-05/frame-000276.color.png",
+          "te_cm": 60.85088849067688
+        },
+        {
+          "ae_deg": 5.481542278297523,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 148,
+          "query_index": 1277,
+          "query_name": "seq-05/frame-000277.color.png",
+          "te_cm": 95.72320580482483
+        },
+        {
+          "ae_deg": 4.546437727617179,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 127,
+          "query_index": 1278,
+          "query_name": "seq-05/frame-000278.color.png",
+          "te_cm": 60.09136438369751
+        },
+        {
+          "ae_deg": 0.8138306999853593,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 132,
+          "query_index": 1279,
+          "query_name": "seq-05/frame-000279.color.png",
+          "te_cm": 60.737401247024536
+        },
+        {
+          "ae_deg": 0.7111837356523516,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1280,
+          "query_name": "seq-05/frame-000280.color.png",
+          "te_cm": 88.7650728225708
+        },
+        {
+          "ae_deg": 5.594470064713574,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 132,
+          "query_index": 1281,
+          "query_name": "seq-05/frame-000281.color.png",
+          "te_cm": 61.56086325645447
+        },
+        {
+          "ae_deg": 0.8627756221342591,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 131,
+          "query_index": 1282,
+          "query_name": "seq-05/frame-000282.color.png",
+          "te_cm": 61.08593940734863
+        },
+        {
+          "ae_deg": 6.637579116078861,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 148,
+          "query_index": 1283,
+          "query_name": "seq-05/frame-000283.color.png",
+          "te_cm": 96.63370251655579
+        },
+        {
+          "ae_deg": 1.1427199966122232,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 141,
+          "query_index": 1284,
+          "query_name": "seq-05/frame-000284.color.png",
+          "te_cm": 61.68721318244934
+        },
+        {
+          "ae_deg": 1.8275703648064137,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 151,
+          "query_index": 1285,
+          "query_name": "seq-05/frame-000285.color.png",
+          "te_cm": 89.98287916183472
+        },
+        {
+          "ae_deg": 7.242653194932419,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 140,
+          "query_index": 1286,
+          "query_name": "seq-05/frame-000286.color.png",
+          "te_cm": 98.64526987075806
+        },
+        {
+          "ae_deg": 7.360823151536457,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 139,
+          "query_index": 1287,
+          "query_name": "seq-05/frame-000287.color.png",
+          "te_cm": 98.63495230674744
+        },
+        {
+          "ae_deg": 5.94369123367398,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 141,
+          "query_index": 1288,
+          "query_name": "seq-05/frame-000288.color.png",
+          "te_cm": 95.46120762825012
+        },
+        {
+          "ae_deg": 1.159799845127192,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 136,
+          "query_index": 1289,
+          "query_name": "seq-05/frame-000289.color.png",
+          "te_cm": 89.5708978176117
+        },
+        {
+          "ae_deg": 1.6046645799221089,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1290,
+          "query_name": "seq-05/frame-000290.color.png",
+          "te_cm": 89.17678594589233
+        },
+        {
+          "ae_deg": 0.7711128292862484,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 124,
+          "query_index": 1291,
+          "query_name": "seq-05/frame-000291.color.png",
+          "te_cm": 61.0325813293457
+        },
+        {
+          "ae_deg": 1.0188972046963545,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1292,
+          "query_name": "seq-05/frame-000292.color.png",
+          "te_cm": 89.40280675888062
+        },
+        {
+          "ae_deg": 0.6708156634711366,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 135,
+          "query_index": 1293,
+          "query_name": "seq-05/frame-000293.color.png",
+          "te_cm": 60.096561908721924
+        },
+        {
+          "ae_deg": 1.44109200802747,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 149,
+          "query_index": 1294,
+          "query_name": "seq-05/frame-000294.color.png",
+          "te_cm": 90.9985363483429
+        },
+        {
+          "ae_deg": 6.68651443327424,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 150,
+          "query_index": 1295,
+          "query_name": "seq-05/frame-000295.color.png",
+          "te_cm": 97.09288477897644
+        },
+        {
+          "ae_deg": 1.4417746000576481,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 141,
+          "query_index": 1296,
+          "query_name": "seq-05/frame-000296.color.png",
+          "te_cm": 90.26429057121277
+        },
+        {
+          "ae_deg": 1.3512298771602567,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 147,
+          "query_index": 1297,
+          "query_name": "seq-05/frame-000297.color.png",
+          "te_cm": 90.68563580513
+        },
+        {
+          "ae_deg": 109.0791319131008,
+          "clean_inliers": 4,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1298,
+          "query_name": "seq-05/frame-000298.color.png",
+          "te_cm": 401.1521339416504
+        },
+        {
+          "ae_deg": 4.875380918705463,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 142,
+          "query_index": 1299,
+          "query_name": "seq-05/frame-000299.color.png",
+          "te_cm": 93.68129372596741
+        },
+        {
+          "ae_deg": 1.169998811661902,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 144,
+          "query_index": 1300,
+          "query_name": "seq-05/frame-000300.color.png",
+          "te_cm": 90.51913619041443
+        },
+        {
+          "ae_deg": 1.0156568135437123,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 152,
+          "query_index": 1301,
+          "query_name": "seq-05/frame-000301.color.png",
+          "te_cm": 89.29724097251892
+        },
+        {
+          "ae_deg": 0.9761392599967226,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 129,
+          "query_index": 1302,
+          "query_name": "seq-05/frame-000302.color.png",
+          "te_cm": 57.634466886520386
+        },
+        {
+          "ae_deg": 5.799680963892492,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 127,
+          "query_index": 1303,
+          "query_name": "seq-05/frame-000303.color.png",
+          "te_cm": 95.70276737213135
+        },
+        {
+          "ae_deg": 5.572753905134342,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 144,
+          "query_index": 1304,
+          "query_name": "seq-05/frame-000304.color.png",
+          "te_cm": 95.91200947761536
+        },
+        {
+          "ae_deg": 0.665358555767708,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 136,
+          "query_index": 1305,
+          "query_name": "seq-05/frame-000305.color.png",
+          "te_cm": 60.06960868835449
+        },
+        {
+          "ae_deg": 1.2751322850179116,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 145,
+          "query_index": 1306,
+          "query_name": "seq-05/frame-000306.color.png",
+          "te_cm": 86.2839937210083
+        },
+        {
+          "ae_deg": 6.897352554555602,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 144,
+          "query_index": 1307,
+          "query_name": "seq-05/frame-000307.color.png",
+          "te_cm": 97.80241250991821
+        },
+        {
+          "ae_deg": 1.8840205976360997,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 137,
+          "query_index": 1308,
+          "query_name": "seq-05/frame-000308.color.png",
+          "te_cm": 92.78700947761536
+        },
+        {
+          "ae_deg": 1.005831479700943,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 136,
+          "query_index": 1309,
+          "query_name": "seq-05/frame-000309.color.png",
+          "te_cm": 90.66810607910156
+        },
+        {
+          "ae_deg": 0.9410651713916494,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 153,
+          "query_index": 1310,
+          "query_name": "seq-05/frame-000310.color.png",
+          "te_cm": 60.70975661277771
+        },
+        {
+          "ae_deg": 1.2498314500631862,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 174,
+          "query_index": 1311,
+          "query_name": "seq-05/frame-000311.color.png",
+          "te_cm": 90.72039723396301
+        },
+        {
+          "ae_deg": 0.7731437967081223,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 156,
+          "query_index": 1312,
+          "query_name": "seq-05/frame-000312.color.png",
+          "te_cm": 89.12970423698425
+        },
+        {
+          "ae_deg": 0.7238532029541963,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 151,
+          "query_index": 1313,
+          "query_name": "seq-05/frame-000313.color.png",
+          "te_cm": 89.14660811424255
+        },
+        {
+          "ae_deg": 1.166771547279071,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 159,
+          "query_index": 1314,
+          "query_name": "seq-05/frame-000314.color.png",
+          "te_cm": 89.15650844573975
+        },
+        {
+          "ae_deg": 1.1085417300054794,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 142,
+          "query_index": 1315,
+          "query_name": "seq-05/frame-000315.color.png",
+          "te_cm": 90.43235778808594
+        },
+        {
+          "ae_deg": 0.6919790046144211,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 125,
+          "query_index": 1316,
+          "query_name": "seq-05/frame-000316.color.png",
+          "te_cm": 117.86171197891235
+        },
+        {
+          "ae_deg": 1.46372149196478,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 140,
+          "query_index": 1317,
+          "query_name": "seq-05/frame-000317.color.png",
+          "te_cm": 90.32641649246216
+        },
+        {
+          "ae_deg": 1.5616639500635299,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 150,
+          "query_index": 1318,
+          "query_name": "seq-05/frame-000318.color.png",
+          "te_cm": 62.7269446849823
+        },
+        {
+          "ae_deg": 1.0571379397553748,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 133,
+          "query_index": 1319,
+          "query_name": "seq-05/frame-000319.color.png",
+          "te_cm": 89.64607119560242
+        },
+        {
+          "ae_deg": 0.816689934565803,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 137,
+          "query_index": 1320,
+          "query_name": "seq-05/frame-000320.color.png",
+          "te_cm": 90.01959562301636
+        },
+        {
+          "ae_deg": 1.5053326052140845,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 126,
+          "query_index": 1321,
+          "query_name": "seq-05/frame-000321.color.png",
+          "te_cm": 118.62764358520508
+        },
+        {
+          "ae_deg": 1.2448283364961519,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 150,
+          "query_index": 1322,
+          "query_name": "seq-05/frame-000322.color.png",
+          "te_cm": 90.48081040382385
+        },
+        {
+          "ae_deg": 1.0386917332412862,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 148,
+          "query_index": 1323,
+          "query_name": "seq-05/frame-000323.color.png",
+          "te_cm": 89.26587104797363
+        },
+        {
+          "ae_deg": 127.70085038319684,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 125,
+          "query_index": 1324,
+          "query_name": "seq-05/frame-000324.color.png",
+          "te_cm": 244.25694942474365
+        },
+        {
+          "ae_deg": 1.1751865537799382,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 129,
+          "query_index": 1325,
+          "query_name": "seq-05/frame-000325.color.png",
+          "te_cm": 90.4824435710907
+        },
+        {
+          "ae_deg": 0.9657374154993221,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1326,
+          "query_name": "seq-05/frame-000326.color.png",
+          "te_cm": 89.44222331047058
+        },
+        {
+          "ae_deg": 132.73812855645957,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1327,
+          "query_name": "seq-05/frame-000327.color.png",
+          "te_cm": 350.2699136734009
+        },
+        {
+          "ae_deg": 2.2271165810148843,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1328,
+          "query_name": "seq-05/frame-000328.color.png",
+          "te_cm": 120.08658647537231
+        },
+        {
+          "ae_deg": 1.7996696823771463,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 128,
+          "query_index": 1329,
+          "query_name": "seq-05/frame-000329.color.png",
+          "te_cm": 55.70495128631592
+        },
+        {
+          "ae_deg": 3.80048459382976,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1330,
+          "query_name": "seq-05/frame-000330.color.png",
+          "te_cm": 66.75499081611633
+        },
+        {
+          "ae_deg": 128.81011408554193,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1331,
+          "query_name": "seq-05/frame-000331.color.png",
+          "te_cm": 267.6383972167969
+        },
+        {
+          "ae_deg": 1.0806173553575285,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 152,
+          "query_index": 1332,
+          "query_name": "seq-05/frame-000332.color.png",
+          "te_cm": 89.31309580802917
+        },
+        {
+          "ae_deg": 42.430917803492584,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1333,
+          "query_name": "seq-05/frame-000333.color.png",
+          "te_cm": 348.44651222229004
+        },
+        {
+          "ae_deg": 1.362068426877715,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 135,
+          "query_index": 1334,
+          "query_name": "seq-05/frame-000334.color.png",
+          "te_cm": 90.21067023277283
+        },
+        {
+          "ae_deg": 126.80442903576768,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 132,
+          "query_index": 1335,
+          "query_name": "seq-05/frame-000335.color.png",
+          "te_cm": 234.22181606292725
+        },
+        {
+          "ae_deg": 1.431953748526522,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 138,
+          "query_index": 1336,
+          "query_name": "seq-05/frame-000336.color.png",
+          "te_cm": 89.92145657539368
+        },
+        {
+          "ae_deg": 2.565871338845891,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 131,
+          "query_index": 1337,
+          "query_name": "seq-05/frame-000337.color.png",
+          "te_cm": 119.17459964752197
+        },
+        {
+          "ae_deg": 101.64503107705386,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1338,
+          "query_name": "seq-05/frame-000338.color.png",
+          "te_cm": 230.70909976959229
+        },
+        {
+          "ae_deg": 118.54193553642492,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 108,
+          "query_index": 1339,
+          "query_name": "seq-05/frame-000339.color.png",
+          "te_cm": 315.75918197631836
+        },
+        {
+          "ae_deg": 1.8049972299297563,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 139,
+          "query_index": 1340,
+          "query_name": "seq-05/frame-000340.color.png",
+          "te_cm": 90.858393907547
+        },
+        {
+          "ae_deg": 2.829015262234622,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 134,
+          "query_index": 1341,
+          "query_name": "seq-05/frame-000341.color.png",
+          "te_cm": 120.29968500137329
+        },
+        {
+          "ae_deg": 25.89479418136535,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1342,
+          "query_name": "seq-05/frame-000342.color.png",
+          "te_cm": 237.4577522277832
+        },
+        {
+          "ae_deg": 1.4161676872507414,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 133,
+          "query_index": 1343,
+          "query_name": "seq-05/frame-000343.color.png",
+          "te_cm": 90.46645760536194
+        },
+        {
+          "ae_deg": 136.01372335785763,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1344,
+          "query_name": "seq-05/frame-000344.color.png",
+          "te_cm": 377.2050380706787
+        },
+        {
+          "ae_deg": 30.236202436703437,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1345,
+          "query_name": "seq-05/frame-000345.color.png",
+          "te_cm": 288.2315158843994
+        },
+        {
+          "ae_deg": 19.086842399742864,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 127,
+          "query_index": 1346,
+          "query_name": "seq-05/frame-000346.color.png",
+          "te_cm": 297.5841760635376
+        },
+        {
+          "ae_deg": 135.80025262553804,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1347,
+          "query_name": "seq-05/frame-000347.color.png",
+          "te_cm": 293.2028293609619
+        },
+        {
+          "ae_deg": 1.7745326652407953,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 133,
+          "query_index": 1348,
+          "query_name": "seq-05/frame-000348.color.png",
+          "te_cm": 89.75515365600586
+        },
+        {
+          "ae_deg": 1.266122305007313,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 133,
+          "query_index": 1349,
+          "query_name": "seq-05/frame-000349.color.png",
+          "te_cm": 90.56441187858582
+        },
+        {
+          "ae_deg": 83.67685925769048,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1350,
+          "query_name": "seq-05/frame-000350.color.png",
+          "te_cm": 523.0096340179443
+        },
+        {
+          "ae_deg": 18.790774189790323,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 136,
+          "query_index": 1351,
+          "query_name": "seq-05/frame-000351.color.png",
+          "te_cm": 295.09732723236084
+        },
+        {
+          "ae_deg": 18.48213501667037,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 126,
+          "query_index": 1352,
+          "query_name": "seq-05/frame-000352.color.png",
+          "te_cm": 298.08506965637207
+        },
+        {
+          "ae_deg": 8.109514337407404,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 108,
+          "query_index": 1353,
+          "query_name": "seq-05/frame-000353.color.png",
+          "te_cm": 240.5543565750122
+        },
+        {
+          "ae_deg": 24.323095936359127,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1354,
+          "query_name": "seq-05/frame-000354.color.png",
+          "te_cm": 289.1802787780762
+        },
+        {
+          "ae_deg": 138.21652766707842,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1355,
+          "query_name": "seq-05/frame-000355.color.png",
+          "te_cm": 375.3876209259033
+        },
+        {
+          "ae_deg": 3.393476609396462,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1356,
+          "query_name": "seq-05/frame-000356.color.png",
+          "te_cm": 93.51289868354797
+        },
+        {
+          "ae_deg": 1.6617439372073766,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1357,
+          "query_name": "seq-05/frame-000357.color.png",
+          "te_cm": 88.26298117637634
+        },
+        {
+          "ae_deg": 83.32709893067246,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1358,
+          "query_name": "seq-05/frame-000358.color.png",
+          "te_cm": 527.7373790740967
+        },
+        {
+          "ae_deg": 83.19954514792248,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 126,
+          "query_index": 1359,
+          "query_name": "seq-05/frame-000359.color.png",
+          "te_cm": 499.97096061706543
+        },
+        {
+          "ae_deg": 136.5151412052066,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1360,
+          "query_name": "seq-05/frame-000360.color.png",
+          "te_cm": 390.1672601699829
+        },
+        {
+          "ae_deg": 80.96712513846049,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 124,
+          "query_index": 1361,
+          "query_name": "seq-05/frame-000361.color.png",
+          "te_cm": 506.1056613922119
+        },
+        {
+          "ae_deg": 140.67075123964742,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 104,
+          "query_index": 1362,
+          "query_name": "seq-05/frame-000362.color.png",
+          "te_cm": 506.0525894165039
+        },
+        {
+          "ae_deg": 22.66854578917336,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1363,
+          "query_name": "seq-05/frame-000363.color.png",
+          "te_cm": 234.76662635803223
+        },
+        {
+          "ae_deg": 1.7833786139896082,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1364,
+          "query_name": "seq-05/frame-000364.color.png",
+          "te_cm": 89.0662670135498
+        },
+        {
+          "ae_deg": 15.212238300587419,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 104,
+          "query_index": 1365,
+          "query_name": "seq-05/frame-000365.color.png",
+          "te_cm": 229.24740314483643
+        },
+        {
+          "ae_deg": 22.023786176807914,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1366,
+          "query_name": "seq-05/frame-000366.color.png",
+          "te_cm": 245.98937034606934
+        },
+        {
+          "ae_deg": 1.556538106534847,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 103,
+          "query_index": 1367,
+          "query_name": "seq-05/frame-000367.color.png",
+          "te_cm": 146.75122499465942
+        },
+        {
+          "ae_deg": 9.21888646900557,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1368,
+          "query_name": "seq-05/frame-000368.color.png",
+          "te_cm": 245.2650785446167
+        },
+        {
+          "ae_deg": 84.3815298743607,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1369,
+          "query_name": "seq-05/frame-000369.color.png",
+          "te_cm": 513.8989925384521
+        },
+        {
+          "ae_deg": 0.8905783340376191,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 96,
+          "query_index": 1370,
+          "query_name": "seq-05/frame-000370.color.png",
+          "te_cm": 89.20320868492126
+        },
+        {
+          "ae_deg": 95.70099748014773,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1371,
+          "query_name": "seq-05/frame-000371.color.png",
+          "te_cm": 351.5519380569458
+        },
+        {
+          "ae_deg": 6.005981278244026,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 101,
+          "query_index": 1372,
+          "query_name": "seq-05/frame-000372.color.png",
+          "te_cm": 157.87030458450317
+        },
+        {
+          "ae_deg": 6.570623198532049,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1373,
+          "query_name": "seq-05/frame-000373.color.png",
+          "te_cm": 239.1571283340454
+        },
+        {
+          "ae_deg": 47.89891112091092,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 112,
+          "query_index": 1374,
+          "query_name": "seq-05/frame-000374.color.png",
+          "te_cm": 273.5844612121582
+        },
+        {
+          "ae_deg": 2.0939693002214788,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 112,
+          "query_index": 1375,
+          "query_name": "seq-05/frame-000375.color.png",
+          "te_cm": 150.72789192199707
+        },
+        {
+          "ae_deg": 35.13128631673027,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1376,
+          "query_name": "seq-05/frame-000376.color.png",
+          "te_cm": 264.51501846313477
+        },
+        {
+          "ae_deg": 84.70877106768518,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 117,
+          "query_index": 1377,
+          "query_name": "seq-05/frame-000377.color.png",
+          "te_cm": 504.91652488708496
+        },
+        {
+          "ae_deg": 157.47719667365084,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 118,
+          "query_index": 1378,
+          "query_name": "seq-05/frame-000378.color.png",
+          "te_cm": 871.061897277832
+        },
+        {
+          "ae_deg": 25.618306416215937,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1379,
+          "query_name": "seq-05/frame-000379.color.png",
+          "te_cm": 292.9612159729004
+        },
+        {
+          "ae_deg": 83.0877281210202,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 113,
+          "query_index": 1380,
+          "query_name": "seq-05/frame-000380.color.png",
+          "te_cm": 497.1707344055176
+        },
+        {
+          "ae_deg": 4.326868917029248,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1381,
+          "query_name": "seq-05/frame-000381.color.png",
+          "te_cm": 152.836811542511
+        },
+        {
+          "ae_deg": 154.5963458251445,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 113,
+          "query_index": 1382,
+          "query_name": "seq-05/frame-000382.color.png",
+          "te_cm": 513.5059833526611
+        },
+        {
+          "ae_deg": 40.66166316693292,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1383,
+          "query_name": "seq-05/frame-000383.color.png",
+          "te_cm": 289.7000551223755
+        },
+        {
+          "ae_deg": 26.203955863956804,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1384,
+          "query_name": "seq-05/frame-000384.color.png",
+          "te_cm": 293.64848136901855
+        },
+        {
+          "ae_deg": 25.128358164030708,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1385,
+          "query_name": "seq-05/frame-000385.color.png",
+          "te_cm": 291.5666341781616
+        },
+        {
+          "ae_deg": 3.6624503126852104,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1386,
+          "query_name": "seq-05/frame-000386.color.png",
+          "te_cm": 93.8581109046936
+        },
+        {
+          "ae_deg": 22.391091552256395,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1387,
+          "query_name": "seq-05/frame-000387.color.png",
+          "te_cm": 239.31856155395508
+        },
+        {
+          "ae_deg": 2.9009691707065905,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 117,
+          "query_index": 1388,
+          "query_name": "seq-05/frame-000388.color.png",
+          "te_cm": 122.71169424057007
+        },
+        {
+          "ae_deg": 17.994941038267946,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1389,
+          "query_name": "seq-05/frame-000389.color.png",
+          "te_cm": 286.11788749694824
+        },
+        {
+          "ae_deg": 24.806140574840768,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 101,
+          "query_index": 1390,
+          "query_name": "seq-05/frame-000390.color.png",
+          "te_cm": 212.23993301391602
+        },
+        {
+          "ae_deg": 16.4731987968512,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1391,
+          "query_name": "seq-05/frame-000391.color.png",
+          "te_cm": 287.3005151748657
+        },
+        {
+          "ae_deg": 69.24101539024758,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 101,
+          "query_index": 1392,
+          "query_name": "seq-05/frame-000392.color.png",
+          "te_cm": 359.8022222518921
+        },
+        {
+          "ae_deg": 43.185896178494524,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1393,
+          "query_name": "seq-05/frame-000393.color.png",
+          "te_cm": 315.5121088027954
+        },
+        {
+          "ae_deg": 41.19359146930434,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1394,
+          "query_name": "seq-05/frame-000394.color.png",
+          "te_cm": 287.41445541381836
+        },
+        {
+          "ae_deg": 18.75037020575511,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 130,
+          "query_index": 1395,
+          "query_name": "seq-05/frame-000395.color.png",
+          "te_cm": 282.3413133621216
+        },
+        {
+          "ae_deg": 21.75020807224493,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1396,
+          "query_name": "seq-05/frame-000396.color.png",
+          "te_cm": 268.7258720397949
+        },
+        {
+          "ae_deg": 10.153453569175598,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 119,
+          "query_index": 1397,
+          "query_name": "seq-05/frame-000397.color.png",
+          "te_cm": 235.02600193023682
+        },
+        {
+          "ae_deg": 18.66946490748902,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 124,
+          "query_index": 1398,
+          "query_name": "seq-05/frame-000398.color.png",
+          "te_cm": 283.15186500549316
+        },
+        {
+          "ae_deg": 101.98572091285409,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 104,
+          "query_index": 1399,
+          "query_name": "seq-05/frame-000399.color.png",
+          "te_cm": 248.67167472839355
+        },
+        {
+          "ae_deg": 85.78962118308301,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1400,
+          "query_name": "seq-05/frame-000400.color.png",
+          "te_cm": 506.516695022583
+        },
+        {
+          "ae_deg": 21.217181816964427,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 124,
+          "query_index": 1401,
+          "query_name": "seq-05/frame-000401.color.png",
+          "te_cm": 229.2173147201538
+        },
+        {
+          "ae_deg": 16.392564998604616,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1402,
+          "query_name": "seq-05/frame-000402.color.png",
+          "te_cm": 285.99629402160645
+        },
+        {
+          "ae_deg": 1.7328435384245646,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1403,
+          "query_name": "seq-05/frame-000403.color.png",
+          "te_cm": 150.46459436416626
+        },
+        {
+          "ae_deg": 5.346713490307825,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1404,
+          "query_name": "seq-05/frame-000404.color.png",
+          "te_cm": 155.07099628448486
+        },
+        {
+          "ae_deg": 29.303956747077567,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1405,
+          "query_name": "seq-05/frame-000405.color.png",
+          "te_cm": 319.68061923980713
+        },
+        {
+          "ae_deg": 16.898646157609416,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1406,
+          "query_name": "seq-05/frame-000406.color.png",
+          "te_cm": 226.83837413787842
+        },
+        {
+          "ae_deg": 8.497592025669189,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1407,
+          "query_name": "seq-05/frame-000407.color.png",
+          "te_cm": 228.36816310882568
+        },
+        {
+          "ae_deg": 20.474525103225186,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1408,
+          "query_name": "seq-05/frame-000408.color.png",
+          "te_cm": 229.42404747009277
+        },
+        {
+          "ae_deg": 13.562406106570839,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1409,
+          "query_name": "seq-05/frame-000409.color.png",
+          "te_cm": 222.0811128616333
+        },
+        {
+          "ae_deg": 18.99433431762421,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1410,
+          "query_name": "seq-05/frame-000410.color.png",
+          "te_cm": 236.6246461868286
+        },
+        {
+          "ae_deg": 27.684617932610507,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 104,
+          "query_index": 1411,
+          "query_name": "seq-05/frame-000411.color.png",
+          "te_cm": 217.2067165374756
+        },
+        {
+          "ae_deg": 18.981111071391066,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 128,
+          "query_index": 1412,
+          "query_name": "seq-05/frame-000412.color.png",
+          "te_cm": 234.21998023986816
+        },
+        {
+          "ae_deg": 19.784612817804074,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1413,
+          "query_name": "seq-05/frame-000413.color.png",
+          "te_cm": 237.6115083694458
+        },
+        {
+          "ae_deg": 24.26355888491142,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1414,
+          "query_name": "seq-05/frame-000414.color.png",
+          "te_cm": 246.10471725463867
+        },
+        {
+          "ae_deg": 15.512175812704774,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1415,
+          "query_name": "seq-05/frame-000415.color.png",
+          "te_cm": 224.74279403686523
+        },
+        {
+          "ae_deg": 39.79244646296792,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1416,
+          "query_name": "seq-05/frame-000416.color.png",
+          "te_cm": 284.665846824646
+        },
+        {
+          "ae_deg": 24.363960958163315,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1417,
+          "query_name": "seq-05/frame-000417.color.png",
+          "te_cm": 295.4698085784912
+        },
+        {
+          "ae_deg": 33.86185467834838,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1418,
+          "query_name": "seq-05/frame-000418.color.png",
+          "te_cm": 268.5541868209839
+        },
+        {
+          "ae_deg": 27.712937604456673,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1419,
+          "query_name": "seq-05/frame-000419.color.png",
+          "te_cm": 249.05922412872314
+        },
+        {
+          "ae_deg": 5.647964106293115,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1420,
+          "query_name": "seq-05/frame-000420.color.png",
+          "te_cm": 157.09586143493652
+        },
+        {
+          "ae_deg": 42.65215787599305,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 102,
+          "query_index": 1421,
+          "query_name": "seq-05/frame-000421.color.png",
+          "te_cm": 238.86818885803223
+        },
+        {
+          "ae_deg": 25.18729245128416,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1422,
+          "query_name": "seq-05/frame-000422.color.png",
+          "te_cm": 293.8002109527588
+        },
+        {
+          "ae_deg": 20.346315622314876,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 112,
+          "query_index": 1423,
+          "query_name": "seq-05/frame-000423.color.png",
+          "te_cm": 239.96620178222656
+        },
+        {
+          "ae_deg": 69.31527320690397,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 108,
+          "query_index": 1424,
+          "query_name": "seq-05/frame-000424.color.png",
+          "te_cm": 198.78802299499512
+        },
+        {
+          "ae_deg": 84.11670294967179,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1425,
+          "query_name": "seq-05/frame-000425.color.png",
+          "te_cm": 532.7540397644043
+        },
+        {
+          "ae_deg": 151.98431756199156,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1426,
+          "query_name": "seq-05/frame-000426.color.png",
+          "te_cm": 850.9037017822266
+        },
+        {
+          "ae_deg": 78.16325735208939,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1427,
+          "query_name": "seq-05/frame-000427.color.png",
+          "te_cm": 339.6494388580322
+        },
+        {
+          "ae_deg": 21.449449229879882,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1428,
+          "query_name": "seq-05/frame-000428.color.png",
+          "te_cm": 240.09935855865479
+        },
+        {
+          "ae_deg": 57.457122241656364,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1429,
+          "query_name": "seq-05/frame-000429.color.png",
+          "te_cm": 302.1707773208618
+        },
+        {
+          "ae_deg": 40.357904163974936,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 123,
+          "query_index": 1430,
+          "query_name": "seq-05/frame-000430.color.png",
+          "te_cm": 281.7678213119507
+        },
+        {
+          "ae_deg": 28.782202011474876,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1431,
+          "query_name": "seq-05/frame-000431.color.png",
+          "te_cm": 250.1007318496704
+        },
+        {
+          "ae_deg": 3.067696436224129,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1432,
+          "query_name": "seq-05/frame-000432.color.png",
+          "te_cm": 117.30376482009888
+        },
+        {
+          "ae_deg": 18.537862530108505,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1433,
+          "query_name": "seq-05/frame-000433.color.png",
+          "te_cm": 238.7345314025879
+        },
+        {
+          "ae_deg": 1.4644949041665782,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1434,
+          "query_name": "seq-05/frame-000434.color.png",
+          "te_cm": 89.39988613128662
+        },
+        {
+          "ae_deg": 2.467634862447713,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1435,
+          "query_name": "seq-05/frame-000435.color.png",
+          "te_cm": 91.84820652008057
+        },
+        {
+          "ae_deg": 1.2387710259194085,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1436,
+          "query_name": "seq-05/frame-000436.color.png",
+          "te_cm": 89.82201814651489
+        },
+        {
+          "ae_deg": 1.2699000399485647,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1437,
+          "query_name": "seq-05/frame-000437.color.png",
+          "te_cm": 89.82173204421997
+        },
+        {
+          "ae_deg": 25.765478209809494,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1438,
+          "query_name": "seq-05/frame-000438.color.png",
+          "te_cm": 307.67595767974854
+        },
+        {
+          "ae_deg": 1.1160684917491277,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 99,
+          "query_index": 1439,
+          "query_name": "seq-05/frame-000439.color.png",
+          "te_cm": 87.5750184059143
+        },
+        {
+          "ae_deg": 39.72620045820797,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 119,
+          "query_index": 1440,
+          "query_name": "seq-05/frame-000440.color.png",
+          "te_cm": 316.8769359588623
+        },
+        {
+          "ae_deg": 23.19686262902114,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 117,
+          "query_index": 1441,
+          "query_name": "seq-05/frame-000441.color.png",
+          "te_cm": 242.1682834625244
+        },
+        {
+          "ae_deg": 2.2096315101830633,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1442,
+          "query_name": "seq-05/frame-000442.color.png",
+          "te_cm": 120.19096612930298
+        },
+        {
+          "ae_deg": 21.64137071536807,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1443,
+          "query_name": "seq-05/frame-000443.color.png",
+          "te_cm": 283.81409645080566
+        },
+        {
+          "ae_deg": 20.275693173844235,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1444,
+          "query_name": "seq-05/frame-000444.color.png",
+          "te_cm": 294.2457675933838
+        },
+        {
+          "ae_deg": 1.5537523498488337,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1445,
+          "query_name": "seq-05/frame-000445.color.png",
+          "te_cm": 148.58468770980835
+        },
+        {
+          "ae_deg": 154.80809534979323,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 126,
+          "query_index": 1446,
+          "query_name": "seq-05/frame-000446.color.png",
+          "te_cm": 812.0613098144531
+        },
+        {
+          "ae_deg": 1.9020672380837427,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1447,
+          "query_name": "seq-05/frame-000447.color.png",
+          "te_cm": 121.16115093231201
+        },
+        {
+          "ae_deg": 13.496855073558935,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1448,
+          "query_name": "seq-05/frame-000448.color.png",
+          "te_cm": 268.56791973114014
+        },
+        {
+          "ae_deg": 40.0352084615431,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 101,
+          "query_index": 1449,
+          "query_name": "seq-05/frame-000449.color.png",
+          "te_cm": 299.63650703430176
+        },
+        {
+          "ae_deg": 14.29859890003431,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 112,
+          "query_index": 1450,
+          "query_name": "seq-05/frame-000450.color.png",
+          "te_cm": 225.21934509277344
+        },
+        {
+          "ae_deg": 21.79862728327115,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1451,
+          "query_name": "seq-05/frame-000451.color.png",
+          "te_cm": 288.31348419189453
+        },
+        {
+          "ae_deg": 24.73751595670236,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1452,
+          "query_name": "seq-05/frame-000452.color.png",
+          "te_cm": 295.3925371170044
+        },
+        {
+          "ae_deg": 15.016362135569793,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 96,
+          "query_index": 1453,
+          "query_name": "seq-05/frame-000453.color.png",
+          "te_cm": 233.02819728851318
+        },
+        {
+          "ae_deg": 2.6249518348362666,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1454,
+          "query_name": "seq-05/frame-000454.color.png",
+          "te_cm": 123.16583395004272
+        },
+        {
+          "ae_deg": 1.092120781302005,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 102,
+          "query_index": 1455,
+          "query_name": "seq-05/frame-000455.color.png",
+          "te_cm": 89.7732675075531
+        },
+        {
+          "ae_deg": 21.514093555279466,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1456,
+          "query_name": "seq-05/frame-000456.color.png",
+          "te_cm": 289.53797817230225
+        },
+        {
+          "ae_deg": 24.76675428899189,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1457,
+          "query_name": "seq-05/frame-000457.color.png",
+          "te_cm": 294.66984272003174
+        },
+        {
+          "ae_deg": 2.476892970424254,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 128,
+          "query_index": 1458,
+          "query_name": "seq-05/frame-000458.color.png",
+          "te_cm": 121.2738037109375
+        },
+        {
+          "ae_deg": 84.22561714617682,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 100,
+          "query_index": 1459,
+          "query_name": "seq-05/frame-000459.color.png",
+          "te_cm": 534.7901821136475
+        },
+        {
+          "ae_deg": 16.66046721596732,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1460,
+          "query_name": "seq-05/frame-000460.color.png",
+          "te_cm": 222.56615161895752
+        },
+        {
+          "ae_deg": 17.366333115742286,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1461,
+          "query_name": "seq-05/frame-000461.color.png",
+          "te_cm": 234.1109275817871
+        },
+        {
+          "ae_deg": 1.3505033157872968,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 114,
+          "query_index": 1462,
+          "query_name": "seq-05/frame-000462.color.png",
+          "te_cm": 86.98424696922302
+        },
+        {
+          "ae_deg": 2.462921605033581,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 129,
+          "query_index": 1463,
+          "query_name": "seq-05/frame-000463.color.png",
+          "te_cm": 122.78586626052856
+        },
+        {
+          "ae_deg": 2.4841154685847195,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1464,
+          "query_name": "seq-05/frame-000464.color.png",
+          "te_cm": 121.17292881011963
+        },
+        {
+          "ae_deg": 65.34383239324337,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 108,
+          "query_index": 1465,
+          "query_name": "seq-05/frame-000465.color.png",
+          "te_cm": 502.8761386871338
+        },
+        {
+          "ae_deg": 47.17767046531425,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 96,
+          "query_index": 1466,
+          "query_name": "seq-05/frame-000466.color.png",
+          "te_cm": 255.91554641723633
+        },
+        {
+          "ae_deg": 47.80575417082111,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 120,
+          "query_index": 1467,
+          "query_name": "seq-05/frame-000467.color.png",
+          "te_cm": 234.9951982498169
+        },
+        {
+          "ae_deg": 0.9480411424117595,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1468,
+          "query_name": "seq-05/frame-000468.color.png",
+          "te_cm": 88.88378739356995
+        },
+        {
+          "ae_deg": 51.757380605699495,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 118,
+          "query_index": 1469,
+          "query_name": "seq-05/frame-000469.color.png",
+          "te_cm": 274.3644714355469
+        },
+        {
+          "ae_deg": 47.36769657330776,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1470,
+          "query_name": "seq-05/frame-000470.color.png",
+          "te_cm": 247.4970817565918
+        },
+        {
+          "ae_deg": 48.33274083132803,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 118,
+          "query_index": 1471,
+          "query_name": "seq-05/frame-000471.color.png",
+          "te_cm": 257.7251195907593
+        },
+        {
+          "ae_deg": 51.64323448429025,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 124,
+          "query_index": 1472,
+          "query_name": "seq-05/frame-000472.color.png",
+          "te_cm": 252.5481939315796
+        },
+        {
+          "ae_deg": 151.64394191489313,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1473,
+          "query_name": "seq-05/frame-000473.color.png",
+          "te_cm": 264.12365436553955
+        },
+        {
+          "ae_deg": 1.6645553071027772,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 119,
+          "query_index": 1474,
+          "query_name": "seq-05/frame-000474.color.png",
+          "te_cm": 90.32750129699707
+        },
+        {
+          "ae_deg": 51.616357689906245,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 122,
+          "query_index": 1475,
+          "query_name": "seq-05/frame-000475.color.png",
+          "te_cm": 279.22306060791016
+        },
+        {
+          "ae_deg": 2.201149695894377,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 134,
+          "query_index": 1476,
+          "query_name": "seq-05/frame-000476.color.png",
+          "te_cm": 91.69274568557739
+        },
+        {
+          "ae_deg": 49.598648092098195,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 118,
+          "query_index": 1477,
+          "query_name": "seq-05/frame-000477.color.png",
+          "te_cm": 251.63097381591797
+        },
+        {
+          "ae_deg": 55.39604094261873,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 117,
+          "query_index": 1478,
+          "query_name": "seq-05/frame-000478.color.png",
+          "te_cm": 272.36390113830566
+        },
+        {
+          "ae_deg": 59.499089256301716,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 109,
+          "query_index": 1479,
+          "query_name": "seq-05/frame-000479.color.png",
+          "te_cm": 291.5201425552368
+        },
+        {
+          "ae_deg": 1.4059655190648581,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1480,
+          "query_name": "seq-05/frame-000480.color.png",
+          "te_cm": 89.08421993255615
+        },
+        {
+          "ae_deg": 65.85007235414638,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1481,
+          "query_name": "seq-05/frame-000481.color.png",
+          "te_cm": 313.82458209991455
+        },
+        {
+          "ae_deg": 3.9885141521515104,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 119,
+          "query_index": 1482,
+          "query_name": "seq-05/frame-000482.color.png",
+          "te_cm": 94.19221878051758
+        },
+        {
+          "ae_deg": 44.665554209340236,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 111,
+          "query_index": 1483,
+          "query_name": "seq-05/frame-000483.color.png",
+          "te_cm": 490.5792236328125
+        },
+        {
+          "ae_deg": 51.13509231570339,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 97,
+          "query_index": 1484,
+          "query_name": "seq-05/frame-000484.color.png",
+          "te_cm": 257.099986076355
+        },
+        {
+          "ae_deg": 5.067320760327045,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 110,
+          "query_index": 1485,
+          "query_name": "seq-05/frame-000485.color.png",
+          "te_cm": 94.4817066192627
+        },
+        {
+          "ae_deg": 1.7987380018856742,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 106,
+          "query_index": 1486,
+          "query_name": "seq-05/frame-000486.color.png",
+          "te_cm": 91.37131571769714
+        },
+        {
+          "ae_deg": 51.1527654301808,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 116,
+          "query_index": 1487,
+          "query_name": "seq-05/frame-000487.color.png",
+          "te_cm": 517.1184062957764
+        },
+        {
+          "ae_deg": 1.538692636502602,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 100,
+          "query_index": 1488,
+          "query_name": "seq-05/frame-000488.color.png",
+          "te_cm": 91.26754999160767
+        },
+        {
+          "ae_deg": 24.231270873157477,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 102,
+          "query_index": 1489,
+          "query_name": "seq-05/frame-000489.color.png",
+          "te_cm": 357.75697231292725
+        },
+        {
+          "ae_deg": 1.7313558378459712,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 108,
+          "query_index": 1490,
+          "query_name": "seq-05/frame-000490.color.png",
+          "te_cm": 88.79080414772034
+        },
+        {
+          "ae_deg": 58.33523185192071,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 121,
+          "query_index": 1491,
+          "query_name": "seq-05/frame-000491.color.png",
+          "te_cm": 355.3426265716553
+        },
+        {
+          "ae_deg": 86.56221803104901,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 89,
+          "query_index": 1492,
+          "query_name": "seq-05/frame-000492.color.png",
+          "te_cm": 434.3964099884033
+        },
+        {
+          "ae_deg": 64.2372051439179,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 105,
+          "query_index": 1493,
+          "query_name": "seq-05/frame-000493.color.png",
+          "te_cm": 376.97417736053467
+        },
+        {
+          "ae_deg": 59.9516029491934,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1494,
+          "query_name": "seq-05/frame-000494.color.png",
+          "te_cm": 404.55875396728516
+        },
+        {
+          "ae_deg": 46.96117054409777,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 107,
+          "query_index": 1495,
+          "query_name": "seq-05/frame-000495.color.png",
+          "te_cm": 536.2395286560059
+        },
+        {
+          "ae_deg": 57.166603560404454,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 115,
+          "query_index": 1496,
+          "query_name": "seq-05/frame-000496.color.png",
+          "te_cm": 339.39013481140137
+        },
+        {
+          "ae_deg": 36.20605073357763,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 93,
+          "query_index": 1497,
+          "query_name": "seq-05/frame-000497.color.png",
+          "te_cm": 485.34865379333496
+        },
+        {
+          "ae_deg": 58.79289550744659,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 118,
+          "query_index": 1498,
+          "query_name": "seq-05/frame-000498.color.png",
+          "te_cm": 354.9370050430298
+        },
+        {
+          "ae_deg": 58.98791106862879,
+          "clean_inliers": 0,
+          "correspondences": 4096,
+          "hypotheses": 100000,
+          "inliers": 103,
+          "query_index": 1499,
+          "query_name": "seq-05/frame-000499.color.png",
+          "te_cm": 370.1282501220703
+        }
+      ],
+      "summary": {
+        "catastrophic_100cm_count": 158,
+        "cvar95_te_cm": 643.2839660644531,
+        "mean_ae_deg": 14.9874327582229,
+        "mean_candidate_correspondences": 4096.0,
+        "mean_clean_inliers": 192.498,
+        "mean_hypotheses": 62599.85,
+        "mean_inliers": 534.152,
+        "mean_te_cm": 121.14974806666142,
+        "median_ae_deg": 1.1698831786936879,
+        "median_te_cm": 60.667404532432556,
+        "p90_ae_deg": 51.13685962715113,
+        "p90_te_cm": 315.5368161201477,
+        "query_count": 500,
+        "recall_5cm_5deg_percent": 42.6
+      },
+      "topk": 4
+    }
+  ],
+  "one_poselib_call_per_query": true,
+  "schema": "lafgs_rendered_track_topk_pnp_mapping_crossfit",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "lafgs_7scenes_gaussian_prior_audit",
+  "version": 1,
+  "audit_date": "2026-08-15",
+  "scope": {
+    "uses_test_queries": false,
+    "reads_mapping_rgb": true,
+    "purpose": "audit existing Gaussian-prior construction and quality; no model selection"
+  },
+  "official_sparse_input": {
+    "points3d_policy": "reference_points_deliberately_excluded",
+    "example_path": "/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1/chess/sparse/0/points3D.txt",
+    "example_size_bytes": 42,
+    "example_sha256": "294275d3a437ab784e31ed587f78231a677799f0dff8cbb1fe4e92ee645c0576"
+  },
+  "construction": {
+    "input": "mapping RGB plus published mapping poses and intrinsics",
+    "sparse_geometry": "known-pose RGB feature matching and ray triangulation",
+    "gaussian_training": "vanilla 2DGS for 30000 iterations",
+    "test_images_present": false,
+    "downstream_render_track_route_uses_source_mapping_rgb": false,
+    "upstream_prior_creation_uses_source_mapping_rgb": true
+  },
+  "v1_unrectified": {
+    "root": "/mnt/pool/sqy/datasets/7Scenes_pgt_lafgs_v1",
+    "camera_policy": "legacy normalized camera import without calibrated image undistortion",
+    "scenes": {
+      "chess": {"mapping_images": 4000, "verified_pairs": 38977, "points": 186682, "observations": 4360515, "reprojection_median_px": 0.8678225532479754, "reprojection_p90_px": 1.857788464078508, "track_length_mean": 23.35798309424583, "sfm_manifest_sha256": "29a366afb9c889691148da4016a2f5d5130b25a40833568e0c09dd4b11463cd2", "gaussian_primitives": 511062, "train_l1": 0.027056045830249786, "train_psnr": 27.89586563110352},
+      "fire": {"mapping_images": 2000, "verified_pairs": 18977, "points": 199969, "observations": 3701384, "reprojection_median_px": 0.5159703213708333, "reprojection_p90_px": 1.4055173816656066, "track_length_mean": 18.50978901729768, "sfm_manifest_sha256": "829517792b4544f3c5713451a2f9aeb9a6169b671031553ce97bdd2d1e235847", "gaussian_primitives": 468022, "train_l1": 0.025723958015441896, "train_psnr": 27.588753509521485},
+      "heads": {"mapping_images": 1000, "verified_pairs": 8977, "points": 43926, "observations": 578382, "reprojection_median_px": 0.703923569523446, "reprojection_p90_px": 1.7443557849421836, "track_length_mean": 13.167190274552656, "sfm_manifest_sha256": "4bd6edbe7e9fac6b64057df6bee31e4ebf37de2a38062d63be33b07c4a952445", "gaussian_primitives": 530183, "train_l1": 0.019631117396056653, "train_psnr": 29.595531463623047},
+      "office": {"mapping_images": 6000, "verified_pairs": 58977, "points": 207192, "observations": 3771426, "reprojection_median_px": 0.8638230903584813, "reprojection_p90_px": 1.786874680602595, "track_length_mean": 18.202565736128808, "sfm_manifest_sha256": "a9c6f528fc34c1621a570a136bcb162c04ef4e3df95f43e64c4eaa23124bafb3", "gaussian_primitives": 626534, "train_l1": 0.0306713055819273, "train_psnr": 27.36589164733887},
+      "pumpkin": {"mapping_images": 4000, "verified_pairs": 38977, "points": 90933, "observations": 2491177, "reprojection_median_px": 0.9208906353472445, "reprojection_p90_px": 1.918428469320268, "track_length_mean": 27.39574191987507, "sfm_manifest_sha256": "e661b62c3fdb8f9ad228be54b83f68286225c51ac6bdaceba38b1502d31508b2", "gaussian_primitives": 315948, "train_l1": 0.02403991110622883, "train_psnr": 28.269192123413088},
+      "redkitchen": {"mapping_images": 7000, "verified_pairs": 68977, "points": 371485, "observations": 6875699, "reprojection_median_px": 0.783570448818304, "reprojection_p90_px": 1.7257481281714242, "track_length_mean": 18.508685411254827, "sfm_manifest_sha256": "2f83882da10ed525a9c31d939ceda2fed46fba98b614e03d815d66b326741de8", "gaussian_primitives": 687211, "train_l1": 0.04769340977072716, "train_psnr": 21.896224594116212},
+      "stairs": {"mapping_images": 2000, "verified_pairs": 18977, "points": 59070, "observations": 1002818, "reprojection_median_px": 1.0625897530825221, "reprojection_p90_px": 2.102609992022345, "track_length_mean": 16.97677331979008, "sfm_manifest_sha256": "809b725022f88daf62bb1ca5c636e67845111d6c890ec9793a5434a8c3832066", "gaussian_primitives": 350765, "train_l1": 0.023930134251713753, "train_psnr": 29.103966903686526}
+    }
+  },
+  "v4_rectified": {
+    "root": "/mnt/pool/sqy/datasets/7Scenes_pgt_undistorted_v4",
+    "camera_policy": "calibrated undistortion to same-resolution PINHOLE with a shared valid mask",
+    "available_scenes": ["fire", "stairs"],
+    "scenes": {
+      "fire": {"mapping_images": 2000, "verified_pairs": 18977, "points": 212129, "observations": 4237868, "reprojection_median_px": 0.45302524306246267, "reprojection_p90_px": 1.3049693067374588, "track_length_mean": 19.977787101244996, "sfm_manifest_sha256": "35b66b30d79f5d5ca2d5999448a669aaf618e65758a2e88ccba2f03db25209a4", "gaussian_primitives": 417249, "train_l1": 0.02427431643009186, "train_psnr": 28.27578277587891},
+      "stairs": {"mapping_images": 2000, "verified_pairs": 18977, "points": 55660, "observations": 975591, "reprojection_median_px": 1.045661722164202, "reprojection_p90_px": 2.1282277237059857, "track_length_mean": 17.527685950413222, "sfm_manifest_sha256": "d6131f20e17afa3a145ba1095952868098c60c37ed4b49992e5bdaac234ab84d", "gaussian_primitives": 319972, "train_l1": 0.022540808655321598, "train_psnr": 29.774109649658204}
+    }
+  },
+  "findings": [
+    "7Scenes does not supply a usable SfM point cloud to this pipeline; the prepared reference points are deliberately empty.",
+    "The prior nevertheless has real triangulated geometry because the pipeline reconstructs it from mapping RGB at fixed published poses.",
+    "High mapping-view PSNR does not certify geometry: Stairs has the best v1 appearance score but the worst v1 reprojection statistics and strong repeated structure.",
+    "Only Fire and Stairs have the rectified v4 prior; the other five scenes retain a camera-model disadvantage.",
+    "The source-image-free claim applies downstream of the trained Gaussian prior, not to construction of the prior itself."
+  ],
+  "recommended_actions": [
+    "Rebuild chess, heads, office, pumpkin, and redkitchen with the v4 rectified PINHOLE preparation.",
+    "Add a mapping-only held-out-trajectory render audit with RGB, depth consistency, reprojection, and valid-mask coverage; do not use test queries for construction or tuning.",
+    "Keep geometry evidence and appearance evidence separate; do not use train PSNR as a geometry gate.",
+    "Retain semantic-mask absence and 2DGS-specific distortion as explicit limitations when claiming arbitrary-prior compatibility."
+  ]
+}

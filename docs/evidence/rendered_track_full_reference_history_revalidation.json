@@ -1,0 +1,269 @@
+{
+  "schema": "lafgs_rendered_track_full_reference_history_revalidation",
+  "version": 1,
+  "decision": "KEEP_FULL_REFERENCE_V14_STOP_RECENT_ENHANCEMENT_FAMILY",
+  "branch": "codex/render-track-artifact-r1",
+  "producer_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+  "experiment_root": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs",
+  "protocol": {
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries_for_construction_selection_training_or_calibration": false,
+    "test_use": "frozen_final_evaluation_only",
+    "test_seeds": [2026, 2027, 2028],
+    "parameter_or_threshold_scan": false,
+    "creates_new_scientific_gate": false,
+    "formal_final_stderr_empty": true,
+    "formal_final_exit_status_zero": true
+  },
+  "twelve_scenes_audit": {
+    "root": "/mnt/pool/sqy/12scenes",
+    "layout_sha256": "a55b8b04bbdd89bd0211842df1b94a534b1afee5074753bf12e084c0d426c922",
+    "archive": "/mnt/pool/sqy/datasets/reference_models_official/12scenes_reference_models.zip",
+    "archive_sha256": "be40309b7e3ee5b8c0a663ddef08a3c304996578c70ff029d1549b07264c6043",
+    "archive_integrity_test_passed": true,
+    "top_level_containers": ["apt1", "apt2", "office1", "office2"],
+    "scene_count": 12,
+    "mapping_image_count": 16989,
+    "test_image_count": 5782,
+    "all_published_sfm_gt_colmap_and_test_list_files_nonempty": true,
+    "all_prepared_full_reference_manifests_exist": true,
+    "scenes": {
+      "apt1/kitchen": {"mapping": 744, "test": 357, "reference_points": 104486},
+      "apt1/living": {"mapping": 1035, "test": 493, "reference_points": 119868},
+      "apt2/bed": {"mapping": 890, "test": 244, "reference_points": 170537},
+      "apt2/kitchen": {"mapping": 782, "test": 230, "reference_points": 119325},
+      "apt2/living": {"mapping": 731, "test": 359, "reference_points": 121284},
+      "apt2/luke": {"mapping": 1370, "test": 624, "reference_points": 140385},
+      "office1/gates362": {"mapping": 3540, "test": 386, "reference_points": 418626},
+      "office1/gates381": {"mapping": 2950, "test": 1053, "reference_points": 470507},
+      "office1/lounge": {"mapping": 933, "test": 327, "reference_points": 120366},
+      "office1/manolis": {"mapping": 1623, "test": 807, "reference_points": 272973},
+      "office2/5a": {"mapping": 1000, "test": 497, "reference_points": 201753},
+      "office2/5b": {"mapping": 1391, "test": 405, "reference_points": 580447}
+    },
+    "conclusion": "complete_nested_12_scene_dataset_not_four_scenes"
+  },
+  "stairs_prior": {
+    "dataset": "/mnt/pool/sqy/datasets/7Scenes_pgt_full_reference_v5/stairs",
+    "gaussian_ply": "/mnt/pool/sqy/indoor_priors_pgt_full_reference_v5/7Scenes/stairs/vanilla_2dgs_v1/point_cloud/iteration_30000/point_cloud.ply",
+    "gaussian_ply_sha256": "467a397aa89d8f05c79212f36e61d28bd2fe267a3531b8c8ac1a75e53537c964",
+    "reference_initial_points": 131766,
+    "final_gaussians": 321622,
+    "mapping_queries": 2000,
+    "test_queries": 1000,
+    "support_repaired_broad_tracks": 15210,
+    "selected_v14_tracks": 5702
+  },
+  "baseline": {
+    "mapping_report": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+    "mapping_report_sha256": "a4a70c83adb4a60626cf9a8c945437d1d8f846dacb2b7f5b4cdf6febd45d54d3",
+    "mapping_statistics_sha256": "84809eda76ed6a6422df67072335085b0233bc164bb8b323ffecb59dd02439d9",
+    "mapping": {
+      "median_te_cm": 0.3636954119428992,
+      "mean_te_cm": 3.6778970594798013,
+      "p90_te_cm": 0.9279615804553039,
+      "cvar95_te_cm": 65.74373936187476,
+      "mean_ae_deg": 0.7073971540446893,
+      "recall_5cm_5deg_percent": 98.55000000000001,
+      "raw_gt_precision_percent": 6.3263671875,
+      "inlier_gt_precision_percent": 33.771214392455974,
+      "catastrophic_100cm_count": 13
+    },
+    "test_three_seed_mean": {
+      "median_te_cm": 2.144421016176542,
+      "mean_te_cm": 7.192658374117067,
+      "p90_te_cm": 6.560104439655942,
+      "mean_ae_deg": 1.6217124967346372,
+      "recall_2cm_2deg_percent": 46.96666666666666,
+      "recall_5cm_5deg_percent": 85.1,
+      "raw_gt_precision_2px_percent": 2.98681640625,
+      "inlier_gt_precision_2px_percent": 21.98539763220901,
+      "catastrophic_100cm_count": 9.666666666666666
+    },
+    "test_summary_sha256": {
+      "2026": "be6f0bb5c8e42f0a5cc395aaa61bdcdc3f1df510aa1a8fa3250f70e45b71f704",
+      "2027": "34ec3989dbaf705c6eb7134ff2db619de9281468365d7e403afa0c631add9a58",
+      "2028": "4fb09c19d626de1a3b76fac8ed3025532db50ba307237738e0de5141f1fc5f15"
+    }
+  },
+  "c2_budget_attribution": {
+    "method_role": "mapping_only_budget_attribution_not_deployable",
+    "anchor_count": 4256,
+    "map_sha256": "a828bc8fb25d10459a8d9f9822b72b8e9f862afebc363ea63cd27aac60840cfe",
+    "metric_sha256": "1bd5c2d05dffc716a74075c6a0259c61e09258f32cc9b9f1e3ac0e7a6f9bce08",
+    "materialization_report_sha256": "d027815a7b75d18d18be795dae64ef333cfde50d4103685b051bed1c75e70453",
+    "mapping_report_sha256": "61c248a00de7b7edb2e51a7a1174d1b3ea1a120343c35391937d7f58818d2004",
+    "mapping_statistics_sha256": "33e59fc22dd6fd283a5da4787fddb1e9c1f547d8729d791f548999b72e1d0bf3",
+    "mapping": {
+      "median_te_cm": 0.35753422416746616,
+      "mean_te_cm": 4.441959447269255,
+      "p90_te_cm": 0.8760995231568814,
+      "cvar95_te_cm": 81.2725702887401,
+      "recall_5cm_5deg_percent": 98.15,
+      "raw_gt_precision_percent": 6.26103515625,
+      "catastrophic_100cm_count": 13
+    },
+    "conclusion": "central_quantiles_improve_but_tail_recall_and_precision_regress"
+  },
+  "r1_scalar_artifact_weight": {
+    "materialization_report_sha256": "983f2a35084d3d12b476981b68c417eac66d87d4f202e99210a212bb5dc37153",
+    "map_sha256": "ede561aea6f53f3add3df3903e1c5872910f8e6e33809ebb665dde143197e413",
+    "metric_sha256": "3d19a18c559ef38f1f5aae254d0515d0ac81cf8a67b5711c5508135364e7be55",
+    "calibration_sha256": "557a28b269df019c3d6f2677a51198296f98d785d91e7905c28274a81cdec076",
+    "artifact_reliability_mean": 0.6180285811424255,
+    "mapping_report_sha256": "bb5bd806ccca70e422ef3fd1bf8423069053e86ad3e443657bc36693a08f2b43",
+    "mapping_statistics_sha256": "feab10e6184536d047a7951419152994093182f1a0f0a24402b5358d7846f456",
+    "mapping": {
+      "median_te_cm": 0.36890842020511627,
+      "mean_te_cm": 4.182104422178964,
+      "p90_te_cm": 0.9296810906380422,
+      "cvar95_te_cm": 75.78443301282823,
+      "recall_5cm_5deg_percent": 98.5,
+      "raw_gt_precision_percent": 6.265478515625,
+      "catastrophic_100cm_count": 13
+    },
+    "test_three_seed_mean": {
+      "median_te_cm": 2.1140773159762225,
+      "mean_te_cm": 7.643949219328351,
+      "p90_te_cm": 6.520611395438513,
+      "mean_ae_deg": 1.7574413076369613,
+      "recall_2cm_2deg_percent": 47.166666666666664,
+      "recall_5cm_5deg_percent": 85.23333333333333,
+      "raw_gt_precision_2px_percent": 2.9416015625,
+      "inlier_gt_precision_2px_percent": 21.662605638961338,
+      "catastrophic_100cm_count": 11.0
+    },
+    "test_summary_sha256": {
+      "2026": "3c45a9fae41caec0b12a0f15dc717dc9001dfb6ec69940bdeab6478ac568d93d",
+      "2027": "7be8e601d761314fce72f65568620bc9d44a07fa0e7e94100bceca8a176298bf",
+      "2028": "55a782f215add1e1aaa670cc995abf2f50f4bb3fd07f40b52edcaaaa0a1f43bb"
+    },
+    "conclusion": "shopfacade_specific_signal_does_not_transfer_to_rebuilt_stairs"
+  },
+  "conditional_artifact_fusion": {
+    "selected_tracks": 5702,
+    "selected_observations": 413615,
+    "trimmed_observations": 47818,
+    "trimmed_fraction": 0.11560992710612526,
+    "changed_tracks": 4434,
+    "materialization_report_sha256": "badb3fa851b4ad01baa127d64d43670fec461d2858eeee2157eccff73bd9eafb",
+    "map_sha256": "fd10d6abc56e90cde0803b147d0142223d9b03115fd0d854ff72ed8a9f1f0e5b",
+    "metric_sha256": "4a3bd2432aa0bc8e8eb479f5d096d1f0aa8c6c9e40be56d6ab6ade6617e0dd3c",
+    "calibration_sha256": "616e2343d29569d14e3dfa2c02522a18a0eb1775149f3dd04f4fcfef2f8c84cf",
+    "mapping_report_sha256": "94b7146be4d8f5c69190e5a96586ad3e44f0a1f4f98cf2faa008fc661aa270d3",
+    "mapping_statistics_sha256": "73ff807b0c66ae344269cf2656cfc880b88a4f707069fdaa093e1f2c4dda194a",
+    "mapping": {
+      "median_te_cm": 0.3617158392444253,
+      "mean_te_cm": 3.8509535946439426,
+      "p90_te_cm": 0.9005028381943703,
+      "cvar95_te_cm": 69.29574271664023,
+      "recall_5cm_5deg_percent": 98.5,
+      "raw_gt_precision_percent": 6.333203125,
+      "catastrophic_100cm_count": 13
+    },
+    "test_three_seed_mean": {
+      "median_te_cm": 2.131321063886086,
+      "mean_te_cm": 7.4724036970525045,
+      "p90_te_cm": 6.5342964231967935,
+      "mean_ae_deg": 1.675143809380483,
+      "recall_2cm_2deg_percent": 46.666666666666664,
+      "recall_5cm_5deg_percent": 84.93333333333334,
+      "raw_gt_precision_2px_percent": 2.9724609375,
+      "inlier_gt_precision_2px_percent": 21.939749858100402,
+      "catastrophic_100cm_count": 9.333333333333334
+    },
+    "test_summary_sha256": {
+      "2026": "822c837ae7fe4dc1c838d4372ca85d9a785994b17584db78a9f4cb16b06b7b17",
+      "2027": "3553016c61815da4d82bd0d636d2fc02079fcb8e44394b556392153ca3066bf1",
+      "2028": "c4ec898aabea606afdec1574790ed59a71affce3c57f42885c2d56d75c9322a8"
+    },
+    "conclusion": "safer_than_scalar_weighting_but_not_an_aggregate_pose_improvement"
+  },
+  "loo_aware_a1": {
+    "steps": 175,
+    "rank": 16,
+    "maximum_residual_norm": 0.05,
+    "crossfit": false,
+    "leave_current_query_observation_out": true,
+    "training_report_sha256": "b44d4e1eb33e423ba91e04889b15feb60ddacd338d135de5abda947af4058356",
+    "map_sha256": "fa2fdeec3c1a40162227da8c4dc17f7ee1ef9c3e50307c68c214b7c03d9c7e42",
+    "metric_sha256": "708c910db015a28e514e0118efa9014d971566442b351ea6662dd73cb0f3534c",
+    "mapping_report_sha256": "2dc97e531b2ee114d1ec3877e72eaf27311d3e6c67f59d15159c5f922f955f45",
+    "mapping_statistics_sha256": "abb3099fd70560eee71a423802c9e6f1244131808f4d13fb316b6c66981a0d25",
+    "mapping": {
+      "median_te_cm": 0.36427711602300406,
+      "mean_te_cm": 4.044149723048759,
+      "p90_te_cm": 0.9124846104532487,
+      "cvar95_te_cm": 73.1490706782788,
+      "recall_5cm_5deg_percent": 98.5,
+      "raw_gt_precision_percent": 6.3376953125,
+      "catastrophic_100cm_count": 13
+    },
+    "test_three_seed_mean": {
+      "median_te_cm": 2.1190443386634192,
+      "mean_te_cm": 7.615451900612485,
+      "p90_te_cm": 6.5442389249801645,
+      "mean_ae_deg": 1.7025275577586312,
+      "recall_2cm_2deg_percent": 46.93333333333333,
+      "recall_5cm_5deg_percent": 84.6,
+      "raw_gt_precision_2px_percent": 2.97373046875,
+      "inlier_gt_precision_2px_percent": 21.937288329285135,
+      "catastrophic_100cm_count": 10.333333333333334
+    },
+    "test_summary_sha256": {
+      "2026": "54c326346f84ccf8e93e075553d72c0cc0073697277eef2fb70767007db5971e",
+      "2027": "be9f65dcb2bc821581b6fe1c23a4422514161936b093bdc515c5e2564981dd4b",
+      "2028": "93f5e8c024386e2b987b2e12f91e2e7ca4e76c4259287eb10a1420b081b52de9"
+    },
+    "conclusion": "small_ranking_signal_does_not_suppress_coherent_false_pose_tail"
+  },
+  "full_broad_track_oracle": {
+    "method_role": "mapping_only_oracle_not_a_gate_not_deployable",
+    "selected_anchor_count": 5702,
+    "oracle_anchor_count": 15210,
+    "added_anchor_count": 9508,
+    "oracle_map_sha256": "81be8132b35e6828b126fb7d5ea975ff7e24231d087619370e883411ff247070",
+    "oracle_report_sha256": "a873394679130d4c417c775a8c63eb107f236394a26bbfe1a688fc05374f5020",
+    "conditional_map_sha256": "8beee94ce029e7a11b8a2a4a149bb088e54eedc21e84daf5005383e3a6574c82",
+    "teacher_sha256": "2dd883110f96bd36ecca2e9c765f7835e9e6bc198e5f01ffe18bdb6972a9c2ad",
+    "calibration_sha256": "531a0b6a1f2264e898fd617bc0e860acd2a68478a0a0938eca5c3adb96aa9988",
+    "mapping_report_sha256": "b7161f8774a3bb15a2e82063d8915d54f0a015b0e19732229f1d4aefaeaa4e4d",
+    "mapping_statistics_sha256": "7cbdeed0e21f2f9d9d0f4434eac2b6cb94de0f8b878f7c79f3405e4c580b4878",
+    "mapping": {
+      "median_te_cm": 0.39085426833480597,
+      "mean_te_cm": 3.9309087575198647,
+      "p90_te_cm": 1.080967914313078,
+      "cvar95_te_cm": 70.09589521586895,
+      "recall_5cm_5deg_percent": 97.05,
+      "raw_gt_precision_percent": 7.7037109375,
+      "inlier_gt_precision_percent": 33.15883335280494,
+      "catastrophic_100cm_count": 13
+    },
+    "conclusion": "more_apparently_good_matches_strengthen_wrong_geometric_consensus_not_pose"
+  },
+  "historical_interpretation": {
+    "old_stairs_prior_was_a_real_tail_limitation": true,
+    "prior_dependent_arms_replayed": [
+      "c2_budget_attribution",
+      "r1_scalar_artifact_weight",
+      "conditional_artifact_fusion",
+      "loo_aware_a1",
+      "full_broad_track_oracle"
+    ],
+    "results_that_remain_unchanged_by_prior": [
+      "p8_original_mapping_rgb_pair_selection",
+      "xfeat_original_mapping_rgb_detector_and_descriptor_gates"
+    ],
+    "shopfacade_artifact_signal_is_valid_but_scene_dependent": true,
+    "simple_capacity_shortage_rejected_on_both_stairs_priors": true
+  },
+  "invalid_execution_audit": {
+    "scientific_results_contaminated": false,
+    "c2_teacher_count_mismatch_failed_before_output": true,
+    "c2_cpu_trial_terminated_without_result": true,
+    "r1_missing_ninja_and_libstdcxx_trials_failed_before_science": true,
+    "r1_cpu_trial_terminated_without_result": true,
+    "formal_replacements_all_exit_zero_and_empty_stderr": true
+  },
+  "overall_conclusion": "Adopt the full-reference prior and keep its V1.4 source-image-free map. Retain recent ShopFacade enhancements as ablations, but do not merge them into the default Stairs method. The remaining limitation is structured Track/pose consensus, not prior quality alone, scalar artifact weighting, bounded metric refresh, map budget, or candidate capacity."
+}

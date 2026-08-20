@@ -43,6 +43,55 @@ class AnchorAssignment:
 
 
 @torch.inference_mode()
+def global_view_mixture_topk(
+    query_descriptors: torch.Tensor,
+    anchor_prototypes: torch.Tensor,
+    prototype_priors: torch.Tensor,
+    *,
+    topk: int = 1,
+    temperature: float = 0.05,
+) -> TopKMatches:
+    """Match one or two prototypes while emitting one score per Anchor."""
+    query = F.normalize(torch.as_tensor(query_descriptors).float(), dim=1)
+    prototypes = torch.as_tensor(anchor_prototypes).float()
+    priors = torch.as_tensor(prototype_priors).float()
+    if prototypes.ndim != 3 or prototypes.shape[1] != 2:
+        raise ValueError("view-mixture prototypes must have shape [N,2,D]")
+    if priors.shape != prototypes.shape[:2]:
+        raise ValueError("view-mixture priors do not align")
+    if query.shape[1] != prototypes.shape[2]:
+        raise ValueError("query and prototype descriptor dimensions differ")
+    if bool((priors < 0).any()) or not torch.allclose(
+        priors.sum(dim=1), torch.ones(priors.shape[0], device=priors.device)
+    ):
+        raise ValueError("each Anchor prototype prior must sum to one")
+    if float(temperature) <= 0:
+        raise ValueError("mixture temperature must be positive")
+    count = int(prototypes.shape[0])
+    topk = int(topk)
+    if topk < 1 or topk > count:
+        raise ValueError("top-K must be between one and the Anchor count")
+    normalized = F.normalize(prototypes, dim=2)
+    prototype_scores = (
+        query @ normalized.reshape(-1, prototypes.shape[2]).T
+    ).reshape(query.shape[0], count, 2)
+    log_prior = torch.where(
+        priors > 0, priors.log(), torch.full_like(priors, -torch.inf)
+    )
+    scores = float(temperature) * torch.logsumexp(
+        prototype_scores / float(temperature) + log_prior[None], dim=2
+    )
+    single = priors[:, 1] == 0
+    scores[:, single] = prototype_scores[:, single, 0]
+    best_scores, best_indices = torch.topk(scores, k=topk, dim=1)
+    return TopKMatches(
+        keypoint_indices=torch.arange(query.shape[0], device=query.device),
+        anchor_indices=best_indices,
+        scores=best_scores,
+    )
+
+
+@torch.inference_mode()
 def suppress_duplicate_anchor_matches(matches: Top1Matches) -> Top1Matches:
     """Keep the highest-scoring query correspondence for each anchor.
 

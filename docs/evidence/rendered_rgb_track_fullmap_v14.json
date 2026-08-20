@@ -1,0 +1,172 @@
+{
+  "schema": "lafgs_rendered_rgb_track_fullmap_v14_evidence",
+  "version": 1,
+  "decision": "PROMOTE_AS_SOURCE_IMAGE_FREE_R0_BASELINE",
+  "authorizes_shared_default": false,
+  "authorizes_test_driven_selection": false,
+  "implementation_commit": "a2d4caed3ddd995d40fc2130c232f424933f924e",
+  "formal_protocol": {
+    "uses_crossfit": false,
+    "construction_uses_all_mapping_observations": true,
+    "feedback_uses_all_mapping_queries": true,
+    "query_descriptor_excluded_from_affected_track_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true,
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries_for_construction_selection_or_calibration": false,
+    "test_use": "final_frozen_evaluation_only",
+    "deployment": "SuperPoint -> one global top-1 -> one PoseLib",
+    "selector": "full repaired-child universe with parent/sibling-aware sufficiency selection",
+    "metric": "identity"
+  },
+  "scenes": {
+    "shopfacade": {
+      "anchor_count": 5788,
+      "artifacts": {
+        "training_materialization": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_training_materialization.json",
+          "sha256": "404011b5876a63fe5f96904e3a82bd5cf3667a63e5cc349cbcd907a6da73f413"
+        },
+        "map": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_training_map.pt",
+          "sha256": "059c32697358ca884a1b16749d56e89f797410314a677f4778487c79b2db6ab7"
+        },
+        "teacher": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_training/rendered_track_positive_teacher.pt",
+          "sha256": "0521f32340cca3160bd68a9c390ceb0cfb1dd3b59e906f23f15a0c4c24ae95c8"
+        },
+        "metric": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/selector_identity_metric.pt",
+          "sha256": "c3a9813cca49466ef62c3ab0a9fec8f5aff67dd6f8ffd23ec879567b11680705"
+        },
+        "mapping_loo_report": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+          "sha256": "cf7f6d5090119648a96136d7fd890482271945d8beac19a98c864f8aeb169723"
+        },
+        "mapping_loo_statistics": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_statistics.pt",
+          "sha256": "db876773b515714355330c642791a8c7a67488c1f2624fff49da0f7d17edc5c2"
+        }
+      },
+      "mapping_loo": {
+        "query_count": 231,
+        "affected_anchor_updates": 168948,
+        "median_te_cm": 0.3415970364585519,
+        "mean_te_cm": 45.27172826149136,
+        "p90_te_cm": 0.7414080668240786,
+        "p95_te_cm": 1.0987203568220139,
+        "p99_te_cm": 2.2357404232025084,
+        "cvar95_te_cm": 864.8672269502034,
+        "recall_5cm_5deg_percent": 99.13419913419914,
+        "catastrophic_100cm_count": 2
+      },
+      "test": {
+        "seeds": [2026, 2027, 2028],
+        "summary_sha256": {
+          "2026": "88eaa66164052100926c78c736f24c4bfad4f802b3d7f2cacb031934e3d007d9",
+          "2027": "cdf95067852b21b70ab317467246d9bb7066364587fb4322fac32b4cc9fa2b2f",
+          "2028": "4766b728633bcfc6e43ddb27ce8daae2900e0aa3369150ba50d1e0c5a31ba602"
+        },
+        "mean_over_seeds": {
+          "median_te_cm": 2.04359944909811,
+          "mean_te_cm": 4.732740534134933,
+          "p90_te_cm": 8.057233989238737,
+          "mean_ae_deg": 0.225348048969319,
+          "recall_2cm_2deg_percent": 49.51456310679612,
+          "recall_5cm_5deg_percent": 82.20064724919094,
+          "raw_gt_precision_2px_percent": 9.752234796882597,
+          "inlier_gt_precision_2px_percent": 43.42424163592316,
+          "catastrophic_100cm_count": 0.0
+        },
+        "delta_vs_v12_mean_over_seeds": {
+          "median_te_cm": -0.38995984941721,
+          "mean_te_cm": -1.196319915875671,
+          "p90_te_cm": -0.335324555635454,
+          "recall_2cm_2deg_percent": 8.73786407766991,
+          "recall_5cm_5deg_percent": 2.588996763754045,
+          "raw_gt_precision_2px_percent": 3.065895820195729,
+          "catastrophic_100cm_count": -1.0
+        }
+      }
+    },
+    "stairs": {
+      "anchor_count": 5811,
+      "artifacts": {
+        "training_materialization": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_materialization.json",
+          "sha256": "6ed5de6628b7795866baf620769dd989aa8cb4c45c2b228df0398b48c2b93bad"
+        },
+        "map": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_map.pt",
+          "sha256": "a20c5209b3e07fec4f0e0b09172cc082e9acd4e72cb0743383e86deb056c2ed6"
+        },
+        "teacher": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_positive_teacher.pt",
+          "sha256": "e12a3005c08f748af76ecb616a63b4255fb27a30677341246874567bc4b1dcfe"
+        },
+        "metric": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_identity_metric.pt",
+          "sha256": "e5a3a98a4c38686ac21318b33b9ffe39ceb481a3194d369afa702395925ad8b9"
+        },
+        "mapping_loo_report": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+          "sha256": "349167671ac79c388d9b4ba3a41ffac3166ff515eecffbaeff5ead0a84fd25bf"
+        },
+        "mapping_loo_statistics": {
+          "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_statistics.pt",
+          "sha256": "b80dc774420f92d8fe4a5d3505db11dd7c17679d5f589b42ecfb9509df8d99bd"
+        }
+      },
+      "mapping_loo": {
+        "query_count": 2000,
+        "affected_anchor_updates": 433140,
+        "median_te_cm": 0.3630831022746861,
+        "mean_te_cm": 6.102910034996603,
+        "p90_te_cm": 0.9597506001591686,
+        "p95_te_cm": 1.4992078393697734,
+        "p99_te_cm": 168.17954373359674,
+        "cvar95_te_cm": 114.27358741499484,
+        "recall_5cm_5deg_percent": 96.6,
+        "catastrophic_100cm_count": 22
+      },
+      "test": {
+        "seeds": [2026, 2027, 2028],
+        "summary_sha256": {
+          "2026": "c4f7ab2126dce5155a306ccde81eb01db0fe4247bbfd52a868b2b996af87b00c",
+          "2027": "05b471fe304b26927be87138b51d3ab31234b666f7342b7e3e5051ece1861707",
+          "2028": "3e6d7dc580183491ce610a74c6a37edef1432967869111cba51d9f36baa3d47f"
+        },
+        "mean_over_seeds": {
+          "median_te_cm": 2.273011611153682,
+          "mean_te_cm": 10.92629123449442,
+          "p90_te_cm": 9.334736913442627,
+          "mean_ae_deg": 3.141500381996567,
+          "recall_2cm_2deg_percent": 42.8,
+          "recall_5cm_5deg_percent": 82.96666666666667,
+          "raw_gt_precision_2px_percent": 2.953515625,
+          "inlier_gt_precision_2px_percent": 20.987688357713475,
+          "catastrophic_100cm_count": 15.666666666666666
+        },
+        "delta_vs_v12_mean_over_seeds": {
+          "median_te_cm": -0.185450259595475,
+          "mean_te_cm": -1.503330979531164,
+          "p90_te_cm": -7.271348635355692,
+          "recall_2cm_2deg_percent": 3.56666666666667,
+          "recall_5cm_5deg_percent": 4.36666666666667,
+          "raw_gt_precision_2px_percent": 0.1970703125,
+          "catastrophic_100cm_count": -9.0
+        }
+      }
+    }
+  },
+  "conclusion": {
+    "r0_result": "positive_on_both_scenes_vs_v12",
+    "shared_default": "not_promoted_because_stairs_tail_remains_far_behind_mixed_mainline",
+    "next_factor": "raw_clean_render_artifact_stability",
+    "stopped_directions": [
+      "formal_crossfit",
+      "fixed_max_child_map",
+      "old_self_matched_A1",
+      "test_driven_parameter_selection"
+    ]
+  }
+}

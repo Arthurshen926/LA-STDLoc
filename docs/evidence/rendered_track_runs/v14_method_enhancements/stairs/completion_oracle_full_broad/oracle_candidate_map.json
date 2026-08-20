@@ -1,0 +1,34 @@
+{
+  "added_anchor_count": 9261,
+  "control_catastrophic_count": 21,
+  "control_task_failure_count": 66,
+  "dependency_group_count": 9707,
+  "dependency_voxel_size": 0.04892896974666561,
+  "input_sha256": {
+    "candidate_map": "ef0863bf71e976d5a980d032f826d80fe06fb3f938828e0956e8408108beb022",
+    "mapping_statistics": "0e0d9ca4ab7149d613f21188be8caa753126064d76028812b26ef81c1d93b61e",
+    "selected_map": "16369d3f7f76d88693c4b8bdba054c36d6a4ec394e87c7e2aeafac6b4ffecbf2"
+  },
+  "inputs": {
+    "candidate_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_candidate_map.pt",
+    "mapping_statistics": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/stairs/fusion_v1/mapping_loo_seed2026/full_mapping_loo_statistics.pt",
+    "selected_map": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/stairs/fusion_v1/conditional_fusion_anchor_map.pt"
+  },
+  "method_role": "mapping_only_oracle_not_a_gate_not_deployable",
+  "oracle_anchor_count": 15072,
+  "output": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/stairs/completion_oracle_full_broad/oracle_candidate_map.pt",
+  "output_sha256": "07c358058da869e691059e1dcc88cc37b00bfbc7e78b85a74bb687810380817a",
+  "producer_identity": {
+    "git_commit": "c96de1cee5c7d642eb2141cabd6e553a833c5bcb",
+    "source_sha256": {
+      "scripts/materialize_rendered_track_completion_oracle.py": "1acc5210f543dc8f123814a514b3770b7291aec6f6768958e3a7b56e748bf121"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_completion_upper_bound",
+  "selected_anchor_count": 5811,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

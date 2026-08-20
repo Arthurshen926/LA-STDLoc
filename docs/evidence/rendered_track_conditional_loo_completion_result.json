@@ -1,0 +1,177 @@
+{
+  "schema": "lafgs_rendered_track_method_enhancement_result",
+  "version": 1,
+  "method_role": "bounded_method_enhancement_audit_not_a_gate",
+  "decision": "KEEP_V14_SOURCE_IMAGE_FREE_BASELINE",
+  "branch": "codex/render-track-artifact-r1",
+  "baseline": "rendered_track_fullmap_v14",
+  "protocol": {
+    "uses_source_mapping_rgb": false,
+    "mapping_construction_uses_test_queries": false,
+    "parameter_or_threshold_scan": false,
+    "conditional_test_evaluation": "one frozen three-seed evaluation after mapping-only inspection",
+    "loo_a1_test_evaluation": false,
+    "completion_oracle_test_evaluation": false,
+    "creates_new_scientific_gate": false
+  },
+  "conditional_artifact_aware_fusion": {
+    "rule": "trim only observations that are jointly low-artifact-reliability and descriptor-outliers, while protecting identity-certified and unique view/sequence evidence",
+    "maximum_trim_fraction_per_track": 0.2,
+    "scenes": {
+      "shopfacade": {
+        "selected_tracks": 5788,
+        "changed_tracks": 2462,
+        "selected_observations": 168948,
+        "trimmed_observations": 7910,
+        "trimmed_fraction": 0.04681913961692355,
+        "materialization_report_sha256": "1d6a0ecfbbcf3cb234161ea1ca28390c385bd605c4056c42df248a09cb76ffab",
+        "mapping_report_sha256": "853466eb0d2cc8a6b10898c2b8d76a988c82af71e5841a43cbeeb100c0802a8c",
+        "mapping": {
+          "median_te_cm": 0.33546003978699446,
+          "mean_te_cm": 26.01951443815999,
+          "p90_te_cm": 0.7420596200972795,
+          "p95_te_cm": 1.0471265763044357,
+          "cvar95_te_cm": 494.358166338255,
+          "recall_5cm_percent": 99.13419913419914,
+          "catastrophic_100cm_count": 2,
+          "raw_match_precision_percent": 24.976957940843214
+        },
+        "test_three_seed_mean": {
+          "median_te_cm": 2.0604554563760757,
+          "mean_te_cm": 4.721948176827342,
+          "p90_te_cm": 7.431151568889615,
+          "mean_ae_deg": 0.22464121402112935,
+          "recall_2cm_percent": 49.51456310679612,
+          "recall_5cm_percent": 83.1715210355987,
+          "raw_match_precision_percent": 9.739237593688173,
+          "catastrophic_100cm_count": 0.0
+        },
+        "test_summary_sha256_by_seed": {
+          "2026": "23a9ba4da750949f1840262b5e4aed05ae72701830df36ed59268b303166a84e",
+          "2027": "a9aca2049c086bedb2905847bcf84e4032afe96c8a3e3162011664ec4929ad27",
+          "2028": "fe8766ce680c7beec66b8dc1520130dd3be2e370c079854cbb4b65ca55febebb"
+        }
+      },
+      "stairs": {
+        "selected_tracks": 5811,
+        "changed_tracks": 4425,
+        "selected_observations": 433140,
+        "trimmed_observations": 48226,
+        "trimmed_fraction": 0.11134044419818073,
+        "materialization_report_sha256": "d1cedd9425ed8a93caaf808f2d70b4eddc1329c1e34dff222a6498fb89258b37",
+        "mapping_report_sha256": "055c70fb3ffd14451cd392f5c37c280f9a2f1764064a15aa3c9762c14dab06eb",
+        "mapping": {
+          "median_te_cm": 0.3618951770476997,
+          "mean_te_cm": 7.355346520493185,
+          "p90_te_cm": 0.9637764096260077,
+          "p95_te_cm": 1.4936077734455464,
+          "cvar95_te_cm": 139.32923726923764,
+          "recall_5cm_percent": 96.7,
+          "catastrophic_100cm_count": 21,
+          "raw_match_precision_percent": 7.277490234375
+        },
+        "test_three_seed_mean": {
+          "median_te_cm": 2.3039951299627623,
+          "mean_te_cm": 11.077522425943364,
+          "p90_te_cm": 14.980486109852803,
+          "mean_ae_deg": 3.238449929979494,
+          "recall_2cm_percent": 42.93333333333334,
+          "recall_5cm_percent": 82.23333333333333,
+          "raw_match_precision_percent": 2.93828125,
+          "catastrophic_100cm_count": 14.666666666666666
+        },
+        "test_summary_sha256_by_seed": {
+          "2026": "620854067e3f3098dc8a3ae3be68a1e217b734a88d3af4aba81bb56662fb90e7",
+          "2027": "8dffc2ff26b6ae0ddd79cbfc0f4f73f7fed9edab1b48497440ed13459cd776bd",
+          "2028": "db6d4f40edfab630ed5eaadd41fb5f0f9f68b53f0031addaa11f12725819689a"
+        }
+      }
+    },
+    "conclusion": "Not cross-scene safe: ShopFacade tail and 5cm recall improve, but Stairs mean, P90, angle, 5cm recall, and precision regress. Do not replace V1.4."
+  },
+  "loo_aware_a1": {
+    "configuration": {
+      "formal_method_uses_crossfit": false,
+      "steps": 175,
+      "rank": 16,
+      "maximum_residual_norm": 0.05,
+      "query_observation_excluded_from_affected_track_bank": true
+    },
+    "scenes": {
+      "shopfacade": {
+        "map_sha256": "3d8424031b503525be8cca2f3a15cf02710e81fbcb2a8233e71a4e2d5baa8e50",
+        "metric_sha256": "e814684a36804ae613aaf8d18e1ab5f7f6e4594dce4cd2acbce15f64297c25ea",
+        "training_report_sha256": "a96ae9a6f706ff8224133874a9a73f3aea68936bd1774ef9efeecdc4347b5e1f",
+        "mapping_report_sha256": "14ccd2d18088d33a9357e82e111ee48e3f9d20578996108beb35c877985be1c8",
+        "mapping": {
+          "median_te_cm": 0.3357923589646816,
+          "mean_te_cm": 26.01895600148992,
+          "p90_te_cm": 0.7544651627540588,
+          "cvar95_te_cm": 494.362043038321,
+          "recall_5cm_percent": 99.13419913419914,
+          "catastrophic_100cm_count": 2,
+          "raw_match_precision_percent": 24.9866821
+        }
+      },
+      "stairs": {
+        "map_sha256": "b00c89f64c88cff381afd6456751e409c89fa8623650a6cd5b62e9a9772be746",
+        "metric_sha256": "5d0f46435e5d1b02675386bc7667508c6ece3cb90ea68c21d78e066411fc5ee1",
+        "training_report_sha256": "99d37769e1defe0418f62063ffb72e75206b645c7429fdfd565c2d46cca033b1",
+        "mapping_report_sha256": "6e6ab3d9efac02dbbf148d3f3236d90e78b0312a3f094d9b8685fe488dad2ffc",
+        "mapping_statistics_sha256": "f5c8ad067086eacad51ebf676915b709d154d5066d025d744036df5596f531ab",
+        "mapping": {
+          "median_te_cm": 0.3632204025052488,
+          "mean_te_cm": 7.546358291162323,
+          "p90_te_cm": 0.960822068154812,
+          "cvar95_te_cm": 143.14683181978762,
+          "recall_5cm_percent": 96.75,
+          "catastrophic_100cm_count": 21,
+          "raw_match_precision_percent": 7.2798828125
+        }
+      }
+    },
+    "conclusion": "The learned residual metric is neutral on ShopFacade and degrades Stairs mean and CVaR while leaving catastrophic failures unchanged. No test evaluation and no longer training run are justified."
+  },
+  "full_broad_track_completion_oracle": {
+    "method_role": "mapping_only_oracle_not_a_gate_not_deployable",
+    "scenes": {
+      "shopfacade": {
+        "selected_anchor_count": 5788,
+        "oracle_anchor_count": 14753,
+        "oracle_map_sha256": "f5cf7aacfcb0a65a22c10a1ec73f93ed2c26f890a38e146c9092f878e42d8393",
+        "oracle_report_sha256": "ef0383c2bb828ec51cd97a7e21492d2d4d7a05c6d4766ddf9be70e03a31a415c",
+        "mapping_report_sha256": "6667ad6f2f688335584b1e5fe44fa9d0740a36073d930f2522d7de99c8c7d0f1",
+        "mapping": {
+          "median_te_cm": 0.25078647304326296,
+          "mean_te_cm": 15.14480738844914,
+          "p90_te_cm": 0.5811359733343124,
+          "p95_te_cm": 0.7883521262556314,
+          "cvar95_te_cm": 286.662101202334,
+          "recall_5cm_percent": 99.13419913419914,
+          "catastrophic_100cm_count": 2,
+          "raw_match_precision_percent": 33.7978387
+        }
+      },
+      "stairs": {
+        "selected_anchor_count": 5811,
+        "oracle_anchor_count": 15072,
+        "oracle_map_sha256": "07c358058da869e691059e1dcc88cc37b00bfbc7e78b85a74bb687810380817a",
+        "oracle_report_sha256": "8de0f987a9e1b35bb4c6eea06ee4d0a12e316be53c2be2eaa0ac909666c9379f",
+        "mapping_report_sha256": "aaa9b61afa9a10485c15662c4822ae64b3e139b2a6cca40db7399d30be33ab95",
+        "mapping_statistics_sha256": "cf4d2ef10dcd103dfb05cd446d95ae976e0bb32ca862dd15ff0e0e745940ae95",
+        "mapping": {
+          "median_te_cm": 0.3941531991586089,
+          "mean_te_cm": 7.201685927856306,
+          "p90_te_cm": 1.1797843780368569,
+          "p95_te_cm": 2.3824163246899825,
+          "cvar95_te_cm": 135.02212737686932,
+          "recall_5cm_percent": 95.65,
+          "catastrophic_100cm_count": 21,
+          "raw_match_precision_percent": 8.51015625
+        }
+      }
+    },
+    "conclusion": "There is map-capacity headroom, especially on ShopFacade, but the full broad pool does not remove catastrophic failures and harms Stairs central/tail recall. Do not implement targeted completion from this oracle."
+  },
+  "overall_conclusion": "The unresolved error is structured false Track and pose consensus, not a scalar observation weight, insufficient metric training, or a simple shortage of candidate anchors. Keep V1.4 as the bounded source-image-free baseline and stop this enhancement family."
+}

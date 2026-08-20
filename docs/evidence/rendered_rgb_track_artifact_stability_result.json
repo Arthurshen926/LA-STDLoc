@@ -1,0 +1,155 @@
+{
+  "schema": "lafgs_rendered_track_artifact_stability_r1_result",
+  "version": 1,
+  "valid": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "decision": "STOP_R1_BEFORE_TEST_AND_R2",
+  "implementation": {
+    "branch": "codex/render-track-artifact-r1",
+    "materializer_commit": "3672fb733609332336b6a05bc9f8fd1bd7fca2d0",
+    "mapping_evaluator_commit": "61d65c5a2d3eb2e7703b0b9ee1da6ddcbb86ac3f",
+    "gate_commit": "fc919c1c7b9442a1459a59398f042e91303d052c",
+    "full_cpu_tests": "616 passed, 1 skipped (explicit CUDA renderer smoke), 15 warnings",
+    "focused_tests": "27 passed",
+    "ruff": "pass",
+    "diff_check": "pass"
+  },
+  "attribution": {
+    "shopfacade": {
+      "C0_v12_membership": {
+        "anchor_count": 2504,
+        "report_sha256": "5fddf057962648fa9ad3def02c64da821289c8ef3dca4865f9bc20aaaad582b7",
+        "median_te_cm": 0.4641080740839243,
+        "p90_te_cm": 0.949628371745348,
+        "mean_te_cm": 82.99049841171005,
+        "cvar95_te_cm": 1588.8517099355038,
+        "raw_gt_precision_percent": 15.861181106357071,
+        "recall_5cm_5deg_percent": 99.13419913419914,
+        "catastrophic_100cm_count": 2
+      },
+      "C1_v14_full_child": {
+        "anchor_count": 5788,
+        "report_sha256": "cf7f6d5090119648a96136d7fd890482271945d8beac19a98c864f8aeb169723",
+        "median_te_cm": 0.3415970364585519,
+        "p90_te_cm": 0.7414080668240786,
+        "mean_te_cm": 45.27172826149136,
+        "cvar95_te_cm": 864.8672269502034,
+        "raw_gt_precision_percent": 24.967656559165242,
+        "recall_5cm_5deg_percent": 99.13419913419914,
+        "catastrophic_100cm_count": 2
+      },
+      "C2_v14_budget_matched": {
+        "anchor_count": 2504,
+        "report_sha256": "783180b6ae8a6544b73fab1fdb459d7f9a65afa1c61d2408f9c92466e2a50744",
+        "median_te_cm": 0.5424028262495995,
+        "p90_te_cm": 1.3351771980524063,
+        "mean_te_cm": 12.942617409862578,
+        "cvar95_te_cm": 238.51871091562012,
+        "raw_gt_precision_percent": 14.549263499687136,
+        "recall_5cm_5deg_percent": 99.13419913419914,
+        "catastrophic_100cm_count": 2
+      }
+    },
+    "stairs": {
+      "C0_v12_membership": {
+        "anchor_count": 4256,
+        "report_sha256": "49a5c8f2fb4f66476354a36276b8309b64e2d40f5bce0f8b02ac9ee5bcae8e51",
+        "median_te_cm": 0.38647191831842065,
+        "p90_te_cm": 1.0549644939601428,
+        "mean_te_cm": 6.7419693196352455,
+        "cvar95_te_cm": 126.36072561889887,
+        "raw_gt_precision_percent": 14.36083984375,
+        "recall_5cm_5deg_percent": 95.85000000000001,
+        "catastrophic_100cm_count": 22
+      },
+      "C1_v14_full_child": {
+        "anchor_count": 5811,
+        "report_sha256": "349167671ac79c388d9b4ba3a41ffac3166ff515eecffbaeff5ead0a84fd25bf",
+        "median_te_cm": 0.3630831022746861,
+        "p90_te_cm": 0.9597506001591686,
+        "mean_te_cm": 6.102910034996603,
+        "cvar95_te_cm": 114.27358741499484,
+        "raw_gt_precision_percent": 7.278662109375,
+        "recall_5cm_5deg_percent": 96.6,
+        "catastrophic_100cm_count": 22
+      },
+      "C2_v14_budget_matched": {
+        "anchor_count": 4256,
+        "report_sha256": "8c30af492e82886434af76d6123ef8d3edac2d2eed3fe99e76bcb4988caf511e",
+        "median_te_cm": 0.36661591148003936,
+        "p90_te_cm": 1.060597226023675,
+        "mean_te_cm": 7.049015361254715,
+        "cvar95_te_cm": 132.79813529364765,
+        "raw_gt_precision_percent": 7.199072265625,
+        "recall_5cm_5deg_percent": 95.89999999999999,
+        "catastrophic_100cm_count": 22
+      }
+    }
+  },
+  "r1": {
+    "shopfacade": {
+      "anchor_count": 5788,
+      "map_sha256": "6735e4a74ba79645cd4357a4e2bd54980ebb4fcb328dbe31c94772cb266e5784",
+      "query_cache_sha256": "c10dacd71745fbba59d207bef6ae415dca721f427a391a0044dcd33e28c711f8",
+      "metric_sha256": "69cf169076eeb46826166ca6c6afdb49a917a97b02876e91589ad5985be1f6fa",
+      "teacher_sha256": "05782bad63a618524d859e2032e5ca0734821eb87b92ace22751dde01ae143ba",
+      "materialization_report_sha256": "0d473181c9996fd48ba6f6bef6ad20f21ba253bd41aa5e59eb0b848cf8442539",
+      "equivalence_report_sha256": "119660427a9f9289e868471cd2ac0ae89c15243791bfcab1e5f3e09d7802f33a",
+      "rebound_calibration_sha256": "c3af4efc06a20a927070e6ac990a27eb9f6d2d13d5542ffe30ccdbbd8fc9b04f",
+      "mapping_report_sha256": "0ccaf74e54e3745d9daa2525648d9856ee9923778a4f5ab1f9a9973ca3134396",
+      "artifact_reliability_mean": 0.7287989854812622,
+      "raw_clean_descriptor_cosine_mean": 0.975220799446106,
+      "raw_clean_position_displacement_px_mean": 0.6744825839996338,
+      "mapping_summary": {
+        "median_te_cm": 0.33201207406818867,
+        "p90_te_cm": 0.7491084281355143,
+        "mean_te_cm": 8.89833847472033,
+        "cvar95_te_cm": 164.75412816895792,
+        "raw_gt_precision_percent": 24.744634793932118,
+        "recall_5cm_5deg_percent": 99.13419913419914,
+        "catastrophic_100cm_count": 2
+      },
+      "mapping_gate_passed": true
+    },
+    "stairs": {
+      "anchor_count": 5811,
+      "map_sha256": "21b3eaff5b8000560e689edcbc5cb355cb04ae9e9cd6ccff06c9b2cbc16b837c",
+      "query_cache_sha256": "0e7d9302629136010b93c1e48b6b38117023fd9c4e9df012ea779535ca9050d8",
+      "metric_sha256": "cbc6be941cca7a8327e890a3df936793301b908d33930f1a9917cded64a73b8a",
+      "teacher_sha256": "d212b9136cfbf6c8ddef426e1be50950f2ab3e44356c616941cc15998fb0d73b",
+      "materialization_report_sha256": "1849650df3fa317a098bb74b50db34ce4d8f0aa8e62e11ee7005ff817f661368",
+      "equivalence_report_sha256": "74f6dd43b7b49ca1fa198f95576e278a23c8938a71e31d4cc8addc10ed4bf168",
+      "rebound_calibration_sha256": "bb06173e992c9752102485e782f29a596898ca0b12f0605ad327a128a567ad01",
+      "mapping_report_sha256": "9923f3c592a920001bc71f1fb81091a07013cbd18db96bcaf62ce3123a557aee",
+      "artifact_reliability_mean": 0.6248882412910461,
+      "raw_clean_descriptor_cosine_mean": 0.9699162840843201,
+      "raw_clean_position_displacement_px_mean": 1.2575725317001343,
+      "mapping_summary": {
+        "median_te_cm": 0.3655059263110161,
+        "p90_te_cm": 0.9320957027375705,
+        "mean_te_cm": 7.449123111965309,
+        "cvar95_te_cm": 141.14482206571847,
+        "raw_gt_precision_percent": 7.193017578125,
+        "recall_5cm_5deg_percent": 96.65,
+        "catastrophic_100cm_count": 22
+      },
+      "mapping_gate_passed": false,
+      "failed_gates": [
+        "cvar95_te_not_higher",
+        "raw_gt_precision_not_lower_by_more_than_0p05pp"
+      ]
+    }
+  },
+  "formal_gate": {
+    "path": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/artifact_R1_mapping_gate.json",
+    "sha256": "b258a5df90acaf8ca53e10365ae5cff1df72ee480475d0c517605ab69a402335",
+    "exit_status": 2,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "shopfacade_passed": true,
+    "stairs_passed": false,
+    "both_scenes_passed": false,
+    "advance_to_frozen_three_seed_test": false,
+    "advance_to_artifact_aware_track_identity_r2": false
+  }
+}

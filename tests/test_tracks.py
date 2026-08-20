@@ -9,6 +9,7 @@ from evidence.tracks import (
 from evidence.camera_pair_policy import (
     candidate_camera_pairs,
     mapping_scene_points_from_depth_samples,
+    trajectory_balanced_camera_pairs,
 )
 from evidence.parallax_stratified_pair_policy import (
     representative_scene_depth_from_samples,
@@ -48,14 +49,9 @@ def _project(point, K, pose):
 
 def test_nearest_camera_pair_policy_remains_exactly_compatible():
     poses = torch.stack(
-        [
-            _look_at_pose([0.04 * index, 0.0, 0.0], [0.0, 0.0, 3.0])
-            for index in range(8)
-        ]
+        [_look_at_pose([0.04 * index, 0.0, 0.0], [0.0, 0.0, 3.0]) for index in range(8)]
     )
-    implicit = candidate_camera_pairs(
-        poses, neighbors=3, minimum_baseline_m=0.03
-    )
+    implicit = candidate_camera_pairs(poses, neighbors=3, minimum_baseline_m=0.03)
     explicit = candidate_camera_pairs(
         poses,
         neighbors=3,
@@ -63,6 +59,62 @@ def test_nearest_camera_pair_policy_remains_exactly_compatible():
         policy="nearest",
     )
     assert explicit == implicit
+
+
+def test_trajectory_balanced_policy_preserves_budget_and_adds_cross_edges():
+    poses = torch.stack(
+        [
+            _look_at_pose(
+                [0.04 * (index % 4), 0.02 * (index // 4), 0.0],
+                [0.0, 0.0, 3.0],
+            )
+            for index in range(12)
+        ]
+    )
+    groups = [f"trajectory-{index // 4}" for index in range(12)]
+    nearest = candidate_camera_pairs(poses, neighbors=3, minimum_baseline_m=0.0)
+    revised = trajectory_balanced_camera_pairs(
+        poses,
+        groups,
+        local_neighbors=1,
+        pair_budget=len(nearest),
+        minimum_baseline_m=0.0,
+    )
+    assert revised == trajectory_balanced_camera_pairs(
+        poses,
+        groups,
+        local_neighbors=1,
+        pair_budget=len(nearest),
+        minimum_baseline_m=0.0,
+    )
+    assert revised == sorted(set(revised))
+    assert len(revised) == len(nearest)
+    assert any(groups[left] != groups[right] for left, right in revised)
+    for group in sorted(set(groups)):
+        rows = {index for index, value in enumerate(groups) if value == group}
+        assert any(left in rows and right in rows for left, right in revised)
+
+
+def test_trajectory_balanced_policy_rejects_single_group_or_small_budget():
+    poses = torch.stack(
+        [_look_at_pose([0.04 * index, 0.0, 0.0], [0.0, 0.0, 3.0]) for index in range(6)]
+    )
+    for groups, budget, expected in (
+        (["same"] * 6, 8, "multiple groups"),
+        (["a"] * 3 + ["b"] * 3, 1, "local trajectory graphs"),
+    ):
+        try:
+            trajectory_balanced_camera_pairs(
+                poses,
+                groups,
+                local_neighbors=2,
+                pair_budget=budget,
+                minimum_baseline_m=0.0,
+            )
+        except ValueError as error:
+            assert expected in str(error)
+        else:
+            raise AssertionError("invalid trajectory-balanced graph must fail")
 
 
 def test_mapping_scene_point_sample_unprojects_known_depth_without_test_data():
@@ -77,16 +129,12 @@ def test_mapping_scene_point_sample_unprojects_known_depth_without_test_data():
         maximum_points=8,
         voxel_size_m=0.001,
     )
-    torch.testing.assert_close(
-        points, torch.tensor([[0.0, 0.0, 2.0], [3.0, 0.0, 3.0]])
-    )
+    torch.testing.assert_close(points, torch.tensor([[0.0, 0.0, 2.0], [3.0, 0.0, 3.0]]))
 
 
 def test_parallax_diverse_policy_preserves_exact_global_budget_and_overlap():
     centers = [[-0.35 + 0.1 * index, 0.0, 0.0] for index in range(8)]
-    poses = torch.stack(
-        [_look_at_pose(center, [0.0, 0.0, 3.0]) for center in centers]
-    )
+    poses = torch.stack([_look_at_pose(center, [0.0, 0.0, 3.0]) for center in centers])
     K = torch.tensor(
         [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
         dtype=torch.float64,
@@ -99,9 +147,7 @@ def test_parallax_diverse_policy_preserves_exact_global_budget_and_overlap():
     scene_points = torch.stack(
         (grid_x.flatten(), grid_y.flatten(), torch.full((63,), 3.0)), dim=1
     )
-    nearest = candidate_camera_pairs(
-        poses, neighbors=2, minimum_baseline_m=0.0
-    )
+    nearest = candidate_camera_pairs(poses, neighbors=2, minimum_baseline_m=0.0)
     revised = candidate_camera_pairs(
         poses,
         neighbors=2,
@@ -146,9 +192,7 @@ def test_parallax_stratified_policy_replays_archived_exact_pair_table():
             for index in range(12)
         ]
     )
-    nearest = candidate_camera_pairs(
-        poses, neighbors=3, minimum_baseline_m=0.03
-    )
+    nearest = candidate_camera_pairs(poses, neighbors=3, minimum_baseline_m=0.03)
     revised = candidate_camera_pairs(
         poses,
         neighbors=3,
@@ -161,24 +205,38 @@ def test_parallax_stratified_policy_replays_archived_exact_pair_table():
         maximum_baseline_depth_ratio=0.5,
     )
     assert revised == [
-        (0, 1), (0, 2), (0, 5), (1, 2), (1, 6), (2, 3),
-        (2, 7), (3, 4), (3, 8), (3, 9), (4, 5), (4, 9),
-        (4, 10), (5, 6), (5, 10), (5, 11), (6, 7), (6, 11),
-        (7, 8), (8, 9), (9, 10), (9, 11), (10, 11),
+        (0, 1),
+        (0, 2),
+        (0, 5),
+        (1, 2),
+        (1, 6),
+        (2, 3),
+        (2, 7),
+        (3, 4),
+        (3, 8),
+        (3, 9),
+        (4, 5),
+        (4, 9),
+        (4, 10),
+        (5, 6),
+        (5, 10),
+        (5, 11),
+        (6, 7),
+        (6, 11),
+        (7, 8),
+        (8, 9),
+        (9, 10),
+        (9, 11),
+        (10, 11),
     ]
     assert len(revised) == len(nearest)
 
 
 def test_parallax_stratified_policy_fails_closed_on_depth_or_budget():
     poses = torch.stack(
-        [
-            _look_at_pose([0.1 * index, 0.0, 0.0], [0.0, 0.0, 2.0])
-            for index in range(4)
-        ]
+        [_look_at_pose([0.1 * index, 0.0, 0.0], [0.0, 0.0, 2.0]) for index in range(4)]
     )
-    nearest = candidate_camera_pairs(
-        poses, neighbors=2, minimum_baseline_m=0.0
-    )
+    nearest = candidate_camera_pairs(poses, neighbors=2, minimum_baseline_m=0.0)
     try:
         candidate_camera_pairs(
             poses,
@@ -212,9 +270,7 @@ def test_representative_scene_depth_preserves_missing_camera_sentinel():
             torch.tensor([-1.0, 0.0]),
         ]
     )
-    torch.testing.assert_close(
-        result[0], torch.tensor(2.0, dtype=torch.float64)
-    )
+    torch.testing.assert_close(result[0], torch.tensor(2.0, dtype=torch.float64))
     assert bool(torch.isnan(result[1]))
 
 
@@ -224,9 +280,7 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
         dtype=torch.float64,
     )
     centers = [[-0.2, 0.0, 0.0], [0.0, 0.0, 0.0], [0.2, 0.0, 0.0]]
-    poses = torch.stack(
-        [_look_at_pose(center, [0.0, 0.0, 3.0]) for center in centers]
-    )
+    poses = torch.stack([_look_at_pose(center, [0.0, 0.0, 3.0]) for center in centers])
     K = torch.tensor(
         [[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]],
         dtype=torch.float64,
@@ -236,6 +290,7 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
         for query in range(3)
     ]
     descriptors = [torch.eye(3) for _ in range(3)]
+    timing = {}
     tracks, diagnostics, sidecar = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
@@ -253,8 +308,19 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
         return_pair_sidecar=True,
         pair_image_hw=torch.tensor([[480, 640]]).repeat(3, 1),
         pair_scene_points_xyz=points,
+        timing_report=timing,
         device="cpu",
     )
+    assert set(timing) == {
+        "pair_selection",
+        "pair_matching",
+        "cycle_support",
+        "component_assembly",
+        "track_table",
+        "pair_sidecar",
+        "total",
+    }
+    assert all(value >= 0.0 for value in timing.values())
     assert diagnostics["track_camera_pair_candidate_count"] == 3
     assert diagnostics["track_count"] == 3
     pair = sidecar["pair"]
@@ -291,9 +357,7 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
     )
     attach_pair_triangulation_statistics(sidecar, tracks, geometry, poses)
     assert pair["triangulated_track_count"].tolist() == [3, 3, 3]
-    assert torch.isfinite(
-        pair["actual_triangulation_parallax_median_deg"]
-    ).all()
+    assert torch.isfinite(pair["actual_triangulation_parallax_median_deg"]).all()
 
 
 def test_robust_triangulation_recovers_track_and_rejects_duplicate_view():
@@ -328,12 +392,55 @@ def test_robust_triangulation_recovers_track_and_rejects_duplicate_view():
         maximum_reprojection_px=1.0,
     )
     assert result["triangulation_high_confidence"].tolist() == [True, False]
-    torch.testing.assert_close(result["triangulated_xyz"][0], point.float(), atol=1e-4, rtol=0)
+    torch.testing.assert_close(
+        result["triangulated_xyz"][0], point.float(), atol=1e-4, rtol=0
+    )
+
+
+def test_fixed_camera_nonlinear_refinement_never_increases_robust_cost():
+    point = torch.tensor([0.2, -0.1, 4.0], dtype=torch.float64)
+    centers = [[-1.2, 0.0, 0.0], [-0.2, 0.3, 0.0], [0.8, 0.0, 0.0], [0.2, -0.5, 0.0]]
+    poses = torch.stack([_look_at_pose(center, point) for center in centers])
+    K = torch.tensor(
+        [[700.0, 0.0, 320.0], [0.0, 520.0, 240.0], [0.0, 0.0, 1.0]],
+        dtype=torch.float64,
+    ).repeat(4, 1, 1)
+    noise = torch.tensor(
+        [[0.8, -0.1], [-0.4, 0.6], [0.2, -0.7], [-0.5, -0.2]],
+        dtype=torch.float64,
+    )
+    uv = torch.stack([_project(point, K[i], poses[i]) for i in range(4)]) + noise
+    result = robust_triangulate_associations(
+        landmark_count=1,
+        landmark_index=torch.zeros(4, dtype=torch.long),
+        query_index=torch.arange(4),
+        uv=uv,
+        confidence=torch.ones(4),
+        camera_K=K,
+        pose_w2c=poses,
+        query_bin=torch.arange(4),
+        minimum_views=3,
+        minimum_view_bins=2,
+        minimum_parallax_deg=0.0,
+        maximum_reprojection_px=2.0,
+        nonlinear_refinement_iterations=5,
+    )
+    assert result["triangulation_nonlinear_refinement_applied"].tolist() == [True]
+    assert result["triangulation_nonlinear_refinement_accepted_iterations"][0] > 0
+    assert (
+        result["triangulation_nonlinear_refinement_final_cost"][0]
+        <= result["triangulation_nonlinear_refinement_initial_cost"][0]
+    )
 
 
 def test_surface_support_corrects_only_the_weak_track_axis():
     point = torch.tensor([0.1, -0.05, 3.0], dtype=torch.float64)
-    centers = [[-0.035, 0.0, 0.0], [-0.01, 0.0, 0.0], [0.015, 0.0, 0.0], [0.04, 0.0, 0.0]]
+    centers = [
+        [-0.035, 0.0, 0.0],
+        [-0.01, 0.0, 0.0],
+        [0.015, 0.0, 0.0],
+        [0.04, 0.0, 0.0],
+    ]
     poses = torch.stack([_look_at_pose(center, point) for center in centers])
     K = torch.tensor(
         [[600.0, 0.0, 320.0], [0.0, 600.0, 240.0], [0.0, 0.0, 1.0]],
@@ -373,12 +480,13 @@ def test_surface_support_corrects_only_the_weak_track_axis():
         surface_support_covariance_sigma_m=0.02,
     )
     assert supported["triangulation_surface_supported"].tolist() == [True]
-    assert supported["triangulation_covariance_trace"][0] < baseline[
-        "triangulation_covariance_trace"
-    ][0]
-    assert torch.linalg.norm(supported["triangulated_xyz"][0] - point.float()) < torch.linalg.norm(
-        baseline["triangulated_xyz"][0] - point.float()
+    assert (
+        supported["triangulation_covariance_trace"][0]
+        < baseline["triangulation_covariance_trace"][0]
     )
+    assert torch.linalg.norm(
+        supported["triangulated_xyz"][0] - point.float()
+    ) < torch.linalg.norm(baseline["triangulated_xyz"][0] - point.float())
 
 
 def test_surface_support_rejects_cross_fitted_inconsistent_depth():
@@ -409,7 +517,9 @@ def test_surface_support_rejects_cross_fitted_inconsistent_depth():
         surface_support_maximum_weak_information_ratio=0.5,
     )
     assert result["triangulation_surface_supported"].tolist() == [False]
-    torch.testing.assert_close(result["triangulated_xyz"][0], point.float(), atol=1e-4, rtol=0)
+    torch.testing.assert_close(
+        result["triangulated_xyz"][0], point.float(), atol=1e-4, rtol=0
+    )
 
 
 def test_selected_track_descriptor_fusion_preserves_legacy_observation_order():
@@ -426,14 +536,10 @@ def test_selected_track_descriptor_fusion_preserves_legacy_observation_order():
     query_cache = {
         "queries": {
             "q0": {
-                "native_descriptors": torch.tensor(
-                    [[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]]
-                )
+                "native_descriptors": torch.tensor([[1.0, 0.0], [0.9, 0.1], [0.8, 0.2]])
             },
             "q1": {
-                "native_descriptors": torch.tensor(
-                    [[0.0, 1.0], [0.2, 0.8], [0.1, 0.9]]
-                )
+                "native_descriptors": torch.tensor([[0.0, 1.0], [0.2, 0.8], [0.1, 0.9]])
             },
         }
     }

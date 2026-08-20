@@ -1,0 +1,66 @@
+{
+  "schema": "lafgs_v4_assignment_rejection_panel_preregistration",
+  "version": 1,
+  "uses_test_queries": false,
+  "purpose": "hard_scene_only_method_selection_without_all_scene_expansion",
+  "hard_scenes": [
+    "7Scenes/stairs",
+    "Cambridge/GreatCourt",
+    "Cambridge/StMarysChurch",
+    "12Scenes/apt2_luke",
+    "12Scenes/office1_gates381",
+    "12Scenes/office1_manolis",
+    "12Scenes/office2_5a",
+    "12Scenes/office2_5b"
+  ],
+  "shared_topk": 8,
+  "candidates": {
+    "k4_regret_002_margin_005": {
+      "assignment_topk": 4,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02,
+      "assignment_minimum_top1_margin": 0.005
+    },
+    "k4_regret_002_margin_010": {
+      "assignment_topk": 4,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02,
+      "assignment_minimum_top1_margin": 0.01
+    },
+    "k8_regret_002_margin_005": {
+      "assignment_topk": 8,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02,
+      "assignment_minimum_top1_margin": 0.005
+    },
+    "k8_regret_002_margin_010": {
+      "assignment_topk": 8,
+      "assignment_dustbin_score": -1.0,
+      "assignment_maximum_regret": 0.02,
+      "assignment_minimum_top1_margin": 0.01
+    }
+  },
+  "pose": {
+    "seed": 2026,
+    "one_standard_poselib_call_per_query": true,
+    "parallelism_changes_query_scheduling_only": true,
+    "pose_workers_per_replay": 4
+  },
+  "pooled_hard_scene_rejection_gate": {
+    "catastrophic_100cm_count_maximum_baseline_delta": 0,
+    "recall_5cm_5deg_maximum_drop_percentage_points": 0.2,
+    "mean_te_maximum_ratio": 1.01,
+    "cvar95_te_maximum_ratio": 1.01,
+    "median_te_maximum_ratio": 1.15,
+    "mean_hypotheses_maximum_ratio": 1.05
+  },
+  "minimum_useful_change": {
+    "at_least_one_family_catastrophic_count_strictly_lower_or_cvar95_ratio_at_most": 0.95
+  },
+  "authorization": {
+    "panel_can_reject": true,
+    "panel_can_select_one_shared_hard_scene_winner": true,
+    "all_24_mapping_scene_expansion_required": false,
+    "official_test_authorized": false
+  }
+}

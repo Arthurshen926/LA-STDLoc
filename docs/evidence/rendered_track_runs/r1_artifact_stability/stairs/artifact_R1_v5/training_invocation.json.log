@@ -1,0 +1,77 @@
+{"completed_queries": 100, "positive_rows": 8872, "strong_pairs": 8872}
+{"completed_queries": 200, "positive_rows": 22103, "strong_pairs": 22103}
+{"completed_queries": 300, "positive_rows": 35748, "strong_pairs": 35748}
+{"completed_queries": 400, "positive_rows": 43387, "strong_pairs": 43387}
+{"completed_queries": 500, "positive_rows": 46877, "strong_pairs": 46877}
+{"completed_queries": 600, "positive_rows": 89629, "strong_pairs": 89629}
+{"completed_queries": 700, "positive_rows": 103556, "strong_pairs": 103556}
+{"completed_queries": 800, "positive_rows": 111989, "strong_pairs": 111989}
+{"completed_queries": 900, "positive_rows": 122829, "strong_pairs": 122829}
+{"completed_queries": 1000, "positive_rows": 134985, "strong_pairs": 134985}
+{"completed_queries": 1100, "positive_rows": 142584, "strong_pairs": 142584}
+{"completed_queries": 1200, "positive_rows": 152366, "strong_pairs": 152366}
+{"completed_queries": 1300, "positive_rows": 154020, "strong_pairs": 154020}
+{"completed_queries": 1400, "positive_rows": 154085, "strong_pairs": 154085}
+{"completed_queries": 1500, "positive_rows": 154085, "strong_pairs": 154085}
+{"completed_queries": 1600, "positive_rows": 158114, "strong_pairs": 158114}
+{"completed_queries": 1700, "positive_rows": 165626, "strong_pairs": 165626}
+{"completed_queries": 1800, "positive_rows": 173461, "strong_pairs": 173461}
+{"completed_queries": 1900, "positive_rows": 177722, "strong_pairs": 177722}
+{"completed_queries": 2000, "positive_rows": 185887, "strong_pairs": 185887}
+{
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "anchor_map": "21b3eaff5b8000560e689edcbc5cb355cb04ae9e9cd6ccff06c9b2cbc16b837c",
+    "query_cache": "0e7d9302629136010b93c1e48b6b38117023fd9c4e9df012ea779535ca9050d8",
+    "scene_calibration": "5e9263ccb44005ff7031f58b38bb3e19d3584a86cb1533d500863cacf74ac5b2",
+    "track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/artifact_stability_anchor_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/artifact_stability_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "d0e0cd81496d73d10f826592991bff7a5b98459c1cbbd5ce11292bc33bd3a6d0",
+    "map": "ea58a274936ca6c87af6d01c85c38a2c123bf8749ddbbb6a954ddffdefef9b03",
+    "teacher": "d212b9136cfbf6c8ddef426e1be50950f2ab3e44356c616941cc15998fb0d73b",
+    "track_payload": "1d7f89c06284fe9a87940a28e233703fd7dc01f85702c708fe6b834f00734701"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/stairs/artifact_R1_v5/training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 586332,
+    "depth_visibility_rejected_anchor_count": 2299662,
+    "exact_depth_disagreement_audit_count": 213549,
+    "exact_track_positive_count": 433140,
+    "masked_query_row_count": 0,
+    "positive_rows": 185887,
+    "query_count": 2000,
+    "strong_certified_exact_positive_count": 185887,
+    "strong_pair_count": 185887,
+    "support_compatible_pair_count": 47270,
+    "weak_exact_ambiguous_count": 247253
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

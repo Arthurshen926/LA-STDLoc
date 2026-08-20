@@ -1,0 +1,180 @@
+{
+  "schema": "lafgs_rendered_track_pose_feedback_closed_loop_result",
+  "version": 1,
+  "branch": "codex/render-track-artifact-r1",
+  "implementation_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+  "protocol": {
+    "uses_source_mapping_rgb": false,
+    "uses_gaussian_primitive_centers_as_localization_geometry": false,
+    "uses_test_queries_for_construction_revision_or_selection": false,
+    "test_use": "frozen_final_evaluation_only",
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_query": true,
+    "revision_rounds": 1,
+    "maximum_prune_fraction": 0.01,
+    "minimum_counterfactual_gain": 1.0,
+    "selection_objective": "mean_mapping_pose_policy_loss",
+    "parameter_scan": false,
+    "mixed_pipeline": false
+  },
+  "verification": {
+    "focused_tests": "13 passed",
+    "full_cpu_tests": "630 passed, 1 skipped",
+    "skipped_test": "explicit CUDA renderer smoke",
+    "ruff": "passed",
+    "diff_check": "passed"
+  },
+  "scenes": {
+    "stairs": {
+      "root": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15",
+      "revision_completion": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/revision/pose_feedback_revision_completion.json",
+        "sha256": "603d9c970c0073c55d8557abfff62cab2ae95eea3c779c4dddf72df3188d3af3"
+      },
+      "candidate_mapping_report": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/candidate_mapping_loo_seed2026/full_mapping_loo_report.json",
+        "sha256": "1bad5a77376ed0b92f0403dc3479017c79facae86a25d0a2b9cf33f4d56fb710"
+      },
+      "closed_loop_selection": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/closed_loop_selection.json",
+        "sha256": "1da47286bfb54bb8ad74c662351a4143032cc9cabf5aebb9ca854c480196cf88",
+        "decision": "RETAIN_V1_4_BASELINE",
+        "selected_map_sha256": "9f3a09fd7c2548d358532ec9b38829802e03cac2ecc82955c119b1af046040cb"
+      },
+      "revision": {
+        "source_anchor_count": 5702,
+        "retained_anchor_count": 5645,
+        "pruned_anchor_count": 57,
+        "pruned_correct_winner_count": 0,
+        "pruned_false_attractor_count": 2057,
+        "pruned_harmful_inlier_count": 6988,
+        "pruned_counterfactual_clean_gain": 1361,
+        "baseline_pose_risk": 0.2364076365035731,
+        "candidate_pose_risk": 0.23713714872620337,
+        "improved_query_count": 877,
+        "regressed_query_count": 778
+      },
+      "mapping": {
+        "baseline": {
+          "median_te_cm": 0.3636954119428992,
+          "mean_te_cm": 3.6778970594798013,
+          "p90_te_cm": 0.9279615804553039,
+          "cvar95_te_cm": 65.74373936187476,
+          "mean_ae_deg": 0.7073971540446893,
+          "recall_5cm_5deg_percent": 98.55000000000001,
+          "raw_gt_precision_percent": 6.3263671875,
+          "catastrophic_100cm_count": 13
+        },
+        "candidate": {
+          "median_te_cm": 0.3656279528513551,
+          "mean_te_cm": 3.624638546319693,
+          "p90_te_cm": 0.9300015494227413,
+          "cvar95_te_cm": 64.67971530836076,
+          "mean_ae_deg": 0.7115078764300458,
+          "recall_5cm_5deg_percent": 98.5,
+          "raw_gt_precision_percent": 6.392919921875,
+          "catastrophic_100cm_count": 13
+        }
+      },
+      "test_three_seed_mean": {
+        "median_te_cm": 2.144421016176542,
+        "mean_te_cm": 7.192658374117066,
+        "p90_te_cm": 6.560104439655941,
+        "mean_ae_deg": 1.621712496734637,
+        "recall_2cm_2deg_percent": 46.96666666666666,
+        "recall_5cm_5deg_percent": 85.09999999999998,
+        "raw_gt_precision_2px_percent": 2.98681640625,
+        "inlier_gt_precision_2px_percent": 21.98539763220901,
+        "catastrophic_100cm_count": 9.666666666666666,
+        "mean_hypotheses": 36616.85466666667
+      },
+      "test_contract_sha256": {
+        "2026": "673eb70cf7e51b2978b4f7cb49bf984a6ebf173ae4dc4a6c25eac6b131abcec5",
+        "2027": "64969f669d62b5acd7803aa4c2655ff8902f3643aed09a0e236aacd6b8cc6868",
+        "2028": "5e2ef43df7c763cbe8eecab1e7cfb85c4f61442ad45856a9c98af44d5c1aca3e"
+      }
+    },
+    "shopfacade": {
+      "root": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15",
+      "revision_completion": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_revision_completion.json",
+        "sha256": "644151e7faf061567a56b9383601626d9112e43d833cfe84da3b753ccaef22ca"
+      },
+      "candidate_mapping_report": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/candidate_mapping_loo_seed2026/full_mapping_loo_report.json",
+        "sha256": "2b6da21c3862cb6865c3cf3480b24452afa6136fad6202f2ba7dfdf75e2b701d"
+      },
+      "closed_loop_selection": {
+        "path": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/closed_loop_selection.json",
+        "sha256": "3bf37e7182a4e07fc8fd693cc77c12906f7e97f9f82cdbe771e6b98a03a64ef8",
+        "decision": "SELECT_POSE_FEEDBACK_REVISION",
+        "selected_map_sha256": "a4c0da67bf67da542d93f778b81451ef0167499644314a1cade8bb0c3fd27c18"
+      },
+      "revision": {
+        "source_anchor_count": 5788,
+        "retained_anchor_count": 5773,
+        "pruned_anchor_count": 15,
+        "pruned_correct_winner_count": 0,
+        "pruned_false_attractor_count": 75,
+        "pruned_harmful_inlier_count": 72,
+        "pruned_counterfactual_clean_gain": 32,
+        "baseline_pose_risk": 0.23924172131053278,
+        "candidate_pose_risk": 0.23909601680154627,
+        "improved_query_count": 48,
+        "regressed_query_count": 38
+      },
+      "mapping": {
+        "baseline": {
+          "median_te_cm": 0.3415970364585519,
+          "mean_te_cm": 45.27172826149136,
+          "p90_te_cm": 0.7414080668240786,
+          "cvar95_te_cm": 864.8672269502034,
+          "mean_ae_deg": 1.4443635978273224,
+          "recall_5cm_5deg_percent": 99.13419913419914,
+          "raw_gt_precision_percent": 24.967656559165242,
+          "catastrophic_100cm_count": 2
+        },
+        "candidate": {
+          "median_te_cm": 0.33736657351255417,
+          "mean_te_cm": 45.27095679128976,
+          "p90_te_cm": 0.7414080668240786,
+          "cvar95_te_cm": 864.8699583563333,
+          "mean_ae_deg": 1.4443124863162924,
+          "recall_5cm_5deg_percent": 99.13419913419914,
+          "raw_gt_precision_percent": 24.974421200385585,
+          "catastrophic_100cm_count": 2
+        }
+      },
+      "v1_4_test_three_seed_mean": {
+        "median_te_cm": 2.04359944909811,
+        "mean_te_cm": 4.7327405341349325,
+        "p90_te_cm": 8.057233989238737,
+        "mean_ae_deg": 0.225348048969319,
+        "recall_2cm_2deg_percent": 49.51456310679612,
+        "recall_5cm_5deg_percent": 82.20064724919094,
+        "raw_gt_precision_2px_percent": 9.752234796882597,
+        "inlier_gt_precision_2px_percent": 43.42424163592316,
+        "catastrophic_100cm_count": 0
+      },
+      "test_three_seed_mean": {
+        "median_te_cm": 2.0447589457035065,
+        "mean_te_cm": 4.765926754406524,
+        "p90_te_cm": 7.94416457414627,
+        "mean_ae_deg": 0.2265867959134337,
+        "recall_2cm_2deg_percent": 49.51456310679612,
+        "recall_5cm_5deg_percent": 82.20064724919094,
+        "raw_gt_precision_2px_percent": 9.74453275054516,
+        "inlier_gt_precision_2px_percent": 43.39862827199344,
+        "catastrophic_100cm_count": 0,
+        "mean_hypotheses": 5197.941747572815
+      },
+      "test_contract_sha256": {
+        "2026": "d3d2fc517829efa8045c2aa90254b47132788c125f713db20109320c4dac1953",
+        "2027": "88739380a99a7098ec4bf2ad48c7aeb19c19e1456a454d24ab5ba887e2411ce2",
+        "2028": "e708f5bd8241a2744da8c04a63b80f87120b72d9ef25da5dea0fd5ef1dcfea05"
+      }
+    }
+  },
+  "decision": "CLOSED_LOOP_IMPLEMENTED_KEEP_V1_4_AS_CROSS_SCENE_DEFAULT",
+  "scientific_conclusion": "Bounded per-anchor harmful-attractor pruning produces a tiny ShopFacade mapping-risk gain and mixed frozen-test tradeoffs, while Stairs rejects it on the joint mapping pose objective. The unresolved source-image-free accuracy limitation is coherent non-local Track/pose consensus, not absence of a deployment-feedback execution loop."
+}

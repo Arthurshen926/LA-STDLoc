@@ -97,6 +97,66 @@ def sample_descriptors(keypoints, descriptors, stride: int = 8):
     return F.normalize(sampled.reshape(batch, channels, -1), p=2, dim=1)
 
 
+def quadratic_subpixel_keypoints(
+    keypoints: torch.Tensor,
+    score_map: torch.Tensor,
+    *,
+    maximum_offset: float = 0.5,
+) -> torch.Tensor:
+    """Refine fixed detector rows by a bounded 3x3 quadratic peak fit.
+
+    The candidate identities and scores stay unchanged.  Only their continuous
+    coordinates move, so this can be evaluated as a geometry factor without
+    changing detector count, NMS, top-k ordering, or the Track row registry.
+    """
+    points = torch.as_tensor(keypoints)
+    scores = torch.as_tensor(score_map)
+    if points.ndim != 2 or points.shape[1] != 2:
+        raise ValueError("keypoints must have shape [N,2]")
+    if scores.ndim != 2:
+        raise ValueError("score_map must have shape [H,W]")
+    if not (0.0 <= float(maximum_offset) <= 0.5):
+        raise ValueError("subpixel maximum offset must be in [0,0.5]")
+    refined = points.float().clone()
+    if refined.numel() == 0 or float(maximum_offset) == 0.0:
+        return refined
+    integer = points.long()
+    x = integer[:, 0]
+    y = integer[:, 1]
+    interior = (
+        (x > 0)
+        & (x + 1 < scores.shape[1])
+        & (y > 0)
+        & (y + 1 < scores.shape[0])
+    )
+    rows = torch.nonzero(interior, as_tuple=False).reshape(-1)
+    if rows.numel() == 0:
+        return refined
+    x = x[rows]
+    y = y[rows]
+    center = scores[y, x].float()
+    horizontal = scores[y, x - 1].float() - 2.0 * center + scores[y, x + 1].float()
+    vertical = scores[y - 1, x].float() - 2.0 * center + scores[y + 1, x].float()
+    dx = torch.zeros_like(center)
+    dy = torch.zeros_like(center)
+    valid_x = torch.isfinite(horizontal) & (horizontal < -1e-12)
+    valid_y = torch.isfinite(vertical) & (vertical < -1e-12)
+    dx[valid_x] = 0.5 * (
+        scores[y[valid_x], x[valid_x] - 1]
+        - scores[y[valid_x], x[valid_x] + 1]
+    ) / horizontal[valid_x]
+    dy[valid_y] = 0.5 * (
+        scores[y[valid_y] - 1, x[valid_y]]
+        - scores[y[valid_y] + 1, x[valid_y]]
+    ) / vertical[valid_y]
+    offset = torch.stack((dx, dy), dim=1).clamp(
+        -float(maximum_offset), float(maximum_offset)
+    )
+    offset = torch.where(torch.isfinite(offset), offset, torch.zeros_like(offset))
+    refined[rows] += offset
+    return refined
+
+
 class SuperPoint(nn.Module):
     def __init__(self):
         super().__init__()
@@ -170,6 +230,7 @@ class SuperPoint(nn.Module):
         *,
         top_k=None,
         detection_threshold=None,
+        subpixel_refinement: bool = False,
     ):
         threshold = (
             self.detection_threshold
@@ -194,6 +255,10 @@ class SuperPoint(nn.Module):
                 keypoint_scores,
                 self.max_num_keypoints if top_k is None else top_k,
             )
+            if bool(subpixel_refinement):
+                keypoints = quadratic_subpixel_keypoints(
+                    keypoints, scores[batch_index]
+                )
             descriptors = sample_descriptors(
                 keypoints[None], descriptors_dense[batch_index : batch_index + 1]
             )[0].transpose(0, 1)
@@ -207,7 +272,14 @@ class SuperPoint(nn.Module):
         return result
 
     @torch.inference_mode()
-    def detectAndCompute(self, x, top_k=None, detection_threshold=None):
+    def detectAndCompute(
+        self,
+        x,
+        top_k=None,
+        detection_threshold=None,
+        *,
+        subpixel_refinement: bool = False,
+    ):
         """Return native sparse SuperPoint descriptors for every input image.
 
         This intentionally does not sample the resized deployment feature
@@ -221,11 +293,17 @@ class SuperPoint(nn.Module):
             scores,
             top_k=top_k,
             detection_threshold=detection_threshold,
+            subpixel_refinement=subpixel_refinement,
         )
 
     @torch.inference_mode()
     def detectAndComputeWithDense(
-        self, x, top_k=None, detection_threshold=None
+        self,
+        x,
+        top_k=None,
+        detection_threshold=None,
+        *,
+        subpixel_refinement: bool = False,
     ):
         """Return native sparse and dense outputs from one encoder forward."""
 
@@ -236,6 +314,7 @@ class SuperPoint(nn.Module):
             scores,
             top_k=top_k,
             detection_threshold=detection_threshold,
+            subpixel_refinement=subpixel_refinement,
         )
         return sparse, (descriptors, scores.unsqueeze(1))
 

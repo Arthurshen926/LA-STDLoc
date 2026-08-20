@@ -33,6 +33,12 @@ native SuperPoint -> global cosine top-1 -> one standard PoseLib PnP/RANSAC
 There is no scene-specific detector, dense refinement, test-time rendering, or
 custom pose solver in the release path.
 
+An optional, mapping-gated capacity-feasible Top-K correspondence extractor is
+documented in
+[`docs/v4_capacity_feasible_assignment.md`](docs/v4_capacity_feasible_assignment.md).
+It retains one standard PoseLib call and is not the default until its frozen
+all-24-scene mapping-LOO gate and official-test confirmation complete.
+
 ## Install
 
 Python 3.9 and CUDA 11.8 are the reference environment.

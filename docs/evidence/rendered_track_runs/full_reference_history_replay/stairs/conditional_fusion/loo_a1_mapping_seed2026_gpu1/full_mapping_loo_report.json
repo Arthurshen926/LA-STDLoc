@@ -1,0 +1,75 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "fa2fdeec3c1a40162227da8c4dc17f7ee1ef9c3e50307c68c214b7c03d9c7e42",
+    "metric": "708c910db015a28e514e0118efa9014d971566442b351ea6662dd73cb0f3534c",
+    "query_cache": "d895246e08b7e722bd5eecdafb494c08b0548026315a2857651fbdf2695fe6a7",
+    "scene_calibration": "616e2343d29569d14e3dfa2c02522a18a0eb1775149f3dd04f4fcfef2f8c84cf",
+    "teacher": "076cdc77e8a680cabe027c1ee5b9eaf1c565927af08d78173c893f007eab98c9",
+    "track_payload": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/loo_a1/anchor_map_step_0175.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/loo_a1/metric_state_step_0175.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/conditional_fusion_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/scene_calibration_rebound.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 365797,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 607,
+    "mean_affected_anchors_per_query": 182.89849853515625,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+    "source_sha256": {
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "08ad6052ea2cf965c9ecc1229ebeaed590bdbbc12f4f7d736a410e95df4a0dfd",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/conditional_fusion/loo_a1_mapping_seed2026_gpu1/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "abb3099fd70560eee71a423802c9e6f1244131808f4d13fb316b6c66981a0d25",
+  "summary": {
+    "catastrophic_100cm_count": 13,
+    "cvar95_te_cm": 73.1490706782788,
+    "inlier_gt_precision_percent": 33.804488838244474,
+    "mean_ae_deg": 0.799460878946954,
+    "mean_hypotheses": 3640.7085,
+    "mean_te_cm": 4.044149723048759,
+    "median_ae_deg": 0.1022545919765423,
+    "median_te_cm": 0.36427711602300406,
+    "p90_ae_deg": 0.2920146607668268,
+    "p90_te_cm": 0.9124846104532487,
+    "p95_ae_deg": 0.3963397785665227,
+    "p95_te_cm": 1.1600082321092482,
+    "p99_te_cm": 29.145159393548955,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 6.3376953125,
+    "recall_5cm_5deg_percent": 98.5,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 42.07919921875
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

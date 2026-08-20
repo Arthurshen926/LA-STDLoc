@@ -13,13 +13,23 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from localization.localizer import load_shared_metric
-from localization.pose_solver import pose_error, solve_absolute_pose
+from localization.matcher import (
+    TopKMatches,
+    maximum_weight_anchor_assignment,
+)
+from localization.group_consensus import correlation_groups_from_map
+from localization.pose_solver import (
+    pose_error,
+    solve_absolute_pose,
+    solve_group_diverse_absolute_pose,
+)
 from map_learning.trainer import _pose_error_cm, _project_errors
 from topology.matching_coverage import (
     IncrementalBipartiteCoverage,
@@ -61,6 +71,26 @@ def _csr_contains_per_row(
     return matched, counts > 0
 
 
+def _csr_contains_at_rows(
+    record: dict,
+    prefix: str,
+    rows: torch.Tensor,
+    values: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """CSR membership for an arbitrary subset of local teacher rows."""
+    rows = torch.as_tensor(rows).long().reshape(-1)
+    values = torch.as_tensor(values).long().reshape(-1)
+    if rows.shape != values.shape:
+        raise ValueError(f"{prefix} selected rows and values do not align")
+    row_count = torch.as_tensor(record[f"{prefix}_offsets"]).numel() - 1
+    if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= row_count):
+        raise ValueError(f"{prefix} selected row is outside the CSR registry")
+    dense = torch.full((row_count,), -1, dtype=torch.long)
+    dense[rows] = values
+    matched, nonempty = _csr_contains_per_row(record, prefix, dense)
+    return matched[rows], nonempty[rows]
+
+
 def _safe_percent(numerator: int, denominator: int) -> float:
     return 100.0 * float(numerator) / max(int(denominator), 1)
 
@@ -86,27 +116,34 @@ def _summary(query_rows: list[dict], counters: dict[str, torch.Tensor]) -> dict:
         "p90_te_cm": float(np.percentile(translation_errors, 90)),
         "p95_te_cm": float(np.percentile(translation_errors, 95)),
         "p99_te_cm": float(np.percentile(translation_errors, 99)),
-        "cvar95_te_cm": float(
-            np.sort(translation_errors)[-tail_count:].mean()
-        ),
+        "cvar95_te_cm": float(np.sort(translation_errors)[-tail_count:].mean()),
         "median_ae_deg": float(np.median(rotation_errors)),
         "mean_ae_deg": float(np.mean(rotation_errors)),
         "p90_ae_deg": float(np.percentile(rotation_errors, 90)),
         "p95_ae_deg": float(np.percentile(rotation_errors, 95)),
         "recall_5cm_5deg_percent": float(
-            100.0
-            * np.mean((translation_errors < 5.0) & (rotation_errors < 5.0))
+            100.0 * np.mean((translation_errors < 5.0) & (rotation_errors < 5.0))
         ),
-        "catastrophic_100cm_count": int(
-            np.count_nonzero(translation_errors >= 100.0)
-        ),
+        "catastrophic_100cm_count": int(np.count_nonzero(translation_errors >= 100.0)),
         "raw_gt_precision_percent": _safe_percent(correct, raw),
         "inlier_gt_precision_percent": _safe_percent(clean, inliers),
         "solver_inlier_ratio_percent": _safe_percent(inliers, raw),
         "retained_matches_mean": float(
             np.mean([row["correspondences"] for row in query_rows])
         ),
+        "assignment_unmatched_query_rows": int(
+            sum(row.get("assignment_unmatched_queries", 0) for row in query_rows)
+        ),
+        "assignment_reassigned_query_rows": int(
+            sum(row.get("assignment_reassigned_queries", 0) for row in query_rows)
+        ),
+        "assignment_top1_collisions": int(
+            sum(row.get("assignment_top1_collisions", 0) for row in query_rows)
+        ),
         "mean_hypotheses": float(np.mean([row["hypotheses"] for row in query_rows])),
+        "group_diverse_selected_count": int(
+            sum(bool(row.get("group_diverse_selected", False)) for row in query_rows)
+        ),
     }
 
 
@@ -128,9 +165,24 @@ def collect_deployment_statistics(
     query_indices: list[int] | torch.Tensor | None = None,
     deployment_row_limit: int = 0,
     collect_anchor_statistics: bool = True,
+    anchor_bank_updater: Callable[[int, torch.Tensor], None] | None = None,
+    pose_group_field: str | None = None,
+    group_hypothesis_samples: int = 32,
+    assignment_topk: int = 0,
+    assignment_dustbin_score: float = -1.0,
+    view_mixture_matcher: Callable[[int, torch.Tensor, int], TopKMatches] | None = None,
 ) -> dict:
     """Replay exact deployment matching and collect anchor-level outcomes."""
     count = int(torch.as_tensor(state["anchor_xyz"]).shape[0])
+    assignment_topk = int(assignment_topk)
+    if assignment_topk < 0 or assignment_topk > count:
+        raise ValueError("assignment top-K must be zero or within the Anchor count")
+    if assignment_topk and pose_group_field is not None:
+        raise ValueError(
+            "capacity assignment and group-aware pose are separate ablations"
+        )
+    if view_mixture_matcher is not None and assignment_topk:
+        raise ValueError("view-mixture matching and assignment are separate methods")
     if int(teacher["anchor_count"]) != count:
         raise ValueError("teacher and deployment map anchor counts differ")
     metric = load_shared_metric(
@@ -173,14 +225,20 @@ def collect_deployment_statistics(
         raise ValueError("deployment replay query index is out of range")
     query_rows = []
     for completed, query_index in enumerate(selected_queries, start=1):
+        if anchor_bank_updater is not None:
+            anchor_bank_updater(query_index, bank)
         record = teacher["records"][query_index]
         cached = cache[names[query_index]]
-        rows = torch.as_tensor(record["query_rows"]).long()
+        all_rows = torch.as_tensor(record["query_rows"]).long()
+        local_rows = torch.arange(all_rows.numel())
+        rows = all_rows
         if int(deployment_row_limit) > 0:
             # Native detector rows are score-ranked cache indices.  A K-prefix
             # is therefore row < K, not the first K entries of a potentially
             # sparse teacher record.
-            rows = rows[rows < int(deployment_row_limit)]
+            keep = rows < int(deployment_row_limit)
+            rows = rows[keep]
+            local_rows = local_rows[keep]
             if rows.numel() == 0:
                 raise ValueError(
                     f"query {names[query_index]} has no teacher rows in requested "
@@ -190,25 +248,49 @@ def collect_deployment_statistics(
             torch.as_tensor(cached["native_descriptors"]).float()[rows], dim=1
         ).to(device)
         adapted, _ = metric(descriptors)
-        effective_topk = int(retrieval_topk) if collect_anchor_statistics else 1
-        scores, indices = torch.topk(
-            adapted @ bank.T, k=min(effective_topk, count), dim=1
+        effective_topk = max(
+            int(retrieval_topk) if collect_anchor_statistics else 1,
+            assignment_topk,
         )
-        del scores
+        if view_mixture_matcher is None:
+            scores, indices = torch.topk(
+                adapted @ bank.T, k=min(effective_topk, count), dim=1
+            )
+        else:
+            mixture_matches = view_mixture_matcher(
+                query_index, adapted, min(effective_topk, count)
+            )
+            scores = mixture_matches.scores
+            indices = mixture_matches.anchor_indices
         indices_cpu = indices.cpu()
-        winners = indices_cpu[:, 0]
+        assignment = None
+        if assignment_topk:
+            assignment = maximum_weight_anchor_assignment(
+                TopKMatches(
+                    keypoint_indices=torch.arange(rows.numel(), device=device),
+                    anchor_indices=indices[:, :assignment_topk],
+                    scores=scores[:, :assignment_topk],
+                ),
+                dustbin_score=float(assignment_dustbin_score),
+            )
+            selected_positions = assignment.matches.keypoint_indices.cpu()
+            winners = assignment.matches.anchor_indices.cpu()
+            rows = rows[selected_positions]
+            local_rows = local_rows[selected_positions]
+        else:
+            winners = indices_cpu[:, 0]
         counters["winner_count"].index_add_(
             0, winners, torch.ones(winners.numel(), dtype=torch.float64)
         )
-        current_correct, has_positive = _csr_contains_per_row(
-            record, "positive", winners
+        current_correct, has_positive = _csr_contains_at_rows(
+            record, "positive", local_rows, winners
         )
-        current_ambiguous, _ = _csr_contains_per_row(record, "ambiguous", winners)
+        current_ambiguous, _ = _csr_contains_at_rows(
+            record, "ambiguous", local_rows, winners
+        )
         correct_winners = winners[current_correct]
         ambiguous_winners = winners[~current_correct & current_ambiguous]
-        false_winners = winners[
-            ~current_correct & ~current_ambiguous & has_positive
-        ]
+        false_winners = winners[~current_correct & ~current_ambiguous & has_positive]
         for counter_name, selected in (
             ("correct_winner_count", correct_winners),
             ("ambiguous_winner_count", ambiguous_winners),
@@ -217,7 +299,7 @@ def collect_deployment_statistics(
             counters[counter_name].index_add_(
                 0, selected, torch.ones(selected.numel(), dtype=torch.float64)
             )
-        if collect_anchor_statistics:
+        if collect_anchor_statistics and not assignment_topk:
             for local, winner in enumerate(winners.tolist()):
                 positives = _csr_values(record, "positive", local)
                 replacement_correct = False
@@ -233,16 +315,31 @@ def collect_deployment_statistics(
         keypoints = torch.as_tensor(cached["native_keypoints"]).float()[rows]
         keypoints = keypoints + float(cached.get("pixel_center_offset", 0.5))
         intrinsic = torch.as_tensor(cached["native_K"]).float()
-        estimate = solve_absolute_pose(
-            keypoints.numpy(),
-            xyz[winners].numpy(),
-            intrinsic.numpy(),
-            reprojection_error_px=float(ransac_reprojection_px),
-            confidence=0.99999,
-            max_iterations=100000,
-            min_iterations=1000,
-            seed=int(seed),
-        )
+        solve_kwargs = {
+            "reprojection_error_px": float(ransac_reprojection_px),
+            "confidence": 0.99999,
+            "max_iterations": 100000,
+            "min_iterations": 1000,
+            "seed": int(seed),
+        }
+        if pose_group_field is None:
+            estimate = solve_absolute_pose(
+                keypoints.numpy(),
+                xyz[winners].numpy(),
+                intrinsic.numpy(),
+                **solve_kwargs,
+            )
+        else:
+            estimate = solve_group_diverse_absolute_pose(
+                keypoints.numpy(),
+                xyz[winners].numpy(),
+                intrinsic.numpy(),
+                correlation_groups_from_map(
+                    state, winners.numpy(), field=pose_group_field
+                ),
+                group_hypothesis_samples=int(group_hypothesis_samples),
+                **solve_kwargs,
+            )
         inliers = torch.as_tensor(estimate.inliers).long().reshape(-1)
         clean_mask = torch.zeros(inliers.numel(), dtype=torch.bool)
         if inliers.numel():
@@ -297,9 +394,7 @@ def collect_deployment_statistics(
             estimate.pose_w2c,
             torch.as_tensor(cached["pose_w2c"]).cpu().numpy(),
         )
-        te_cm = _pose_error_cm(
-            estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"])
-        )
+        te_cm = _pose_error_cm(estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"]))
         query_rows.append(
             {
                 "query_index": query_index,
@@ -309,7 +404,20 @@ def collect_deployment_statistics(
                 "inliers": int(inliers.numel()),
                 "clean_inliers": int(clean_mask.sum()),
                 "hypotheses": int(estimate.diagnostics.get("iterations", 0)),
+                "group_diverse_selected": bool(
+                    estimate.diagnostics.get("group_diverse_selected", False)
+                ),
                 "correspondences": int(rows.numel()),
+                "assignment_topk": assignment_topk,
+                "assignment_unmatched_queries": (
+                    int(assignment.unmatched_query_count) if assignment else 0
+                ),
+                "assignment_reassigned_queries": (
+                    int(assignment.reassigned_query_count) if assignment else 0
+                ),
+                "assignment_top1_collisions": (
+                    int(assignment.top1_collision_count) if assignment else 0
+                ),
             }
         )
         if completed % 25 == 0 or completed == len(selected_queries):
@@ -573,23 +681,26 @@ def subset_map_and_metric(
     output["anchor_ids"] = torch.arange(int(keep.sum()), dtype=torch.long)
     track_mask = keep & (torch.as_tensor(state["anchor_type"]).long() == 1)
     base_mask = keep & ~track_mask
-    metadata = dict(state["track_centric_reconstruction"])
-    source_track_indices = torch.as_tensor(metadata["track_indices"]).long()
-    source_base_rows = torch.as_tensor(metadata["base_canonical_rows"]).long()
-    source_track_count = source_track_indices.numel()
-    metadata.update(
-        {
-            "budget": int(keep.sum()),
-            "track_anchor_count": int(track_mask.sum()),
-            "base_reserve_count": int(base_mask.sum()),
-            "final_track_count": int(track_mask.sum()),
-            "final_base_count": int(base_mask.sum()),
-            "track_indices": source_track_indices[keep[:source_track_count]],
-            "base_canonical_rows": source_base_rows[keep[source_track_count:]],
-            "deployment_revision_applied": True,
-        }
-    )
-    output["track_centric_reconstruction"] = metadata
+    if "track_centric_reconstruction" in state:
+        metadata = dict(state["track_centric_reconstruction"])
+        source_track_indices = torch.as_tensor(metadata["track_indices"]).long()
+        source_base_rows = torch.as_tensor(metadata["base_canonical_rows"]).long()
+        source_track_count = source_track_indices.numel()
+        if source_track_count + source_base_rows.numel() != count:
+            raise ValueError("track reconstruction registry and map do not align")
+        metadata.update(
+            {
+                "budget": int(keep.sum()),
+                "track_anchor_count": int(track_mask.sum()),
+                "base_reserve_count": int(base_mask.sum()),
+                "final_track_count": int(track_mask.sum()),
+                "final_base_count": int(base_mask.sum()),
+                "track_indices": source_track_indices[keep[:source_track_count]],
+                "base_canonical_rows": source_base_rows[keep[source_track_count:]],
+                "deployment_revision_applied": True,
+            }
+        )
+        output["track_centric_reconstruction"] = metadata
     output["provenance"] = {
         **state.get("provenance", {}),
         "deployment_revision": {

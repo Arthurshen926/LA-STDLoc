@@ -1,0 +1,34 @@
+{
+  "arm": "C2",
+  "input_sha256": {
+    "selection": "c80750e5cbd22b77c92d2cedfa439b4c9121cf465716d72c21e3df84be0b39b0",
+    "source_map": "9f3a09fd7c2548d358532ec9b38829802e03cac2ecc82955c119b1af046040cb"
+  },
+  "inputs": {
+    "selection": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/unified_sufficiency_selection.pt",
+    "source_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_map.pt"
+  },
+  "output_sha256": {
+    "map": "a828bc8fb25d10459a8d9f9822b72b8e9f862afebc363ea63cd27aac60840cfe",
+    "metric": "1bd5c2d05dffc716a74075c6a0259c61e09258f32cc9b9f1e3ac0e7a6f9bce08"
+  },
+  "outputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/attribution_C2_budget4256/budget_control_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/attribution_C2_budget4256/budget_control_identity_metric.pt"
+  },
+  "policy": "v14_selector_precision_order_prefix",
+  "producer_identity": {
+    "git_commit": "854d1d453f9ec11897b687140a92cda70f212996",
+    "source_sha256": {
+      "scripts/materialize_rendered_track_budget_control.py": "d7349e349b795e57f33285c1c3c614858048ab2eb8c668f4a3fc86f64c7dbf70"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_attribution_budget_control",
+  "source_count": 5702,
+  "target_count": 4256,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

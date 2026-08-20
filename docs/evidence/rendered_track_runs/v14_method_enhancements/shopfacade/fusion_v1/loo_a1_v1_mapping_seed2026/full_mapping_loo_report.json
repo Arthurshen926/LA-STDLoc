@@ -1,0 +1,75 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "3d8424031b503525be8cca2f3a15cf02710e81fbcb2a8233e71a4e2d5baa8e50",
+    "metric": "e814684a36804ae613aaf8d18e1ab5f7f6e4594dce4cd2acbce15f64297c25ea",
+    "query_cache": "661109ff09dc80e13bfab9cc45c496d5ca4e23b9817cb47fc728f551ce0d970e",
+    "scene_calibration": "849971cad9ad84dcea8b8ffa21301c588cd706942a296d8079661d51ef7dc0a0",
+    "teacher": "bbba3854fea6f18fb8a54bbce65ba0f8fb7928bce22d9d0ec9f6617d4079314a",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/loo_a1_v1/anchor_map_step_0175.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/loo_a1_v1/metric_state_step_0175.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/conditional_fusion_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/scene_calibration_rebound.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/training_v2/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 161038,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 1154,
+    "mean_affected_anchors_per_query": 697.1342163085938,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "a3cbcb8fc74786054c130cd8da94e0e8e6e8ae4c",
+    "source_sha256": {
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "08ad6052ea2cf965c9ecc1229ebeaed590bdbbc12f4f7d736a410e95df4a0dfd",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/loo_a1_v1_mapping_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "fd0ac702ee19c527885d77eda8d451ca83023b6afa7e1c189fadf77855aafac7",
+  "summary": {
+    "catastrophic_100cm_count": 2,
+    "cvar95_te_cm": 494.362043038321,
+    "inlier_gt_precision_percent": 88.72690639817972,
+    "mean_ae_deg": 1.098243478119045,
+    "mean_hypotheses": 3598.2943722943724,
+    "mean_te_cm": 26.01895600148992,
+    "median_ae_deg": 0.018294963514203316,
+    "median_te_cm": 0.3357923589646816,
+    "p90_ae_deg": 0.0429507141157529,
+    "p90_te_cm": 0.7544651627540588,
+    "p95_ae_deg": 0.055934233382232704,
+    "p95_te_cm": 1.0564318858087063,
+    "p99_te_cm": 2.25217800587415,
+    "query_count": 231,
+    "raw_gt_precision_percent": 24.986682112597453,
+    "recall_5cm_5deg_percent": 99.13419913419914,
+    "retained_matches_mean": 2047.82683982684,
+    "solver_inlier_ratio_percent": 36.51236238183017
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

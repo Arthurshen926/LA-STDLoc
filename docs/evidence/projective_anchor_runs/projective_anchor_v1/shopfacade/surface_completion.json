@@ -1,0 +1,39 @@
+{
+  "authorizes_default_map_change": false,
+  "decision": "CANDIDATE_PROVIDER_READY_REQUIRES_UNIFIED_SELECTOR_EVALUATION",
+  "inputs": {
+    "mapping_source": "gaussian_render",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "query_cache_sha256": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+    "track_payload_sha256": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14",
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries": false
+  },
+  "map": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_completion.pt",
+  "map_sha256": "9899a971405b665720d77c6d86d8a22897cbaca6f4cb4494839b31a7aacdcd4a",
+  "schema": "lafgs_gaussian_render_surface_completion_report",
+  "surface_completion": {
+    "alpha_minimum": 0.05,
+    "descriptor": "gwff_style_rendered_rgb_observation_fusion",
+    "descriptor_trim_fraction": 0.2,
+    "eligible_surface_component_count": 2096,
+    "geometry": "weighted_rendered_depth_unprojection_not_primitive_center",
+    "identity": "multi_view_rendered_depth_surface_voxel",
+    "legal_observation_count": 59136,
+    "maximum_candidates": 512,
+    "maximum_rows_per_view": 256,
+    "minimum_observations": 3,
+    "minimum_pose_bins": 2,
+    "minimum_views": 2,
+    "schema": "lafgs_gaussian_render_surface_completion",
+    "selected_surface_component_count": 512,
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries": false,
+    "version": 1,
+    "voxel_size_m": 0.37035385445008145
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

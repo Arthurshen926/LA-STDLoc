@@ -1,0 +1,65 @@
+{
+  "diagnostics": {
+    "candidate_count": 15072,
+    "missing_source_count": 27,
+    "missing_source_track_ids": [
+      466,
+      540,
+      3865,
+      2298,
+      256,
+      5429,
+      6114,
+      5977,
+      3662,
+      527,
+      3099,
+      8690,
+      8431,
+      9627,
+      11200,
+      29139,
+      9712,
+      9531,
+      8209,
+      21201,
+      11041,
+      22380,
+      8179,
+      36653,
+      10564,
+      24332,
+      21382
+    ],
+    "multi_child_source_count": 6,
+    "retained_source_count": 4256,
+    "retention_fraction": 0.9936960074713985,
+    "selected_child_count": 4262,
+    "source_selection_count": 4283
+  },
+  "input_sha256": {
+    "repaired_candidate_map": "ef0863bf71e976d5a980d032f826d80fe06fb3f938828e0956e8408108beb022",
+    "repaired_track_payload": "a5d16927d3bdbebb6cfb9192c03ec433c598b4a2069e957d39e4d5ff2e8943ba",
+    "source_selection": "b4d9f09e28ce9f8bd2b28b41758e23189920467059ef6f4930b3a97fea1db199"
+  },
+  "inputs": {
+    "repaired_candidate_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_candidate_map.pt",
+    "repaired_track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repaired_track_payload.pt",
+    "source_selection": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/training/rendered_track_training_map.pt"
+  },
+  "output": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/frozen_membership_max2/frozen_membership_anchor_map.pt",
+  "output_sha256": "de4b14f3b847e07eb01a9c1ca8f8995ccb3356c05dff1efa23bda242a111e38e",
+  "producer_identity": {
+    "git_commit": "8b5a8f1c5c273ec0e7efc88d16fba0c163102df1",
+    "source_sha256": {
+      "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+      "scripts/materialize_rendered_track_frozen_membership.py": "2a62fa8aef889f4598bb35f420cfd08ba0a561964e2b2fe4ab0c77f909dd1ba9"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_frozen_membership_report",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

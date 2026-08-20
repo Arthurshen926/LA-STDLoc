@@ -1,0 +1,52 @@
+{
+  "input_sha256": {
+    "anchor_map": "781f9cd70fd749c89178fd85e871dc46a70284d6ea0b7c0725b32300f6a2bb32",
+    "query_cache": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+    "track_payload": "a8c2e1e68207fd887dea3602992ef18701179968f22058a4e9528fc1fd25c417"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/topology_final/adaptive_compact_total03447.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/stairs/appearance_ensemble_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/support_repair_final/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "8fd1a439fb4df99ee2813f257360fe6834de8d8996fc2d70964e06315a5fb123",
+    "map": "9267c08fd672aab2506d5c3885d978323b9b6f8fe8421aed547643190e573810",
+    "teacher": "dabd9035eae1bd7b3abaf3a1745c9ad1a82a8a6ad8f4d8b85d663479345b60cd",
+    "track_payload": "5cf6c01930f818c554ceebb7f0aea5da8033524f5c5904d5609958d571ff2d7e"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_final/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_final/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_final/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/training_final/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 1147752,
+    "depth_visibility_rejected_anchor_count": 1370292,
+    "exact_depth_disagreement_audit_count": 186835,
+    "exact_track_positive_count": 371803,
+    "masked_query_row_count": 0,
+    "positive_rows": 371803,
+    "query_count": 2000,
+    "strong_pair_count": 371803,
+    "support_compatible_pair_count": 172706
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

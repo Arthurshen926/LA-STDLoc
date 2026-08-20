@@ -40,8 +40,11 @@ from common.config import (
 from map_learning.pipeline import (
     build_bootstrap_and_tracks,
     build_evidence,
+    configure_build_timing,
     distill_compact_map,
+    finalize_build_timing,
     resolve_prior_ply,
+    timed_pipeline_stage,
     train_compact_map,
     write_pipeline_manifest,
 )
@@ -60,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provenance-shards", type=int, default=1)
     parser.add_argument("--observation-shards", type=int, default=1)
     parser.add_argument("--pose-scoring-shards", type=int, default=1)
+    parser.add_argument(
+        "--gpu-workers-per-device",
+        type=int,
+        default=0,
+        help=(
+            "Bound concurrent shard processes per visible GPU; zero preserves "
+            "historical scheduling. Use one for long memory-heavy shards."
+        ),
+    )
     parser.add_argument(
         "--evaluate",
         action=argparse.BooleanOptionalAction,
@@ -124,6 +136,8 @@ def _validate_arguments(
         or args.artifact_cache_max_node_gib > args.artifact_cache_max_total_gib
     ):
         parser.error("artifact cache limits must be positive and node <= total")
+    if args.gpu_workers_per_device < 0:
+        parser.error("--gpu-workers-per-device cannot be negative")
     args.output = args.output.expanduser().resolve()
     if args.output.exists():
         parser.error(
@@ -152,6 +166,8 @@ _BOOTSTRAP_DAG_SOURCES = (
     "data/scene.py",
     "data/splits.py",
     "evidence/camera_pair_policy.py",
+    "evidence/observation_provider.py",
+    "localization/group_consensus.py",
     "evidence/parallax_stratified_pair_policy.py",
     "evidence/parallel_triangulation.py",
     "evidence/track_provenance_assignment.py",
@@ -578,6 +594,11 @@ def run(args: argparse.Namespace, *, experimental_factors: dict[str, object]) ->
     # Atomically claim the run root.  This closes the preflight/write TOCTOU
     # window and makes direct API callers obey the same fresh-root contract.
     args.output.mkdir(parents=True, exist_ok=False)
+    if int(args.gpu_workers_per_device) > 0:
+        os.environ["LAFGS_GPU_WORKERS_PER_DEVICE"] = str(
+            int(args.gpu_workers_per_device)
+        )
+    configure_build_timing(args.output / "build_timing.json")
     config = Path(args.config)
     if args.keypoints is not None:
         config = materialize_keypoint_factor_config(
@@ -596,51 +617,58 @@ def run(args: argparse.Namespace, *, experimental_factors: dict[str, object]) ->
             config,
             args.output / "factor_config_surface_tracks.yaml",
         )
-    artifacts, _ = _build_or_reuse_bootstrap(args=args, config=Path(config))
+    with timed_pipeline_stage("bootstrap_and_tracks"):
+        artifacts, _ = _build_or_reuse_bootstrap(
+            args=args,
+            config=Path(config),
+        )
     prior_ply = resolve_prior_ply(args.prior)
-    evidence = build_evidence(
-        base_state=artifacts["base_state"],
-        track_payload=artifacts["track_payload"],
-        query_cache=artifacts["query_cache"],
-        prior_ply=prior_ply,
-        gaussian_type=args.gaussian_type,
-        sh_degree=args.sh_degree,
-        visibility_cache=artifacts["visibility_cache"],
-        output=args.output / "evidence",
-        config=config,
-        valid_masks=args.valid_masks or None,
-        function_graph_shards=args.function_graph_shards,
-        provenance_shards=args.provenance_shards,
-        observation_shards=args.observation_shards,
-        scene_calibration=artifacts.get("scene_calibration"),
-    )
-    compact_map = distill_compact_map(
-        canonical_map=evidence["canonical_map"],
-        function_graph=evidence["function_graph"],
-        positive_teacher=evidence["positive_teacher"],
-        track_payload=artifacts["track_payload"],
-        query_cache=artifacts["query_cache"],
-        output=args.output / "topology",
-        config=config,
-        pose_scoring_shards=args.pose_scoring_shards,
-    )
-    trained = train_compact_map(
-        compact_map=compact_map,
-        function_graph=evidence["function_graph"],
-        track_payload=artifacts["track_payload"],
-        query_cache=artifacts["query_cache"],
-        prior_ply=prior_ply,
-        gaussian_type=args.gaussian_type,
-        sh_degree=args.sh_degree,
-        output=args.output / "map_learning",
-        config=config,
-        valid_masks=args.valid_masks or None,
-        rebuild_function_graph=True,
-        function_graph_shards=args.function_graph_shards,
-        provenance_shards=args.provenance_shards,
-        observation_shards=args.observation_shards,
-        scene_calibration=artifacts.get("scene_calibration"),
-    )
+    with timed_pipeline_stage("canonical_evidence"):
+        evidence = build_evidence(
+            base_state=artifacts["base_state"],
+            track_payload=artifacts["track_payload"],
+            query_cache=artifacts["query_cache"],
+            prior_ply=prior_ply,
+            gaussian_type=args.gaussian_type,
+            sh_degree=args.sh_degree,
+            visibility_cache=artifacts["visibility_cache"],
+            output=args.output / "evidence",
+            config=config,
+            valid_masks=args.valid_masks or None,
+            function_graph_shards=args.function_graph_shards,
+            provenance_shards=args.provenance_shards,
+            observation_shards=args.observation_shards,
+            scene_calibration=artifacts.get("scene_calibration"),
+        )
+    with timed_pipeline_stage("selector"):
+        compact_map = distill_compact_map(
+            canonical_map=evidence["canonical_map"],
+            function_graph=evidence["function_graph"],
+            positive_teacher=evidence["positive_teacher"],
+            track_payload=artifacts["track_payload"],
+            query_cache=artifacts["query_cache"],
+            output=args.output / "topology",
+            config=config,
+            pose_scoring_shards=args.pose_scoring_shards,
+        )
+    with timed_pipeline_stage("compact_evidence_and_metric"):
+        trained = train_compact_map(
+            compact_map=compact_map,
+            function_graph=evidence["function_graph"],
+            track_payload=artifacts["track_payload"],
+            query_cache=artifacts["query_cache"],
+            prior_ply=prior_ply,
+            gaussian_type=args.gaussian_type,
+            sh_degree=args.sh_degree,
+            output=args.output / "map_learning",
+            config=config,
+            valid_masks=args.valid_masks or None,
+            rebuild_function_graph=True,
+            function_graph_shards=args.function_graph_shards,
+            provenance_shards=args.provenance_shards,
+            observation_shards=args.observation_shards,
+            scene_calibration=artifacts.get("scene_calibration"),
+        )
     outputs = {
         **artifacts,
         **evidence,
@@ -725,19 +753,21 @@ def run(args: argparse.Namespace, *, experimental_factors: dict[str, object]) ->
     locked_parents = {
         name: (path, sha256_file(path)) for name, path in registry_parents.items()
     }
-    registry_result = materialize_anchor_registry(
-        parents=locked_parents,
-        output=Path(trained["trained_map"]).parent / "neutral_anchor_registry.pt",
-        contract_output=(
-            Path(trained["trained_map"]).parent
-            / "neutral_anchor_registry.contract.json"
-        ),
-        require_pipeline_parents=True,
-    )
+    with timed_pipeline_stage("anchor_registry"):
+        registry_result = materialize_anchor_registry(
+            parents=locked_parents,
+            output=Path(trained["trained_map"]).parent / "neutral_anchor_registry.pt",
+            contract_output=(
+                Path(trained["trained_map"]).parent
+                / "neutral_anchor_registry.contract.json"
+            ),
+            require_pipeline_parents=True,
+        )
     outputs["anchor_registry"] = registry_result["registry"]
     outputs["anchor_registry_contract"] = registry_result["contract"]
     outputs["selection_provenance"] = selection_provenance
     outputs["config"] = Path(config).expanduser().resolve()
+    outputs["build_timing"] = finalize_build_timing()
     manifest = write_pipeline_manifest(args.output, outputs)
     completion = write_pipeline_completion(
         output=args.output,

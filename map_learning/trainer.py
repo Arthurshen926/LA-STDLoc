@@ -18,6 +18,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from common.hashing import sha256_file
+from evidence.tracks import (
+    LeaveOneQueryOutProjectiveAnchorDescriptorBank,
+    LeaveOneQueryOutTrackDescriptorBank,
+)
 from map_learning.metric import SharedLowRankMetric
 from map_learning.alias_teacher import (
     RecurrentAliasTeacher,
@@ -118,9 +123,7 @@ def _build_training_records(
         ),
         "ambiguous_pair_count": ambiguous_pairs,
         "ignored_ambiguous_pair_count": ignored_ambiguous_pairs,
-        "track_anchor_count": int(
-            torch.as_tensor(metadata["track_indices"]).numel()
-        ),
+        "track_anchor_count": int(torch.as_tensor(metadata["track_indices"]).numel()),
         "base_anchor_count": int(
             torch.as_tensor(metadata["base_canonical_rows"]).numel()
         ),
@@ -187,7 +190,9 @@ def resolve_density_prefixes(
         if torch.as_tensor(record["cache_rows"]).numel()
     )
     maximum = int(deployment_row_limit) if int(deployment_row_limit) > 0 else inferred
-    prefixes = tuple(sorted(set(max(int(round(maximum * value)), 1) for value in values)))
+    prefixes = tuple(
+        sorted(set(max(int(round(maximum * value)), 1) for value in values))
+    )
     if prefixes[-1] != maximum:
         raise RuntimeError("density prefix resolution lost the full deployment density")
     return prefixes
@@ -218,13 +223,13 @@ def _replace_refreshed_pairs(
     refreshed_harmful: dict,
 ) -> dict[str, int]:
     old_clean = sum(len(clean_pairs.get(int(query), {})) for query in query_indices)
-    old_harmful = sum(
-        len(harmful_pairs.get(int(query), {})) for query in query_indices
-    )
+    old_harmful = sum(len(harmful_pairs.get(int(query), {})) for query in query_indices)
     for query in query_indices:
         clean_pairs.pop(int(query), None)
         harmful_pairs.pop(int(query), None)
-    clean_pairs.update({int(key): dict(value) for key, value in refreshed_clean.items()})
+    clean_pairs.update(
+        {int(key): dict(value) for key, value in refreshed_clean.items()}
+    )
     harmful_pairs.update(
         {int(key): dict(value) for key, value in refreshed_harmful.items()}
     )
@@ -327,16 +332,17 @@ def _refresh_ransac_outcomes(
     deployment_row_limit: int = 0,
     anchor_residual_parameter: torch.Tensor | None = None,
     anchor_residual_max_norm: float = 0.0,
+    loo_descriptor_bank: LeaveOneQueryOutTrackDescriptorBank | None = None,
 ):
-    bank, _, _ = bounded_anchor_bank(
+    reference_bank, _, _ = bounded_anchor_bank(
         metric,
         raw_features,
         anchor_residual_parameter,
         anchor_residual_max_norm,
     )
     xyz_cpu = torch.as_tensor(state["anchor_xyz"]).float()
-    harmful = torch.zeros(bank.shape[0])
-    clean = torch.zeros(bank.shape[0])
+    harmful = torch.zeros(reference_bank.shape[0])
+    clean = torch.zeros(reference_bank.shape[0])
     harmful_pairs: dict[int, dict[int, int]] = defaultdict(dict)
     clean_pairs: dict[int, dict[int, int]] = defaultdict(dict)
     false_top1_pairs: dict[int, dict[int, int]] = defaultdict(dict)
@@ -344,11 +350,30 @@ def _refresh_ransac_outcomes(
     group_error: dict[int, list[float]] = defaultdict(list)
     rows = []
     for query_index in np.asarray(query_indices, dtype=int).tolist():
+        bank = reference_bank
+        if loo_descriptor_bank is not None:
+            update_rows, update_features = loo_descriptor_bank.query_update(query_index)
+            if update_rows.numel():
+                device_rows = update_rows.to(device)
+                row_residual = (
+                    None
+                    if anchor_residual_parameter is None
+                    else anchor_residual_parameter[device_rows]
+                )
+                update_bank, _, _ = bounded_anchor_bank(
+                    metric,
+                    update_features.to(device),
+                    row_residual,
+                    anchor_residual_max_norm,
+                )
+                bank = reference_bank.index_copy(0, device_rows, update_bank)
         cached = cache[names[query_index]]
         record = training_records[query_index]
         deployment_rows = record["deployment_rows"].long()
         if int(deployment_row_limit) > 0:
-            deployment_rows = deployment_rows[deployment_rows < int(deployment_row_limit)]
+            deployment_rows = deployment_rows[
+                deployment_rows < int(deployment_row_limit)
+            ]
         if deployment_rows.numel() == 0:
             continue
         record_rows = torch.searchsorted(record["cache_rows"].long(), deployment_rows)
@@ -364,12 +389,10 @@ def _refresh_ransac_outcomes(
         positives = record["positives"][record_rows]
         ignored = record["ignored_anchors"][record_rows]
         has_positive = (positives >= 0).any(dim=1)
-        top1_positive = (
-            (positives == index.cpu()[:, None]) & (positives >= 0)
-        ).any(dim=1)
-        top1_ignored = (
-            (ignored == index.cpu()[:, None]) & (ignored >= 0)
-        ).any(dim=1)
+        top1_positive = ((positives == index.cpu()[:, None]) & (positives >= 0)).any(
+            dim=1
+        )
+        top1_ignored = ((ignored == index.cpu()[:, None]) & (ignored >= 0)).any(dim=1)
         false_top1 = has_positive & ~top1_positive & ~top1_ignored
         for cache_row, anchor in zip(
             deployment_rows[false_top1].tolist(), index.cpu()[false_top1].tolist()
@@ -389,9 +412,7 @@ def _refresh_ransac_outcomes(
             min_iterations=1000,
             seed=int(seed),
         )
-        te_cm = _pose_error_cm(
-            estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"])
-        )
+        te_cm = _pose_error_cm(estimate.pose_w2c, torch.as_tensor(cached["pose_w2c"]))
         group = int(groups[query_index])
         group_error[group].append(te_cm)
         inliers = torch.as_tensor(estimate.inliers).long().reshape(-1)
@@ -421,9 +442,9 @@ def _refresh_ransac_outcomes(
             if top_scores.shape[1] >= 2:
                 margins = (top_scores[:, 0] - top_scores[:, 1]).detach().cpu()
                 for local in inliers[clean_mask].tolist():
-                    clean_margin_pairs[query_index][
-                        int(deployment_rows[local])
-                    ] = float(margins[local])
+                    clean_margin_pairs[query_index][int(deployment_rows[local])] = (
+                        float(margins[local])
+                    )
         rows.append(
             {
                 "query_index": query_index,
@@ -496,26 +517,19 @@ def _multi_positive_list_loss(
     harmful_weight: float,
 ) -> torch.Tensor:
     scores = query @ bank.T
-    top_scores, top_indices = torch.topk(
-        scores, k=min(int(topk), bank.shape[0]), dim=1
-    )
+    top_scores, top_indices = torch.topk(scores, k=min(int(topk), bank.shape[0]), dim=1)
     positive_mask = positives >= 0
-    positive_scores = torch.einsum(
-        "bd,bpd->bp", query, bank[positives.clamp_min(0)]
-    )
+    positive_scores = torch.einsum("bd,bpd->bp", query, bank[positives.clamp_min(0)])
     top_is_positive = (
-        (top_indices[:, :, None] == positives[:, None, :])
-        & positive_mask[:, None, :]
+        (top_indices[:, :, None] == positives[:, None, :]) & positive_mask[:, None, :]
     ).any(dim=2)
     ignored_valid = ignored >= 0
     top_is_ignored = (
-        (top_indices[:, :, None] == ignored[:, None, :])
-        & ignored_valid[:, None, :]
+        (top_indices[:, :, None] == ignored[:, None, :]) & ignored_valid[:, None, :]
     ).any(dim=2)
     denominator = torch.logsumexp(
         (
-            torch.cat((top_scores, positive_scores), dim=1)
-            / float(temperature)
+            torch.cat((top_scores, positive_scores), dim=1) / float(temperature)
         ).masked_fill(
             ~torch.cat((~top_is_positive & ~top_is_ignored, positive_mask), dim=1),
             -torch.inf,
@@ -559,6 +573,62 @@ def bounded_anchor_bank(
     return F.normalize(shared + residual, dim=1), shared_residual, residual
 
 
+def bounded_query_anchor_bank(
+    *,
+    metric: SharedLowRankMetric,
+    raw_features: torch.Tensor,
+    query_index: int,
+    loo_descriptor_bank: LeaveOneQueryOutTrackDescriptorBank | None,
+    anchor_residual_parameter: torch.Tensor | None,
+    maximum_norm: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """Build the training bank, replacing only rows affected by one query.
+
+    The deployed checkpoint still contains the full-observation Track bank.
+    This helper only removes the current mapping query's own descriptor
+    observations while that query supplies self-localization feedback.
+    """
+    bank, shared_residual, anchor_residual = bounded_anchor_bank(
+        metric,
+        raw_features,
+        anchor_residual_parameter,
+        maximum_norm,
+    )
+    if loo_descriptor_bank is None:
+        return bank, shared_residual, anchor_residual, 0
+    rows, features = loo_descriptor_bank.query_update(int(query_index))
+    if rows.numel() == 0:
+        return bank, shared_residual, anchor_residual, 0
+    device_rows = rows.to(raw_features.device)
+    row_residual = (
+        None
+        if anchor_residual_parameter is None
+        else anchor_residual_parameter[device_rows]
+    )
+    updates, _, _ = bounded_anchor_bank(
+        metric,
+        features.to(device=raw_features.device, dtype=raw_features.dtype),
+        row_residual,
+        maximum_norm,
+    )
+    return (
+        bank.index_copy(0, device_rows, updates),
+        shared_residual,
+        anchor_residual,
+        int(rows.numel()),
+    )
+
+
+def track_descriptor_payload_for_loo(payload: dict) -> dict:
+    """Restore pose-view bins after training replaces them with DRO groups."""
+    if "pose_view_bins" not in payload:
+        return payload
+    pose_view_bins = torch.as_tensor(payload["pose_view_bins"]).long().reshape(-1)
+    if pose_view_bins.numel() != len(payload["query_names"]):
+        raise ValueError("LOO pose-view bins do not align with the query registry")
+    return {**payload, "query_bins": pose_view_bins}
+
+
 def _save_checkpoint(
     output_dir: Path,
     step: int,
@@ -592,18 +662,19 @@ def _save_checkpoint(
         "config": config,
         "history": history,
     }
-    map_path = output_dir / f"anchor_map_step_{step:04d}.pt"
+    map_path = (output_dir / f"anchor_map_step_{step:04d}.pt").resolve()
     torch.save(output, map_path)
     torch.save(
         {
             "schema": "lafgs_shared_metric_state",
             "version": 1,
-            "landmark_indices": torch.arange(transformed.shape[0]).long(),
+            "landmark_indices": torch.as_tensor(output["anchor_ids"]).long().clone(),
             "metric_config": metric.export_config(),
             "metric_state_dict": {
                 key: value.detach().cpu() for key, value in metric.state_dict().items()
             },
             "map_path": str(map_path),
+            "map_sha256": sha256_file(map_path),
             "step": int(step),
         },
         output_dir / f"metric_state_step_{step:04d}.pt",
@@ -667,6 +738,9 @@ def train(
     ransac_reprojection_px: float = 12.0,
     clean_reprojection_px: float = 4.0,
     seed: int = 2026,
+    leave_one_query_out_track_descriptors: bool = False,
+    loo_descriptor_trim_fraction: float = 0.2,
+    cpu_threads: int = 1,
 ) -> dict:
     if not 0.0 <= float(alias_query_replay_fraction) <= 1.0:
         raise ValueError("alias_query_replay_fraction must lie in [0, 1]")
@@ -676,6 +750,9 @@ def train(
         raise ValueError("protected_clean_task_scale must lie in [0, 1]")
     if float(anchor_feature_residual_max_norm) < 0.0:
         raise ValueError("anchor feature residual bound must be non-negative")
+    if int(cpu_threads) <= 0:
+        raise ValueError("CPU thread count must be positive")
+    torch.set_num_threads(int(cpu_threads))
     torch.manual_seed(int(seed))
     device = torch.device("cuda")
     state = torch.load(map_path, map_location="cpu", weights_only=False)
@@ -688,19 +765,45 @@ def train(
     records, data_report = _build_training_records(
         graph, payload, state, teacher, max_positives
     )
-    records, row_limit_report = limit_training_records(
-        records, deployment_row_limit
-    )
+    records, row_limit_report = limit_training_records(records, deployment_row_limit)
     data_report.update(row_limit_report)
     density_prefixes = resolve_density_prefixes(
         records, deployment_row_limit, density_prefix_fractions
     )
-    raw_features = F.normalize(
-        torch.as_tensor(
-            state.get("v7_metric_raw_features", state["anchor_features"])
-        ).float(),
-        dim=1,
-    ).to(device)
+    # Fused Track descriptors are already the exact normalized deployment raw
+    # bank.  Keep their serialized values bitwise intact for the LOO replay;
+    # SharedLowRankMetric performs the required normalization internally.
+    raw_features_cpu = torch.as_tensor(
+        state.get("v7_metric_raw_features", state["anchor_features"])
+    ).float()
+    loo_descriptor_bank = None
+    if leave_one_query_out_track_descriptors:
+        if (
+            payload.get("rendered_rgb_only") is not True
+            or cache_payload.get("uses_source_mapping_rgb") is not False
+            or cache_payload.get("uses_test_queries") is not False
+        ):
+            raise ValueError(
+                "LOO Track descriptor training requires source-image-free mapping inputs"
+            )
+        loo_payload = track_descriptor_payload_for_loo(payload)
+        if bool((torch.as_tensor(state["track_cluster_ids"]) < 0).any()):
+            loo_descriptor_bank = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
+                state=state,
+                payload=loo_payload,
+                query_cache=cache_payload,
+                reference_features=raw_features_cpu,
+                trim_fraction=float(loo_descriptor_trim_fraction),
+            )
+        else:
+            loo_descriptor_bank = LeaveOneQueryOutTrackDescriptorBank(
+                payload=loo_payload,
+                query_cache=cache_payload,
+                track_indices=state["track_cluster_ids"],
+                reference_features=raw_features_cpu,
+                trim_fraction=float(loo_descriptor_trim_fraction),
+            )
+    raw_features = raw_features_cpu.to(device)
     metric = SharedLowRankMetric(
         descriptor_dim=raw_features.shape[1],
         rank=rank,
@@ -799,7 +902,9 @@ def train(
         "refresh_shards": int(refresh_shards),
         "initial_ransac_refresh": bool(initial_ransac_refresh),
         "deployment_row_limit": int(deployment_row_limit),
-        "density_prefix_fractions": [float(value) for value in density_prefix_fractions],
+        "density_prefix_fractions": [
+            float(value) for value in density_prefix_fractions
+        ],
         "density_prefixes": list(density_prefixes),
         "density_dro_eta": float(density_dro_eta),
         "density_dro_max_weight_ratio": float(density_dro_max_weight_ratio),
@@ -812,20 +917,14 @@ def train(
         "alias_query_replay_fraction": float(alias_query_replay_fraction),
         "alias_require_harmful_inlier": bool(alias_require_harmful_inlier),
         "protected_clean_weight": float(protected_clean_weight),
-        "protected_clean_minimum_margin": float(
-            protected_clean_minimum_margin
-        ),
+        "protected_clean_minimum_margin": float(protected_clean_minimum_margin),
         "protected_clean_margin_slack": float(protected_clean_margin_slack),
         "protected_clean_task_scale": float(protected_clean_task_scale),
-        "anchor_feature_residual_max_norm": float(
-            anchor_feature_residual_max_norm
-        ),
+        "anchor_feature_residual_max_norm": float(anchor_feature_residual_max_norm),
         "anchor_feature_residual_trust_weight": float(
             anchor_feature_residual_trust_weight
         ),
-        "anchor_feature_residual_alias_only": bool(
-            anchor_feature_residual_alias_only
-        ),
+        "anchor_feature_residual_alias_only": bool(anchor_feature_residual_alias_only),
         "anchor_feature_residual_include_alias_positives": bool(
             anchor_feature_residual_include_alias_positives
         ),
@@ -841,6 +940,12 @@ def train(
         "ransac_reprojection_px": float(ransac_reprojection_px),
         "clean_reprojection_px": float(clean_reprojection_px),
         "seed": int(seed),
+        "leave_one_query_out_track_descriptors": bool(
+            leave_one_query_out_track_descriptors
+        ),
+        "loo_descriptor_trim_fraction": float(loo_descriptor_trim_fraction),
+        "formal_method_uses_crossfit": False,
+        "cpu_threads": int(cpu_threads),
         "initial_metric_state": (
             str(Path(initial_metric_state_path).resolve())
             if initial_metric_state_path is not None
@@ -875,6 +980,7 @@ def train(
                         deployment_row_limit=density_prefix,
                         anchor_residual_parameter=anchor_residual_parameter,
                         anchor_residual_max_norm=anchor_feature_residual_max_norm,
+                        loo_descriptor_bank=loo_descriptor_bank,
                     )
                 )
             (
@@ -915,9 +1021,7 @@ def train(
                 alias_repair_anchor_indices(
                     alias_teacher,
                     records,
-                    include_positives=(
-                        anchor_feature_residual_include_alias_positives
-                    ),
+                    include_positives=(anchor_feature_residual_include_alias_positives),
                 )
             )
             risk = torch.zeros_like(group_weights)
@@ -989,9 +1093,7 @@ def train(
                         ]
                     )
                 ),
-                "harmful_anchor_fraction": float(
-                    (harmful_prior > 0).float().mean()
-                ),
+                "harmful_anchor_fraction": float((harmful_prior > 0).float().mean()),
                 "group_weight_max": float(group_weights.max()),
                 "group_weight_effective_count": float(
                     group_weights.sum().square()
@@ -1016,11 +1118,7 @@ def train(
         )
         if replay_alias_query:
             query_index = active_alias_queries[
-                int(
-                    torch.randint(
-                        len(active_alias_queries), (1,), generator=generator
-                    )
-                )
+                int(torch.randint(len(active_alias_queries), (1,), generator=generator))
             ]
         else:
             query_index = int(torch.randint(len(records), (1,), generator=generator))
@@ -1067,8 +1165,9 @@ def train(
             ]
         cache_rows = record["cache_rows"][rows]
         query = F.normalize(
-            torch.as_tensor(cache[names[query_index]]["native_descriptors"])
-            .float()[cache_rows],
+            torch.as_tensor(cache[names[query_index]]["native_descriptors"]).float()[
+                cache_rows
+            ],
             dim=1,
         ).to(device)
         positives = record["positives"][rows].to(device)
@@ -1105,9 +1204,7 @@ def train(
             device=device,
         )[:, None]
         harmful_survivors = torch.where(
-            (
-                (harmful_survivors == ignored) & (ignored >= 0)
-            ).any(dim=1, keepdim=True),
+            ((harmful_survivors == ignored) & (ignored >= 0)).any(dim=1, keepdim=True),
             torch.full_like(harmful_survivors, -1),
             harmful_survivors,
         )
@@ -1143,11 +1240,14 @@ def train(
             adapted_anchor,
             shared_anchor_residual,
             anchor_feature_residual,
-        ) = bounded_anchor_bank(
-            metric,
-            raw_features,
-            anchor_residual_parameter,
-            anchor_feature_residual_max_norm,
+            loo_affected_anchor_count,
+        ) = bounded_query_anchor_bank(
+            metric=metric,
+            raw_features=raw_features,
+            query_index=query_index,
+            loo_descriptor_bank=loo_descriptor_bank,
+            anchor_residual_parameter=anchor_residual_parameter,
+            maximum_norm=anchor_feature_residual_max_norm,
         )
         list_loss = torch.zeros(adapted_query.shape[0], device=device)
         if bool(matchable.any()):
@@ -1167,9 +1267,8 @@ def train(
                 all_row_weights[protect] = float(protected_clean_task_scale)
             row_weights = all_row_weights[matchable]
             task_loss = (
-                (list_loss[matchable] * row_weights).sum()
-                / row_weights.sum().clamp_min(1e-8)
-            )
+                list_loss[matchable] * row_weights
+            ).sum() / row_weights.sum().clamp_min(1e-8)
         else:
             task_loss = torch.zeros((), device=device)
         alias_loss, alias_diagnostics = alias_group_ranking_loss(
@@ -1204,10 +1303,9 @@ def train(
         anchor_feature_trust_loss = anchor_feature_residual.square().sum(dim=1).mean()
         if float(soft_pose_weight) > 0.0:
             cached = cache[names[query_index]]
-            keypoint_xy = (
-                torch.as_tensor(cached["native_keypoints"]).float()[cache_rows]
-                + float(cached.get("pixel_center_offset", 0.5))
-            )
+            keypoint_xy = torch.as_tensor(cached["native_keypoints"]).float()[
+                cache_rows
+            ] + float(cached.get("pixel_center_offset", 0.5))
             soft_pose_loss, soft_pose_diagnostics = soft_pose_bias_loss(
                 query_features=adapted_query,
                 anchor_features=adapted_anchor,
@@ -1232,8 +1330,7 @@ def train(
             + float(alias_weight) * alias_loss
             + float(protected_clean_weight) * protected_loss
             + float(trust_weight) * trust_loss
-            + float(anchor_feature_residual_trust_weight)
-            * anchor_feature_trust_loss
+            + float(anchor_feature_residual_trust_weight) * anchor_feature_trust_loss
             + float(soft_pose_weight) * soft_pose_loss
         )
         if not bool(torch.isfinite(loss).item()):
@@ -1250,10 +1347,7 @@ def train(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         trainable_anchor_count = int(raw_features.shape[0])
-        if (
-            anchor_feature_residual_alias_only
-            and anchor_residual_parameter is not None
-        ):
+        if anchor_feature_residual_alias_only and anchor_residual_parameter is not None:
             trainable = torch.zeros(
                 raw_features.shape[0], dtype=torch.bool, device=device
             )
@@ -1273,9 +1367,7 @@ def train(
                 "alias_loss": float(alias_loss.detach()),
                 "protected_clean_loss": float(protected_loss.detach()),
                 "trust_loss": float(trust_loss.detach()),
-                "anchor_feature_trust_loss": float(
-                    anchor_feature_trust_loss.detach()
-                ),
+                "anchor_feature_trust_loss": float(anchor_feature_trust_loss.detach()),
                 "anchor_feature_residual_mean": float(
                     torch.linalg.norm(anchor_feature_residual.detach(), dim=1).mean()
                 ),
@@ -1290,6 +1382,7 @@ def train(
                 "density_weight": float(density_weights[density_index]),
                 "alias_query_replay": bool(replay_alias_query),
                 "active_alias_query_count": int(len(active_alias_queries)),
+                "loo_affected_anchor_count": int(loo_affected_anchor_count),
                 **alias_diagnostics,
                 **protected_diagnostics,
                 **soft_pose_diagnostics,
@@ -1314,7 +1407,9 @@ def train(
         "config": config,
         "history": history,
     }
-    (output_dir / "training_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    (output_dir / "training_report.json").write_text(
+        json.dumps(report, indent=2) + "\n"
+    )
     return report
 
 
@@ -1397,6 +1492,13 @@ def main() -> None:
     parser.add_argument("--ransac-reprojection-px", type=float, default=12.0)
     parser.add_argument("--clean-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--leave-one-query-out-track-descriptors",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--loo-descriptor-trim-fraction", type=float, default=0.2)
+    parser.add_argument("--cpu-threads", type=int, default=1)
     args = parser.parse_args()
     train(
         map_path=args.map,
@@ -1426,9 +1528,7 @@ def main() -> None:
         initial_ransac_refresh=args.initial_ransac_refresh,
         deployment_row_limit=args.deployment_row_limit,
         density_prefix_fractions=tuple(
-            float(value)
-            for value in args.density_prefix_fractions.split(",")
-            if value
+            float(value) for value in args.density_prefix_fractions.split(",") if value
         ),
         density_dro_eta=args.density_dro_eta,
         density_dro_max_weight_ratio=args.density_dro_max_weight_ratio,
@@ -1448,9 +1548,7 @@ def main() -> None:
         anchor_feature_residual_trust_weight=(
             args.anchor_feature_residual_trust_weight
         ),
-        anchor_feature_residual_alias_only=(
-            args.anchor_feature_residual_alias_only
-        ),
+        anchor_feature_residual_alias_only=(args.anchor_feature_residual_alias_only),
         anchor_feature_residual_include_alias_positives=(
             args.anchor_feature_residual_include_alias_positives
         ),
@@ -1466,6 +1564,11 @@ def main() -> None:
         ransac_reprojection_px=args.ransac_reprojection_px,
         clean_reprojection_px=args.clean_reprojection_px,
         seed=args.seed,
+        leave_one_query_out_track_descriptors=(
+            args.leave_one_query_out_track_descriptors
+        ),
+        loo_descriptor_trim_fraction=args.loo_descriptor_trim_fraction,
+        cpu_threads=args.cpu_threads,
     )
 
 

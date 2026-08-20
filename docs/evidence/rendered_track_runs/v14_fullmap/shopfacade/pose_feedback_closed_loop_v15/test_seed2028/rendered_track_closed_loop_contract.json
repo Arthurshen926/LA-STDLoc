@@ -1,0 +1,81 @@
+{
+  "closed_loop_decision": "SELECT_POSE_FEEDBACK_REVISION",
+  "closed_loop_selection": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/closed_loop_selection.json",
+  "closed_loop_selection_sha256": "3bf37e7182a4e07fc8fd693cc77c12906f7e97f9f82cdbe771e6b98a03a64ef8",
+  "deployment": {
+    "keypoint_count": 2048,
+    "nms_radius": 4,
+    "one_global_top1_per_query_row": true,
+    "pose_solves_per_query": 1,
+    "ransac_reprojection_px": 12.0
+  },
+  "evaluated_split": "test",
+  "evaluation_code": {
+    "entrypoints": {
+      "map_learning/equal_energy_descriptor_factor.py": "a866d0abc65a6e894db0d35de1adbfc704847a00d27e9963ab6ea45d6d8c1e71",
+      "scripts/compare_mapping_pose_gate.py": "5cc791186c95fd4e405f38f54f18c9bca0706d91d1582c2f7d7dd397937870f3",
+      "scripts/evaluate_mapping_cache.py": "b4eabde12b18618a7f29f614b451410e67df97456d1eee3408ea1b3fd1a4cd4a",
+      "scripts/materialize_equal_energy_descriptor_factor.py": "f18587d43738308fd06f886223604b3a6b2dfb755de9ba2c684763ff00c8da75"
+    },
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "git_worktree_clean": true,
+    "repository": "/tmp/stdloc-wt-render-track-artifact-r1",
+    "schema": "lafgs_mapping_pose_evaluation_code",
+    "version": 1
+  },
+  "schema": "lafgs_rendered_track_closed_loop_test_contract",
+  "seed": 2028,
+  "selected_artifact_sha256": {
+    "map": "a4c0da67bf67da542d93f778b81451ef0167499644314a1cade8bb0c3fd27c18",
+    "metric": "603d97751bdc839e434b0f07fe2d55e6466348de5fa835050f8b2dcdc90c2248",
+    "query_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "scene_calibration": "5dc1aeb1d4769e19568a9ac34a237f2d513566968688c3f2b353cc9219b2daad",
+    "teacher": "8c28d69d306552bb174993fbd3f2388e248a0f2dc2f8921ab4f28d2409732093"
+  },
+  "selected_artifacts": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/shopfacade/pose_feedback_closed_loop_v15/revision/pose_feedback_positive_teacher.pt"
+  },
+  "selected_label": "pose_feedback_revision",
+  "summary": {
+    "catastrophic_100cm_count": 0,
+    "duplicate_anchor_fraction_percent": 0.0,
+    "frontend_ms_mean": 194.1606958930209,
+    "frontend_ms_p50": 145.5272762104869,
+    "frontend_ms_p90": 203.7654023617506,
+    "inlier_gt_precision_2px_percent": 43.388704318936874,
+    "inlier_gt_precision_4px_percent": 73.62983603043618,
+    "matcher_raw_gt_precision_2px_percent": 9.74453275054516,
+    "matcher_raw_gt_precision_4px_percent": 16.53629348647569,
+    "matching_ms_mean": 5.739251875038286,
+    "matching_ms_p50": 5.639045499265194,
+    "matching_ms_p90": 10.566234774887562,
+    "mean_ae_deg": 0.2261681330079681,
+    "mean_hypotheses": 5171.417475728155,
+    "mean_te_cm": 4.746419378755235,
+    "median_ae_deg": 0.11429433117815709,
+    "median_te_cm": 2.0447589457035065,
+    "p90_ae_deg": 0.37729061575910994,
+    "p90_te_cm": 7.94416457414627,
+    "query_count": 103,
+    "ransac_ms_mean": 77.62245558093763,
+    "ransac_ms_p50": 54.0647329762578,
+    "ransac_ms_p90": 163.5622464120388,
+    "raw_gt_precision_2px_percent": 9.74453275054516,
+    "raw_gt_precision_4px_percent": 16.53629348647569,
+    "recall_2cm_2deg_percent": 49.51456310679612,
+    "recall_5cm_5deg_percent": 82.52427184466019,
+    "retained_matches_mean": 2016.8640776699028,
+    "runtime_ms_mean": 277.69553485028086,
+    "solver_inlier_ratio_percent": 22.458685742068095,
+    "total_ms_mean": 277.69553485028086,
+    "total_ms_p50": 212.72310335189104,
+    "total_ms_p90": 351.4772308990359
+  },
+  "test_used_for_construction_selection_or_calibration": false,
+  "uses_source_mapping_rgb": false,
+  "version": 1
+}

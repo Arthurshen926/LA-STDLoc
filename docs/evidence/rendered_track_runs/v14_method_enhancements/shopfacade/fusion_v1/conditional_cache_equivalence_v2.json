@@ -1,0 +1,82 @@
+{
+  "audit": {
+    "added_query_fields": [
+      "native_artifact_exposure",
+      "native_artifact_reliability",
+      "native_raw_clean_descriptor_cosine",
+      "native_raw_clean_detector_score_stability",
+      "native_raw_clean_position_displacement_px",
+      "native_raw_clean_position_stability"
+    ],
+    "artifact_evidence_bitwise_reused": true,
+    "artifact_only_allowed_differences": true,
+    "base_appearance_reliability_bitwise_exact": true,
+    "calibration_numeric_reuse_authorized": true,
+    "changed_query_fields": [
+      "native_appearance_reliability",
+      "source"
+    ],
+    "conditional_annotations_valid": true,
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "exact_shared_query_fields": [
+      "native_K",
+      "native_alpha_at_keypoints",
+      "native_appearance_dispersion",
+      "native_depth_at_keypoints",
+      "native_descriptors",
+      "native_input_hw",
+      "native_keypoints",
+      "native_rendered_alpha",
+      "native_rendered_depth",
+      "native_scores",
+      "native_valid_keypoint_mask",
+      "pose_w2c"
+    ],
+    "localization_query_rows_bitwise_exact": true,
+    "query_count": 231,
+    "query_order_exact": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_image_free_mapping_only": true,
+    "source_track_query_registry_exact": true
+  },
+  "checks": {
+    "artifact_evidence_bitwise_reused": true,
+    "base_appearance_reliability_bitwise_exact": true,
+    "calibration_numeric_reuse_authorized": true,
+    "conditional_annotations_valid": true,
+    "content_equivalent_track_payload_reuse_authorized": true,
+    "localization_query_rows_bitwise_exact": true,
+    "query_order_exact": true,
+    "rendered_geometry_samples_bitwise_exact": true,
+    "source_image_free_mapping_only": true,
+    "source_track_query_registry_exact": true
+  },
+  "producer_identity": {
+    "git_commit": "7b2241bfa6fdaeca51f91e312cfebe1895059bcc",
+    "source_sha256": {
+      "evidence/conditional_track_fusion.py": "0daedfbdbc125dad84c08c5f2e346dbdd4854c0e70c5b0984f50a8163e3f143d",
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "scripts/materialize_rendered_track_conditional_fusion.py": "c9d6122c58cd0aae6cf1a7e4b1df55b6f3c6381c86df4e7b77d5c69702d7d1a5"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_mapping_sparse_refresh_equivalence",
+  "sources": {
+    "refreshed_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/fusion_v1/conditional_fusion_cache.pt",
+      "sha256": "661109ff09dc80e13bfab9cc45c496d5ca4e23b9817cb47fc728f551ce0d970e"
+    },
+    "source_cache": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+      "sha256": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47"
+    },
+    "source_track_payload": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+      "sha256": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+    }
+  },
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 2
+}

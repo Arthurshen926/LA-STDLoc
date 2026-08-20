@@ -1,0 +1,15 @@
+{
+  "calibration_split": "mapping",
+  "context_state": null,
+  "descriptor_protocol": "shared_metric",
+  "duplicate_anchor_suppression": false,
+  "evaluated_split": "test",
+  "guided_sampling": false,
+  "keypoint_count": 1024,
+  "nms_radius": 4,
+  "pose_solves": 1,
+  "ransac_reprojection_px": 10.284482002258306,
+  "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_history_replay_20260816/stairs/artifact_R1/scene_calibration_rebound.json",
+  "schema": "lafgs_sparse_deployment_contract",
+  "version": 1
+}

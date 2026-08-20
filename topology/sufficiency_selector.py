@@ -1,4 +1,4 @@
-"""One compatibility state machine for precision, matching, and pose selection."""
+"""One hierarchical state machine for precision, matching, and pose sufficiency."""
 
 from __future__ import annotations
 
@@ -61,12 +61,12 @@ def select_precision_compatibility(
     return torch.as_tensor(selected, dtype=torch.long), report
 
 
-class CompatibilitySufficiencySelector:
-    """Share one selected set and trace while exactly retaining V3 policies.
+class HierarchicalSufficiencySelector:
+    """Share one candidate registry, selected set, and causal selection trace.
 
-    This is the first, behavior-preserving step toward the V4 selector.  The
-    three calls remain hierarchical, but they no longer create three
-    conceptual maps: each call appends a primary reason to one candidate set.
+    The stages are intentionally hierarchical: precision establishes a stable
+    core, then matching and observability may add candidates only when they
+    contribute missing sufficiency.  All stages mutate one selected state.
     """
 
     def __init__(
@@ -224,7 +224,8 @@ class CompatibilitySufficiencySelector:
         return {
             "schema": "lafgs_unified_sufficiency_selection",
             "version": 1,
-            "policy": "v3_compatibility",
+            "policy": "hierarchical_sufficiency_v4",
+            "numerical_policy": "declared_by_materialization_report",
             "candidate_count": len(self.edges),
             "candidate_partitions": {
                 "track_evidence_count": self.track_candidate_count,
@@ -244,5 +245,10 @@ class CompatibilitySufficiencySelector:
             "reports": dict(self._reports),
             "single_candidate_registry": True,
             "single_selected_state": True,
-            "behavior_change_authorized": False,
+            "completion_candidate_provider": "always_available_when_materialized",
         }
+
+
+# Historical import compatibility only.  The formal V4 name describes the
+# actual method; keeping the alias avoids breaking archived experiment code.
+CompatibilitySufficiencySelector = HierarchicalSufficiencySelector

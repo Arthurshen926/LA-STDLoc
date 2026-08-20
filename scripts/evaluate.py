@@ -47,6 +47,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--group-aware-pose",
+        action="store_true",
+        help=(
+            "Add a bounded distinct-parent AP3P hypothesis supplement to the "
+            "single robust-pose wrapper; mapping evidence only until validated."
+        ),
+    )
+    parser.add_argument("--group-field", default="parent_source_track_ids")
+    parser.add_argument("--group-hypothesis-samples", type=int, default=32)
+    parser.add_argument(
         "--stage-state",
         type=Path,
         help="Evaluate A0 by materializing a Stage-A state with an identity metric.",
@@ -91,11 +101,13 @@ def main() -> None:
     if args.assignment_topk < 0:
         parser.error("--assignment-topk must be zero or positive")
     if args.assignment_topk and (
-        args.suppress_duplicate_anchors or args.guided_sampling
+        args.suppress_duplicate_anchors
+        or args.guided_sampling
+        or args.group_aware_pose
     ):
         parser.error(
             "--assignment-topk cannot be combined with duplicate suppression "
-            "or guided sampling"
+            "guided sampling, or group-aware pose"
         )
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
@@ -149,6 +161,9 @@ def main() -> None:
         seed=args.seed,
         suppress_duplicate_anchors=args.suppress_duplicate_anchors,
         guided_sampling=args.guided_sampling,
+        group_aware_pose=args.group_aware_pose,
+        group_field=args.group_field,
+        group_hypothesis_samples=args.group_hypothesis_samples,
         assignment_topk=args.assignment_topk,
         assignment_dustbin_score=args.assignment_dustbin_score,
         profile_mode=not args.deployment_mode,
@@ -177,6 +192,13 @@ def main() -> None:
                 "pose_solves": 1,
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
+                "group_aware_pose": bool(args.group_aware_pose),
+                "group_field": args.group_field if args.group_aware_pose else None,
+                "group_hypothesis_samples": (
+                    int(args.group_hypothesis_samples)
+                    if args.group_aware_pose
+                    else 0
+                ),
                 "capacity_assignment": bool(args.assignment_topk > 0),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),

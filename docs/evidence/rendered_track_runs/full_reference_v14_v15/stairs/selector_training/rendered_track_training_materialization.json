@@ -1,0 +1,57 @@
+{
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "anchor_map": "d1ed6cddcf4999989f1eadee40829647aacf6c216a259f4dcc27126f25035b6f",
+    "query_cache": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63",
+    "scene_calibration": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+    "track_payload": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/adaptive_compact_total05702.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "mapping_grouping": "mapping_trajectory",
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "fbf83ba0d3a74e23a790ae8301d9c192a061bc72fe2757f05a63eca2a226ad6e",
+    "map": "9f3a09fd7c2548d358532ec9b38829802e03cac2ecc82955c119b1af046040cb",
+    "teacher": "1c9f276c33b9958f63095ba2b18e0d0c8e7975eb38054ec3775c14b4cd3a9110",
+    "track_payload": "b300283f899607c6162ab8390bc0f4b7ef23191256a37d6892dc20370bdfaa1a"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 594032,
+    "depth_visibility_rejected_anchor_count": 2266472,
+    "exact_depth_disagreement_audit_count": 207260,
+    "exact_track_positive_count": 413615,
+    "masked_query_row_count": 0,
+    "positive_rows": 161460,
+    "query_count": 2000,
+    "strong_certified_exact_positive_count": 161460,
+    "strong_pair_count": 161460,
+    "support_compatible_pair_count": 48350,
+    "weak_exact_ambiguous_count": 252155
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

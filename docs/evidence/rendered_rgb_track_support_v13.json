@@ -1,0 +1,215 @@
+{
+  "schema": "lafgs_rendered_rgb_track_support_v13_result",
+  "version": 1,
+  "date": "2026-08-14",
+  "decision": "STOP_BEFORE_TEST",
+  "mapping_only": true,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "code": {
+    "support_and_component_repair_commit": "e29b59f74ec6ec9cc18e195fc54adf9fb4844d87",
+    "complementary_sibling_hotfix_commit": "c7467ff5b2d8a8af29df50f95f497ad2c64de42b",
+    "parent_lineage_hotfix_commit": "8b5a8f1c5c273ec0e7efc88d16fba0c163102df1"
+  },
+  "protocol_repairs": {
+    "child_cap_after_triangulation_and_broad_gate": true,
+    "frozen_support_pair_rows_reused_in_folds": true,
+    "fold_specific_components_rebuilt_without_held_sequence": true,
+    "observation_level_identity_certification": true,
+    "uncertified_exact_observations_are_ambiguous": true,
+    "sibling_parent_capacity_and_lineage": true,
+    "source_image_free_calibration_fail_closed": true,
+    "maximum_two_complementary_children_arm": true
+  },
+  "shopfacade": {
+    "support_repair": {
+      "source_tracks": 35069,
+      "unbounded_children": 37143,
+      "geometry_eligible_children": 14756,
+      "retained_children": 14753,
+      "dropped_geometry_ineligible": 22387,
+      "dropped_excess_after_geometry": 3,
+      "coverage_certified_observations": 199047
+    },
+    "membership": {
+      "max1_anchors": 2504,
+      "max2_anchors": 2635,
+      "max2_sources_with_two_children": 131,
+      "missing_source_identities": 17
+    },
+    "teacher": {
+      "max1_exact_observations": 95852,
+      "max1_strong_certified": 80206,
+      "max1_weak_ambiguous": 15646,
+      "max2_exact_observations": 98638,
+      "max2_strong_certified": 82459,
+      "max2_weak_ambiguous": 16179
+    },
+    "mapping_crossfit": {
+      "v11_fixed_identity_control": {
+        "catastrophic_100cm_count": 7,
+        "cvar95_te_cm": 829.1127043465773,
+        "mean_te_cm": 44.41685445961498,
+        "median_te_cm": 0.5640599876642227,
+        "p90_te_cm": 3.2242130488157272,
+        "p95_te_cm": 44.22794729471207,
+        "raw_gt_precision_percent": 11.4905886929022,
+        "recall_5cm_5deg_percent": 91.77489177489177
+      },
+      "corrected_max1": {
+        "catastrophic_100cm_count": 8,
+        "new_catastrophic_vs_control": 3,
+        "fixed_catastrophic_vs_control": 2,
+        "cvar95_te_cm": 583.2718595862389,
+        "mean_te_cm": 31.80476350292011,
+        "median_te_cm": 0.5964500829577446,
+        "p90_te_cm": 3.2417025417089462,
+        "p95_te_cm": 45.039333403110504,
+        "raw_gt_precision_percent": 10.268725372478057,
+        "recall_5cm_5deg_percent": 90.9090909090909
+      },
+      "corrected_max2": {
+        "catastrophic_100cm_count": 7,
+        "new_catastrophic_vs_control": 2,
+        "fixed_catastrophic_vs_control": 2,
+        "cvar95_te_cm": 703.6837607622147,
+        "mean_te_cm": 38.101090283840655,
+        "median_te_cm": 0.5919164512306452,
+        "p90_te_cm": 3.6931112408638,
+        "p95_te_cm": 45.050765573978424,
+        "raw_gt_precision_percent": 10.317980416363667,
+        "recall_5cm_5deg_percent": 90.9090909090909
+      },
+      "entity_aware_selector": {
+        "anchor_count": 5788,
+        "unique_parent_count": 5702,
+        "catastrophic_100cm_count": 8,
+        "new_catastrophic_vs_control": 3,
+        "fixed_catastrophic_vs_control": 2,
+        "cvar95_te_cm": 992.7022527903318,
+        "mean_te_cm": 52.52475615820617,
+        "median_te_cm": 0.4696872550994158,
+        "p90_te_cm": 3.256015107035637,
+        "p95_te_cm": 20.03237158060074,
+        "raw_gt_precision_percent": 16.396433342916573,
+        "recall_5cm_5deg_percent": 91.34199134199135
+      }
+    },
+    "passes_tail_gate": false
+  },
+  "stairs": {
+    "support_repair": {
+      "source_tracks": 72269,
+      "unbounded_children": 72503,
+      "geometry_eligible_children": 15072,
+      "retained_children": 15072,
+      "dropped_geometry_ineligible": 57431,
+      "dropped_excess_after_geometry": 0,
+      "coverage_certified_observations": 471192
+    },
+    "membership": {
+      "max1_anchors": 4256,
+      "max2_anchors": 4262,
+      "max2_sources_with_two_children": 6,
+      "missing_source_identities": 27
+    },
+    "teacher": {
+      "max1_exact_observations": 371943,
+      "max1_strong_certified": 167186,
+      "max1_weak_ambiguous": 204757,
+      "max2_exact_observations": 373003,
+      "max2_strong_certified": 167638,
+      "max2_weak_ambiguous": 205365
+    },
+    "mapping_crossfit": {
+      "v11_fixed_identity_control": {
+        "catastrophic_100cm_count": 309,
+        "cvar95_te_cm": 626.7872633934021,
+        "mean_te_cm": 62.42249761033454,
+        "median_te_cm": 2.041748072952032,
+        "p90_te_cm": 272.8004717826844,
+        "p95_te_cm": 317.5545358657837,
+        "raw_gt_precision_percent": 3.61328125,
+        "recall_5cm_5deg_percent": 70.6
+      },
+      "corrected_max1": {
+        "catastrophic_100cm_count": 324,
+        "new_catastrophic_vs_control": 33,
+        "fixed_catastrophic_vs_control": 18,
+        "cvar95_te_cm": 591.5059401988983,
+        "mean_te_cm": 62.09759270256181,
+        "median_te_cm": 2.004705835133791,
+        "p90_te_cm": 271.37507438659674,
+        "p95_te_cm": 313.1454133987427,
+        "raw_gt_precision_percent": 1.086572265625,
+        "recall_5cm_5deg_percent": 69.05
+      },
+      "corrected_max2": {
+        "catastrophic_100cm_count": 324,
+        "new_catastrophic_vs_control": 33,
+        "fixed_catastrophic_vs_control": 18,
+        "same_catastrophic_set_as_max1": true,
+        "cvar95_te_cm": 594.9048972129822,
+        "mean_te_cm": 62.35877696348034,
+        "median_te_cm": 1.9997358322143555,
+        "p90_te_cm": 271.6604971885682,
+        "p95_te_cm": 313.5727858543396,
+        "raw_gt_precision_percent": 1.08671875,
+        "recall_5cm_5deg_percent": 69.15
+      }
+    },
+    "passes_tail_gate": false
+  },
+  "tail_gate": {
+    "requires_no_new_catastrophic_query": true,
+    "requires_non_regression_of_mean_p95_cvar95": true,
+    "requires_recall_non_regression": true,
+    "shopfacade_pass": false,
+    "stairs_pass": false,
+    "authorizes_test_evaluation": false,
+    "authorizes_default_map_change": false
+  },
+  "artifacts": {
+    "shopfacade_support_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repair_report.json",
+      "sha256": "4ce1f101b706734f2d33c1198f4df01268b67bb138113797e5b808904644efd5"
+    },
+    "shopfacade_v11_control_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/shopfacade/crossfit_support_only_v11_control_lineage/crossfit_report.json",
+      "sha256": "321451096cea2f0df859eb5c785e4ad92a595e7ae11f20d27dd4d27a3f8d93e0"
+    },
+    "shopfacade_max1_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/crossfit_component_max1/crossfit_report.json",
+      "sha256": "6e764d5815c83fe346b032a4ebd2df72c3fe88581c8a7939b1bcb56e3ba93af5"
+    },
+    "shopfacade_max2_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/crossfit_component_max2/crossfit_report.json",
+      "sha256": "e2ffadf5882e5376cf0856db79daccb9eb091c8b9a156a57fcf20767b88bd23c"
+    },
+    "shopfacade_selector_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/crossfit_component_selector_lineage/crossfit_report.json",
+      "sha256": "54ed48fd5a193eea1e33ee4a3a0b90ed5a9daa8e1ea4b4e42f61fc9eeb1fa447"
+    },
+    "stairs_support_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/support_repair/support_repair_report.json",
+      "sha256": "32abacb1adb806f17d68448d3eed302331995cd8fc829baa7f693e72aa02602d"
+    },
+    "stairs_v11_control_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_v11_control_lineage/crossfit_report.json",
+      "sha256": "f99939a3bd5ef86940d6d4ebd95285eea6adeeb67d745d4f85831cc70ea5b931"
+    },
+    "stairs_v12_fixed_identity_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v12_20260814/stairs/crossfit_support_only_er_lineage/crossfit_report.json",
+      "sha256": "f98f73281e2363c1f797db0c204ea683078711c83d23d43fdf14b214533f74e6"
+    },
+    "stairs_max1_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/crossfit_component_max1/crossfit_report.json",
+      "sha256": "59e339a21062237de87f2519dc2eb22922f38f319da0b00356717be0b8d3165c"
+    },
+    "stairs_max2_report": {
+      "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/stairs/crossfit_component_max2/crossfit_report.json",
+      "sha256": "5cc207f3eb73ff14e3f96e221af72d5c867368b0adc8140b202b8d226243a37b"
+    }
+  },
+  "protocol_note": "The V1.1 and V1.2 controls retained fixed full-mapping component identities and only removed held observations before retriangulation. V1.3 rebuilds components from frozen support-filtered pair rows per held fold, so absolute control-to-V1.3 changes include the stronger independence protocol. The max1-to-max2 comparison is exact within V1.3."
+}

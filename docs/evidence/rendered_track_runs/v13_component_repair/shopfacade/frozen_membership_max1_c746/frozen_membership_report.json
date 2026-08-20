@@ -1,0 +1,55 @@
+{
+  "diagnostics": {
+    "candidate_count": 14753,
+    "missing_source_count": 17,
+    "missing_source_track_ids": [
+      4793,
+      9696,
+      4656,
+      6882,
+      523,
+      271,
+      3792,
+      6663,
+      335,
+      73,
+      9286,
+      2794,
+      3644,
+      14223,
+      1694,
+      4015,
+      5223
+    ],
+    "multi_child_source_count": 0,
+    "retained_source_count": 2504,
+    "retention_fraction": 0.993256644188814,
+    "selected_child_count": 2504,
+    "source_selection_count": 2521
+  },
+  "input_sha256": {
+    "repaired_candidate_map": "66c22256ba44332c96a7b661e2f6c36f00762ae06aaa94e5056d7b9b4089e917",
+    "repaired_track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14",
+    "source_selection": "e99ace606cf94d81e68cf292c2f66217e4c3f598d579c7dd08ac5cf893e74d3f"
+  },
+  "inputs": {
+    "repaired_candidate_map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_candidate_map.pt",
+    "repaired_track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+    "source_selection": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/training/rendered_track_training_map.pt"
+  },
+  "output": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/frozen_membership_max1_c746/frozen_membership_anchor_map.pt",
+  "output_sha256": "ea802ec4f6006b5b3b56f96fad440dc8a8e57ee3454a61ecd35b18d2017df389",
+  "producer_identity": {
+    "git_commit": "c7467ff5b2d8a8af29df50f95f497ad2c64de42b",
+    "source_sha256": {
+      "common/hashing.py": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+      "scripts/materialize_rendered_track_frozen_membership.py": "2a62fa8aef889f4598bb35f420cfd08ba0a561964e2b2fe4ab0c77f909dd1ba9"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_frozen_membership_report",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

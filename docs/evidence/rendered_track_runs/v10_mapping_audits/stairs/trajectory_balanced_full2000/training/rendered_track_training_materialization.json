@@ -1,0 +1,47 @@
+{
+  "input_sha256": {
+    "anchor_map": "44fa1d957bc6bb8e4843550149c868e1d100fa830f49b9dcfa950c5fece26c24",
+    "query_cache": "a1995e493a6f4bc4b59f1ae91c771f540b982618331d226b16db5887852c78d5",
+    "track_payload": "89a2abc04513501f7a82ae1f6bb6a34ef6daebf4cd61c640589c13a623524881"
+  },
+  "inputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/rendered_rgb_track_map.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000/rendered_rgb_feature_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/rendered_rgb_track_payload.pt"
+  },
+  "mapping_sequence_names": [
+    "seq-02",
+    "seq-03",
+    "seq-05",
+    "seq-06"
+  ],
+  "mapping_sequence_query_counts": {
+    "seq-02": 500,
+    "seq-03": 500,
+    "seq-05": 500,
+    "seq-06": 500
+  },
+  "output_sha256": {
+    "graph": "20ae383b7a7c67e6f98fff06c59aa0f98bc76b040436b3d7e95960107c71c98a",
+    "map": "85cf4601319a46646493569ac618e758cb086e484a58638bc090e95297462c7e",
+    "teacher": "8436de52b9dd17100461eeb7fc3e4a60d2a5f7abb74dce5793e64eb45e77824a",
+    "track_payload": "b20ba568389656489e2fb5530e2788c7c72b608e5530b9538e140519aaf0251a"
+  },
+  "outputs": {
+    "graph": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/training/rendered_track_training_graph.pt",
+    "map": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/training/rendered_track_training_map.pt",
+    "teacher": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/training/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_rendered_rgb_only_trainonly_20260813/stairs/trajectory_balanced_full2000/training/rendered_track_training_payload.pt"
+  },
+  "schema": "lafgs_rendered_track_train_only_materialization",
+  "teacher_diagnostics": {
+    "ambiguous_pair_count": 11156846,
+    "exact_track_positive_count": 721040,
+    "positive_rows": 1155567,
+    "query_count": 2000,
+    "strong_pair_count": 1885996
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

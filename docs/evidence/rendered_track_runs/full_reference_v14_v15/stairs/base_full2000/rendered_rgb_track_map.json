@@ -1,0 +1,43 @@
+{
+  "artifacts": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/rendered_rgb_track_map.pt",
+    "feature_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/rendered_rgb_feature_cache.pt",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/metric_state_identity.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/base_full2000/rendered_rgb_track_payload.pt"
+  },
+  "artifacts_sha256": {
+    "anchor_map": "e41936caa5b66bfd681cd1eed0e43dc3bde21985702258fc7b3f31711e73d0a0",
+    "feature_cache": "d341a4d4584e90d6e39cf3485694122cd4c36da0ece197231ae7ea1a7acca332",
+    "identity_metric": "84663d995d5576ed15a85e22da3ef71e8fe5f4fb9314edac0541532257c4d915",
+    "track_payload": "041fd6536dcaffdf866ce7dd672fdcde66ffba0d188f73e020615b88e5d163bb"
+  },
+  "broad_track_count": 16157,
+  "cross_trajectory_pair_count": 0,
+  "cycle_or_chain_supported_edge_count": 4229519,
+  "pair_count": 7450,
+  "pair_policy": "nearest",
+  "query_count": 2000,
+  "raw_match_count": 4593253,
+  "schema": "lafgs_rendered_rgb_only_track_probe_report",
+  "scientific_scope": {
+    "gaussian_primitive_geometry_used_for_triangulation": false,
+    "gaussian_rendered_rgb_used": true,
+    "kcs_or_gwff_used": false,
+    "mapping_source_rgb_loaded": false,
+    "mapping_source_rgb_used": false,
+    "rendered_depth_used": false,
+    "test_queries_used_for_map_construction": false
+  },
+  "selected_map_track_count": 16000,
+  "timing_seconds": {
+    "matching_and_track_build": 241.09055867791176,
+    "pure_ray_triangulation": 55.19858612213284,
+    "total": 1384.1530386479571
+  },
+  "track_count": 67223,
+  "triangulated_parallax_median_deg": 2.929448366165161,
+  "triangulated_reprojection_median_px": 0.9897546172142029,
+  "triangulated_reprojection_p90_px": 2.2534782886505127,
+  "triangulated_track_count": 16823,
+  "version": 1
+}

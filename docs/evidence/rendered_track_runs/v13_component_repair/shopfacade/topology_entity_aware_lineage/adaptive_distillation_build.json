@@ -1,0 +1,3504 @@
+{
+  "all_candidate_alias_risk": null,
+  "anchor_count": 5788,
+  "base_count": 0,
+  "calibration": {
+    "parameters": {
+      "angular_pixel_scale": 1.0,
+      "assignment_distance_m": 0.29628308356006516,
+      "base_voxel_m": 1.4814154178003258,
+      "clean_radius_px": 4.0,
+      "covariance_scale": 2.194591640096514,
+      "dependency_voxel_m": 0.7407077089001629,
+      "depth_residual_m": 0.22221231267004887,
+      "evidence_depth_abs_tolerance_m": 0.07407077089001629,
+      "harm_radius_px": 12.0,
+      "image_pixel_scale": 1.0,
+      "kcs_radius_px": 1.0,
+      "matching_rows_target": 123,
+      "metric_scale": 1.4814154178003258,
+      "metric_steps": 176,
+      "negative_radius_px": 8.0,
+      "pixel_scale": 1.0,
+      "positive_radius_px": 2.0,
+      "projected_neighbor_radius_px": 64.0,
+      "ransac_reprojection_px": 12.0,
+      "semidense_local_radius_px": 8.0,
+      "semidense_sigma_px": 2.0,
+      "stage_a_steps": 1001,
+      "surface_group_voxel_m": 0.37035385445008145,
+      "surface_max_distance_m": 0.22221231267004887,
+      "surface_point_plane_m": 0.044442462534009776,
+      "task_rotation_deg": 5.0,
+      "task_translation_m": 0.05,
+      "track_covariance_trace_m2": 0.4389183280193028,
+      "track_reprojection_median_px": 3.0,
+      "track_reprojection_p90_px": 15.0,
+      "trajectory_bin_count": 4,
+      "view_bin_count": 4
+    },
+    "policy": {
+      "calibration_rebuild_relative_drift": 0.25,
+      "calibration_split": "all_mapping_train",
+      "coverage_reserve_maximum": 16000,
+      "depth_diversity_weight": 0.05,
+      "depth_residual_fraction": 0.01,
+      "descriptor_trim_fraction": 0.2,
+      "image_diversity_weight": 0.05,
+      "matching_rows_fraction": 0.06,
+      "matching_rows_maximum": 192,
+      "matching_rows_minimum": 32,
+      "maximum_harmful_rate": 0.1,
+      "maximum_per_source": 1,
+      "maximum_per_spatial_voxel": 3,
+      "metric_query_epochs": 0.76,
+      "pose_bins_maximum": 8,
+      "pose_bins_minimum": 2,
+      "pose_minimum_additions": 0,
+      "pose_minimum_matchability": 0.1,
+      "pose_minimum_objective_relative_gain": 0.001,
+      "pose_minimum_relative_gain": 0.02,
+      "pose_reserve_maximum": 512,
+      "queries_per_pose_bin_squared": 16,
+      "ransac_reprojection_maximum_px": 12.0,
+      "ransac_track_residual_quantile": 0.975,
+      "reference_effective_baseline_m": 2.06756077,
+      "reference_focal_px": 1672.028076171875,
+      "reference_image_diagonal_px": 2202.9071700822983,
+      "scaffold_safety_cap": 48000,
+      "stage_a_query_epochs": 4.33,
+      "task_rotation_deg": 5.0,
+      "task_translation_m": 0.05,
+      "track_core_check_interval": 64,
+      "track_core_maximum": 16000,
+      "track_core_minimum": 0,
+      "voxel_diversity_weight": 0.05
+    },
+    "schema": "lafgs_mapping_only_scene_calibration",
+    "sources": {
+      "mapping_source": "gaussian_render",
+      "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+      "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+      "uses_source_mapping_rgb": false,
+      "uses_test_queries": false
+    },
+    "statistics": {
+      "camera_extent_diagonal_m": 42.65831149621395,
+      "effective_baseline_m": 3.0629164019171133,
+      "focal_px": 1672.028076171875,
+      "image_diagonal_px": 2202.9071700822983,
+      "query_count": 231,
+      "stable_track_reprojection_p90_px": 7.2338059306144675,
+      "stable_track_reprojection_quantile": 0.975,
+      "track_count": 14753,
+      "triangulated_track_count": 14753,
+      "valid_keypoints_median": 2048.0,
+      "valid_keypoints_p10": 2048.0,
+      "visible_depth_median_m": 10.409999294933215
+    },
+    "version": 2
+  },
+  "calibration_contract": {
+    "input": null,
+    "input_sha256": null,
+    "mode": "derived_from_current_track_payload",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt",
+    "uses_test_queries": false
+  },
+  "coverage": {
+    "achieved_matching_rank": 27568,
+    "alias_risk_tiebreak_enabled": false,
+    "alias_risk_unknown_policy": null,
+    "core_rank_median": 645.0,
+    "core_rank_p10": 126.0,
+    "coverage_definition": "query_anchor_bipartite_matching_rank",
+    "feasibility_limited_query_count": 18,
+    "feasible_target_count": 27568,
+    "final_rank_median": 645.0,
+    "final_rank_p10": 138.0,
+    "normalized_coverage_p10": 1.1219512195121952,
+    "requested_rows_per_query": 123,
+    "reserve_count": 178,
+    "unmet_query_count": 0,
+    "unmet_rank": 0
+  },
+  "map": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/adaptive_compact_total05788.pt",
+  "pose_reserve": {
+    "augmenting_row_assignment": true,
+    "covariance_model": "anisotropic_triangulation_covariance_projected_by_Jx",
+    "duplicate_query_rows_counted": false,
+    "first_gain": 18.118518134138334,
+    "force_fill": false,
+    "information_diagnostics": [
+      {
+        "additions": 0,
+        "full_logdet_median": 48.040537758681616,
+        "full_logdet_p10": 38.34367134876583,
+        "translation_worst_std_p90": 0.6542410392771252
+      },
+      {
+        "additions": 64,
+        "full_logdet_median": 48.31794450718021,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 128,
+        "full_logdet_median": 48.46495866726413,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 192,
+        "full_logdet_median": 48.64263904858687,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 256,
+        "full_logdet_median": 48.73184218468552,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 320,
+        "full_logdet_median": 48.75172916931296,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 384,
+        "full_logdet_median": 48.80319178568685,
+        "full_logdet_p10": 39.454901763162965,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 448,
+        "full_logdet_median": 48.88715009152172,
+        "full_logdet_p10": 39.57652949616132,
+        "translation_worst_std_p90": 0.5498409002526999
+      },
+      {
+        "additions": 490,
+        "full_logdet_median": 48.929961237311765,
+        "full_logdet_p10": 39.60359026540004,
+        "translation_worst_std_p90": 0.5498409002526999
+      }
+    ],
+    "last_gain": 0.5699738416983863,
+    "marginal_history": [
+      {
+        "additions": 1,
+        "cumulative_utility_gain": 18.118518134138334,
+        "marginal_gain": 18.118518134138334,
+        "objective_relative_marginal_gain": 1.0
+      },
+      {
+        "additions": 2,
+        "cumulative_utility_gain": 27.884067925008907,
+        "marginal_gain": 9.765549790870574,
+        "objective_relative_marginal_gain": 0.3502196959616485
+      },
+      {
+        "additions": 3,
+        "cumulative_utility_gain": 35.34695450821748,
+        "marginal_gain": 7.462886583208575,
+        "objective_relative_marginal_gain": 0.21113237864590567
+      },
+      {
+        "additions": 4,
+        "cumulative_utility_gain": 40.97270954448489,
+        "marginal_gain": 5.625755036267414,
+        "objective_relative_marginal_gain": 0.13730493049671072
+      },
+      {
+        "additions": 5,
+        "cumulative_utility_gain": 46.421304528337906,
+        "marginal_gain": 5.448594983853011,
+        "objective_relative_marginal_gain": 0.11737272442498711
+      },
+      {
+        "additions": 6,
+        "cumulative_utility_gain": 51.02941955839027,
+        "marginal_gain": 4.608115030052368,
+        "objective_relative_marginal_gain": 0.09030310495261552
+      },
+      {
+        "additions": 7,
+        "cumulative_utility_gain": 55.59001737922242,
+        "marginal_gain": 4.56059782083214,
+        "objective_relative_marginal_gain": 0.08203987039113123
+      },
+      {
+        "additions": 8,
+        "cumulative_utility_gain": 60.128775133620465,
+        "marginal_gain": 4.538757754398049,
+        "objective_relative_marginal_gain": 0.07548395496684987
+      },
+      {
+        "additions": 9,
+        "cumulative_utility_gain": 64.3882116359888,
+        "marginal_gain": 4.259436502368338,
+        "objective_relative_marginal_gain": 0.06615242750409908
+      },
+      {
+        "additions": 10,
+        "cumulative_utility_gain": 68.56246099864607,
+        "marginal_gain": 4.174249362657275,
+        "objective_relative_marginal_gain": 0.06088243190015752
+      },
+      {
+        "additions": 11,
+        "cumulative_utility_gain": 72.29313372858016,
+        "marginal_gain": 3.7306727299340796,
+        "objective_relative_marginal_gain": 0.05160480031119755
+      },
+      {
+        "additions": 12,
+        "cumulative_utility_gain": 75.93149194138246,
+        "marginal_gain": 3.6383582128022955,
+        "objective_relative_marginal_gain": 0.047916327202039345
+      },
+      {
+        "additions": 13,
+        "cumulative_utility_gain": 79.47163531105238,
+        "marginal_gain": 3.5401433696699236,
+        "objective_relative_marginal_gain": 0.04454599878074466
+      },
+      {
+        "additions": 14,
+        "cumulative_utility_gain": 82.8555552562095,
+        "marginal_gain": 3.383919945157118,
+        "objective_relative_marginal_gain": 0.04084119567714217
+      },
+      {
+        "additions": 15,
+        "cumulative_utility_gain": 86.13088001169452,
+        "marginal_gain": 3.2753247554850105,
+        "objective_relative_marginal_gain": 0.03802729932679545
+      },
+      {
+        "additions": 16,
+        "cumulative_utility_gain": 89.35613484708239,
+        "marginal_gain": 3.225254835387876,
+        "objective_relative_marginal_gain": 0.03609438614267888
+      },
+      {
+        "additions": 17,
+        "cumulative_utility_gain": 92.47826009543184,
+        "marginal_gain": 3.1221252483494517,
+        "objective_relative_marginal_gain": 0.033760640015584334
+      },
+      {
+        "additions": 18,
+        "cumulative_utility_gain": 95.54816992507206,
+        "marginal_gain": 3.0699098296402174,
+        "objective_relative_marginal_gain": 0.032129446665986494
+      },
+      {
+        "additions": 19,
+        "cumulative_utility_gain": 98.60451141154552,
+        "marginal_gain": 3.056341486473453,
+        "objective_relative_marginal_gain": 0.030995959948700566
+      },
+      {
+        "additions": 20,
+        "cumulative_utility_gain": 101.48199259346484,
+        "marginal_gain": 2.8774811819193222,
+        "objective_relative_marginal_gain": 0.028354598765580646
+      },
+      {
+        "additions": 21,
+        "cumulative_utility_gain": 104.30552009987312,
+        "marginal_gain": 2.823527506408286,
+        "objective_relative_marginal_gain": 0.02706978023507042
+      },
+      {
+        "additions": 22,
+        "cumulative_utility_gain": 107.06775911152243,
+        "marginal_gain": 2.7622390116493096,
+        "objective_relative_marginal_gain": 0.025798980333305983
+      },
+      {
+        "additions": 23,
+        "cumulative_utility_gain": 109.82846290369146,
+        "marginal_gain": 2.7607037921690223,
+        "objective_relative_marginal_gain": 0.02513650577619285
+      },
+      {
+        "additions": 24,
+        "cumulative_utility_gain": 112.46179658357872,
+        "marginal_gain": 2.6333336798872526,
+        "objective_relative_marginal_gain": 0.023415362015226447
+      },
+      {
+        "additions": 25,
+        "cumulative_utility_gain": 115.08912463397954,
+        "marginal_gain": 2.6273280504008207,
+        "objective_relative_marginal_gain": 0.022828638750677525
+      },
+      {
+        "additions": 26,
+        "cumulative_utility_gain": 117.6012875162934,
+        "marginal_gain": 2.5121628823138638,
+        "objective_relative_marginal_gain": 0.021361695397814493
+      },
+      {
+        "additions": 27,
+        "cumulative_utility_gain": 120.1128144102217,
+        "marginal_gain": 2.511526893928307,
+        "objective_relative_marginal_gain": 0.020909733122651514
+      },
+      {
+        "additions": 28,
+        "cumulative_utility_gain": 122.58662398493308,
+        "marginal_gain": 2.4738095747113857,
+        "objective_relative_marginal_gain": 0.02018009383320188
+      },
+      {
+        "additions": 29,
+        "cumulative_utility_gain": 125.03836868830224,
+        "marginal_gain": 2.451744703369159,
+        "objective_relative_marginal_gain": 0.019607938979761562
+      },
+      {
+        "additions": 30,
+        "cumulative_utility_gain": 127.4550752597752,
+        "marginal_gain": 2.4167065714729543,
+        "objective_relative_marginal_gain": 0.018961242355765698
+      },
+      {
+        "additions": 31,
+        "cumulative_utility_gain": 129.86242557265285,
+        "marginal_gain": 2.407350312877654,
+        "objective_relative_marginal_gain": 0.01853769712264336
+      },
+      {
+        "additions": 32,
+        "cumulative_utility_gain": 132.19314814263382,
+        "marginal_gain": 2.3307225699809626,
+        "objective_relative_marginal_gain": 0.017631190441626813
+      },
+      {
+        "additions": 33,
+        "cumulative_utility_gain": 134.4503511756913,
+        "marginal_gain": 2.2572030330574804,
+        "objective_relative_marginal_gain": 0.01678837588239475
+      },
+      {
+        "additions": 34,
+        "cumulative_utility_gain": 136.6737508743647,
+        "marginal_gain": 2.223399698673402,
+        "objective_relative_marginal_gain": 0.016267935023728357
+      },
+      {
+        "additions": 35,
+        "cumulative_utility_gain": 138.88979555570708,
+        "marginal_gain": 2.216044681342379,
+        "objective_relative_marginal_gain": 0.015955417548681964
+      },
+      {
+        "additions": 36,
+        "cumulative_utility_gain": 141.04828171915383,
+        "marginal_gain": 2.1584861634467623,
+        "objective_relative_marginal_gain": 0.01530317234026714
+      },
+      {
+        "additions": 37,
+        "cumulative_utility_gain": 143.20053335113803,
+        "marginal_gain": 2.1522516319841927,
+        "objective_relative_marginal_gain": 0.015029634189327469
+      },
+      {
+        "additions": 38,
+        "cumulative_utility_gain": 145.34723407365937,
+        "marginal_gain": 2.146700722521341,
+        "objective_relative_marginal_gain": 0.014769463871830073
+      },
+      {
+        "additions": 39,
+        "cumulative_utility_gain": 147.4655479731168,
+        "marginal_gain": 2.1183138994574264,
+        "objective_relative_marginal_gain": 0.014364805397417968
+      },
+      {
+        "additions": 40,
+        "cumulative_utility_gain": 149.51750465630548,
+        "marginal_gain": 2.0519566831886813,
+        "objective_relative_marginal_gain": 0.013723855864940331
+      },
+      {
+        "additions": 41,
+        "cumulative_utility_gain": 151.56228028050737,
+        "marginal_gain": 2.0447756242018844,
+        "objective_relative_marginal_gain": 0.013491322645828956
+      },
+      {
+        "additions": 42,
+        "cumulative_utility_gain": 153.57518400879002,
+        "marginal_gain": 2.0129037282826436,
+        "objective_relative_marginal_gain": 0.013106959573412806
+      },
+      {
+        "additions": 43,
+        "cumulative_utility_gain": 155.56727457539904,
+        "marginal_gain": 1.9920905666090154,
+        "objective_relative_marginal_gain": 0.012805331790032137
+      },
+      {
+        "additions": 44,
+        "cumulative_utility_gain": 157.52402879648125,
+        "marginal_gain": 1.956754221082213,
+        "objective_relative_marginal_gain": 0.012421941185940026
+      },
+      {
+        "additions": 45,
+        "cumulative_utility_gain": 159.4624737458091,
+        "marginal_gain": 1.9384449493278482,
+        "objective_relative_marginal_gain": 0.012156119893247256
+      },
+      {
+        "additions": 46,
+        "cumulative_utility_gain": 161.37239887726497,
+        "marginal_gain": 1.9099251314558878,
+        "objective_relative_marginal_gain": 0.011835513041536428
+      },
+      {
+        "additions": 47,
+        "cumulative_utility_gain": 163.26344736041602,
+        "marginal_gain": 1.8910484831510561,
+        "objective_relative_marginal_gain": 0.011582803828565668
+      },
+      {
+        "additions": 48,
+        "cumulative_utility_gain": 165.12691904495549,
+        "marginal_gain": 1.8634716845394612,
+        "objective_relative_marginal_gain": 0.011285087224525365
+      },
+      {
+        "additions": 49,
+        "cumulative_utility_gain": 166.97762089454687,
+        "marginal_gain": 1.8507018495913907,
+        "objective_relative_marginal_gain": 0.01108353227023269
+      },
+      {
+        "additions": 50,
+        "cumulative_utility_gain": 168.8049229767629,
+        "marginal_gain": 1.8273020822160166,
+        "objective_relative_marginal_gain": 0.010824933597864067
+      },
+      {
+        "additions": 51,
+        "cumulative_utility_gain": 170.593718280558,
+        "marginal_gain": 1.788795303795089,
+        "objective_relative_marginal_gain": 0.010485704408255178
+      },
+      {
+        "additions": 52,
+        "cumulative_utility_gain": 172.37381556887783,
+        "marginal_gain": 1.7800972883198292,
+        "objective_relative_marginal_gain": 0.010326958781094747
+      },
+      {
+        "additions": 53,
+        "cumulative_utility_gain": 174.12354329183995,
+        "marginal_gain": 1.7497277229621169,
+        "objective_relative_marginal_gain": 0.01004877163583493
+      },
+      {
+        "additions": 54,
+        "cumulative_utility_gain": 175.86944271634226,
+        "marginal_gain": 1.745899424502326,
+        "objective_relative_marginal_gain": 0.009927247152981922
+      },
+      {
+        "additions": 55,
+        "cumulative_utility_gain": 177.59895111525327,
+        "marginal_gain": 1.729508398910998,
+        "objective_relative_marginal_gain": 0.00973828047998228
+      },
+      {
+        "additions": 56,
+        "cumulative_utility_gain": 179.3210244418955,
+        "marginal_gain": 1.722073326642238,
+        "objective_relative_marginal_gain": 0.009603298508927672
+      },
+      {
+        "additions": 57,
+        "cumulative_utility_gain": 181.03049095366973,
+        "marginal_gain": 1.709466511774218,
+        "objective_relative_marginal_gain": 0.009442975615702847
+      },
+      {
+        "additions": 58,
+        "cumulative_utility_gain": 182.73582624929372,
+        "marginal_gain": 1.7053352956239956,
+        "objective_relative_marginal_gain": 0.009332243877002672
+      },
+      {
+        "additions": 59,
+        "cumulative_utility_gain": 184.44088884782678,
+        "marginal_gain": 1.7050625985330476,
+        "objective_relative_marginal_gain": 0.009244493502413187
+      },
+      {
+        "additions": 60,
+        "cumulative_utility_gain": 186.14165688851605,
+        "marginal_gain": 1.7007680406892813,
+        "objective_relative_marginal_gain": 0.009136955526875455
+      },
+      {
+        "additions": 61,
+        "cumulative_utility_gain": 187.83671711973312,
+        "marginal_gain": 1.6950602312170697,
+        "objective_relative_marginal_gain": 0.009024115504193912
+      },
+      {
+        "additions": 62,
+        "cumulative_utility_gain": 189.5100432277283,
+        "marginal_gain": 1.6733261079951631,
+        "objective_relative_marginal_gain": 0.008829748964725735
+      },
+      {
+        "additions": 63,
+        "cumulative_utility_gain": 191.17915478534331,
+        "marginal_gain": 1.669111557615024,
+        "objective_relative_marginal_gain": 0.008730614796833415
+      },
+      {
+        "additions": 64,
+        "cumulative_utility_gain": 192.83067202043128,
+        "marginal_gain": 1.6515172350879717,
+        "objective_relative_marginal_gain": 0.008564598244583133
+      },
+      {
+        "additions": 65,
+        "cumulative_utility_gain": 194.48142167075233,
+        "marginal_gain": 1.6507496503210537,
+        "objective_relative_marginal_gain": 0.008487955487674772
+      },
+      {
+        "additions": 66,
+        "cumulative_utility_gain": 196.1270141973724,
+        "marginal_gain": 1.6455925266200762,
+        "objective_relative_marginal_gain": 0.008390442965516389
+      },
+      {
+        "additions": 67,
+        "cumulative_utility_gain": 197.72999327903992,
+        "marginal_gain": 1.6029790816675027,
+        "objective_relative_marginal_gain": 0.00810690909904271
+      },
+      {
+        "additions": 68,
+        "cumulative_utility_gain": 199.32061783035763,
+        "marginal_gain": 1.5906245513177086,
+        "objective_relative_marginal_gain": 0.007980230889468212
+      },
+      {
+        "additions": 69,
+        "cumulative_utility_gain": 200.91036778193657,
+        "marginal_gain": 1.5897499515789422,
+        "objective_relative_marginal_gain": 0.007912732275242359
+      },
+      {
+        "additions": 70,
+        "cumulative_utility_gain": 202.4852739892474,
+        "marginal_gain": 1.574906207310809,
+        "objective_relative_marginal_gain": 0.0077778802195484185
+      },
+      {
+        "additions": 71,
+        "cumulative_utility_gain": 204.03605013339103,
+        "marginal_gain": 1.5507761441436438,
+        "objective_relative_marginal_gain": 0.00760050071117239
+      },
+      {
+        "additions": 72,
+        "cumulative_utility_gain": 205.56890181731873,
+        "marginal_gain": 1.5328516839277129,
+        "objective_relative_marginal_gain": 0.007456632157766255
+      },
+      {
+        "additions": 73,
+        "cumulative_utility_gain": 207.10002309305864,
+        "marginal_gain": 1.53112127573991,
+        "objective_relative_marginal_gain": 0.007393148744613677
+      },
+      {
+        "additions": 74,
+        "cumulative_utility_gain": 208.62326989296497,
+        "marginal_gain": 1.52324679990632,
+        "objective_relative_marginal_gain": 0.007301423281726089
+      },
+      {
+        "additions": 75,
+        "cumulative_utility_gain": 210.14607673245712,
+        "marginal_gain": 1.5228068394921352,
+        "objective_relative_marginal_gain": 0.007246420505060694
+      },
+      {
+        "additions": 76,
+        "cumulative_utility_gain": 211.66871964112048,
+        "marginal_gain": 1.5226429086633673,
+        "objective_relative_marginal_gain": 0.0071935187742665704
+      },
+      {
+        "additions": 77,
+        "cumulative_utility_gain": 213.1782849737367,
+        "marginal_gain": 1.5095653326162208,
+        "objective_relative_marginal_gain": 0.007081234060974819
+      },
+      {
+        "additions": 78,
+        "cumulative_utility_gain": 214.68053623217406,
+        "marginal_gain": 1.5022512584373633,
+        "objective_relative_marginal_gain": 0.006997612754295989
+      },
+      {
+        "additions": 79,
+        "cumulative_utility_gain": 216.15567512030907,
+        "marginal_gain": 1.475138888135012,
+        "objective_relative_marginal_gain": 0.006824428215053671
+      },
+      {
+        "additions": 80,
+        "cumulative_utility_gain": 217.6305267608711,
+        "marginal_gain": 1.4748516405620278,
+        "objective_relative_marginal_gain": 0.006776860133149293
+      },
+      {
+        "additions": 81,
+        "cumulative_utility_gain": 219.09984907676954,
+        "marginal_gain": 1.4693223158984343,
+        "objective_relative_marginal_gain": 0.006706176759544933
+      },
+      {
+        "additions": 82,
+        "cumulative_utility_gain": 220.54942149192263,
+        "marginal_gain": 1.449572415153072,
+        "objective_relative_marginal_gain": 0.006572551427917307
+      },
+      {
+        "additions": 83,
+        "cumulative_utility_gain": 221.9932269117238,
+        "marginal_gain": 1.4438054198011816,
+        "objective_relative_marginal_gain": 0.006503826445008228
+      },
+      {
+        "additions": 84,
+        "cumulative_utility_gain": 223.43211004438012,
+        "marginal_gain": 1.4388831326563076,
+        "objective_relative_marginal_gain": 0.006439912026836713
+      },
+      {
+        "additions": 85,
+        "cumulative_utility_gain": 224.86866096462347,
+        "marginal_gain": 1.4365509202433457,
+        "objective_relative_marginal_gain": 0.0063883998511884465
+      },
+      {
+        "additions": 86,
+        "cumulative_utility_gain": 226.29645150121365,
+        "marginal_gain": 1.427790536590177,
+        "objective_relative_marginal_gain": 0.0063093810226296
+      },
+      {
+        "additions": 87,
+        "cumulative_utility_gain": 227.7232228247902,
+        "marginal_gain": 1.4267713235765478,
+        "objective_relative_marginal_gain": 0.006265374720584834
+      },
+      {
+        "additions": 88,
+        "cumulative_utility_gain": 229.1439717891596,
+        "marginal_gain": 1.4207489643693902,
+        "objective_relative_marginal_gain": 0.006200245868464969
+      },
+      {
+        "additions": 89,
+        "cumulative_utility_gain": 230.5590438904175,
+        "marginal_gain": 1.4150721012579297,
+        "objective_relative_marginal_gain": 0.006137569263734889
+      },
+      {
+        "additions": 90,
+        "cumulative_utility_gain": 231.96683505393347,
+        "marginal_gain": 1.4077911635159555,
+        "objective_relative_marginal_gain": 0.006068932928229317
+      },
+      {
+        "additions": 91,
+        "cumulative_utility_gain": 233.36827886255904,
+        "marginal_gain": 1.4014438086255727,
+        "objective_relative_marginal_gain": 0.006005288359910069
+      },
+      {
+        "additions": 92,
+        "cumulative_utility_gain": 234.7696013405101,
+        "marginal_gain": 1.4013224779510647,
+        "objective_relative_marginal_gain": 0.0059689264280795235
+      },
+      {
+        "additions": 93,
+        "cumulative_utility_gain": 236.16965913397274,
+        "marginal_gain": 1.4000577934626501,
+        "objective_relative_marginal_gain": 0.005928186535885351
+      },
+      {
+        "additions": 94,
+        "cumulative_utility_gain": 237.5647435792087,
+        "marginal_gain": 1.3950844452359723,
+        "objective_relative_marginal_gain": 0.0058724389158815735
+      },
+      {
+        "additions": 95,
+        "cumulative_utility_gain": 238.95740356625643,
+        "marginal_gain": 1.392659987047726,
+        "objective_relative_marginal_gain": 0.005828067957984734
+      },
+      {
+        "additions": 96,
+        "cumulative_utility_gain": 240.33853087477334,
+        "marginal_gain": 1.3811273085168954,
+        "objective_relative_marginal_gain": 0.005746591291416863
+      },
+      {
+        "additions": 97,
+        "cumulative_utility_gain": 241.71380306312864,
+        "marginal_gain": 1.3752721883553034,
+        "objective_relative_marginal_gain": 0.0056896717147597985
+      },
+      {
+        "additions": 98,
+        "cumulative_utility_gain": 243.08818797148655,
+        "marginal_gain": 1.374384908357912,
+        "objective_relative_marginal_gain": 0.005653853113254202
+      },
+      {
+        "additions": 99,
+        "cumulative_utility_gain": 244.45925350824118,
+        "marginal_gain": 1.3710655367546192,
+        "objective_relative_marginal_gain": 0.005608564687482358
+      },
+      {
+        "additions": 100,
+        "cumulative_utility_gain": 245.8261743906518,
+        "marginal_gain": 1.3669208824106216,
+        "objective_relative_marginal_gain": 0.005560518060368931
+      },
+      {
+        "additions": 101,
+        "cumulative_utility_gain": 247.18553851722413,
+        "marginal_gain": 1.3593641265723377,
+        "objective_relative_marginal_gain": 0.005499367538759214
+      },
+      {
+        "additions": 102,
+        "cumulative_utility_gain": 248.5440770094596,
+        "marginal_gain": 1.3585384922354895,
+        "objective_relative_marginal_gain": 0.005465986188774812
+      },
+      {
+        "additions": 103,
+        "cumulative_utility_gain": 249.89453027876328,
+        "marginal_gain": 1.3504532693036726,
+        "objective_relative_marginal_gain": 0.005404092949922553
+      },
+      {
+        "additions": 104,
+        "cumulative_utility_gain": 251.24341291227103,
+        "marginal_gain": 1.3488826335077546,
+        "objective_relative_marginal_gain": 0.005368827854518743
+      },
+      {
+        "additions": 105,
+        "cumulative_utility_gain": 252.58702880685485,
+        "marginal_gain": 1.3436158945838241,
+        "objective_relative_marginal_gain": 0.005319417631739292
+      },
+      {
+        "additions": 106,
+        "cumulative_utility_gain": 253.9229159767228,
+        "marginal_gain": 1.335887169867953,
+        "objective_relative_marginal_gain": 0.00526099491544282
+      },
+      {
+        "additions": 107,
+        "cumulative_utility_gain": 255.2578191921745,
+        "marginal_gain": 1.3349032154517086,
+        "objective_relative_marginal_gain": 0.005229627126316188
+      },
+      {
+        "additions": 108,
+        "cumulative_utility_gain": 256.5881193275128,
+        "marginal_gain": 1.3303001353383093,
+        "objective_relative_marginal_gain": 0.005184574168222866
+      },
+      {
+        "additions": 109,
+        "cumulative_utility_gain": 257.9180790477206,
+        "marginal_gain": 1.329959720207768,
+        "objective_relative_marginal_gain": 0.005156519950513806
+      },
+      {
+        "additions": 110,
+        "cumulative_utility_gain": 259.2457077559782,
+        "marginal_gain": 1.3276287082575544,
+        "objective_relative_marginal_gain": 0.005121121270432835
+      },
+      {
+        "additions": 111,
+        "cumulative_utility_gain": 260.5674721488337,
+        "marginal_gain": 1.3217643928555292,
+        "objective_relative_marginal_gain": 0.0050726377392975195
+      },
+      {
+        "additions": 112,
+        "cumulative_utility_gain": 261.8791915622752,
+        "marginal_gain": 1.311719413441517,
+        "objective_relative_marginal_gain": 0.005008872242259037
+      },
+      {
+        "additions": 113,
+        "cumulative_utility_gain": 263.189105444296,
+        "marginal_gain": 1.3099138820207792,
+        "objective_relative_marginal_gain": 0.0049770824662726115
+      },
+      {
+        "additions": 114,
+        "cumulative_utility_gain": 264.484495295269,
+        "marginal_gain": 1.2953898509730488,
+        "objective_relative_marginal_gain": 0.004897791265710614
+      },
+      {
+        "additions": 115,
+        "cumulative_utility_gain": 265.77914651201263,
+        "marginal_gain": 1.2946512167436004,
+        "objective_relative_marginal_gain": 0.004871154241158965
+      },
+      {
+        "additions": 116,
+        "cumulative_utility_gain": 267.0735924439121,
+        "marginal_gain": 1.2944459318994632,
+        "objective_relative_marginal_gain": 0.004846776201474538
+      },
+      {
+        "additions": 117,
+        "cumulative_utility_gain": 268.3638638021209,
+        "marginal_gain": 1.2902713582087812,
+        "objective_relative_marginal_gain": 0.004807917653027114
+      },
+      {
+        "additions": 118,
+        "cumulative_utility_gain": 269.64781750940114,
+        "marginal_gain": 1.2839537072802827,
+        "objective_relative_marginal_gain": 0.004761595028431922
+      },
+      {
+        "additions": 119,
+        "cumulative_utility_gain": 270.9317205929105,
+        "marginal_gain": 1.283903083509361,
+        "objective_relative_marginal_gain": 0.0047388437230592665
+      },
+      {
+        "additions": 120,
+        "cumulative_utility_gain": 272.2121652682787,
+        "marginal_gain": 1.2804446753681693,
+        "objective_relative_marginal_gain": 0.004703848096231214
+      },
+      {
+        "additions": 121,
+        "cumulative_utility_gain": 273.4850725360986,
+        "marginal_gain": 1.2729072678198972,
+        "objective_relative_marginal_gain": 0.004654393952898033
+      },
+      {
+        "additions": 122,
+        "cumulative_utility_gain": 274.74907840761637,
+        "marginal_gain": 1.2640058715178075,
+        "objective_relative_marginal_gain": 0.004600582752974824
+      },
+      {
+        "additions": 123,
+        "cumulative_utility_gain": 275.994575005284,
+        "marginal_gain": 1.2454965976676053,
+        "objective_relative_marginal_gain": 0.004512757533889062
+      },
+      {
+        "additions": 124,
+        "cumulative_utility_gain": 277.23807916479507,
+        "marginal_gain": 1.2435041595110907,
+        "objective_relative_marginal_gain": 0.0044853295884074084
+      },
+      {
+        "additions": 125,
+        "cumulative_utility_gain": 278.479355754706,
+        "marginal_gain": 1.2412765899109148,
+        "objective_relative_marginal_gain": 0.004457337911267911
+      },
+      {
+        "additions": 126,
+        "cumulative_utility_gain": 279.71247996532844,
+        "marginal_gain": 1.233124210622438,
+        "objective_relative_marginal_gain": 0.004408541981306265
+      },
+      {
+        "additions": 127,
+        "cumulative_utility_gain": 280.94536474370955,
+        "marginal_gain": 1.232884778381097,
+        "objective_relative_marginal_gain": 0.004388343546816611
+      },
+      {
+        "additions": 128,
+        "cumulative_utility_gain": 282.174839455969,
+        "marginal_gain": 1.2294747122594616,
+        "objective_relative_marginal_gain": 0.004357137988028556
+      },
+      {
+        "additions": 129,
+        "cumulative_utility_gain": 283.4042377776695,
+        "marginal_gain": 1.229398321700511,
+        "objective_relative_marginal_gain": 0.004337967319546483
+      },
+      {
+        "additions": 130,
+        "cumulative_utility_gain": 284.63279182376954,
+        "marginal_gain": 1.2285540461000273,
+        "objective_relative_marginal_gain": 0.00431627725754342
+      },
+      {
+        "additions": 131,
+        "cumulative_utility_gain": 285.8546334458419,
+        "marginal_gain": 1.2218416220723651,
+        "objective_relative_marginal_gain": 0.004274346045553449
+      },
+      {
+        "additions": 132,
+        "cumulative_utility_gain": 287.07082929743046,
+        "marginal_gain": 1.216195851588559,
+        "objective_relative_marginal_gain": 0.0042365706559772875
+      },
+      {
+        "additions": 133,
+        "cumulative_utility_gain": 288.2818351422415,
+        "marginal_gain": 1.2110058448110501,
+        "objective_relative_marginal_gain": 0.004200770555708188
+      },
+      {
+        "additions": 134,
+        "cumulative_utility_gain": 289.490430346806,
+        "marginal_gain": 1.2085952045645052,
+        "objective_relative_marginal_gain": 0.004174905550821223
+      },
+      {
+        "additions": 135,
+        "cumulative_utility_gain": 290.68904790605905,
+        "marginal_gain": 1.198617559252998,
+        "objective_relative_marginal_gain": 0.004123366765576772
+      },
+      {
+        "additions": 136,
+        "cumulative_utility_gain": 291.88131490301515,
+        "marginal_gain": 1.192266996956082,
+        "objective_relative_marginal_gain": 0.0040847664310140665
+      },
+      {
+        "additions": 137,
+        "cumulative_utility_gain": 293.06929036903006,
+        "marginal_gain": 1.1879754660149238,
+        "objective_relative_marginal_gain": 0.004053565163784429
+      },
+      {
+        "additions": 138,
+        "cumulative_utility_gain": 294.2529828990546,
+        "marginal_gain": 1.1836925300245567,
+        "objective_relative_marginal_gain": 0.004022703587785311
+      },
+      {
+        "additions": 139,
+        "cumulative_utility_gain": 295.4357809440872,
+        "marginal_gain": 1.1827980450326205,
+        "objective_relative_marginal_gain": 0.004003570729492889
+      },
+      {
+        "additions": 140,
+        "cumulative_utility_gain": 296.6163192280344,
+        "marginal_gain": 1.1805382839472065,
+        "objective_relative_marginal_gain": 0.003980017980870518
+      },
+      {
+        "additions": 141,
+        "cumulative_utility_gain": 297.79264949085086,
+        "marginal_gain": 1.1763302628164358,
+        "objective_relative_marginal_gain": 0.003950165542459356
+      },
+      {
+        "additions": 142,
+        "cumulative_utility_gain": 298.96735638470415,
+        "marginal_gain": 1.1747068938532748,
+        "objective_relative_marginal_gain": 0.003929214573987434
+      },
+      {
+        "additions": 143,
+        "cumulative_utility_gain": 300.1412916895036,
+        "marginal_gain": 1.1739353047994672,
+        "objective_relative_marginal_gain": 0.003911275580215414
+      },
+      {
+        "additions": 144,
+        "cumulative_utility_gain": 301.31272169493224,
+        "marginal_gain": 1.1714300054286546,
+        "objective_relative_marginal_gain": 0.003887754884158802
+      },
+      {
+        "additions": 145,
+        "cumulative_utility_gain": 302.4824164795875,
+        "marginal_gain": 1.1696947846553003,
+        "objective_relative_marginal_gain": 0.0038669843962127796
+      },
+      {
+        "additions": 146,
+        "cumulative_utility_gain": 303.64368373880836,
+        "marginal_gain": 1.1612672592208135,
+        "objective_relative_marginal_gain": 0.0038244406895673335
+      },
+      {
+        "additions": 147,
+        "cumulative_utility_gain": 304.80339687616964,
+        "marginal_gain": 1.1597131373612621,
+        "objective_relative_marginal_gain": 0.0038047907249288654
+      },
+      {
+        "additions": 148,
+        "cumulative_utility_gain": 305.96073771080086,
+        "marginal_gain": 1.157340834631228,
+        "objective_relative_marginal_gain": 0.003782644934413662
+      },
+      {
+        "additions": 149,
+        "cumulative_utility_gain": 307.11168350408957,
+        "marginal_gain": 1.1509457932887273,
+        "objective_relative_marginal_gain": 0.003747645742931825
+      },
+      {
+        "additions": 150,
+        "cumulative_utility_gain": 308.2605347164054,
+        "marginal_gain": 1.1488512123158292,
+        "objective_relative_marginal_gain": 0.0037268838626156064
+      },
+      {
+        "additions": 151,
+        "cumulative_utility_gain": 309.40294203086654,
+        "marginal_gain": 1.1424073144611107,
+        "objective_relative_marginal_gain": 0.0036922962236963547
+      },
+      {
+        "additions": 152,
+        "cumulative_utility_gain": 310.5396579237463,
+        "marginal_gain": 1.1367158928797292,
+        "objective_relative_marginal_gain": 0.003660453226746493
+      },
+      {
+        "additions": 153,
+        "cumulative_utility_gain": 311.6752710021225,
+        "marginal_gain": 1.135613078376194,
+        "objective_relative_marginal_gain": 0.0036435777362922722
+      },
+      {
+        "additions": 154,
+        "cumulative_utility_gain": 312.81019587205236,
+        "marginal_gain": 1.1349248699298828,
+        "objective_relative_marginal_gain": 0.0036281581767689474
+      },
+      {
+        "additions": 155,
+        "cumulative_utility_gain": 313.9440831802207,
+        "marginal_gain": 1.1338873081683285,
+        "objective_relative_marginal_gain": 0.003611749253823066
+      },
+      {
+        "additions": 156,
+        "cumulative_utility_gain": 315.0735887557367,
+        "marginal_gain": 1.1295055755160348,
+        "objective_relative_marginal_gain": 0.003584894500286703
+      },
+      {
+        "additions": 157,
+        "cumulative_utility_gain": 316.1898015460161,
+        "marginal_gain": 1.1162127902794072,
+        "objective_relative_marginal_gain": 0.003530198585854646
+      },
+      {
+        "additions": 158,
+        "cumulative_utility_gain": 317.3021433550978,
+        "marginal_gain": 1.1123418090817172,
+        "objective_relative_marginal_gain": 0.003505623369952714
+      },
+      {
+        "additions": 159,
+        "cumulative_utility_gain": 318.40699639524496,
+        "marginal_gain": 1.1048530401471188,
+        "objective_relative_marginal_gain": 0.0034699395825324225
+      },
+      {
+        "additions": 160,
+        "cumulative_utility_gain": 319.50226141444625,
+        "marginal_gain": 1.0952650192012858,
+        "objective_relative_marginal_gain": 0.00342803526445326
+      },
+      {
+        "additions": 161,
+        "cumulative_utility_gain": 320.5965446133306,
+        "marginal_gain": 1.094283198884357,
+        "objective_relative_marginal_gain": 0.0034132719683681086
+      },
+      {
+        "additions": 162,
+        "cumulative_utility_gain": 321.68981430191224,
+        "marginal_gain": 1.0932696885816366,
+        "objective_relative_marginal_gain": 0.0033985213083420215
+      },
+      {
+        "additions": 163,
+        "cumulative_utility_gain": 322.78194509549104,
+        "marginal_gain": 1.09213079357882,
+        "objective_relative_marginal_gain": 0.00338349405898687
+      },
+      {
+        "additions": 164,
+        "cumulative_utility_gain": 323.87199843731116,
+        "marginal_gain": 1.090053341820146,
+        "objective_relative_marginal_gain": 0.003365691838379591
+      },
+      {
+        "additions": 165,
+        "cumulative_utility_gain": 324.9605597476829,
+        "marginal_gain": 1.0885613103717613,
+        "objective_relative_marginal_gain": 0.003349825933390131
+      },
+      {
+        "additions": 166,
+        "cumulative_utility_gain": 326.03987522656445,
+        "marginal_gain": 1.0793154788815507,
+        "objective_relative_marginal_gain": 0.0033103787631237943
+      },
+      {
+        "additions": 167,
+        "cumulative_utility_gain": 327.1176777445811,
+        "marginal_gain": 1.077802518016642,
+        "objective_relative_marginal_gain": 0.003294846446232747
+      },
+      {
+        "additions": 168,
+        "cumulative_utility_gain": 328.1940156894057,
+        "marginal_gain": 1.0763379448246018,
+        "objective_relative_marginal_gain": 0.003279578217060545
+      },
+      {
+        "additions": 169,
+        "cumulative_utility_gain": 329.2617461800971,
+        "marginal_gain": 1.067730490691377,
+        "objective_relative_marginal_gain": 0.003242801519091009
+      },
+      {
+        "additions": 170,
+        "cumulative_utility_gain": 330.3255472258316,
+        "marginal_gain": 1.0638010457345062,
+        "objective_relative_marginal_gain": 0.003220462524526521
+      },
+      {
+        "additions": 171,
+        "cumulative_utility_gain": 331.3881679854471,
+        "marginal_gain": 1.0626207596155193,
+        "objective_relative_marginal_gain": 0.003206574230079887
+      },
+      {
+        "additions": 172,
+        "cumulative_utility_gain": 332.4486996581997,
+        "marginal_gain": 1.0605316727526028,
+        "objective_relative_marginal_gain": 0.0031900611247478684
+      },
+      {
+        "additions": 173,
+        "cumulative_utility_gain": 333.5087369322817,
+        "marginal_gain": 1.0600372740820039,
+        "objective_relative_marginal_gain": 0.0031784392931728275
+      },
+      {
+        "additions": 174,
+        "cumulative_utility_gain": 334.56431445922664,
+        "marginal_gain": 1.0555775269449594,
+        "objective_relative_marginal_gain": 0.0031550810451830263
+      },
+      {
+        "additions": 175,
+        "cumulative_utility_gain": 335.61966437232206,
+        "marginal_gain": 1.0553499130954398,
+        "objective_relative_marginal_gain": 0.0031444817605343883
+      },
+      {
+        "additions": 176,
+        "cumulative_utility_gain": 336.67414814774804,
+        "marginal_gain": 1.0544837754259504,
+        "objective_relative_marginal_gain": 0.003132060424678626
+      },
+      {
+        "additions": 177,
+        "cumulative_utility_gain": 337.72638796356347,
+        "marginal_gain": 1.0522398158154298,
+        "objective_relative_marginal_gain": 0.0031156576841989427
+      },
+      {
+        "additions": 178,
+        "cumulative_utility_gain": 338.7761037951065,
+        "marginal_gain": 1.0497158315430364,
+        "objective_relative_marginal_gain": 0.0030985533506752583
+      },
+      {
+        "additions": 179,
+        "cumulative_utility_gain": 339.8128692191961,
+        "marginal_gain": 1.0367654240895725,
+        "objective_relative_marginal_gain": 0.0030509892885216407
+      },
+      {
+        "additions": 180,
+        "cumulative_utility_gain": 340.8461012715144,
+        "marginal_gain": 1.0332320523183087,
+        "objective_relative_marginal_gain": 0.003031374125929189
+      },
+      {
+        "additions": 181,
+        "cumulative_utility_gain": 341.8757527759095,
+        "marginal_gain": 1.0296515043951153,
+        "objective_relative_marginal_gain": 0.0030117710777518188
+      },
+      {
+        "additions": 182,
+        "cumulative_utility_gain": 342.8973025133213,
+        "marginal_gain": 1.0215497374117413,
+        "objective_relative_marginal_gain": 0.002979171110195756
+      },
+      {
+        "additions": 183,
+        "cumulative_utility_gain": 343.9148984089683,
+        "marginal_gain": 1.0175958956470612,
+        "objective_relative_marginal_gain": 0.002958859591005509
+      },
+      {
+        "additions": 184,
+        "cumulative_utility_gain": 344.92526263307855,
+        "marginal_gain": 1.010364224110244,
+        "objective_relative_marginal_gain": 0.0029292265124257946
+      },
+      {
+        "additions": 185,
+        "cumulative_utility_gain": 345.93214085157854,
+        "marginal_gain": 1.0068782184999652,
+        "objective_relative_marginal_gain": 0.0029106234998035763
+      },
+      {
+        "additions": 186,
+        "cumulative_utility_gain": 346.931207056691,
+        "marginal_gain": 0.9990662051124343,
+        "objective_relative_marginal_gain": 0.002879724235788278
+      },
+      {
+        "additions": 187,
+        "cumulative_utility_gain": 347.9286006599672,
+        "marginal_gain": 0.9973936032761633,
+        "objective_relative_marginal_gain": 0.0028666617271022295
+      },
+      {
+        "additions": 188,
+        "cumulative_utility_gain": 348.922423414647,
+        "marginal_gain": 0.9938227546798686,
+        "objective_relative_marginal_gain": 0.002848262788484777
+      },
+      {
+        "additions": 189,
+        "cumulative_utility_gain": 349.91340334389395,
+        "marginal_gain": 0.9909799292469013,
+        "objective_relative_marginal_gain": 0.0028320719348751805
+      },
+      {
+        "additions": 190,
+        "cumulative_utility_gain": 350.9024294472498,
+        "marginal_gain": 0.9890261033558677,
+        "objective_relative_marginal_gain": 0.0028185216754235817
+      },
+      {
+        "additions": 191,
+        "cumulative_utility_gain": 351.88740743152425,
+        "marginal_gain": 0.9849779842744578,
+        "objective_relative_marginal_gain": 0.002799128253733064
+      },
+      {
+        "additions": 192,
+        "cumulative_utility_gain": 352.87033290124134,
+        "marginal_gain": 0.9829254697171129,
+        "objective_relative_marginal_gain": 0.002785514615625697
+      },
+      {
+        "additions": 193,
+        "cumulative_utility_gain": 353.8532294891845,
+        "marginal_gain": 0.982896587943156,
+        "objective_relative_marginal_gain": 0.0027776956829305924
+      },
+      {
+        "additions": 194,
+        "cumulative_utility_gain": 354.8357187834044,
+        "marginal_gain": 0.9824892942198722,
+        "objective_relative_marginal_gain": 0.002768856803899143
+      },
+      {
+        "additions": 195,
+        "cumulative_utility_gain": 355.8131512434771,
+        "marginal_gain": 0.9774324600727078,
+        "objective_relative_marginal_gain": 0.002747038597805697
+      },
+      {
+        "additions": 196,
+        "cumulative_utility_gain": 356.790303602425,
+        "marginal_gain": 0.9771523589479071,
+        "objective_relative_marginal_gain": 0.0027387301422763933
+      },
+      {
+        "additions": 197,
+        "cumulative_utility_gain": 357.766271786176,
+        "marginal_gain": 0.9759681837509532,
+        "objective_relative_marginal_gain": 0.0027279491129176487
+      },
+      {
+        "additions": 198,
+        "cumulative_utility_gain": 358.7394344426555,
+        "marginal_gain": 0.9731626564795477,
+        "objective_relative_marginal_gain": 0.0027127284124519846
+      },
+      {
+        "additions": 199,
+        "cumulative_utility_gain": 359.7101224811513,
+        "marginal_gain": 0.970688038495804,
+        "objective_relative_marginal_gain": 0.0026985285590529016
+      },
+      {
+        "additions": 200,
+        "cumulative_utility_gain": 360.6798993963429,
+        "marginal_gain": 0.9697769151916015,
+        "objective_relative_marginal_gain": 0.002688746771901297
+      },
+      {
+        "additions": 201,
+        "cumulative_utility_gain": 361.6389964605275,
+        "marginal_gain": 0.9590970641846105,
+        "objective_relative_marginal_gain": 0.0026520841877441027
+      },
+      {
+        "additions": 202,
+        "cumulative_utility_gain": 362.5974062559131,
+        "marginal_gain": 0.9584097953855797,
+        "objective_relative_marginal_gain": 0.0026431788502898324
+      },
+      {
+        "additions": 203,
+        "cumulative_utility_gain": 363.55490450249084,
+        "marginal_gain": 0.9574982465777564,
+        "objective_relative_marginal_gain": 0.0026337101623977576
+      },
+      {
+        "additions": 204,
+        "cumulative_utility_gain": 364.51062459719833,
+        "marginal_gain": 0.9557200947074949,
+        "objective_relative_marginal_gain": 0.0026219265783092366
+      },
+      {
+        "additions": 205,
+        "cumulative_utility_gain": 365.46279372699405,
+        "marginal_gain": 0.9521691297957411,
+        "objective_relative_marginal_gain": 0.002605379114206151
+      },
+      {
+        "additions": 206,
+        "cumulative_utility_gain": 366.4110209646615,
+        "marginal_gain": 0.9482272376674414,
+        "objective_relative_marginal_gain": 0.0025878785937470295
+      },
+      {
+        "additions": 207,
+        "cumulative_utility_gain": 367.34402268443523,
+        "marginal_gain": 0.9330017197737744,
+        "objective_relative_marginal_gain": 0.002539858176963626
+      },
+      {
+        "additions": 208,
+        "cumulative_utility_gain": 368.27181940593005,
+        "marginal_gain": 0.9277967214947931,
+        "objective_relative_marginal_gain": 0.0025193258691133327
+      },
+      {
+        "additions": 209,
+        "cumulative_utility_gain": 369.19816956574044,
+        "marginal_gain": 0.9263501598103959,
+        "objective_relative_marginal_gain": 0.002509086545309774
+      },
+      {
+        "additions": 210,
+        "cumulative_utility_gain": 370.11955241459486,
+        "marginal_gain": 0.9213828488544364,
+        "objective_relative_marginal_gain": 0.0024894195479365972
+      },
+      {
+        "additions": 211,
+        "cumulative_utility_gain": 371.04072446235034,
+        "marginal_gain": 0.9211720477554628,
+        "objective_relative_marginal_gain": 0.002482671003540838
+      },
+      {
+        "additions": 212,
+        "cumulative_utility_gain": 371.9588553655974,
+        "marginal_gain": 0.9181309032470827,
+        "objective_relative_marginal_gain": 0.002468366836822998
+      },
+      {
+        "additions": 213,
+        "cumulative_utility_gain": 372.8760855783429,
+        "marginal_gain": 0.9172302127455151,
+        "objective_relative_marginal_gain": 0.002459879429711512
+      },
+      {
+        "additions": 214,
+        "cumulative_utility_gain": 373.7927876847525,
+        "marginal_gain": 0.9167021064096266,
+        "objective_relative_marginal_gain": 0.0024524339061960452
+      },
+      {
+        "additions": 215,
+        "cumulative_utility_gain": 374.70143273506886,
+        "marginal_gain": 0.9086450503163486,
+        "objective_relative_marginal_gain": 0.0024249841899024772
+      },
+      {
+        "additions": 216,
+        "cumulative_utility_gain": 375.6096299945702,
+        "marginal_gain": 0.9081972595013486,
+        "objective_relative_marginal_gain": 0.0024179285805704114
+      },
+      {
+        "additions": 217,
+        "cumulative_utility_gain": 376.5155282382429,
+        "marginal_gain": 0.9058982436726823,
+        "objective_relative_marginal_gain": 0.0024060050004085587
+      },
+      {
+        "additions": 218,
+        "cumulative_utility_gain": 377.4212112699235,
+        "marginal_gain": 0.9056830316806148,
+        "objective_relative_marginal_gain": 0.002399661186591047
+      },
+      {
+        "additions": 219,
+        "cumulative_utility_gain": 378.3266733074502,
+        "marginal_gain": 0.9054620375267066,
+        "objective_relative_marginal_gain": 0.0023933338604198167
+      },
+      {
+        "additions": 220,
+        "cumulative_utility_gain": 379.2297961233826,
+        "marginal_gain": 0.9031228159323463,
+        "objective_relative_marginal_gain": 0.0023814658688857742
+      },
+      {
+        "additions": 221,
+        "cumulative_utility_gain": 380.12713959089024,
+        "marginal_gain": 0.8973434675076817,
+        "objective_relative_marginal_gain": 0.0023606403596266308
+      },
+      {
+        "additions": 222,
+        "cumulative_utility_gain": 381.0244691802286,
+        "marginal_gain": 0.8973295893383615,
+        "objective_relative_marginal_gain": 0.0023550445231744817
+      },
+      {
+        "additions": 223,
+        "cumulative_utility_gain": 381.9165769597608,
+        "marginal_gain": 0.8921077795321596,
+        "objective_relative_marginal_gain": 0.0023358707983658776
+      },
+      {
+        "additions": 224,
+        "cumulative_utility_gain": 382.8075065591879,
+        "marginal_gain": 0.8909295994271444,
+        "objective_relative_marginal_gain": 0.0023273566587947592
+      },
+      {
+        "additions": 225,
+        "cumulative_utility_gain": 383.6973660331911,
+        "marginal_gain": 0.8898594740031478,
+        "objective_relative_marginal_gain": 0.0023191701397454263
+      },
+      {
+        "additions": 226,
+        "cumulative_utility_gain": 384.58513314944656,
+        "marginal_gain": 0.8877671162554965,
+        "objective_relative_marginal_gain": 0.0023083760648400253
+      },
+      {
+        "additions": 227,
+        "cumulative_utility_gain": 385.47050524003754,
+        "marginal_gain": 0.8853720905909789,
+        "objective_relative_marginal_gain": 0.0022968607936413865
+      },
+      {
+        "additions": 228,
+        "cumulative_utility_gain": 386.34802112918936,
+        "marginal_gain": 0.8775158891518079,
+        "objective_relative_marginal_gain": 0.0022713093924671066
+      },
+      {
+        "additions": 229,
+        "cumulative_utility_gain": 387.2235023728362,
+        "marginal_gain": 0.8754812436468263,
+        "objective_relative_marginal_gain": 0.002260919696976124
+      },
+      {
+        "additions": 230,
+        "cumulative_utility_gain": 388.0989451792037,
+        "marginal_gain": 0.8754428063675362,
+        "objective_relative_marginal_gain": 0.0022557206538227066
+      },
+      {
+        "additions": 231,
+        "cumulative_utility_gain": 388.9741824330509,
+        "marginal_gain": 0.8752372538471326,
+        "objective_relative_marginal_gain": 0.002250116571677031
+      },
+      {
+        "additions": 232,
+        "cumulative_utility_gain": 389.8466584508534,
+        "marginal_gain": 0.8724760178025106,
+        "objective_relative_marginal_gain": 0.0022379979381367474
+      },
+      {
+        "additions": 233,
+        "cumulative_utility_gain": 390.7128614445127,
+        "marginal_gain": 0.8662029936593547,
+        "objective_relative_marginal_gain": 0.0022169810086540213
+      },
+      {
+        "additions": 234,
+        "cumulative_utility_gain": 391.57859883276353,
+        "marginal_gain": 0.8657373882508173,
+        "objective_relative_marginal_gain": 0.0022108904593648613
+      },
+      {
+        "additions": 235,
+        "cumulative_utility_gain": 392.4430268175476,
+        "marginal_gain": 0.8644279847840517,
+        "objective_relative_marginal_gain": 0.0022026840221725653
+      },
+      {
+        "additions": 236,
+        "cumulative_utility_gain": 393.3069146414508,
+        "marginal_gain": 0.8638878239031974,
+        "objective_relative_marginal_gain": 0.002196472504661508
+      },
+      {
+        "additions": 237,
+        "cumulative_utility_gain": 394.1698030375324,
+        "marginal_gain": 0.8628883960815883,
+        "objective_relative_marginal_gain": 0.002189128617748085
+      },
+      {
+        "additions": 238,
+        "cumulative_utility_gain": 395.03204522804805,
+        "marginal_gain": 0.8622421905156297,
+        "objective_relative_marginal_gain": 0.00218271454412734
+      },
+      {
+        "additions": 239,
+        "cumulative_utility_gain": 395.89229740131066,
+        "marginal_gain": 0.8602521732626184,
+        "objective_relative_marginal_gain": 0.0021729449623279547
+      },
+      {
+        "additions": 240,
+        "cumulative_utility_gain": 396.7487998052367,
+        "marginal_gain": 0.8565024039259974,
+        "objective_relative_marginal_gain": 0.0021588027596969495
+      },
+      {
+        "additions": 241,
+        "cumulative_utility_gain": 397.6044701068694,
+        "marginal_gain": 0.855670301632741,
+        "objective_relative_marginal_gain": 0.0021520640887230246
+      },
+      {
+        "additions": 242,
+        "cumulative_utility_gain": 398.4586900901038,
+        "marginal_gain": 0.8542199832343819,
+        "objective_relative_marginal_gain": 0.002143810649583816
+      },
+      {
+        "additions": 243,
+        "cumulative_utility_gain": 399.3118146140798,
+        "marginal_gain": 0.8531245239760369,
+        "objective_relative_marginal_gain": 0.00213648705786617
+      },
+      {
+        "additions": 244,
+        "cumulative_utility_gain": 400.16422595364304,
+        "marginal_gain": 0.8524113395632167,
+        "objective_relative_marginal_gain": 0.002130153782567171
+      },
+      {
+        "additions": 245,
+        "cumulative_utility_gain": 401.01303087522837,
+        "marginal_gain": 0.8488049215853217,
+        "objective_relative_marginal_gain": 0.0021166517201018833
+      },
+      {
+        "additions": 246,
+        "cumulative_utility_gain": 401.8605729395935,
+        "marginal_gain": 0.8475420643651357,
+        "objective_relative_marginal_gain": 0.0021090450804004
+      },
+      {
+        "additions": 247,
+        "cumulative_utility_gain": 402.7059324075656,
+        "marginal_gain": 0.8453594679721128,
+        "objective_relative_marginal_gain": 0.002099197950519765
+      },
+      {
+        "additions": 248,
+        "cumulative_utility_gain": 403.5492927745574,
+        "marginal_gain": 0.8433603669917706,
+        "objective_relative_marginal_gain": 0.0020898571304470443
+      },
+      {
+        "additions": 249,
+        "cumulative_utility_gain": 404.3875883331962,
+        "marginal_gain": 0.8382955586388326,
+        "objective_relative_marginal_gain": 0.0020730002176726475
+      },
+      {
+        "additions": 250,
+        "cumulative_utility_gain": 405.2256702360602,
+        "marginal_gain": 0.8380819028639624,
+        "objective_relative_marginal_gain": 0.0020681856171050226
+      },
+      {
+        "additions": 251,
+        "cumulative_utility_gain": 406.0602682520071,
+        "marginal_gain": 0.8345980159469174,
+        "objective_relative_marginal_gain": 0.002055355032738523
+      },
+      {
+        "additions": 252,
+        "cumulative_utility_gain": 406.8942107213275,
+        "marginal_gain": 0.8339424693203639,
+        "objective_relative_marginal_gain": 0.0020495314195844183
+      },
+      {
+        "additions": 253,
+        "cumulative_utility_gain": 407.72486044526653,
+        "marginal_gain": 0.8306497239390336,
+        "objective_relative_marginal_gain": 0.002037280049668546
+      },
+      {
+        "additions": 254,
+        "cumulative_utility_gain": 408.55314097139353,
+        "marginal_gain": 0.8282805261270288,
+        "objective_relative_marginal_gain": 0.0020273507729194626
+      },
+      {
+        "additions": 255,
+        "cumulative_utility_gain": 409.3811520691545,
+        "marginal_gain": 0.8280110977609862,
+        "objective_relative_marginal_gain": 0.002022592133457856
+      },
+      {
+        "additions": 256,
+        "cumulative_utility_gain": 410.2014137914363,
+        "marginal_gain": 0.8202617222818507,
+        "objective_relative_marginal_gain": 0.0019996560097155255
+      },
+      {
+        "additions": 257,
+        "cumulative_utility_gain": 411.0191688787123,
+        "marginal_gain": 0.8177550872760241,
+        "objective_relative_marginal_gain": 0.0019895789520155823
+      },
+      {
+        "additions": 258,
+        "cumulative_utility_gain": 411.8369032738008,
+        "marginal_gain": 0.8177343950884588,
+        "objective_relative_marginal_gain": 0.00198557824368839
+      },
+      {
+        "additions": 259,
+        "cumulative_utility_gain": 412.6514416132765,
+        "marginal_gain": 0.8145383394757348,
+        "objective_relative_marginal_gain": 0.001973913713450912
+      },
+      {
+        "additions": 260,
+        "cumulative_utility_gain": 413.4590035808634,
+        "marginal_gain": 0.8075619675868636,
+        "objective_relative_marginal_gain": 0.0019531851056399175
+      },
+      {
+        "additions": 261,
+        "cumulative_utility_gain": 414.26546432502306,
+        "marginal_gain": 0.8064607441596591,
+        "objective_relative_marginal_gain": 0.0019467245368224291
+      },
+      {
+        "additions": 262,
+        "cumulative_utility_gain": 415.0713914801563,
+        "marginal_gain": 0.8059271551332404,
+        "objective_relative_marginal_gain": 0.0019416591258175646
+      },
+      {
+        "additions": 263,
+        "cumulative_utility_gain": 415.87617797787055,
+        "marginal_gain": 0.8047864977142515,
+        "objective_relative_marginal_gain": 0.0019351589254941058
+      },
+      {
+        "additions": 264,
+        "cumulative_utility_gain": 416.6807883035707,
+        "marginal_gain": 0.8046103257001254,
+        "objective_relative_marginal_gain": 0.0019309993363887238
+      },
+      {
+        "additions": 265,
+        "cumulative_utility_gain": 417.4838366329738,
+        "marginal_gain": 0.8030483294030879,
+        "objective_relative_marginal_gain": 0.0019235435217796917
+      },
+      {
+        "additions": 266,
+        "cumulative_utility_gain": 418.28356670700157,
+        "marginal_gain": 0.7997300740277631,
+        "objective_relative_marginal_gain": 0.0019119328075060534
+      },
+      {
+        "additions": 267,
+        "cumulative_utility_gain": 419.08294013104427,
+        "marginal_gain": 0.7993734240426983,
+        "objective_relative_marginal_gain": 0.0019074348953282132
+      },
+      {
+        "additions": 268,
+        "cumulative_utility_gain": 419.8789151362461,
+        "marginal_gain": 0.7959750052018357,
+        "objective_relative_marginal_gain": 0.0018957251162363094
+      },
+      {
+        "additions": 269,
+        "cumulative_utility_gain": 420.67473220169944,
+        "marginal_gain": 0.7958170654532922,
+        "objective_relative_marginal_gain": 0.0018917634089601668
+      },
+      {
+        "additions": 270,
+        "cumulative_utility_gain": 421.4703137109392,
+        "marginal_gain": 0.7955815092397801,
+        "objective_relative_marginal_gain": 0.0018876335612700375
+      },
+      {
+        "additions": 271,
+        "cumulative_utility_gain": 422.2651455264368,
+        "marginal_gain": 0.7948318154976398,
+        "objective_relative_marginal_gain": 0.0018823050491338213
+      },
+      {
+        "additions": 272,
+        "cumulative_utility_gain": 423.0595918177608,
+        "marginal_gain": 0.7944462913239688,
+        "objective_relative_marginal_gain": 0.0018778590692400336
+      },
+      {
+        "additions": 273,
+        "cumulative_utility_gain": 423.8533231872198,
+        "marginal_gain": 0.7937313694590061,
+        "objective_relative_marginal_gain": 0.001872655765656007
+      },
+      {
+        "additions": 274,
+        "cumulative_utility_gain": 424.6465003040044,
+        "marginal_gain": 0.7931771167845819,
+        "objective_relative_marginal_gain": 0.0018678527109413277
+      },
+      {
+        "additions": 275,
+        "cumulative_utility_gain": 425.439289013377,
+        "marginal_gain": 0.7927887093725785,
+        "objective_relative_marginal_gain": 0.0018634590876905378
+      },
+      {
+        "additions": 276,
+        "cumulative_utility_gain": 426.23137818699655,
+        "marginal_gain": 0.7920891736195796,
+        "objective_relative_marginal_gain": 0.001858354908052015
+      },
+      {
+        "additions": 277,
+        "cumulative_utility_gain": 427.02242615508686,
+        "marginal_gain": 0.7910479680902989,
+        "objective_relative_marginal_gain": 0.0018524740614044577
+      },
+      {
+        "additions": 278,
+        "cumulative_utility_gain": 427.8129344116882,
+        "marginal_gain": 0.7905082566013616,
+        "objective_relative_marginal_gain": 0.0018477895197078085
+      },
+      {
+        "additions": 279,
+        "cumulative_utility_gain": 428.6016310769613,
+        "marginal_gain": 0.7886966652731197,
+        "objective_relative_marginal_gain": 0.0018401625380923907
+      },
+      {
+        "additions": 280,
+        "cumulative_utility_gain": 429.38807489922254,
+        "marginal_gain": 0.7864438222612249,
+        "objective_relative_marginal_gain": 0.0018315455603786933
+      },
+      {
+        "additions": 281,
+        "cumulative_utility_gain": 430.1743582547225,
+        "marginal_gain": 0.7862833554999658,
+        "objective_relative_marginal_gain": 0.0018278247887438647
+      },
+      {
+        "additions": 282,
+        "cumulative_utility_gain": 430.959495790166,
+        "marginal_gain": 0.7851375354435016,
+        "objective_relative_marginal_gain": 0.0018218360266176493
+      },
+      {
+        "additions": 283,
+        "cumulative_utility_gain": 431.74228615546184,
+        "marginal_gain": 0.7827903652958431,
+        "objective_relative_marginal_gain": 0.0018130963549259009
+      },
+      {
+        "additions": 284,
+        "cumulative_utility_gain": 432.5224390148042,
+        "marginal_gain": 0.7801528593423697,
+        "objective_relative_marginal_gain": 0.0018037280588711073
+      },
+      {
+        "additions": 285,
+        "cumulative_utility_gain": 433.301073371749,
+        "marginal_gain": 0.7786343569448181,
+        "objective_relative_marginal_gain": 0.0017969822942875374
+      },
+      {
+        "additions": 286,
+        "cumulative_utility_gain": 434.07771691572185,
+        "marginal_gain": 0.7766435439728245,
+        "objective_relative_marginal_gain": 0.001789180862568012
+      },
+      {
+        "additions": 287,
+        "cumulative_utility_gain": 434.853593669729,
+        "marginal_gain": 0.7758767540071341,
+        "objective_relative_marginal_gain": 0.0017842252318981914
+      },
+      {
+        "additions": 288,
+        "cumulative_utility_gain": 435.62893030901245,
+        "marginal_gain": 0.7753366392834401,
+        "objective_relative_marginal_gain": 0.001779809799898865
+      },
+      {
+        "additions": 289,
+        "cumulative_utility_gain": 436.4028882292446,
+        "marginal_gain": 0.7739579202321618,
+        "objective_relative_marginal_gain": 0.0017734940375224966
+      },
+      {
+        "additions": 290,
+        "cumulative_utility_gain": 437.17406435262296,
+        "marginal_gain": 0.7711761233783596,
+        "objective_relative_marginal_gain": 0.001764002456367887
+      },
+      {
+        "additions": 291,
+        "cumulative_utility_gain": 437.9449659013919,
+        "marginal_gain": 0.7709015487689389,
+        "objective_relative_marginal_gain": 0.0017602703736581272
+      },
+      {
+        "additions": 292,
+        "cumulative_utility_gain": 438.7156143987542,
+        "marginal_gain": 0.770648497362308,
+        "objective_relative_marginal_gain": 0.0017566014795677087
+      },
+      {
+        "additions": 293,
+        "cumulative_utility_gain": 439.4859693472559,
+        "marginal_gain": 0.7703549485016911,
+        "objective_relative_marginal_gain": 0.0017528544759821492
+      },
+      {
+        "additions": 294,
+        "cumulative_utility_gain": 440.2509951847079,
+        "marginal_gain": 0.7650258374520075,
+        "objective_relative_marginal_gain": 0.0017377038230908253
+      },
+      {
+        "additions": 295,
+        "cumulative_utility_gain": 441.0144074362997,
+        "marginal_gain": 0.7634122515917774,
+        "objective_relative_marginal_gain": 0.001731036988178317
+      },
+      {
+        "additions": 296,
+        "cumulative_utility_gain": 441.777653729927,
+        "marginal_gain": 0.7632462936273553,
+        "objective_relative_marginal_gain": 0.001727670666868887
+      },
+      {
+        "additions": 297,
+        "cumulative_utility_gain": 442.5407734761862,
+        "marginal_gain": 0.7631197462591823,
+        "objective_relative_marginal_gain": 0.0017244055056550558
+      },
+      {
+        "additions": 298,
+        "cumulative_utility_gain": 443.301258902852,
+        "marginal_gain": 0.7604854266658034,
+        "objective_relative_marginal_gain": 0.001715504775573988
+      },
+      {
+        "additions": 299,
+        "cumulative_utility_gain": 444.0572246770382,
+        "marginal_gain": 0.7559657741862086,
+        "objective_relative_marginal_gain": 0.0017024062039211743
+      },
+      {
+        "additions": 300,
+        "cumulative_utility_gain": 444.8110385450495,
+        "marginal_gain": 0.7538138680112526,
+        "objective_relative_marginal_gain": 0.0016946833659455328
+      },
+      {
+        "additions": 301,
+        "cumulative_utility_gain": 445.5631323232597,
+        "marginal_gain": 0.7520937782102197,
+        "objective_relative_marginal_gain": 0.0016879623192534914
+      },
+      {
+        "additions": 302,
+        "cumulative_utility_gain": 446.313928486824,
+        "marginal_gain": 0.750796163564306,
+        "objective_relative_marginal_gain": 0.001682215399617471
+      },
+      {
+        "additions": 303,
+        "cumulative_utility_gain": 447.06282648811253,
+        "marginal_gain": 0.7488980012885045,
+        "objective_relative_marginal_gain": 0.0016751515825447808
+      },
+      {
+        "additions": 304,
+        "cumulative_utility_gain": 447.8108818227687,
+        "marginal_gain": 0.7480553346561709,
+        "objective_relative_marginal_gain": 0.0016704715428336348
+      },
+      {
+        "additions": 305,
+        "cumulative_utility_gain": 448.55845214767294,
+        "marginal_gain": 0.7475703249042728,
+        "objective_relative_marginal_gain": 0.0016666062612909144
+      },
+      {
+        "additions": 306,
+        "cumulative_utility_gain": 449.3050692502963,
+        "marginal_gain": 0.746617102623346,
+        "objective_relative_marginal_gain": 0.0016617152881652107
+      },
+      {
+        "additions": 307,
+        "cumulative_utility_gain": 450.0515713343276,
+        "marginal_gain": 0.7465020840312798,
+        "objective_relative_marginal_gain": 0.0016587034277383503
+      },
+      {
+        "additions": 308,
+        "cumulative_utility_gain": 450.7978492270157,
+        "marginal_gain": 0.7462778926881264,
+        "objective_relative_marginal_gain": 0.0016554601890132598
+      },
+      {
+        "additions": 309,
+        "cumulative_utility_gain": 451.54295161758915,
+        "marginal_gain": 0.7451023905734373,
+        "objective_relative_marginal_gain": 0.001650125171712265
+      },
+      {
+        "additions": 310,
+        "cumulative_utility_gain": 452.28613814704687,
+        "marginal_gain": 0.7431865294577001,
+        "objective_relative_marginal_gain": 0.0016431777734830246
+      },
+      {
+        "additions": 311,
+        "cumulative_utility_gain": 453.0292235098366,
+        "marginal_gain": 0.743085362789703,
+        "objective_relative_marginal_gain": 0.0016402592244108697
+      },
+      {
+        "additions": 312,
+        "cumulative_utility_gain": 453.77146878709914,
+        "marginal_gain": 0.7422452772625316,
+        "objective_relative_marginal_gain": 0.0016357248710380662
+      },
+      {
+        "additions": 313,
+        "cumulative_utility_gain": 454.5106795867549,
+        "marginal_gain": 0.7392107996557794,
+        "objective_relative_marginal_gain": 0.0016263881859231038
+      },
+      {
+        "additions": 314,
+        "cumulative_utility_gain": 455.24879142682124,
+        "marginal_gain": 0.7381118400663177,
+        "objective_relative_marginal_gain": 0.0016213372862626592
+      },
+      {
+        "additions": 315,
+        "cumulative_utility_gain": 455.98633902004315,
+        "marginal_gain": 0.7375475932219318,
+        "objective_relative_marginal_gain": 0.0016174773893599308
+      },
+      {
+        "additions": 316,
+        "cumulative_utility_gain": 456.723853927164,
+        "marginal_gain": 0.7375149071208487,
+        "objective_relative_marginal_gain": 0.0016147939302475405
+      },
+      {
+        "additions": 317,
+        "cumulative_utility_gain": 457.45890426030616,
+        "marginal_gain": 0.7350503331421734,
+        "objective_relative_marginal_gain": 0.001606811729527316
+      },
+      {
+        "additions": 318,
+        "cumulative_utility_gain": 458.19349365041364,
+        "marginal_gain": 0.7345893901074643,
+        "objective_relative_marginal_gain": 0.0016032296405062694
+      },
+      {
+        "additions": 319,
+        "cumulative_utility_gain": 458.92788860146493,
+        "marginal_gain": 0.7343949510513065,
+        "objective_relative_marginal_gain": 0.0016002404065904533
+      },
+      {
+        "additions": 320,
+        "cumulative_utility_gain": 459.66118729031695,
+        "marginal_gain": 0.7332986888520348,
+        "objective_relative_marginal_gain": 0.0015953026035867835
+      },
+      {
+        "additions": 321,
+        "cumulative_utility_gain": 460.39277531914337,
+        "marginal_gain": 0.7315880288264127,
+        "objective_relative_marginal_gain": 0.0015890519314063461
+      },
+      {
+        "additions": 322,
+        "cumulative_utility_gain": 461.12342121645133,
+        "marginal_gain": 0.7306458973079698,
+        "objective_relative_marginal_gain": 0.0015844909707264784
+      },
+      {
+        "additions": 323,
+        "cumulative_utility_gain": 461.85193022275297,
+        "marginal_gain": 0.7285090063016204,
+        "objective_relative_marginal_gain": 0.0015773648622627986
+      },
+      {
+        "additions": 324,
+        "cumulative_utility_gain": 462.57975082468823,
+        "marginal_gain": 0.7278206019352551,
+        "objective_relative_marginal_gain": 0.0015733948592382067
+      },
+      {
+        "additions": 325,
+        "cumulative_utility_gain": 463.30656979820037,
+        "marginal_gain": 0.7268189735121253,
+        "objective_relative_marginal_gain": 0.001568764660144365
+      },
+      {
+        "additions": 326,
+        "cumulative_utility_gain": 464.0328071729465,
+        "marginal_gain": 0.7262373747461174,
+        "objective_relative_marginal_gain": 0.001565056098448329
+      },
+      {
+        "additions": 327,
+        "cumulative_utility_gain": 464.7585983833292,
+        "marginal_gain": 0.7257912103826702,
+        "objective_relative_marginal_gain": 0.0015616520337812954
+      },
+      {
+        "additions": 328,
+        "cumulative_utility_gain": 465.4836132025488,
+        "marginal_gain": 0.7250148192196215,
+        "objective_relative_marginal_gain": 0.0015575517561864016
+      },
+      {
+        "additions": 329,
+        "cumulative_utility_gain": 466.20595539835006,
+        "marginal_gain": 0.7223421958012839,
+        "objective_relative_marginal_gain": 0.0015494057667797872
+      },
+      {
+        "additions": 330,
+        "cumulative_utility_gain": 466.92447182829704,
+        "marginal_gain": 0.7185164299470032,
+        "objective_relative_marginal_gain": 0.001538827954623086
+      },
+      {
+        "additions": 331,
+        "cumulative_utility_gain": 467.6426816604319,
+        "marginal_gain": 0.7182098321348235,
+        "objective_relative_marginal_gain": 0.0015358089847246563
+      },
+      {
+        "additions": 332,
+        "cumulative_utility_gain": 468.3607455955265,
+        "marginal_gain": 0.7180639350946115,
+        "objective_relative_marginal_gain": 0.0015331428644422033
+      },
+      {
+        "additions": 333,
+        "cumulative_utility_gain": 469.078230001169,
+        "marginal_gain": 0.717484405642515,
+        "objective_relative_marginal_gain": 0.0015295623624245512
+      },
+      {
+        "additions": 334,
+        "cumulative_utility_gain": 469.79549736206314,
+        "marginal_gain": 0.7172673608941473,
+        "objective_relative_marginal_gain": 0.0015267650816613977
+      },
+      {
+        "additions": 335,
+        "cumulative_utility_gain": 470.5113764627962,
+        "marginal_gain": 0.7158791007330306,
+        "objective_relative_marginal_gain": 0.0015214915866962803
+      },
+      {
+        "additions": 336,
+        "cumulative_utility_gain": 471.2258058498219,
+        "marginal_gain": 0.7144293870256742,
+        "objective_relative_marginal_gain": 0.0015161083670646009
+      },
+      {
+        "additions": 337,
+        "cumulative_utility_gain": 471.93817876195374,
+        "marginal_gain": 0.7123729121318751,
+        "objective_relative_marginal_gain": 0.0015094623494981045
+      },
+      {
+        "additions": 338,
+        "cumulative_utility_gain": 472.6500707652759,
+        "marginal_gain": 0.7118920033222089,
+        "objective_relative_marginal_gain": 0.0015061713672645223
+      },
+      {
+        "additions": 339,
+        "cumulative_utility_gain": 473.36192222302174,
+        "marginal_gain": 0.7118514577457988,
+        "objective_relative_marginal_gain": 0.0015038207010880233
+      },
+      {
+        "additions": 340,
+        "cumulative_utility_gain": 474.0720828496725,
+        "marginal_gain": 0.7101606266507512,
+        "objective_relative_marginal_gain": 0.0014980013638051367
+      },
+      {
+        "additions": 341,
+        "cumulative_utility_gain": 474.7817756894004,
+        "marginal_gain": 0.7096928397278706,
+        "objective_relative_marginal_gain": 0.0014947769187167532
+      },
+      {
+        "additions": 342,
+        "cumulative_utility_gain": 475.4913567391376,
+        "marginal_gain": 0.7095810497372009,
+        "objective_relative_marginal_gain": 0.0014923111423169124
+      },
+      {
+        "additions": 343,
+        "cumulative_utility_gain": 476.20084974718753,
+        "marginal_gain": 0.7094930080499344,
+        "objective_relative_marginal_gain": 0.0014899028601620522
+      },
+      {
+        "additions": 344,
+        "cumulative_utility_gain": 476.908958557588,
+        "marginal_gain": 0.7081088104004677,
+        "objective_relative_marginal_gain": 0.0014847882340942894
+      },
+      {
+        "additions": 345,
+        "cumulative_utility_gain": 477.6170501625245,
+        "marginal_gain": 0.708091604936521,
+        "objective_relative_marginal_gain": 0.001482550936352817
+      },
+      {
+        "additions": 346,
+        "cumulative_utility_gain": 478.3243877615213,
+        "marginal_gain": 0.70733759899677,
+        "objective_relative_marginal_gain": 0.0014787822178730892
+      },
+      {
+        "additions": 347,
+        "cumulative_utility_gain": 479.0316497796492,
+        "marginal_gain": 0.7072620181278902,
+        "objective_relative_marginal_gain": 0.0014764411045767546
+      },
+      {
+        "additions": 348,
+        "cumulative_utility_gain": 479.73868506441454,
+        "marginal_gain": 0.7070352847653535,
+        "objective_relative_marginal_gain": 0.0014737925182548492
+      },
+      {
+        "additions": 349,
+        "cumulative_utility_gain": 480.4433330608995,
+        "marginal_gain": 0.7046479964849608,
+        "objective_relative_marginal_gain": 0.0014666620348244936
+      },
+      {
+        "additions": 350,
+        "cumulative_utility_gain": 481.1459306535627,
+        "marginal_gain": 0.7025975926632109,
+        "objective_relative_marginal_gain": 0.0014602588277299576
+      },
+      {
+        "additions": 351,
+        "cumulative_utility_gain": 481.8474699670033,
+        "marginal_gain": 0.7015393134406044,
+        "objective_relative_marginal_gain": 0.0014559364885502989
+      },
+      {
+        "additions": 352,
+        "cumulative_utility_gain": 482.54803677355517,
+        "marginal_gain": 0.7005668065518491,
+        "objective_relative_marginal_gain": 0.0014518073915211127
+      },
+      {
+        "additions": 353,
+        "cumulative_utility_gain": 483.24859465835914,
+        "marginal_gain": 0.7005578848039764,
+        "objective_relative_marginal_gain": 0.001449684267161186
+      },
+      {
+        "additions": 354,
+        "cumulative_utility_gain": 483.9490121011121,
+        "marginal_gain": 0.700417442752952,
+        "objective_relative_marginal_gain": 0.001447295944901346
+      },
+      {
+        "additions": 355,
+        "cumulative_utility_gain": 484.64540809387603,
+        "marginal_gain": 0.6963959927639246,
+        "objective_relative_marginal_gain": 0.0014369185823979423
+      },
+      {
+        "additions": 356,
+        "cumulative_utility_gain": 485.3408039731284,
+        "marginal_gain": 0.6953958792523587,
+        "objective_relative_marginal_gain": 0.0014327991249852964
+      },
+      {
+        "additions": 357,
+        "cumulative_utility_gain": 486.03283949277153,
+        "marginal_gain": 0.6920355196431076,
+        "objective_relative_marginal_gain": 0.0014238451878381766
+      },
+      {
+        "additions": 358,
+        "cumulative_utility_gain": 486.7224837416138,
+        "marginal_gain": 0.6896442488422748,
+        "objective_relative_marginal_gain": 0.001416914713987994
+      },
+      {
+        "additions": 359,
+        "cumulative_utility_gain": 487.41207631180583,
+        "marginal_gain": 0.689592570191996,
+        "objective_relative_marginal_gain": 0.0014148040307291276
+      },
+      {
+        "additions": 360,
+        "cumulative_utility_gain": 488.09851162562256,
+        "marginal_gain": 0.6864353138167383,
+        "objective_relative_marginal_gain": 0.0014063458450847366
+      },
+      {
+        "additions": 361,
+        "cumulative_utility_gain": 488.7842255091934,
+        "marginal_gain": 0.6857138835708468,
+        "objective_relative_marginal_gain": 0.0014028969180756622
+      },
+      {
+        "additions": 362,
+        "cumulative_utility_gain": 489.46902293637356,
+        "marginal_gain": 0.6847974271801661,
+        "objective_relative_marginal_gain": 0.0013990618304545565
+      },
+      {
+        "additions": 363,
+        "cumulative_utility_gain": 490.153748194193,
+        "marginal_gain": 0.6847252578194113,
+        "objective_relative_marginal_gain": 0.0013969601586074814
+      },
+      {
+        "additions": 364,
+        "cumulative_utility_gain": 490.8364545432521,
+        "marginal_gain": 0.6827063490591234,
+        "objective_relative_marginal_gain": 0.0013909039207253176
+      },
+      {
+        "additions": 365,
+        "cumulative_utility_gain": 491.51912533695617,
+        "marginal_gain": 0.6826707937040748,
+        "objective_relative_marginal_gain": 0.0013888997569241612
+      },
+      {
+        "additions": 366,
+        "cumulative_utility_gain": 492.20158885951884,
+        "marginal_gain": 0.682463522562649,
+        "objective_relative_marginal_gain": 0.0013865528637239599
+      },
+      {
+        "additions": 367,
+        "cumulative_utility_gain": 492.8824598917841,
+        "marginal_gain": 0.6808710322652538,
+        "objective_relative_marginal_gain": 0.0013814064968243017
+      },
+      {
+        "additions": 368,
+        "cumulative_utility_gain": 493.56233350575206,
+        "marginal_gain": 0.6798736139679754,
+        "objective_relative_marginal_gain": 0.0013774827773806449
+      },
+      {
+        "additions": 369,
+        "cumulative_utility_gain": 494.2412156221182,
+        "marginal_gain": 0.6788821163661354,
+        "objective_relative_marginal_gain": 0.0013735845876625312
+      },
+      {
+        "additions": 370,
+        "cumulative_utility_gain": 494.9171867643222,
+        "marginal_gain": 0.6759711422039761,
+        "objective_relative_marginal_gain": 0.0013658267691678916
+      },
+      {
+        "additions": 371,
+        "cumulative_utility_gain": 495.59286283753255,
+        "marginal_gain": 0.6756760732103496,
+        "objective_relative_marginal_gain": 0.0013633692570585963
+      },
+      {
+        "additions": 372,
+        "cumulative_utility_gain": 496.26784729049393,
+        "marginal_gain": 0.6749844529614053,
+        "objective_relative_marginal_gain": 0.001360121266462581
+      },
+      {
+        "additions": 373,
+        "cumulative_utility_gain": 496.94237178122177,
+        "marginal_gain": 0.6745244907278442,
+        "objective_relative_marginal_gain": 0.00135734952185724
+      },
+      {
+        "additions": 374,
+        "cumulative_utility_gain": 497.6150993744626,
+        "marginal_gain": 0.6727275932408568,
+        "objective_relative_marginal_gain": 0.0013519034974753038
+      },
+      {
+        "additions": 375,
+        "cumulative_utility_gain": 498.286945475856,
+        "marginal_gain": 0.6718461013934042,
+        "objective_relative_marginal_gain": 0.0013483116655841785
+      },
+      {
+        "additions": 376,
+        "cumulative_utility_gain": 498.9576085891773,
+        "marginal_gain": 0.6706631133213289,
+        "objective_relative_marginal_gain": 0.0013441284425297288
+      },
+      {
+        "additions": 377,
+        "cumulative_utility_gain": 499.62779573959375,
+        "marginal_gain": 0.6701871504164313,
+        "objective_relative_marginal_gain": 0.0013413728301972477
+      },
+      {
+        "additions": 378,
+        "cumulative_utility_gain": 500.2971954319424,
+        "marginal_gain": 0.669399692348657,
+        "objective_relative_marginal_gain": 0.0013380040872919873
+      },
+      {
+        "additions": 379,
+        "cumulative_utility_gain": 500.9656516094027,
+        "marginal_gain": 0.6684561774603315,
+        "objective_relative_marginal_gain": 0.0013343353487666242
+      },
+      {
+        "additions": 380,
+        "cumulative_utility_gain": 501.6334550091993,
+        "marginal_gain": 0.6678033997965791,
+        "objective_relative_marginal_gain": 0.001331257700474408
+      },
+      {
+        "additions": 381,
+        "cumulative_utility_gain": 502.3005743611309,
+        "marginal_gain": 0.6671193519315887,
+        "objective_relative_marginal_gain": 0.0013281277903774817
+      },
+      {
+        "additions": 382,
+        "cumulative_utility_gain": 502.96591092208456,
+        "marginal_gain": 0.6653365609537019,
+        "objective_relative_marginal_gain": 0.0013228263516585927
+      },
+      {
+        "additions": 383,
+        "cumulative_utility_gain": 503.63060463442565,
+        "marginal_gain": 0.6646937123410855,
+        "objective_relative_marginal_gain": 0.0013198040512720072
+      },
+      {
+        "additions": 384,
+        "cumulative_utility_gain": 504.2945798066314,
+        "marginal_gain": 0.6639751722057854,
+        "objective_relative_marginal_gain": 0.001316641500411094
+      },
+      {
+        "additions": 385,
+        "cumulative_utility_gain": 504.9584472882868,
+        "marginal_gain": 0.6638674816553508,
+        "objective_relative_marginal_gain": 0.0013146972492893876
+      },
+      {
+        "additions": 386,
+        "cumulative_utility_gain": 505.62177933201997,
+        "marginal_gain": 0.6633320437332075,
+        "objective_relative_marginal_gain": 0.00131191351094397
+      },
+      {
+        "additions": 387,
+        "cumulative_utility_gain": 506.28266202207413,
+        "marginal_gain": 0.6608826900541515,
+        "objective_relative_marginal_gain": 0.0013053630701367702
+      },
+      {
+        "additions": 388,
+        "cumulative_utility_gain": 506.94251481706846,
+        "marginal_gain": 0.6598527949942954,
+        "objective_relative_marginal_gain": 0.0013016323857398407
+      },
+      {
+        "additions": 389,
+        "cumulative_utility_gain": 507.6022930220484,
+        "marginal_gain": 0.6597782049799338,
+        "objective_relative_marginal_gain": 0.0012997935865338484
+      },
+      {
+        "additions": 390,
+        "cumulative_utility_gain": 508.26166408266243,
+        "marginal_gain": 0.6593710606140473,
+        "objective_relative_marginal_gain": 0.001297306303445323
+      },
+      {
+        "additions": 391,
+        "cumulative_utility_gain": 508.91800735530074,
+        "marginal_gain": 0.6563432726383001,
+        "objective_relative_marginal_gain": 0.0012896837273436749
+      },
+      {
+        "additions": 392,
+        "cumulative_utility_gain": 509.57360871315745,
+        "marginal_gain": 0.6556013578567257,
+        "objective_relative_marginal_gain": 0.0012865685087427052
+      },
+      {
+        "additions": 393,
+        "cumulative_utility_gain": 510.22735428986465,
+        "marginal_gain": 0.6537455767072162,
+        "objective_relative_marginal_gain": 0.0012812828853856738
+      },
+      {
+        "additions": 394,
+        "cumulative_utility_gain": 510.8805202352787,
+        "marginal_gain": 0.6531659454140349,
+        "objective_relative_marginal_gain": 0.0012785101790791097
+      },
+      {
+        "additions": 395,
+        "cumulative_utility_gain": 511.53339376101763,
+        "marginal_gain": 0.6528735257389063,
+        "objective_relative_marginal_gain": 0.0012763067547529872
+      },
+      {
+        "additions": 396,
+        "cumulative_utility_gain": 512.1856330775638,
+        "marginal_gain": 0.6522393165462005,
+        "objective_relative_marginal_gain": 0.0012734432096954725
+      },
+      {
+        "additions": 397,
+        "cumulative_utility_gain": 512.8373366552918,
+        "marginal_gain": 0.6517035777279313,
+        "objective_relative_marginal_gain": 0.0012707802867441761
+      },
+      {
+        "additions": 398,
+        "cumulative_utility_gain": 513.4882510609355,
+        "marginal_gain": 0.6509144056436881,
+        "objective_relative_marginal_gain": 0.0012676325199238966
+      },
+      {
+        "additions": 399,
+        "cumulative_utility_gain": 514.1391406303799,
+        "marginal_gain": 0.650889569444373,
+        "objective_relative_marginal_gain": 0.0012659794168682142
+      },
+      {
+        "additions": 400,
+        "cumulative_utility_gain": 514.7880091395306,
+        "marginal_gain": 0.6488685091507137,
+        "objective_relative_marginal_gain": 0.001260457698374325
+      },
+      {
+        "additions": 401,
+        "cumulative_utility_gain": 515.4367494430159,
+        "marginal_gain": 0.6487403034853124,
+        "objective_relative_marginal_gain": 0.0012586225258217332
+      },
+      {
+        "additions": 402,
+        "cumulative_utility_gain": 516.0847835074122,
+        "marginal_gain": 0.6480340643964129,
+        "objective_relative_marginal_gain": 0.0012556736511242354
+      },
+      {
+        "additions": 403,
+        "cumulative_utility_gain": 516.7326265611036,
+        "marginal_gain": 0.647843053691429,
+        "objective_relative_marginal_gain": 0.0012537297247957335
+      },
+      {
+        "additions": 404,
+        "cumulative_utility_gain": 517.3802599950199,
+        "marginal_gain": 0.6476334339161997,
+        "objective_relative_marginal_gain": 0.0012517552059725541
+      },
+      {
+        "additions": 405,
+        "cumulative_utility_gain": 518.027585939132,
+        "marginal_gain": 0.6473259441120899,
+        "objective_relative_marginal_gain": 0.0012495974378247694
+      },
+      {
+        "additions": 406,
+        "cumulative_utility_gain": 518.6742280713319,
+        "marginal_gain": 0.646642132199922,
+        "objective_relative_marginal_gain": 0.001246721154055472
+      },
+      {
+        "additions": 407,
+        "cumulative_utility_gain": 519.320502570054,
+        "marginal_gain": 0.6462744987221535,
+        "objective_relative_marginal_gain": 0.0012444617447680566
+      },
+      {
+        "additions": 408,
+        "cumulative_utility_gain": 519.966302390492,
+        "marginal_gain": 0.6457998204379909,
+        "objective_relative_marginal_gain": 0.0012420032172642576
+      },
+      {
+        "additions": 409,
+        "cumulative_utility_gain": 520.6098688397306,
+        "marginal_gain": 0.6435664492384932,
+        "objective_relative_marginal_gain": 0.0012361779669540123
+      },
+      {
+        "additions": 410,
+        "cumulative_utility_gain": 521.2528627051877,
+        "marginal_gain": 0.6429938654571774,
+        "objective_relative_marginal_gain": 0.001233554597897421
+      },
+      {
+        "additions": 411,
+        "cumulative_utility_gain": 521.8926985508575,
+        "marginal_gain": 0.6398358456698297,
+        "objective_relative_marginal_gain": 0.0012259911806516274
+      },
+      {
+        "additions": 412,
+        "cumulative_utility_gain": 522.5314053409646,
+        "marginal_gain": 0.6387067901071062,
+        "objective_relative_marginal_gain": 0.0012223318705415118
+      },
+      {
+        "additions": 413,
+        "cumulative_utility_gain": 523.168856810382,
+        "marginal_gain": 0.6374514694173553,
+        "objective_relative_marginal_gain": 0.001218443072670119
+      },
+      {
+        "additions": 414,
+        "cumulative_utility_gain": 523.8053066916531,
+        "marginal_gain": 0.6364498812710724,
+        "objective_relative_marginal_gain": 0.0012150504646294647
+      },
+      {
+        "additions": 415,
+        "cumulative_utility_gain": 524.4408558839365,
+        "marginal_gain": 0.6355491922834503,
+        "objective_relative_marginal_gain": 0.0012118605656918978
+      },
+      {
+        "additions": 416,
+        "cumulative_utility_gain": 525.0752046827207,
+        "marginal_gain": 0.6343487987842414,
+        "objective_relative_marginal_gain": 0.001208110368052039
+      },
+      {
+        "additions": 417,
+        "cumulative_utility_gain": 525.7069849020932,
+        "marginal_gain": 0.6317802193724951,
+        "objective_relative_marginal_gain": 0.0012017725415806617
+      },
+      {
+        "additions": 418,
+        "cumulative_utility_gain": 526.3379513258852,
+        "marginal_gain": 0.63096642379213,
+        "objective_relative_marginal_gain": 0.0011987857273120391
+      },
+      {
+        "additions": 419,
+        "cumulative_utility_gain": 526.9679813394295,
+        "marginal_gain": 0.6300300135442655,
+        "objective_relative_marginal_gain": 0.0011955755109501651
+      },
+      {
+        "additions": 420,
+        "cumulative_utility_gain": 527.594619616101,
+        "marginal_gain": 0.6266382766715295,
+        "objective_relative_marginal_gain": 0.001187726814059432
+      },
+      {
+        "additions": 421,
+        "cumulative_utility_gain": 528.2206733321327,
+        "marginal_gain": 0.6260537160316723,
+        "objective_relative_marginal_gain": 0.0011852124455530811
+      },
+      {
+        "additions": 422,
+        "cumulative_utility_gain": 528.8460266940798,
+        "marginal_gain": 0.6253533619470449,
+        "objective_relative_marginal_gain": 0.001182486641445056
+      },
+      {
+        "additions": 423,
+        "cumulative_utility_gain": 529.4697624508265,
+        "marginal_gain": 0.6237357567466886,
+        "objective_relative_marginal_gain": 0.00117803848487876
+      },
+      {
+        "additions": 424,
+        "cumulative_utility_gain": 530.0927429103904,
+        "marginal_gain": 0.6229804595639464,
+        "objective_relative_marginal_gain": 0.0011752291799800366
+      },
+      {
+        "additions": 425,
+        "cumulative_utility_gain": 530.7150094313636,
+        "marginal_gain": 0.6222665209731967,
+        "objective_relative_marginal_gain": 0.001172505977624274
+      },
+      {
+        "additions": 426,
+        "cumulative_utility_gain": 531.3371666821536,
+        "marginal_gain": 0.6221572507900153,
+        "objective_relative_marginal_gain": 0.001170927406932537
+      },
+      {
+        "additions": 427,
+        "cumulative_utility_gain": 531.9576245065132,
+        "marginal_gain": 0.620457824359591,
+        "objective_relative_marginal_gain": 0.0011663670107843226
+      },
+      {
+        "additions": 428,
+        "cumulative_utility_gain": 532.5771083936966,
+        "marginal_gain": 0.619483887183364,
+        "objective_relative_marginal_gain": 0.0011631815889567364
+      },
+      {
+        "additions": 429,
+        "cumulative_utility_gain": 533.1960066749735,
+        "marginal_gain": 0.618898281276957,
+        "objective_relative_marginal_gain": 0.001160733151653602
+      },
+      {
+        "additions": 430,
+        "cumulative_utility_gain": 533.8143152477375,
+        "marginal_gain": 0.6183085727639114,
+        "objective_relative_marginal_gain": 0.001158283985840584
+      },
+      {
+        "additions": 431,
+        "cumulative_utility_gain": 534.4326031528593,
+        "marginal_gain": 0.6182879051218039,
+        "objective_relative_marginal_gain": 0.0011569052888507256
+      },
+      {
+        "additions": 432,
+        "cumulative_utility_gain": 535.0488845970176,
+        "marginal_gain": 0.6162814441583306,
+        "objective_relative_marginal_gain": 0.0011518226874213465
+      },
+      {
+        "additions": 433,
+        "cumulative_utility_gain": 535.6646714160295,
+        "marginal_gain": 0.6157868190118524,
+        "objective_relative_marginal_gain": 0.0011495751948397493
+      },
+      {
+        "additions": 434,
+        "cumulative_utility_gain": 536.2801590946558,
+        "marginal_gain": 0.6154876786263781,
+        "objective_relative_marginal_gain": 0.001147698023483546
+      },
+      {
+        "additions": 435,
+        "cumulative_utility_gain": 536.8951582011157,
+        "marginal_gain": 0.6149991064598836,
+        "objective_relative_marginal_gain": 0.0011454733704815995
+      },
+      {
+        "additions": 436,
+        "cumulative_utility_gain": 537.5098956297998,
+        "marginal_gain": 0.6147374286840424,
+        "objective_relative_marginal_gain": 0.0011436764861114887
+      },
+      {
+        "additions": 437,
+        "cumulative_utility_gain": 538.1224772542542,
+        "marginal_gain": 0.6125816244544919,
+        "objective_relative_marginal_gain": 0.0011383684018927479
+      },
+      {
+        "additions": 438,
+        "cumulative_utility_gain": 538.7349461455835,
+        "marginal_gain": 0.6124688913293245,
+        "objective_relative_marginal_gain": 0.0011368649754601508
+      },
+      {
+        "additions": 439,
+        "cumulative_utility_gain": 539.3451673417899,
+        "marginal_gain": 0.610221196206338,
+        "objective_relative_marginal_gain": 0.0011314112615745996
+      },
+      {
+        "additions": 440,
+        "cumulative_utility_gain": 539.9553488199375,
+        "marginal_gain": 0.6101814781476279,
+        "objective_relative_marginal_gain": 0.0011300591418923218
+      },
+      {
+        "additions": 441,
+        "cumulative_utility_gain": 540.5636716111223,
+        "marginal_gain": 0.6083227911848461,
+        "objective_relative_marginal_gain": 0.0011253490072164324
+      },
+      {
+        "additions": 442,
+        "cumulative_utility_gain": 541.1717870719207,
+        "marginal_gain": 0.6081154607983453,
+        "objective_relative_marginal_gain": 0.0011237013372197985
+      },
+      {
+        "additions": 443,
+        "cumulative_utility_gain": 541.77783413248,
+        "marginal_gain": 0.6060470605594274,
+        "objective_relative_marginal_gain": 0.0011186265335676904
+      },
+      {
+        "additions": 444,
+        "cumulative_utility_gain": 542.3836310574595,
+        "marginal_gain": 0.6057969249794394,
+        "objective_relative_marginal_gain": 0.0011169159434224554
+      },
+      {
+        "additions": 445,
+        "cumulative_utility_gain": 542.989338980682,
+        "marginal_gain": 0.6057079232224404,
+        "objective_relative_marginal_gain": 0.001115506106177878
+      },
+      {
+        "additions": 446,
+        "cumulative_utility_gain": 543.5940061123102,
+        "marginal_gain": 0.6046671316282957,
+        "objective_relative_marginal_gain": 0.001112350623497065
+      },
+      {
+        "additions": 447,
+        "cumulative_utility_gain": 544.1985187611886,
+        "marginal_gain": 0.604512648878368,
+        "objective_relative_marginal_gain": 0.0011108311177591558
+      },
+      {
+        "additions": 448,
+        "cumulative_utility_gain": 544.8027167646636,
+        "marginal_gain": 0.6041980034750818,
+        "objective_relative_marginal_gain": 0.0011090216419314864
+      },
+      {
+        "additions": 449,
+        "cumulative_utility_gain": 545.4068524061094,
+        "marginal_gain": 0.6041356414457191,
+        "objective_relative_marginal_gain": 0.001107678861716758
+      },
+      {
+        "additions": 450,
+        "cumulative_utility_gain": 546.0100397530043,
+        "marginal_gain": 0.6031873468949637,
+        "objective_relative_marginal_gain": 0.001104718417206805
+      },
+      {
+        "additions": 451,
+        "cumulative_utility_gain": 546.6125836921457,
+        "marginal_gain": 0.6025439391413568,
+        "objective_relative_marginal_gain": 0.0011023235781939334
+      },
+      {
+        "additions": 452,
+        "cumulative_utility_gain": 547.2109870232351,
+        "marginal_gain": 0.5984033310894268,
+        "objective_relative_marginal_gain": 0.001093551381971828
+      },
+      {
+        "additions": 453,
+        "cumulative_utility_gain": 547.8087166941168,
+        "marginal_gain": 0.5977296708817081,
+        "objective_relative_marginal_gain": 0.001091128440760949
+      },
+      {
+        "additions": 454,
+        "cumulative_utility_gain": 548.4058337159038,
+        "marginal_gain": 0.5971170217870191,
+        "objective_relative_marginal_gain": 0.001088823249273365
+      },
+      {
+        "additions": 455,
+        "cumulative_utility_gain": 549.0027785252304,
+        "marginal_gain": 0.5969448093266282,
+        "objective_relative_marginal_gain": 0.0010873256615024482
+      },
+      {
+        "additions": 456,
+        "cumulative_utility_gain": 549.5985669118448,
+        "marginal_gain": 0.5957883866144965,
+        "objective_relative_marginal_gain": 0.0010840428314109131
+      },
+      {
+        "additions": 457,
+        "cumulative_utility_gain": 550.1941330997665,
+        "marginal_gain": 0.5955661879216892,
+        "objective_relative_marginal_gain": 0.001082465537330067
+      },
+      {
+        "additions": 458,
+        "cumulative_utility_gain": 550.7892560444737,
+        "marginal_gain": 0.5951229447072371,
+        "objective_relative_marginal_gain": 0.0010804912009016814
+      },
+      {
+        "additions": 459,
+        "cumulative_utility_gain": 551.3832800924104,
+        "marginal_gain": 0.5940240479366594,
+        "objective_relative_marginal_gain": 0.0010773341691411146
+      },
+      {
+        "additions": 460,
+        "cumulative_utility_gain": 551.9762056971724,
+        "marginal_gain": 0.5929256047620228,
+        "objective_relative_marginal_gain": 0.0010741868918301095
+      },
+      {
+        "additions": 461,
+        "cumulative_utility_gain": 552.56814782987,
+        "marginal_gain": 0.5919421326975813,
+        "objective_relative_marginal_gain": 0.0010712563419052418
+      },
+      {
+        "additions": 462,
+        "cumulative_utility_gain": 553.1591301414592,
+        "marginal_gain": 0.5909823115891771,
+        "objective_relative_marginal_gain": 0.0010683766738841416
+      },
+      {
+        "additions": 463,
+        "cumulative_utility_gain": 553.7496063518433,
+        "marginal_gain": 0.5904762103841644,
+        "objective_relative_marginal_gain": 0.001066323485580928
+      },
+      {
+        "additions": 464,
+        "cumulative_utility_gain": 554.338983468924,
+        "marginal_gain": 0.5893771170806013,
+        "objective_relative_marginal_gain": 0.001063207053186873
+      },
+      {
+        "additions": 465,
+        "cumulative_utility_gain": 554.9282238046158,
+        "marginal_gain": 0.5892403356917737,
+        "objective_relative_marginal_gain": 0.0010618316214877528
+      },
+      {
+        "additions": 466,
+        "cumulative_utility_gain": 555.5156394182098,
+        "marginal_gain": 0.5874156135940791,
+        "objective_relative_marginal_gain": 0.0010574240793819558
+      },
+      {
+        "additions": 467,
+        "cumulative_utility_gain": 556.1026084849525,
+        "marginal_gain": 0.5869690667426751,
+        "objective_relative_marginal_gain": 0.001055504969382926
+      },
+      {
+        "additions": 468,
+        "cumulative_utility_gain": 556.6891689589991,
+        "marginal_gain": 0.5865604740465422,
+        "objective_relative_marginal_gain": 0.0010536588580363473
+      },
+      {
+        "additions": 469,
+        "cumulative_utility_gain": 557.2754903037189,
+        "marginal_gain": 0.5863213447198636,
+        "objective_relative_marginal_gain": 0.0010521211769071604
+      },
+      {
+        "additions": 470,
+        "cumulative_utility_gain": 557.8609101641899,
+        "marginal_gain": 0.5854198604710014,
+        "objective_relative_marginal_gain": 0.0010494011137985994
+      },
+      {
+        "additions": 471,
+        "cumulative_utility_gain": 558.4446858729801,
+        "marginal_gain": 0.5837757087902098,
+        "objective_relative_marginal_gain": 0.0010453599497999184
+      },
+      {
+        "additions": 472,
+        "cumulative_utility_gain": 559.0279316582928,
+        "marginal_gain": 0.5832457853127048,
+        "objective_relative_marginal_gain": 0.001043321366040821
+      },
+      {
+        "additions": 473,
+        "cumulative_utility_gain": 559.6098353990213,
+        "marginal_gain": 0.5819037407284895,
+        "objective_relative_marginal_gain": 0.0010398383014722603
+      },
+      {
+        "additions": 474,
+        "cumulative_utility_gain": 560.1901356687159,
+        "marginal_gain": 0.580300269694593,
+        "objective_relative_marginal_gain": 0.001035898764982484
+      },
+      {
+        "additions": 475,
+        "cumulative_utility_gain": 560.7698640016705,
+        "marginal_gain": 0.5797283329545251,
+        "objective_relative_marginal_gain": 0.0010338079311494495
+      },
+      {
+        "additions": 476,
+        "cumulative_utility_gain": 561.3495284061371,
+        "marginal_gain": 0.5796644044665777,
+        "objective_relative_marginal_gain": 0.0010326265101040396
+      },
+      {
+        "additions": 477,
+        "cumulative_utility_gain": 561.9289690161195,
+        "marginal_gain": 0.5794406099824353,
+        "objective_relative_marginal_gain": 0.0010311634422353717
+      },
+      {
+        "additions": 478,
+        "cumulative_utility_gain": 562.5081985296536,
+        "marginal_gain": 0.5792295135340191,
+        "objective_relative_marginal_gain": 0.001029726348963577
+      },
+      {
+        "additions": 479,
+        "cumulative_utility_gain": 563.0865471594382,
+        "marginal_gain": 0.5783486297846242,
+        "objective_relative_marginal_gain": 0.0010271043282816426
+      },
+      {
+        "additions": 480,
+        "cumulative_utility_gain": 563.6638304915732,
+        "marginal_gain": 0.5772833321350651,
+        "objective_relative_marginal_gain": 0.0010241624544750623
+      },
+      {
+        "additions": 481,
+        "cumulative_utility_gain": 564.2399799811852,
+        "marginal_gain": 0.5761494896120277,
+        "objective_relative_marginal_gain": 0.0010211071708021108
+      },
+      {
+        "additions": 482,
+        "cumulative_utility_gain": 564.8159377263729,
+        "marginal_gain": 0.5759577451876291,
+        "objective_relative_marginal_gain": 0.0010197264395656162
+      },
+      {
+        "additions": 483,
+        "cumulative_utility_gain": 565.390943486098,
+        "marginal_gain": 0.5750057597250934,
+        "objective_relative_marginal_gain": 0.0010170056070932304
+      },
+      {
+        "additions": 484,
+        "cumulative_utility_gain": 565.9653195285814,
+        "marginal_gain": 0.5743760424833878,
+        "objective_relative_marginal_gain": 0.0010148608451164677
+      },
+      {
+        "additions": 485,
+        "cumulative_utility_gain": 566.5390157085169,
+        "marginal_gain": 0.5736961799355424,
+        "objective_relative_marginal_gain": 0.0010126331356333416
+      },
+      {
+        "additions": 486,
+        "cumulative_utility_gain": 567.112595207856,
+        "marginal_gain": 0.5735794993391022,
+        "objective_relative_marginal_gain": 0.0010114032102018049
+      },
+      {
+        "additions": 487,
+        "cumulative_utility_gain": 567.6859323043333,
+        "marginal_gain": 0.5733370964773419,
+        "objective_relative_marginal_gain": 0.0010099547370322698
+      },
+      {
+        "additions": 488,
+        "cumulative_utility_gain": 568.2575857441543,
+        "marginal_gain": 0.5716534398209774,
+        "objective_relative_marginal_gain": 0.0010059759062826695
+      },
+      {
+        "additions": 489,
+        "cumulative_utility_gain": 568.827643137353,
+        "marginal_gain": 0.5700573931986402,
+        "objective_relative_marginal_gain": 0.0010021619027769195
+      },
+      {
+        "additions": 490,
+        "cumulative_utility_gain": 569.3976169790513,
+        "marginal_gain": 0.5699738416983863,
+        "objective_relative_marginal_gain": 0.00100101199004378
+      }
+    ],
+    "matchability_model": "query_specific_detector_repeatability_x_candidate_global_reliability",
+    "maximum_additions": 512,
+    "minimum_additions": 0,
+    "minimum_objective_relative_gain": 0.001,
+    "minimum_relative_gain": 0.02,
+    "objective": "task_scaled_full_se3_logdet_plus_additive_capped_diversity",
+    "row_reassignment_count": 0,
+    "selected_count": 490,
+    "selection_is_dynamic": true,
+    "source_capacity": 1,
+    "spatial_voxel_capacity": 3,
+    "stop_reason": "objective_relative_marginal_gain",
+    "theoretical_scope": "D-opt logdet is monotone submodular under a cardinality constraint; source and spatial capacities are practical safeguards without a claimed 1-1/e guarantee"
+  },
+  "rendered_track_crossfit_exclusions": null,
+  "schema": "lafgs_v2_adaptive_distillation_build",
+  "selection_provenance": {
+    "coverage_gaussian_count": 0,
+    "coverage_track_count": 178,
+    "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/adaptive_selection_provenance.pt",
+    "pose_gaussian_count": 0,
+    "pose_track_count": 490,
+    "track_core_count": 5120
+  },
+  "surface_supported": {
+    "candidate_count": 0,
+    "core_requires_image_only_geometry": true,
+    "promoted_reserve_candidate_count": 0,
+    "promoted_selected_count": 0,
+    "surface_geometry_scope": "functionally_selected_promoted_reserve",
+    "track_core_geometry_source": "image_only_triangulation"
+  },
+  "track_core": {
+    "history": [
+      {
+        "matching_rank_p10": 3.0,
+        "track_count": 64
+      },
+      {
+        "matching_rank_p10": 6.0,
+        "track_count": 128
+      },
+      {
+        "matching_rank_p10": 8.0,
+        "track_count": 192
+      },
+      {
+        "matching_rank_p10": 10.0,
+        "track_count": 256
+      },
+      {
+        "matching_rank_p10": 12.0,
+        "track_count": 320
+      },
+      {
+        "matching_rank_p10": 14.0,
+        "track_count": 384
+      },
+      {
+        "matching_rank_p10": 17.0,
+        "track_count": 448
+      },
+      {
+        "matching_rank_p10": 18.0,
+        "track_count": 512
+      },
+      {
+        "matching_rank_p10": 21.0,
+        "track_count": 576
+      },
+      {
+        "matching_rank_p10": 23.0,
+        "track_count": 640
+      },
+      {
+        "matching_rank_p10": 24.0,
+        "track_count": 704
+      },
+      {
+        "matching_rank_p10": 26.0,
+        "track_count": 768
+      },
+      {
+        "matching_rank_p10": 28.0,
+        "track_count": 832
+      },
+      {
+        "matching_rank_p10": 29.0,
+        "track_count": 896
+      },
+      {
+        "matching_rank_p10": 34.0,
+        "track_count": 960
+      },
+      {
+        "matching_rank_p10": 34.0,
+        "track_count": 1024
+      },
+      {
+        "matching_rank_p10": 35.0,
+        "track_count": 1088
+      },
+      {
+        "matching_rank_p10": 35.0,
+        "track_count": 1152
+      },
+      {
+        "matching_rank_p10": 37.0,
+        "track_count": 1216
+      },
+      {
+        "matching_rank_p10": 39.0,
+        "track_count": 1280
+      },
+      {
+        "matching_rank_p10": 40.0,
+        "track_count": 1344
+      },
+      {
+        "matching_rank_p10": 40.0,
+        "track_count": 1408
+      },
+      {
+        "matching_rank_p10": 40.0,
+        "track_count": 1472
+      },
+      {
+        "matching_rank_p10": 41.0,
+        "track_count": 1536
+      },
+      {
+        "matching_rank_p10": 41.0,
+        "track_count": 1600
+      },
+      {
+        "matching_rank_p10": 42.0,
+        "track_count": 1664
+      },
+      {
+        "matching_rank_p10": 42.0,
+        "track_count": 1728
+      },
+      {
+        "matching_rank_p10": 44.0,
+        "track_count": 1792
+      },
+      {
+        "matching_rank_p10": 45.0,
+        "track_count": 1856
+      },
+      {
+        "matching_rank_p10": 46.0,
+        "track_count": 1920
+      },
+      {
+        "matching_rank_p10": 49.0,
+        "track_count": 1984
+      },
+      {
+        "matching_rank_p10": 49.0,
+        "track_count": 2048
+      },
+      {
+        "matching_rank_p10": 50.0,
+        "track_count": 2112
+      },
+      {
+        "matching_rank_p10": 51.0,
+        "track_count": 2176
+      },
+      {
+        "matching_rank_p10": 52.0,
+        "track_count": 2240
+      },
+      {
+        "matching_rank_p10": 53.0,
+        "track_count": 2304
+      },
+      {
+        "matching_rank_p10": 53.0,
+        "track_count": 2368
+      },
+      {
+        "matching_rank_p10": 54.0,
+        "track_count": 2432
+      },
+      {
+        "matching_rank_p10": 57.0,
+        "track_count": 2496
+      },
+      {
+        "matching_rank_p10": 58.0,
+        "track_count": 2560
+      },
+      {
+        "matching_rank_p10": 59.0,
+        "track_count": 2624
+      },
+      {
+        "matching_rank_p10": 62.0,
+        "track_count": 2688
+      },
+      {
+        "matching_rank_p10": 62.0,
+        "track_count": 2752
+      },
+      {
+        "matching_rank_p10": 62.0,
+        "track_count": 2816
+      },
+      {
+        "matching_rank_p10": 63.0,
+        "track_count": 2880
+      },
+      {
+        "matching_rank_p10": 64.0,
+        "track_count": 2944
+      },
+      {
+        "matching_rank_p10": 64.0,
+        "track_count": 3008
+      },
+      {
+        "matching_rank_p10": 65.0,
+        "track_count": 3072
+      },
+      {
+        "matching_rank_p10": 66.0,
+        "track_count": 3136
+      },
+      {
+        "matching_rank_p10": 67.0,
+        "track_count": 3200
+      },
+      {
+        "matching_rank_p10": 68.0,
+        "track_count": 3264
+      },
+      {
+        "matching_rank_p10": 68.0,
+        "track_count": 3328
+      },
+      {
+        "matching_rank_p10": 70.0,
+        "track_count": 3392
+      },
+      {
+        "matching_rank_p10": 71.0,
+        "track_count": 3456
+      },
+      {
+        "matching_rank_p10": 74.0,
+        "track_count": 3520
+      },
+      {
+        "matching_rank_p10": 75.0,
+        "track_count": 3584
+      },
+      {
+        "matching_rank_p10": 77.0,
+        "track_count": 3648
+      },
+      {
+        "matching_rank_p10": 80.0,
+        "track_count": 3712
+      },
+      {
+        "matching_rank_p10": 80.0,
+        "track_count": 3776
+      },
+      {
+        "matching_rank_p10": 81.0,
+        "track_count": 3840
+      },
+      {
+        "matching_rank_p10": 82.0,
+        "track_count": 3904
+      },
+      {
+        "matching_rank_p10": 85.0,
+        "track_count": 3968
+      },
+      {
+        "matching_rank_p10": 86.0,
+        "track_count": 4032
+      },
+      {
+        "matching_rank_p10": 89.0,
+        "track_count": 4096
+      },
+      {
+        "matching_rank_p10": 92.0,
+        "track_count": 4160
+      },
+      {
+        "matching_rank_p10": 95.0,
+        "track_count": 4224
+      },
+      {
+        "matching_rank_p10": 97.0,
+        "track_count": 4288
+      },
+      {
+        "matching_rank_p10": 98.0,
+        "track_count": 4352
+      },
+      {
+        "matching_rank_p10": 99.0,
+        "track_count": 4416
+      },
+      {
+        "matching_rank_p10": 102.0,
+        "track_count": 4480
+      },
+      {
+        "matching_rank_p10": 106.0,
+        "track_count": 4544
+      },
+      {
+        "matching_rank_p10": 108.0,
+        "track_count": 4608
+      },
+      {
+        "matching_rank_p10": 112.0,
+        "track_count": 4672
+      },
+      {
+        "matching_rank_p10": 113.0,
+        "track_count": 4736
+      },
+      {
+        "matching_rank_p10": 114.0,
+        "track_count": 4800
+      },
+      {
+        "matching_rank_p10": 116.0,
+        "track_count": 4864
+      },
+      {
+        "matching_rank_p10": 117.0,
+        "track_count": 4928
+      },
+      {
+        "matching_rank_p10": 120.0,
+        "track_count": 4992
+      },
+      {
+        "matching_rank_p10": 122.0,
+        "track_count": 5056
+      },
+      {
+        "matching_rank_p10": 126.0,
+        "track_count": 5120
+      }
+    ],
+    "matching_rank_median": 645.0,
+    "matching_rank_p10": 126.0,
+    "maximum_count": 14329,
+    "minimum_count": 0,
+    "realized_count": 5120,
+    "selection": "quality_order_until_matching_feasible_p10_saturation",
+    "stop_reason": "p10_matching_rank_target",
+    "target_rows": 123
+  },
+  "track_count": 5788,
+  "unified_sufficiency_selection": {
+    "behavior_change_authorized": false,
+    "path": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/topology_entity_aware_lineage/unified_sufficiency_selection.pt",
+    "policy": "v3_compatibility",
+    "selected_count": 5788
+  },
+  "version": 1
+}

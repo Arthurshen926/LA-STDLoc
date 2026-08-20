@@ -1,0 +1,243 @@
+{
+  "schema": "lafgs_rendered_rgb_track_only_appearance_followup_result",
+  "version": 1,
+  "implementation_commit": "3f2a682bb0dd17943eafc63da59d18b5826c6cc3",
+  "artifact_root": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814",
+  "construction_uses_source_mapping_rgb": false,
+  "construction_uses_test_queries": false,
+  "uses_gaussian_primitive_geometry_for_anchors": false,
+  "uses_gaussian_prior_for_rendered_rgb": true,
+  "uses_rendered_alpha_depth_for_support_only": true,
+  "track_identity_geometry_and_map_size_fixed": true,
+  "evaluation_split": "test_after_mapping_artifacts_frozen",
+  "pose_seeds": [
+    2026,
+    2027,
+    2028
+  ],
+  "appearance_contract": {
+    "variant_count": 7,
+    "variants": [
+      "identity",
+      "exposure_0.8",
+      "exposure_1.2",
+      "gamma_0.85",
+      "gamma_1.15",
+      "warm_white_balance_contrast",
+      "cool_white_balance_contrast"
+    ],
+    "shared_identity_keypoint_rows": true,
+    "robust_keep_count": 6,
+    "fusion": "normalize(mean(top_6_by_mean_pairwise_cosine))",
+    "alpha_minimum": 0.05,
+    "alpha_local_min_radius_px": 4,
+    "depth_abs_tolerance_m": 0.05,
+    "depth_relative_tolerance": 0.02,
+    "identity_rerender_minimum_cosine": 0.999
+  },
+  "teacher_contract": {
+    "positive_requires_rendered_visibility": true,
+    "query_rows_respect_native_valid_keypoint_mask": true,
+    "track_descriptor_observations_weighted_by_native_appearance_reliability": true,
+    "invalid_observations_dropped_when_supported_alternatives_exist": true
+  },
+  "scenes": {
+    "stairs": {
+      "family": "7Scenes",
+      "mapping_view_count": 2000,
+      "test_query_count": 1000,
+      "selected_track_anchor_count": 4283,
+      "gaussian_anchor_count": 0,
+      "appearance_artifacts": {
+        "query_cache_sha256": "a343f9591a53b330b71ea91452ce930b10c32aa4717e755d16313b3ba5e63d39",
+        "anchor_map_sha256": "f790dae88d8fc06108019f728bec1f801025896c0614605a79c23d9e15bb1ad7",
+        "identity_metric_sha256": "8ef7f76c8a50690ee3c35d9d7cb9eeeb5588989a870b47fb64d2008c8f43e61e",
+        "report_sha256": "d5a0151d0706fb283b9e2d14a85bc0d213f48556f26c73ddcddb88c89a205aaf"
+      },
+      "fixed_geometry_audit": {
+        "anchor_ids_exact": true,
+        "anchor_xyz_exact": true,
+        "track_cluster_ids_exact": true,
+        "source_primitive_ids_exact": true,
+        "anchor_type_exact": true,
+        "identity_rerender_cosine_minimum": 0.9999902248382568,
+        "identity_rerender_cosine_median": 0.9999998807907104,
+        "valid_keypoint_fraction": 1.0,
+        "keypoint_appearance_dispersion_median": 0.0007835229043848813,
+        "track_appearance_dispersion_median": 0.0009401245042681694
+      },
+      "support_teacher": {
+        "teacher_sha256": "8f0ad2ed8368eb55b798051b38a379aca7c4b3d67c7d07693f23af2c6fb93ab5",
+        "positive_row_count": 471114,
+        "strong_pair_count": 606867,
+        "previous_strong_pair_count": 770151,
+        "ambiguous_pair_count": 1927192,
+        "exact_positive_count": 307107,
+        "depth_visibility_rejected_projection_count": 1008157,
+        "masked_query_row_count": 0,
+        "active_recurrent_harmful_anchor_count": 237,
+        "previous_active_recurrent_harmful_anchor_count": 614
+      },
+      "learned_artifacts": {
+        "map_sha256": "ad2ac57eb40010dea37a4f4b9bedfca510ec486338c70027ce04a817d3f03a9e",
+        "metric_sha256": "fb22bfeeb96509617d4e92eecd4198973e41a87bd368d926d614a9d5baca611f",
+        "matched_single_render_identity_metric_sha256": "48ab82c854655fe05ac3788719f3cd5590b794d29ed289aab659d47196fe509d"
+      },
+      "results_three_seed_mean": {
+        "matched_single_render_selected_identity": {
+          "median_te_cm": 2.5492369508,
+          "mean_te_cm": 11.8060596244,
+          "p90_te_cm": 18.1060893834,
+          "median_ae_deg": 0.7566259625,
+          "mean_ae_deg": 3.6846501456,
+          "p90_ae_deg": 2.5454569493,
+          "recall_2cm_2deg_percent": 37.7666667,
+          "recall_5cm_5deg_percent": 77.3,
+          "raw_gt_precision_2px_percent": 2.74599609375,
+          "inlier_gt_precision_2px_percent": 19.1560199097,
+          "catastrophic_100cm_count": 19.0
+        },
+        "appearance_ensemble_identity": {
+          "median_te_cm": 2.5196156154,
+          "mean_te_cm": 11.4878732305,
+          "p90_te_cm": 18.6144040028,
+          "median_ae_deg": 0.7526979812,
+          "mean_ae_deg": 3.5134199668,
+          "p90_ae_deg": 2.5276275302,
+          "recall_2cm_2deg_percent": 38.0333333,
+          "recall_5cm_5deg_percent": 77.0333333,
+          "raw_gt_precision_2px_percent": 2.74443359375,
+          "inlier_gt_precision_2px_percent": 19.1562051721,
+          "catastrophic_100cm_count": 18.3333333
+        },
+        "appearance_ensemble_support_aware_a1": {
+          "median_te_cm": 2.4907500794,
+          "mean_te_cm": 11.6393461144,
+          "p90_te_cm": 10.5664588014,
+          "median_ae_deg": 0.7435003844,
+          "mean_ae_deg": 3.6599555811,
+          "p90_ae_deg": 2.428141492,
+          "recall_2cm_2deg_percent": 37.7333333,
+          "recall_5cm_5deg_percent": 77.7,
+          "raw_gt_precision_2px_percent": 2.76748046875,
+          "inlier_gt_precision_2px_percent": 19.253856211,
+          "catastrophic_100cm_count": 18.6666667
+        },
+        "previous_non_support_aware_a1": {
+          "median_te_cm": 3.9390221859,
+          "mean_te_cm": 14.9053708747,
+          "p90_te_cm": 23.3245040476,
+          "recall_2cm_2deg_percent": 6.2,
+          "recall_5cm_5deg_percent": 65.5333333,
+          "raw_gt_precision_2px_percent": 0.10703125,
+          "inlier_gt_precision_2px_percent": 0.6655024644,
+          "catastrophic_100cm_count": 27.0
+        },
+        "existing_mixed_mainline": {
+          "median_te_cm": 2.1351461299,
+          "mean_te_cm": 4.9457000453,
+          "p90_te_cm": 6.8727304041,
+          "recall_2cm_2deg_percent": 46.6,
+          "recall_5cm_5deg_percent": 84.8666667,
+          "raw_gt_precision_2px_percent": 3.6208984375,
+          "inlier_gt_precision_2px_percent": 22.4259134396,
+          "catastrophic_100cm_count": 1.0
+        }
+      },
+      "decision": "SUPPORT_AWARE_A1_RESCUES_DESCRIPTOR_LEARNING_BUT_TAIL_GAP_REMAINS"
+    },
+    "shopfacade": {
+      "family": "Cambridge",
+      "mapping_view_count": 231,
+      "test_query_count": 103,
+      "selected_track_anchor_count": 2521,
+      "gaussian_anchor_count": 0,
+      "appearance_artifacts": {
+        "query_cache_sha256": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+        "anchor_map_sha256": "434ed604569842d87c359697e9e183dac8728d0297d6e54b3e239a5ee4a84bd3",
+        "identity_metric_sha256": "463fa4c72dbafa94ba25b3b99933d6e23c411c779d625eaa51c2d8aee2e08871",
+        "report_sha256": "a315d1d5d30fda0ea6092fdf1b1a3095705bb6d772812faba2afcf449d02af89"
+      },
+      "fixed_geometry_audit": {
+        "anchor_ids_exact": true,
+        "anchor_xyz_exact": true,
+        "track_cluster_ids_exact": true,
+        "source_primitive_ids_exact": true,
+        "anchor_type_exact": true,
+        "identity_rerender_cosine_minimum": 0.9999927282333374,
+        "identity_rerender_cosine_median": 0.9999998807907104,
+        "valid_keypoint_fraction": 0.9999154491,
+        "keypoint_appearance_dispersion_median": 0.001092434,
+        "track_appearance_dispersion_median": 0.001074572
+      },
+      "support_teacher": {
+        "teacher_sha256": "3c47bb51734973bc91964f94b9eec043ea35182079963d118b5bf9cb9c5b8823",
+        "positive_row_count": 90605,
+        "strong_pair_count": 92580,
+        "previous_strong_pair_count": 131336,
+        "ambiguous_pair_count": 40016,
+        "exact_positive_count": 84007,
+        "depth_visibility_rejected_projection_count": 278798,
+        "masked_query_row_count": 40
+      },
+      "learned_artifacts": {
+        "map_sha256": "0c6b82f7a644f8ece366dc63f8b1bba9564de82f887b4afe288ac31e0d1cb74d",
+        "metric_sha256": "c2115dab72aa900a9b0142eda718b5676bf0b97875b463c6fd56b371ebe7131c"
+      },
+      "results_three_seed_mean": {
+        "single_render_selected_identity": {
+          "median_te_cm": 2.5031686,
+          "mean_te_cm": 5.784227,
+          "p90_te_cm": 8.1433731,
+          "mean_ae_deg": 0.282679,
+          "recall_2cm_2deg_percent": 39.8058,
+          "recall_5cm_5deg_percent": 78.6408,
+          "raw_gt_precision_2px_percent": 7.09214,
+          "inlier_gt_precision_2px_percent": 42.28384,
+          "catastrophic_100cm_count": 1.0
+        },
+        "appearance_ensemble_identity": {
+          "median_te_cm": 2.4886748,
+          "mean_te_cm": 5.8178969,
+          "p90_te_cm": 8.2751355,
+          "mean_ae_deg": 0.284547,
+          "recall_2cm_2deg_percent": 39.8058,
+          "recall_5cm_5deg_percent": 78.6408,
+          "raw_gt_precision_2px_percent": 7.090696,
+          "inlier_gt_precision_2px_percent": 42.357915,
+          "catastrophic_100cm_count": 1.0
+        },
+        "appearance_ensemble_support_aware_a1": {
+          "median_te_cm": 2.5006179,
+          "mean_te_cm": 5.7810817,
+          "p90_te_cm": 8.2704778,
+          "mean_ae_deg": 0.282858,
+          "recall_2cm_2deg_percent": 39.8058,
+          "recall_5cm_5deg_percent": 78.6408,
+          "raw_gt_precision_2px_percent": 7.093585,
+          "inlier_gt_precision_2px_percent": 42.32972,
+          "catastrophic_100cm_count": 1.0
+        },
+        "previous_single_render_a1": {
+          "median_te_cm": 2.514454,
+          "mean_te_cm": 5.7556745,
+          "p90_te_cm": 8.1346999,
+          "mean_ae_deg": 0.281644,
+          "recall_2cm_2deg_percent": 40.7767,
+          "recall_5cm_5deg_percent": 78.6408,
+          "raw_gt_precision_2px_percent": 7.1003,
+          "inlier_gt_precision_2px_percent": 42.26995,
+          "catastrophic_100cm_count": 1.0
+        }
+      },
+      "decision": "NO_UNIVERSAL_GAIN_KEEP_PREVIOUS_SINGLE_RENDER_ROUTE"
+    }
+  },
+  "causal_conclusions": [
+    "The previous Stairs comparison lacked a selected-map identity control and therefore overstated render-to-real descriptor collapse.",
+    "Rendered alpha/depth support makes A1 non-destructive on Stairs and materially improves its P90 tail relative to matched identity.",
+    "The seven gentle appearance transforms are nearly neutral and should not become the universal default.",
+    "Remaining Stairs error is dominated by catastrophic Track-support tails rather than average descriptor-bank quality."
+  ],
+  "overall_decision": "RETAIN_EXPERIMENTAL_ROUTE_REQUIRE_MATCHED_IDENTITY_AND_FOCUS_NEXT_ON_TRACK_SUPPORT_TAIL"
+}

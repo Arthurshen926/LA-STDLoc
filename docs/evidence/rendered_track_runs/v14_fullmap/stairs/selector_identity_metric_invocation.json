@@ -1,0 +1,10 @@
+{
+  "anchor_count": 5811,
+  "descriptor_dim": 256,
+  "map": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_training/rendered_track_training_map.pt",
+  "map_sha256": "a20c5209b3e07fec4f0e0b09172cc082e9acd4e72cb0743383e86deb056c2ed6",
+  "output": "/mnt/pool/sqy/lafgs_render_track_only_fullmap_v14_20260815/stairs/selector_identity_metric.pt",
+  "output_sha256": "e5a3a98a4c38686ac21318b33b9ffe39ceb481a3194d369afa702395925ad8b9",
+  "schema": "lafgs_rendered_track_identity_metric_materialization",
+  "version": 1
+}

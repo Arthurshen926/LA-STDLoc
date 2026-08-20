@@ -1,0 +1,59 @@
+{
+  "cpu_threads": 1,
+  "diagnostics": {
+    "artifact_evidence_used_as_weight": false,
+    "changed_track_count": 4037,
+    "each_mapping_sequence_retained": true,
+    "each_pose_view_bin_retained": true,
+    "initially_eligible_observation_count": 11572,
+    "maximum_allowed_track_trim_fraction": 0.2,
+    "maximum_observed_track_trim_fraction": 0.2,
+    "protected_identity_certified_count": 36084,
+    "protected_unique_sequence_count": 0,
+    "protected_unique_view_count": 1199,
+    "selected_observation_count": 236696,
+    "selected_track_count": 14753,
+    "strong_identity_observations_never_trimmed": true,
+    "trimmed_observation_count": 10450,
+    "trimmed_observation_fraction": 0.0441494575320242
+  },
+  "input_sha256": {
+    "appearance_cache": "53f2a3396810eda5ecdebb51afd5f560d84a2b8aade927787e2d490db9d78d47",
+    "artifact_cache": "c10dacd71745fbba59d207bef6ae415dca721f427a391a0044dcd33e28c711f8",
+    "selected_map": "f5cf7aacfcb0a65a22c10a1ec73f93ed2c26f890a38e146c9092f878e42d8393",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "appearance_cache": "/mnt/pool/sqy/lafgs_render_track_only_appearance_v11_20260814/shopfacade/appearance_ensemble_cache.pt",
+    "artifact_cache": "/mnt/pool/sqy/lafgs_render_track_only_artifact_r1_20260815/shopfacade/artifact_R1_v5/artifact_stability_cache.pt",
+    "selected_map": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/oracle_candidate_map.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "method_role": "experimental_method_enhancement_not_a_gate",
+  "output_sha256": {
+    "anchor_map": "87a0f246952b97bc1095c23dd84886e9e296d0ac7272be00fecc786d6c5c4cd4",
+    "cache_equivalence": "d066d7c8702bce30e1fce23411aed802cd25d04d22bd8a0354a35c1a12a9a6a8",
+    "identity_metric": "a76ebbde49089736ca75514588002ccc55978242d8b433c7ba5733fa48409cec",
+    "query_cache": "0310c3d527152b54d8ca02ca7b83c76cd685c0c96617c563092623e8b18671b3"
+  },
+  "outputs": {
+    "anchor_map": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_anchor_map.pt",
+    "cache_equivalence": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_cache_equivalence_v2.json",
+    "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_cache.pt"
+  },
+  "producer_identity": {
+    "git_commit": "c96de1cee5c7d642eb2141cabd6e553a833c5bcb",
+    "source_sha256": {
+      "evidence/conditional_track_fusion.py": "0daedfbdbc125dad84c08c5f2e346dbdd4854c0e70c5b0984f50a8163e3f143d",
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "scripts/materialize_rendered_track_conditional_fusion.py": "c9d6122c58cd0aae6cf1a7e4b1df55b6f3c6381c86df4e7b77d5c69702d7d1a5"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_conditional_artifact_fusion_materialization",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

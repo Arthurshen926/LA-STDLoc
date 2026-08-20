@@ -1,0 +1,101 @@
+{
+  "schema": "lafgs_rendered_rgb_track_only_pilot_result",
+  "version": 1,
+  "construction_uses_source_mapping_rgb": false,
+  "construction_uses_test_queries": false,
+  "uses_gaussian_primitive_geometry_for_anchors": false,
+  "uses_gaussian_prior_for_rendered_rgb": true,
+  "evaluation_split": "test_after_map_freeze",
+  "seeds": [2026, 2027, 2028],
+  "scenes": {
+    "stairs": {
+      "family": "7Scenes",
+      "mapping_view_count": 2000,
+      "test_query_count": 1000,
+      "pair_count": 7450,
+      "all_track_count": 72269,
+      "triangulated_track_count": 15533,
+      "broad_track_count": 14855,
+      "excluded_harmful_track_count": 295,
+      "final_track_anchor_count": 4283,
+      "final_gaussian_anchor_count": 0,
+      "final_map_sha256": "1134fb6311867b1b973b6e1bc01a6f7797696d069e32e63866a13e22755a2399",
+      "final_metric_sha256": "dad912fd74267a63ee37cd765f316aaadf37d5530bcba1fa131f5a6bd24fe449",
+      "results_three_seed_mean": {
+        "median_te_cm": 3.9390221859018006,
+        "mean_te_cm": 14.905370874687407,
+        "p90_te_cm": 23.32450404763222,
+        "median_ae_deg": 1.7917817743811337,
+        "mean_ae_deg": 5.354548787900195,
+        "p90_ae_deg": 4.917850849980318,
+        "recall_2cm_2deg_percent": 6.2,
+        "recall_5cm_5deg_percent": 65.53333333333335,
+        "raw_gt_precision_2px_percent": 0.10703124999999998,
+        "inlier_gt_precision_2px_percent": 0.6655024643904502,
+        "catastrophic_100cm_count": 27.0
+      },
+      "existing_mainline_three_seed_mean": {
+        "median_te_cm": 2.135146129876375,
+        "mean_te_cm": 4.945700045321913,
+        "p90_te_cm": 6.872730404138566,
+        "recall_2cm_2deg_percent": 46.6,
+        "recall_5cm_5deg_percent": 84.86666666666666,
+        "raw_gt_precision_2px_percent": 3.6208984375000006,
+        "inlier_gt_precision_2px_percent": 22.42591343958739,
+        "catastrophic_100cm_count": 1.0
+      },
+      "decision": "NEGATIVE_RENDER_TO_REAL_DESCRIPTOR_GAP"
+    },
+    "shopfacade": {
+      "family": "Cambridge",
+      "mapping_view_count": 231,
+      "test_query_count": 103,
+      "pair_count": 786,
+      "all_track_count": 35069,
+      "triangulated_track_count": 15493,
+      "broad_track_count": 14769,
+      "excluded_harmful_track_count": 117,
+      "final_track_anchor_count": 2521,
+      "final_gaussian_anchor_count": 0,
+      "triangulated_reprojection_median_px": 0.6738967895507812,
+      "triangulated_reprojection_p90_px": 1.5537470579147339,
+      "final_map_sha256": "c1c31cabe79387a1be32a0b59364a8b494f05d764a2fb4bff6c1f3763fe7df62",
+      "final_metric_sha256": "a91904951bc895414513dfe98a18843056dfe549b0b6bd1b0cfea72c56b37cb2",
+      "results_three_seed_mean": {
+        "median_te_cm": 2.5144539773464203,
+        "mean_te_cm": 5.755674485026778,
+        "p90_te_cm": 8.134699910879135,
+        "median_ae_deg": 0.13308995789718758,
+        "mean_ae_deg": 0.2816443847064956,
+        "p90_ae_deg": 0.454702645790712,
+        "recall_2cm_2deg_percent": 40.77669902912621,
+        "recall_5cm_5deg_percent": 78.64077669902912,
+        "raw_gt_precision_2px_percent": 7.100323967324068,
+        "inlier_gt_precision_2px_percent": 42.269952510262776,
+        "catastrophic_100cm_count": 1.0
+      },
+      "selected_identity_three_seed_mean": {
+        "median_te_cm": 2.5031685829162598,
+        "mean_te_cm": 5.784226990151173,
+        "p90_te_cm": 8.143373131752014,
+        "recall_2cm_2deg_percent": 39.80582524271845,
+        "recall_5cm_5deg_percent": 78.64077669902912,
+        "raw_gt_precision_2px_percent": 7.092140543090541,
+        "inlier_gt_precision_2px_percent": 42.28384457776256,
+        "catastrophic_100cm_count": 1.0
+      },
+      "existing_mainline_three_seed_mean": {
+        "median_te_cm": 1.9934717565774918,
+        "mean_te_cm": 4.744904871101711,
+        "p90_te_cm": 8.318358808755873,
+        "recall_2cm_2deg_percent": 50.48543689320388,
+        "recall_5cm_5deg_percent": 81.55339805825243,
+        "raw_gt_precision_2px_percent": 9.978963785940877,
+        "inlier_gt_precision_2px_percent": 42.53791065602364,
+        "catastrophic_100cm_count": 0.0
+      },
+      "decision": "PROMISING_NEAR_MAINLINE_BUT_NOT_REPLACEMENT"
+    }
+  },
+  "overall_decision": "CONTINUE_ONLY_WITH_MAPPING_RENDER_DOMAIN_ROBUSTNESS"
+}

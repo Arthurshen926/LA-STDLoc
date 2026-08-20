@@ -1,0 +1,75 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "ab38bb76ff2306fa8f866f61415593dbeb634be9f7bfabeba6f4b95d772d14f7",
+    "metric": "04e20c8462638ed4d451da53d3ac960c6a5578df4004b268ae855319a410e429",
+    "query_cache": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63",
+    "scene_calibration": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+    "teacher": "63f0c8aba744ec978a700a4f40daccd94c4cd861fab6a8c37857dbb1dbc58d69",
+    "track_payload": "0ebab592b8064b38e8d54ee281974eedf89b3b5c2ac8f21621e4830908213bb1"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/revision/pose_feedback_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/revision/pose_feedback_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/revision/pose_feedback_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 411828,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 658,
+    "mean_affected_anchors_per_query": 205.91400146484375,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "source_sha256": {
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "08ad6052ea2cf965c9ecc1229ebeaed590bdbbc12f4f7d736a410e95df4a0dfd",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/candidate_mapping_loo_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "97c1c86fe3a3556b8db76074fee9bcc63322435243c86bd307a0f1aa3d95ad0d",
+  "summary": {
+    "catastrophic_100cm_count": 13,
+    "cvar95_te_cm": 64.67971530836076,
+    "inlier_gt_precision_percent": 33.79709122634417,
+    "mean_ae_deg": 0.7115078764300458,
+    "mean_hypotheses": 3631.524,
+    "mean_te_cm": 3.624638546319693,
+    "median_ae_deg": 0.10237896945452397,
+    "median_te_cm": 0.3656279528513551,
+    "p90_ae_deg": 0.2979639076123386,
+    "p90_te_cm": 0.9300015494227413,
+    "p95_ae_deg": 0.40101416926943045,
+    "p95_te_cm": 1.2099703866988416,
+    "p99_te_cm": 30.350345849990834,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 6.392919921875,
+    "recall_5cm_5deg_percent": 98.5,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 42.087109375
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

@@ -1,0 +1,103 @@
+{
+  "authorization": {
+    "mapping_selection_complete": true,
+    "mixed_pipeline_authorized": false,
+    "test_may_be_used_only_for_frozen_final_evaluation": true,
+    "test_may_change_map_or_selection": false
+  },
+  "baseline_summary": {
+    "catastrophic_100cm_count": 13,
+    "cvar95_te_cm": 65.74373936187476,
+    "inlier_gt_precision_percent": 33.771214392455974,
+    "mean_ae_deg": 0.7073971540446893,
+    "mean_hypotheses": 3631.3075,
+    "mean_te_cm": 3.6778970594798013,
+    "median_ae_deg": 0.1017697052413776,
+    "median_te_cm": 0.3636954119428992,
+    "p90_ae_deg": 0.29410185985547693,
+    "p90_te_cm": 0.9279615804553039,
+    "p95_ae_deg": 0.40030127627893825,
+    "p95_te_cm": 1.1996425548568366,
+    "p99_te_cm": 30.350345849990834,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 6.3263671875,
+    "recall_5cm_5deg_percent": 98.55000000000001,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 42.117333984375
+  },
+  "candidate_summary": {
+    "catastrophic_100cm_count": 13,
+    "cvar95_te_cm": 64.67971530836076,
+    "inlier_gt_precision_percent": 33.79709122634417,
+    "mean_ae_deg": 0.7115078764300458,
+    "mean_hypotheses": 3631.524,
+    "mean_te_cm": 3.624638546319693,
+    "median_ae_deg": 0.10237896945452397,
+    "median_te_cm": 0.3656279528513551,
+    "p90_ae_deg": 0.2979639076123386,
+    "p90_te_cm": 0.9300015494227413,
+    "p95_ae_deg": 0.40101416926943045,
+    "p95_te_cm": 1.2099703866988416,
+    "p99_te_cm": 30.350345849990834,
+    "query_count": 2000,
+    "raw_gt_precision_percent": 6.392919921875,
+    "recall_5cm_5deg_percent": 98.5,
+    "retained_matches_mean": 1024.0,
+    "solver_inlier_ratio_percent": 42.087109375
+  },
+  "decision": "RETAIN_V1_4_BASELINE",
+  "input_sha256": {
+    "baseline_report": "a4a70c83adb4a60626cf9a8c945437d1d8f846dacb2b7f5b4cdf6febd45d54d3",
+    "candidate_report": "1bad5a77376ed0b92f0403dc3479017c79facae86a25d0a2b9cf33f4d56fb710",
+    "revision_completion": "603d9c970c0073c55d8557abfff62cab2ae95eea3c779c4dddf72df3188d3af3"
+  },
+  "inputs": {
+    "baseline_report": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/full_mapping_loo_selector_identity_seed2026/full_mapping_loo_report.json",
+    "candidate_report": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/candidate_mapping_loo_seed2026/full_mapping_loo_report.json",
+    "revision_completion": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/pose_feedback_closed_loop_v15/revision/pose_feedback_revision_completion.json"
+  },
+  "producer_identity": {
+    "git_commit": "067a1a7cf5fcfd782a1f90e8ca97e7f7fadfd465",
+    "source_sha256": {
+      "map_learning/context_policy_oracle.py": "043ed93c46139b5e3305007fe3940343d56ae2c1716e8c44440cd033200e1b38",
+      "scripts/compare_rendered_track_pose_feedback.py": "14b59170a439de2cefb13a9cb638890baae9bcd40e3f6c3fe9a1c749f3f77472"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "schema": "lafgs_rendered_track_closed_loop_selection",
+  "selected_artifact_sha256": {
+    "map": "9f3a09fd7c2548d358532ec9b38829802e03cac2ecc82955c119b1af046040cb",
+    "metric": "e4b1d6e7e96df4ef84b9effda7af451a7767779ba8c475fe07c2e1ccfa2fae2f",
+    "query_cache": "7d18ee218c16e74b64a5375f370b686506f1a7343b2593d4e6ac97f828c64a63",
+    "scene_calibration": "69f24d63c4d5539d8627ebe62d99eceb05e8aed2b21994ead68253f8e299881f",
+    "teacher": "1c9f276c33b9958f63095ba2b18e0d0c8e7975eb38054ec3775c14b4cd3a9110"
+  },
+  "selected_artifacts": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_training_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/appearance/appearance_ensemble_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/topology_entity_aware_lineage/scene_calibration.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_full_reference_v5_20260815/stairs/selector_training/rendered_track_positive_teacher.pt"
+  },
+  "selected_label": "v1_4_baseline",
+  "selection_objective": {
+    "absolute_improvement": -0.000729512222630263,
+    "baseline_risk": 0.2364076365035731,
+    "candidate_risk": 0.23713714872620337,
+    "catastrophe_cm": 100.0,
+    "catastrophe_weight": 2.0,
+    "hypothesis_scale": 1000.0,
+    "hypothesis_weight": 0.05,
+    "improved_query_count": 877,
+    "name": "mean_mapping_pose_policy_loss",
+    "regressed_query_count": 778,
+    "rotation_scale_deg": 5.0,
+    "rule": "candidate_mean_risk_strictly_lower",
+    "translation_scale_cm": 5.0
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "valid": true,
+  "version": 1
+}

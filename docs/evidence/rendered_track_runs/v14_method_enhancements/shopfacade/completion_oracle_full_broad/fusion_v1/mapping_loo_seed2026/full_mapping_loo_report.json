@@ -1,0 +1,75 @@
+{
+  "configuration": {
+    "cpu_threads": 1,
+    "deployment_row_limit": 0,
+    "descriptor_trim_fraction": 0.2,
+    "one_global_top1_per_query_row": true,
+    "one_poselib_call_per_mapping_query": true
+  },
+  "formal_method_uses_crossfit": false,
+  "input_sha256": {
+    "map": "87a0f246952b97bc1095c23dd84886e9e296d0ac7272be00fecc786d6c5c4cd4",
+    "metric": "a76ebbde49089736ca75514588002ccc55978242d8b433c7ba5733fa48409cec",
+    "query_cache": "0310c3d527152b54d8ca02ca7b83c76cd685c0c96617c563092623e8b18671b3",
+    "scene_calibration": "5f8fbc39f9d3e9f9056fee5daca67b1cfc5e17cd63a262131d098d179238bbaa",
+    "teacher": "4f1879d4336e42905bbac93cbd8f4cd78e18564dfd90a39e4d8e5173771e3fde",
+    "track_payload": "1c358882053bf97edbe94946ca4d1d0c9e8dffaddd3c527626fa8be95095ed14"
+  },
+  "inputs": {
+    "map": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_anchor_map.pt",
+    "metric": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_identity_metric.pt",
+    "query_cache": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/conditional_fusion_cache.pt",
+    "scene_calibration": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/scene_calibration_rebound.json",
+    "teacher": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/training_v2/rendered_track_positive_teacher.pt",
+    "track_payload": "/mnt/pool/sqy/lafgs_render_track_only_support_v13_20260814/shopfacade/support_repair/support_repaired_track_payload.pt"
+  },
+  "loo": {
+    "affected_anchor_updates": 226246,
+    "construction_uses_all_mapping_observations": true,
+    "maximum_affected_anchors_per_query": 1705,
+    "mean_affected_anchors_per_query": 979.419921875,
+    "minimum_affected_anchors_per_query": 0,
+    "query_descriptor_excluded_from_affected_anchor_fusion": true,
+    "track_identity_and_geometry_remain_full_mapping": true
+  },
+  "producer_identity": {
+    "git_commit": "a3cbcb8fc74786054c130cd8da94e0e8e6e8ae4c",
+    "source_sha256": {
+      "evidence/tracks.py": "335570b40be73ac23180bdcf0350bd42116b7cdf2a1c82dc632bb38395cdeb9c",
+      "localization/localizer.py": "5893916e4611efa9a9b8eb72ee46256516d1a2d0e571c5d9c7ad15b549ed37fd",
+      "localization/pose_solver.py": "a2d01b711f8a2f00606d1132bb66541d49e440df25fc2d7182a0ccacd9deda89",
+      "scripts/evaluate_rendered_track_fullmap.py": "08ad6052ea2cf965c9ecc1229ebeaed590bdbbc12f4f7d736a410e95df4a0dfd",
+      "topology/deployment_revision.py": "6caa425ea3fd61e996cab829e2c0b06dbf89ac2d346db168052f8c5b74733071"
+    },
+    "torch_version": "2.0.1+cu118",
+    "worktree_clean": true
+  },
+  "protocol": "full_mapping_construction_and_feedback_with_leave_one_query_observation_out_descriptor_fusion",
+  "schema": "lafgs_rendered_track_full_mapping_loo_report",
+  "seed": 2026,
+  "statistics": "/mnt/pool/sqy/lafgs_render_track_only_conditional_gwff_20260815/shopfacade/completion_oracle_full_broad/fusion_v1/mapping_loo_seed2026/full_mapping_loo_statistics.pt",
+  "statistics_sha256": "397bc53ee27c29bf236037cb663a49b3067040eeebbb64cae5f09c86a17f6567",
+  "summary": {
+    "catastrophic_100cm_count": 2,
+    "cvar95_te_cm": 286.662101202334,
+    "inlier_gt_precision_percent": 89.26862583450527,
+    "mean_ae_deg": 0.778620445159534,
+    "mean_hypotheses": 2102.121212121212,
+    "mean_te_cm": 15.14480738844914,
+    "median_ae_deg": 0.011385249998116858,
+    "median_te_cm": 0.25078647304326296,
+    "p90_ae_deg": 0.03117505777509432,
+    "p90_te_cm": 0.5811359733343124,
+    "p95_ae_deg": 0.0436182467127293,
+    "p95_te_cm": 0.7883521262556314,
+    "p99_te_cm": 1.634833235293626,
+    "query_count": 231,
+    "raw_gt_precision_percent": 33.7978386971301,
+    "recall_5cm_5deg_percent": 99.13419913419914,
+    "retained_matches_mean": 2047.82683982684,
+    "solver_inlier_ratio_percent": 52.31012497674654
+  },
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

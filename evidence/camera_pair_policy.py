@@ -40,9 +40,7 @@ def mapping_scene_points_from_depth_samples(
         raise ValueError("Camera table does not align with depth samples")
     per_camera = max(int(points_per_camera), 1)
     collected = []
-    for query, (uv_value, depth_value) in enumerate(
-        zip(keypoints, depth_at_keypoints)
-    ):
+    for query, (uv_value, depth_value) in enumerate(zip(keypoints, depth_at_keypoints)):
         uv = torch.as_tensor(uv_value, dtype=torch.float64).reshape(-1, 2)
         depth = torch.as_tensor(depth_value, dtype=torch.float64).reshape(-1)
         if uv.shape[0] != depth.numel():
@@ -74,9 +72,7 @@ def mapping_scene_points_from_depth_samples(
     # Stable first-occurrence voxel reduction avoids density domination by a
     # long near-static trajectory while remaining exactly reproducible.
     _, inverse = torch.unique(quantized, dim=0, return_inverse=True)
-    first = torch.full(
-        (int(inverse.max()) + 1,), points.shape[0], dtype=torch.long
-    )
+    first = torch.full((int(inverse.max()) + 1,), points.shape[0], dtype=torch.long)
     row = torch.arange(points.shape[0], dtype=torch.long)
     if hasattr(first, "scatter_reduce_"):
         first.scatter_reduce_(0, inverse, row, reduce="amin", include_self=True)
@@ -156,9 +152,7 @@ def candidate_camera_pairs(
     legacy_pairs = set()
     width = min(max(int(neighbors), 1), max(count - 1, 1))
     for query in range(count):
-        candidates = torch.topk(
-            cost[query], width, largest=False, sorted=True
-        ).indices
+        candidates = torch.topk(cost[query], width, largest=False, sorted=True).indices
         for other in candidates.tolist():
             if not bool(torch.isfinite(cost[query, other])):
                 continue
@@ -207,9 +201,9 @@ def candidate_camera_pairs(
 
     camera_K = torch.as_tensor(camera_K, dtype=torch.float64).cpu()
     image_hw = torch.as_tensor(image_hw, dtype=torch.long).cpu()
-    scene_points_xyz = torch.as_tensor(
-        scene_points_xyz, dtype=torch.float64
-    ).reshape(-1, 3).cpu()
+    scene_points_xyz = (
+        torch.as_tensor(scene_points_xyz, dtype=torch.float64).reshape(-1, 3).cpu()
+    )
     if camera_K.shape[0] != count or image_hw.shape != (count, 2):
         raise ValueError("Camera intrinsics/image sizes must align with poses")
     finite_points = torch.isfinite(scene_points_xyz).all(dim=1)
@@ -220,12 +214,11 @@ def candidate_camera_pairs(
     # Pose-only proposals include local-overlap candidates and candidates with
     # useful transverse baselines.  The expensive scene-point test is confined
     # to this pool and never observes descriptors or Track identities.
-    pool_width = min(
-        max(int(candidate_pool_per_camera), int(neighbors), 1), count - 1
+    pool_width = min(max(int(candidate_pool_per_camera), int(neighbors), 1), count - 1)
+    camera = (
+        torch.einsum("qij,pj->qpi", pose_w2c[:, :3, :3].double(), scene_points_xyz)
+        + pose_w2c[:, None, :3, 3].double()
     )
-    camera = torch.einsum(
-        "qij,pj->qpi", pose_w2c[:, :3, :3].double(), scene_points_xyz
-    ) + pose_w2c[:, None, :3, 3].double()
     depth = camera[..., 2]
     representative_depth = torch.nanmedian(
         depth.masked_fill(depth <= 1e-6, torch.nan), dim=1
@@ -243,9 +236,7 @@ def candidate_camera_pairs(
     ).clamp_min(1e-3)
     displacement = centers[None, :, :] - centers[:, None, :]
     axial = (displacement * axes[:, None, :]).sum(dim=2, keepdim=True)
-    transverse = torch.linalg.norm(
-        displacement - axial * axes[:, None, :], dim=2
-    )
+    transverse = torch.linalg.norm(displacement - axial * axes[:, None, :], dim=2)
     expected_parallax = torch.rad2deg(
         torch.atan2(transverse, representative_depth[:, None])
     )
@@ -266,9 +257,7 @@ def candidate_camera_pairs(
     geometric_width = min(pool_width - local_width, count - 1)
     proposal_pairs: set[tuple[int, int]] = set()
     for query in range(count):
-        local = torch.topk(
-            cost[query], local_width, largest=False, sorted=True
-        ).indices
+        local = torch.topk(cost[query], local_width, largest=False, sorted=True).indices
         geometric = (
             torch.topk(
                 coarse_score[query], geometric_width, largest=True, sorted=True
@@ -298,9 +287,7 @@ def candidate_camera_pairs(
     rays = F.normalize(scene_points_xyz[None] - centers[:, None], dim=2)
     proposal_tensor = torch.as_tensor(proposals, dtype=torch.long)
     overlap_values = torch.zeros(len(proposals), dtype=torch.float64)
-    parallax_values = torch.full(
-        (len(proposals),), float("nan"), dtype=torch.float64
-    )
+    parallax_values = torch.full((len(proposals),), float("nan"), dtype=torch.float64)
     joint_counts = torch.zeros(len(proposals), dtype=torch.long)
     for start in range(0, len(proposals), 256):
         end = min(start + 256, len(proposals))
@@ -311,9 +298,9 @@ def candidate_camera_pairs(
         joint_count = joint.sum(dim=1)
         union_count = union.sum(dim=1)
         joint_counts[start:end] = joint_count
-        overlap_values[start:end] = joint_count.double() / union_count.clamp_min(
-            1
-        ).double()
+        overlap_values[start:end] = (
+            joint_count.double() / union_count.clamp_min(1).double()
+        )
         cosine = (rays[left] * rays[right]).sum(dim=2).clamp(-1.0, 1.0)
         angles = torch.rad2deg(torch.acos(cosine)).masked_fill(~joint, torch.nan)
         parallax_values[start:end] = torch.nanmedian(angles, dim=1).values
@@ -342,9 +329,7 @@ def candidate_camera_pairs(
     degrees = torch.zeros(count, dtype=torch.long)
 
     def endpoint_feature(query: int, other: int, pair_index: int) -> torch.Tensor:
-        direction_world = F.normalize(
-            centers[other] - centers[query], dim=0
-        )
+        direction_world = F.normalize(centers[other] - centers[query], dim=0)
         direction_camera = pose_w2c[query, :3, :3].double() @ direction_world
         return torch.cat(
             (
@@ -359,18 +344,16 @@ def candidate_camera_pairs(
         if not previous:
             return 1.0
         stacked = torch.stack(previous)
-        direction_cosine = (stacked[:, :3] * feature[:3]).sum(dim=1).clamp(
-            -1.0, 1.0
-        )
+        direction_cosine = (stacked[:, :3] * feature[:3]).sum(dim=1).clamp(-1.0, 1.0)
         direction_distance = torch.acos(direction_cosine) / torch.pi
-        parallax_distance = (
-            (stacked[:, 3] - feature[3]).abs().clamp_max(1.0)
-        )
-        axis_distance = (
-            (stacked[:, 4] - feature[4]).abs() / torch.pi
-        ).clamp_max(1.0)
+        parallax_distance = (stacked[:, 3] - feature[3]).abs().clamp_max(1.0)
+        axis_distance = ((stacked[:, 4] - feature[4]).abs() / torch.pi).clamp_max(1.0)
         return float(
-            (0.70 * direction_distance + 0.20 * parallax_distance + 0.10 * axis_distance)
+            (
+                0.70 * direction_distance
+                + 0.20 * parallax_distance
+                + 0.10 * axis_distance
+            )
             .min()
             .item()
         )
@@ -391,12 +374,15 @@ def candidate_camera_pairs(
                 other = right if query == left else left
                 feature_query = endpoint_feature(query, other, pair_index)
                 feature_other = endpoint_feature(other, query, pair_index)
-                marginal = float(base_utility[pair_index]) + float(
-                    diversity_weight
-                ) * (
-                    diversity(query, feature_query)
-                    + 0.5 * diversity(other, feature_other)
-                ) - 0.01 * float(degrees[other])
+                marginal = (
+                    float(base_utility[pair_index])
+                    + float(diversity_weight)
+                    * (
+                        diversity(query, feature_query)
+                        + 0.5 * diversity(other, feature_other)
+                    )
+                    - 0.01 * float(degrees[other])
+                )
                 key = (marginal, -pair_index)
                 if best_key is None or key > best_key:
                     best = (pair_index, other, feature_query, feature_other)
@@ -412,9 +398,7 @@ def candidate_camera_pairs(
             progress = True
         if not progress:
             raise RuntimeError("Failed to fill exact parallax-diverse pair budget")
-    result = [
-        tuple(proposal_tensor[index].tolist()) for index in sorted(selected)
-    ]
+    result = [tuple(proposal_tensor[index].tolist()) for index in sorted(selected)]
     if len(result) != budget:
         raise AssertionError("Pair-policy exact-budget contract failed")
     return sorted(result)
@@ -438,15 +422,9 @@ def _camera_pair_geometry_table(
             "right_query_index": torch.zeros(0, dtype=torch.long),
             "baseline_m": torch.zeros(0, dtype=torch.float64),
             "axis_angle_deg": torch.zeros(0, dtype=torch.float64),
-            "mapping_point_joint_visibility_count": torch.zeros(
-                0, dtype=torch.long
-            ),
-            "mapping_point_overlap_jaccard": torch.zeros(
-                0, dtype=torch.float64
-            ),
-            "mapping_point_parallax_median_deg": torch.zeros(
-                0, dtype=torch.float64
-            ),
+            "mapping_point_joint_visibility_count": torch.zeros(0, dtype=torch.long),
+            "mapping_point_overlap_jaccard": torch.zeros(0, dtype=torch.float64),
+            "mapping_point_parallax_median_deg": torch.zeros(0, dtype=torch.float64),
         }
     left, right = pair[:, 0], pair[:, 1]
     baseline = torch.linalg.norm(centers[left] - centers[right], dim=1)
@@ -474,9 +452,7 @@ def _camera_pair_geometry_table(
     points = points[torch.isfinite(points).all(dim=1)].cpu()
     if points.numel() == 0:
         return result
-    camera = torch.einsum("qij,pj->qpi", pose[:, :3, :3], points) + pose[
-        :, None, :3, 3
-    ]
+    camera = torch.einsum("qij,pj->qpi", pose[:, :3, :3], points) + pose[:, None, :3, 3]
     depth = camera[..., 2]
     projected = torch.einsum("qij,qpj->qpi", K, camera)
     uv = projected[..., :2] / depth[..., None].clamp_min(1e-8)
@@ -499,9 +475,7 @@ def _camera_pair_geometry_table(
         result["mapping_point_overlap_jaccard"][start:end] = (
             joint_count.double() / union.sum(dim=1).clamp_min(1).double()
         )
-        cosine = (rays[chunk_left] * rays[chunk_right]).sum(dim=2).clamp(
-            -1.0, 1.0
-        )
+        cosine = (rays[chunk_left] * rays[chunk_right]).sum(dim=2).clamp(-1.0, 1.0)
         angle = torch.rad2deg(torch.acos(cosine)).masked_fill(~joint, torch.nan)
         result["mapping_point_parallax_median_deg"][start:end] = torch.nanmedian(
             angle, dim=1
@@ -509,9 +483,110 @@ def _camera_pair_geometry_table(
     return result
 
 
+def trajectory_balanced_camera_pairs(
+    pose_w2c: torch.Tensor,
+    query_groups: list[str] | tuple[str, ...],
+    *,
+    local_neighbors: int = 4,
+    pair_budget: int,
+    minimum_baseline_m: float = 0.03,
+    maximum_baseline_m: float = 5.0,
+    maximum_axis_angle_deg: float = 75.0,
+) -> list[tuple[int, int]]:
+    """Mix local edges with pose-near cross-trajectory edges.
+
+    This policy is descriptor-free. Each trajectory keeps its own local graph,
+    then the remaining exact budget is allocated round-robin across trajectory
+    pairs. Candidate ranking observes camera pose only.
+    """
+    pose = torch.as_tensor(pose_w2c, dtype=torch.float64).cpu()
+    groups = [str(value) for value in query_groups]
+    count = int(pose.shape[0])
+    if len(groups) != count:
+        raise ValueError("query_groups must align with pose_w2c")
+    if len(set(groups)) < 2:
+        raise ValueError("trajectory-balanced policy requires multiple groups")
+    budget = int(pair_budget)
+    if budget <= 0 or budget > count * (count - 1) // 2:
+        raise ValueError("invalid exact pair budget")
+
+    group_names = sorted(set(groups))
+    group_rows = {
+        group: torch.as_tensor(
+            [index for index, value in enumerate(groups) if value == group],
+            dtype=torch.long,
+        )
+        for group in group_names
+    }
+    selected: set[tuple[int, int]] = set()
+    for group in group_names:
+        rows = group_rows[group]
+        local = candidate_camera_pairs(
+            pose[rows],
+            neighbors=local_neighbors,
+            minimum_baseline_m=minimum_baseline_m,
+            maximum_baseline_m=maximum_baseline_m,
+            maximum_axis_angle_deg=maximum_axis_angle_deg,
+            policy="nearest",
+        )
+        selected.update((int(rows[left]), int(rows[right])) for left, right in local)
+    if len(selected) > budget:
+        raise ValueError("local trajectory graphs exceed exact pair budget")
+
+    centers, axes = _camera_centers_and_axes(pose)
+    distance = torch.cdist(centers, centers)
+    cosine = (axes @ axes.T).clamp(-1.0, 1.0)
+    minimum_cosine = float(
+        torch.cos(torch.deg2rad(torch.tensor(maximum_axis_angle_deg))).item()
+    )
+    valid = (
+        (distance >= float(minimum_baseline_m))
+        & (distance <= float(maximum_baseline_m))
+        & (cosine >= minimum_cosine)
+    )
+    valid.fill_diagonal_(False)
+    positive = distance[valid]
+    distance_scale = positive.median().clamp_min(1e-6) if positive.numel() else 1.0
+    cost = distance / distance_scale + 0.5 * (1.0 - cosine)
+
+    buckets: list[list[tuple[int, int]]] = []
+    for left_group_index, left_group in enumerate(group_names):
+        for right_group in group_names[left_group_index + 1 :]:
+            left_rows = group_rows[left_group]
+            right_rows = group_rows[right_group]
+            locations = torch.nonzero(valid[left_rows][:, right_rows], as_tuple=False)
+            values = cost[left_rows[locations[:, 0]], right_rows[locations[:, 1]]]
+            order = torch.argsort(values, stable=True)
+            bucket = []
+            for location in locations[order].tolist():
+                left = int(left_rows[location[0]])
+                right = int(right_rows[location[1]])
+                bucket.append((min(left, right), max(left, right)))
+            buckets.append(bucket)
+
+    positions = [0 for _ in buckets]
+    while len(selected) < budget:
+        progressed = False
+        for bucket_index, bucket in enumerate(buckets):
+            while positions[bucket_index] < len(bucket):
+                pair = bucket[positions[bucket_index]]
+                positions[bucket_index] += 1
+                if pair in selected:
+                    continue
+                selected.add(pair)
+                progressed = True
+                break
+            if len(selected) == budget:
+                break
+        if not progressed:
+            raise ValueError("insufficient valid cross-trajectory pairs")
+    return sorted(selected)
+
+
 __all__ = [
     "_camera_centers_and_axes",
     "_camera_pair_geometry_table",
     "candidate_camera_pairs",
     "mapping_scene_points_from_depth_samples",
+    "trajectory_balanced_camera_pairs",
 ]
