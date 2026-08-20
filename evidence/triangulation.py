@@ -32,17 +32,13 @@ def camera_pose_bins(
         (centered / scale, optical_axis * float(direction_weight)), dim=1
     )
     centroid = embedding.mean(dim=0)
-    first = int(
-        torch.argmax((embedding - centroid).square().sum(dim=1)).item()
-    )
+    first = int(torch.argmax((embedding - centroid).square().sum(dim=1)).item())
     selected = [first]
     selected_mask = torch.zeros(count, dtype=torch.bool)
     selected_mask[first] = True
     nearest = (embedding - embedding[first]).square().sum(dim=1)
     for _ in range(1, bin_count):
-        index = int(
-            torch.argmax(nearest.masked_fill(selected_mask, -torch.inf)).item()
-        )
+        index = int(torch.argmax(nearest.masked_fill(selected_mask, -torch.inf)).item())
         selected.append(index)
         selected_mask[index] = True
         nearest = torch.minimum(
@@ -82,9 +78,7 @@ def fundamental_from_known_poses(
     pose_a_w2c = torch.as_tensor(pose_a_w2c, dtype=torch.float64)
     pose_b_w2c = torch.as_tensor(pose_b_w2c, dtype=torch.float64)
     rotation = pose_b_w2c[:3, :3] @ pose_a_w2c[:3, :3].T
-    translation = (
-        pose_b_w2c[:3, 3] - rotation @ pose_a_w2c[:3, 3]
-    )
+    translation = pose_b_w2c[:3, 3] - rotation @ pose_a_w2c[:3, 3]
     essential = _skew(translation) @ rotation
     return torch.linalg.inv(K_b).T @ essential @ torch.linalg.inv(K_a)
 
@@ -96,26 +90,16 @@ def symmetric_epipolar_distance(
 ) -> torch.Tensor:
     """Compute symmetric point-to-epipolar-line distance in pixels."""
     uv_a = torch.as_tensor(uv_a, dtype=torch.float64)
-    uv_b = torch.as_tensor(
-        uv_b, device=uv_a.device, dtype=torch.float64
-    )
-    fundamental = torch.as_tensor(
-        fundamental, device=uv_a.device, dtype=torch.float64
-    )
-    ones = torch.ones(
-        (uv_a.shape[0], 1), device=uv_a.device, dtype=uv_a.dtype
-    )
+    uv_b = torch.as_tensor(uv_b, device=uv_a.device, dtype=torch.float64)
+    fundamental = torch.as_tensor(fundamental, device=uv_a.device, dtype=torch.float64)
+    ones = torch.ones((uv_a.shape[0], 1), device=uv_a.device, dtype=uv_a.dtype)
     point_a = torch.cat((uv_a, ones), dim=1)
     point_b = torch.cat((uv_b, ones), dim=1)
     line_b = point_a @ fundamental.T
     line_a = point_b @ fundamental
     numerator = (point_b * line_b).sum(dim=1).abs()
-    distance_a = numerator / torch.linalg.norm(line_a[:, :2], dim=1).clamp_min(
-        1e-12
-    )
-    distance_b = numerator / torch.linalg.norm(line_b[:, :2], dim=1).clamp_min(
-        1e-12
-    )
+    distance_a = numerator / torch.linalg.norm(line_a[:, :2], dim=1).clamp_min(1e-12)
+    distance_b = numerator / torch.linalg.norm(line_b[:, :2], dim=1).clamp_min(1e-12)
     return 0.5 * (distance_a + distance_b)
 
 
@@ -137,10 +121,12 @@ def reciprocal_epipolar_matches(
     recovered_minimum_similarity: float = -1.0,
     recovered_minimum_margin: float = -1.0,
     return_diagnostics: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, dict[str, int]
-]:
+) -> (
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    | tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, int]]
+):
     """Match descriptors with optional epipolar-first top-K reciprocity."""
+
     def returned(source, target, confidence, diagnostics=None):
         base = (source, target, confidence)
         if not bool(return_diagnostics):
@@ -178,9 +164,9 @@ def reciprocal_epipolar_matches(
         if candidate_topk < 2:
             candidate_topk = 1
     if candidate_topk > 1:
-        fundamental = fundamental_from_known_poses(
-            K_a, pose_a_w2c, K_b, pose_b_w2c
-        ).to(device=similarity.device)
+        fundamental = fundamental_from_known_poses(K_a, pose_a_w2c, K_b, pose_b_w2c).to(
+            device=similarity.device
+        )
         uv_a_device = torch.as_tensor(
             uv_a, device=similarity.device, dtype=torch.float64
         )
@@ -188,44 +174,30 @@ def reciprocal_epipolar_matches(
             uv_b, device=similarity.device, dtype=torch.float64
         )
 
-        values_ab, indices_ab = torch.topk(
-            similarity, k=candidate_topk, dim=1
-        )
+        values_ab, indices_ab = torch.topk(similarity, k=candidate_topk, dim=1)
         epipolar_ab = symmetric_epipolar_distance(
-            uv_a_device[:, None, :]
-            .expand(-1, candidate_topk, -1)
-            .reshape(-1, 2),
+            uv_a_device[:, None, :].expand(-1, candidate_topk, -1).reshape(-1, 2),
             uv_b_device[indices_ab].reshape(-1, 2),
             fundamental,
         ).reshape_as(values_ab)
         valid_ab = epipolar_ab <= float(maximum_epipolar_error_px)
         gated_ab = values_ab.masked_fill(~valid_ab, -torch.inf)
         best_ab, best_ab_position = torch.topk(gated_ab, k=2, dim=1)
-        target = indices_ab.gather(
-            1, best_ab_position[:, :1]
-        ).squeeze(1)
-        chosen_epipolar = epipolar_ab.gather(
-            1, best_ab_position[:, :1]
-        ).squeeze(1)
+        target = indices_ab.gather(1, best_ab_position[:, :1]).squeeze(1)
+        chosen_epipolar = epipolar_ab.gather(1, best_ab_position[:, :1]).squeeze(1)
 
-        values_ba, indices_ba = torch.topk(
-            similarity, k=candidate_topk, dim=0
-        )
+        values_ba, indices_ba = torch.topk(similarity, k=candidate_topk, dim=0)
         values_ba = values_ba.T
         indices_ba = indices_ba.T
         epipolar_ba = symmetric_epipolar_distance(
             uv_a_device[indices_ba].reshape(-1, 2),
-            uv_b_device[:, None, :]
-            .expand(-1, candidate_topk, -1)
-            .reshape(-1, 2),
+            uv_b_device[:, None, :].expand(-1, candidate_topk, -1).reshape(-1, 2),
             fundamental,
         ).reshape_as(values_ba)
         valid_ba = epipolar_ba <= float(maximum_epipolar_error_px)
         gated_ba = values_ba.masked_fill(~valid_ba, -torch.inf)
         best_ba, best_ba_position = torch.topk(gated_ba, k=2, dim=1)
-        source_for_target = indices_ba.gather(
-            1, best_ba_position[:, :1]
-        ).squeeze(1)
+        source_for_target = indices_ba.gather(1, best_ba_position[:, :1]).squeeze(1)
 
         source = torch.arange(
             descriptors_a.shape[0],
@@ -233,10 +205,7 @@ def reciprocal_epipolar_matches(
             dtype=torch.long,
         )
         reciprocal = source_for_target[target] == source
-        recovered = (
-            (target != indices_ab[:, 0])
-            | (source != indices_ba[target, 0])
-        )
+        recovered = (target != indices_ab[:, 0]) | (source != indices_ba[target, 0])
         recovered_similarity = (
             float(recovered_minimum_similarity)
             if float(recovered_minimum_similarity) >= 0.0
@@ -250,10 +219,7 @@ def reciprocal_epipolar_matches(
         recovered_valid = (
             (best_ab[:, 0] >= recovered_similarity)
             & ((best_ab[:, 0] - best_ab[:, 1]) >= recovered_margin)
-            & (
-                (best_ba[target, 0] - best_ba[target, 1])
-                >= recovered_margin
-            )
+            & ((best_ba[target, 0] - best_ba[target, 1]) >= recovered_margin)
         )
         descriptor_valid = (
             reciprocal
@@ -261,32 +227,25 @@ def reciprocal_epipolar_matches(
             & torch.isfinite(best_ba[target, 0])
             & (best_ab[:, 0] >= float(minimum_similarity))
             & ((best_ab[:, 0] - best_ab[:, 1]) >= float(minimum_margin))
-            & (
-                (best_ba[target, 0] - best_ba[target, 1])
-                >= float(minimum_margin)
-            )
+            & ((best_ba[target, 0] - best_ba[target, 1]) >= float(minimum_margin))
             & (~recovered | recovered_valid)
         )
-        selected = torch.nonzero(
-            descriptor_valid, as_tuple=False
-        ).reshape(-1)
+        selected = torch.nonzero(descriptor_valid, as_tuple=False).reshape(-1)
         diagnostics = None
         if bool(return_diagnostics):
             raw_target = indices_ab[:, 0]
             raw_reciprocal = indices_ba[raw_target, 0] == source
             raw_margin_ab = values_ab[:, 0] - values_ab[:, 1]
-            raw_margin_ba = (
-                values_ba[raw_target, 0] - values_ba[raw_target, 1]
-            )
+            raw_margin_ba = values_ba[raw_target, 0] - values_ba[raw_target, 1]
             raw_descriptor_valid = (
                 raw_reciprocal
                 & (values_ab[:, 0] >= float(minimum_similarity))
                 & (raw_margin_ab >= float(minimum_margin))
                 & (raw_margin_ba >= float(minimum_margin))
             )
-            raw_selected = torch.nonzero(
-                raw_descriptor_valid, as_tuple=False
-            ).reshape(-1)
+            raw_selected = torch.nonzero(raw_descriptor_valid, as_tuple=False).reshape(
+                -1
+            )
             if raw_selected.numel():
                 raw_epipolar = symmetric_epipolar_distance(
                     torch.as_tensor(
@@ -302,22 +261,31 @@ def reciprocal_epipolar_matches(
                 ).sum()
             else:
                 raw_epipolar_accepted_tensor = source.new_zeros(())
-            finite_reciprocal = reciprocal & torch.isfinite(best_ab[:, 0]) & torch.isfinite(
-                best_ba[target, 0]
+            finite_reciprocal = (
+                reciprocal
+                & torch.isfinite(best_ab[:, 0])
+                & torch.isfinite(best_ba[target, 0])
             )
-            counts = torch.stack(
-                (
-                    raw_reciprocal.sum(),
-                    raw_descriptor_valid.sum(),
-                    raw_epipolar_accepted_tensor.to(source.device),
-                    finite_reciprocal.sum(),
-                    descriptor_valid.sum(),
-                    recovered[selected].sum() if selected.numel() else source.new_zeros(()),
-                    (~valid_ab).sum(),
-                    (~valid_ba).sum(),
-                    (~valid_ab.any(dim=1)).sum(),
+            counts = (
+                torch.stack(
+                    (
+                        raw_reciprocal.sum(),
+                        raw_descriptor_valid.sum(),
+                        raw_epipolar_accepted_tensor.to(source.device),
+                        finite_reciprocal.sum(),
+                        descriptor_valid.sum(),
+                        recovered[selected].sum()
+                        if selected.numel()
+                        else source.new_zeros(()),
+                        (~valid_ab).sum(),
+                        (~valid_ba).sum(),
+                        (~valid_ab.any(dim=1)).sum(),
+                    )
                 )
-            ).detach().cpu().tolist()
+                .detach()
+                .cpu()
+                .tolist()
+            )
             (
                 raw_reciprocal_count,
                 raw_descriptor_count,
@@ -353,10 +321,7 @@ def reciprocal_epipolar_matches(
         selected_epipolar = chosen_epipolar[selected].float()
         confidence = best_ab[selected, 0].detach().float() * torch.exp(
             -0.5
-            * (
-                selected_epipolar
-                / max(float(maximum_epipolar_error_px), 1e-6)
-            ).square()
+            * (selected_epipolar / max(float(maximum_epipolar_error_px), 1e-6)).square()
         )
         return returned(
             selected.detach().cpu().long(),
@@ -398,9 +363,7 @@ def reciprocal_epipolar_matches(
     selected_target = target[selected]
     selected_cpu = selected.detach().cpu()
     selected_target_cpu = selected_target.detach().cpu()
-    fundamental = fundamental_from_known_poses(
-        K_a, pose_a_w2c, K_b, pose_b_w2c
-    )
+    fundamental = fundamental_from_known_poses(K_a, pose_a_w2c, K_b, pose_b_w2c)
     epipolar = symmetric_epipolar_distance(
         torch.as_tensor(uv_a).cpu()[selected_cpu],
         torch.as_tensor(uv_b).cpu()[selected_target_cpu],
@@ -409,31 +372,25 @@ def reciprocal_epipolar_matches(
     epipolar_valid = epipolar <= float(maximum_epipolar_error_px)
     selected = selected_cpu[epipolar_valid]
     selected_target = selected_target_cpu[epipolar_valid]
-    confidence = (
-        values_ab[selected.to(values_ab.device), 0].detach().float().cpu()
-        * torch.exp(
-            -0.5
-            * (
-                epipolar[epipolar_valid].float()
-                / max(float(maximum_epipolar_error_px), 1e-6)
-            ).square()
-        )
+    confidence = values_ab[
+        selected.to(values_ab.device), 0
+    ].detach().float().cpu() * torch.exp(
+        -0.5
+        * (
+            epipolar[epipolar_valid].float()
+            / max(float(maximum_epipolar_error_px), 1e-6)
+        ).square()
     )
     accepted = int(epipolar_valid.sum())
     diagnostics = {
         "source_keypoint_count": int(descriptors_a.shape[0]),
         "target_keypoint_count": int(descriptors_b.shape[0]),
         "raw_top1_reciprocal_count": int(reciprocal.sum()),
-        "descriptor_accepted_before_epipolar_count": int(
-            descriptor_valid.sum()
-        ),
+        "descriptor_accepted_before_epipolar_count": int(descriptor_valid.sum()),
         "epipolar_accepted_top1_count": accepted,
-        "epipolar_rejected_after_descriptor_count": int(
-            descriptor_valid.sum()
-        )
+        "epipolar_rejected_after_descriptor_count": int(descriptor_valid.sum())
         - accepted,
-        "ambiguity_rejected_count": int(reciprocal.sum())
-        - int(descriptor_valid.sum()),
+        "ambiguity_rejected_count": int(reciprocal.sum()) - int(descriptor_valid.sum()),
         "final_reciprocal_epipolar_count": accepted,
         "epipolar_recovered_final_count": 0,
     }
@@ -468,15 +425,11 @@ def _cycle_supported_pair_edges(
                 lm_left, lm_middle, _ = pair_matches[pair_lm]
                 lr_left, lr_right, _ = pair_matches[pair_lr]
                 mr_middle, mr_right, _ = pair_matches[pair_mr]
-                lookup_lr = torch.full(
-                    (keypoint_counts[left],), -1, dtype=torch.long
-                )
+                lookup_lr = torch.full((keypoint_counts[left],), -1, dtype=torch.long)
                 edge_lr = torch.full_like(lookup_lr, -1)
                 lookup_lr[lr_left] = lr_right
                 edge_lr[lr_left] = torch.arange(lr_left.numel())
-                lookup_mr = torch.full(
-                    (keypoint_counts[middle],), -1, dtype=torch.long
-                )
+                lookup_mr = torch.full((keypoint_counts[middle],), -1, dtype=torch.long)
                 edge_mr = torch.full_like(lookup_mr, -1)
                 lookup_mr[mr_middle] = mr_right
                 edge_mr[mr_middle] = torch.arange(mr_middle.numel())
@@ -647,31 +600,21 @@ def _graded_track_components(
     for edge in order.tolist():
         left_query = int(edge_left[edge])
         right_query = int(edge_right[edge])
-        source_node = (
-            int(keypoint_offsets[left_query]) + int(edge_source[edge])
-        )
-        target_node = (
-            int(keypoint_offsets[right_query]) + int(edge_target[edge])
-        )
+        source_node = int(keypoint_offsets[left_query]) + int(edge_source[edge])
+        target_node = int(keypoint_offsets[right_query]) + int(edge_target[edge])
         disjoint.add(source_node, left_query)
         disjoint.add(target_node, right_query)
         is_cycle = bool(edge_cycle[edge])
         pair = (left_query, right_query)
         pair_position = int(edge_pair_position[edge])
-        if not disjoint.union(
-            source_node, target_node, cycle_supported=is_cycle
-        ):
+        if not disjoint.union(source_node, target_node, cycle_supported=is_cycle):
             rejected_conflict += 1
             edge_conflict_rejected[pair][pair_position] = True
             continue
         edge_accepted[pair][pair_position] = True
         confidence = float(edge_confidence[edge])
-        node_confidence[source_node] = max(
-            node_confidence[source_node], confidence
-        )
-        node_confidence[target_node] = max(
-            node_confidence[target_node], confidence
-        )
+        node_confidence[source_node] = max(node_confidence[source_node], confidence)
+        node_confidence[target_node] = max(node_confidence[target_node], confidence)
         if is_cycle:
             accepted_cycle += 1
         else:
@@ -680,8 +623,7 @@ def _graded_track_components(
     for node in disjoint.parent:
         components[disjoint.find(node)].append(node)
     component_cycle_seeded = {
-        root: bool(disjoint.cycle_seeded[disjoint.find(root)])
-        for root in components
+        root: bool(disjoint.cycle_seeded[disjoint.find(root)]) for root in components
     }
     diagnostics = {
         "track_graded_cycle_edge_count": accepted_cycle,
@@ -737,15 +679,14 @@ def build_cycle_consistent_tracks(
         tuple[int, int], tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ]
     | None = None,
-    precomputed_pair_match_diagnostics: dict[
-        tuple[int, int], dict[str, int]
-    ]
+    precomputed_pair_match_diagnostics: dict[tuple[int, int], dict[str, int]]
     | None = None,
     precomputed_confidence_includes_detector_scores: bool = False,
     device: str | torch.device = "cuda",
-) -> tuple[dict[str, torch.Tensor], dict[str, float | int]] | tuple[
-    dict[str, torch.Tensor], dict[str, float | int], dict
-]:
+) -> (
+    tuple[dict[str, torch.Tensor], dict[str, float | int]]
+    | tuple[dict[str, torch.Tensor], dict[str, float | int], dict]
+):
     """Build map-independent native 2D tracks from a local camera graph."""
     query_count = len(descriptors)
     if len(keypoints) != query_count:
@@ -756,14 +697,9 @@ def build_cycle_consistent_tracks(
     if uses_precomputed_pair_matches:
         pairs = [tuple(map(int, pair)) for pair in precomputed_pairs]
         if pairs != sorted(set(pairs)) or any(
-            left < 0
-            or left >= right
-            or right >= query_count
-            for left, right in pairs
+            left < 0 or left >= right or right >= query_count for left, right in pairs
         ):
-            raise ValueError(
-                "Precomputed pairs must be unique, sorted and canonical"
-            )
+            raise ValueError("Precomputed pairs must be unique, sorted and canonical")
         if pair_budget is not None and int(pair_budget) != len(pairs):
             raise ValueError("Precomputed pair count differs from the exact budget")
         if precomputed_pair_matches is None:
@@ -810,18 +746,31 @@ def build_cycle_consistent_tracks(
             diversity_weight=pair_diversity_weight,
             candidate_pool_per_camera=pair_candidate_pool_per_camera,
             scene_depth_m=pair_scene_depth_m,
-            minimum_expected_parallax_deg=(
-                pair_minimum_expected_parallax_deg
-            ),
+            minimum_expected_parallax_deg=(pair_minimum_expected_parallax_deg),
             near_fraction=pair_near_fraction,
-            maximum_baseline_depth_ratio=(
-                pair_maximum_baseline_depth_ratio
-            ),
+            maximum_baseline_depth_ratio=(pair_maximum_baseline_depth_ratio),
         )
     pair_matches = {}
     pair_match_diagnostics = {}
     raw_match_count = 0
     device = torch.device(device)
+    # Pair policies repeatedly revisit the same per-camera descriptor table.
+    # Keeping that immutable table resident avoids O(pair_count) duplicate
+    # host-to-device transfers while preserving the exact FP32 matcher input.
+    # The conservative free-memory guard falls back to the historical
+    # per-pair transfer path without changing any matching semantics.
+    resident_descriptors = None
+    if device.type == "cuda" and torch.cuda.is_available():
+        descriptor_bytes = sum(
+            int(value.numel()) * int(value.element_size()) for value in descriptors
+        )
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        if descriptor_bytes <= int(0.4 * free_bytes):
+            try:
+                resident_descriptors = [value.to(device) for value in descriptors]
+            except torch.OutOfMemoryError:
+                resident_descriptors = None
+                torch.cuda.empty_cache()
     for left, right in pairs:
         if uses_precomputed_pair_matches:
             source, target, confidence = precomputed_pair_matches[(left, right)]
@@ -830,10 +779,7 @@ def build_cycle_consistent_tracks(
             confidence = (
                 torch.as_tensor(confidence, dtype=torch.float32).cpu().reshape(-1)
             )
-            if (
-                source.numel() != target.numel()
-                or source.numel() != confidence.numel()
-            ):
+            if source.numel() != target.numel() or source.numel() != confidence.numel():
                 raise ValueError("Precomputed pair match columns must align")
             if source.numel() and (
                 int(source.min()) < 0
@@ -857,9 +803,19 @@ def build_cycle_consistent_tracks(
                 (precomputed_pair_match_diagnostics or {}).get((left, right), {})
             )
         else:
+            left_descriptors = (
+                resident_descriptors[left]
+                if resident_descriptors is not None
+                else descriptors[left].to(device)
+            )
+            right_descriptors = (
+                resident_descriptors[right]
+                if resident_descriptors is not None
+                else descriptors[right].to(device)
+            )
             match_result = reciprocal_epipolar_matches(
-                descriptors[left].to(device),
-                descriptors[right].to(device),
+                left_descriptors,
+                right_descriptors,
                 keypoints[left],
                 keypoints[right],
                 camera_K[left],
@@ -870,9 +826,7 @@ def build_cycle_consistent_tracks(
                 minimum_margin=minimum_margin,
                 maximum_epipolar_error_px=maximum_epipolar_error_px,
                 epipolar_candidate_topk=epipolar_candidate_topk,
-                recovered_minimum_similarity=(
-                    epipolar_recovered_minimum_similarity
-                ),
+                recovered_minimum_similarity=(epipolar_recovered_minimum_similarity),
                 recovered_minimum_margin=epipolar_recovered_minimum_margin,
                 return_diagnostics=return_pair_sidecar,
             )
@@ -909,9 +863,7 @@ def build_cycle_consistent_tracks(
     }
     component_cycle_seeded = {}
     pair_edge_status = {
-        "accepted": {
-            pair: cycle_support[pair].clone() for pair in pair_matches
-        },
+        "accepted": {pair: cycle_support[pair].clone() for pair in pair_matches},
         "conflict_rejected": {
             pair: torch.zeros(match[0].numel(), dtype=torch.bool)
             for pair, match in pair_matches.items()
@@ -928,16 +880,12 @@ def build_cycle_consistent_tracks(
             component_cycle_seeded,
             graded_diagnostics,
             pair_edge_status,
-        ) = _graded_track_components(
-            pair_matches, cycle_support, keypoint_offsets
-        )
+        ) = _graded_track_components(pair_matches, cycle_support, keypoint_offsets)
         supported_edge_count = (
             graded_diagnostics["track_graded_cycle_edge_count"]
             + graded_diagnostics["track_graded_chain_edge_count"]
         )
-        active_nodes = {
-            node for nodes in components.values() for node in nodes
-        }
+        active_nodes = {node for nodes in components.values() for node in nodes}
     else:
         disjoint = _SparseDisjointSet()
         node_confidence = defaultdict(float)
@@ -964,9 +912,7 @@ def build_cycle_consistent_tracks(
         for node in disjoint.parent:
             components[disjoint.find(node)].append(node)
         active_nodes = set(disjoint.parent)
-        component_cycle_seeded = {
-            root: bool(require_cycle) for root in components
-        }
+        component_cycle_seeded = {root: bool(require_cycle) for root in components}
     node_query = {}
     for query, (start, end) in enumerate(
         zip(keypoint_offsets[:-1], keypoint_offsets[1:])
@@ -1032,9 +978,7 @@ def build_cycle_consistent_tracks(
         "track_camera_pair_budget": int(len(pairs)),
         "track_pair_matches_reused": int(uses_precomputed_pair_matches),
         "track_observation_count": len(track_indices),
-        "track_rejected_duplicate_query_component_count": (
-            rejected_duplicate_query
-        ),
+        "track_rejected_duplicate_query_component_count": (rejected_duplicate_query),
         **graded_diagnostics,
     }
     if not bool(return_pair_sidecar):
@@ -1048,15 +992,10 @@ def build_cycle_consistent_tracks(
         scene_points_xyz=pair_scene_points_xyz,
     )
     diagnostic_names = sorted(
-        {
-            name
-            for diagnostic in pair_match_diagnostics.values()
-            for name in diagnostic
-        }
+        {name for diagnostic in pair_match_diagnostics.values() for name in diagnostic}
     )
     match_columns = {
-        name: torch.zeros(len(pairs), dtype=torch.long)
-        for name in diagnostic_names
+        name: torch.zeros(len(pairs), dtype=torch.long) for name in diagnostic_names
     }
     cycle_supported_count = torch.zeros(len(pairs), dtype=torch.long)
     graph_accepted_count = torch.zeros(len(pairs), dtype=torch.long)
@@ -1111,8 +1050,7 @@ def build_cycle_consistent_tracks(
             "uses_descriptors_for_selection": False,
             "uses_precomputed_pair_matches": bool(uses_precomputed_pair_matches),
             "uses_test_queries": False,
-            "overlap_constraint_applied": str(pair_policy)
-            == "parallax_diverse",
+            "overlap_constraint_applied": str(pair_policy) == "parallax_diverse",
         },
         "pair": {
             **geometry_table,
@@ -1144,9 +1082,7 @@ def build_cycle_consistent_tracks(
             "final_track_indices": torch.as_tensor(
                 final_track_indices, dtype=torch.long
             ),
-            "triangulated_track_count": torch.full(
-                (len(pairs),), -1, dtype=torch.long
-            ),
+            "triangulated_track_count": torch.full((len(pairs),), -1, dtype=torch.long),
             "actual_triangulation_parallax_median_deg": torch.full(
                 (len(pairs),), float("nan"), dtype=torch.float64
             ),
@@ -1167,9 +1103,7 @@ def build_cycle_consistent_tracks(
                 "Edges emitted by the configured matcher; with top-K>1 this may "
                 "include explicitly counted epipolar recoveries."
             ),
-            "accepted_match_count": (
-                "Alias of final_reciprocal_epipolar_count."
-            ),
+            "accepted_match_count": ("Alias of final_reciprocal_epipolar_count."),
             "rejected_ambiguity_count": "Alias of ambiguity_rejected_count.",
             "rejected_epipolar_count": (
                 "Alias of epipolar_rejected_after_descriptor_count."
@@ -1177,9 +1111,7 @@ def build_cycle_consistent_tracks(
             "cycle_supported_edge_count": (
                 "Emitted edges participating in an exact three-camera keypoint cycle."
             ),
-            "cycle_supported_match_count": (
-                "Alias of cycle_supported_edge_count."
-            ),
+            "cycle_supported_match_count": ("Alias of cycle_supported_edge_count."),
             "conflict_rejected_edge_count": (
                 "Emitted edges rejected because union would duplicate a camera in "
                 "one Track component."
@@ -1199,9 +1131,7 @@ def build_cycle_consistent_tracks(
                 "maximum_baseline_depth_ratio": float(
                     pair_maximum_baseline_depth_ratio
                 ),
-                "scene_depth_estimator": (
-                    "median_positive_mapping_keypoint_depth"
-                ),
+                "scene_depth_estimator": ("median_positive_mapping_keypoint_depth"),
             }
         )
     return tracks, diagnostics, pair_sidecar
@@ -1231,17 +1161,13 @@ def attach_pair_triangulation_statistics(
     geometry_xyz = torch.as_tensor(
         track_geometry["triangulated_xyz"], dtype=torch.float64
     )
-    triangulated = torch.as_tensor(
-        track_geometry["triangulated"], dtype=torch.bool
-    )
+    triangulated = torch.as_tensor(track_geometry["triangulated"], dtype=torch.bool)
     track_count = int(torch.as_tensor(tracks["track_level"]).numel())
     if geometry_xyz.shape[0] != track_count or triangulated.numel() != track_count:
         raise ValueError("Track table and triangulation table do not align")
     centers, _ = _camera_centers_and_axes(pose_w2c)
     triangulated_count = torch.zeros(left.numel(), dtype=torch.long)
-    actual_parallax = torch.full(
-        (left.numel(),), float("nan"), dtype=torch.float64
-    )
+    actual_parallax = torch.full((left.numel(),), float("nan"), dtype=torch.float64)
     for pair_index in range(int(left.numel())):
         begin = int(offsets[pair_index])
         end = int(offsets[pair_index + 1])
@@ -1279,9 +1205,7 @@ def _deduplicate_landmark_query(
 ) -> torch.Tensor:
     """Keep the highest-confidence observation for each landmark/query pair."""
     key = landmark_index.long() * int(query_count) + query_index.long()
-    confidence_order = torch.argsort(
-        confidence, descending=True, stable=True
-    )
+    confidence_order = torch.argsort(confidence, descending=True, stable=True)
     key_order = torch.argsort(key[confidence_order], stable=True)
     ordered = confidence_order[key_order]
     ordered_key = key[ordered]
@@ -1299,9 +1223,7 @@ def _camera_rays(
     uv = uv.to(dtype=torch.float64)
     K = K.to(dtype=torch.float64)
     pose_w2c = pose_w2c.to(dtype=torch.float64)
-    homogeneous = torch.cat(
-        (uv, torch.ones((uv.shape[0], 1), dtype=uv.dtype)), dim=1
-    )
+    homogeneous = torch.cat((uv, torch.ones((uv.shape[0], 1), dtype=uv.dtype)), dim=1)
     direction_camera = torch.linalg.solve(K, homogeneous[:, :, None]).squeeze(2)
     rotation = pose_w2c[:, :3, :3]
     translation = pose_w2c[:, :3, 3]
@@ -1322,10 +1244,7 @@ def _weighted_ray_intersection(
     normal = weighted.sum(dim=0)
     rhs = torch.einsum("nij,nj->i", weighted, center)
     eigenvalues = torch.linalg.eigvalsh(normal)
-    if (
-        not bool(torch.isfinite(eigenvalues).all())
-        or float(eigenvalues[0]) <= 1e-12
-    ):
+    if not bool(torch.isfinite(eigenvalues).all()) or float(eigenvalues[0]) <= 1e-12:
         raise torch.linalg.LinAlgError("Degenerate ray intersection")
     point = torch.linalg.solve(normal, rhs)
     condition = eigenvalues[-1] / eigenvalues[0]
@@ -1357,22 +1276,14 @@ def _reprojection_normal_matrix(
     projected_h = torch.einsum("nij,nj->ni", K, camera)
     denominator = projected_h[:, 2].clamp_min(1e-12)
     jacobian_camera_u = (
-        K[:, 0, :] * denominator[:, None]
-        - projected_h[:, 0, None] * K[:, 2, :]
+        K[:, 0, :] * denominator[:, None] - projected_h[:, 0, None] * K[:, 2, :]
     ) / denominator[:, None].square()
     jacobian_camera_v = (
-        K[:, 1, :] * denominator[:, None]
-        - projected_h[:, 1, None] * K[:, 2, :]
+        K[:, 1, :] * denominator[:, None] - projected_h[:, 1, None] * K[:, 2, :]
     ) / denominator[:, None].square()
-    jacobian_camera = torch.stack(
-        (jacobian_camera_u, jacobian_camera_v), dim=1
-    )
-    jacobian_world = torch.einsum(
-        "nij,njk->nik", jacobian_camera, pose_w2c[:, :3, :3]
-    )
-    return torch.einsum(
-        "n,nji,njk->ik", weight, jacobian_world, jacobian_world
-    )
+    jacobian_camera = torch.stack((jacobian_camera_u, jacobian_camera_v), dim=1)
+    jacobian_world = torch.einsum("nij,njk->nik", jacobian_camera, pose_w2c[:, :3, :3])
+    return torch.einsum("n,nji,njk->ik", weight, jacobian_world, jacobian_world)
 
 
 def _surface_supported_weak_axis_update(
@@ -1402,10 +1313,7 @@ def _surface_supported_weak_axis_update(
     if int(valid.sum()) < 3:
         return None
     eigenvalues, eigenvectors = torch.linalg.eigh(reprojection_normal)
-    if (
-        not bool(torch.isfinite(eigenvalues).all())
-        or float(eigenvalues[1]) <= 1e-12
-    ):
+    if not bool(torch.isfinite(eigenvalues).all()) or float(eigenvalues[1]) <= 1e-12:
         return None
     weak_ratio = float(eigenvalues[0] / eigenvalues[1])
     if weak_ratio > float(maximum_weak_information_ratio):
@@ -1445,27 +1353,24 @@ def _surface_supported_weak_axis_update(
             delta = -(combined * coefficient * residual).sum() / (
                 combined * coefficient.square()
             ).sum().clamp_min(1e-12)
-        return delta.clamp(
-            -float(maximum_correction_m), float(maximum_correction_m)
-        )
+        return delta.clamp(-float(maximum_correction_m), float(maximum_correction_m))
 
     fitted_delta = solve_delta(fit_rows)
     candidate = point + fitted_delta * weak_axis
-    candidate_projected, candidate_depth = _project(
-        candidate, camera_K, pose_w2c
-    )
+    candidate_projected, candidate_depth = _project(candidate, camera_K, pose_w2c)
     candidate_reprojection = torch.linalg.norm(candidate_projected - uv, dim=1)
     base_validation_depth = base_depth_residual[validation_rows].abs().median()
     candidate_validation_depth = (
-        candidate_depth[validation_rows] - rendered_depth[validation_rows]
-    ).abs().median()
+        (candidate_depth[validation_rows] - rendered_depth[validation_rows])
+        .abs()
+        .median()
+    )
     depth_improved = candidate_validation_depth <= base_validation_depth * (
         1.0 - float(minimum_depth_improvement_fraction)
     )
-    already_consistent = (
-        base_validation_depth <= float(covariance_sigma_m)
-        and candidate_validation_depth <= float(covariance_sigma_m)
-    )
+    already_consistent = base_validation_depth <= float(
+        covariance_sigma_m
+    ) and candidate_validation_depth <= float(covariance_sigma_m)
     reprojection_safe = candidate_reprojection[validation_rows].median() <= (
         base_reprojection[validation_rows].median()
         + float(maximum_reprojection_increase_px)
@@ -1477,9 +1382,7 @@ def _surface_supported_weak_axis_update(
     # one effective measurement because renderer errors are correlated.
     final_delta = solve_delta(valid_rows)
     revised_point = point + final_delta * weak_axis
-    revised_projected, revised_depth = _project(
-        revised_point, camera_K, pose_w2c
-    )
+    revised_projected, revised_depth = _project(revised_point, camera_K, pose_w2c)
     revised_reprojection = torch.linalg.norm(revised_projected - uv, dim=1)
     if revised_reprojection.median() > (
         base_reprojection.median() + float(maximum_reprojection_increase_px)
@@ -1504,9 +1407,7 @@ def _surface_supported_weak_axis_update(
     )
     surface_weight = base_weight[valid_rows] * surface_robust
     surface_weight /= surface_weight.sum().clamp_min(1e-12)
-    effective_jacobian_sq = (
-        surface_weight * depth_jacobian[valid_rows].square()
-    ).sum()
+    effective_jacobian_sq = (surface_weight * depth_jacobian[valid_rows].square()).sum()
     surface_precision = effective_jacobian_sq / max(
         float(covariance_sigma_m) ** 2, 1e-12
     )
@@ -1554,9 +1455,7 @@ def _fixed_camera_reprojection_refine(
             0.5 * norm.square(),
             delta * (norm - 0.5 * delta),
         )
-        camera = candidate @ pose_w2c[:, :3, :3].transpose(1, 2) + pose_w2c[
-            :, :3, 3
-        ]
+        camera = candidate @ pose_w2c[:, :3, :3].transpose(1, 2) + pose_w2c[:, :3, 3]
         x, y, z = camera.unbind(dim=1)
         inv_z = z.clamp_min(1e-12).reciprocal()
         jacobian_camera = candidate.new_zeros((camera.shape[0], 2, 3))
@@ -1670,9 +1569,7 @@ def robust_triangulate_associations(
         query_bin = camera_pose_bins(pose_w2c, 8)
     query_bin = torch.as_tensor(query_bin, dtype=torch.long).cpu()
     if rendered_depth is not None:
-        rendered_depth = torch.as_tensor(
-            rendered_depth, dtype=torch.float64
-        ).cpu()
+        rendered_depth = torch.as_tensor(rendered_depth, dtype=torch.float64).cpu()
     if not (
         landmark_index.numel()
         == query_index.numel()
@@ -1715,18 +1612,12 @@ def robust_triangulate_associations(
         (landmark_count,), float("inf"), dtype=torch.float64
     )
     parallax_deg = torch.zeros(landmark_count, dtype=torch.float64)
-    condition_number = torch.full(
-        (landmark_count,), float("inf"), dtype=torch.float64
-    )
-    covariance_trace = torch.full(
-        (landmark_count,), float("inf"), dtype=torch.float64
-    )
+    condition_number = torch.full((landmark_count,), float("inf"), dtype=torch.float64)
+    covariance_trace = torch.full((landmark_count,), float("inf"), dtype=torch.float64)
     covariance_matrix = torch.full(
         (landmark_count, 3, 3), float("nan"), dtype=torch.float64
     )
-    image_only_xyz = torch.full(
-        (landmark_count, 3), float("nan"), dtype=torch.float64
-    )
+    image_only_xyz = torch.full((landmark_count, 3), float("nan"), dtype=torch.float64)
     image_only_covariance_trace = torch.full(
         (landmark_count,), float("inf"), dtype=torch.float64
     )
@@ -1745,21 +1636,15 @@ def robust_triangulate_associations(
     rendered_depth_absolute_median_m = torch.full(
         (landmark_count,), float("inf"), dtype=torch.float64
     )
-    rendered_depth_observation_count = torch.zeros(
-        landmark_count, dtype=torch.long
-    )
+    rendered_depth_observation_count = torch.zeros(landmark_count, dtype=torch.long)
     triangulated = torch.zeros(landmark_count, dtype=torch.bool)
     surface_supported = torch.zeros(landmark_count, dtype=torch.bool)
     surface_correction_m = torch.zeros(landmark_count, dtype=torch.float64)
     surface_weak_information_ratio = torch.full(
         (landmark_count,), float("nan"), dtype=torch.float64
     )
-    surface_depth_improvement_m = torch.zeros(
-        landmark_count, dtype=torch.float64
-    )
-    surface_reprojection_delta_px = torch.zeros(
-        landmark_count, dtype=torch.float64
-    )
+    surface_depth_improvement_m = torch.zeros(landmark_count, dtype=torch.float64)
+    surface_reprojection_delta_px = torch.zeros(landmark_count, dtype=torch.float64)
     nonlinear_refinement_applied = torch.zeros(landmark_count, dtype=torch.bool)
     nonlinear_refinement_accepted_iterations = torch.zeros(
         landmark_count, dtype=torch.long
@@ -1781,9 +1666,7 @@ def robust_triangulate_associations(
         selected = torch.arange(start, end)
         maximum = int(maximum_observations_per_landmark)
         if maximum > 0 and selected.numel() > maximum:
-            rank = torch.argsort(
-                confidence[selected], descending=True, stable=True
-            )
+            rank = torch.argsort(confidence[selected], descending=True, stable=True)
             selected = selected[rank[:maximum]]
         queries = query_index[selected]
         if queries.numel() < int(minimum_views):
@@ -1804,9 +1687,7 @@ def robust_triangulate_associations(
                 centers, directions, weight
             )
             for _ in range(max(int(iterations), 1)):
-                projected, depth = _project(
-                    point, camera_K[queries], pose_w2c[queries]
-                )
+                projected, depth = _project(point, camera_K[queries], pose_w2c[queries])
                 residual = torch.linalg.norm(projected - uv[selected], dim=1)
                 robust = torch.where(
                     residual <= float(huber_delta_px),
@@ -1839,9 +1720,7 @@ def robust_triangulate_associations(
             nonlinear_refinement_accepted_iterations[landmark] = refinement_iterations
             nonlinear_refinement_initial_cost[landmark] = refinement_initial_cost
             nonlinear_refinement_final_cost[landmark] = refinement_final_cost
-        projected, depth = _project(
-            point, camera_K[queries], pose_w2c[queries]
-        )
+        projected, depth = _project(point, camera_K[queries], pose_w2c[queries])
         residual = torch.linalg.norm(projected - uv[selected], dim=1)
         finite = torch.isfinite(residual) & (depth > 0)
         if int(finite.sum()) < int(minimum_views):
@@ -1856,15 +1735,9 @@ def robust_triangulate_associations(
         if int(robust_inlier.sum()) < int(minimum_views):
             robust_inlier = finite
         inlier_directions = directions[robust_inlier]
-        pair_cosine = (inlier_directions @ inlier_directions.T).clamp(
-            -1.0, 1.0
-        )
-        upper = torch.triu_indices(
-            pair_cosine.shape[0], pair_cosine.shape[1], offset=1
-        )
-        pair_angles = torch.rad2deg(
-            torch.acos(pair_cosine[upper[0], upper[1]])
-        )
+        pair_cosine = (inlier_directions @ inlier_directions.T).clamp(-1.0, 1.0)
+        upper = torch.triu_indices(pair_cosine.shape[0], pair_cosine.shape[1], offset=1)
+        pair_angles = torch.rad2deg(torch.acos(pair_cosine[upper[0], upper[1]]))
         if pair_angles.numel() > 0:
             parallax_deg[landmark] = torch.quantile(
                 pair_angles,
@@ -1875,18 +1748,14 @@ def robust_triangulate_associations(
         final_projected, final_depth = _project(
             point, camera_K[queries], pose_w2c[queries]
         )
-        final_residual = torch.linalg.norm(
-            final_projected - uv[selected], dim=1
-        )
+        final_residual = torch.linalg.norm(final_projected - uv[selected], dim=1)
         final_robust = torch.where(
             final_residual <= float(huber_delta_px),
             torch.ones_like(final_residual),
             float(huber_delta_px) / final_residual.clamp_min(1e-8),
         )
         final_weight = (
-            base_weight
-            * final_robust
-            * (final_depth > 0).to(final_robust.dtype)
+            base_weight * final_robust * (final_depth > 0).to(final_robust.dtype)
         )
         reprojection_normal = _reprojection_normal_matrix(
             point,
@@ -1894,18 +1763,14 @@ def robust_triangulate_associations(
             pose_w2c[queries],
             final_weight,
         )
-        reprojection_eigenvalues = torch.linalg.eigvalsh(
-            reprojection_normal
-        )
+        reprojection_eigenvalues = torch.linalg.eigvalsh(reprojection_normal)
         if (
             not bool(torch.isfinite(reprojection_eigenvalues).all())
             or float(reprojection_eigenvalues[0]) <= 1e-12
         ):
             continue
         covariance = torch.linalg.inv(reprojection_normal) * sigma2
-        condition = (
-            reprojection_eigenvalues[-1] / reprojection_eigenvalues[0]
-        )
+        condition = reprojection_eigenvalues[-1] / reprojection_eigenvalues[0]
         image_only_xyz[landmark] = point
         image_only_covariance_trace[landmark] = torch.trace(covariance)
         image_only_covariance_matrix[landmark] = covariance
@@ -1937,9 +1802,7 @@ def robust_triangulate_associations(
             )
             if surface_result is not None:
                 point, covariance, condition, surface_report = surface_result
-                projected, depth = _project(
-                    point, camera_K[queries], pose_w2c[queries]
-                )
+                projected, depth = _project(point, camera_K[queries], pose_w2c[queries])
                 residual = torch.linalg.norm(projected - uv[selected], dim=1)
                 finite = torch.isfinite(residual) & (depth > 0)
         triangulated_xyz[landmark] = point
@@ -1956,8 +1819,7 @@ def robust_triangulate_associations(
                 "weak_information_ratio"
             ]
             surface_depth_improvement_m[landmark] = (
-                surface_report["depth_before_m"]
-                - surface_report["depth_after_m"]
+                surface_report["depth_before_m"] - surface_report["depth_after_m"]
             )
             surface_reprojection_delta_px[landmark] = surface_report[
                 "reprojection_delta_px"
@@ -1969,29 +1831,17 @@ def robust_triangulate_associations(
                 & (rendered_depth[selected] > 0)
             )
             if bool(valid_depth.any()):
-                depth_delta = (
-                    depth[valid_depth] - rendered_depth[selected][valid_depth]
-                )
+                depth_delta = depth[valid_depth] - rendered_depth[selected][valid_depth]
                 rendered_depth_signed_median_m[landmark] = depth_delta.median()
-                rendered_depth_absolute_median_m[landmark] = (
-                    depth_delta.abs().median()
-                )
-                rendered_depth_observation_count[landmark] = int(
-                    valid_depth.sum()
-                )
+                rendered_depth_absolute_median_m[landmark] = depth_delta.abs().median()
+                rendered_depth_observation_count[landmark] = int(valid_depth.sum())
         triangulated[landmark] = True
 
     covariance_valid = covariance_trace <= float(maximum_covariance_trace_m2)
     depth_required = int(minimum_rendered_depth_observations) > 0
     depth_valid = (
-        (
-            rendered_depth_observation_count
-            >= int(minimum_rendered_depth_observations)
-        )
-        & (
-            rendered_depth_absolute_median_m
-            <= float(maximum_rendered_depth_residual_m)
-        )
+        (rendered_depth_observation_count >= int(minimum_rendered_depth_observations))
+        & (rendered_depth_absolute_median_m <= float(maximum_rendered_depth_residual_m))
         if depth_required
         else torch.ones(landmark_count, dtype=torch.bool)
     )
@@ -2051,9 +1901,7 @@ def robust_triangulate_associations(
         "triangulation_surface_reprojection_delta_px": (
             surface_reprojection_delta_px.float()
         ),
-        "triangulation_nonlinear_refinement_applied": (
-            nonlinear_refinement_applied
-        ),
+        "triangulation_nonlinear_refinement_applied": (nonlinear_refinement_applied),
         "triangulation_nonlinear_refinement_accepted_iterations": (
             nonlinear_refinement_accepted_iterations
         ),
@@ -2089,9 +1937,7 @@ def transfer_triangulated_tracks_to_landmarks(
     track_assignment_cost = torch.as_tensor(
         track_assignment_cost, dtype=torch.float32
     ).cpu()
-    assigned_tracks = torch.nonzero(
-        track_landmark >= 0, as_tuple=False
-    ).reshape(-1)
+    assigned_tracks = torch.nonzero(track_landmark >= 0, as_tuple=False).reshape(-1)
     best_track = torch.full((landmark_count,), -1, dtype=torch.long)
     if assigned_tracks.numel() > 0:
         score = track_assignment_cost[assigned_tracks]
@@ -2109,9 +1955,7 @@ def transfer_triangulated_tracks_to_landmarks(
         best_track[ordered_landmarks[keep]] = ordered_tracks[keep]
 
     bank_geometry = {}
-    selected_landmarks = torch.nonzero(
-        best_track >= 0, as_tuple=False
-    ).reshape(-1)
+    selected_landmarks = torch.nonzero(best_track >= 0, as_tuple=False).reshape(-1)
     selected_tracks = best_track[selected_landmarks]
     for name, value in track_geometry.items():
         value = torch.as_tensor(value).cpu()
@@ -2141,9 +1985,9 @@ def transfer_triangulated_tracks_to_landmarks(
     bank_geometry["track_assignment_cost"] = torch.full(
         (landmark_count,), float("inf"), dtype=torch.float32
     )
-    bank_geometry["track_assignment_cost"][selected_landmarks] = (
-        track_assignment_cost[selected_tracks]
-    )
+    bank_geometry["track_assignment_cost"][selected_landmarks] = track_assignment_cost[
+        selected_tracks
+    ]
     bank_geometry["track_assigned"] = best_track >= 0
     assignment = {
         "track_landmark_index": track_landmark,
@@ -2163,9 +2007,7 @@ def transfer_triangulated_track_groups_to_landmarks(
     edge_assignment_cost: torch.Tensor,
 ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
     """Transfer track evidence through sparse track-to-Gaussian groups."""
-    edge_track_index = torch.as_tensor(
-        edge_track_index, dtype=torch.long
-    ).reshape(-1)
+    edge_track_index = torch.as_tensor(edge_track_index, dtype=torch.long).reshape(-1)
     edge_landmark_index = torch.as_tensor(
         edge_landmark_index, dtype=torch.long
     ).reshape(-1)
@@ -2178,9 +2020,7 @@ def transfer_triangulated_track_groups_to_landmarks(
         == edge_assignment_cost.numel()
     ):
         raise ValueError("Track-group edge tensors must have equal lengths")
-    track_count = int(
-        torch.as_tensor(track_geometry["triangulated_xyz"]).shape[0]
-    )
+    track_count = int(torch.as_tensor(track_geometry["triangulated_xyz"]).shape[0])
     if edge_track_index.numel() and (
         int(edge_track_index.min()) < 0
         or int(edge_track_index.max()) >= track_count
@@ -2203,9 +2043,7 @@ def transfer_triangulated_track_groups_to_landmarks(
     landmark_best_edge = edge_assignment["landmark_best_track_index"]
     landmark_best_track = torch.full_like(landmark_best_edge, -1)
     selected = landmark_best_edge >= 0
-    landmark_best_track[selected] = edge_track_index[
-        landmark_best_edge[selected]
-    ]
+    landmark_best_track[selected] = edge_track_index[landmark_best_edge[selected]]
     edge_order = torch.argsort(edge_landmark_index, stable=True)
     landmark_track_indices = edge_track_index[edge_order]
     landmark_edge_indices = edge_order
@@ -2213,21 +2051,11 @@ def transfer_triangulated_track_groups_to_landmarks(
     landmark_track_count = torch.bincount(
         ordered_landmarks, minlength=int(landmark_count)
     )
-    landmark_track_offsets = torch.zeros(
-        int(landmark_count) + 1, dtype=torch.long
-    )
-    landmark_track_offsets[1:] = torch.cumsum(
-        landmark_track_count, dim=0
-    )
-    raw_responsibility = (
-        1.0 - edge_assignment_cost[edge_order]
-    ).clamp_min(1e-6)
-    responsibility_sum = torch.zeros(
-        int(landmark_count), dtype=torch.float32
-    )
-    responsibility_sum.index_add_(
-        0, ordered_landmarks, raw_responsibility
-    )
+    landmark_track_offsets = torch.zeros(int(landmark_count) + 1, dtype=torch.long)
+    landmark_track_offsets[1:] = torch.cumsum(landmark_track_count, dim=0)
+    raw_responsibility = (1.0 - edge_assignment_cost[edge_order]).clamp_min(1e-6)
+    responsibility_sum = torch.zeros(int(landmark_count), dtype=torch.float32)
+    responsibility_sum.index_add_(0, ordered_landmarks, raw_responsibility)
     landmark_track_responsibilities = raw_responsibility / (
         responsibility_sum[ordered_landmarks].clamp_min(1e-12)
     )
@@ -2239,24 +2067,20 @@ def transfer_triangulated_track_groups_to_landmarks(
     )
     effective_track_support = torch.zeros_like(responsibility_sum)
     has_support = landmark_track_count > 0
-    effective_track_support[has_support] = (
-        1.0 / responsibility_square_sum[has_support].clamp_min(1e-12)
-    )
+    effective_track_support[has_support] = 1.0 / responsibility_square_sum[
+        has_support
+    ].clamp_min(1e-12)
     track_xyz = torch.as_tensor(
         track_geometry["triangulated_xyz"], dtype=torch.float32
     ).cpu()
-    landmark_track_xyz_mean = torch.zeros(
-        (int(landmark_count), 3), dtype=torch.float32
-    )
+    landmark_track_xyz_mean = torch.zeros((int(landmark_count), 3), dtype=torch.float32)
     landmark_track_xyz_mean.index_add_(
         0,
         ordered_landmarks,
-        track_xyz[landmark_track_indices]
-        * landmark_track_responsibilities[:, None],
+        track_xyz[landmark_track_indices] * landmark_track_responsibilities[:, None],
     )
     edge_residual = torch.linalg.norm(
-        track_xyz[landmark_track_indices]
-        - landmark_track_xyz_mean[ordered_landmarks],
+        track_xyz[landmark_track_indices] - landmark_track_xyz_mean[ordered_landmarks],
         dim=1,
     )
     weighted_square_residual = torch.zeros_like(responsibility_sum)
@@ -2266,9 +2090,7 @@ def transfer_triangulated_track_groups_to_landmarks(
         landmark_track_responsibilities * edge_residual.square(),
     )
     landmark_track_xyz_rms_m = torch.sqrt(weighted_square_residual)
-    landmark_track_xyz_max_residual_m = torch.zeros_like(
-        responsibility_sum
-    )
+    landmark_track_xyz_max_residual_m = torch.zeros_like(responsibility_sum)
     landmark_track_xyz_max_residual_m.scatter_reduce_(
         0,
         ordered_landmarks,
@@ -2282,9 +2104,7 @@ def transfer_triangulated_track_groups_to_landmarks(
             "landmark_effective_track_support": effective_track_support,
             "landmark_track_xyz_mean": landmark_track_xyz_mean,
             "landmark_track_xyz_rms_m": landmark_track_xyz_rms_m,
-            "landmark_track_xyz_max_residual_m": (
-                landmark_track_xyz_max_residual_m
-            ),
+            "landmark_track_xyz_max_residual_m": (landmark_track_xyz_max_residual_m),
         }
     )
     assignment = {
@@ -2296,9 +2116,7 @@ def transfer_triangulated_track_groups_to_landmarks(
         "landmark_track_offsets": landmark_track_offsets,
         "landmark_track_indices": landmark_track_indices,
         "landmark_track_edge_indices": landmark_edge_indices,
-        "landmark_track_responsibilities": (
-            landmark_track_responsibilities
-        ),
+        "landmark_track_responsibilities": (landmark_track_responsibilities),
     }
     return geometry, assignment
 
@@ -2328,15 +2146,11 @@ def assign_triangulated_tracks_to_landmarks(
         dtype=torch.bool,
     ).reshape(-1)
     eligible_indices = torch.nonzero(eligible, as_tuple=False).reshape(-1)
-    track_landmark = torch.full(
-        (track_xyz.shape[0],), -1, dtype=torch.long
-    )
+    track_landmark = torch.full((track_xyz.shape[0],), -1, dtype=torch.long)
     track_landmark_distance = torch.full(
         (track_xyz.shape[0],), float("inf"), dtype=torch.float32
     )
-    track_landmark_margin = torch.zeros(
-        track_xyz.shape[0], dtype=torch.float32
-    )
+    track_landmark_margin = torch.zeros(track_xyz.shape[0], dtype=torch.float32)
     if eligible_indices.numel() > 0:
         bank_device = bank_xyz_cpu.to(device)
         for start in range(0, eligible_indices.numel(), max(int(chunk_size), 1)):
@@ -2351,14 +2165,13 @@ def assign_triangulated_tracks_to_landmarks(
                 margin = nearest_two[:, 1] - nearest_two[:, 0]
             else:
                 margin = torch.full_like(nearest_distance, float("inf"))
-            valid = (
-                (nearest_distance <= float(maximum_distance_m))
-                & (margin >= float(minimum_margin_m))
+            valid = (nearest_distance <= float(maximum_distance_m)) & (
+                margin >= float(minimum_margin_m)
             )
             track_landmark[selected[valid.cpu()]] = nearest[valid].cpu()
-            track_landmark_distance[selected[valid.cpu()]] = (
-                nearest_distance[valid].cpu()
-            )
+            track_landmark_distance[selected[valid.cpu()]] = nearest_distance[
+                valid
+            ].cpu()
             track_landmark_margin[selected] = margin.cpu()
     geometry, assignment = transfer_triangulated_tracks_to_landmarks(
         track_geometry,
@@ -2366,19 +2179,15 @@ def assign_triangulated_tracks_to_landmarks(
         int(bank_xyz_cpu.shape[0]),
         track_assignment_cost=track_landmark_distance,
     )
-    geometry["track_assignment_distance_m"] = geometry.pop(
-        "track_assignment_cost"
-    )
+    geometry["track_assignment_distance_m"] = geometry.pop("track_assignment_cost")
     best_track = assignment["landmark_best_track_index"]
     selected_landmark = best_track >= 0
     geometry["track_assignment_margin_m"] = torch.zeros(
         bank_xyz_cpu.shape[0], dtype=torch.float32
     )
-    geometry["track_assignment_margin_m"][selected_landmark] = (
-        track_landmark_margin[best_track[selected_landmark]]
-    )
-    assignment["track_landmark_distance_m"] = assignment.pop(
-        "track_assignment_cost"
-    )
+    geometry["track_assignment_margin_m"][selected_landmark] = track_landmark_margin[
+        best_track[selected_landmark]
+    ]
+    assignment["track_landmark_distance_m"] = assignment.pop("track_assignment_cost")
     assignment["track_landmark_margin_m"] = track_landmark_margin
     return geometry, assignment

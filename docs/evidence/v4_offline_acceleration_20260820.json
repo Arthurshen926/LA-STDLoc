@@ -1,0 +1,84 @@
+{
+  "schema": "lafgs_v4_offline_acceleration_evidence",
+  "version": 1,
+  "date": "2026-08-20",
+  "scope": "offline_build_only_no_localization_method_change",
+  "changes": {
+    "build_timing": {
+      "artifact": "build_timing.json",
+      "atomic_updates": true,
+      "coarse_stages": [
+        "bootstrap_and_tracks",
+        "canonical_evidence",
+        "selector",
+        "compact_evidence_and_metric",
+        "anchor_registry"
+      ],
+      "subprocess_and_parallel_shard_events": true,
+      "included_in_pipeline_completion": true,
+      "render_track_scene_aggregation": {
+        "current_invocation_vs_cache_hit_stages": true,
+        "single_seed_result_binds_timing_sha256": true
+      }
+    },
+    "descriptor_residency": {
+      "definition": "copy immutable per-camera descriptors to the matching device once and reuse them for every selected camera pair",
+      "free_memory_guard_fraction": 0.4,
+      "oom_fallback": "historical_per_pair_transfer",
+      "matcher_dtype_or_formula_changed": false
+    },
+    "gpu_shard_bound": {
+      "cli": "--gpu-workers-per-device",
+      "default": 0,
+      "zero_semantics": "preserve_historical_unbounded_scheduling",
+      "recommended_value_for_long_memory_heavy_shards": 1,
+      "reason_not_default": "a short synthetic workload was slower when process startup was serialized"
+    }
+  },
+  "historical_stage_evidence_seconds": {
+    "stairs": {
+      "render_track_total": 1384.1530386479571,
+      "matching_and_track_build": 241.09055867791176,
+      "pure_ray_triangulation": 55.19858612213284,
+      "unattributed_frontend_and_serial_overhead": 1087.8638938479125
+    },
+    "shopfacade": {
+      "render_track_total": 768.1032884074375,
+      "matching_and_track_build": 42.56217151414603,
+      "pure_ray_triangulation": 52.078934812918305,
+      "unattributed_frontend_and_serial_overhead": 673.4629450803732
+    }
+  },
+  "synthetic_gpu_descriptor_reuse_benchmark": {
+    "gpu": "NVIDIA_GeForce_RTX_3090",
+    "camera_count": 96,
+    "rows_per_camera": 768,
+    "descriptor_dimension": 256,
+    "pair_count": 250,
+    "per_pair_transfer_seconds": 0.1222,
+    "resident_seconds": 0.0507,
+    "speedup": 2.409,
+    "top1_scores_and_indices_exact": true
+  },
+  "short_gpu_shard_scheduling_benchmark": {
+    "gpu_count": 3,
+    "job_count": 6,
+    "oversubscribed_wall_seconds": 2.756,
+    "bounded_one_per_gpu_wall_seconds": 4.398,
+    "conclusion": "do_not_enable_bounded_scheduling_by_default_without_real_stage_timing"
+  },
+  "scientific_contract": {
+    "anchor_selection_changed": false,
+    "track_policy_changed": false,
+    "triangulation_changed": false,
+    "descriptor_values_changed": false,
+    "localization_or_pose_solver_changed": false,
+    "test_queries_used": false
+  },
+  "remaining_priority": [
+    "measure_real_scene build_timing.json before further optimization",
+    "content-address observation and pair-match artifacts across experiments",
+    "batch render and SuperPoint only after bitwise or pose-equivalence validation",
+    "persistent GPU workers only for stages proven dominated by repeated model loading"
+  ]
+}
