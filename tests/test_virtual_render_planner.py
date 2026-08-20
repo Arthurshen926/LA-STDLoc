@@ -10,6 +10,7 @@ from evidence.virtual_render_planner import (
     PlannerPolicy,
     assign_pose_families,
     assign_pose_bins_from_reference,
+    camera_registry_sha256,
     generate_candidate_poses,
     greedy_capped_coverage,
     validate_mapping_inputs,
@@ -49,6 +50,8 @@ from scripts.plan_sufficiency_guided_virtual_rendering import (
     _validate_formal_unified_map,
     run,
 )
+from scripts.run_sufficiency_virtual_track_experiment import validate_runtime_plan_lineage
+from common.hashing import sha256_file
 
 
 def test_formal_unified_map_parent_sha_is_fail_closed(tmp_path):
@@ -68,6 +71,45 @@ def test_formal_unified_map_parent_sha_is_fail_closed(tmp_path):
     }
     with pytest.raises(ValueError, match="parent SHA mismatch"):
         _validate_formal_unified_map(formal, query, track)
+
+
+def test_runtime_lineage_rehashes_parents_and_ordered_registry(tmp_path):
+    record = {
+        "pose_w2c": torch.eye(4), "native_K": torch.eye(3),
+        "native_input_hw": torch.tensor([8, 8]),
+    }
+    query_payload = {"queries": {"a": record, "b": dict(record)}}
+    track_payload = {"query_names": ["a", "b"]}
+    paths = {name: tmp_path / name for name in ("query.pt", "track.pt", "map.pt", "prior.ply")}
+    torch.save(query_payload, paths["query.pt"])
+    torch.save(track_payload, paths["track.pt"])
+    torch.save({"formal": True}, paths["map.pt"])
+    paths["prior.ply"].write_bytes(b"prior")
+    plan = {
+        "candidate_render_support": {
+            "mode": "real_low_resolution_alpha_depth_zbuffer",
+            "gaussian_ply_sha256": sha256_file(paths["prior.ply"]),
+        },
+        "inputs": {
+            "query_cache": str(paths["query.pt"]),
+            "query_cache_sha256": sha256_file(paths["query.pt"]),
+            "track_payload": str(paths["track.pt"]),
+            "track_payload_sha256": sha256_file(paths["track.pt"]),
+            "selected_map": str(paths["map.pt"]),
+            "selected_map_sha256": sha256_file(paths["map.pt"]),
+            "canonical_camera_registry_sha256": camera_registry_sha256(
+                query_payload, track_payload["query_names"]
+            ),
+        },
+    }
+    assert validate_runtime_plan_lineage(plan, paths["prior.ply"])[-1] == plan["inputs"]["canonical_camera_registry_sha256"]
+    tampered = dict(plan); tampered["inputs"] = dict(plan["inputs"])
+    tampered["inputs"]["canonical_camera_registry_sha256"] = "evil"
+    with pytest.raises(ValueError, match="ordered canonical"):
+        validate_runtime_plan_lineage(tampered, paths["prior.ply"])
+    torch.save({"queries": {"a": record}}, paths["query.pt"])
+    with pytest.raises(ValueError, match="query cache identity"):
+        validate_runtime_plan_lineage(plan, paths["prior.ply"])
 
 
 def test_capped_coverage_is_monotone_and_has_diminishing_returns():

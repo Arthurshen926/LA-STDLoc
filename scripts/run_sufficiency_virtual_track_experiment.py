@@ -75,6 +75,43 @@ def _gather(rows, query, keypoint):
     return torch.cat(rows)[offsets[query.long()] + keypoint.long()]
 
 
+def validate_runtime_plan_lineage(
+    plan: dict, gaussian_ply: Path
+) -> tuple[Path, Path, Path, dict, dict, str]:
+    """Re-hash every mutable parent and the ordered geometry registry."""
+    support = plan.get("candidate_render_support", {})
+    if support.get("mode") != "real_low_resolution_alpha_depth_zbuffer":
+        raise ValueError("closed loop requires real candidate alpha/depth support")
+    selected_map_path = Path(plan.get("inputs", {}).get("selected_map", ""))
+    if (
+        not selected_map_path.is_file()
+        or sha256_file(selected_map_path) != plan["inputs"].get("selected_map_sha256")
+    ):
+        raise ValueError("formal unified map identity changed after planning")
+    if support.get("gaussian_ply_sha256") != sha256_file(gaussian_ply):
+        raise ValueError("planner and closed loop use different Gaussian priors")
+    query_path = Path(plan.get("inputs", {}).get("query_cache", ""))
+    track_path = Path(plan.get("inputs", {}).get("track_payload", ""))
+    if not query_path.is_file() or sha256_file(query_path) != plan["inputs"].get(
+        "query_cache_sha256"
+    ):
+        raise ValueError("planner query cache identity changed at runtime")
+    if not track_path.is_file() or sha256_file(track_path) != plan["inputs"].get(
+        "track_payload_sha256"
+    ):
+        raise ValueError("planner Track payload identity changed at runtime")
+    query_payload, track_payload = _load(query_path), _load(track_path)
+    ordered_registry_sha = camera_registry_sha256(
+        query_payload, list(track_payload["query_names"])
+    )
+    if ordered_registry_sha != plan["inputs"].get("canonical_camera_registry_sha256"):
+        raise ValueError("ordered canonical camera registry changed at runtime")
+    return (
+        selected_map_path, query_path, track_path,
+        query_payload, track_payload, ordered_registry_sha,
+    )
+
+
 @torch.inference_mode()
 def render_observations(args, plan: dict, selected: torch.Tensor) -> dict:
     source_cache = _load(Path(plan["inputs"]["query_cache"]))
@@ -291,37 +328,10 @@ def main() -> None:
         raise ValueError("invalid mapping-only virtual-render plan")
     if plan.get("gt_visible_diagnostic", "missing") is not None:
         raise ValueError("planner contains a GT-visible/test diagnostic")
-    support = plan.get("candidate_render_support", {})
-    if support.get("mode") != "real_low_resolution_alpha_depth_zbuffer":
-        raise ValueError("closed loop requires real candidate alpha/depth support")
-    selected_map_path = Path(plan.get("inputs", {}).get("selected_map", ""))
-    if (
-        not selected_map_path.is_file()
-        or sha256_file(selected_map_path)
-        != plan["inputs"].get("selected_map_sha256")
-    ):
-        raise ValueError("formal unified map identity changed after planning")
-    if support.get("gaussian_ply_sha256") != sha256_file(args.gaussian_ply):
-        raise ValueError("planner and closed loop use different Gaussian priors")
-    query_path = Path(plan.get("inputs", {}).get("query_cache", ""))
-    track_path = Path(plan.get("inputs", {}).get("track_payload", ""))
-    if not query_path.is_file() or sha256_file(query_path) != plan["inputs"].get(
-        "query_cache_sha256"
-    ):
-        raise ValueError("planner query cache identity changed at runtime")
-    if not track_path.is_file() or sha256_file(track_path) != plan["inputs"].get(
-        "track_payload_sha256"
-    ):
-        raise ValueError("planner Track payload identity changed at runtime")
-    query_payload = _load(query_path)
-    track_payload = _load(track_path)
-    ordered_registry_sha = camera_registry_sha256(
-        query_payload, list(track_payload["query_names"])
-    )
-    if ordered_registry_sha != plan["inputs"].get(
-        "canonical_camera_registry_sha256"
-    ):
-        raise ValueError("ordered canonical camera registry changed at runtime")
+    (
+        selected_map_path, query_path, track_path,
+        query_payload, track_payload, ordered_registry_sha,
+    ) = validate_runtime_plan_lineage(plan, args.gaussian_ply)
     if plan.get("triangulation_family_contract", {}).get(
         "source_and_pose_proximity_components"
     ) is not True:
