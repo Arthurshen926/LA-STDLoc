@@ -25,6 +25,7 @@ from evidence.virtual_render_planner import camera_registry_sha256
 from evidence.virtual_track_experiment import (
     DRY_RUN_THRESHOLDS,
     augment_formal_anchor_map,
+    build_map_bound_identity_metric,
     dry_run_passes,
     enforce_one_observation_per_family,
     validate_augmented_mapping_guard,
@@ -445,11 +446,30 @@ def main() -> None:
     augmented_path = args.output_dir / "augmented_formal_anchor_map.pt"
     _atomic_save(augmented, augmented_path)
     augmented_sha = sha256_file(augmented_path)
+    metric = build_map_bound_identity_metric(
+        map_path=str(augmented_path.resolve()), map_sha256=augmented_sha,
+        anchor_ids=augmented["anchor_ids"],
+        descriptor_dim=int(torch.as_tensor(augmented["anchor_features"]).shape[1]),
+        producer={
+            "entrypoint": str(Path(__file__).resolve()),
+            "entrypoint_sha256": sha256_file(Path(__file__).resolve()),
+            "torch_version": str(torch.__version__),
+            "source": "formal_prefix_plus_frozen_virtual_track_suffix",
+        },
+    )
+    metric_path = args.output_dir / "identity_metric.pt"
+    _atomic_save(metric, metric_path)
+    metric_sha = sha256_file(metric_path)
     guard.update({
         "augmented_map": str(augmented_path.resolve()),
         "augmented_map_sha256": augmented_sha,
         "formal_map_sha256": sha256_file(selected_map_path),
         "virtual_track_artifact_sha256": artifact_sha,
+        "identity_metric": str(metric_path.resolve()),
+        "identity_metric_sha256": metric_sha,
+        "identity_metric_landmark_count": int(metric["landmark_indices"].numel()),
+        "identity_metric_protocol": metric["protocol"],
+        "learned_descriptor_transform": False,
     })
     _atomic_json(guard, args.output_dir / "mapping_guard.json")
     decision = {
@@ -461,6 +481,8 @@ def main() -> None:
         "augmented_map": str(augmented_path.resolve()),
         "augmented_map_sha256": augmented_sha,
         "mapping_guard": guard,
+        "identity_metric": str(metric_path.resolve()),
+        "identity_metric_sha256": metric_sha,
     }
     _atomic_json(decision, args.output_dir / "decision.json")
     print(json.dumps(decision, indent=2, sort_keys=True), flush=True)

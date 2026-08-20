@@ -6,6 +6,7 @@ from dataclasses import replace
 import torch
 
 from topology.anchor_construction import AnchorCandidateBatch, UnifiedAnchorConstructor
+from map_learning.metric import SharedLowRankMetric, validate_map_bound_identity_metric
 
 
 DRY_RUN_THRESHOLDS = {
@@ -211,6 +212,23 @@ def augment_formal_anchor_map(
         "virtual_anchor_augmentation_lineage": lineage,
     })
     UnifiedAnchorConstructor.attach_to_map(state, combined)
+    suffix_ids = torch.arange(formal_count, total, dtype=torch.long)
+    state["virtual_anchor_selection_registry"] = {
+        "schema": "lafgs_virtual_anchor_selection_registry",
+        "version": 1,
+        "candidate_anchor_ids": suffix_ids,
+        "selected_anchor_ids": suffix_ids.clone(),
+        "selected_state": torch.ones(new_count, dtype=torch.bool),
+        "primary_selection_reasons": [
+            "stable_broad_virtual_track_augmentation"
+        ] * new_count,
+        "candidate_count": new_count,
+        "selected_count": new_count,
+        "append_start": formal_count,
+        "append_stop": total,
+        "formal_parent_anchor_count": formal_count,
+        "selection_uses_test_queries": False,
+    }
     if not torch.equal(state["anchor_xyz"][:formal_count], formal.xyz):
         raise AssertionError("formal Anchor prefix changed during augmentation")
     return state
@@ -252,6 +270,29 @@ def validate_augmented_mapping_guard(
     registry = augmented.get("virtual_observation_registry", {})
     if int(registry.get("query_count", -1)) != int(virtual_query_count):
         raise ValueError("virtual observation registry count differs")
+    selection = augmented.get("virtual_anchor_selection_registry", {})
+    expected_suffix = torch.arange(formal_count, total, dtype=torch.long)
+    if (
+        selection.get("schema") != "lafgs_virtual_anchor_selection_registry"
+        or int(selection.get("candidate_count", -1)) != total - formal_count
+        or int(selection.get("selected_count", -1)) != total - formal_count
+        or int(selection.get("append_start", -1)) != formal_count
+        or int(selection.get("append_stop", -1)) != total
+        or selection.get("selection_uses_test_queries") is not False
+        or not torch.equal(
+            torch.as_tensor(selection.get("candidate_anchor_ids")).long(),
+            expected_suffix,
+        )
+        or not torch.equal(
+            torch.as_tensor(selection.get("selected_anchor_ids")).long(),
+            expected_suffix,
+        )
+        or not bool(torch.as_tensor(selection.get("selected_state")).bool().all())
+        or selection.get("primary_selection_reasons") != [
+            "stable_broad_virtual_track_augmentation"
+        ] * (total - formal_count)
+    ):
+        raise ValueError("virtual suffix selection registry is incomplete")
     observations = augmented["projective_anchor_observations"]
     offsets = torch.as_tensor(observations["observation_offsets"]).long()
     query = torch.as_tensor(observations["query_indices"]).long()
@@ -270,6 +311,51 @@ def validate_augmented_mapping_guard(
         "augmented_anchor_count": total,
         "virtual_observation_count": int(new_query.numel()),
         "identity_namespace_disjoint": True,
+        "selection_registry_complete": True,
+        "selection_reason": "stable_broad_virtual_track_augmentation",
         "mapping_only": True,
         "gt_visible_diagnostic": None,
     }
+
+
+def build_map_bound_identity_metric(
+    *, map_path: str, map_sha256: str, anchor_ids: torch.Tensor,
+    descriptor_dim: int, producer: dict,
+) -> dict:
+    """Create the strict no-learn metric shim for an exact augmented map."""
+    anchor_ids = torch.as_tensor(anchor_ids).long()
+    expected = torch.arange(anchor_ids.numel(), dtype=torch.long)
+    if not torch.equal(anchor_ids, expected):
+        raise ValueError("identity metric requires canonical contiguous anchor IDs")
+    metric = SharedLowRankMetric(
+        descriptor_dim=int(descriptor_dim), rank=1, max_residual_norm=0.0
+    )
+    with torch.no_grad():
+        for parameter in metric.parameters():
+            parameter.zero_()
+    payload = {
+        "schema": "lafgs_shared_metric_state",
+        "version": 1,
+        "landmark_indices": anchor_ids.clone(),
+        "metric_config": metric.export_config(),
+        "metric_state_dict": {
+            name: value.detach().cpu().clone()
+            for name, value in metric.state_dict().items()
+        },
+        "map_path": str(map_path),
+        "map_sha256": str(map_sha256),
+        "step": 0,
+        "protocol": "rendered_track_map_bound_identity",
+        "producer": {
+            **dict(producer),
+            "learned_descriptor_transform": False,
+            "uses_test_queries": False,
+            "virtual_suffix_training_steps": 0,
+        },
+    }
+    validate_map_bound_identity_metric(
+        payload, descriptor_dim=int(descriptor_dim),
+        anchor_count=int(anchor_ids.numel()), map_path=str(map_path),
+        map_sha256=str(map_sha256),
+    )
+    return payload

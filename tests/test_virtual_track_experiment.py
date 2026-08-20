@@ -3,6 +3,7 @@ import torch
 from evidence.virtual_track_experiment import (
     DRY_RUN_THRESHOLDS,
     augment_formal_anchor_map,
+    build_map_bound_identity_metric,
     dry_run_passes,
     enforce_one_observation_per_family,
     validate_augmented_mapping_guard,
@@ -92,4 +93,25 @@ def test_virtual_tracks_augment_and_preserve_formal_map_prefix():
     assert guard["formal_prefix_preserved"]
     assert guard["augmented_anchor_count"] == 3
     assert augmented["projective_anchor_observations"]["query_indices"].tolist() == [0, 2]
+    assert augmented["virtual_anchor_selection_registry"][
+        "primary_selection_reasons"
+    ] == ["stable_broad_virtual_track_augmentation"]
+    augmented["virtual_anchor_selection_registry"]["primary_selection_reasons"] = [
+        "evil"
+    ]
+    import pytest
+    with pytest.raises(ValueError, match="selection registry"):
+        validate_augmented_mapping_guard(augmented, formal, virtual_query_count=1)
+
+
+def test_augmented_identity_metric_is_exact_no_learn_and_map_bound():
+    payload = build_map_bound_identity_metric(
+        map_path="/tmp/exact-map.pt", map_sha256="abc",
+        anchor_ids=torch.arange(3), descriptor_dim=2,
+        producer={"entrypoint": "unit-test"},
+    )
+    assert payload["landmark_indices"].tolist() == [0, 1, 2]
+    assert payload["metric_config"]["max_residual_norm"] == 0.0
+    assert payload["producer"]["virtual_suffix_training_steps"] == 0
+    assert all(torch.count_nonzero(value) == 0 for value in payload["metric_state_dict"].values())
     augment_formal_anchor_map,
