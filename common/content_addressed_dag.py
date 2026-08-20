@@ -157,6 +157,7 @@ def runtime_identity() -> dict:
         ),
         "pillow": _distribution_identity("PIL", ("Pillow",)),
         "plyfile": _distribution_identity("plyfile", ("plyfile",)),
+        "poselib": _distribution_identity("poselib", ("poselib",)),
     }
     return {
         "schema": "lafgs_dag_runtime_identity",
@@ -210,6 +211,72 @@ def _clone_or_copy(source: Path, target: Path) -> str:
         os.fsync(target_handle.fileno())
     shutil.copystat(source, target, follow_symlinks=False)
     return mode
+
+
+def _open_directory_no_symlinks(path: Path, *, create: bool) -> int:
+    """Open an absolute directory one no-follow component at a time."""
+    path = _absolute_path(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(path.anchor, flags)
+    try:
+        for component in path.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _clone_or_copy_at(source: Path, target_directory_fd: int, name: str) -> str:
+    """Clone/copy a file into a directory already bound by descriptor."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    target_fd = os.open(name, flags, 0o600, dir_fd=target_directory_fd)
+    with source.open("rb") as source_handle, os.fdopen(target_fd, "wb") as target_handle:
+        try:
+            fcntl.ioctl(target_handle.fileno(), FICLONE, source_handle.fileno())
+            mode = "reflink"
+        except OSError:
+            source_handle.seek(0)
+            shutil.copyfileobj(source_handle, target_handle, length=8 << 20)
+            mode = "byte_copy"
+        target_handle.flush()
+        os.fsync(target_handle.fileno())
+    return mode
+
+
+def _content_record_at(directory_fd: int, name: str) -> tuple[int, str]:
+    """Return size and SHA through a no-follow descriptor-relative open."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    descriptor = os.open(name, flags, dir_fd=directory_fd)
+    digest = hashlib.sha256()
+    with os.fdopen(descriptor, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        while chunk := handle.read(8 << 20):
+            digest.update(chunk)
+    return size, digest.hexdigest()
+
+
+def _remove_flat_directory_at(parent_fd: int, name: str) -> None:
+    """Remove one materialization directory through its bound parent."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        directory_fd = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    try:
+        for child in os.listdir(directory_fd):
+            os.unlink(child, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
 
 
 class ContentAddressedStore:
@@ -336,42 +403,90 @@ class ContentAddressedStore:
     ) -> tuple[dict[str, Path], dict[str, str]]:
         """Create a run-owned, cache-prune-safe snapshot of one verified node."""
         destination = _reject_symlink_boundary(destination)
-        if destination.exists():
-            raise FileExistsError(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(
+        destination_name = _safe_name(destination.name)
+        temporary_name = _safe_name(
             f".{destination.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
         )
+        parent_fd = _open_directory_no_symlinks(destination.parent, create=True)
+        parent_identity = os.fstat(parent_fd)
+        try:
+            try:
+                os.stat(destination_name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(destination)
+        except BaseException:
+            os.close(parent_fd)
+            raise
         lock_path = self.root / ".publish.lock"
         _reject_symlink_boundary(lock_path)
-        with lock_path.open("a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-            loaded = self._load_unlocked(spec)
-            if loaded is None:
-                raise FileNotFoundError(self.node_path(spec))
-            cached, expected_records = loaded
-            temporary.mkdir()
-            modes = {}
-            try:
-                for name, source in cached.items():
-                    target = temporary / name
-                    modes[name] = _clone_or_copy(source, target)
-                    expected = expected_records[name]
-                    if (
-                        target.stat().st_size != expected["size_bytes"]
-                        or sha256_file(target) != expected["sha256"]
-                    ):
-                        raise ValueError(
-                            f"run-local DAG materialization failed manifest SHA/size: {target}"
-                        )
-                temporary.rename(destination)
-                return (
-                    {name: destination / name for name in cached},
-                    modes,
+        temporary_created = False
+        destination_created = False
+        try:
+            with lock_path.open("a+b") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+                loaded = self._load_unlocked(spec)
+                if loaded is None:
+                    raise FileNotFoundError(self.node_path(spec))
+                cached, expected_records = loaded
+                os.mkdir(temporary_name, dir_fd=parent_fd)
+                temporary_created = True
+                temporary_fd = os.open(
+                    temporary_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd,
                 )
+                modes = {}
+                for name, source in cached.items():
+                    modes[name] = _clone_or_copy_at(source, temporary_fd, name)
+                    expected = expected_records[name]
+                    size, digest = _content_record_at(temporary_fd, name)
+                    if size != expected["size_bytes"] or digest != expected["sha256"]:
+                        raise ValueError(
+                            "run-local DAG materialization failed manifest SHA/size: "
+                            f"{destination / name}"
+                        )
+                os.close(temporary_fd)
+                temporary_fd = -1
+                os.rename(
+                    temporary_name,
+                    destination_name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                temporary_created = False
+                destination_created = True
+            try:
+                current_parent_fd = _open_directory_no_symlinks(
+                    destination.parent, create=False
+                )
+            except (OSError, ValueError) as error:
+                raise RuntimeError(
+                    "destination parent changed during DAG materialization"
+                ) from error
+            try:
+                current_identity = os.fstat(current_parent_fd)
+                if (
+                    current_identity.st_dev != parent_identity.st_dev
+                    or current_identity.st_ino != parent_identity.st_ino
+                ):
+                    raise RuntimeError(
+                        "destination parent changed during DAG materialization"
+                    )
             finally:
-                if temporary.exists():
-                    shutil.rmtree(temporary)
+                os.close(current_parent_fd)
+            return ({name: destination / name for name in cached}, modes)
+        except BaseException:
+            if temporary_created:
+                _remove_flat_directory_at(parent_fd, temporary_name)
+            if destination_created:
+                _remove_flat_directory_at(parent_fd, destination_name)
+            raise
+        finally:
+            if "temporary_fd" in locals() and temporary_fd >= 0:
+                os.close(temporary_fd)
+            os.close(parent_fd)
 
     def publish(self, spec: Mapping, artifacts: Mapping[str, str | Path]) -> dict[str, Path]:
         """Atomically install one immutable node, refusing unbounded growth."""

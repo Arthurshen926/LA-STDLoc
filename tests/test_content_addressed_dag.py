@@ -78,6 +78,7 @@ def test_runtime_and_rasterizer_abi_are_keyed(tmp_path: Path):
         "opencv",
         "pillow",
         "plyfile",
+        "poselib",
     }
     for name, identity in runtime["numerical_dependencies"].items():
         assert identity["module"]
@@ -301,17 +302,17 @@ def test_materialize_rejects_load_copy_evil_toctou(tmp_path: Path, monkeypatch):
     payload.write_bytes(b"GOOD")
     store = _store(tmp_path)
     store.publish(spec, {"track_payload.pt": payload})
-    original = content_addressed_dag._clone_or_copy
+    original = content_addressed_dag._clone_or_copy_at
     injected = False
 
-    def inject_evil(source_path, target_path):
+    def inject_evil(source_path, target_directory_fd, name):
         nonlocal injected
         if not injected:
             source_path.write_bytes(b"EVIL")
             injected = True
-        return original(source_path, target_path)
+        return original(source_path, target_directory_fd, name)
 
-    monkeypatch.setattr(content_addressed_dag, "_clone_or_copy", inject_evil)
+    monkeypatch.setattr(content_addressed_dag, "_clone_or_copy_at", inject_evil)
     destination = tmp_path / "run-local"
     with pytest.raises(ValueError, match="manifest SHA/size"):
         store.materialize(spec, destination)
@@ -330,6 +331,38 @@ def test_materialize_rejects_symlinked_destination_parent(tmp_path: Path):
     linked.symlink_to(real, target_is_directory=True)
     with pytest.raises(ValueError, match="symbolic-link boundary"):
         store.materialize(spec, linked / "snapshot")
+
+
+def test_materialize_binds_parent_against_dynamic_symlink_attack(
+    tmp_path: Path, monkeypatch
+):
+    spec = _spec(tmp_path)
+    payload = tmp_path / "payload.pt"
+    payload.write_bytes(b"payload")
+    store = _store(tmp_path)
+    store.publish(spec, {"track_payload.pt": payload})
+    parent = tmp_path / "destination-parent"
+    parent.mkdir()
+    moved_parent = tmp_path / "moved-parent"
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    original_load = store._load_unlocked
+    attacked = False
+
+    def load_then_replace_parent(load_spec):
+        nonlocal attacked
+        loaded = original_load(load_spec)
+        if loaded is not None and not attacked:
+            parent.rename(moved_parent)
+            parent.symlink_to(evil, target_is_directory=True)
+            attacked = True
+        return loaded
+
+    monkeypatch.setattr(store, "_load_unlocked", load_then_replace_parent)
+    with pytest.raises(RuntimeError, match="destination parent changed"):
+        store.materialize(spec, parent / "snapshot")
+    assert not (evil / "snapshot").exists()
+    assert not (moved_parent / "snapshot").exists()
 
 
 def test_every_declared_bootstrap_source_invalidates_identity(tmp_path: Path):
