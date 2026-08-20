@@ -52,6 +52,20 @@
       "formal_geometry_field_count": 25,
       "all_fields_bitwise_equal": true,
       "rejected_nonlinear_refinement_fields_restored": false
+    },
+    "remaining_hotspot_probes": {
+      "dense_list_dsu": {
+        "seconds": 1.328591462224722,
+        "bitwise_equal": true,
+        "decision": "reverted_slower_than_1.2240990679711103_second_sparse_bitset"
+      },
+      "fixed_two_process_triangulation": {
+        "seconds": 14.152907699346542,
+        "serial_seconds": 28.7398035293445,
+        "speedup": 2.0306642380400355,
+        "all_fields_bitwise_equal": true,
+        "decision": "headroom_confirmed_but_requires_fresh_cpu_stage_not_post_cuda_fork"
+      }
     }
   },
   "cross_branch_warning": "Historical render-only artifacts use a different camera-pair policy implementation and are not a valid integration bitwise oracle.",

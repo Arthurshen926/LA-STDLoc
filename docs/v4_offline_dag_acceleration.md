@@ -43,3 +43,11 @@ code differs across those branches.
 The complete integration CPU suite passes: 555 passed, one CUDA renderer smoke
 test skipped by its explicit environment gate.
 
+Two remaining structural options were bounded rather than enabled blindly. A
+dense-list DSU was bitwise exact but slowed the same Track oracle from 1.224 s
+to 1.329 s, so it was reverted. Splitting the 10k-Track geometry oracle into
+two fixed landmark ranges reduced 28.740 s to 14.153 s (2.03x), with all fields
+still bitwise equal. That benchmark used a clean CPU `fork`; forking the real
+builder after it has initialized CUDA is unsafe. The viable production form is
+a separate fresh CPU triangulation stage with shared read-only packed arrays,
+not an in-process fork hidden inside the current GPU builder.
