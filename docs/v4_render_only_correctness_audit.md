@@ -33,3 +33,9 @@ ablation; the formal runner is unchanged.
 The centered-pinhole renderer/localizer contract is unchanged.  This audit
 does not add off-center or distorted virtual-camera rasterization.
 
+## Verification
+
+- Focused coordinate/registry/cross-stage suite: `51 passed`.
+- Clean-commit producer-lineage subset: `31 passed`.
+- Full suite: `759 passed, 1 skipped` in `180.24 s`; the skip is the opt-in
+  CUDA renderer smoke test.

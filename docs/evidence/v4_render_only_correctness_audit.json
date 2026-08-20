@@ -2,6 +2,12 @@
   "base_commit": "8073cf1a0abf1716c4e3f08b7a2b1f15763eefdb",
   "default_method_changed": false,
   "mapping_only": true,
+  "tests": {
+    "full_passed": 759,
+    "full_seconds": 180.24,
+    "full_skipped": 1,
+    "lineage_subset_passed": 31
+  },
   "outcomes": {
     "cycle_seeded_precision_core": "unchanged_explicit_ablation_only",
     "raster_sampling": "fixed_shared_nearest_cell",
