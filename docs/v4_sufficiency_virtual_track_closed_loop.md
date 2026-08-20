@@ -16,6 +16,14 @@ prefix plus virtual Track Anchors; a virtual-only batch is never emitted as a
 deployment map. Runtime checks re-hash the query cache, Track payload, formal
 map, Gaussian prior, and ordered camera registry before materialization.
 
+The augmented map has a strict map-SHA-bound identity metric sidecar. Its
+landmark rows equal all augmented `anchor_ids`, every metric parameter is zero,
+and neither the formal prefix nor virtual suffix receives descriptor-transform
+training. The virtual suffix also carries a complete selected-state registry
+with the sole reason `stable_broad_virtual_track_augmentation`; the mapping
+guard rejects missing rows, changed reasons, identity collisions, or a changed
+formal prefix recursively.
+
 The Top-8 dry-run gate was fixed before rendering.  It consumes only mapping
 evidence: detector support, Track/Anchor counts, family independence, and view
 bins. `gt_visible_diagnostic` remains null.  Top-32 refuses to run without a

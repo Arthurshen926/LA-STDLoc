@@ -1,0 +1,26 @@
+{
+  "augmented_anchor_count": 7854,
+  "augmented_map_sha256": "ad0810fee5f59505314a5d5c64edc4dc65039fb4016ab7ec5a888ee36417f0a9",
+  "formal_anchor_count": 5794,
+  "formal_map_sha256": "7e47dfb74cffec2e8d934f42c06c3a69b9064b623a2d477ad6bdf66fc296c252",
+  "formal_prefix_preserved": true,
+  "gt_visible_diagnostic": null,
+  "identity_metric_landmark_count": 7854,
+  "identity_metric_protocol": "rendered_track_map_bound_identity",
+  "identity_metric_sha256": "28ae2dd9deeaa7478f1d1f7f82d6e3cb6e5d45f0dea4515e5f6326149dbf3a54",
+  "identity_namespace_disjoint": true,
+  "learned_descriptor_transform": false,
+  "localizer_construction": {
+    "anchor_count": 7854,
+    "device": "cpu",
+    "feature_dimension": 256,
+    "passed": true
+  },
+  "mapping_only": true,
+  "selection_reason": "stable_broad_virtual_track_augmentation",
+  "selection_registry_complete": true,
+  "uses_test_queries": false,
+  "virtual_anchor_count": 2060,
+  "virtual_observation_count": 13832,
+  "virtual_suffix_training_steps": 0
+}
