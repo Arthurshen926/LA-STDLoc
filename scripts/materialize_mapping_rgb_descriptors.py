@@ -197,6 +197,23 @@ def materialize(args) -> dict:
         if (index + 1) % max(args.progress_interval, 1) == 0 or index + 1 == len(cameras):
             print(json.dumps({"completed_views": index + 1, "mapping_views": len(cameras)}), flush=True)
     rgb_cache = {**source_cache, "schema": "lafgs_mapping_rgb_fixed_row_descriptor_cache", "version": 1, "uses_source_mapping_rgb": True, "uses_test_queries": False, "queries": records}
+    compact_rgb_cache = {
+        "schema": rgb_cache["schema"],
+        "version": 1,
+        "uses_source_mapping_rgb": True,
+        "uses_test_queries": False,
+        "source_mapping_indices": mapping_indices,
+        "query_names": names,
+        "queries": {
+            name: {
+                "native_keypoints": record["native_keypoints"],
+                "native_descriptors": record["native_descriptors"],
+                "native_input_hw": record["native_input_hw"],
+                "pose_w2c": record["pose_w2c"],
+            }
+            for name, record in records.items()
+        },
+    }
     features = fuse_frozen_rows(source_map, payload, rgb_cache, trim_fraction=args.descriptor_trim_fraction)
     output_map = dict(source_map)
     output_map["anchor_features"] = features
@@ -219,6 +236,8 @@ def materialize(args) -> dict:
     map_path = args.output_dir / "mapping_rgb_descriptor_anchor_map.pt"
     metric_path = args.output_dir / "mapping_rgb_descriptor_identity_metric.pt"
     _atomic_torch_save(output_map, map_path)
+    cache_path = args.output_dir / "mapping_rgb_fixed_row_observation_cache.pt"
+    _atomic_torch_save(compact_rgb_cache, cache_path)
     metric = SharedLowRankMetric(descriptor_dim=features.shape[1], rank=1, max_residual_norm=0.0)
     with torch.no_grad():
         for parameter in metric.parameters():
@@ -249,8 +268,8 @@ def materialize(args) -> dict:
         "image_manifest": image_manifest,
         "inputs": {"dataset": str(args.dataset), "selected_map": str(args.selected_map), "source_cache": str(args.source_cache), "track_payload": str(args.track_payload)},
         "input_sha256": {"selected_map": sha256_file(args.selected_map), "source_cache": sha256_file(args.source_cache), "track_payload": sha256_file(args.track_payload)},
-        "outputs": {"anchor_map": str(map_path), "identity_metric": str(metric_path)},
-        "output_sha256": {"anchor_map": sha256_file(map_path), "identity_metric": sha256_file(metric_path)},
+        "outputs": {"anchor_map": str(map_path), "identity_metric": str(metric_path), "observation_cache": str(cache_path)},
+        "output_sha256": {"anchor_map": sha256_file(map_path), "identity_metric": sha256_file(metric_path), "observation_cache": sha256_file(cache_path)},
         "runtime_identity": {"python": platform.python_version(), "torch": torch.__version__, "cuda": torch.version.cuda, "device": torch.cuda.get_device_name()},
         "code_sha256": {"materializer": sha256_file(Path(__file__).resolve()), "dataset_loader": sha256_file(Path(__file__).resolve().parents[1] / "data/datasets.py"), "superpoint": sha256_file(Path(__file__).resolve().parents[1] / "features/superpoint.py"), "track_fusion": sha256_file(Path(__file__).resolve().parents[1] / "evidence/tracks.py")},
         "superpoint_weights_path": str(resolve_superpoint_weights()),
