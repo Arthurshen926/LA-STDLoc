@@ -13,6 +13,8 @@ from typing import Mapping, Sequence
 
 import torch
 
+from features.raster_sampling import sample_raster_at_grid_uv
+
 from features.sampling import unproject_pixels
 
 
@@ -43,6 +45,30 @@ class PlannerPolicy:
     parallax_weight: float = 0.20
     appearance_weight: float = 0.10
     risk_weight: float = 0.25
+
+
+def zbuffer_supported_mask(
+    uv: torch.Tensor,
+    camera_depth: torch.Tensor,
+    alpha_raster: torch.Tensor,
+    depth_raster: torch.Tensor,
+    *,
+    alpha_minimum: float,
+    depth_absolute_m: float,
+    depth_relative: float,
+) -> torch.Tensor:
+    """Require candidate-render alpha and z-buffer agreement for each voxel."""
+    uv = torch.as_tensor(uv).float()
+    camera_depth = torch.as_tensor(camera_depth).float().reshape(-1)
+    if uv.shape != (camera_depth.numel(), 2):
+        raise ValueError("candidate projected pixels/depth must align")
+    alpha = sample_raster_at_grid_uv(torch.as_tensor(alpha_raster), uv).float()
+    depth = sample_raster_at_grid_uv(torch.as_tensor(depth_raster), uv).float()
+    tolerance = float(depth_absolute_m) + float(depth_relative) * camera_depth.abs()
+    return (
+        (alpha >= float(alpha_minimum)) & torch.isfinite(depth) & (depth > 0)
+        & (camera_depth > 0) & ((depth - camera_depth).abs() <= tolerance)
+    )
 
 
 def camera_centers(pose_w2c: torch.Tensor) -> torch.Tensor:
@@ -91,6 +117,46 @@ def _look_at_pose(center: torch.Tensor, target: torch.Tensor) -> torch.Tensor | 
 
 def _pose_signature(pose: torch.Tensor) -> tuple[int, ...]:
     return tuple(torch.round(torch.as_tensor(pose).reshape(-1) * 1e7).long().tolist())
+
+
+def assign_pose_families(
+    pose_w2c: torch.Tensor,
+    source_cameras: Sequence[Sequence[int]],
+    *,
+    center_threshold_m: float = 0.03,
+    related_source_threshold_m: float = 0.15,
+) -> torch.Tensor:
+    """Cluster dependent virtual poses by center proximity and source lineage."""
+    pose = torch.as_tensor(pose_w2c, dtype=torch.float64)
+    if len(source_cameras) != int(pose.shape[0]):
+        raise ValueError("source-camera lineage must align with candidate poses")
+    centers = camera_centers(pose)
+    parent = list(range(len(source_cameras)))
+
+    def root(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left, right = root(left), root(right)
+        if left != right:
+            parent[max(left, right)] = min(left, right)
+
+    sources = [set(map(int, values)) for values in source_cameras]
+    for left in range(len(parent)):
+        for right in range(left + 1, len(parent)):
+            distance = float(torch.linalg.norm(centers[left] - centers[right]))
+            same_center = distance <= float(center_threshold_m)
+            related = bool(sources[left] & sources[right]) and (
+                distance <= float(related_source_threshold_m)
+            )
+            if same_center or related:
+                union(left, right)
+    roots = [root(index) for index in range(len(parent))]
+    unique = {value: index for index, value in enumerate(sorted(set(roots)))}
+    return torch.tensor([unique[value] for value in roots], dtype=torch.long)
 
 
 def generate_candidate_poses(
@@ -217,8 +283,7 @@ def generate_candidate_poses(
         if signature in seen:
             continue
         seen.add(signature)
-        family = parent if kind in {"small_translation", "small_rotation"} else count + len(kept)
-        kept.append((pose.float(), parent, kind, family, family_members, risk))
+        kept.append((pose.float(), parent, kind, family_members, risk))
     if len(kept) > int(policy.maximum_candidates):
         by_kind: dict[str, list[tuple]] = defaultdict(list)
         for row in kept:
@@ -243,9 +308,11 @@ def generate_candidate_poses(
         "pose_w2c": torch.stack([row[0] for row in kept]) if kept else torch.empty(0, 4, 4),
         "parent_camera_index": torch.tensor([row[1] for row in kept], dtype=torch.long),
         "kind": [row[2] for row in kept],
-        "pose_family": torch.tensor([row[3] for row in kept], dtype=torch.long),
-        "family_source_cameras": [row[4] for row in kept],
-        "artifact_risk": torch.tensor([row[5] for row in kept]),
+        "pose_family": assign_pose_families(
+            torch.stack([row[0] for row in kept]), [row[3] for row in kept]
+        ) if kept else torch.empty(0, dtype=torch.long),
+        "family_source_cameras": [row[3] for row in kept],
+        "artifact_risk": torch.tensor([row[4] for row in kept]),
     }
 
 

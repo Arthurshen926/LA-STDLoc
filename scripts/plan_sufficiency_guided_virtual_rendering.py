@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import hashlib
+import math
 import os
 from pathlib import Path
 
@@ -21,8 +23,114 @@ from evidence.virtual_render_planner import (
     generate_candidate_poses,
     greedy_capped_coverage,
     validate_mapping_inputs,
+    zbuffer_supported_mask,
 )
 from features.sampling import unproject_pixels
+
+
+def _camera_registry_sha256(query_payload: dict, names: list[str]) -> str:
+    records = query_payload.get("queries", query_payload)
+    digest = hashlib.sha256()
+    for name in names:
+        record = records[name]
+        digest.update(name.encode("utf-8") + b"\0")
+        for field in ("pose_w2c", "native_K", "native_input_hw"):
+            value = torch.as_tensor(record[field]).contiguous().cpu()
+            digest.update(str(value.dtype).encode() + str(tuple(value.shape)).encode())
+            digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _validate_formal_unified_map(
+    selected_map: dict, query_path: Path, track_path: Path
+) -> None:
+    construction = selected_map.get("projective_anchor_construction", {})
+    if construction.get("schema") != "lafgs_gaussian_supported_projective_anchor_construction":
+        raise ValueError("planner requires the formal unified V4 Anchor map")
+    kind = torch.as_tensor(selected_map.get("anchor_candidate_kind"))
+    if kind.ndim != 1 or not bool((kind == 0).any()) or not bool((kind == 1).any()):
+        raise ValueError("formal unified map must contain Track and completion Anchors")
+    provenance = selected_map.get("provenance", {})
+    expected = {
+        "query_cache_sha256": sha256_file(query_path),
+        "track_payload_sha256": sha256_file(track_path),
+    }
+    for field, value in expected.items():
+        if provenance.get(field) != value:
+            raise ValueError(f"formal unified map parent SHA mismatch: {field}")
+
+
+@torch.inference_mode()
+def render_candidate_coverage_support(
+    *, args, field: dict, candidates: dict, proxy_cells: list[torch.Tensor],
+    poses: torch.Tensor, intrinsics: torch.Tensor, query_payload: dict,
+    track_payload: dict,
+) -> tuple[list[torch.Tensor], dict]:
+    """Filter projected voxels by real candidate alpha/depth z-buffer evidence."""
+    from priors.models import GaussianModel2D
+    from priors.rendering import render_from_pose_gsplat
+    from features.raster_sampling import sample_raster_at_grid_uv
+
+    model = GaussianModel2D(int(args.sh_degree))
+    model.load_ply(args.gaussian_ply, loc_feature_dim=0)
+    model = model.to(args.device).eval()
+    names = list(track_payload["query_names"])
+    cache = query_payload.get("queries", query_payload)
+    voxel_xyz = torch.as_tensor(field["voxel_center_xyz"]).float()
+    kept, audits = [], []
+    for candidate_index, (pose, parent, projected) in enumerate(zip(
+        candidates["pose_w2c"], candidates["parent_camera_index"], proxy_cells
+    )):
+        parent = int(parent)
+        height, width = map(int, torch.as_tensor(cache[names[parent]]["native_input_hw"]).tolist())
+        scale = float(args.candidate_support_scale)
+        render_h, render_w = max(32, round(height * scale)), max(32, round(width * scale))
+        K = intrinsics[parent].float()
+        fov_x = 2.0 * math.atan(width / (2.0 * float(K[0, 0])))
+        fov_y = 2.0 * math.atan(height / (2.0 * float(K[1, 1])))
+        package = render_from_pose_gsplat(
+            model, pose.to(args.device), fov_x, fov_y, render_w, render_h,
+            bg_color=torch.zeros(3, device=args.device), render_mode="RGB+ED",
+            rgb_only=True, rasterize_mode="antialiased",
+        )
+        alpha = torch.as_tensor(package.get("alphas", package.get("rend_alpha"))).float().squeeze().cpu()
+        depth = torch.as_tensor(package["depth"]).float().squeeze().cpu()
+        cells = torch.as_tensor(projected).long()
+        if cells.numel():
+            xyz = voxel_xyz[cells]
+            camera = (pose[:3, :3].float() @ xyz.T).T + pose[:3, 3].float()
+            uvw = (K @ camera.T).T
+            uv = uvw[:, :2] / camera[:, 2, None].clamp_min(1e-8)
+            uv[:, 0] *= render_w / width
+            uv[:, 1] *= render_h / height
+            visible = zbuffer_supported_mask(
+                uv, camera[:, 2], alpha, depth,
+                alpha_minimum=float(args.candidate_alpha_minimum),
+                depth_absolute_m=float(args.candidate_depth_absolute_m),
+                depth_relative=float(args.candidate_depth_relative),
+            )
+            cells = cells[visible]
+        kept.append(cells)
+        audits.append({
+            "candidate_index": candidate_index,
+            "projected_voxel_count": int(torch.as_tensor(projected).numel()),
+            "zbuffer_supported_voxel_count": int(cells.numel()),
+            "alpha_supported_fraction": float((alpha >= float(args.candidate_alpha_minimum)).float().mean()),
+            "render_hw": [render_h, render_w],
+        })
+        if (candidate_index + 1) % 32 == 0:
+            print(json.dumps({"candidate_support_rendered": candidate_index + 1,
+                              "candidate_count": len(proxy_cells)}), flush=True)
+    return kept, {
+        "mode": "real_low_resolution_alpha_depth_zbuffer",
+        "gaussian_ply": str(args.gaussian_ply.resolve()),
+        "gaussian_ply_sha256": sha256_file(args.gaussian_ply.resolve()),
+        "support_scale": float(args.candidate_support_scale),
+        "alpha_minimum": float(args.candidate_alpha_minimum),
+        "depth_absolute_m": float(args.candidate_depth_absolute_m),
+        "depth_relative": float(args.candidate_depth_relative),
+        "candidates": audits,
+    }
 
 
 def _load(path: Path):
@@ -264,6 +372,10 @@ def run(args) -> dict:
     track_payload = _load(track_path)
     validate_mapping_inputs(query_payload, track_payload)
     selected_map = _load(args.selected_map.resolve()) if args.selected_map else None
+    if bool(getattr(args, "require_formal_unified_map", False)):
+        if selected_map is None:
+            raise ValueError("formal planner requires --selected-map")
+        _validate_formal_unified_map(selected_map, query_path, track_path)
     policy = PlannerPolicy(**{
         "selected_view_budget": int(args.view_budget),
         "maximum_candidates": int(args.maximum_candidates),
@@ -278,6 +390,13 @@ def run(args) -> dict:
     coverage, parallax, appearance = candidate_coverage(
         field, candidates, poses, intrinsics, query_payload, track_payload, policy
     )
+    candidate_support = None
+    if getattr(args, "gaussian_ply", None) is not None:
+        coverage, candidate_support = render_candidate_coverage_support(
+            args=args, field=field, candidates=candidates, proxy_cells=coverage,
+            poses=poses, intrinsics=intrinsics, query_payload=query_payload,
+            track_payload=track_payload,
+        )
     selected, trace = greedy_capped_coverage(
         coverage,
         field["deficit_demand"],
@@ -298,7 +417,7 @@ def run(args) -> dict:
         "mapping_only": True,
         "uses_test_queries": False,
         "uses_source_mapping_rgb": False,
-        "renders_images": False,
+        "renders_images": candidate_support is not None,
         "default_pipeline_enabled": False,
         "policy": asdict(policy),
         "inputs": {
@@ -308,6 +427,9 @@ def run(args) -> dict:
             "track_payload_sha256": sha256_file(track_path),
             "selected_map": str(args.selected_map.resolve()) if args.selected_map else None,
             "selected_map_sha256": sha256_file(args.selected_map.resolve()) if args.selected_map else None,
+            "canonical_camera_registry_sha256": _camera_registry_sha256(
+                query_payload, list(track_payload["query_names"])
+            ),
         },
         "coverage_field": field,
         "candidates": {
@@ -319,9 +441,10 @@ def run(args) -> dict:
         "selected_candidate_indices": selected,
         "greedy_trace": trace,
         "triangulation_family_contract": {
-            "same_source_small_perturbations_share_family": True,
+            "source_and_pose_proximity_components": True,
             "maximum_evidence_per_pose_family": 1,
         },
+        "candidate_render_support": candidate_support,
         "gt_visible_diagnostic": None,
     }
     _atomic_save(payload, args.output.resolve())
@@ -338,7 +461,7 @@ def run(args) -> dict:
         ])).numel()) if selected.numel() else 0,
         "remaining_deficit_demand_proxy": trace[-1]["remaining_demand"] if trace else float(field["deficit_demand"].sum()),
         "uses_test_queries": False,
-        "renders_images": False,
+        "renders_images": candidate_support is not None,
     }
     args.output.with_suffix(".json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return summary
@@ -349,6 +472,13 @@ def main(argv=None):
     parser.add_argument("--query-cache", type=Path, required=True)
     parser.add_argument("--track-payload", type=Path, required=True)
     parser.add_argument("--selected-map", type=Path)
+    parser.add_argument("--gaussian-ply", type=Path, required=True)
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--sh-degree", type=int, default=3)
+    parser.add_argument("--candidate-support-scale", type=float, default=0.25)
+    parser.add_argument("--candidate-alpha-minimum", type=float, default=0.2)
+    parser.add_argument("--candidate-depth-absolute-m", type=float, default=0.10)
+    parser.add_argument("--candidate-depth-relative", type=float, default=0.05)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--view-budget", type=int, default=32)
     parser.add_argument("--maximum-candidates", type=int, default=512)
@@ -356,6 +486,7 @@ def main(argv=None):
     parser.add_argument("--surface-stride", type=int, default=24)
     parser.add_argument("--cpu-threads", type=int, default=8)
     args = parser.parse_args(argv)
+    args.require_formal_unified_map = True
     if min(args.view_budget, args.maximum_candidates, args.surface_stride) <= 0:
         parser.error("budgets and surface stride must be positive")
     print(json.dumps(run(args), indent=2, sort_keys=True))

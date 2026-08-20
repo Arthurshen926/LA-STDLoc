@@ -8,11 +8,56 @@ import torch
 
 from evidence.virtual_render_planner import (
     PlannerPolicy,
+    assign_pose_families,
     generate_candidate_poses,
     greedy_capped_coverage,
     validate_mapping_inputs,
+    zbuffer_supported_mask,
 )
-from scripts.plan_sufficiency_guided_virtual_rendering import run
+
+
+def test_same_center_reverse_and_deficit_candidates_share_family():
+    pose = torch.eye(4).repeat(4, 1, 1)
+    pose[1, :3, :3] = torch.diag(torch.tensor([-1.0, 1.0, -1.0]))
+    pose[2, 0, 3] = -0.10
+    pose[3, 0, 3] = -1.00
+    family = assign_pose_families(pose, [(4,), (4,), (4,), (4,)])
+    assert family[:3].unique().numel() == 1
+    assert family[3] != family[0]
+
+
+def test_candidate_coverage_rejects_occluded_and_transparent_voxels():
+    alpha = torch.tensor([[1.0, 1.0, 0.0]])
+    depth = torch.tensor([[2.0, 2.0, 2.0]])
+    keep = zbuffer_supported_mask(
+        torch.tensor([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]),
+        torch.tensor([2.02, 3.0, 2.0]), alpha, depth,
+        alpha_minimum=0.2, depth_absolute_m=0.1, depth_relative=0.0,
+    )
+    assert keep.tolist() == [True, False, False]
+from scripts.plan_sufficiency_guided_virtual_rendering import (
+    _validate_formal_unified_map,
+    run,
+)
+
+
+def test_formal_unified_map_parent_sha_is_fail_closed(tmp_path):
+    query = tmp_path / "query.pt"
+    track = tmp_path / "track.pt"
+    torch.save({"a": 1}, query)
+    torch.save({"b": 2}, track)
+    formal = {
+        "projective_anchor_construction": {
+            "schema": "lafgs_gaussian_supported_projective_anchor_construction"
+        },
+        "anchor_candidate_kind": torch.tensor([0, 1]),
+        "provenance": {
+            "query_cache_sha256": "evil",
+            "track_payload_sha256": "evil",
+        },
+    }
+    with pytest.raises(ValueError, match="parent SHA mismatch"):
+        _validate_formal_unified_map(formal, query, track)
 
 
 def test_capped_coverage_is_monotone_and_has_diminishing_returns():
