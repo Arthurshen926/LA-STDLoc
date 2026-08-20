@@ -19,6 +19,9 @@ from features.extractor import FeatureExtractor
 from features.superpoint import sample_descriptors
 from priors.models import GaussianModel2D, GaussianModel3D
 from priors.rendering import render_from_pose_gsplat
+from scripts.materialize_mapping_rgb_descriptors import (
+    resolve_attested_mapping_cameras,
+)
 
 
 RECIPES = (
@@ -97,10 +100,9 @@ def run(args) -> dict:
     names = list(cache["queries"])
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    indices = torch.as_tensor(cache["source_mapping_indices"]).long()
-    cameras = [mapping[int(index)] for index in indices]
-    if names != [camera.image_name for camera in cameras]:
-        raise ValueError("render cache and mapping camera schedule differ")
+    cameras, camera_schedule = resolve_attested_mapping_cameras(
+        mapping, cache, names
+    )
     model = GaussianModel2D(args.sh_degree) if args.gaussian_type == "2dgs" else GaussianModel3D(args.sh_degree)
     model.load_ply(args.gaussian_ply, loc_feature_dim=0)
     model = model.cuda().eval()
@@ -167,7 +169,11 @@ def run(args) -> dict:
         "uses_test_queries": False, "uses_source_mapping_rgb_for_predictor": False,
         "uses_source_mapping_rgb_as_offline_oracle_label": True,
         "audit_only": True, "map_mutated": False, "trains_feature_or_matcher": False,
-        "configuration": {"recipes": RECIPES, "subpixel_offsets_xy": SUBPIXEL_OFFSETS},
+        "configuration": {
+            "recipes": RECIPES,
+            "subpixel_offsets_xy": SUBPIXEL_OFFSETS,
+            "camera_schedule": camera_schedule,
+        },
         "descriptor_variance": variance_report,
         "worst_variant_cosine_instability": worst_report,
         "go_contract": {"rho_minimum_each": 0.2, "maximum_monotonic_violations_each": 2, "decile_gap_ratio_minimum_each": 1.25},

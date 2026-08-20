@@ -21,6 +21,11 @@ import torch.nn.functional as F
 
 from common.hashing import sha256_file
 from data.datasets import ColmapDataset
+from evidence.virtual_camera_registry import (
+    camera_intrinsic,
+    resolve_virtual_camera_registry,
+)
+from evidence.virtual_render_planner import camera_registry_sha256
 from evidence.tracks import (
     fuse_projective_anchor_observations,
     fuse_track_descriptors,
@@ -71,7 +76,7 @@ def _atomic_json(payload: dict, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def validate_frozen_inputs(state: dict, payload: dict, cache: dict) -> tuple[list[str], torch.Tensor]:
+def validate_frozen_inputs(state: dict, payload: dict, cache: dict) -> list[str]:
     if cache.get("uses_source_mapping_rgb") is not False or cache.get("uses_test_queries") is not False:
         raise ValueError("source cache must be mapping-only Gaussian-render evidence")
     if payload.get("rendered_rgb_only") is not True:
@@ -100,7 +105,55 @@ def validate_frozen_inputs(state: dict, payload: dict, cache: dict) -> tuple[lis
         maximum = int(keypoints[queries == int(query)].max())
         if maximum >= int(torch.as_tensor(cache["queries"][name]["native_keypoints"]).shape[0]):
             raise ValueError(f"observation keypoint is outside frozen rows for {name}")
-    return names, torch.as_tensor(cache["source_mapping_indices"]).long()
+    return names
+
+
+def resolve_attested_mapping_cameras(
+    mapping: list, cache: dict, names: list[str]
+) -> tuple[list, dict]:
+    """Resolve a frozen mapping schedule by attested names and calibration.
+
+    New artifacts use the formal virtual-camera registry.  Historical audit
+    caches predate that field, so they are resolved from their immutable
+    ordered query names and pose/K/HW records.  The legacy dataset-index vector
+    is deliberately never consumed.
+    """
+
+    records = cache.get("queries", cache)
+    if names != list(records) or len(names) != len(set(names)):
+        raise ValueError("frozen query registry must be exact, ordered, and unique")
+    registry = cache.get("virtual_camera_registry")
+    if registry is not None:
+        cameras = resolve_virtual_camera_registry(mapping, registry)
+        policy = "formal_virtual_camera_registry"
+        registry_sha = registry["registry_sha256"]
+    else:
+        by_name = {camera.image_name: camera for camera in mapping}
+        if len(by_name) != len(mapping) or any(name not in by_name for name in names):
+            raise ValueError("mapping dataset does not contain the frozen query registry")
+        cameras = [by_name[name] for name in names]
+        policy = "ordered_query_geometry_registry_v1"
+        registry_sha = camera_registry_sha256(cache, names)
+    for name, camera in zip(names, cameras):
+        record = records[name]
+        if (
+            torch.as_tensor(record["native_input_hw"]).long().tolist()
+            != [int(camera.height), int(camera.width)]
+            or not torch.equal(
+                torch.as_tensor(record["pose_w2c"]).float(),
+                torch.as_tensor(camera.pose_w2c).float(),
+            )
+            or not torch.equal(
+                torch.as_tensor(record["native_K"]).float(),
+                camera_intrinsic(camera),
+            )
+        ):
+            raise ValueError(f"mapping camera calibration differs for {name}")
+    return cameras, {
+        "policy": policy,
+        "ordered_camera_names": list(names),
+        "ordered_camera_registry_sha256": registry_sha,
+    }
 
 
 def fuse_frozen_rows(state: dict, payload: dict, cache: dict, *, trim_fraction: float) -> torch.Tensor:
@@ -161,7 +214,7 @@ def materialize(args) -> dict:
     source_map = torch.load(args.selected_map, map_location="cpu", weights_only=False)
     payload = torch.load(args.track_payload, map_location="cpu", weights_only=False)
     source_cache = torch.load(args.source_cache, map_location="cpu", weights_only=False)
-    names, mapping_indices = validate_frozen_inputs(source_map, payload, source_cache)
+    names = validate_frozen_inputs(source_map, payload, source_cache)
 
     # This closes the fusion-contract loop before any resource is changed.
     replay = fuse_frozen_rows(source_map, payload, source_cache, trim_fraction=args.descriptor_trim_fraction)
@@ -171,9 +224,9 @@ def materialize(args) -> dict:
 
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    cameras = [mapping[int(index)] for index in mapping_indices]
-    if names != [camera.image_name for camera in cameras]:
-        raise ValueError("mapping RGB camera schedule differs from frozen evidence")
+    cameras, camera_schedule = resolve_attested_mapping_cameras(
+        mapping, source_cache, names
+    )
     extractor = FeatureExtractor("sp", nms_radius=args.nms_radius).cuda().eval()
     extractor.requires_grad_(False)
     records = {}
@@ -202,7 +255,7 @@ def materialize(args) -> dict:
         "version": 1,
         "uses_source_mapping_rgb": True,
         "uses_test_queries": False,
-        "source_mapping_indices": mapping_indices,
+        "camera_schedule": camera_schedule,
         "query_names": names,
         "queries": {
             name: {
@@ -235,6 +288,7 @@ def materialize(args) -> dict:
         "descriptor_only": True,
         "fixed_anchor_rows_identity_xyz_selection": True,
         "fixed_render_keypoints": True,
+        "camera_schedule": camera_schedule,
         "image_manifest_sha256": _manifest_digest(image_manifest),
         "pixel_contract": "PIL RGB/gray float32 /255; bilinear resize to COLMAP HxW align_corners=false; frozen full-resolution keypoint index; sample_descriptors pixel_center=index+0.5 stride=8 align_corners=false",
         "nms_radius": int(args.nms_radius),

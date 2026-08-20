@@ -27,6 +27,7 @@ from priors.rendering import render_from_pose_gsplat
 from scripts.materialize_mapping_rgb_descriptors import (
     TOPOLOGY_FIELDS,
     fuse_frozen_rows,
+    resolve_attested_mapping_cameras,
     validate_frozen_inputs,
 )
 from scripts.probe_rendered_rgb_track_map import _intrinsic
@@ -57,7 +58,7 @@ def materialize(args) -> dict:
     source_map = torch.load(args.selected_map, map_location="cpu", weights_only=False)
     payload = torch.load(args.track_payload, map_location="cpu", weights_only=False)
     source_cache = torch.load(args.source_cache, map_location="cpu", weights_only=False)
-    names, mapping_indices = validate_frozen_inputs(source_map, payload, source_cache)
+    names = validate_frozen_inputs(source_map, payload, source_cache)
     replay = fuse_frozen_rows(source_map, payload, source_cache, trim_fraction=args.descriptor_trim_fraction)
     if not torch.equal(replay, torch.as_tensor(source_map["anchor_features"]).float()):
         raise ValueError("source descriptor fusion does not reproduce the frozen map")
@@ -69,9 +70,9 @@ def materialize(args) -> dict:
 
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    cameras = [mapping[int(index)] for index in mapping_indices]
-    if names != [camera.image_name for camera in cameras]:
-        raise ValueError("mapping camera schedule differs from frozen evidence")
+    cameras, camera_schedule = resolve_attested_mapping_cameras(
+        mapping, source_cache, names
+    )
     model = GaussianModel2D(args.sh_degree) if args.gaussian_type == "2dgs" else GaussianModel3D(args.sh_degree)
     model.load_ply(args.gaussian_ply, loc_feature_dim=0)
     model = model.cuda().eval()
@@ -129,6 +130,7 @@ def materialize(args) -> dict:
             "uses_test_queries": False,
             "descriptor_only": True,
             "fixed_anchor_rows_identity_xyz_selection": True,
+            "camera_schedule": camera_schedule,
             "source_map": str(args.selected_map),
             "source_cache": str(args.source_cache),
             "gaussian_ply": str(args.gaussian_ply),
@@ -162,6 +164,7 @@ def materialize(args) -> dict:
         "uses_test_queries": False,
         "descriptor_only": True,
         "fixed_anchor_rows_identity_xyz_selection": True,
+        "camera_schedule": camera_schedule,
         "photometric_canonicalization_contract": contract,
         "mapping_query_count": len(cameras),
         "anchor_count": int(features.shape[0]),
