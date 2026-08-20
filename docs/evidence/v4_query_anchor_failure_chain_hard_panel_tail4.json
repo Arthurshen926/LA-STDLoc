@@ -1,0 +1,103 @@
+{
+  "aggregate_tail4_categories": {
+    "L1_MAP_COVERAGE_OR_GEOMETRY": 6,
+    "L2_DETECTOR_ACCESS": 5,
+    "L3_DESCRIPTOR_RECALL": 9,
+    "L4_CANDIDATE_SELECTION_OR_STRUCTURE": 8,
+    "L5_SOLVER_GAP": 0
+  },
+  "blocked_scenes": [],
+  "decision": "DIAGNOSTIC_ONLY_NO_MAP_THRESHOLD_OR_SOLVER_CHANGE",
+  "producer_commit": "e29536b5f2d39490152b6382fde4ea08b0543fb1",
+  "scenes": {
+    "12Scenes/apt2_luke": {
+      "eligible_rows": 13,
+      "formal_catastrophic_100cm_count": 90,
+      "formal_failure_5cm5deg_count": 97,
+      "geometry_solvable": 3,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/apt2_luke_tail4.json",
+      "json_sha256": "21bef8391d589dca383950ce98126fa0b05b0ccb05235a171e2d54942b42f0e7",
+      "oracle_pose_correct": 1,
+      "r_at_k_percent": [30.7692, 38.4615, 38.4615, 38.4615, 38.4615, 38.4615],
+      "sidecar_sha256": "3564a2901b42e02abb59e4123c710ab77ff966472f0f715397fb9a4fea640649",
+      "tail4_categories_l1_l2_l3_l4_l5": [1, 2, 0, 1, 0]
+    },
+    "12Scenes/office1_gates381": {
+      "eligible_rows": 93,
+      "formal_catastrophic_100cm_count": 132,
+      "formal_failure_5cm5deg_count": 189,
+      "geometry_solvable": 3,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/office1_gates381_tail4.json",
+      "json_sha256": "70576f46e7e2211bc98c1125d4cd358e391875679fcce53f8741cf19f015213d",
+      "oracle_pose_correct": 3,
+      "r_at_k_percent": [4.3011, 5.3763, 7.5269, 9.6774, 9.6774, 11.8280],
+      "sidecar_sha256": "49bfdbec8e40673b238044ee7e0884446aaa4bcf6e20b267c57aca36ff6a5b87",
+      "tail4_categories_l1_l2_l3_l4_l5": [1, 0, 1, 2, 0]
+    },
+    "12Scenes/office1_manolis": {
+      "eligible_rows": 16,
+      "formal_catastrophic_100cm_count": 156,
+      "formal_failure_5cm5deg_count": 161,
+      "geometry_solvable": 3,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/office1_manolis_tail4.json",
+      "json_sha256": "502b7d23156afabe3a75fd01b69c9e320d06827674f54a201c2713fa2a2deb71",
+      "oracle_pose_correct": 2,
+      "r_at_k_percent": [50.0, 62.5, 62.5, 62.5, 62.5, 68.75],
+      "sidecar_sha256": "6775b7935234023c2e9e82c7ea5f707840c78163ee460711402e2e9bbbb2782e",
+      "tail4_categories_l1_l2_l3_l4_l5": [1, 1, 1, 1, 0]
+    },
+    "12Scenes/office2_5a": {
+      "eligible_rows": 9,
+      "formal_catastrophic_100cm_count": 226,
+      "formal_failure_5cm5deg_count": 259,
+      "geometry_solvable": 1,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/office2_5a_tail4.json",
+      "json_sha256": "98a5c0819860cb29ef8d7f2249941d54b648044bd9d8e2bae4ce8ea9ccbee18c",
+      "oracle_pose_correct": 1,
+      "r_at_k_percent": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "sidecar_sha256": "562df626168c0e803ebf167b96c92639bd9dfbf2d1f93593250216862d5412ee",
+      "tail4_categories_l1_l2_l3_l4_l5": [3, 0, 1, 0, 0]
+    },
+    "12Scenes/office2_5b": {
+      "eligible_rows": 101,
+      "formal_catastrophic_100cm_count": 255,
+      "formal_failure_5cm5deg_count": 395,
+      "geometry_solvable": 4,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/office2_5b_tail4.json",
+      "json_sha256": "d1c5a642a47f5168b7175fcbf0f6c706d24092c28578df582f273880e173f254",
+      "oracle_pose_correct": 4,
+      "r_at_k_percent": [0.0, 0.0, 0.9901, 1.9802, 3.9604, 4.9505],
+      "sidecar_sha256": "1772a05d7f6395c0c101fd8e8db481059d7778cc6e1aea13ed71d974d568fc2e",
+      "tail4_categories_l1_l2_l3_l4_l5": [0, 0, 3, 1, 0]
+    },
+    "Cambridge/GreatCourt": {
+      "eligible_rows": 269,
+      "formal_catastrophic_100cm_count": 21,
+      "formal_failure_5cm5deg_count": 219,
+      "geometry_solvable": 4,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/greatcourt_tail4.json",
+      "json_sha256": "52689211efc9b30cfba89388eed9b1a49343b62841fefa109faf17a8876bd06a",
+      "oracle_pose_correct": 2,
+      "r_at_k_percent": [4.8327, 4.8327, 5.9480, 7.8067, 9.2937, 10.4089],
+      "sidecar_sha256": "8a708c62f13b3c1773e170701274f7ab04c01df911848cf7a9df155d24f4ea64",
+      "tail4_categories_l1_l2_l3_l4_l5": [0, 2, 1, 1, 0]
+    },
+    "Cambridge/StMarysChurch": {
+      "eligible_rows": 353,
+      "formal_catastrophic_100cm_count": 103,
+      "formal_failure_5cm5deg_count": 132,
+      "geometry_solvable": 4,
+      "json_path": "/mnt/pool/sqy/lafgs_v4_failure_chain_panel_e29536b_20260821/stmaryschurch_tail4.json",
+      "json_sha256": "8cf7a99fdc5559f72f272968015b01e9bb639a80e97919b864b32f608aaa6264",
+      "oracle_pose_correct": 4,
+      "r_at_k_percent": [1.9830, 2.5496, 3.9660, 5.9490, 8.7819, 11.8980],
+      "sidecar_sha256": "6864c131137842628f9007220556ad566fe3de2575d0a5abf02d4147349c8931",
+      "tail4_categories_l1_l2_l3_l4_l5": [0, 0, 2, 2, 0]
+    }
+  },
+  "schema": "lafgs_query_anchor_failure_chain_hard_panel_tail4",
+  "selection": "top4_translation_error_from_frozen_formal_mapping_top1_seed2026",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}
