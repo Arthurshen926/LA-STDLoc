@@ -206,21 +206,30 @@ def run(args) -> dict:
     latency = {name: [] for name in records}
     progress_path = args.output.with_name(f".{args.output.name}.progress.pt")
     progress_path.parent.mkdir(parents=True, exist_ok=True)
-    query_start = 0
+    requested_start = int(args.query_start)
+    query_limit = (
+        len(replay.query_names) if int(args.query_end) <= 0
+        else min(int(args.query_end), len(replay.query_names))
+    )
+    if not 0 <= requested_start < query_limit:
+        raise ValueError("invalid mapping-query audit range")
+    query_start = requested_start
     if progress_path.is_file():
         progress = torch.load(progress_path, map_location="cpu", weights_only=False)
         if progress.get("schema") != "lafgs_view_mixture_audit_progress":
             raise ValueError("unsupported view-mixture progress sidecar")
         query_start = int(progress["next_query_index"])
+        if query_start < requested_start or query_start > query_limit:
+            raise ValueError("progress sidecar lies outside requested query range")
         records = progress["records"]
         query_rows = progress["query_rows"]
         positive_query_ids = progress["positive_query_ids"]
         positive_anchor_rows = progress["positive_anchor_rows"]
         latency = progress["latency"]
-    for query_index in range(query_start, len(replay.query_names)):
+    for query_index in range(query_start, query_limit):
         if query_index % 100 == 0:
             print(
-                f"view-mixture mapping LOO query {query_index}/{len(replay.query_names)}",
+                f"view-mixture mapping LOO query {query_index}/{query_limit}",
                 flush=True,
             )
         if previous_rows.numel():
@@ -379,10 +388,22 @@ def run(args) -> dict:
         "inputs": {"map": str(args.map.resolve()), "track_payload": str(args.track_payload.resolve()), "query_cache": str(args.query_cache.resolve())},
         "input_sha256": {"map": sha256_file(args.map), "track_payload": sha256_file(args.track_payload), "query_cache": sha256_file(args.query_cache)},
         "configuration": vars(args) | {"map": str(args.map), "track_payload": str(args.track_payload), "query_cache": str(args.query_cache), "output": str(args.output)},
+        "query_range": {"start": requested_start, "end": query_limit, "full_query_count": len(replay.query_names)},
         "prototype_budget": {"anchor_count": anchor_count, "eligible_k2_count": len(eligible), "selected_k2_count": len(selected_local), "prototype_count": anchor_count + len(selected_local), "prototype_ratio": (anchor_count + len(selected_local)) / anchor_count},
         "summary": summary,
         "query_guard": {"mapping_query_count": len(query_rows), "queries": query_rows},
     }
+    records_path = args.output.with_name(f"{args.output.stem}_records.pt")
+    temporary_records = records_path.with_name(f".{records_path.name}.{os.getpid()}.tmp")
+    torch.save({
+        "schema": "lafgs_view_mixture_audit_records", "version": 1,
+        "query_range": result["query_range"], "records": records,
+        "query_rows": query_rows, "positive_query_ids": positive_query_ids,
+        "positive_anchor_rows": positive_anchor_rows, "latency": latency,
+    }, temporary_records)
+    os.replace(temporary_records, records_path)
+    result["records"] = str(records_path.resolve())
+    result["records_sha256"] = sha256_file(records_path)
     _atomic_json(args.output, result)
     progress_path.unlink(missing_ok=True)
     return result
@@ -404,6 +425,8 @@ def main():
     parser.add_argument("--maximum-prototype-ratio", type=float, default=1.2)
     parser.add_argument("--temperature", type=float, default=0.05)
     parser.add_argument("--anchor-chunk-size", type=int, default=2048)
+    parser.add_argument("--query-start", type=int, default=0)
+    parser.add_argument("--query-end", type=int, default=0)
     args = parser.parse_args()
     print(json.dumps(run(args)["summary"], indent=2, sort_keys=True))
 
