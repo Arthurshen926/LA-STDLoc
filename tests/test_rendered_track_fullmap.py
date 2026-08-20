@@ -15,6 +15,7 @@ from map_learning.trainer import (
     track_descriptor_payload_for_loo,
 )
 from scripts.evaluate_rendered_track_fullmap import _DeviceBankUpdater
+from topology.anchor_registry import build_anchor_registry
 
 
 def _fixture() -> tuple[dict, dict, torch.Tensor]:
@@ -28,6 +29,7 @@ def _fixture() -> tuple[dict, dict, torch.Tensor]:
             "keypoint_index": torch.tensor([0, 0, 0, 1, 1]),
             "confidence": torch.ones(5),
         },
+        "track_geometry": {"triangulated_xyz": torch.zeros(2, 3)},
     }
     descriptors = (
         torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
@@ -117,20 +119,36 @@ def test_unified_mapping_loo_replays_track_and_surface_rows() -> None:
     )[None]
     reference = torch.cat((track_reference, surface_reference))
     state = {
+        "schema": "lafgs_materialized_anchor_map",
+        "anchor_ids": torch.tensor([10, 11]),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [0.0, 1.0, 1.0]]),
+        "anchor_features": reference.clone(),
+        "source_primitive_ids": torch.tensor([-1, 4]),
         "track_cluster_ids": torch.tensor([0, -1]),
-        "projective_anchor_observations": {
-            "schema": "lafgs_projective_anchor_observations",
-            "version": 1,
-            "observation_offsets": torch.tensor([0, 3, 5]),
-            "query_indices": torch.tensor([0, 1, 2, 0, 1]),
-            "keypoint_indices": torch.tensor([0, 0, 0, 0, 0]),
-        },
+        "anchor_type": torch.tensor([1, 0]),
     }
+    teacher = {
+        "anchor_count": 2,
+        "query_names": payload["query_names"],
+        "records": [
+            {
+                "query_index": query,
+                "query_rows": torch.tensor([0]),
+                "positive_offsets": torch.tensor([0, int(query < 2)]),
+                "positive_indices": (
+                    torch.tensor([1]) if query < 2 else torch.empty(0, dtype=torch.long)
+                ),
+            }
+            for query in range(3)
+        ],
+    }
+    registry = build_anchor_registry(state, teacher=teacher, track_payload=payload)
     replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
         state=state,
         payload=payload,
         query_cache=cache,
         reference_features=reference,
+        anchor_registry=registry,
         trim_fraction=0.0,
     )
     rows, features = replay.query_update(0)

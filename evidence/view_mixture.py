@@ -161,6 +161,7 @@ class LeaveOneQueryOutViewMixtureMatcher:
     """Strict mapping-LOO matcher over a unified Track/surface Anchor map."""
 
     def __init__(self, *, state: dict, payload: dict, query_cache: dict,
+                 anchor_registry: dict | None = None,
                  device: torch.device, trim_fraction: float = 0.2,
                  minimum_cluster_observations: int = 2,
                  minimum_cluster_view_bins: int = 2,
@@ -180,7 +181,8 @@ class LeaveOneQueryOutViewMixtureMatcher:
         features = torch.as_tensor(state["anchor_features"]).float()
         self.replay = LeaveOneQueryOutProjectiveAnchorDescriptorBank(
             state=state, payload=payload, query_cache=query_cache,
-            reference_features=features, trim_fraction=self.trim_fraction,
+            reference_features=features, anchor_registry=anchor_registry,
+            trim_fraction=self.trim_fraction,
         )
         if self.replay.track_replay is None:
             raise ValueError("view-mixture map has no Track Anchors")

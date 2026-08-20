@@ -15,6 +15,26 @@ def test_single_prototype_rows_are_exact_cosine_compatibility():
     assert torch.equal(mixture.scores[:, 0], baseline.scores)
 
 
+def test_all_k1_evaluator_path_is_bitwise_exact_after_single_normalization():
+    generator = torch.Generator().manual_seed(2026)
+    query = torch.nn.functional.normalize(
+        torch.nn.functional.normalize(
+            torch.randn(100, 32, generator=generator), dim=1
+        ),
+        dim=1,
+    )
+    bank = torch.nn.functional.normalize(
+        torch.randn(1000, 32, generator=generator), dim=1
+    )
+    prototypes = torch.zeros(1000, 2, 32)
+    prototypes[:, 0] = bank
+    priors = torch.tensor([[1.0, 0.0]] * 1000)
+    expected_scores, expected_indices = torch.topk(query @ bank.T, k=1, dim=1)
+    actual = global_view_mixture_topk(query, prototypes, priors, topk=1)
+    assert torch.equal(actual.anchor_indices, expected_indices)
+    assert torch.equal(actual.scores, expected_scores)
+
+
 def test_two_prototypes_still_emit_one_anchor_identity():
     query = torch.tensor([[0.0, 1.0]])
     prototypes = torch.tensor([[[1.0, 0.0], [0.0, 1.0]], [[0.8, 0.2], [0.0, 0.0]]])

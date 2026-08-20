@@ -27,6 +27,7 @@ from evidence.view_mixture import LeaveOneQueryOutViewMixtureMatcher
 from map_learning.metric import SharedLowRankMetric, validate_map_bound_identity_metric
 from map_learning.trainer import bounded_anchor_bank, track_descriptor_payload_for_loo
 from topology.deployment_revision import collect_deployment_statistics
+from topology.anchor_registry import build_anchor_registry
 
 
 _SOURCE_PATHS = (
@@ -35,6 +36,7 @@ _SOURCE_PATHS = (
     "evidence/tracks.py",
     "evidence/view_mixture.py",
     "localization/matcher.py",
+    "topology/anchor_registry.py",
     "topology/deployment_revision.py",
     "localization/group_consensus.py",
     "localization/localizer.py",
@@ -258,6 +260,22 @@ def run(args: argparse.Namespace) -> dict:
     ):
         raise ValueError("metric is not bound to the exact evaluated map")
     calibration_sources = calibration.get("sources", {})
+    payload_provenance = dict(payload.get("provenance", {}))
+    declared_track_sha256 = calibration_sources.get("track_payload_sha256")
+    provenance_present = bool(payload_provenance)
+    track_payload_lineage_valid = (
+        payload.get("schema") == "lafgs_track_first_payload"
+        and payload.get("version") == 1
+        and (
+            (
+                provenance_present
+                and payload_provenance.get("uses_test_queries") is False
+                and payload_provenance.get("query_cache_sha256")
+                == input_sha256["query_cache"]
+            )
+            or not provenance_present
+        )
+    )
     if (
         calibration.get("schema") != "lafgs_mapping_only_scene_calibration"
         or calibration_sources.get("uses_source_mapping_rgb") is not False
@@ -265,6 +283,13 @@ def run(args: argparse.Namespace) -> dict:
         or calibration_sources.get("mapping_source") != "gaussian_render"
         or Path(str(calibration_sources.get("query_cache", ""))).resolve()
         != paths["query_cache"]
+        or Path(str(calibration_sources.get("track_payload", ""))).resolve()
+        != paths["track_payload"]
+        or (
+            declared_track_sha256 is not None
+            and declared_track_sha256 != input_sha256["track_payload"]
+        )
+        or not track_payload_lineage_valid
     ):
         raise ValueError("scene calibration is not bound source-image-free evidence")
 
@@ -294,8 +319,12 @@ def run(args: argparse.Namespace) -> dict:
     if bool(args.view_mixture):
         replay = None
         updater = None
+        anchor_registry = build_anchor_registry(
+            state, teacher=teacher, track_payload=loo_payload
+        )
         mixture_matcher = LeaveOneQueryOutViewMixtureMatcher(
-            state=state, payload=loo_payload, query_cache=cache, device=device,
+            state=state, payload=loo_payload, query_cache=cache,
+            anchor_registry=anchor_registry, device=device,
             trim_fraction=float(args.descriptor_trim_fraction),
         )
         affected = torch.as_tensor(
@@ -394,6 +423,11 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_trim_fraction": float(args.descriptor_trim_fraction),
             "descriptor_transform": "none_identity_only",
             "view_mixture": bool(args.view_mixture),
+            "track_payload_lineage_mode": (
+                "calibration_sha_and_payload_provenance"
+                if declared_track_sha256 is not None and provenance_present
+                else "calibration_path_plus_explicit_cli_sha_structural_mapping_registry"
+            ),
             "view_mixture_contract": (
                 {
                     "minimum_cluster_observations": 2,

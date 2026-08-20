@@ -722,6 +722,7 @@ class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
         payload: dict,
         query_cache: dict,
         reference_features: torch.Tensor,
+        anchor_registry: dict | None = None,
         trim_fraction: float = 0.2,
     ) -> None:
         from evidence.observation_provider import GaussianRenderObservationProvider
@@ -766,6 +767,19 @@ class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
         )
 
         observations = state.get("projective_anchor_observations")
+        registry_observations = anchor_registry is not None
+        if registry_observations:
+            from topology.anchor_registry import validate_registry_compatibility
+
+            validate_registry_compatibility(anchor_registry, state)
+            if (
+                anchor_registry.get("schema")
+                != "lafgs_evidence_grounded_anchor_registry"
+                or anchor_registry.get("uses_test_queries") is not False
+                or list(anchor_registry.get("query_names", ())) != self.query_names
+            ):
+                raise ValueError("Anchor Registry is not aligned mapping-only evidence")
+            observations = anchor_registry
         if observations is None:
             if self.surface_rows.numel():
                 raise ValueError("surface Anchors lack projective observations")
@@ -773,15 +787,26 @@ class LeaveOneQueryOutProjectiveAnchorDescriptorBank:
             self.observation_query = torch.empty(0, dtype=torch.long)
             self.observation_keypoint = torch.empty(0, dtype=torch.long)
         else:
+            if registry_observations:
+                offset_key = "observation_offsets"
+                query_key = "observation_query_indices"
+                keypoint_key = "observation_keypoint_indices"
+            else:
+                offset_key = "observation_offsets"
+                query_key = "query_indices"
+                keypoint_key = "keypoint_indices"
             if (
+                not registry_observations
+                and (
                 observations.get("schema") != "lafgs_projective_anchor_observations"
                 or int(observations.get("version", -1)) != 1
+                )
             ):
                 raise ValueError("unsupported projective observation schema")
-            self.offsets = torch.as_tensor(observations["observation_offsets"])
-            self.observation_query = torch.as_tensor(observations["query_indices"])
+            self.offsets = torch.as_tensor(observations[offset_key])
+            self.observation_query = torch.as_tensor(observations[query_key])
             self.observation_keypoint = torch.as_tensor(
-                observations["keypoint_indices"]
+                observations[keypoint_key]
             )
             if self.offsets.dtype != torch.long or self.offsets.shape != (count + 1,):
                 raise ValueError("projective observation offsets must be int64 [N+1]")

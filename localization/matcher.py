@@ -52,7 +52,9 @@ def global_view_mixture_topk(
     temperature: float = 0.05,
 ) -> TopKMatches:
     """Match one or two prototypes while emitting one score per Anchor."""
-    query = F.normalize(torch.as_tensor(query_descriptors).float(), dim=1)
+    # Deployment already supplies the exact normalized query bank.  A second
+    # normalization would move all-K1 scores at the last float32 bit.
+    query = torch.as_tensor(query_descriptors).float()
     prototypes = torch.as_tensor(anchor_prototypes).float()
     priors = torch.as_tensor(prototype_priors).float()
     if prototypes.ndim != 3 or prototypes.shape[1] != 2:
@@ -71,9 +73,8 @@ def global_view_mixture_topk(
     topk = int(topk)
     if topk < 1 or topk > count:
         raise ValueError("top-K must be between one and the Anchor count")
-    normalized = F.normalize(prototypes, dim=2)
     prototype_scores = (
-        query @ normalized.reshape(-1, prototypes.shape[2]).T
+        query @ prototypes.reshape(-1, prototypes.shape[2]).T
     ).reshape(query.shape[0], count, 2)
     log_prior = torch.where(
         priors > 0, priors.log(), torch.full_like(priors, -torch.inf)
