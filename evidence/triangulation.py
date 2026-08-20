@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import time
 
 import torch
 import torch.nn.functional as F
@@ -535,7 +536,7 @@ class _ConflictAwareTrackSet:
             return
         self.parent[node] = node
         self.rank[node] = 0
-        self.queries[node] = {int(query)}
+        self.queries[node] = 1 << int(query)
         self.cycle_seeded[node] = False
 
     def find(self, node):
@@ -558,7 +559,7 @@ class _ConflictAwareTrackSet:
         self.parent[right_root] = left_root
         if self.rank[left_root] == self.rank[right_root]:
             self.rank[left_root] += 1
-        self.queries[left_root].update(self.queries.pop(right_root))
+        self.queries[left_root] |= self.queries.pop(right_root)
         self.cycle_seeded[left_root] = (
             self.cycle_seeded[left_root]
             or self.cycle_seeded.pop(right_root)
@@ -643,20 +644,35 @@ def _graded_track_components(
     accepted_cycle = 0
     accepted_chain = 0
     rejected_conflict = 0
-    for edge in order.tolist():
-        left_query = int(edge_left[edge])
-        right_query = int(edge_right[edge])
-        source_node = (
-            int(keypoint_offsets[left_query]) + int(edge_source[edge])
-        )
-        target_node = (
-            int(keypoint_offsets[right_query]) + int(edge_target[edge])
-        )
+    ordered_left = edge_left[order].tolist()
+    ordered_right = edge_right[order].tolist()
+    ordered_source = edge_source[order].tolist()
+    ordered_target = edge_target[order].tolist()
+    ordered_confidence = edge_confidence[order].tolist()
+    ordered_cycle = edge_cycle[order].tolist()
+    ordered_position = edge_pair_position[order].tolist()
+    for (
+        left_query,
+        right_query,
+        source_index,
+        target_index,
+        confidence,
+        is_cycle,
+        pair_position,
+    ) in zip(
+        ordered_left,
+        ordered_right,
+        ordered_source,
+        ordered_target,
+        ordered_confidence,
+        ordered_cycle,
+        ordered_position,
+    ):
+        source_node = keypoint_offsets[left_query] + source_index
+        target_node = keypoint_offsets[right_query] + target_index
         disjoint.add(source_node, left_query)
         disjoint.add(target_node, right_query)
-        is_cycle = bool(edge_cycle[edge])
         pair = (left_query, right_query)
-        pair_position = int(edge_pair_position[edge])
         if not disjoint.union(
             source_node, target_node, cycle_supported=is_cycle
         ):
@@ -664,7 +680,6 @@ def _graded_track_components(
             edge_conflict_rejected[pair][pair_position] = True
             continue
         edge_accepted[pair][pair_position] = True
-        confidence = float(edge_confidence[edge])
         node_confidence[source_node] = max(
             node_confidence[source_node], confidence
         )
@@ -741,11 +756,14 @@ def build_cycle_consistent_tracks(
     ]
     | None = None,
     precomputed_confidence_includes_detector_scores: bool = False,
+    preload_descriptors_to_device: bool = True,
+    timing_report: dict[str, float] | None = None,
     device: str | torch.device = "cuda",
 ) -> tuple[dict[str, torch.Tensor], dict[str, float | int]] | tuple[
     dict[str, torch.Tensor], dict[str, float | int], dict
 ]:
     """Build map-independent native 2D tracks from a local camera graph."""
+    started = time.perf_counter()
     query_count = len(descriptors)
     if len(keypoints) != query_count:
         raise ValueError("Descriptor and keypoint camera tables must align")
@@ -817,10 +835,32 @@ def build_cycle_consistent_tracks(
                 pair_maximum_baseline_depth_ratio
             ),
         )
+    pair_selection_finished = time.perf_counter()
     pair_matches = {}
     pair_match_diagnostics = {}
     raw_match_count = 0
     device = torch.device(device)
+    resident_descriptors = None
+    if (
+        bool(preload_descriptors_to_device)
+        and device.type == "cuda"
+        and torch.cuda.is_available()
+    ):
+        descriptor_bytes = sum(
+            int(value.numel()) * int(value.element_size()) for value in descriptors
+        )
+        memory_device = (
+            torch.device("cuda", torch.cuda.current_device())
+            if device.index is None
+            else device
+        )
+        free_bytes, _ = torch.cuda.mem_get_info(memory_device)
+        if descriptor_bytes <= int(0.4 * free_bytes):
+            try:
+                resident_descriptors = [value.to(device) for value in descriptors]
+            except torch.cuda.OutOfMemoryError:
+                resident_descriptors = None
+                torch.cuda.empty_cache()
     for left, right in pairs:
         if uses_precomputed_pair_matches:
             source, target, confidence = precomputed_pair_matches[(left, right)]
@@ -856,9 +896,19 @@ def build_cycle_consistent_tracks(
                 (precomputed_pair_match_diagnostics or {}).get((left, right), {})
             )
         else:
+            left_descriptors = (
+                resident_descriptors[left]
+                if resident_descriptors is not None
+                else descriptors[left].to(device)
+            )
+            right_descriptors = (
+                resident_descriptors[right]
+                if resident_descriptors is not None
+                else descriptors[right].to(device)
+            )
             match_result = reciprocal_epipolar_matches(
-                descriptors[left].to(device),
-                descriptors[right].to(device),
+                left_descriptors,
+                right_descriptors,
                 keypoints[left],
                 keypoints[right],
                 camera_K[left],
@@ -889,6 +939,7 @@ def build_cycle_consistent_tracks(
                 * detector_scores[right][target].float().clamp_min(0.0)
             )
         pair_matches[(left, right)] = (source, target, confidence)
+    pair_matching_finished = time.perf_counter()
     keypoint_counts = [int(value.shape[0]) for value in keypoints]
     cycle_support = (
         _cycle_supported_pair_edges(pair_matches, keypoint_counts)
@@ -898,6 +949,7 @@ def build_cycle_consistent_tracks(
             for pair, match in pair_matches.items()
         }
     )
+    cycle_support_finished = time.perf_counter()
     keypoint_offsets = [0]
     for count in keypoint_counts:
         keypoint_offsets.append(keypoint_offsets[-1] + count)
@@ -966,6 +1018,7 @@ def build_cycle_consistent_tracks(
         component_cycle_seeded = {
             root: bool(require_cycle) for root in components
         }
+    component_assembly_finished = time.perf_counter()
     node_query = {}
     for query, (start, end) in enumerate(
         zip(keypoint_offsets[:-1], keypoint_offsets[1:])
@@ -1036,7 +1089,21 @@ def build_cycle_consistent_tracks(
         ),
         **graded_diagnostics,
     }
+    track_table_finished = time.perf_counter()
     if not bool(return_pair_sidecar):
+        if timing_report is not None:
+            timing_report.update(
+                {
+                    "pair_selection": pair_selection_finished - started,
+                    "pair_matching": pair_matching_finished - pair_selection_finished,
+                    "cycle_support": cycle_support_finished - pair_matching_finished,
+                    "component_assembly": component_assembly_finished
+                    - cycle_support_finished,
+                    "track_table": track_table_finished - component_assembly_finished,
+                    "pair_sidecar": 0.0,
+                    "total": track_table_finished - started,
+                }
+            )
         return tracks, diagnostics
 
     geometry_table = _camera_pair_geometry_table(
@@ -1061,6 +1128,11 @@ def build_cycle_consistent_tracks(
     graph_accepted_count = torch.zeros(len(pairs), dtype=torch.long)
     conflict_rejected_count = torch.zeros(len(pairs), dtype=torch.long)
     final_component_edge_count = torch.zeros(len(pairs), dtype=torch.long)
+    node_track = torch.full((keypoint_offsets[-1],), -1, dtype=torch.long)
+    if node_to_track:
+        node_track[torch.as_tensor(list(node_to_track), dtype=torch.long)] = (
+            torch.as_tensor(list(node_to_track.values()), dtype=torch.long)
+        )
     final_track_offsets = [0]
     final_track_indices = []
     for pair_index, pair in enumerate(pairs):
@@ -1077,19 +1149,14 @@ def build_cycle_consistent_tracks(
         )
         graph_accepted_count[pair_index] = int(accepted.sum())
         left, right = pair
-        contributed_tracks = []
-        for local_edge in torch.nonzero(accepted, as_tuple=False).reshape(-1).tolist():
-            source_node = keypoint_offsets[left] + int(source[local_edge])
-            target_node = keypoint_offsets[right] + int(target[local_edge])
-            source_track = node_to_track.get(source_node, -1)
-            target_track = node_to_track.get(target_node, -1)
-            if source_track < 0 or source_track != target_track:
-                continue
-            final_component_edge_count[pair_index] += 1
-            contributed_tracks.append(source_track)
-        unique_tracks = sorted(set(contributed_tracks))
-        final_track_indices.extend(unique_tracks)
-        final_track_offsets.append(final_track_offsets[-1] + len(unique_tracks))
+        local_edge = torch.nonzero(accepted, as_tuple=False).reshape(-1)
+        source_track = node_track[keypoint_offsets[left] + source[local_edge].long()]
+        target_track = node_track[keypoint_offsets[right] + target[local_edge].long()]
+        retained = (source_track >= 0) & (source_track == target_track)
+        final_component_edge_count[pair_index] = int(retained.sum())
+        unique_tracks = torch.unique(source_track[retained], sorted=True)
+        final_track_indices.extend(unique_tracks.tolist())
+        final_track_offsets.append(final_track_offsets[-1] + unique_tracks.numel())
     pair_sidecar = {
         "schema": "lafgs_mapping_track_pair_sidecar",
         "version": 1,
@@ -1201,6 +1268,20 @@ def build_cycle_consistent_tracks(
                 "scene_depth_estimator": (
                     "median_positive_mapping_keypoint_depth"
                 ),
+            }
+        )
+    if timing_report is not None:
+        finished = time.perf_counter()
+        timing_report.update(
+            {
+                "pair_selection": pair_selection_finished - started,
+                "pair_matching": pair_matching_finished - pair_selection_finished,
+                "cycle_support": cycle_support_finished - pair_matching_finished,
+                "component_assembly": component_assembly_finished
+                - cycle_support_finished,
+                "track_table": track_table_finished - component_assembly_finished,
+                "pair_sidecar": finished - track_table_finished,
+                "total": finished - started,
             }
         )
     return tracks, diagnostics, pair_sidecar
@@ -1673,6 +1754,9 @@ def robust_triangulate_associations(
         landmark_index, return_counts=True
     )
     offsets = torch.cat((torch.zeros(1, dtype=torch.long), counts.cumsum(0)))
+    observation_centers, observation_directions = _camera_rays(
+        uv, camera_K[query_index], pose_w2c[query_index]
+    )
     for group, landmark in enumerate(unique_landmarks.tolist()):
         start = int(offsets[group])
         end = int(offsets[group + 1])
@@ -1691,9 +1775,8 @@ def robust_triangulate_associations(
         distinct_view_bin_count[landmark] = int(bins.numel())
         if bins.numel() < int(minimum_view_bins):
             continue
-        centers, directions = _camera_rays(
-            uv[selected], camera_K[queries], pose_w2c[queries]
-        )
+        centers = observation_centers[selected]
+        directions = observation_directions[selected]
         base_weight = confidence[selected].clamp_min(1e-4)
         base_weight /= base_weight.mean().clamp_min(1e-8)
         weight = base_weight
@@ -1748,14 +1831,10 @@ def robust_triangulate_associations(
                 pair_angles,
                 min(max(float(parallax_quantile), 0.0), 1.0),
             )
+        final_depth = depth
+        final_residual = residual
         residual = residual[finite]
         sigma2 = residual.square().median().clamp_min(1e-8)
-        final_projected, final_depth = _project(
-            point, camera_K[queries], pose_w2c[queries]
-        )
-        final_residual = torch.linalg.norm(
-            final_projected - uv[selected], dim=1
-        )
         final_robust = torch.where(
             final_residual <= float(huber_delta_px),
             torch.ones_like(final_residual),

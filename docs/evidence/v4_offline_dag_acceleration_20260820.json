@@ -1,0 +1,63 @@
+{
+  "schema": "lafgs_v4_offline_dag_acceleration_evidence",
+  "version": 1,
+  "date": "2026-08-20",
+  "baseline_commit": "791af97d0cf592747c40f8b3982efa7ae5a2d060",
+  "scope": "offline_method_neutral",
+  "dag": {
+    "node": "mapping_observation_track_geometry",
+    "opt_in_only": true,
+    "default_maximum_node_gib": 8.0,
+    "default_maximum_store_gib": 20.0,
+    "atomic_publish": true,
+    "publish_lock": true,
+    "test_rgb_opened_for_key": false,
+    "strict_checks": [
+      "canonical_config",
+      "upstream_sha256",
+      "producer_source_sha256",
+      "schema_version",
+      "artifact_sha256",
+      "artifact_size"
+    ],
+    "shopfacade_real_artifact_benchmark": {
+      "artifact_bytes": 531439443,
+      "cache_key_validation_seconds": 0.5307419095188379,
+      "cold_publish_and_verify_seconds": 2.9217523811385036,
+      "hit_sha_verification_seconds": 0.5189345208927989,
+      "hit_materialization_seconds": 0.00000873953104019165,
+      "same_artifact_paths": true
+    },
+    "copy_mode_probe": {
+      "artifact_bytes": 490572506,
+      "copy_mode": "byte_copy",
+      "cold_publish_and_verify_seconds": 1.7549700029194355,
+      "hit_sha_verification_seconds": 0.4537893757224083
+    }
+  },
+  "same_791_oracle": {
+    "track": {
+      "old_seconds": 2.673471547663212,
+      "new_seconds": 1.2240990679711103,
+      "speedup": 2.1840320098391808,
+      "track_rows_bitwise_equal": true,
+      "diagnostics_bitwise_equal": true,
+      "pair_sidecar_bitwise_equal": true
+    },
+    "triangulation": {
+      "landmark_count": 10000,
+      "old_seconds": 31.12715724017471,
+      "new_seconds": 28.7398035293445,
+      "speedup": 1.0830678507733231,
+      "formal_geometry_field_count": 25,
+      "all_fields_bitwise_equal": true,
+      "rejected_nonlinear_refinement_fields_restored": false
+    }
+  },
+  "cross_branch_warning": "Historical render-only artifacts use a different camera-pair policy implementation and are not a valid integration bitwise oracle.",
+  "tests": {
+    "passed": 555,
+    "skipped": 1,
+    "skip_reason": "CUDA renderer smoke requires LAFGS_RUN_CUDA_SMOKE=1"
+  }
+}
