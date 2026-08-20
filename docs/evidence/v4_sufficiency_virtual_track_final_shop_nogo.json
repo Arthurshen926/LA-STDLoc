@@ -1,0 +1,125 @@
+{
+  "schema": "lafgs_v4_sufficiency_virtual_track_final_shop_nogo",
+  "version": 1,
+  "decision": "STOP_NO_GO_DO_NOT_DEPLOY_AUGMENTED_MAP",
+  "default_pipeline_changed": false,
+  "binary_artifacts_checked_into_git": false,
+  "frozen_augmented_map": {
+    "anchor_count": 7854,
+    "formal_prefix_anchor_count": 5794,
+    "virtual_suffix_anchor_count": 2060,
+    "path": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/top32_formal_frame_v5_deployment/augmented_formal_anchor_map.pt",
+    "sha256": "ad0810fee5f59505314a5d5c64edc4dc65039fb4016ab7ec5a888ee36417f0a9",
+    "identity_metric_sha256": "28ae2dd9deeaa7478f1d1f7f82d6e3cb6e5d45f0dea4515e5f6326149dbf3a54"
+  },
+  "frozen_shop_test": {
+    "protocol": "global_top1_one_standard_poselib_seed2026_no_retrieval_refinement_group_guided_assignment",
+    "uses_test_queries": true,
+    "test_used_for_construction_selection_or_calibration": false,
+    "status": 0,
+    "stderr_empty": true,
+    "query_count": 103,
+    "metrics": {
+      "median_te_cm": 2.102832682430744,
+      "median_ae_deg": 0.11781704126323082,
+      "mean_te_cm": 4.750084130599806,
+      "mean_ae_deg": 0.227679596165156,
+      "p90_te_cm": 8.047215491533278,
+      "p90_ae_deg": 0.45035897631587185,
+      "recall_2cm_2deg_percent": 47.57281553398058,
+      "recall_5cm_5deg_percent": 82.52427184466019,
+      "catastrophic_100cm_count": 0
+    },
+    "source": {
+      "root": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/shop_test_seed2026_frozen_v5",
+      "results_sha256": "4028a42bb1e9f70b76290c0ffbdaf63d35952449ac728ee32394d373552f8860",
+      "summary_sha256": "0b5bbc1cab5218156c5d6efccf479167903ef61aafc03fabb9fad0e8b6d10c6a",
+      "contract_sha256": "fc033eb787ca403617d9a13e9e7cce0d5a35b03c4c7759ac1e328d72ed66ede5",
+      "comparison_sha256": "5a5a82dd04e6549838ada190f67cdbe6a4bb7f8f127f48a0bedeeed540db492e"
+    }
+  },
+  "comparisons": {
+    "ours_g": {
+      "source_path": "/mnt/pool/sqy/lafgs_projective_anchor_architecture_v1_20260816/shopfacade/surface_unified_test_seed2026/results.json",
+      "source_results_sha256": "da35eea3f9aa26a6d9d87220ce59e6aca16051e397e3e013b8e89a29ec020f10",
+      "median_te_cm": 2.0390622317790985,
+      "median_ae_deg": 0.11257939340752852,
+      "mean_te_cm": 4.728891015803279,
+      "p90_te_cm": 8.057233989238737,
+      "recall_2cm_2deg_percent": 49.51456310679612,
+      "recall_5cm_5deg_percent": 82.52427184466019,
+      "translation_queries_improved": 47,
+      "translation_queries_regressed": 56,
+      "r2_gained_queries": 0,
+      "r2_lost_queries": 2
+    },
+    "g_plus_rgb_descriptor_oracle": {
+      "source_path": "/mnt/pool/sqy/lafgs_resource_reverse_ablation_20260821/Cambridge/ShopFacade/g_plus_rgb_desc_test_seed2026/results.json",
+      "source_results_sha256": "73574c575050ca7d427b407cc289a2e45c0f7c9724d94df1725e767ffe8fd43d",
+      "median_te_cm": 2.019522897899151,
+      "median_ae_deg": 0.11061279251445409,
+      "mean_te_cm": 4.790098267128166,
+      "p90_te_cm": 6.8401291966438285,
+      "recall_2cm_2deg_percent": 49.51456310679612,
+      "recall_5cm_5deg_percent": 84.46601941747572,
+      "translation_queries_improved": 53,
+      "translation_queries_regressed": 50,
+      "r2_gained_queries": 1,
+      "r2_lost_queries": 3,
+      "r5_gained_queries": 0,
+      "r5_lost_queries": 2
+    }
+  },
+  "mapping_tail_visibility": {
+    "uses_test_queries": false,
+    "source_path": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/shop_test_seed2026_frozen_v5/results/mapping_tail2_gt_visibility_augmented.json",
+    "source_sha256": "046ce90df0060705f6828885eaabc42b462b0593f9265737e25a209586626ab7",
+    "queries": {
+      "seq2/frame00036.png": {"formal_gt_visible": 0, "augmented_gt_visible": 0},
+      "seq2/frame00043.png": {"formal_gt_visible": 0, "augmented_gt_visible": 0}
+    }
+  },
+  "mapping_camera_leave_one_family_out_oracle": {
+    "uses_test_queries": false,
+    "symmetric_mapping_camera_count": 231,
+    "candidate_count": 256,
+    "formal_l1_zero_count": 2,
+    "formal_l1_zero_repaired_by_oracle_count": 1,
+    "tail_joint_headroom": false,
+    "source_path": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/mapping_camera_loo_sufficiency_oracle_v1.json",
+    "source_sha256": "104f1f46aead69f4744f39a9b41a0e93d5ac61ba00a4c3f6ea42dd0b4f306a00"
+  },
+  "support_ring_upper_bound": {
+    "uses_test_queries": false,
+    "candidate_generation": "all_formal_l1_zero_cameras_symmetric_local_six_directions_radii_0.20_0.35_0.50m",
+    "generated_candidate_count": 36,
+    "real_render_gate_candidate_count": 26,
+    "pose_family_count": 25,
+    "queries": {
+      "seq2/frame00036.png": {
+        "multi_family_gt_visible": 0,
+        "multi_family_detector_accessible": 0,
+        "information_rank": 0,
+        "passes": false
+      },
+      "seq2/frame00043.png": {
+        "multi_family_gt_visible": 1756,
+        "multi_family_detector_accessible": 1032,
+        "information_rank": 6,
+        "d_opt_logdet_regularized": 75.19568214891831,
+        "passes": true
+      }
+    },
+    "failure_diagnosis": "frame00036 candidate z-buffer depth about 0.184m versus held-out-render unprojected depth about 1.64m; median disagreement about 1.47m",
+    "preregistration_path": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/support_ring_oracle_preregistration_v1.json",
+    "preregistration_sha256": "2a3b11731d3432b4b6c5242a05f8127b085435bf60a7c0a1e63b2581a5fe64e4",
+    "source_path": "/mnt/pool/sqy/lafgs_v4_sufficiency_virtual_render_shop_20260821/support_ring_oracle_v1.json",
+    "source_sha256": "ee1679fe196871e2a68e2eeaca441333c2d6e31b0904c299325f8f6ad9db1069"
+  },
+  "stop_scope": [
+    "do_not_deploy_the_7854_anchor_augmented_map",
+    "do_not_continue_selector_optimization_in_the_existing_256_candidate_pool",
+    "do_not_expand_the_current_safe_support_ring_or_run_its_closed_loop",
+    "retain_the_formal_ours_g_map_as_the_shop_reference"
+  ]
+}
