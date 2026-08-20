@@ -1,0 +1,43 @@
+{
+  "base_commit": "a153a86",
+  "default_pipeline_enabled": false,
+  "gt_visible_diagnostic": null,
+  "mapping_only": true,
+  "method": {
+    "candidate_sources": [
+      "se3_interpolation",
+      "small_translation",
+      "small_rotation",
+      "boundary_expansion",
+      "reverse_view",
+      "deficit_directed"
+    ],
+    "maximum_evidence_per_pose_family": 1,
+    "objective": "normalized_capped_coverage_plus_nonnegative_parallax_appearance_artifact_quality"
+  },
+  "schema": "lafgs_sufficiency_guided_virtual_render_plan_probe",
+  "shopfacade": {
+    "candidate_count": 256,
+    "coverage_voxel_count": 77120,
+    "deficit_voxel_count": 62581,
+    "initial_deficit_demand": 197015.0,
+    "output_bytes": 47213281,
+    "output_sha256": "ce5036b83e45c0069282fc1f676bacc2fd15cc26a15404209dbf8c045deda59d",
+    "remaining_deficit_demand_proxy": 21096.0,
+    "renders_images": false,
+    "selected_appearance_mean": 0.999897837638855,
+    "selected_artifact_risk_mean": 0.14765286445617676,
+    "selected_candidate_count": 32,
+    "selected_covered_voxel_count": 57666,
+    "selected_kind_counts": {
+      "se3_interpolation": 29,
+      "small_translation": 3
+    },
+    "selected_parallax_mean": 0.8158650994300842,
+    "selected_unique_pose_families": 32
+  },
+  "synthetic_tests_passed": 5,
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 1
+}

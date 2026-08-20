@@ -276,6 +276,7 @@ def greedy_capped_coverage(
     if any(value.shape != (count,) for value in (parallax, appearance, risk)):
         raise ValueError("candidate utility vectors must align")
     remaining = demand.clone()
+    coverage_normalizer = max(float(demand.sum()), 1.0)
     used_family: defaultdict[int, int] = defaultdict(int)
     selected: list[int] = []
     trace: list[dict] = []
@@ -290,18 +291,21 @@ def greedy_capped_coverage(
             coverage = float(torch.minimum(
                 remaining[cells], torch.full_like(remaining[cells], float(coverage_cap))
             ).sum()) if cells.numel() else 0.0
+            coverage_score = coverage / coverage_normalizer
             modular = (
                 float(parallax_weight) * float(parallax[candidate])
                 + float(appearance_weight) * float(appearance[candidate])
-                - float(risk_weight) * float(risk[candidate])
+                + float(risk_weight) * (
+                    1.0 - max(0.0, min(1.0, float(risk[candidate])))
+                )
             )
-            gain = coverage + modular
-            key = (gain, coverage, -candidate)
+            gain = coverage_score + modular
+            key = (gain, coverage_score, coverage, -candidate)
             if best is None or key > best[0]:
-                best = (key, candidate, cells, coverage, modular)
+                best = (key, candidate, cells, coverage, coverage_score, modular)
         if best is None or best[0][0] <= 0:
             break
-        _, candidate, cells, coverage, modular = best
+        _, candidate, cells, coverage, coverage_score, modular = best
         selected.append(candidate)
         used_family[int(family[candidate])] += 1
         if cells.numel():
@@ -310,8 +314,9 @@ def greedy_capped_coverage(
             "candidate_index": candidate,
             "pose_family": int(family[candidate]),
             "coverage_gain": coverage,
+            "normalized_coverage_gain": coverage_score,
             "modular_gain": modular,
-            "total_gain": coverage + modular,
+            "total_gain": coverage_score + modular,
             "remaining_demand": float(remaining.sum()),
         })
     return torch.tensor(selected, dtype=torch.long), trace

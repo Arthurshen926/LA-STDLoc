@@ -49,6 +49,15 @@ def _pair_distinct_count(inverse: torch.Tensor, labels: torch.Tensor, voxel_coun
     return count
 
 
+def _pair_csr(inverse: torch.Tensor, labels: torch.Tensor, voxel_count: int):
+    width = max(int(labels.max()) + 1, 1) if labels.numel() else 1
+    pair = torch.unique(inverse.long() * width + labels.long()).sort().values
+    voxel = torch.div(pair, width, rounding_mode="floor")
+    counts = torch.bincount(voxel, minlength=voxel_count)
+    offsets = torch.cat((torch.zeros(1, dtype=torch.long), counts.cumsum(0)))
+    return offsets, pair % width
+
+
 def build_coverage_field(
     query_payload: dict,
     track_payload: dict,
@@ -130,7 +139,8 @@ def build_coverage_field(
     centers = torch.zeros(voxel_count, 3)
     centers.index_add_(0, inverse, xyz)
     centers /= count[:, None].clamp_min(1)
-    family_count = _pair_distinct_count(inverse, family, voxel_count)
+    family_offsets, family_indices = _pair_csr(inverse, family, voxel_count)
+    family_count = family_offsets[1:] - family_offsets[:-1]
     bin_count = _pair_distinct_count(inverse, view_bin, voxel_count)
     stable_count = _pair_distinct_count(
         inverse[is_stable], family[is_stable], voxel_count
@@ -153,6 +163,8 @@ def build_coverage_field(
         "voxel_center_xyz": centers,
         "surface_support_count": surface_count,
         "camera_family_count": family_count,
+        "camera_family_offsets": family_offsets,
+        "camera_family_indices": family_indices,
         "view_bin_count": bin_count,
         "stable_observation_count": stable_count,
         "track_observation_count": track_count,
@@ -176,11 +188,25 @@ def candidate_coverage(
     full_xyz = field["voxel_center_xyz"].double()
     demand = field["deficit_demand"]
     source_supported = field["surface_support_count"] > 0
+    source_centers = camera_centers(poses)
     active_index = torch.nonzero(
         source_supported & (demand > 0), as_tuple=False
     ).reshape(-1)
     xyz = full_xyz[active_index]
-    source_centers = camera_centers(poses)
+    family_offsets = torch.as_tensor(field["camera_family_offsets"]).long()
+    family_indices = torch.as_tensor(field["camera_family_indices"]).long()
+    incidence_voxel = torch.repeat_interleave(
+        torch.arange(full_xyz.shape[0]), family_offsets[1:] - family_offsets[:-1]
+    )
+    incidence_keep = source_supported[incidence_voxel] & (demand[incidence_voxel] > 0)
+    incidence_voxel = incidence_voxel[incidence_keep]
+    incidence_family = family_indices[incidence_keep]
+    active_lookup = torch.full((full_xyz.shape[0],), -1, dtype=torch.long)
+    active_lookup[active_index] = torch.arange(active_index.numel())
+    incidence_local_voxel = active_lookup[incidence_voxel]
+    incidence_source_ray = torch.nn.functional.normalize(
+        full_xyz[incidence_voxel] - source_centers[incidence_family], dim=1
+    )
     cells = []
     parallax = []
     appearance = []
@@ -200,6 +226,15 @@ def candidate_coverage(
         parent_ray = torch.nn.functional.normalize(xyz - source_centers[parent], dim=1)
         candidate_ray = torch.nn.functional.normalize(xyz - center, dim=1)
         angle = torch.rad2deg(torch.acos((parent_ray * candidate_ray).sum(1).clamp(-1, 1)))
+        incidence_cosine = (
+            incidence_source_ray * candidate_ray[incidence_local_voxel]
+        ).sum(1).clamp(-1, 1)
+        incidence_parallax = torch.rad2deg(torch.acos(incidence_cosine))
+        maximum_parallax = torch.zeros(xyz.shape[0], dtype=torch.float64)
+        maximum_parallax.scatter_reduce_(
+            0, incidence_local_voxel, incidence_parallax,
+            reduce="amax", include_self=True,
+        )
         valid = (
             (depth > 0)
             & (uv[:, 0] >= 0) & (uv[:, 0] < width)
@@ -210,7 +245,10 @@ def candidate_coverage(
         local_index = torch.nonzero(valid, as_tuple=False).reshape(-1)
         index = active_index[local_index]
         cells.append(index)
-        parallax.append(float((angle[local_index] / 30.0).clamp_max(1).mean()) if index.numel() else 0.0)
+        parallax.append(
+            float((maximum_parallax[local_index] / 30.0).clamp_max(1).mean())
+            if index.numel() else 0.0
+        )
         appearance.append(
             float(torch.cos(torch.deg2rad(angle[local_index])).clamp_min(0).mean())
             if index.numel() else 0.0
