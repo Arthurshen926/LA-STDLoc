@@ -137,15 +137,15 @@ def augment_formal_anchor_map(
     virtual_batch.validate()
     if int(formal.features.shape[1]) != int(virtual_batch.features.shape[1]):
         raise ValueError("formal and virtual Anchor descriptor dimensions differ")
-    existing_track = formal.track_cluster_ids[formal.track_cluster_ids >= 0]
-    track_offset = int(existing_track.max()) + 1 if existing_track.numel() else 0
     existing_identity = torch.cat((
+        formal.track_cluster_ids[formal.track_cluster_ids >= 0],
         formal.parent_identity_ids[formal.parent_identity_ids >= 0],
         formal.correlation_group_ids[formal.correlation_group_ids >= 0],
+        torch.as_tensor(formal_map["fine_identity_ids"]).long().clamp_min(0),
     ))
     identity_offset = int(existing_identity.max()) + 1 if existing_identity.numel() else 0
     new_count = int(virtual_batch.xyz.shape[0])
-    new_track = torch.arange(track_offset, track_offset + new_count, dtype=torch.long)
+    new_track = torch.arange(identity_offset, identity_offset + new_count, dtype=torch.long)
     new_identity = torch.arange(
         identity_offset, identity_offset + new_count, dtype=torch.long
     )
@@ -238,6 +238,17 @@ def validate_augmented_mapping_guard(
     new_source = torch.as_tensor(augmented["source_primitive_ids"])[formal_count:]
     if not bool((new_kind == 1).all()) or not bool((new_source == -1).all()):
         raise ValueError("virtual additions are not pure observation-defined Tracks")
+    formal_track = torch.as_tensor(formal_map["track_cluster_ids"]).long()
+    new_track = torch.as_tensor(augmented["track_cluster_ids"])[formal_count:].long()
+    formal_identity = torch.as_tensor(formal_map["anchor_parent_identity_ids"]).long()
+    new_identity = torch.as_tensor(augmented["anchor_parent_identity_ids"])[formal_count:].long()
+    if (
+        new_track.unique().numel() != new_track.numel()
+        or new_identity.unique().numel() != new_identity.numel()
+        or bool(torch.isin(new_track, formal_track[formal_track >= 0]).any())
+        or bool(torch.isin(new_identity, formal_identity[formal_identity >= 0]).any())
+    ):
+        raise ValueError("virtual Track/identity namespace collides with formal map")
     registry = augmented.get("virtual_observation_registry", {})
     if int(registry.get("query_count", -1)) != int(virtual_query_count):
         raise ValueError("virtual observation registry count differs")
@@ -258,6 +269,7 @@ def validate_augmented_mapping_guard(
         "virtual_anchor_count": total - formal_count,
         "augmented_anchor_count": total,
         "virtual_observation_count": int(new_query.numel()),
+        "identity_namespace_disjoint": True,
         "mapping_only": True,
         "gt_visible_diagnostic": None,
     }
