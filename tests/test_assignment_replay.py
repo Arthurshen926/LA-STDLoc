@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 import topology.assignment_replay as assignment_replay
+from scripts.evaluate_v4_mapping_topk_sidecar import apply_confidence_dustbin
 
 
 class _IdentityMetric(torch.nn.Module):
@@ -167,3 +168,27 @@ def test_sidecar_rejects_test_scope(monkeypatch):
         assert "test queries" in str(error)
     else:
         raise AssertionError("test-scoped sidecar was accepted")
+
+
+def test_margin_dustbin_rejects_the_entire_ambiguous_query_row():
+    sidecar = {
+        "topk": 2,
+        "records": [
+            {
+                "scores": torch.tensor([[0.80, 0.795], [0.80, 0.70]]),
+                "anchor_indices": torch.tensor([[0, 1], [1, 0]]),
+            }
+        ],
+    }
+    filtered = apply_confidence_dustbin(
+        sidecar, minimum_margin=0.01, dustbin_score=-1.0
+    )
+    assert filtered["confidence_rejected_query_rows"] == 1
+    assert torch.equal(
+        filtered["records"][0]["scores"],
+        torch.tensor([[-1.0, -1.0], [0.80, 0.70]]),
+    )
+    assert torch.equal(
+        sidecar["records"][0]["scores"],
+        torch.tensor([[0.80, 0.795], [0.80, 0.70]]),
+    )

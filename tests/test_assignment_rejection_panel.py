@@ -23,9 +23,9 @@ def _write_report(path: Path, rows: list[dict]) -> None:
 
 def test_panel_summary_uses_query_level_tail_metrics():
     rows = [
-        {"te_cm": 0.1, "ae_deg": 0.1},
-        {"te_cm": 10.0, "ae_deg": 0.1},
-        {"te_cm": 200.0, "ae_deg": 20.0},
+        {"te_cm": 0.1, "ae_deg": 0.1, "hypotheses": 10, "correspondences": 5},
+        {"te_cm": 10.0, "ae_deg": 0.1, "hypotheses": 20, "correspondences": 4},
+        {"te_cm": 200.0, "ae_deg": 20.0, "hypotheses": 30, "correspondences": 3},
     ]
     result = panel.summary(rows)
     assert result["query_count"] == 3
@@ -37,7 +37,10 @@ def test_panel_summary_uses_query_level_tail_metrics():
 
 def test_panel_report_loader_rejects_test_scope(tmp_path):
     report = tmp_path / "report.json"
-    _write_report(report, [{"te_cm": 1.0, "ae_deg": 1.0}])
+    _write_report(
+        report,
+        [{"te_cm": 1.0, "ae_deg": 1.0, "hypotheses": 10, "correspondences": 5}],
+    )
     assert panel.load_queries(report)[0]["te_cm"] == 1.0
     payload = json.loads(report.read_text())
     payload["uses_test_queries"] = True

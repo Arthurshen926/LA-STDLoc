@@ -1,0 +1,59 @@
+{
+  "schema": "lafgs_v4_assignment_stairs_result",
+  "version": 1,
+  "uses_test_queries": false,
+  "decision": {
+    "forced_capacity_k4_k8": "STOP",
+    "shared_top8_sidecar": "KEEP",
+    "next_experiment": "margin_dustbin_plus_regret_on_fixed_hard_scene_panel"
+  },
+  "reports": {
+    "top1": {
+      "path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_assignment_mapping_loo_20260819/7Scenes/stairs/top1/full_mapping_loo_report.json",
+      "sha256": "868d5567f10ef0e1316b0dbcb444654624db0420ff7a71b437b624f54811fb61",
+      "median_te_cm": 0.3709719981998205,
+      "mean_te_cm": 3.087353842606535,
+      "cvar95_te_cm": 54.197527962736785,
+      "recall_5cm_5deg_percent": 98.45,
+      "mean_hypotheses": 3479.027
+    },
+    "forced_k4": {
+      "path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_assignment_mapping_loo_20260819/7Scenes/stairs/assignment_k4/full_mapping_loo_report.json",
+      "sha256": "d91a84070e5e12ab333b1e30345eb28391a492559bffb9ac35cf2bc732e2ddac",
+      "median_te_cm": 0.45604193583130836,
+      "mean_te_cm": 6.153032885028006,
+      "cvar95_te_cm": 113.80666073318571,
+      "recall_5cm_5deg_percent": 97.95,
+      "mean_hypotheses": 6149.9235
+    },
+    "forced_k8": {
+      "path": "/mnt/pool/sqy/lafgs_projective_anchor_v4_assignment_mapping_loo_20260819/7Scenes/stairs/assignment_k8/full_mapping_loo_report.json",
+      "sha256": "333e677ce4c96994b1f19a75db5c185350f72c7ad14e8619a185adac770a73cb",
+      "median_te_cm": 0.43352663051337004,
+      "mean_te_cm": 6.281293087929043,
+      "cvar95_te_cm": 116.63659597188234,
+      "recall_5cm_5deg_percent": 97.95,
+      "mean_hypotheses": 7277.674
+    }
+  },
+  "acceleration": {
+    "path": "/mnt/pool/sqy/lafgs_v4_assignment_accel_smoke_20260820/stairs/smoke_result.json",
+    "sha256": "fdec965c2d07af05e1d2f2814e0f8b88eb84f0f13016fd00764d969c4c4b59d3",
+    "materialize_seconds": 1750.9789969921112,
+    "replay_seconds_1_worker": 511.5459506511688,
+    "replay_seconds_8_workers": 407.30243253707886,
+    "exact_query_and_summary_parity": true
+  },
+  "headroom": {
+    "path": "/mnt/pool/sqy/lafgs_v4_assignment_accel_smoke_20260820/stairs/topk_headroom.json",
+    "sha256": "914a7680d75abe300036f9b6b650d8a8858daa505bb1b286e87dec10f30e5fe2",
+    "positive_recall_percent_at_k": {
+      "1": 79.92240427230698,
+      "2": 87.4876291469251,
+      "4": 92.01332944478177,
+      "8": 94.6930833185919
+    },
+    "maximum_correct_matching_rank_percent": 94.41506781857038,
+    "top1_collision_count": 2120618
+  }
+}

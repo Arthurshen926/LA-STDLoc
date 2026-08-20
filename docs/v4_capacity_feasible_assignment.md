@@ -41,7 +41,7 @@ The resulting method has a single coherent set-level interpretation:
 - deployment extracts a capacity-feasible correspondence set; and
 - existing D-optimal/observability selection preserves pose-support diversity.
 
-## Frozen experiment
+## Frozen experiment and result
 
 The first experiment compares three globally shared protocols:
 
@@ -53,23 +53,36 @@ Both assignment variants initially use \(\tau=-1\), so the first comparison
 isolates capacity and fallback rank rather than threshold rejection.  No
 scene-specific K, threshold, group rule, or prototype count is allowed.
 
-All 24 scenes are evaluated first with full-mapping leave-one-query-out (LOO)
+Stairs rejected both forced variants. Relative to Top-1, K4/K8 roughly doubled
+mean translation error (3.087 cm to 6.153/6.281 cm) and CVaR95 (54.20 cm to
+113.81/116.64 cm), while recall fell from 98.45% to 97.95%. With dustbin -1,
+collision resolution forced 1.96M/2.23M rows away from Top-1 and raised mean
+PoseLib hypotheses from 3479 to 6150/7278. Forced K4/K8 are permanently
+stopped.
+
+The exact reusable Top-8 sidecar is retained: it reproduces historical Top-1
+queries and summaries exactly. A no-Pose audit measures positive
+R@1/2/4/8=79.92/87.49/92.01/94.69% and maximum correct matching rank 94.42%,
+so real candidate headroom remains. The next bounded experiment therefore uses
+a true Top-1/Top-2 margin dustbin plus fallback regret, only on the eight fixed
+hard scenes.
+
+The hard scenes are evaluated with full-mapping leave-one-query-out (LOO)
 descriptor replay.  The current mapping camera remains part of Track identity
 and geometry, but its descriptor observations are removed from every affected
 Anchor before retrieval.  This is not a held-out fold and it never opens the
 test split.
 
-The automation entrypoint is
+The historical all-scene automation entrypoint is
 `scripts/run_v4_assignment_mapping_matrix.py`; its paired summarizer is
 `scripts/summarize_v4_assignment_mapping_matrix.py`.  A candidate proceeds to
 one frozen official-test run per scene only if mean translation error, P90,
 CVaR95, and 5cm/5deg recall are all non-regressive separately on Cambridge,
 7Scenes, and 12Scenes.  There is no pooled compensation across datasets.
-If both K values pass, selection minimizes the worst-dataset CVaR95 ratio,
-then the worst-dataset mean-error ratio, then prefers the smaller K.  This rule
-is frozen before results are read.  Only that one selected variant is permitted
-one official-test run per scene through
-`scripts/run_v4_assignment_test_matrix.py`.
+The current hard-scene panel uses pooled tail/mean/recall safeguards and a
+deterministic catastrophic-count, CVaR95, mean, recall, median tie break. It may
+select one globally shared candidate, but does not itself authorize official
+test access or an all-scene expansion.
 
 ## Scope boundary
 

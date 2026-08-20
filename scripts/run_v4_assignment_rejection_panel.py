@@ -76,6 +76,13 @@ def main() -> None:
     parser.add_argument("--gpus", default="0,1,2")
     parser.add_argument("--replay-workers", type=int, default=4)
     parser.add_argument("--pose-workers", type=int, default=8)
+    parser.add_argument(
+        "--reuse-sidecar",
+        action="append",
+        default=[],
+        metavar="FAMILY/SCENE=PATH",
+        help="Reuse an exact source-validated sidecar instead of rematerializing it.",
+    )
     args = parser.parse_args()
     code_root = args.code_root.resolve()
     root = args.output_root.resolve()
@@ -114,11 +121,32 @@ def main() -> None:
         scene: common_arguments(Path(source_scenes[scene]["output"]))
         for scene in scenes
     }
+    reusable = {}
+    for specification in args.reuse_sidecar:
+        scene, separator, value = specification.partition("=")
+        if not separator or scene not in scenes or scene in reusable:
+            raise ValueError(f"invalid reusable sidecar specification: {specification}")
+        path = Path(value).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        reusable[scene] = path
+    sidecar_by_scene = {
+        scene: reusable.get(
+            scene,
+            root
+            / scene.split("/", 1)[0]
+            / scene.split("/", 1)[1]
+            / "mapping_loo_top8.pt",
+        )
+        for scene in scenes
+    }
 
     def materialize_partition(gpu: str, assigned: list[str]) -> None:
         for scene in assigned:
+            if scene in reusable:
+                continue
             family, name = scene.split("/", 1)
-            sidecar = root / family / name / "mapping_loo_top8.pt"
+            sidecar = sidecar_by_scene[scene]
             command = [
                 str(PYTHON),
                 "-u",
@@ -160,6 +188,33 @@ def main() -> None:
         for future in futures:
             future.result()
 
+    for scene in scenes:
+        family, name = scene.split("/", 1)
+        sidecar = sidecar_by_scene[scene]
+        run_checked(
+            [
+                str(PYTHON),
+                "-u",
+                "-m",
+                "scripts.audit_v4_mapping_topk_headroom",
+                "--sidecar",
+                str(sidecar),
+                "--expected-sidecar-sha256",
+                _sha256(sidecar),
+                "--output",
+                str(root / family / name / "topk_headroom.json"),
+                "--cpu-threads",
+                "2",
+            ],
+            code_root=code_root,
+            log=root / family / name / "topk_headroom.log",
+            env={
+                **os.environ,
+                "PYTHONPATH": str(code_root),
+                "CUDA_VISIBLE_DEVICES": "",
+            },
+        )
+
     replay_jobs = [
         (scene, candidate, configuration)
         for scene in scenes
@@ -169,7 +224,7 @@ def main() -> None:
     def replay_partition(assigned: list[tuple]) -> None:
         for scene, candidate, configuration in assigned:
             family, name = scene.split("/", 1)
-            sidecar = root / family / name / "mapping_loo_top8.pt"
+            sidecar = sidecar_by_scene[scene]
             output = root / family / name / candidate
             command = [
                 str(PYTHON),
@@ -189,6 +244,8 @@ def main() -> None:
                 str(configuration["assignment_dustbin_score"]),
                 "--assignment-maximum-regret",
                 str(configuration["assignment_maximum_regret"]),
+                "--assignment-minimum-top1-margin",
+                str(configuration["assignment_minimum_top1_margin"]),
                 "--pose-workers",
                 str(args.pose_workers),
                 "--seed",

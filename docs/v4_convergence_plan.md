@@ -31,14 +31,15 @@ Track 与 Gaussian 不应继续作为两类可部署地标并行扩张。更简�
 4. 精度优化必须优先处理错误对应和身份混淆；继续增加候选、训练步数或 Pose Reserve 不能解决这个根因。
 5. 所有超参数、去重阈值和 selector 约束只能由 mapping split 校准；test split 只在方案冻结后使用一次。
 
-## 当前全 24 场景增强：容量可行对应分配
+## 当前难例场景增强：带拒配的容量可行对应分配
 
-最新部署审计不再只在单个场景调试。`top1`、`assignment_k4` 和
-`assignment_k8` 使用完全相同的 24 场景地图、LOO 描述子与 PoseLib，仅改变
-query-row 到 Anchor 的集合级分配。精确定义、一次 PnP 边界和三数据集独立
-非退化门见 [`v4_capacity_feasible_assignment.md`](v4_capacity_feasible_assignment.md)。
-在 24 场景 mapping-LOO 结果完成前，默认发布路径仍保持独立 global Top-1，
-multi-prototype 与 dustbin 阈值学习均不并入本次因果轴。
+Stairs 已明确否决 dustbin=-1 的强制 K4/K8：mean/CVaR95 约翻倍，Recall
+下降 0.5pp，PoseLib hypotheses 显著增加。共享 Top-8 sidecar 因逐 query 与
+summary exact parity而保留。无 Pose 审计显示正确候选 R@1 到 R@8 仍有
+14.77pp headroom，因此下一步只在固定八个难例场景检验“Top-1/Top-2 margin
+拒配 + fallback regret + Anchor capacity”，不再要求每轮扩展 24 场景。完整
+数值与 SHA 见 `docs/evidence/v4_assignment_stairs_result.json`。默认发布路径仍
+保持独立 global Top-1；只有难例面板得到实际 pose/tail 改善后才替换。
 
 ## 已确认的当前实现事实
 
