@@ -60,8 +60,38 @@ metrics matched. The observed 7.26x combines current runtime/code state; only
 the component microbenchmarks should be interpreted as isolated causal
 speedups.
 
+A second structural pass removed the remaining Python hot loops without
+changing their ordering. Conflict-aware Track assembly now materializes the
+already stably-sorted edge columns once before the sequential union pass, uses
+an exact integer bitset for per-component camera membership, and maps accepted
+pair edges to final Tracks with a dense vectorized lookup. On the same real
+ShopFacade artifacts, component assembly fell from 28.44 s to 9.36 s and the
+pair sidecar from 11.87 s to 0.49 s. The complete Track build fell from 47.52 s
+to 16.91 s (2.81x), while the Track table, diagnostics and complete sidecar
+were byte-exact.
+
+Triangulation now computes every immutable observation ray once instead of
+re-solving the same camera system per Track, and reuses the already computed
+final projection when forming robust covariance weights. A 375,254-observation
+ShopFacade ray-only replay reduced 9.75 s to 0.135 s (72.0x) with exact rays;
+the complete triangulation stage reduced to 45.60 s and all 29 geometry fields
+remained byte-exact.
+
+The resulting full ShopFacade Track-map replay completed in 75.23 s, 1.405x
+faster than the preceding 105.74 s optimized run and 10.21x faster than the
+768.10 s historical record. The complete Track payload and Anchor map were
+byte-exact, not merely metric-equivalent. A hard-scene Stairs Track replay also
+remained byte-exact and completed in 102.23 s; its profile is now explicit:
+31.57 s pair matching, 60.94 s conflict-aware components, 5.85 s final Track
+table and 3.43 s sidecar. This confirms that future optimization should target
+the still-sequential conflict-aware union or reuse a completed Track artifact,
+not assume the renderer is the dominant cost.
+
 The next implementation decision must therefore use the new profiles. Reuse
-of observation and exact pair-match artifacts is safe and high priority.
+of completed observation/Track artifacts across experiment roots is higher
+value than pair-match-only caching because the latter would still pay the
+conflict-aware union and sidecar costs. Exact pair-match caching remains useful
+when the Track policy itself is being iterated.
 Batching render/SuperPoint and persistent workers are only accepted after exact
 artifact or downstream pose-equivalence validation.
 

@@ -1,6 +1,6 @@
 {
   "schema": "lafgs_v4_offline_acceleration_evidence",
-  "version": 2,
+  "version": 3,
   "date": "2026-08-20",
   "scope": "offline_build_only_no_localization_method_change",
   "changes": {
@@ -51,6 +51,31 @@
         "speedup": 20.04701749338819,
         "bitwise_exact": true
       }
+    },
+    "conflict_aware_track_assembly": {
+      "definition": "materialize stable ordered edge scalar columns once and represent per-component query membership with exact integer bitsets",
+      "edge_order_or_union_policy_changed": false,
+      "shopfacade": {
+        "accepted_or_rejected_edge_count": 817355,
+        "previous_component_seconds": 28.663686585612595,
+        "optimized_component_seconds": 9.3563435934484,
+        "previous_sidecar_seconds": 11.870845762081444,
+        "optimized_sidecar_seconds": 0.4949732003733516,
+        "previous_track_build_seconds": 47.51979201287031,
+        "optimized_track_build_seconds": 16.90701006539166,
+        "track_build_speedup": 2.810636202893114,
+        "tracks_diagnostics_and_sidecar_bitwise_exact": true
+      }
+    },
+    "precomputed_observation_rays": {
+      "definition": "compute immutable camera centers and normalized rays once for every deduplicated observation and slice them per Track",
+      "shopfacade_observations": 375254,
+      "per_track_ray_seconds": 9.749490823596716,
+      "batched_ray_seconds": 0.13537396490573883,
+      "ray_speedup": 72.01895010155982,
+      "rays_bitwise_exact": true,
+      "redundant_final_projection_removed": true,
+      "complete_geometry_fields_bitwise_exact": true
     },
     "bounded_cpu_threads": {
       "formal_default": 8,
@@ -140,6 +165,36 @@
     ],
     "causal_limit": "historical and optimized runs differ in code age and runtime state; the 7.26x number is an observed end-to-end replay difference, while individual microbenchmarks isolate the retained changes"
   },
+  "shopfacade_structural_optimization_replay": {
+    "output_root": "/mnt/pool/sqy/lafgs_offline_accel_probe_20260820/shopfacade_structural_v2",
+    "preceding_optimized_seconds": 105.73845392651856,
+    "structurally_optimized_seconds": 75.23495845124125,
+    "incremental_speedup": 1.4054431092036317,
+    "historical_seconds": 768.1032884074375,
+    "cumulative_observed_speedup": 10.210718369178957,
+    "timing_seconds": {
+      "matching_and_track_build": 16.9459196543321,
+      "triangulation": 45.599826698191464,
+      "descriptor_fusion": 12.1853081677109,
+      "total": 75.23495845124125
+    },
+    "track_payload_all_fields_bitwise_exact": true,
+    "anchor_map_all_fields_bitwise_exact": true,
+    "scientific_report_exact": true
+  },
+  "stairs_hard_scene_track_replay": {
+    "source_root": "/mnt/pool/sqy/lafgs_rendered_rgb_only_probe_20260813/stairs/full2000",
+    "track_build_seconds": 102.2328853867948,
+    "timing_seconds": {
+      "pair_selection": 0.30068364553153515,
+      "pair_matching": 31.567225112579763,
+      "cycle_support": 0.14839428290724754,
+      "component_assembly": 60.93520814366639,
+      "track_table": 5.853391793556511,
+      "pair_sidecar": 3.427982408553362
+    },
+    "tracks_diagnostics_and_sidecar_bitwise_exact": true
+  },
   "synthetic_gpu_descriptor_reuse_benchmark": {
     "gpu": "NVIDIA_GeForce_RTX_3090",
     "camera_count": 96,
@@ -167,8 +222,9 @@
     "test_queries_used": false
   },
   "remaining_priority": [
-    "use the new fine-grained Track timing on the next hard-scene rebuild",
-    "content-address observation and pair-match artifacts across experiments",
+    "content-address completed observation and Track artifacts across experiment roots",
+    "cache exact pair matches only when iterating the Track policy itself",
+    "investigate process-level parallel Track triangulation only if bitwise output remains exact",
     "batch render and SuperPoint only after bitwise or pose-equivalence validation",
     "persistent GPU workers only for stages proven dominated by repeated model loading"
   ]

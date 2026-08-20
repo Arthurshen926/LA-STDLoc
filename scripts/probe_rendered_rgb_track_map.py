@@ -337,6 +337,7 @@ def _build_track_map(
                 poses=poses,
             )
         )
+    track_timing: dict[str, float] = {}
     tracks, diagnostics, sidecar = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
@@ -367,6 +368,7 @@ def _build_track_map(
         precomputed_pair_match_diagnostics=precomputed_diagnostics,
         precomputed_confidence_includes_detector_scores=(precomputed_pairs is not None),
         preload_descriptors_to_device=args.preload_pair_descriptors,
+        timing_report=track_timing,
         device=args.device,
     )
     track_seconds = time.perf_counter() - track_started
@@ -548,6 +550,7 @@ def _build_track_map(
             "cache_load_or_in_memory_validation": cache_seconds,
             "observation_provider_materialization": input_seconds,
             "matching_and_track_build": track_seconds,
+            "track_build_breakdown": track_timing,
             "observation_uv_gather": observation_seconds,
             "camera_pose_bins": pose_bin_seconds,
             "pure_ray_triangulation": triangulation_seconds,

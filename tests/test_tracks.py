@@ -290,6 +290,7 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
         for query in range(3)
     ]
     descriptors = [torch.eye(3) for _ in range(3)]
+    timing = {}
     tracks, diagnostics, sidecar = build_cycle_consistent_tracks(
         descriptors=descriptors,
         keypoints=keypoints,
@@ -307,8 +308,19 @@ def test_track_pair_sidecar_records_exact_match_and_triangulation_funnel():
         return_pair_sidecar=True,
         pair_image_hw=torch.tensor([[480, 640]]).repeat(3, 1),
         pair_scene_points_xyz=points,
+        timing_report=timing,
         device="cpu",
     )
+    assert set(timing) == {
+        "pair_selection",
+        "pair_matching",
+        "cycle_support",
+        "component_assembly",
+        "track_table",
+        "pair_sidecar",
+        "total",
+    }
+    assert all(value >= 0.0 for value in timing.values())
     assert diagnostics["track_camera_pair_candidate_count"] == 3
     assert diagnostics["track_count"] == 3
     pair = sidecar["pair"]
