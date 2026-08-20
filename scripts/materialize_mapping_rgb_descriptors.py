@@ -210,6 +210,15 @@ def materialize(args) -> dict:
                 "native_descriptors": record["native_descriptors"],
                 "native_input_hw": record["native_input_hw"],
                 "pose_w2c": record["pose_w2c"],
+                **{
+                    field: record[field]
+                    for field in (
+                        "native_valid_keypoint_mask",
+                        "native_appearance_reliability",
+                        "native_descriptor_fusion_keep_mask",
+                    )
+                    if field in record
+                },
             }
             for name, record in records.items()
         },
