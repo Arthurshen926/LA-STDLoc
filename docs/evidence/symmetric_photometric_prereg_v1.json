@@ -1,0 +1,33 @@
+{
+  "candidate_order": [
+    "luminance_percentile_v1",
+    "clahe_clip_1p5_only_if_candidate_1_is_clearly_invalid"
+  ],
+  "candidate_1": {
+    "channel_output": "replicate_grayscale_to_rgb",
+    "constant_epsilon": 1e-6,
+    "constant_image_output": "zeros",
+    "lower_percentile": 0.01,
+    "luminance_weights_rgb": [0.299, 0.587, 0.114],
+    "mode": "luminance_percentile_v1",
+    "quantile_scope": "all_image_pixels_per_image",
+    "upper_percentile": 0.99
+  },
+  "candidate_2": {
+    "clip_limit": 1.5,
+    "eligible_only_if": "candidate_1_is_clearly_invalid_without_parameter_tuning",
+    "mode": "clahe_luminance_v1"
+  },
+  "evaluation_order": ["7Scenes/stairs", "Cambridge/ShopFacade"],
+  "frozen_before_test": true,
+  "invariants": [
+    "no_source_mapping_rgb",
+    "no_test_query_build_evidence",
+    "same_keypoint_rows",
+    "same_track_and_anchor_identity",
+    "same_xyz_and_selected_rows",
+    "same_global_top1_and_single_standard_poselib"
+  ],
+  "schema": "lafgs_symmetric_photometric_preregistration",
+  "version": 1
+}

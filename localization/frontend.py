@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from features.superpoint import SuperPoint
+from features.photometric import canonicalize_image, validate_photometric_contract
 from map_learning.context_metric import (
     MapConsistentContextAdapter,
     dense_context_tokens,
@@ -48,6 +49,7 @@ class NativeSuperPointFrontend:
         nms_radius: int = 4,
         metric: SharedLowRankMetric | None = None,
         context_adapter: MapConsistentContextAdapter | None = None,
+        photometric_contract: dict | None = None,
     ) -> None:
         self.device = torch.device(device)
         self.keypoint_count = int(keypoint_count)
@@ -60,6 +62,11 @@ class NativeSuperPointFrontend:
         self.context_adapter = (
             context_adapter.to(self.device).eval()
             if context_adapter is not None
+            else None
+        )
+        self.photometric_contract = (
+            validate_photometric_contract(photometric_contract)
+            if photometric_contract is not None
             else None
         )
         if self.metric is not None and self.context_adapter is not None:
@@ -77,6 +84,8 @@ class NativeSuperPointFrontend:
         if image.ndim != 4 or image.shape[0] != 1 or image.shape[1] != 3:
             raise ValueError("image must have shape [3,H,W] or [1,3,H,W]")
         height, width = map(int, image.shape[-2:])
+        if self.photometric_contract is not None:
+            image = canonicalize_image(image, self.photometric_contract)
         resized_mask = None
         if valid_mask is not None:
             resized_mask = torch.as_tensor(

@@ -206,6 +206,9 @@ def main() -> None:
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),
+                "photometric_canonicalization_contract": (
+                    localizer.photometric_canonicalization_contract
+                ),
                 "context_state": (
                     str(args.context_state.resolve())
                     if args.context_state is not None

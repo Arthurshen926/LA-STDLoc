@@ -45,11 +45,15 @@ def load_shared_metric(
     *,
     anchor_ids: torch.Tensor,
     device: torch.device,
+    photometric_contract: dict | None = None,
 ) -> SharedLowRankMetric:
     state = torch.load(path, map_location="cpu", weights_only=False)
     metric_ids = torch.as_tensor(state["landmark_indices"]).long().reshape(-1)
     if not torch.equal(metric_ids.cpu(), anchor_ids.cpu()):
         raise ValueError("metric state does not align with the compact anchor map")
+    metric_photometric = state.get("photometric_canonicalization_contract")
+    if metric_photometric != photometric_contract:
+        raise ValueError("map and metric photometric contracts do not align")
     metric = SharedLowRankMetric(**state["metric_config"]).to(device)
     metric.load_state_dict(state["metric_state_dict"])
     return metric.eval()
@@ -163,6 +167,9 @@ class SparseLocalizer:
                 metric_state_path,
                 anchor_ids=self.anchor_ids,
                 device=self.device,
+                photometric_contract=state.get(
+                    "photometric_canonicalization_contract"
+                ),
             )
             context_adapter = None
         # This is the exact normalization that the historical matcher applied
@@ -180,6 +187,10 @@ class SparseLocalizer:
             nms_radius=nms_radius,
             metric=metric,
             context_adapter=context_adapter,
+            photometric_contract=state.get("photometric_canonicalization_contract"),
+        )
+        self.photometric_canonicalization_contract = state.get(
+            "photometric_canonicalization_contract"
         )
         self.reprojection_error_px = float(reprojection_error_px)
         self.confidence = float(confidence)
