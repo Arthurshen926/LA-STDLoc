@@ -205,6 +205,7 @@ def run(args) -> dict:
     positive_anchor_rows: list[int] = []
     latency = {name: [] for name in records}
     progress_path = args.output.with_name(f".{args.output.name}.progress.pt")
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
     query_start = 0
     if progress_path.is_file():
         progress = torch.load(progress_path, map_location="cpu", weights_only=False)
