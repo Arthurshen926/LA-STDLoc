@@ -1,0 +1,47 @@
+{
+  "schema": "lafgs_v4_fresh_cpu_triangulation_evidence",
+  "version": 1,
+  "method_change": false,
+  "implementation": {
+    "process_model": "fresh_python_exec",
+    "worker_count": 2,
+    "partition": "fixed_contiguous_track_ranges",
+    "input": "single_temporary_copy_on_write_mapped_packed_binary",
+    "merge": "original_track_range_order",
+    "formal_geometry_field_count": 25,
+    "formal_minimum_track_count": 5000,
+    "partial_failure_publication": false
+  },
+  "fixed_size_791_camera_oracle": {
+    "camera_count": 791,
+    "track_count": 10000,
+    "triangulated_track_count": 10000,
+    "serial_seconds": 27.663982265628874,
+    "fresh_two_worker_seconds": 15.62127552460879,
+    "speedup": 1.7709169921527053,
+    "all_25_fields_bitwise_equal": true
+  },
+  "real_shopfacade_slice": {
+    "scene": "Cambridge/ShopFacade",
+    "frozen_track_count": 2000,
+    "observation_count": 68740,
+    "triangulated_track_count": 1658,
+    "serial_seconds": 4.866878469474614,
+    "fresh_two_worker_seconds": 4.9146880600601435,
+    "speedup": 0.9902721006905686,
+    "all_25_fields_bitwise_equal": true,
+    "decision": "serial_below_5000_tracks"
+  },
+  "failure_recovery": {
+    "one_completed_one_failed_shard": "fail_closed",
+    "partial_shards_escape_temporary_run": false,
+    "clean_retry_all_25_fields_bitwise_equal": true
+  },
+  "cpp_stable_dsu": {
+    "current_complete_track_oracle_seconds": 1.2240990679711103,
+    "prior_dense_list_probe_seconds": 1.328591462224722,
+    "measured_compile_advantage": false,
+    "measured_memory_advantage": false,
+    "decision": "stop"
+  }
+}

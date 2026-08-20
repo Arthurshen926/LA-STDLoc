@@ -153,6 +153,7 @@ _BOOTSTRAP_DAG_SOURCES = (
     "data/splits.py",
     "evidence/camera_pair_policy.py",
     "evidence/parallax_stratified_pair_policy.py",
+    "evidence/parallel_triangulation.py",
     "evidence/track_provenance_assignment.py",
     "evidence/tracks.py",
     "evidence/triangulation.py",

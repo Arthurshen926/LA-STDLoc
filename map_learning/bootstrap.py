@@ -53,6 +53,9 @@ from evidence.triangulation import (
     camera_pose_bins,
     robust_triangulate_associations,
 )
+from evidence.parallel_triangulation import (
+    robust_triangulate_associations_fresh_cpu,
+)
 from evidence.track_provenance_assignment import (
     assign_tracks_by_splat_provenance,
 )
@@ -2844,7 +2847,18 @@ def _collect_track_first_geometry_teacher(
         int(args.geometry_teacher_view_bins),
         direction_weight=float(args.geometry_teacher_view_direction_weight),
     )
-    track_geometry = robust_triangulate_associations(
+    triangulate = robust_triangulate_associations
+    triangulation_extra = {}
+    if (
+        int(args.geometry_teacher_triangulation_cpu_workers) > 1
+        and int(track_diagnostics["track_count"])
+        >= int(args.geometry_teacher_parallel_triangulation_min_tracks)
+    ):
+        triangulate = robust_triangulate_associations_fresh_cpu
+        triangulation_extra["worker_count"] = int(
+            args.geometry_teacher_triangulation_cpu_workers
+        )
+    track_geometry = triangulate(
         landmark_count=int(track_diagnostics["track_count"]),
         landmark_index=tracks["track_index"],
         query_index=observation_query,
@@ -2891,6 +2905,7 @@ def _collect_track_first_geometry_teacher(
         surface_support_covariance_sigma_m=(
             args.geometry_teacher_surface_covariance_sigma_m
         ),
+        **triangulation_extra,
     )
     track_geometry["track_confidence_level"] = tracks[
         "track_level"
@@ -4705,6 +4720,8 @@ def build_parser():
     parser.add_argument('--save_track_micro_anchor_payload', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--save_track_pair_sidecar', action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument('--geometry_teacher_max_observations_per_landmark', type=int, default=32)
+    parser.add_argument('--geometry_teacher_triangulation_cpu_workers', type=int, default=2)
+    parser.add_argument('--geometry_teacher_parallel_triangulation_min_tracks', type=int, default=5000)
     parser.add_argument('--geometry_teacher_min_views', type=int, default=3)
     parser.add_argument('--geometry_teacher_view_bins', type=int, default=8)
     parser.add_argument('--geometry_teacher_min_view_bins', type=int, default=2)
