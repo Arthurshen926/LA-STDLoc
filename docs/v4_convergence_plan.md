@@ -41,6 +41,12 @@ summary exact parity而保留。无 Pose 审计显示正确候选 R@1 到 R@8 �
 数值与 SHA 见 `docs/evidence/v4_assignment_stairs_result.json`。默认发布路径仍
 保持独立 global Top-1；只有难例面板得到实际 pose/tail 改善后才替换。
 
+真实 margin dustbin 面板随后也在首个难例 Stairs 停止。四个候选虽把 raw
+precision 提高到 14.90--16.46%、把平均 hypotheses 降到 2918--3160，却使
+mean TE 恶化至 6.48--7.58 cm、CVaR95 恶化至 122.43--144.39 cm。说明
+Top-K oracle headroom 不能由局部 cosine margin 可靠兑现；不再继续调 K、margin
+或 dustbin。证据见 `docs/evidence/v4_assignment_margin_stairs_result.json`。
+
 ## 已确认的当前实现事实
 
 - Coverage 与 Pose 已经在 `leftover_tracks_plus_gaussian_base` 共享候选宇宙、匹配状态和姿态状态；不存在必须再造一个“统一候选分支”的必要。

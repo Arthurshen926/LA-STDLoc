@@ -67,6 +67,14 @@ so real candidate headroom remains. The next bounded experiment therefore uses
 a true Top-1/Top-2 margin dustbin plus fallback regret, only on the eight fixed
 hard scenes.
 
+That bounded experiment is also a Stop. On Stairs, all four K4/K8,
+regret=0.02, margin=0.005/0.01 candidates improved median error, raw/inlier
+precision, retained-correspondence count and PoseLib hypotheses, but mean TE
+rose to 6.48--7.58 cm and CVaR95 to 122.43--144.39 cm. This is a real tail
+regression, not a strict-gate artifact. Stairs was the preregistered cheap first
+hard scene, so the remaining seven scenes were not run. The default remains
+independent global Top-1; local cosine score/margin tuning is closed.
+
 The hard scenes are evaluated with full-mapping leave-one-query-out (LOO)
 descriptor replay.  The current mapping camera remains part of Track identity
 and geometry, but its descriptor observations are removed from every affected
