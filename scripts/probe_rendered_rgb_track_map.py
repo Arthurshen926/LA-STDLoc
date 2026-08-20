@@ -28,6 +28,10 @@ from evidence.camera_pair_policy import (
     trajectory_balanced_camera_pairs,
 )
 from evidence.observation_provider import GaussianRenderObservationProvider
+from evidence.virtual_camera_registry import (
+    build_virtual_camera_registry,
+    camera_intrinsic,
+)
 from evidence.tracks import fuse_track_descriptors
 from evidence.triangulation import (
     build_cycle_consistent_tracks,
@@ -73,16 +77,7 @@ def _uniform_indices(count: int, limit: int) -> torch.Tensor:
 
 
 def _intrinsic(camera) -> torch.Tensor:
-    focal_x = camera.width / (2.0 * torch.tan(torch.tensor(camera.fov_x / 2.0)))
-    focal_y = camera.height / (2.0 * torch.tan(torch.tensor(camera.fov_y / 2.0)))
-    return torch.tensor(
-        [
-            [float(focal_x), 0.0, camera.width / 2.0],
-            [0.0, float(focal_y), camera.height / 2.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=torch.float32,
-    )
+    return camera_intrinsic(camera)
 
 
 def _gather_query_keypoints(
@@ -106,8 +101,9 @@ def _render_feature_cache(args, output: Path) -> dict:
     started = time.perf_counter()
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    indices = _uniform_indices(len(mapping), args.max_views)
-    cameras = [mapping[int(index)] for index in indices]
+    cameras, camera_registry = build_virtual_camera_registry(
+        mapping, args.max_views
+    )
 
     model = (
         GaussianModel2D(args.sh_degree)
@@ -184,7 +180,12 @@ def _render_feature_cache(args, output: Path) -> dict:
         "uses_gaussian_geometry_for_triangulation": False,
         "mapping_query_count": len(cameras),
         "full_mapping_query_count": len(mapping),
-        "source_mapping_indices": indices,
+        # Kept only for archived artifact readers. New stages resolve by the
+        # attested names below, never by this dataset-order-dependent vector.
+        "source_mapping_indices": torch.tensor(
+            camera_registry["selected_legacy_dataset_indices"], dtype=torch.long
+        ),
+        "virtual_camera_registry": camera_registry,
         "queries": records,
         "configuration": {
             "gaussian_type": args.gaussian_type,
@@ -220,14 +221,10 @@ def _validate_cache(payload: dict) -> dict:
     return payload
 
 
-def _query_trajectory(image_name: str) -> str:
-    return str(image_name).split("/", maxsplit=1)[0]
-
-
 def _trajectory_balanced_matches(
     *,
     args,
-    names: list[str],
+    query_groups: list[str | None],
     descriptors: list[torch.Tensor],
     keypoints: list[torch.Tensor],
     scores: list[torch.Tensor],
@@ -246,9 +243,14 @@ def _trajectory_balanced_matches(
         maximum_axis_angle_deg=args.maximum_axis_angle_deg,
         policy="nearest",
     )
+    if any(group is None for group in query_groups):
+        raise ValueError(
+            "trajectory-balanced virtual-camera matching requires explicit "
+            "sequence_id metadata; filenames are opaque"
+        )
     pairs = trajectory_balanced_camera_pairs(
         poses,
-        [_query_trajectory(name) for name in names],
+        [str(group) for group in query_groups],
         local_neighbors=args.local_pair_neighbors,
         pair_budget=len(nearest),
         minimum_baseline_m=args.minimum_baseline_m,
@@ -319,6 +321,7 @@ def _build_track_map(
     intrinsics = observations["camera_K"]
     poses = observations["pose_w2c"]
     image_hw = observations["image_hw"]
+    query_groups = observations["query_groups"]
     input_seconds = time.perf_counter() - input_started
 
     track_started = time.perf_counter()
@@ -329,7 +332,7 @@ def _build_track_map(
         precomputed_pairs, precomputed_matches, precomputed_diagnostics = (
             _trajectory_balanced_matches(
                 args=args,
-                names=names,
+                query_groups=query_groups,
                 descriptors=descriptors,
                 keypoints=keypoints,
                 scores=scores,
@@ -520,14 +523,14 @@ def _build_track_map(
         "query_count": len(names),
         "pair_count": int(diagnostics["track_camera_pair_candidate_count"]),
         "pair_policy": str(args.pair_policy),
-        "cross_trajectory_pair_count": int(
-            sum(
-                _query_trajectory(names[left]) != _query_trajectory(names[right])
+        "cross_trajectory_pair_count": (
+            None if any(group is None for group in query_groups) else int(sum(
+                query_groups[left] != query_groups[right]
                 for left, right in zip(
                     torch.as_tensor(sidecar["pair"]["left_query_index"]).tolist(),
                     torch.as_tensor(sidecar["pair"]["right_query_index"]).tolist(),
                 )
-            )
+            ))
         ),
         "raw_match_count": int(diagnostics["track_raw_reciprocal_epipolar_edge_count"]),
         "cycle_or_chain_supported_edge_count": int(

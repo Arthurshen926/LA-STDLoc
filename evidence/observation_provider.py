@@ -54,7 +54,7 @@ class ObservationView:
     keypoint_validity: torch.Tensor | None
     keypoint_alpha: torch.Tensor | None
     keypoint_depth: torch.Tensor | None
-    sequence_id: str
+    sequence_id: str | None
     pose_bin: int
     source_kind: SourceKind
     image_hw: tuple[int, int]
@@ -264,7 +264,8 @@ class ObservationProvider:
                 raise ValueError(
                     f"{name}.native_depth_at_keypoints rows are not aligned"
                 )
-        sequence_id = str(record.get("sequence_id", name.split("/", 1)[0]))
+        raw_sequence_id = record.get("sequence_id")
+        sequence_id = None if raw_sequence_id is None else str(raw_sequence_id)
         pose_bin = (
             int(self._query_bins[index])
             if self._query_bins is not None
@@ -313,6 +314,7 @@ class ObservationProvider:
             "image_hw": torch.tensor(
                 [view.image_hw for view in views], dtype=torch.long
             ),
+            "query_groups": [view.sequence_id for view in views],
         }
 
 

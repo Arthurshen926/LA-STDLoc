@@ -10,6 +10,8 @@ from pathlib import Path
 
 import torch
 
+from features.raster_sampling import sample_raster_at_grid_uv
+
 
 def _source_anchor_lookup(source_ids: torch.Tensor):
     source_ids = torch.as_tensor(source_ids).long().reshape(-1)
@@ -177,18 +179,18 @@ def _sample_surface(
                 "raster-provenance surface samples must align with query_rows"
             )
         return keypoints, depth, alpha, "raster_provenance"
-    height, width = (int(value) for value in cached["native_input_hw"])
-    pixels = torch.floor(keypoints).long()
-    x = pixels[:, 0].clamp(0, width - 1)
-    y = pixels[:, 1].clamp(0, height - 1)
-    depth = torch.as_tensor(cached["native_depth"]).float()[y, x]
+    depth = sample_raster_at_grid_uv(
+        torch.as_tensor(cached["native_depth"]).float(), keypoints
+    )
     if "native_alpha" not in cached:
         raise KeyError(
             "complete-positive teacher requires rendered_alpha in raster "
             "provenance or native_alpha in the query cache; rebuild raster "
             "provenance with the current pipeline"
         )
-    alpha = torch.as_tensor(cached["native_alpha"]).float()[y, x]
+    alpha = sample_raster_at_grid_uv(
+        torch.as_tensor(cached["native_alpha"]).float(), keypoints
+    )
     return keypoints, depth, alpha, "query_cache"
 
 

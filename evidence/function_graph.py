@@ -11,18 +11,20 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from features.raster_sampling import sample_raster_at_grid_uv
+
 from evidence.projection import _project_candidates
 from data.masks import deployment_valid_mask
 from localization.pose_solver import solve_pose
 
 
 def _sample_rendered_surface(cached: dict, keypoints: torch.Tensor):
-    height, width = (int(value) for value in cached["native_input_hw"])
-    pixels = torch.floor(keypoints).long()
-    x = pixels[:, 0].clamp(0, width - 1)
-    y = pixels[:, 1].clamp(0, height - 1)
-    depth = torch.as_tensor(cached["native_depth"]).float()[y, x]
-    alpha = torch.as_tensor(cached["native_alpha"]).float()[y, x]
+    depth = sample_raster_at_grid_uv(
+        torch.as_tensor(cached["native_depth"]).float(), keypoints
+    )
+    alpha = sample_raster_at_grid_uv(
+        torch.as_tensor(cached["native_alpha"]).float(), keypoints
+    )
     return depth, alpha
 
 

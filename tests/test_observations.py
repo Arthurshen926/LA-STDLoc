@@ -37,10 +37,10 @@ def test_legacy_surface_samples_require_alpha() -> None:
         _sample_surface(_cache(with_alpha=False), torch.tensor([0]))
 
 
-def test_legacy_surface_samples_remain_supported_with_alpha() -> None:
+def test_query_cache_surface_samples_share_nearest_cell_alpha_depth_contract() -> None:
     _, depth, alpha, source = _sample_surface(
         _cache(with_alpha=True), torch.tensor([0, 1])
     )
-    assert torch.equal(depth, torch.tensor([1.0, 4.0]))
-    assert torch.allclose(alpha, torch.tensor([0.1, 0.4]))
+    assert torch.equal(depth, torch.tensor([3.0, 4.0]))
+    assert torch.allclose(alpha, torch.tensor([0.3, 0.4]))
     assert source == "query_cache"

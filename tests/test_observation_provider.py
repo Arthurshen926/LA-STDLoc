@@ -30,6 +30,8 @@ def test_render_provider_reproduces_legacy_track_inputs_exactly() -> None:
         "seq-01/frame-000001.color.png": _record(1),
         "seq-02/frame-000002.color.png": _record(2),
     }
+    records["seq-01/frame-000001.color.png"]["sequence_id"] = "seq-01"
+    records["seq-02/frame-000002.color.png"]["sequence_id"] = "seq-02"
     provider = GaussianRenderObservationProvider(
         {
             "schema": "lafgs_rendered_rgb_only_sparse_mapping_cache",
@@ -40,6 +42,7 @@ def test_render_provider_reproduces_legacy_track_inputs_exactly() -> None:
     )
     inputs = provider.track_inputs()
     assert inputs["query_names"] == list(records)
+    assert inputs["query_groups"] == ["seq-01", "seq-02"]
     for index, name in enumerate(records):
         record = records[name]
         assert torch.equal(

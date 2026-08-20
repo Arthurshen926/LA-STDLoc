@@ -1,0 +1,21 @@
+{
+  "base_commit": "8073cf1a0abf1716c4e3f08b7a2b1f15763eefdb",
+  "default_method_changed": false,
+  "mapping_only": true,
+  "outcomes": {
+    "cycle_seeded_precision_core": "unchanged_explicit_ablation_only",
+    "raster_sampling": "fixed_shared_nearest_cell",
+    "virtual_camera_registry": "fixed_cross_stage_names_policy_calibration_hash"
+  },
+  "real_registry_audit": {
+    "scene": "Cambridge/ShopFacade",
+    "mapping_camera_count": 231,
+    "positions_changed_vs_filename_order": 231,
+    "reverse_order_resolution_count": 231,
+    "registry_sha256": "3213155e8e01bb7472c7aa5aa1a66b179bb79061db9d670d782ad5498a04cf05"
+  },
+  "schema": "lafgs_v4_render_only_correctness_audit",
+  "uses_source_mapping_rgb": false,
+  "uses_test_queries": false,
+  "version": 2
+}

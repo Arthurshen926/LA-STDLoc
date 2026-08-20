@@ -29,6 +29,7 @@ from features.superpoint import sample_descriptors
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D, GaussianModel3D
 from priors.rendering import render_from_pose_gsplat
+from evidence.virtual_camera_registry import resolve_virtual_camera_registry
 from scripts.probe_rendered_rgb_track_map import _intrinsic
 
 
@@ -233,8 +234,9 @@ def materialize(args) -> dict:
 
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    indices = torch.as_tensor(source_cache["source_mapping_indices"]).long()
-    cameras = [mapping[int(index)] for index in indices]
+    cameras = resolve_virtual_camera_registry(
+        mapping, source_cache.get("virtual_camera_registry")
+    )
     source_queries = source_cache["queries"]
     names = list(source_queries)
     if names != [camera.image_name for camera in cameras]:

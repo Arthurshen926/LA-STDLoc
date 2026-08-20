@@ -36,6 +36,7 @@ from features.superpoint import sample_descriptors
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D
 from priors.rendering import render_from_pose_gsplat
+from evidence.virtual_camera_registry import resolve_virtual_camera_registry
 from scripts.probe_rendered_rgb_track_map import _intrinsic
 
 
@@ -236,8 +237,9 @@ def materialize(args: argparse.Namespace) -> dict:
 
     dataset = ColmapDataset(args.dataset.resolve(), images=args.images)
     mapping = dataset.split("mapping")
-    indices = torch.as_tensor(raw_cache["source_mapping_indices"]).long()
-    cameras = [mapping[int(index)] for index in indices]
+    cameras = resolve_virtual_camera_registry(
+        mapping, raw_cache.get("virtual_camera_registry")
+    )
     if names != [camera.image_name for camera in cameras]:
         raise ValueError("R1 dataset mapping order differs from the frozen cache")
 
