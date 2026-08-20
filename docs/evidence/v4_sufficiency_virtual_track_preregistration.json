@@ -8,7 +8,10 @@
   "minimum_new_anchor_count": 20,
   "minimum_raw_track_count": 50,
   "minimum_stable_broad_track_count": 20,
-  "plan_sha256": "ce5036b83e45c0069282fc1f676bacc2fd15cc26a15404209dbf8c045deda59d",
+  "candidate_coverage": "real_low_resolution_alpha_depth_zbuffer",
+  "formal_unified_map_anchor_count": 5794,
+  "formal_unified_map_sha256": "7e47dfb74cffec2e8d934f42c06c3a69b9064b623a2d477ad6bdf66fc296c252",
+  "plan_sha256": "7b6d231492692c189011aedc8ce060b3e6335a36651caa954f99276b9798b487",
   "selected_view_count": 8,
   "test_queries_used_for_decision": false
 }

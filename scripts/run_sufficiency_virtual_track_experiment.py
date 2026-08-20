@@ -291,6 +291,22 @@ def main() -> None:
         raise ValueError("invalid mapping-only virtual-render plan")
     if plan.get("gt_visible_diagnostic", "missing") is not None:
         raise ValueError("planner contains a GT-visible/test diagnostic")
+    support = plan.get("candidate_render_support", {})
+    if support.get("mode") != "real_low_resolution_alpha_depth_zbuffer":
+        raise ValueError("closed loop requires real candidate alpha/depth support")
+    selected_map_path = Path(plan.get("inputs", {}).get("selected_map", ""))
+    if (
+        not selected_map_path.is_file()
+        or sha256_file(selected_map_path)
+        != plan["inputs"].get("selected_map_sha256")
+    ):
+        raise ValueError("formal unified map identity changed after planning")
+    if support.get("gaussian_ply_sha256") != sha256_file(args.gaussian_ply):
+        raise ValueError("planner and closed loop use different Gaussian priors")
+    if plan.get("triangulation_family_contract", {}).get(
+        "source_and_pose_proximity_components"
+    ) is not True:
+        raise ValueError("planner lacks source/pose-proximity family identity")
     selected = torch.as_tensor(plan["selected_candidate_indices"]).long()[:args.view_count]
     if selected.numel() != args.view_count:
         raise ValueError("plan does not contain the requested frozen view count")

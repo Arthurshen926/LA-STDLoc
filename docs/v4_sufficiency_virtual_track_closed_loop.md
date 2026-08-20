@@ -1,8 +1,12 @@
 # Sufficiency virtual-render Track closed loop
 
 This is a bounded experimental entry point; the default V4 pipeline is
-unchanged.  The frozen planner supplies virtual poses, and the experiment runs
-Gaussian RGB/alpha/depth rendering, the standard SuperPoint frontend,
+unchanged. The frozen planner is bound to the formal unified 5,794-Anchor map
+and its parent query/Track SHAs. Candidate coverage is accepted only after a
+real low-resolution Gaussian alpha/depth render agrees with the candidate
+z-buffer; pose families are source/center-proximity components rather than
+operation labels. The experiment then runs Gaussian RGB/alpha/depth rendering,
+the standard SuperPoint frontend,
 family-aware Track construction, pure-ray triangulation, and the shared
 `UnifiedAnchorConstructor`.
 
