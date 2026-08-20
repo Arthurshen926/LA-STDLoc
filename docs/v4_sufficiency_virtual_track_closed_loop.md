@@ -10,6 +10,12 @@ the standard SuperPoint frontend,
 family-aware Track construction, pure-ray triangulation, and the shared
 `UnifiedAnchorConstructor`.
 
+Virtual views inherit bins from the fixed formal-mapping center/direction
+frame. The deployable experimental artifact is always the formal 5,794-Anchor
+prefix plus virtual Track Anchors; a virtual-only batch is never emitted as a
+deployment map. Runtime checks re-hash the query cache, Track payload, formal
+map, Gaussian prior, and ordered camera registry before materialization.
+
 The Top-8 dry-run gate was fixed before rendering.  It consumes only mapping
 evidence: detector support, Track/Anchor counts, family independence, and view
 bins. `gt_visible_diagnostic` remains null.  Top-32 refuses to run without a

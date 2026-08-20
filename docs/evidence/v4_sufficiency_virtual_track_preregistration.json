@@ -11,7 +11,7 @@
   "candidate_coverage": "real_low_resolution_alpha_depth_zbuffer",
   "formal_unified_map_anchor_count": 5794,
   "formal_unified_map_sha256": "7e47dfb74cffec2e8d934f42c06c3a69b9064b623a2d477ad6bdf66fc296c252",
-  "plan_sha256": "7b6d231492692c189011aedc8ce060b3e6335a36651caa954f99276b9798b487",
+  "plan_sha256": "9a8253213db590d03e02b26d4c2c40d7dac4d870b6dc48ca04c5978e76bbab49",
   "selected_view_count": 8,
   "test_queries_used_for_decision": false
 }
