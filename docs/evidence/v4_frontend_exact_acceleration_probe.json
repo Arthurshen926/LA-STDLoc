@@ -1,0 +1,100 @@
+{
+  "schema": "lafgs_frontend_exact_acceleration_probe",
+  "version": 1,
+  "commit": "12487b93b45f8ce22edb6f60725dfba7b2497fda",
+  "protocol": {
+    "split": "mapping",
+    "image_size": [1080, 1920],
+    "keypoint_count": 2048,
+    "precision": "float32",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "scenes": ["Cambridge/ShopFacade", "Cambridge/GreatCourt"],
+    "forbidden_changes": ["FP16", "detector replacement", "keypoint reduction"]
+  },
+  "probes": {
+    "channels_last_plus_cudnn_benchmark": {
+      "decision": "STOP_NUMERICAL_CONTRACT",
+      "shopfacade": {
+        "baseline_mean_ms": 44.09340458611647,
+        "candidate_mean_ms": 42.20360812420646,
+        "speedup": 1.0447780781289666,
+        "keypoint_rows_exact": false,
+        "scores_exact": false,
+        "descriptors_exact": false,
+        "maximum_score_difference": 0.0031209588050842285
+      },
+      "greatcourt": {
+        "baseline_keypoint_rows": 2015,
+        "candidate_keypoint_rows": 2014,
+        "keypoint_count_exact": false
+      }
+    },
+    "contiguous_cudnn_benchmark": {
+      "decision": "STOP_NO_MATERIAL_GAIN",
+      "shopfacade": {
+        "baseline_mean_ms": 46.14969100803137,
+        "candidate_mean_ms": 44.568778201937675,
+        "speedup": 1.0354713068177614,
+        "keypoint_rows_exact": true,
+        "scores_exact": true,
+        "descriptors_exact": true
+      },
+      "reason": "A process-global backend policy was not enabled for a 3.5 percent single-image probe gain."
+    },
+    "torch_compile_dense_forward": {
+      "decision": "STOP_NUMERICAL_CONTRACT",
+      "shopfacade": {
+        "compile_cold_start_seconds": 20.056649410165846,
+        "baseline_mean_ms": 46.699003130197525,
+        "candidate_mean_ms": 38.40995356440544,
+        "speedup": 1.2158047275921093,
+        "keypoint_rows_exact": false,
+        "scores_exact": false,
+        "descriptors_exact": false,
+        "maximum_score_difference": 0.00062522292137146
+      }
+    },
+    "cuda_graph_dense_forward": {
+      "decision": "STOP_SLOWER",
+      "shopfacade": {
+        "baseline_mean_ms": 25.24895578001936,
+        "candidate_mean_ms": 28.62374538866182,
+        "speedup": 0.8820982522441229,
+        "keypoint_rows_exact": true,
+        "scores_exact": true,
+        "descriptors_exact": true
+      },
+      "scope": "Static dense forward captured; dynamic sparse extraction remained outside the graph."
+    },
+    "reusable_input_buffers": {
+      "decision": "STOP_NO_REPRODUCIBLE_GAIN",
+      "equivalence": {
+        "keypoint_rows_exact": true,
+        "scores_exact": true,
+        "descriptors_exact": true,
+        "top1_anchor_ids_exact": true,
+        "top1_scores_exact": true,
+        "poselib_pose_exact": true,
+        "poselib_inliers_exact": true
+      },
+      "interleaved_ab_ba_20_pairs": {
+        "shopfacade": {
+          "baseline_mean_ms": 53.340223245322704,
+          "candidate_mean_ms": 53.540604934096336,
+          "speedup": 0.9962573884060465
+        },
+        "greatcourt": {
+          "baseline_mean_ms": 67.10992092266679,
+          "candidate_mean_ms": 68.16494530066848,
+          "speedup": 0.9845224789171606
+        }
+      },
+      "reason": "Sequential control-then-candidate timings showed an order-dependent apparent gain that disappeared under interleaved measurement."
+    },
+    "preallocated_sparse_outputs": {
+      "decision": "STOP_UNSAFE_CONTRACT",
+      "reason": "Keypoint count and row selection are data-dependent; output reuse would expose mutable storage or require a result copy that defeats the proposed allocation saving."
+    }
+  },
+  "final_decision": "STOP_ALL_PROBES_KEEP_EXISTING_FRONTEND"
+}
