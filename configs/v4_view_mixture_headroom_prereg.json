@@ -1,0 +1,39 @@
+{
+  "schema": "lafgs_view_mixture_headroom_preregistration",
+  "version": 1,
+  "created_before_first_real_scene_result": true,
+  "uses_test_queries_for_selection": false,
+  "protocol": "mapping-query-local leave-one-out descriptor retrieval audit over selected Track Anchors",
+  "candidate_registry": "selected_track_anchors_only; surface completion is excluded from this low-cost Track appearance hypothesis audit",
+  "scene_order": [
+    "Cambridge/GreatCourt",
+    "Cambridge/StMarysChurch",
+    "7Scenes/stairs",
+    "12Scenes/office2_5a",
+    "12Scenes/office2_5b",
+    "Cambridge/ShopFacade",
+    "7Scenes/chess",
+    "12Scenes/apt1_kitchen"
+  ],
+  "parameters": {
+    "minimum_cluster_observations": 2,
+    "minimum_cluster_view_bins": 2,
+    "minimum_angle_degrees": 12.0,
+    "minimum_loss_improvement": 0.015,
+    "maximum_prototype_ratio": 1.2,
+    "temperature": 0.05,
+    "descriptor_trim_fraction": 0.2
+  },
+  "required_reports": [
+    "observation_weighted_recall_at_1_4_16",
+    "mapping_query_macro_recall_at_1_4_16",
+    "track_macro_recall_at_1_4_16",
+    "correct_best_wrong_margin",
+    "false_maximum",
+    "benefited_and_harmed_fraction",
+    "retrieval_zero_correct_top1_proxy",
+    "prototype_budget",
+    "matching_latency"
+  ],
+  "pose_gate": "Only after a frozen candidate passes retrieval headroom; catastrophe means pose error only in that later replay."
+}
