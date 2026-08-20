@@ -1,6 +1,6 @@
 {
   "schema": "lafgs_v4_offline_dag_acceleration_evidence",
-  "version": 1,
+  "version": 2,
   "date": "2026-08-20",
   "baseline_commit": "791af97d0cf592747c40f8b3982efa7ae5a2d060",
   "scope": "offline_method_neutral",
@@ -11,6 +11,12 @@
     "default_maximum_store_gib": 20.0,
     "atomic_publish": true,
     "publish_lock": true,
+    "partial_final_recovery": true,
+    "pre_and_post_build_toctou_check": true,
+    "run_local_materialization": true,
+    "cache_prune_safe_completed_run": true,
+    "torch_and_json_path_rebinding": true,
+    "runtime_and_rasterizer_abi_keyed": true,
     "test_rgb_opened_for_key": false,
     "strict_checks": [
       "canonical_config",
@@ -22,11 +28,11 @@
     ],
     "shopfacade_real_artifact_benchmark": {
       "artifact_bytes": 531439443,
-      "cache_key_validation_seconds": 0.5307419095188379,
-      "cold_publish_and_verify_seconds": 2.9217523811385036,
-      "hit_sha_verification_seconds": 0.5189345208927989,
-      "hit_materialization_seconds": 0.00000873953104019165,
-      "same_artifact_paths": true
+      "cache_key_validation_seconds": 0.5046752877533436,
+      "cold_publish_and_verify_seconds": 2.44538099039346,
+      "hit_verify_and_run_local_materialization_seconds": 2.4695484340190887,
+      "copy_mode": "byte_copy",
+      "cache_pruned_local_artifacts_complete": true
     },
     "copy_mode_probe": {
       "artifact_bytes": 490572506,
@@ -70,7 +76,7 @@
   },
   "cross_branch_warning": "Historical render-only artifacts use a different camera-pair policy implementation and are not a valid integration bitwise oracle.",
   "tests": {
-    "passed": 555,
+    "passed": 568,
     "skipped": 1,
     "skip_reason": "CUDA renderer smoke requires LAFGS_RUN_CUDA_SMOKE=1"
   }

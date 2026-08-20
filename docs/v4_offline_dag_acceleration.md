@@ -17,17 +17,20 @@ and reuse of the final projection.
 The DAG is disabled unless `--artifact-cache` is explicit. Its key binds the
 mapping-only camera schedule and RGB hashes (test RGB is not opened), the
 mapping-mask subset, resolved Gaussian PLY, Gaussian manifest when present,
-SuperPoint checkpoint, canonical config, and exact source-file hashes for the
-node producer. Cache nodes have schema/version checks, SHA and size checks for
-every artifact, atomic-last publication, a root publish lock, and configurable
-hard node/store limits (8/20 GiB defaults). Publication attempts a reflink and
-falls back to a byte copy. It never evicts data implicitly.
+SuperPoint checkpoint, canonical config, the complete explicit transitive local
+source closure, and Torch/CUDA/cuDNN/gsplat rasterizer ABI. Cache nodes have
+schema/version checks, SHA and size checks for every artifact, pre/post-build
+input hashing, atomic-last publication, partial-final recovery, a root publish
+lock, alias rejection, and configurable hard node/store limits including the
+manifest (8/20 GiB defaults). Publication attempts a reflink and falls back to
+a byte copy. It never evicts data implicitly.
 
 On a real 531,439,443-byte ShopFacade Observation/Track/Geometry artifact set,
-key hashing took 0.531 s, cold byte-copy publication plus verification took
-2.922 s, a verified hit took 0.519 s, and path materialization took 9 us. A
-second 490,572,506-byte run explicitly recorded `byte_copy`, 1.755 s cold and
-0.454 s hit verification. These costs replace the historical 75.23 s optimized
+key hashing took 0.505 s, cold byte-copy publication plus verification took
+2.445 s, and verified run-local byte-copy materialization took 2.470 s. The
+cache was then deleted and every run-local artifact remained complete. JSON and
+Torch metadata paths are rebound locally; uncached build-only paths become
+path-neutral tokens. These costs replace the historical 75.23 s optimized
 or 768.10 s unoptimized Shop Track-map build when only downstream policy changes.
 
 A fixed synthetic replay was run once with the untouched `791af97` module and
@@ -40,7 +43,7 @@ refinement and are intentionally absent. Historical render-only full-map
 artifacts are not direct integration-oracle inputs because camera-pair policy
 code differs across those branches.
 
-The complete integration CPU suite passes: 555 passed, one CUDA renderer smoke
+The complete integration CPU suite passes: 568 passed, one CUDA renderer smoke
 test skipped by its explicit environment gate.
 
 Two remaining structural options were bounded rather than enabled blindly. A

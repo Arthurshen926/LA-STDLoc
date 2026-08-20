@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import pickle
 import time
@@ -18,6 +19,7 @@ from common.content_addressed_dag import (
     ContentAddressedStore,
     node_spec,
     path_content_record,
+    runtime_identity,
     source_identity,
 )
 from common.hashing import sha256_file
@@ -131,15 +133,54 @@ def _validate_arguments(
 
 
 _BOOTSTRAP_DAG_SOURCES = (
+    "common/anchor_registry_artifact.py",
+    "common/artifact_contract.py",
     "common/calibration.py",
+    "common/cli.py",
     "common/config.py",
+    "common/content_addressed_dag.py",
+    "common/geometry.py",
+    "common/hashing.py",
+    "common/pipeline_completion.py",
+    "common/producer_identity.py",
+    "common/runtime.py",
+    "common/tensor_identity.py",
+    "data/cameras.py",
+    "data/colmap.py",
     "data/datasets.py",
+    "data/images.py",
+    "data/scene.py",
+    "data/splits.py",
+    "evidence/camera_pair_policy.py",
+    "evidence/parallax_stratified_pair_policy.py",
+    "evidence/track_provenance_assignment.py",
     "evidence/tracks.py",
     "evidence/triangulation.py",
+    "evidence/visibility.py",
     "features/extractor.py",
+    "features/matching.py",
+    "features/multiview_fusion.py",
+    "features/sampling.py",
     "features/superpoint.py",
+    "localization/pose_solver.py",
+    "map_learning/alias_teacher.py",
     "map_learning/bootstrap.py",
+    "map_learning/metric.py",
     "map_learning/pipeline.py",
+    "map_learning/soft_pose.py",
+    "map_learning/stage_a_loss.py",
+    "map_learning/trainer.py",
+    "map_learning/trust.py",
+    "priors/geometry.py",
+    "priors/models.py",
+    "priors/rasterizer.py",
+    "priors/rendering.py",
+    "scripts/run_pipeline.py",
+    "topology/anchor_covariance.py",
+    "topology/anchor_registry.py",
+    "topology/geometry_materializer.py",
+    "topology/pose_information.py",
+    "topology/sampling.py",
 )
 
 _BOOTSTRAP_DAG_FILES = {
@@ -151,6 +192,7 @@ _BOOTSTRAP_DAG_FILES = {
     "mapping_frontend_contract": "mapping_frontend_contract.json",
     "scene_calibration": "scene_calibration.json",
 }
+_BOOTSTRAP_DAG_PATH_BINDINGS = "path_bindings.json"
 
 
 def _mapping_mask_record(dataset_root: Path, names: list[str]) -> dict:
@@ -169,18 +211,31 @@ def _mapping_mask_record(dataset_root: Path, names: list[str]) -> dict:
         return {"kind": "mapping_mask_manifest", "present": False}
     with mask_path.open("rb") as handle:
         masks = pickle.load(handle)
+    if not isinstance(masks, dict):
+        raise ValueError("mapping mask artifact must contain a dictionary")
     digest = hashlib.sha256()
     selected = 0
     for name in names:
         if name not in masks:
             continue
+        channels = masks[name]
+        if not isinstance(channels, (list, tuple)) or len(channels) < 3:
+            raise ValueError(
+                f"Mask entry for {name!r} must contain three validity channels"
+            )
         selected += 1
-        digest.update(name.encode("utf-8"))
-        for channel in masks[name]:
+        encoded_name = name.encode("utf-8")
+        digest.update(len(encoded_name).to_bytes(8, "big"))
+        digest.update(encoded_name)
+        for channel in channels[:3]:
             value = torch.as_tensor(channel).detach().cpu().contiguous()
-            digest.update(str(value.dtype).encode("ascii"))
-            digest.update(json.dumps(list(value.shape)).encode("ascii"))
-            digest.update(value.numpy().tobytes())
+            for encoded in (
+                str(value.dtype).encode("ascii"),
+                json.dumps(list(value.shape)).encode("ascii"),
+                value.numpy().tobytes(),
+            ):
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
     return {
         "kind": "mapping_mask_manifest",
         "present": True,
@@ -271,7 +326,10 @@ def _bootstrap_dag_spec(args: argparse.Namespace, config: Path) -> dict:
             "mainline": load_mainline_config(config).values,
         },
         upstream=upstream,
-        producer=source_identity(root, _BOOTSTRAP_DAG_SOURCES),
+        producer={
+            **source_identity(root, _BOOTSTRAP_DAG_SOURCES),
+            "runtime": runtime_identity(),
+        },
     )
 
 
@@ -286,8 +344,63 @@ def _rebound_json(
                 sources[name] = value
     if "query_cache" in payload:
         payload["query_cache"] = replacements["query_cache"]
+    if target.exists():
+        target.chmod(0o644)
     target.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return target
+
+
+def _rebind_value_paths(value, replacements: dict[str, str]):
+    if isinstance(value, Path):
+        rebound, changed = _rebind_value_paths(str(value), replacements)
+        return Path(rebound), changed
+    if isinstance(value, str):
+        for old, new in sorted(replacements.items(), key=lambda item: -len(item[0])):
+            if value == old:
+                return new, True
+            if value.startswith(old + os.sep):
+                return new + value[len(old) :], True
+        return value, False
+    if isinstance(value, dict):
+        output = {}
+        changed = False
+        for key, item in value.items():
+            new_key, key_changed = _rebind_value_paths(key, replacements)
+            new_item, item_changed = _rebind_value_paths(item, replacements)
+            if new_key in output and new_key != key:
+                raise ValueError("path rebinding would collide dictionary keys")
+            output[new_key] = new_item
+            changed = changed or key_changed or item_changed
+        return output, changed
+    if isinstance(value, list):
+        values = [_rebind_value_paths(item, replacements) for item in value]
+        return [item for item, _ in values], any(changed for _, changed in values)
+    if isinstance(value, tuple):
+        values = [_rebind_value_paths(item, replacements) for item in value]
+        return tuple(item for item, _ in values), any(changed for _, changed in values)
+    if isinstance(value, (set, frozenset)):
+        values = [_rebind_value_paths(item, replacements) for item in value]
+        rebound = type(value)(item for item, _ in values)
+        if len(rebound) != len(value):
+            raise ValueError("path rebinding would collide set entries")
+        return rebound, any(changed for _, changed in values)
+    return value, False
+
+
+def _rebind_torch_artifact_paths(path: Path, replacements: dict[str, str]) -> bool:
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    rebound, changed = _rebind_value_paths(payload, replacements)
+    if not changed:
+        return False
+    temporary = path.with_name(f".{path.name}.rebind.{os.getpid()}")
+    try:
+        torch.save(rebound, temporary)
+        path.chmod(0o644)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return True
 
 
 def _build_or_reuse_bootstrap(
@@ -331,8 +444,6 @@ def _build_or_reuse_bootstrap(
         missing = sorted(set(_BOOTSTRAP_DAG_FILES) - set(built))
         if missing:
             raise RuntimeError(f"bootstrap DAG node is incomplete: {missing}")
-        future_query = store.artifact_path(spec, _BOOTSTRAP_DAG_FILES["query_cache"])
-        future_track = store.artifact_path(spec, _BOOTSTRAP_DAG_FILES["track_payload"])
         rebound_dir = args.output / "bootstrap/dag_publish"
         rebound_dir.mkdir(parents=True, exist_ok=True)
         publish_sources = {
@@ -340,8 +451,8 @@ def _build_or_reuse_bootstrap(
             for name, filename in _BOOTSTRAP_DAG_FILES.items()
         }
         replacements = {
-            "query_cache": str(future_query),
-            "track_payload": str(future_track),
+            "query_cache": "@dag/query_cache.pt",
+            "track_payload": "@dag/track_payload.pt",
         }
         publish_sources[_BOOTSTRAP_DAG_FILES["scene_calibration"]] = _rebound_json(
             source=Path(built["scene_calibration"]),
@@ -355,13 +466,89 @@ def _build_or_reuse_bootstrap(
                 replacements=replacements,
             )
         )
+        binding_source = rebound_dir / _BOOTSTRAP_DAG_PATH_BINDINGS
+        binding_source.write_text(
+            json.dumps(
+                {
+                    "schema": "lafgs_dag_origin_path_bindings",
+                    "version": 1,
+                    "output": str(Path(args.output).resolve()),
+                    "dataset": str(Path(args.dataset).expanduser().resolve()),
+                    "prior": str(Path(args.prior).expanduser().resolve()),
+                    "config": str(Path(config).expanduser().resolve()),
+                    "artifacts": {
+                        name: str(Path(path).expanduser().resolve())
+                        for name, path in built.items()
+                        if isinstance(path, (str, Path))
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        publish_sources[_BOOTSTRAP_DAG_PATH_BINDINGS] = binding_source
         publish_started = time.perf_counter()
+        final_spec = _bootstrap_dag_spec(args, config)
+        if final_spec != spec:
+            raise RuntimeError(
+                "mapping inputs, config, runtime, or producer changed during DAG build"
+            )
         cached = store.publish(spec, publish_sources)
         publish_seconds = time.perf_counter() - publish_started
     materialize_started = time.perf_counter()
-    artifacts = {
-        name: cached[filename] for name, filename in _BOOTSTRAP_DAG_FILES.items()
+    local, materialize_modes = store.materialize(
+        spec, args.output / "bootstrap_dag_materialized"
+    )
+    artifacts = {name: local[filename] for name, filename in _BOOTSTRAP_DAG_FILES.items()}
+    local_replacements = {
+        "query_cache": str(artifacts["query_cache"]),
+        "track_payload": str(artifacts["track_payload"]),
     }
+    _rebound_json(
+        source=artifacts["scene_calibration"],
+        target=artifacts["scene_calibration"],
+        replacements=local_replacements,
+    )
+    bindings_path = local[_BOOTSTRAP_DAG_PATH_BINDINGS]
+    origin = json.loads(bindings_path.read_text())
+    embedded_replacements = {
+        str(origin["output"]): "@dag-origin-output",
+        str(origin["dataset"]): str(Path(args.dataset).expanduser().resolve()),
+        str(origin["prior"]): str(Path(args.prior).expanduser().resolve()),
+        str(origin["config"]): str(Path(config).expanduser().resolve()),
+    }
+    for name, old_path in origin.get("artifacts", {}).items():
+        if name in artifacts:
+            embedded_replacements[str(old_path)] = str(artifacts[name])
+    rebound_torch = {}
+    for name in (
+        "base_state",
+        "track_payload",
+        "query_cache",
+        "visibility_cache",
+    ):
+        rebound_torch[name] = _rebind_torch_artifact_paths(
+            artifacts[name], embedded_replacements
+        )
+    origin.update(
+        {
+            "schema": "lafgs_run_local_path_bindings",
+            "origin_cache_paths_removed": True,
+            "output": str(Path(args.output).resolve()),
+            "dataset": str(Path(args.dataset).expanduser().resolve()),
+            "prior": str(Path(args.prior).expanduser().resolve()),
+            "config": str(Path(config).expanduser().resolve()),
+            "artifacts": {name: str(path) for name, path in artifacts.items()},
+        }
+    )
+    bindings_path.chmod(0o644)
+    bindings_path.write_text(json.dumps(origin, indent=2, sort_keys=True) + "\n")
+    _rebound_json(
+        source=artifacts["mapping_frontend_contract"],
+        target=artifacts["mapping_frontend_contract"],
+        replacements=local_replacements,
+    )
     materialize_seconds = time.perf_counter() - materialize_started
     report = {
         "schema": "lafgs_pipeline_dag_reuse_report",
@@ -371,6 +558,8 @@ def _build_or_reuse_bootstrap(
         "cache_hit": cache_hit,
         "cache_root": str(store.root),
         "artifacts": {name: str(path) for name, path in artifacts.items()},
+        "materialization_copy_mode": materialize_modes,
+        "run_local_torch_path_rebound": rebound_torch,
         "timing_seconds": {
             "cache_key_validation": key_seconds,
             "cache_lookup_and_sha_verification": lookup_seconds,

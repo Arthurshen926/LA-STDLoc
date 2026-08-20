@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import stat
 import tempfile
 from typing import Mapping
+import uuid
+
+import torch
 
 from common.hashing import canonical_json, sha256_file
 
@@ -28,7 +33,10 @@ def _safe_name(value: str) -> str:
 
 def path_content_record(path: str | Path) -> dict:
     """Hash a file or directory tree without following symbolic links."""
-    path = Path(path).expanduser().resolve()
+    path = Path(path).expanduser()
+    if path.is_symlink():
+        raise ValueError(f"DAG input is a symbolic link: {path}")
+    path = path.resolve()
     if path.is_file():
         return {
             "kind": "file",
@@ -74,6 +82,45 @@ def source_identity(root: str | Path, relative_paths: tuple[str, ...]) -> dict:
             raise FileNotFoundError(path)
         sources[relative] = sha256_file(path)
     return {"schema": "lafgs_dag_source_identity", "version": 1, "sources": sources}
+
+
+def runtime_identity() -> dict:
+    """Bind numerical runtime and rasterizer ABI to cached tensor artifacts."""
+    try:
+        distribution = importlib.metadata.distribution("gsplat")
+        gsplat_version = distribution.version
+        binaries = {}
+        for relative in distribution.files or ():
+            path = Path(distribution.locate_file(relative))
+            if path.is_file() and path.suffix in {".so", ".pyd", ".dll", ".dylib"}:
+                binaries[str(relative)] = sha256_file(path)
+    except importlib.metadata.PackageNotFoundError:
+        gsplat_version = None
+        binaries = {}
+    cuda_devices = []
+    if torch.cuda.is_available():
+        for index in range(torch.cuda.device_count()):
+            properties = torch.cuda.get_device_properties(index)
+            cuda_devices.append(
+                {
+                    "name": properties.name,
+                    "compute_capability": [properties.major, properties.minor],
+                    "total_memory": properties.total_memory,
+                }
+            )
+    return {
+        "schema": "lafgs_dag_runtime_identity",
+        "version": 1,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": str(torch.__version__),
+        "torch_cuda": str(torch.version.cuda),
+        "cudnn": int(torch.backends.cudnn.version() or 0),
+        "cuda_arch_list": os.environ.get("TORCH_CUDA_ARCH_LIST", ""),
+        "visible_cuda_devices": cuda_devices,
+        "gsplat": gsplat_version,
+        "gsplat_binary_sha256": binaries,
+    }
 
 
 def node_spec(
@@ -176,7 +223,10 @@ class ContentAddressedStore:
         resolved = {}
         for name, record in records.items():
             _safe_name(name)
-            path = node / "artifacts" / record["file"]
+            file_name = _safe_name(str(record.get("file", "")))
+            if file_name != name:
+                raise ValueError(f"DAG artifact name/file mismatch: {name}")
+            path = node / "artifacts" / file_name
             expected_files.add(str(path.relative_to(node)))
             if (
                 path.is_symlink()
@@ -193,6 +243,42 @@ class ContentAddressedStore:
             raise ValueError(f"DAG node contains unregistered files: {node}")
         return resolved
 
+    def materialize(
+        self,
+        spec: Mapping,
+        destination: str | Path,
+    ) -> tuple[dict[str, Path], dict[str, str]]:
+        """Create a run-owned, cache-prune-safe snapshot of one verified node."""
+        cached = self.load(spec)
+        if cached is None:
+            raise FileNotFoundError(self.node_path(spec))
+        destination = Path(destination).expanduser().resolve()
+        if destination.exists():
+            raise FileExistsError(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(
+            f".{destination.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        temporary.mkdir()
+        modes = {}
+        try:
+            for name, source in cached.items():
+                target = temporary / name
+                modes[name] = _clone_or_copy(source, target)
+                if (
+                    target.stat().st_size != source.stat().st_size
+                    or sha256_file(target) != sha256_file(source)
+                ):
+                    raise ValueError(f"run-local DAG materialization differs: {target}")
+            temporary.rename(destination)
+            return (
+                {name: (destination / name).resolve() for name in cached},
+                modes,
+            )
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+
     def publish(self, spec: Mapping, artifacts: Mapping[str, str | Path]) -> dict[str, Path]:
         """Atomically install one immutable node, refusing unbounded growth."""
         if not artifacts:
@@ -201,25 +287,68 @@ class ContentAddressedStore:
         existing = self.load(spec)
         if existing is not None:
             return existing
-        sources = {name: Path(path).expanduser().resolve() for name, path in artifacts.items()}
+        sources = {}
+        for name, raw_path in artifacts.items():
+            raw = Path(raw_path).expanduser()
+            if raw.is_symlink():
+                raise ValueError(f"DAG artifact source is a symlink: {raw}")
+            sources[name] = raw.resolve()
+        if len(set(sources.values())) != len(sources):
+            raise ValueError("DAG artifacts must have unique source paths")
+        source_inodes = []
         for name, source in sources.items():
             _safe_name(name)
             if source.is_symlink() or not source.is_file():
                 raise FileNotFoundError(source)
+            identity = (source.stat().st_dev, source.stat().st_ino)
+            if identity in source_inodes:
+                raise ValueError("DAG artifacts must not alias one source inode")
+            source_inodes.append(identity)
         lock_path = self.root / ".publish.lock"
         with lock_path.open("a+b") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             existing = self.load(spec)
             if existing is not None:
                 return existing
+            if final.exists():
+                # A node without its atomic-last manifest is incomplete derived
+                # state. Remove only this exact content-addressed directory.
+                if (final / "manifest.json").exists():
+                    raise ValueError(f"invalid completed DAG node: {final}")
+                shutil.rmtree(final)
             node_bytes = sum(path.stat().st_size for path in sources.values())
-            if node_bytes > self.maximum_node_bytes:
+            planned_records = {
+                name: {
+                    "file": name,
+                    "sha256": sha256_file(source),
+                    "size_bytes": source.stat().st_size,
+                    "copy_mode": "byte_copy",
+                }
+                for name, source in sorted(sources.items())
+            }
+            planned_manifest = {
+                "schema": SCHEMA,
+                "version": VERSION,
+                "complete": True,
+                "immutable": True,
+                "spec": dict(spec),
+                "artifacts": planned_records,
+                "artifact_bytes": node_bytes,
+            }
+            manifest_reserve = len(
+                (json.dumps(planned_manifest, indent=2, sort_keys=True) + "\n").encode()
+            )
+            planned_total = node_bytes + manifest_reserve
+            if planned_total > self.maximum_node_bytes:
                 raise ValueError(
-                    f"DAG node is {node_bytes} bytes, above limit {self.maximum_node_bytes}"
+                    f"DAG node including manifest is at least {planned_total} bytes, "
+                    f"above limit {self.maximum_node_bytes}"
                 )
-            if self._store_size() + node_bytes > self.maximum_store_bytes:
+            store_bytes_before = self._store_size()
+            if store_bytes_before + planned_total > self.maximum_store_bytes:
                 raise ValueError(
-                    "DAG cache capacity would be exceeded; prune it explicitly"
+                    "DAG cache capacity including manifest would be exceeded; "
+                    "prune it explicitly"
                 )
             final.parent.mkdir(parents=True, exist_ok=True)
             temporary = Path(
@@ -239,6 +368,12 @@ class ContentAddressedStore:
                         "size_bytes": target.stat().st_size,
                         "copy_mode": copy_mode,
                     }
+                    if (
+                        records[name]["sha256"] != planned_records[name]["sha256"]
+                        or records[name]["size_bytes"]
+                        != planned_records[name]["size_bytes"]
+                    ):
+                        raise ValueError(f"DAG publish source changed during copy: {source}")
                 manifest = {
                     "schema": SCHEMA,
                     "version": VERSION,
@@ -246,7 +381,7 @@ class ContentAddressedStore:
                     "immutable": True,
                     "spec": dict(spec),
                     "artifacts": records,
-                    "size_bytes": node_bytes,
+                    "artifact_bytes": node_bytes,
                 }
                 manifest_path = temporary / "manifest.json"
                 manifest_path.write_text(
@@ -254,6 +389,21 @@ class ContentAddressedStore:
                 )
                 with manifest_path.open("rb") as handle:
                     os.fsync(handle.fileno())
+                actual_node_bytes = sum(
+                    path.stat().st_size
+                    for path in temporary.rglob("*")
+                    if path.is_file()
+                )
+                if actual_node_bytes > self.maximum_node_bytes:
+                    raise ValueError(
+                        f"DAG node including manifest is {actual_node_bytes} bytes, "
+                        f"above limit {self.maximum_node_bytes}"
+                    )
+                if store_bytes_before + actual_node_bytes > self.maximum_store_bytes:
+                    raise ValueError(
+                        "DAG cache capacity including manifest would be exceeded; "
+                        "prune it explicitly"
+                    )
                 temporary.rename(final)
                 result = self.load(spec)
                 if result is None:
