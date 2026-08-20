@@ -38,5 +38,43 @@
     "tampered_statistics": "fail_closed",
     "missing_statistics": "fail_closed"
   },
-  "benchmark_output_root": "/mnt/pool/sqy/lafgs_mapping_eval_shard_probe_20260820_3a033fe"
+  "benchmark_output_root": "/mnt/pool/sqy/lafgs_mapping_eval_shard_probe_20260820_3a033fe",
+  "rendered_fullmap_view_mixture": {
+    "implementation_commit": "48f35e48e01fb819903788a867e469d1145bde05",
+    "scene": "Cambridge/ShopFacade",
+    "mapping_query_count": 231,
+    "seed": 2026,
+    "unsharded_wall_seconds": 415.97829074785113,
+    "two_shards": {
+      "gpu_count": 1,
+      "processes_per_gpu": 2,
+      "evaluation_wall_seconds": 244.9399893283844,
+      "evaluation_timing_method": "common_launch_and_atomic_report_completion",
+      "merge_wall_seconds": 2.056124064140022,
+      "end_to_end_wall_seconds": 246.99611339252442,
+      "end_to_end_speedup": 1.6841491351193105,
+      "summary_exact": true,
+      "ordered_query_rows_exact": true,
+      "counter_tensors_exact": true,
+      "loo_exact": true,
+      "dynamic_configuration_exact": true
+    },
+    "four_shards": {
+      "gpu_count": 2,
+      "processes_per_gpu": 2,
+      "evaluation_wall_seconds": 140.9858816638589,
+      "merge_wall_seconds": 2.3157887309789658,
+      "end_to_end_wall_seconds": 143.30167039483786,
+      "end_to_end_speedup": 2.9028153656667763,
+      "summary_exact": true,
+      "ordered_query_rows_exact": true,
+      "counter_tensors_exact": true,
+      "loo_exact": true,
+      "dynamic_configuration_exact": true
+    },
+    "summary_field_count": 22,
+    "counter_tensor_count": 8,
+    "probe_root": "/mnt/pool/sqy/lafgs_v4_fullmap_shard_probe_20260820_48f35e4",
+    "cross_version_note": "a1bf942 rows/summary/loo exact; two one-vote Anchor-counter differences after matcher lineage repair, excluded as bitwise oracle"
+  }
 }

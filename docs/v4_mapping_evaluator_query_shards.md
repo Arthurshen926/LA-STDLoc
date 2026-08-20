@@ -51,3 +51,35 @@ Unit coverage additionally checks exact 2/4-shard parity and rejects partial,
 tampered, and missing statistics.  Benchmark outputs live under the dedicated
 non-production root
 `/mnt/pool/sqy/lafgs_mapping_eval_shard_probe_20260820_3a033fe`.
+
+## Rendered Track fullmap / view-mixture entrypoint
+
+The same contract now covers the formal K2 entrypoint
+`scripts.evaluate_rendered_track_fullmap`. Its existing report/statistics
+schemas and legacy `statistics`/`statistics_sha256` fields are preserved.
+Additional fields bind the full ordered mapping registry, producer identity,
+all six input paths and hashes, calibration parameters, seed, device, and the
+static fullmap configuration. The merge CLI dispatches by report schema and
+recomputes the query summary, Anchor counters, LOO affected-Anchor aggregates,
+and observed maximum query-local K2 eligibility. The merged dynamic
+view-mixture configuration is reconstructed from those exact statistics.
+
+On the real 231-query ShopFacade K2 input at clean producer `48f35e4`, the
+current unsharded replay took 415.978 s. Two shards sharing one GPU completed
+in 244.940 s and merged in 2.056 s (1.68x end-to-end). Four shards distributed
+two per GPU completed in 140.986 s and merged in 2.316 s (2.90x end-to-end).
+Both two- and four-shard merged artifacts are exactly equal to the current
+unsharded artifact for all ordered query-row fields, all 22 summary fields,
+all eight Anchor counter tensors, the complete LOO aggregate, and the dynamic
+view-mixture report configuration. The two-shard wall time is derived from the
+common launch timestamp and atomic report completion timestamps; the
+unsharded and four-shard wall times were measured directly around their
+process groups.
+
+An older K2 artifact from producer `a1bf942` has the same query rows, summary,
+and LOO values, but differs by one vote on each of two Anchor counters after
+the later matcher lineage repair. It is retained only as a cross-version
+accuracy check, not misrepresented as the exact same-code counter oracle. All
+current exact claims compare producer `48f35e4` against itself. The dedicated
+probe root is
+`/mnt/pool/sqy/lafgs_v4_fullmap_shard_probe_20260820_48f35e4`.
