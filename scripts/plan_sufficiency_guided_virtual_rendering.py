@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
-import hashlib
 import math
 import os
 from pathlib import Path
@@ -19,6 +18,8 @@ from evidence.virtual_render_planner import (
     PlannerPolicy,
     SCHEMA,
     VERSION,
+    assign_pose_bins_from_reference,
+    camera_registry_sha256,
     camera_centers,
     generate_candidate_poses,
     greedy_capped_coverage,
@@ -26,19 +27,6 @@ from evidence.virtual_render_planner import (
     zbuffer_supported_mask,
 )
 from features.sampling import unproject_pixels
-
-
-def _camera_registry_sha256(query_payload: dict, names: list[str]) -> str:
-    records = query_payload.get("queries", query_payload)
-    digest = hashlib.sha256()
-    for name in names:
-        record = records[name]
-        digest.update(name.encode("utf-8") + b"\0")
-        for field in ("pose_w2c", "native_K", "native_input_hw"):
-            value = torch.as_tensor(record[field]).contiguous().cpu()
-            digest.update(str(value.dtype).encode() + str(tuple(value.shape)).encode())
-            digest.update(value.numpy().tobytes())
-    return digest.hexdigest()
 
 
 def _validate_formal_unified_map(
@@ -382,11 +370,14 @@ def run(args) -> dict:
         "voxel_size_m": float(args.voxel_size_m),
         "surface_stride": int(args.surface_stride),
     })
-    field, poses, intrinsics, _ = build_coverage_field(
+    field, poses, intrinsics, formal_bins = build_coverage_field(
         query_payload, track_payload, selected_map, policy
     )
     deficit = field["voxel_center_xyz"][field["deficit_demand"] > 0]
     candidates = generate_candidate_poses(poses, deficit, policy)
+    candidates["formal_pose_bin"] = assign_pose_bins_from_reference(
+        candidates["pose_w2c"], poses, formal_bins
+    )
     coverage, parallax, appearance = candidate_coverage(
         field, candidates, poses, intrinsics, query_payload, track_payload, policy
     )
@@ -427,7 +418,7 @@ def run(args) -> dict:
             "track_payload_sha256": sha256_file(track_path),
             "selected_map": str(args.selected_map.resolve()) if args.selected_map else None,
             "selected_map_sha256": sha256_file(args.selected_map.resolve()) if args.selected_map else None,
-            "canonical_camera_registry_sha256": _camera_registry_sha256(
+            "canonical_camera_registry_sha256": camera_registry_sha256(
                 query_payload, list(track_payload["query_names"])
             ),
         },
@@ -443,6 +434,12 @@ def run(args) -> dict:
         "triangulation_family_contract": {
             "source_and_pose_proximity_components": True,
             "maximum_evidence_per_pose_family": 1,
+        },
+        "formal_pose_bin_frame": {
+            "bin_count": int(torch.unique(formal_bins).numel()),
+            "reference_query_count": int(formal_bins.numel()),
+            "reference_query_bins": formal_bins,
+            "assignment": "nearest_reference_bin_centroid_center_plus_direction",
         },
         "candidate_render_support": candidate_support,
         "gt_visible_diagnostic": None,

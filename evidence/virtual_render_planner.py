@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import hashlib
 import math
 from typing import Mapping, Sequence
 
@@ -20,6 +21,61 @@ from features.sampling import unproject_pixels
 
 SCHEMA = "lafgs_sufficiency_guided_virtual_render_plan"
 VERSION = 1
+
+
+def camera_registry_sha256(query_payload: Mapping, names: Sequence[str]) -> str:
+    """Hash the ordered mapping camera registry, including geometry policy."""
+    records = query_payload.get("queries", query_payload)
+    if list(names) != list(dict.fromkeys(names)) or set(names) != set(records):
+        raise ValueError("ordered camera registry must cover every query exactly")
+    digest = hashlib.sha256()
+    for name in names:
+        record = records[name]
+        digest.update(str(name).encode("utf-8") + b"\0")
+        for field in ("pose_w2c", "native_K", "native_input_hw"):
+            value = torch.as_tensor(record[field]).contiguous().cpu()
+            digest.update(str(value.dtype).encode() + str(tuple(value.shape)).encode())
+            digest.update(value.numpy().tobytes())
+    return digest.hexdigest()
+
+
+def assign_pose_bins_from_reference(
+    candidate_pose_w2c: torch.Tensor,
+    reference_pose_w2c: torch.Tensor,
+    reference_bins: torch.Tensor,
+    *,
+    direction_weight: float = 0.5,
+) -> torch.Tensor:
+    """Assign candidates in the immutable formal-mapping pose-bin frame."""
+    candidate = torch.as_tensor(candidate_pose_w2c, dtype=torch.float64)
+    reference = torch.as_tensor(reference_pose_w2c, dtype=torch.float64)
+    bins = torch.as_tensor(reference_bins, dtype=torch.long).reshape(-1)
+    if reference.shape[0] != bins.numel() or bins.numel() == 0:
+        raise ValueError("reference pose-bin registry must align and be non-empty")
+    if int(bins.min()) < 0 or not torch.equal(
+        torch.unique(bins, sorted=True), torch.arange(int(bins.max()) + 1)
+    ):
+        raise ValueError("formal mapping pose bins must be contiguous from zero")
+    reference_center = camera_centers(reference)
+    candidate_center = camera_centers(candidate)
+    origin = reference_center.median(dim=0).values
+    radius = torch.linalg.norm(reference_center - origin, dim=1)
+    scale = radius[radius > 0].median().clamp_min(1e-6)
+    reference_axis = reference[:, :3, :3].transpose(1, 2)[:, :, 2]
+    candidate_axis = candidate[:, :3, :3].transpose(1, 2)[:, :, 2]
+    reference_embedding = torch.cat(
+        ((reference_center - origin) / scale,
+         reference_axis * float(direction_weight)), dim=1
+    )
+    candidate_embedding = torch.cat(
+        ((candidate_center - origin) / scale,
+         candidate_axis * float(direction_weight)), dim=1
+    )
+    prototypes = torch.stack([
+        reference_embedding[bins == index].mean(0)
+        for index in range(int(bins.max()) + 1)
+    ])
+    return torch.cdist(candidate_embedding, prototypes).argmin(1).long()
 
 
 @dataclass(frozen=True)

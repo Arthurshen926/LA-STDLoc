@@ -21,10 +21,13 @@ from evidence.triangulation import (
     robust_triangulate_associations,
 )
 from evidence.virtual_render_planner import SCHEMA as PLAN_SCHEMA
+from evidence.virtual_render_planner import camera_registry_sha256
 from evidence.virtual_track_experiment import (
     DRY_RUN_THRESHOLDS,
+    augment_formal_anchor_map,
     dry_run_passes,
     enforce_one_observation_per_family,
+    validate_augmented_mapping_guard,
 )
 from features.extractor import FeatureExtractor
 from features.raster_sampling import sample_raster_at_grid_uv
@@ -153,10 +156,7 @@ def render_observations(args, plan: dict, selected: torch.Tensor) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "uses_gaussian_primitive_geometry_for_triangulation": False,
-        "query_bins": camera_pose_bins(
-            torch.stack([records[name]["pose_w2c"] for name in records]),
-            min(args.view_bins, len(records)),
-        ),
+        "query_bins": torch.as_tensor(candidates["formal_pose_bin"])[selected].long(),
         "pose_family": families,
         "queries": records,
         "render_quality": {
@@ -303,6 +303,25 @@ def main() -> None:
         raise ValueError("formal unified map identity changed after planning")
     if support.get("gaussian_ply_sha256") != sha256_file(args.gaussian_ply):
         raise ValueError("planner and closed loop use different Gaussian priors")
+    query_path = Path(plan.get("inputs", {}).get("query_cache", ""))
+    track_path = Path(plan.get("inputs", {}).get("track_payload", ""))
+    if not query_path.is_file() or sha256_file(query_path) != plan["inputs"].get(
+        "query_cache_sha256"
+    ):
+        raise ValueError("planner query cache identity changed at runtime")
+    if not track_path.is_file() or sha256_file(track_path) != plan["inputs"].get(
+        "track_payload_sha256"
+    ):
+        raise ValueError("planner Track payload identity changed at runtime")
+    query_payload = _load(query_path)
+    track_payload = _load(track_path)
+    ordered_registry_sha = camera_registry_sha256(
+        query_payload, list(track_payload["query_names"])
+    )
+    if ordered_registry_sha != plan["inputs"].get(
+        "canonical_camera_registry_sha256"
+    ):
+        raise ValueError("ordered canonical camera registry changed at runtime")
     if plan.get("triangulation_family_contract", {}).get(
         "source_and_pose_proximity_components"
     ) is not True:
@@ -368,12 +387,70 @@ def main() -> None:
     }
     artifact_path = args.output_dir / "frozen_virtual_track_closed_loop.pt"
     _atomic_save(artifact, artifact_path)
+    artifact_sha = sha256_file(artifact_path)
+    formal_map = _load(selected_map_path)
+    virtual_registry = {
+        "schema": "lafgs_virtual_observation_registry",
+        "version": 1,
+        "formal_query_count": len(track_payload["query_names"]),
+        "query_count": len(provider),
+        "ordered_names": list(provider.names),
+        "pose_w2c": torch.stack([
+            provider.build_view(index).pose_w2c.float() for index in range(len(provider))
+        ]),
+        "camera_K": torch.stack([
+            provider.build_view(index).intrinsics.float() for index in range(len(provider))
+        ]),
+        "image_hw": torch.tensor([
+            provider.build_view(index).image_hw for index in range(len(provider))
+        ], dtype=torch.long),
+        "pose_family": torch.as_tensor(cache["pose_family"]).long(),
+        "formal_pose_bin": torch.as_tensor(cache["query_bins"]).long(),
+        "ordered_formal_camera_registry_sha256": ordered_registry_sha,
+    }
+    augmented = augment_formal_anchor_map(
+        formal_map, batch,
+        formal_query_count=len(track_payload["query_names"]),
+        virtual_registry=virtual_registry,
+        lineage={
+            "schema": "lafgs_virtual_anchor_augmentation_lineage",
+            "version": 1,
+            "mapping_only": True,
+            "uses_test_queries": False,
+            "formal_map": str(selected_map_path.resolve()),
+            "formal_map_sha256": sha256_file(selected_map_path),
+            "plan": str(args.plan.resolve()),
+            "plan_sha256": sha256_file(args.plan),
+            "virtual_track_artifact": str(artifact_path.resolve()),
+            "virtual_track_artifact_sha256": artifact_sha,
+            "query_cache_sha256": sha256_file(query_path),
+            "track_payload_sha256": sha256_file(track_path),
+            "ordered_camera_registry_sha256": ordered_registry_sha,
+            "augmentation_semantics": "formal_5794_prefix_plus_virtual_track_anchors",
+        },
+    )
+    guard = validate_augmented_mapping_guard(
+        augmented, formal_map, virtual_query_count=len(provider)
+    )
+    augmented_path = args.output_dir / "augmented_formal_anchor_map.pt"
+    _atomic_save(augmented, augmented_path)
+    augmented_sha = sha256_file(augmented_path)
+    guard.update({
+        "augmented_map": str(augmented_path.resolve()),
+        "augmented_map_sha256": augmented_sha,
+        "formal_map_sha256": sha256_file(selected_map_path),
+        "virtual_track_artifact_sha256": artifact_sha,
+    })
+    _atomic_json(guard, args.output_dir / "mapping_guard.json")
     decision = {
         "schema": "lafgs_sufficiency_virtual_track_dry_run_decision", "version": 1,
         "plan_sha256": sha256_file(args.plan), "view_count": args.view_count,
         "thresholds": DRY_RUN_THRESHOLDS if args.view_count == 8 else None,
         "metrics": metrics, "passed": passed, "failures": failures,
-        "artifact": str(artifact_path.resolve()), "artifact_sha256": sha256_file(artifact_path),
+        "artifact": str(artifact_path.resolve()), "artifact_sha256": artifact_sha,
+        "augmented_map": str(augmented_path.resolve()),
+        "augmented_map_sha256": augmented_sha,
+        "mapping_guard": guard,
     }
     _atomic_json(decision, args.output_dir / "decision.json")
     print(json.dumps(decision, indent=2, sort_keys=True), flush=True)

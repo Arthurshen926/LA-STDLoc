@@ -9,6 +9,7 @@ import torch
 from evidence.virtual_render_planner import (
     PlannerPolicy,
     assign_pose_families,
+    assign_pose_bins_from_reference,
     generate_candidate_poses,
     greedy_capped_coverage,
     validate_mapping_inputs,
@@ -35,6 +36,15 @@ def test_candidate_coverage_rejects_occluded_and_transparent_voxels():
         alpha_minimum=0.2, depth_absolute_m=0.1, depth_relative=0.0,
     )
     assert keep.tolist() == [True, False, False]
+
+
+def test_candidate_bins_use_fixed_formal_reference_frame():
+    reference = torch.eye(4).repeat(4, 1, 1)
+    reference[:, 0, 3] = torch.tensor([0.0, -0.1, -5.0, -5.1])
+    bins = torch.tensor([0, 0, 1, 1])
+    candidate = reference[[1, 2]]
+    assigned = assign_pose_bins_from_reference(candidate, reference, bins)
+    assert assigned.tolist() == [0, 1]
 from scripts.plan_sufficiency_guided_virtual_rendering import (
     _validate_formal_unified_map,
     run,
