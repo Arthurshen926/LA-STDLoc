@@ -1,0 +1,29 @@
+{
+  "candidate_reliability_if_go": "clamp(worst_variant_cosine, 0, 1)",
+  "go_contract": {
+    "highest_instability_decile_gap_ratio_minimum_each_scene": 1.25,
+    "maximum_monotonic_decile_violations_each_scene": 2,
+    "spearman_rho_minimum_each_scene": 0.2
+  },
+  "invariants": [
+    "mapping_render_only_predictor",
+    "paired_real_rgb_used_only_as_offline_oracle_label",
+    "no_test_queries",
+    "fixed_keypoint_rows",
+    "no_feature_or_matcher_training",
+    "no_map_mutation_before_go"
+  ],
+  "perturbations": {
+    "contrast": [0.9, 1.1],
+    "exposure": [0.9, 1.1],
+    "gamma": [0.9, 1.1],
+    "identity": true,
+    "subpixel_offsets_xy": [[-0.25, 0.0], [0.25, 0.0], [0.0, -0.25], [0.0, 0.25]]
+  },
+  "schema": "lafgs_render_perturbation_stability_preregistration",
+  "stability_statistics": [
+    "mean_cosine_variance_to_variant_centroid",
+    "worst_cosine_to_identity"
+  ],
+  "version": 1
+}
