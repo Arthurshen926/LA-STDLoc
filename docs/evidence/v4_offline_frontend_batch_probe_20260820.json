@@ -1,0 +1,81 @@
+{
+  "schema": "lafgs_v4_offline_frontend_batch_probe",
+  "version": 1,
+  "base_commit": "12487b93b45f8ce22edb6f60725dfba7b2497fda",
+  "scene": "Cambridge/ShopFacade",
+  "scope": {
+    "mapping_views_only": true,
+    "physical_gpu": 1,
+    "gpu_2_used": false,
+    "full_24_scene_run": false,
+    "scientific_method_changed": false
+  },
+  "superpoint": {
+    "view_count": 8,
+    "input_hw": [360, 640],
+    "keypoint_count": 2048,
+    "persistent_model_load_seconds": 0.23497578781098127,
+    "batch_1_seconds": 0.05725656822323799,
+    "batch_2": {
+      "seconds": 0.08614265825599432,
+      "speedup": 0.6646714808020652,
+      "keypoint_rows_exact": false,
+      "scores_exact": false,
+      "scores_max_abs": 0.0009948313236236572,
+      "descriptors_exact": false,
+      "descriptors_max_abs": 0.44590556621551514
+    },
+    "batch_4": {
+      "seconds": 0.06452759355306625,
+      "speedup": 0.8873191307862937,
+      "keypoint_rows_exact": false,
+      "scores_exact": false,
+      "scores_max_abs": 0.0009663701057434082,
+      "descriptors_exact": false,
+      "descriptors_max_abs": 0.445901095867157
+    },
+    "batch_8": {
+      "seconds": 0.0568567980080843,
+      "speedup": 1.0070311770827625,
+      "keypoint_rows_exact": false,
+      "scores_exact": false,
+      "scores_max_abs": 0.0009948313236236572,
+      "descriptors_exact": false,
+      "descriptors_max_abs": 0.44590556621551514
+    },
+    "decision": "stop_non_exact_and_no_material_throughput_gain"
+  },
+  "gaussian_loading": {
+    "primitive_count": 1202378,
+    "ply_bytes": 293381741,
+    "legacy_random_loc_bank_shape": [1202378, 256],
+    "legacy_probe": "aborted_after_more_than_145_seconds_with_about_2.7_GiB_RSS",
+    "rgb_only_zero_dim_load_seconds_under_shared_host_load": 40.25295719131827,
+    "rgb_only_loc_feature_shape": [1202378, 1, 0],
+    "decision": "retain_zero_dim_rgb_only_loader_contract"
+  },
+  "render_batch": {
+    "historical_full_231_view_render_seconds": 13.101095882244408,
+    "probe_status": "stopped_before_production_change",
+    "reason": "end_to_end_exact_batch_is_already_blocked_by_superpoint_and_the_ideal_render_only_saving_is_bounded_below_the_remaining_track_and_geometry_hotspots"
+  },
+  "packed_observations": {
+    "view_count": 231,
+    "cache_load_seconds": 0.39864630065858364,
+    "existing_list_materialization_seconds": 0.0018050046637654305,
+    "stack_to_packed_seconds": 5.431589985266328,
+    "dictionary_serialization_seconds": 0.4290656102821231,
+    "packed_serialization_seconds": 0.3887376943603158,
+    "dictionary_bytes": 490518126,
+    "packed_bytes": 490147671,
+    "tensor_values_exact": true,
+    "decision": "stop_packed_schema_change_cost_exceeds_saved_adapter_and_serialization_time"
+  },
+  "fresh_cpu_triangulation": {
+    "prior_10000_track_serial_seconds": 28.7398035293445,
+    "prior_fixed_two_process_seconds": 14.152907699346542,
+    "prior_speedup": 2.0306642380400355,
+    "all_fields_bitwise_equal": true,
+    "current_decision": "defer_requires_a_new_stage_boundary_and_is_not_a_small_frontend_engineering_change"
+  }
+}

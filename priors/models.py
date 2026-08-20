@@ -123,13 +123,18 @@ class FrozenGaussianModel(nn.Module):
         if loc_names:
             loc = _stack_properties(vertex, loc_names, rows)[:, None, :]
         else:
-            dimension = int(loc_feature_dim or 256)
-            if dimension <= 0:
-                raise ValueError("loc_feature_dim must be positive")
-            generator = np.random.default_rng(0)
-            loc = generator.standard_normal((rows, dimension)).astype(np.float32)
-            loc /= np.clip(np.linalg.norm(loc, axis=1, keepdims=True), 1e-12, None)
-            loc = loc[:, None, :]
+            dimension = 256 if loc_feature_dim is None else int(loc_feature_dim)
+            if dimension < 0:
+                raise ValueError("loc_feature_dim must be non-negative")
+            if dimension == 0:
+                loc = np.empty((rows, 1, 0), dtype=np.float32)
+            else:
+                generator = np.random.default_rng(0)
+                loc = generator.standard_normal((rows, dimension)).astype(np.float32)
+                loc /= np.clip(
+                    np.linalg.norm(loc, axis=1, keepdims=True), 1e-12, None
+                )
+                loc = loc[:, None, :]
 
         device = self.target_device
         self._xyz = nn.Parameter(torch.from_numpy(xyz).to(device), requires_grad=False)
