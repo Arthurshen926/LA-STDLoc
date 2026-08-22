@@ -32,6 +32,7 @@ from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.virtual_camera_registry import (
     build_virtual_camera_registry,
     camera_intrinsic,
+    resolve_virtual_camera_registry,
 )
 from evidence.tracks import fuse_track_descriptors
 from evidence.triangulation import (
@@ -98,14 +99,33 @@ def _gather_query_keypoints(
     return packed[offsets[query_index] + keypoint_index]
 
 
+def _resolve_render_cameras(mapping, args):
+    camera_registry_path = getattr(args, "camera_registry", None)
+    if camera_registry_path is not None:
+        if int(args.max_views) != 0:
+            raise ValueError("an explicit camera registry cannot be combined with max-views")
+        expected_registry_sha = getattr(args, "expected_camera_registry_sha256", None)
+        if not expected_registry_sha:
+            raise ValueError("an explicit camera registry requires its expected SHA")
+        actual_registry_sha = sha256_file(camera_registry_path)
+        if actual_registry_sha != expected_registry_sha:
+            raise ValueError("explicit camera registry SHA differs")
+        camera_registry = json.loads(camera_registry_path.read_text())
+        cameras = resolve_virtual_camera_registry(mapping, camera_registry)
+        return cameras, camera_registry, actual_registry_sha
+    cameras, camera_registry = build_virtual_camera_registry(mapping, args.max_views)
+    return cameras, camera_registry, None
+
+
 @torch.inference_mode()
 def _render_feature_cache(args, output: Path) -> dict:
     started = time.perf_counter()
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
-    cameras, camera_registry = build_virtual_camera_registry(
-        mapping, args.max_views
+    cameras, camera_registry, actual_registry_sha = _resolve_render_cameras(
+        mapping, args
     )
+    camera_registry_path = getattr(args, "camera_registry", None)
 
     model = (
         GaussianModel2D(args.sh_degree)
@@ -222,6 +242,14 @@ def _render_feature_cache(args, output: Path) -> dict:
             camera_registry["selected_legacy_dataset_indices"], dtype=torch.long
         ),
         "virtual_camera_registry": camera_registry,
+        "explicit_camera_registry": (
+            None
+            if camera_registry_path is None
+            else {
+                "path": str(camera_registry_path.resolve()),
+                "sha256": actual_registry_sha,
+            }
+        ),
         "queries": records,
         "configuration": {
             "gaussian_type": args.gaussian_type,
@@ -647,6 +675,8 @@ def main() -> None:
     parser.add_argument("--sh-degree", type=int, default=3)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-views", type=int, default=0)
+    parser.add_argument("--camera-registry", type=Path)
+    parser.add_argument("--expected-camera-registry-sha256")
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--reuse-feature-cache", action="store_true")
     parser.add_argument("--keypoints", type=int, default=1024)
