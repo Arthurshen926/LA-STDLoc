@@ -1,0 +1,72 @@
+{
+  "schema": "lafgs_v6_first_hard_scene_validation",
+  "version": 1,
+  "branch": "codex/v6-closed-loop-projective-anchor",
+  "base_tag": "v4-render-only-frozen",
+  "base_commit": "8fdf3fc5939f794c2fd9cf0aa7ebff9fb19df873",
+  "scope": {
+    "mapping_only": true,
+    "uses_source_mapping_rgb": false,
+    "uses_test_queries": false,
+    "online_adapter": false,
+    "retrieval": false,
+    "refinement": false,
+    "online_protocol": "native_superpoint_global_top1_one_standard_poselib"
+  },
+  "scenes": {
+    "7Scenes/stairs": {
+      "mapping_views": 32,
+      "observation_cache_sha256": "441ae4b0e998a0f6c7f9c52bc331b73f35096c64b45a04af99d366464c8eed3a",
+      "anchor_count": 4062,
+      "map_sha256": "b530f0f2dcbaa22d663fd5fa51357898156bfdbb4fa6ce62f7cef358d6e62ae6",
+      "offline_seconds": 19.600,
+      "baseline": {
+        "median_te_cm": 0.4868897646665573,
+        "mean_te_cm": 2.8263519098982215,
+        "p90_te_cm": 3.1377847909927374,
+        "cvar95_te_cm": 33.30489468574524,
+        "recall_5cm_5deg_percent": 96.875,
+        "catastrophic_100cm_count": 0,
+        "failure_layers": {"L1": 0, "L2": 0, "L3": 0, "L4": 1},
+        "summary_sha256": "0f75501c8773bcf31a67cda066740301740bef06178874b3d23204f82722749e"
+      },
+      "descriptor_only": {
+        "anchor_count": 4062,
+        "recall_5cm_5deg_percent": 93.75,
+        "catastrophic_100cm_count": 0,
+        "failure_layers": {"L1": 0, "L2": 0, "L3": 0, "L4": 2},
+        "decision": "REJECT_RECALL_REGRESSION",
+        "summary_sha256": "5e3ece9c1014bdc1a673b01da33c08821b38f56bc9f8b3e42d38275e70e37717"
+      },
+      "selection_only": {
+        "anchor_count": 52,
+        "unmet_pose_queries": 1,
+        "recall_5cm_5deg_percent": 9.375,
+        "catastrophic_100cm_count": 16,
+        "decision": "REJECT_CATASTROPHIC_AND_RECALL_REGRESSION",
+        "summary_sha256": "bc07502a6b0882cb8a63c4d1192e2bd12ad6b124574be4a08dc8c70adda418d6"
+      },
+      "round_decision": "STOP_NO_ACCEPTED_PROPOSAL"
+    },
+    "Cambridge/ShopFacade": {
+      "mapping_views": 32,
+      "observation_cache_sha256": "aa5195651aaceefa169ceac454a2693088ffa670157c7c314beaff747967a34b",
+      "association_components": 6391,
+      "anchor_count": 3739,
+      "map_sha256": "3781040aaff359c5e2ac32ed98203ae65182979fe9b167640a0a814b53281f8a",
+      "offline_seconds": 18.23148857150227,
+      "baseline": {
+        "median_te_cm": 0.4503766596317291,
+        "mean_te_cm": 0.48087467439472675,
+        "p90_te_cm": 0.8759823501110077,
+        "cvar95_te_cm": 1.0174883604049683,
+        "recall_5cm_5deg_percent": 100.0,
+        "catastrophic_100cm_count": 0,
+        "failure_layers": {"L1": 0, "L2": 0, "L3": 0, "L4": 0},
+        "decision": "PROTECTION_PASS_STOP_NO_FAILURE"
+      }
+    }
+  },
+  "timing_note": "Online timing was collected under unrelated full-GPU contention and is excluded from realtime claims. LOO rematerialization is reported separately from online matching and PoseLib.",
+  "scientific_conclusion": "The first V6 hard-scene loop is operational and conservative: query-local self-localization feedback rejected both harmful offline map proposals and preserved the baseline."
+}
