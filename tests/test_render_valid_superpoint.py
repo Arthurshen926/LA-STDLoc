@@ -47,3 +47,13 @@ def test_alpha_neighborhood_is_eroded_before_nms() -> None:
         alpha, minimum_alpha=0.5, neighborhood_radius=1
     )
     assert int((~valid).sum()) == 9
+
+
+def test_alpha_channel_last_from_gsplat_is_supported() -> None:
+    alpha = torch.ones((1, 3, 4, 1))
+    alpha[0, 1, 2, 0] = 0.0
+    valid = render_validity_mask_from_alpha(
+        alpha, minimum_alpha=0.05, neighborhood_radius=0
+    )
+    assert valid.shape == (1, 3, 4)
+    assert valid[0, 1, 2].item() is False

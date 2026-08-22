@@ -78,10 +78,14 @@ def render_validity_mask_from_alpha(
     value = torch.as_tensor(alpha)
     if value.ndim == 4 and value.shape[1] == 1:
         value = value[:, 0]
+    elif value.ndim == 4 and value.shape[-1] == 1:
+        value = value[..., 0]
     elif value.ndim == 2:
         value = value[None]
     if value.ndim != 3:
-        raise ValueError("alpha must have shape [H,W], [B,H,W], or [B,1,H,W]")
+        raise ValueError(
+            "alpha must have shape [H,W], [B,H,W], [B,1,H,W], or [B,H,W,1]"
+        )
     if not 0.0 <= float(minimum_alpha) <= 1.0:
         raise ValueError("minimum_alpha must be in [0,1]")
     radius = int(neighborhood_radius)
