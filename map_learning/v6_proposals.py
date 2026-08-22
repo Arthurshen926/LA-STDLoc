@@ -94,12 +94,11 @@ def selection_only_proposal(
 
     require_schema(feedback, FEEDBACK_SCHEMA, label="self-localization feedback")
     count = int(torch.as_tensor(state["anchor_ids"]).numel())
-    query_count = len(feedback["records"])
     layers = {
         name: [defaultdict(set) for _ in range(count)]
         for name in ("visibility", "detectability", "matching")
     }
-    information = torch.zeros((query_count, count, 6, 6), dtype=torch.float64)
+    information: list[dict[int, torch.Tensor]] = [dict() for _ in range(count)]
     for query_index, record in enumerate(feedback["records"]):
         for anchor in torch.as_tensor(record["visible_anchor_ids"]).long().tolist():
             layers["visibility"][anchor][query_index].add(anchor)
@@ -108,7 +107,8 @@ def selection_only_proposal(
         for row, anchor in torch.as_tensor(record["matching_pairs"]).long().tolist():
             layers["matching"][anchor][query_index].add(row)
         for anchor in torch.as_tensor(record["clean_inlier_anchor_ids"]).long().tolist():
-            information[query_index, anchor] += torch.eye(6, dtype=torch.float64)
+            previous = information[anchor].get(query_index, torch.zeros((6, 6), dtype=torch.float64))
+            information[anchor][query_index] = previous + torch.eye(6, dtype=torch.float64)
     candidate_edges = {
         name: [
             {query: tuple(sorted(rows)) for query, rows in candidate.items()}

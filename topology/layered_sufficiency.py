@@ -37,14 +37,34 @@ def select_layered_sufficiency(
     if any(len(edges) != candidate_count for edges in layer_edges.values()):
         raise ValueError("layer candidate registries differ")
     reliability = torch.as_tensor(reliability).float().reshape(-1)
-    information = torch.as_tensor(pose_information).double()
+    dense_information = isinstance(pose_information, torch.Tensor)
+    information = (
+        torch.as_tensor(pose_information).double()
+        if dense_information
+        else pose_information
+    )
     if reliability.numel() != candidate_count:
         raise ValueError("reliability does not align with candidates")
-    if information.ndim != 4 or information.shape[1] != candidate_count:
-        raise ValueError("pose_information must have shape [Q,N,6,6]")
-    query_count = int(information.shape[0])
-    if information.shape[2:] != (6, 6):
-        raise ValueError("pose information matrices must be 6x6")
+    if dense_information:
+        if information.ndim != 4 or information.shape[1] != candidate_count:
+            raise ValueError("pose_information must have shape [Q,N,6,6]")
+        query_count = int(information.shape[0])
+        if information.shape[2:] != (6, 6):
+            raise ValueError("pose information matrices must be 6x6")
+    else:
+        if not isinstance(information, Sequence) or len(information) != candidate_count:
+            raise ValueError("sparse pose information must have one mapping per candidate")
+        query_count = max(
+            (int(query) for candidate in information for query in candidate),
+            default=-1,
+        ) + 1
+        if query_count <= 0:
+            query_count = max(
+                (int(query) for edges in layer_edges.values() for candidate in edges for query in candidate),
+                default=-1,
+            ) + 1
+        if query_count <= 0:
+            raise ValueError("cannot infer query count from sparse pose information")
     target = _targets(matching_target, query_count)
     states = {
         name: IncrementalBipartiteCoverage(query_count, layer_edges[name])
@@ -90,7 +110,14 @@ def select_layered_sufficiency(
 
     base = torch.eye(6, dtype=torch.float64).repeat(query_count, 1, 1) * 1e-9
     for candidate in selected:
-        base += information[:, candidate]
+        if dense_information:
+            base += information[:, candidate]
+        else:
+            for query, matrix in information[candidate].items():
+                value = torch.as_tensor(matrix).double()
+                if value.shape != (6, 6):
+                    raise ValueError("sparse pose information matrices must be 6x6")
+                base[int(query)] += value
 
     def pose_score(matrix: torch.Tensor) -> torch.Tensor:
         return torch.linalg.slogdet(matrix)[1]
@@ -101,21 +128,43 @@ def select_layered_sufficiency(
             break
         best = None
         best_gain = float("-inf")
-        for candidate in order:
-            if candidate in selected_set:
-                continue
-            gain = float(
-                torch.clamp(
-                    pose_score(base + information[:, candidate]) - current,
+        if dense_information:
+            # Bounded batches avoid materializing [N,Q,6,6] on full scenes.
+            for start in range(0, len(order), 256):
+                chunk = torch.tensor(order[start : start + 256], dtype=torch.long)
+                gains = torch.clamp(
+                    torch.linalg.slogdet(
+                        base[None] + information.transpose(0, 1)[chunk]
+                    )[1]
+                    - current[None],
                     min=0,
-                ).sum()
-            )
-            if gain > best_gain:
-                best, best_gain = candidate, gain
+                ).sum(1)
+                for candidate, gain in zip(chunk.tolist(), gains.tolist()):
+                    if candidate not in selected_set and float(gain) > best_gain:
+                        best, best_gain = candidate, float(gain)
+        else:
+            for candidate in order:
+                if candidate in selected_set or not information[candidate]:
+                    continue
+                gain = 0.0
+                for query, matrix in information[candidate].items():
+                    query = int(query)
+                    value = torch.as_tensor(matrix).double()
+                    gain += float(
+                        torch.clamp(
+                            pose_score(base[query] + value) - current[query], min=0
+                        )
+                    )
+                if gain > best_gain:
+                    best, best_gain = candidate, gain
         if best is None or not best_gain > 0:
             break
         add(best, "pose_sufficiency")
-        base += information[:, best]
+        if dense_information:
+            base += information[:, best]
+        else:
+            for query, matrix in information[best].items():
+                base[int(query)] += torch.as_tensor(matrix).double()
     return {
         "selected_anchor_rows": torch.tensor(selected, dtype=torch.long),
         "trace": trace,
