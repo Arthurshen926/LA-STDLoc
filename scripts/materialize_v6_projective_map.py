@@ -183,6 +183,7 @@ def run(args: argparse.Namespace) -> dict:
             "completion_anchors": 0 if completion is None else int(completion["anchor_xyz"].shape[0]),
             "total_anchors": int(state["anchor_xyz"].shape[0]),
         },
+        "association_diagnostics": dict(association["diagnostics"]),
         "contracts": {
             "render_valid_before_nms": True,
             "unified_association_once": True,

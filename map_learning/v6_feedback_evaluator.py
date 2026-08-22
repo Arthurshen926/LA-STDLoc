@@ -75,6 +75,11 @@ def _summary(rows: list[dict]) -> dict:
     te = np.asarray([row["te_cm"] for row in rows], dtype=np.float64)
     ae = np.asarray([row["ae_deg"] for row in rows], dtype=np.float64)
     tail = max(int(math.ceil(0.05 * len(rows))), 1)
+    correspondence_count = sum(int(row["correspondences"]) for row in rows)
+    correct_count = sum(int(row["correct_winners"]) for row in rows)
+    inlier_count = sum(int(row["inliers"]) for row in rows)
+    clean_inlier_count = sum(int(row["clean_inliers"]) for row in rows)
+    positive_rows = sum(int(row["positive_rows"]) for row in rows)
     return {
         "query_count": len(rows),
         "median_te_cm": float(np.median(te)),
@@ -84,6 +89,17 @@ def _summary(rows: list[dict]) -> dict:
         "median_ae_deg": float(np.median(ae)),
         "recall_5cm_5deg_percent": float(np.mean((te < 5.0) & (ae < 5.0)) * 100.0),
         "catastrophic_100cm_count": int((te >= 100.0).sum()),
+        "raw_gt_precision_percent": 100.0 * correct_count / max(correspondence_count, 1),
+        "inlier_gt_precision_percent": 100.0 * clean_inlier_count / max(inlier_count, 1),
+        "correct_anchor_recall_at_1_percent": 100.0
+        * sum(int(row["correct_anchor_rank_le_1"]) for row in rows)
+        / max(positive_rows, 1),
+        "correct_anchor_recall_at_16_percent": 100.0
+        * sum(int(row["correct_anchor_rank_le_16"]) for row in rows)
+        / max(positive_rows, 1),
+        "mean_poselib_iterations": float(
+            np.mean([row["poselib_iterations"] for row in rows])
+        ),
         "online_latency_ms": float(
             np.mean([row["online_latency_ms"] for row in rows])
         ),
@@ -283,8 +299,17 @@ def evaluate_query_local_feedback(
                 "ae_deg": ae_deg,
                 "inliers": int(inliers.numel()),
                 "clean_inliers": int(correct[inliers].sum()) if inliers.numel() else 0,
+                "correct_winners": int(correct.sum()),
+                "positive_rows": int(len(correct_anchor_ranks)),
+                "correct_anchor_rank_le_1": int(
+                    sum(rank <= 1 for rank in correct_anchor_ranks)
+                ),
+                "correct_anchor_rank_le_16": int(
+                    sum(rank <= 16 for rank in correct_anchor_ranks)
+                ),
                 "correspondences": int(winners.numel()),
                 "pose_solves": 1,
+                "poselib_iterations": int(estimate.diagnostics.get("iterations", 0)),
                 "online_latency_ms": online_latency_ms,
                 "loo_feedback_latency_ms": loo_latency_ms,
                 "detectable_matching_pairs": detectable_pairs,
