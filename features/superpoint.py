@@ -378,6 +378,34 @@ class SuperPoint(nn.Module):
         return sparse, (descriptors, scores.unsqueeze(1))
 
     @torch.inference_mode()
+    def detectAndComputeWithValidityAudit(
+        self,
+        x,
+        top_k=None,
+        detection_threshold=None,
+        *,
+        validity_mask: torch.Tensor,
+    ):
+        """Return valid and ungated sparse rows from one identical dense forward."""
+
+        device = next(self.parameters()).device
+        descriptors, scores = self._dense_outputs(x.to(device))
+        raw = self._sparse_from_dense(
+            descriptors,
+            scores,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+        )
+        valid = self._sparse_from_dense(
+            descriptors,
+            scores,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+            validity_mask=validity_mask,
+        )
+        return valid, raw
+
+    @torch.inference_mode()
     def detectAndComputeDense(self, x):
         """Return the native stride-8 descriptor map and score map."""
         device = next(self.parameters()).device

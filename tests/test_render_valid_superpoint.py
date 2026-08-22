@@ -40,6 +40,31 @@ def test_invalid_peak_cannot_suppress_valid_neighbor() -> None:
     assert [3.0, 3.0] not in rows["keypoints"].tolist()
 
 
+def test_validity_audit_reuses_one_dense_forward_and_returns_raw_rows() -> None:
+    model = _model()
+    model.register_parameter("device_marker", torch.nn.Parameter(torch.zeros(())))
+    calls = 0
+
+    def dense_outputs(_):
+        nonlocal calls
+        calls += 1
+        dense = torch.nn.functional.normalize(torch.rand(1, 4, 1, 1), dim=1)
+        scores = torch.zeros(1, 8, 8)
+        scores[0, 3, 3] = 0.99
+        scores[0, 3, 4] = 0.8
+        return dense, scores
+
+    model._dense_outputs = dense_outputs
+    valid = torch.ones(1, 8, 8, dtype=torch.bool)
+    valid[0, 3, 3] = False
+    guarded, raw = model.detectAndComputeWithValidityAudit(
+        torch.zeros(1, 3, 8, 8), validity_mask=valid
+    )
+    assert calls == 1
+    assert [3.0, 3.0] in raw[0]["keypoints"].tolist()
+    assert [4.0, 3.0] in guarded[0]["keypoints"].tolist()
+
+
 def test_alpha_neighborhood_is_eroded_before_nms() -> None:
     alpha = torch.ones(1, 5, 5)
     alpha[0, 2, 2] = 0.1

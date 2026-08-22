@@ -54,3 +54,14 @@ class FeatureExtractor(nn.Module):
             detection_threshold=detection_threshold,
             validity_mask=validity_mask,
         )
+
+    @torch.no_grad()
+    def detectAndComputeWithValidityAudit(
+        self, image, top_k=None, detection_threshold=None, *, validity_mask
+    ):
+        return self.model.detectAndComputeWithValidityAudit(
+            image,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+            validity_mask=validity_mask,
+        )

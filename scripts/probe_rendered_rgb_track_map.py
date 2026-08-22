@@ -144,6 +144,10 @@ def _render_feature_cache(args, output: Path) -> dict:
     records: dict[str, dict] = {}
     render_seconds = 0.0
     feature_seconds = 0.0
+    raw_detector_rows = 0
+    valid_detector_rows = 0
+    valid_pixels = 0
+    total_pixels = 0
     for row, camera in enumerate(cameras):
         pose = torch.from_numpy(camera.pose_w2c).cuda().float()
         render_started = time.perf_counter()
@@ -184,17 +188,33 @@ def _render_feature_cache(args, output: Path) -> dict:
         render_seconds += time.perf_counter() - render_started
 
         feature_started = time.perf_counter()
-        sparse = extractor.detectAndCompute(
-            rendered[None],
-            top_k=args.keypoints,
-            detection_threshold=args.detection_threshold,
-            validity_mask=validity_mask,
-        )[0]
+        if validity_mask is None:
+            sparse = extractor.detectAndCompute(
+                rendered[None],
+                top_k=args.keypoints,
+                detection_threshold=args.detection_threshold,
+            )[0]
+            raw = sparse
+        else:
+            valid_batch, raw_batch = extractor.detectAndComputeWithValidityAudit(
+                rendered[None],
+                top_k=args.keypoints,
+                detection_threshold=args.detection_threshold,
+                validity_mask=validity_mask,
+            )
+            sparse, raw = valid_batch[0], raw_batch[0]
         torch.cuda.synchronize()
         feature_seconds += time.perf_counter() - feature_started
         keypoints = sparse["keypoints"].detach().cpu().float()
         descriptors = F.normalize(sparse["descriptors"].detach().cpu().float(), dim=1)
         scores = sparse["keypoint_scores"].detach().cpu().float()
+        raw_count = int(raw["keypoints"].shape[0])
+        valid_count = int(keypoints.shape[0])
+        raw_detector_rows += raw_count
+        valid_detector_rows += valid_count
+        if validity_mask is not None:
+            valid_pixels += int(validity_mask.sum())
+            total_pixels += int(validity_mask.numel())
         records[camera.image_name] = {
             "native_keypoints": keypoints,
             "native_descriptors": descriptors,
@@ -205,6 +225,11 @@ def _render_feature_cache(args, output: Path) -> dict:
                 [camera.height, camera.width], dtype=torch.long
             ),
             "source": "gaussian_rendered_rgb_only",
+            "render_valid_diagnostics": {
+                "raw_detector_rows": raw_count,
+                "valid_detector_rows": valid_count,
+                "invalid_or_boundary_rows_removed": raw_count - valid_count,
+            },
             **(
                 {
                     "native_valid_mask": validity_mask[0].detach().cpu(),
@@ -279,6 +304,21 @@ def _render_feature_cache(args, output: Path) -> dict:
             "render": render_seconds,
             "superpoint": feature_seconds,
             "total": time.perf_counter() - started,
+        },
+        "render_valid_diagnostics": {
+            "raw_detector_rows": raw_detector_rows,
+            "valid_detector_rows": valid_detector_rows,
+            "invalid_or_boundary_rows_removed": (
+                raw_detector_rows - valid_detector_rows
+            ),
+            "valid_region_pixel_fraction": (
+                None if total_pixels == 0 else valid_pixels / total_pixels
+            ),
+            "valid_rows_per_megapixel": (
+                None
+                if valid_pixels == 0
+                else valid_detector_rows * 1000000.0 / valid_pixels
+            ),
         },
     }
     _atomic_torch_save(payload, output)
