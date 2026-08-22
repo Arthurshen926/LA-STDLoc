@@ -24,7 +24,7 @@ def reconstruct_projective_anchors(
     *,
     maximum_observations: int = 32,
     minimum_views: int = 3,
-    minimum_view_bins: int = 2,
+    minimum_view_bins: int = 1,
     huber_delta_px: float = 2.0,
     triangulation_iterations: int = 3,
     minimum_parallax_deg: float = 1.0,
@@ -169,6 +169,9 @@ def reconstruct_projective_anchors(
             "gaussian_primitive_center_used": False,
             "one_observation_per_camera": True,
             "continuous_identity_and_geometry_reliability": True,
+            "global_pose_bin_is_not_a_base_geometry_hard_gate": (
+                int(minimum_view_bins) == 1
+            ),
             "triangulation_execution": (
                 "fresh_cpu_fixed_contiguous_shards"
                 if triangulator is robust_triangulate_associations_fresh_cpu

@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 from common.v6_contracts import ASSOCIATION_GRAPH_SCHEMA
@@ -28,3 +30,10 @@ def test_association_scope_must_be_mapping_only() -> None:
                 "uses_test_queries": True,
             },
         )
+
+
+def test_base_reconstruction_does_not_require_cross_global_pose_bins() -> None:
+    parameter = inspect.signature(reconstruct_projective_anchors).parameters[
+        "minimum_view_bins"
+    ]
+    assert parameter.default == 1

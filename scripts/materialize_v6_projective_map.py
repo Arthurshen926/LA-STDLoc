@@ -112,7 +112,7 @@ def run(args: argparse.Namespace) -> dict:
         provider,
         association,
         minimum_views=args.minimum_views,
-        minimum_view_bins=args.minimum_camera_families,
+        minimum_view_bins=args.base_minimum_view_bins,
         minimum_parallax_deg=args.minimum_parallax_deg,
         maximum_reprojection_px=args.maximum_reprojection_px,
         parallel_workers=args.triangulation_workers,
@@ -131,7 +131,7 @@ def run(args: argparse.Namespace) -> dict:
             minimum_margin=args.minimum_margin,
             maximum_epipolar_error_px=args.maximum_epipolar_error_px,
             minimum_observations=args.minimum_views,
-            minimum_camera_families=args.minimum_camera_families,
+            minimum_camera_families=args.completion_minimum_camera_families,
             maximum_rows_per_view=args.completion_maximum_rows_per_view,
             safety_maximum_components=args.completion_safety_maximum_components,
             device=args.device,
@@ -216,7 +216,10 @@ def main() -> None:
     parser.add_argument("--minimum-margin", type=float, default=0.01)
     parser.add_argument("--maximum-epipolar-error-px", type=float, default=2.0)
     parser.add_argument("--minimum-views", type=int, default=3)
-    parser.add_argument("--minimum-camera-families", type=int, default=2)
+    parser.add_argument("--base-minimum-view-bins", type=int, default=1)
+    parser.add_argument(
+        "--completion-minimum-camera-families", type=int, default=2
+    )
     parser.add_argument("--minimum-parallax-deg", type=float, default=1.0)
     parser.add_argument("--maximum-reprojection-px", type=float, default=2.0)
     parser.add_argument("--triangulation-workers", type=int, default=2)

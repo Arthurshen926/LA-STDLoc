@@ -33,7 +33,8 @@ geometry:
   final_xyz_source: fixed_camera_ray_triangulation
   gaussian_depth_role: proposal_and_visibility_only
   minimum_observations: 3
-  minimum_camera_families: 2
+  base_minimum_view_bins: 1
+  completion_minimum_camera_families: 2
   minimum_parallax_deg: 1.0
   maximum_reprojection_px: 2.0
   triangulation_workers: 2
