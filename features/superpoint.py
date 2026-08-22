@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import os
 from pathlib import Path
@@ -63,6 +65,37 @@ def batched_nms(scores, nms_radius: int):
         new_max_mask = suppressed_scores == max_pool(suppressed_scores)
         max_mask = max_mask | (new_max_mask & (~suppression_mask))
     return torch.where(max_mask, scores, zeros)
+
+
+def render_validity_mask_from_alpha(
+    alpha: torch.Tensor,
+    *,
+    minimum_alpha: float,
+    neighborhood_radius: int = 0,
+) -> torch.Tensor:
+    """Gate detector rows whose support neighborhood leaves rendered content."""
+
+    value = torch.as_tensor(alpha)
+    if value.ndim == 4 and value.shape[1] == 1:
+        value = value[:, 0]
+    elif value.ndim == 2:
+        value = value[None]
+    if value.ndim != 3:
+        raise ValueError("alpha must have shape [H,W], [B,H,W], or [B,1,H,W]")
+    if not 0.0 <= float(minimum_alpha) <= 1.0:
+        raise ValueError("minimum_alpha must be in [0,1]")
+    radius = int(neighborhood_radius)
+    if radius < 0:
+        raise ValueError("neighborhood_radius must be non-negative")
+    invalid = (~torch.isfinite(value)) | (value < float(minimum_alpha))
+    if radius:
+        invalid = F.max_pool2d(
+            invalid[:, None].float(),
+            kernel_size=2 * radius + 1,
+            stride=1,
+            padding=radius,
+        )[:, 0].bool()
+    return ~invalid
 
 
 def select_top_k_keypoints(keypoints, scores, k):
@@ -231,13 +264,31 @@ class SuperPoint(nn.Module):
         top_k=None,
         detection_threshold=None,
         subpixel_refinement: bool = False,
+        validity_mask: torch.Tensor | None = None,
     ):
         threshold = (
             self.detection_threshold
             if detection_threshold is None
             else float(detection_threshold)
         )
-        suppressed = batched_nms(scores, self.nms_radius)
+        all_valid = True
+        if validity_mask is not None:
+            validity_mask = torch.as_tensor(validity_mask, device=scores.device).bool()
+            if validity_mask.ndim == 4 and validity_mask.shape[1] == 1:
+                validity_mask = validity_mask[:, 0]
+            elif validity_mask.ndim == 2:
+                validity_mask = validity_mask[None]
+            if validity_mask.shape != scores.shape:
+                raise ValueError(
+                    "validity_mask must align with the full-resolution score map"
+                )
+            all_valid = bool(validity_mask.all())
+        nms_scores = (
+            scores if all_valid else torch.where(validity_mask, scores, -torch.inf)
+        )
+        suppressed = batched_nms(nms_scores, self.nms_radius)
+        if not all_valid:
+            suppressed = torch.where(validity_mask, suppressed, -torch.inf)
         if self.remove_borders:
             pad = int(self.remove_borders)
             suppressed[:, :pad] = -1
@@ -279,6 +330,7 @@ class SuperPoint(nn.Module):
         detection_threshold=None,
         *,
         subpixel_refinement: bool = False,
+        validity_mask: torch.Tensor | None = None,
     ):
         """Return native sparse SuperPoint descriptors for every input image.
 
@@ -294,6 +346,7 @@ class SuperPoint(nn.Module):
             top_k=top_k,
             detection_threshold=detection_threshold,
             subpixel_refinement=subpixel_refinement,
+            validity_mask=validity_mask,
         )
 
     @torch.inference_mode()
@@ -304,6 +357,7 @@ class SuperPoint(nn.Module):
         detection_threshold=None,
         *,
         subpixel_refinement: bool = False,
+        validity_mask: torch.Tensor | None = None,
     ):
         """Return native sparse and dense outputs from one encoder forward."""
 
@@ -315,6 +369,7 @@ class SuperPoint(nn.Module):
             top_k=top_k,
             detection_threshold=detection_threshold,
             subpixel_refinement=subpixel_refinement,
+            validity_mask=validity_mask,
         )
         return sparse, (descriptors, scores.unsqueeze(1))
 

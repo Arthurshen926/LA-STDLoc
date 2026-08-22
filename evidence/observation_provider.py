@@ -221,8 +221,6 @@ class ObservationProvider:
             if tuple(alpha.shape) != (height, width):
                 raise ValueError(f"{name}.native_alpha does not match image size")
         surface_support = record.get("native_surface_support")
-        if surface_support is None:
-            surface_support = record.get("native_appearance_reliability")
         if surface_support is not None:
             surface_support = _tensor(
                 surface_support,

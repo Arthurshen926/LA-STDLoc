@@ -30,9 +30,14 @@ class FeatureExtractor(nn.Module):
         return {"feature_map": features, "scores": scores}
 
     @torch.no_grad()
-    def detectAndCompute(self, image, top_k=None, detection_threshold=None):
+    def detectAndCompute(
+        self, image, top_k=None, detection_threshold=None, *, validity_mask=None
+    ):
         return self.model.detectAndCompute(
-            image, top_k=top_k, detection_threshold=detection_threshold
+            image,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+            validity_mask=validity_mask,
         )
 
     @torch.no_grad()
@@ -40,7 +45,12 @@ class FeatureExtractor(nn.Module):
         return self.model.detectAndComputeDense(image)
 
     @torch.no_grad()
-    def detectAndComputeWithDense(self, image, top_k=None, detection_threshold=None):
+    def detectAndComputeWithDense(
+        self, image, top_k=None, detection_threshold=None, *, validity_mask=None
+    ):
         return self.model.detectAndComputeWithDense(
-            image, top_k=top_k, detection_threshold=detection_threshold
+            image,
+            top_k=top_k,
+            detection_threshold=detection_threshold,
+            validity_mask=validity_mask,
         )

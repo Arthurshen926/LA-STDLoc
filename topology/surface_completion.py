@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from evidence.observation_provider import ObservationProvider
 from evidence.tracks import fuse_projective_anchor_observations
+from features.raster_sampling import sample_raster_at_grid_uv
 
 
 def _unproject_to_world(
@@ -72,23 +73,20 @@ def materialize_gaussian_surface_completion(
         if view.valid_mask is None and view.keypoint_validity is None:
             raise ValueError("surface completion requires rendered validity")
         height, width = view.image_hw
-        pixels = torch.floor(view.keypoints).long()
-        x = pixels[:, 0].clamp(0, width - 1)
-        y = pixels[:, 1].clamp(0, height - 1)
         depth = (
             view.keypoint_depth.float()
             if view.keypoint_depth is not None
-            else view.depth[y, x].float()
+            else sample_raster_at_grid_uv(view.depth, view.keypoints).float()
         )
         alpha = (
             view.keypoint_alpha.float()
             if view.keypoint_alpha is not None
-            else view.alpha[y, x].float()
+            else sample_raster_at_grid_uv(view.alpha, view.keypoints).float()
         )
         keypoint_valid = (
             view.keypoint_validity.bool()
             if view.keypoint_validity is not None
-            else view.valid_mask[y, x].bool()
+            else sample_raster_at_grid_uv(view.valid_mask, view.keypoints).bool()
         )
         valid = (
             keypoint_valid
@@ -135,13 +133,38 @@ def materialize_gaussian_surface_completion(
         raise ValueError("surface completion requires explicit mapping pose bins")
     voxel = torch.floor(xyz / float(voxel_size_m)).long()
     unique_voxel, inverse = torch.unique(voxel, dim=0, sorted=True, return_inverse=True)
+    raw_observation_count = int(inverse.numel())
+    weight = detector * alpha
+    order = torch.arange(inverse.numel(), dtype=torch.long)
+    for values, descending in (
+        (keypoint, False),
+        (weight, True),
+        (query, False),
+        (inverse, False),
+    ):
+        order = order[
+            torch.argsort(values[order], descending=descending, stable=True)
+        ]
+    pairs = torch.stack((inverse[order], query[order]), dim=1)
+    keep_mask = torch.ones(order.numel(), dtype=torch.bool)
+    if order.numel() > 1:
+        keep_mask[1:] = torch.any(pairs[1:] != pairs[:-1], dim=1)
+    keep = order[keep_mask]
+    xyz = xyz[keep]
+    descriptors = descriptors[keep]
+    detector = detector[keep]
+    alpha = alpha[keep]
+    query = query[keep]
+    keypoint = keypoint[keep]
+    pose_bin = pose_bin[keep]
+    inverse = inverse[keep]
+    weight = weight[keep]
     group_count = int(unique_voxel.shape[0])
     observation_count = torch.bincount(inverse, minlength=group_count)
     view_pairs = torch.unique(torch.stack((inverse, query), dim=1), dim=0)
     view_count = torch.bincount(view_pairs[:, 0], minlength=group_count)
     bin_pairs = torch.unique(torch.stack((inverse, pose_bin), dim=1), dim=0)
     pose_bin_count = torch.bincount(bin_pairs[:, 0], minlength=group_count)
-    weight = detector * alpha
     weight_sum = torch.zeros(group_count, dtype=torch.float32)
     weight_sum.index_add_(0, inverse, weight)
     eligible = (
@@ -215,6 +238,10 @@ def materialize_gaussian_surface_completion(
             if selected_covariance
             else torch.empty((0, 3, 3))
         ).float(),
+        "anchor_position_covariance_semantics": (
+            "weighted_rendered_depth_proposal_scatter_not_"
+            "ray_triangulation_uncertainty"
+        ),
         "anchor_matchability": torch.tensor(selected_matchability).float(),
         "base_anchor_count": count,
         "canonical_anchor_count": count,
@@ -248,7 +275,12 @@ def materialize_gaussian_surface_completion(
             "minimum_pose_bins": int(minimum_pose_bins),
             "alpha_minimum": float(alpha_minimum),
             "descriptor_trim_fraction": float(descriptor_trim_fraction),
+            "raw_legal_observation_count": raw_observation_count,
+            "same_view_duplicate_observation_count": (
+                raw_observation_count - int(xyz.shape[0])
+            ),
             "legal_observation_count": int(xyz.shape[0]),
+            "one_observation_per_camera_per_component": True,
             "eligible_surface_component_count": int(eligible.sum()),
             "selected_surface_component_count": count,
         },
@@ -321,8 +353,8 @@ def surface_completion_selector_inputs(
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "provenance_opportunity_count": legal.clone(),
-        "provenance_legal_hit_strong_count": legal.clone(),
-        "provenance_legal_hit_clean_count": legal.clone(),
+        "provenance_legal_hit_strong_count": zeros.clone(),
+        "provenance_legal_hit_clean_count": zeros.clone(),
         "provenance_solver_inlier_gtclean_strong_count": zeros.clone(),
         "provenance_harmful_solver_inlier_count": zeros.clone(),
         "records": [
@@ -332,9 +364,8 @@ def surface_completion_selector_inputs(
             }
             for record in records
         ],
-        "evidence_semantics": (
-            "exact_multiview_surface_component_observation_support_without_pose_feedback"
-        ),
+        "evidence_semantics": "construction_opportunity_only_feedback_unobserved",
+        "feedback_outcomes_observed": False,
     }
     teacher = {
         "schema": "lafgs_v9_active_map_complete_positive_teacher",

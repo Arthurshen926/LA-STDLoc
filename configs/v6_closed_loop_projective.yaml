@@ -1,0 +1,57 @@
+schema: lafgs_v6_closed_loop_projective_mainline
+version: 1
+
+method:
+  name: Closed-Loop Projective Anchor Distillation
+  mapping_only: true
+  online_protocol: native_superpoint_global_top1_one_poselib
+  maximum_rounds: 3
+
+observation:
+  schema: render_observation_cache_v2
+  keypoints: 2048
+  nms_radius: 4
+  detection_threshold: 0.0
+  minimum_alpha: 0.05
+  validity_neighborhood_radius: 4
+
+association:
+  schema: projective_association_graph_v2
+  pair_policy: nearest
+  pair_neighbors: 6
+  minimum_similarity: 0.65
+  minimum_margin: 0.01
+  maximum_epipolar_error_px: 2.0
+  candidate_topk: 4
+  minimum_views: 3
+  continuous_identity_reliability: true
+  posthoc_support_repair: false
+  parent_child_semantics: false
+
+geometry:
+  anchor_schema: projective_anchor_candidates_v2
+  final_xyz_source: fixed_camera_ray_triangulation
+  gaussian_depth_role: proposal_and_visibility_only
+  minimum_observations: 3
+  minimum_camera_families: 2
+  minimum_parallax_deg: 1.0
+  maximum_reprojection_px: 2.0
+
+feedback:
+  schema: self_localization_feedback_v1
+  query_local_descriptor_loo: true
+  query_local_geometry_loo: true
+  failure_layers: [L1, L2, L3, L4]
+  descriptor_trust_region: 0.05
+
+selection:
+  layers: [visibility, detectability, matching, pose]
+  catastrophic_must_not_increase: true
+  recall_5cm_must_not_decrease: true
+  state_hash_must_not_repeat: true
+
+compatibility:
+  historical_runner_default: false
+  direct_depth_surface_anchor: false
+  appearance_ensemble_default: false
+  render_to_real_adapter: false

@@ -1,0 +1,170 @@
+"""Materialize V6 projective candidates into the unchanged online map API."""
+
+from __future__ import annotations
+
+import torch
+
+from common.v6_contracts import ANCHOR_CANDIDATE_SCHEMA, require_schema
+from map_learning.metric import SharedLowRankMetric
+
+
+def merge_projective_candidates(parts: list[dict]) -> dict:
+    """Concatenate independently constructed candidate sets without reselecting."""
+
+    if not parts:
+        raise ValueError("at least one candidate set is required")
+    for index, part in enumerate(parts):
+        require_schema(part, ANCHOR_CANDIDATE_SCHEMA, label=f"candidate[{index}]")
+    names = list(parts[0]["query_names"])
+    bins = torch.as_tensor(parts[0]["query_bins"]).long()
+    for part in parts[1:]:
+        if list(part["query_names"]) != names or not torch.equal(
+            torch.as_tensor(part["query_bins"]).long(), bins
+        ):
+            raise ValueError("candidate mapping registries differ")
+    feature_dims = {int(torch.as_tensor(part["anchor_features"]).shape[1]) for part in parts}
+    if len(feature_dims) != 1:
+        raise ValueError("candidate descriptor dimensions differ")
+    offsets = [0]
+    query = []
+    keypoint = []
+    for part in parts:
+        csr = part["projective_anchor_observations"]
+        local_offsets = torch.as_tensor(csr["observation_offsets"]).long()
+        if local_offsets.ndim != 1 or int(local_offsets[0]) != 0:
+            raise ValueError("candidate CSR offsets are invalid")
+        if int(local_offsets[-1]) != len(torch.as_tensor(csr["query_indices"])):
+            raise ValueError("candidate CSR columns are not aligned")
+        base = offsets[-1]
+        offsets.extend((local_offsets[1:] + base).tolist())
+        query.append(torch.as_tensor(csr["query_indices"]).long())
+        keypoint.append(torch.as_tensor(csr["keypoint_indices"]).long())
+    count = sum(int(torch.as_tensor(part["anchor_xyz"]).shape[0]) for part in parts)
+    kind = []
+    for part in parts:
+        value = str(part.get("candidate_kind", "projective_track"))
+        kind.extend([value] * int(torch.as_tensor(part["anchor_xyz"]).shape[0]))
+    return {
+        "schema": ANCHOR_CANDIDATE_SCHEMA,
+        "version": 2,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "query_names": names,
+        "query_bins": bins,
+        "anchor_ids": torch.arange(count, dtype=torch.long),
+        "anchor_xyz": torch.cat([torch.as_tensor(part["anchor_xyz"]).float() for part in parts]),
+        "anchor_features": torch.cat(
+            [torch.as_tensor(part["anchor_features"]).float() for part in parts]
+        ),
+        "anchor_position_covariance": torch.cat(
+            [torch.as_tensor(part["anchor_position_covariance"]).float() for part in parts]
+        ),
+        "identity_reliability": torch.cat(
+            [torch.as_tensor(part["identity_reliability"]).float() for part in parts]
+        ),
+        "geometry_reliability": torch.cat(
+            [torch.as_tensor(part["geometry_reliability"]).float() for part in parts]
+        ),
+        "candidate_kind": kind,
+        "projective_anchor_observations": {
+            "observation_offsets": torch.tensor(offsets, dtype=torch.long),
+            "query_indices": torch.cat(query),
+            "keypoint_indices": torch.cat(keypoint),
+        },
+        "contract": {
+            "final_xyz_source": "fixed_camera_robust_ray_triangulation",
+            "gaussian_depth_used_for_final_xyz": False,
+            "direct_gaussian_surface_anchor": False,
+        },
+    }
+
+
+def materialize_projective_anchor_map(candidates: dict, *, lineage: dict) -> dict:
+    require_schema(candidates, ANCHOR_CANDIDATE_SCHEMA, label="candidates")
+    xyz = torch.as_tensor(candidates["anchor_xyz"]).float()
+    features = torch.as_tensor(candidates["anchor_features"]).float()
+    count = int(xyz.shape[0])
+    if count == 0 or features.ndim != 2 or features.shape[0] != count:
+        raise ValueError("candidate rows are empty or misaligned")
+    if not torch.isfinite(xyz).all() or not torch.isfinite(features).all():
+        raise ValueError("candidate geometry/descriptors must be finite")
+    anchor_ids = torch.arange(count, dtype=torch.long)
+    kinds = list(candidates.get("candidate_kind", ["projective_track"] * count))
+    if len(kinds) != count:
+        raise ValueError("candidate kinds do not align")
+    csr = candidates["projective_anchor_observations"]
+    return {
+        "schema": "lafgs_materialized_anchor_map",
+        "version": 1,
+        "anchor_ids": anchor_ids,
+        "anchor_xyz": xyz,
+        "anchor_features": features,
+        "source_primitive_ids": torch.full((count,), -1, dtype=torch.long),
+        "track_cluster_ids": torch.arange(count, dtype=torch.long),
+        "anchor_type": torch.ones(count, dtype=torch.long),
+        "dependency_group_ids": torch.arange(count, dtype=torch.long),
+        "coarse_dependency_group_ids": torch.arange(count, dtype=torch.long),
+        "fine_identity_ids": torch.arange(count, dtype=torch.long),
+        "anchor_parent_identity_ids": torch.arange(count, dtype=torch.long),
+        "anchor_correlation_group_ids": torch.arange(count, dtype=torch.long),
+        "anchor_position_covariance": torch.as_tensor(
+            candidates["anchor_position_covariance"]
+        ).float(),
+        "anchor_matchability": (
+            torch.as_tensor(candidates["identity_reliability"]).float()
+            * torch.as_tensor(candidates["geometry_reliability"]).float()
+        ).clamp(0, 1),
+        "anchor_candidate_kind": kinds,
+        "base_anchor_count": 0,
+        "canonical_anchor_count": count,
+        "micro_anchor_count": count,
+        "projective_anchor_observations": {
+            "schema": "lafgs_projective_anchor_observations",
+            "version": 1,
+            "observation_offsets": torch.as_tensor(csr["observation_offsets"]).long(),
+            "query_indices": torch.as_tensor(csr["query_indices"]).long(),
+            "keypoint_indices": torch.as_tensor(csr["keypoint_indices"]).long(),
+        },
+        "projective_anchor_construction": {
+            "schema": "lafgs_v6_closed_loop_projective_anchor_construction",
+            "version": 1,
+            "final_xyz_source": "fixed_camera_robust_ray_triangulation",
+            "gaussian_depth_role": "proposal_and_visibility_only",
+            "direct_gaussian_surface_anchor": False,
+            "posthoc_support_repair": False,
+            "parent_child_semantics": False,
+        },
+        "v6_mapping_query_names": list(candidates["query_names"]),
+        "v6_mapping_query_bins": torch.as_tensor(candidates["query_bins"]).long(),
+        "provenance": {
+            **dict(lineage),
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "uses_gaussian_geometry_for_triangulation": False,
+            "mapping_source": "gaussian_render_valid_projective_v6",
+        },
+    }
+
+
+def identity_metric_state(state: dict, *, map_path: str, map_sha256: str) -> dict:
+    features = torch.as_tensor(state["anchor_features"]).float()
+    metric = SharedLowRankMetric(
+        descriptor_dim=int(features.shape[1]), rank=1, max_residual_norm=0.0
+    )
+    with torch.no_grad():
+        for parameter in metric.parameters():
+            parameter.zero_()
+    return {
+        "schema": "lafgs_shared_metric_state",
+        "version": 1,
+        "landmark_indices": torch.as_tensor(state["anchor_ids"]).long(),
+        "metric_config": metric.export_config(),
+        "metric_state_dict": {
+            name: value.detach().cpu().clone()
+            for name, value in metric.state_dict().items()
+        },
+        "map_path": str(map_path),
+        "map_sha256": str(map_sha256),
+        "step": 0,
+        "protocol": "v6_identity_shared_metric",
+    }

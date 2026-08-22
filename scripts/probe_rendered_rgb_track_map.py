@@ -22,6 +22,7 @@ import torch
 import torch.nn.functional as F
 
 from common.hashing import sha256_file
+from common.v6_contracts import RENDER_OBSERVATION_SCHEMA
 from data.datasets import ColmapDataset
 from evidence.camera_pair_policy import (
     candidate_camera_pairs,
@@ -40,6 +41,7 @@ from evidence.triangulation import (
     robust_triangulate_associations,
 )
 from features.extractor import FeatureExtractor
+from features.superpoint import render_validity_mask_from_alpha
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D, GaussianModel3D
 from priors.rendering import render_from_pose_gsplat
@@ -125,6 +127,7 @@ def _render_feature_cache(args, output: Path) -> dict:
     for row, camera in enumerate(cameras):
         pose = torch.from_numpy(camera.pose_w2c).cuda().float()
         render_started = time.perf_counter()
+        render_valid = args.render_valid_alpha_minimum is not None
         package = render_from_pose_gsplat(
             model,
             pose,
@@ -133,11 +136,30 @@ def _render_feature_cache(args, output: Path) -> dict:
             camera.width,
             camera.height,
             bg_color=torch.zeros(3, device="cuda"),
-            render_mode="RGB",
+            render_mode="RGB+ED" if render_valid else "RGB",
+            # V6 needs RGB, alpha, and proposal-only depth, never the legacy
+            # learned/random Gaussian localization-feature render.
             rgb_only=True,
             rasterize_mode="antialiased",
         )
-        rendered = package["render"].float().clamp(0.0, 1.0)
+        rendered_payload = package["render"].float()
+        rendered = rendered_payload[:3].clamp(0.0, 1.0)
+        validity_mask = None
+        rendered_alpha = None
+        if render_valid:
+            rendered_alpha = package.get("alphas")
+            if rendered_alpha is None:
+                rendered_alpha = package.get("rend_alpha")
+            if rendered_alpha is None:
+                raise ValueError("render-valid extraction requires renderer alpha")
+            rendered_depth = package.get("depth")
+            if rendered_depth is None:
+                raise ValueError("V6 observation extraction requires proposal depth")
+            validity_mask = render_validity_mask_from_alpha(
+                rendered_alpha,
+                minimum_alpha=float(args.render_valid_alpha_minimum),
+                neighborhood_radius=int(args.render_valid_neighborhood_radius),
+            )
         torch.cuda.synchronize()
         render_seconds += time.perf_counter() - render_started
 
@@ -146,6 +168,7 @@ def _render_feature_cache(args, output: Path) -> dict:
             rendered[None],
             top_k=args.keypoints,
             detection_threshold=args.detection_threshold,
+            validity_mask=validity_mask,
         )[0]
         torch.cuda.synchronize()
         feature_seconds += time.perf_counter() - feature_started
@@ -162,6 +185,15 @@ def _render_feature_cache(args, output: Path) -> dict:
                 [camera.height, camera.width], dtype=torch.long
             ),
             "source": "gaussian_rendered_rgb_only",
+            **(
+                {
+                    "native_valid_mask": validity_mask[0].detach().cpu(),
+                    "native_alpha": rendered_alpha.squeeze().detach().cpu().half(),
+                    "native_depth": rendered_depth.squeeze().detach().cpu().float(),
+                }
+                if validity_mask is not None
+                else {}
+            ),
         }
         if (row + 1) % max(int(args.progress_interval), 1) == 0 or row + 1 == len(
             cameras
@@ -172,11 +204,15 @@ def _render_feature_cache(args, output: Path) -> dict:
             )
 
     payload = {
-        "schema": "lafgs_rendered_rgb_only_sparse_mapping_cache",
-        "version": 1,
+        "schema": (
+            RENDER_OBSERVATION_SCHEMA
+            if args.render_valid_alpha_minimum is not None
+            else "lafgs_rendered_rgb_only_sparse_mapping_cache"
+        ),
+        "version": 2 if args.render_valid_alpha_minimum is not None else 1,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
-        "uses_rendered_depth": False,
+        "uses_rendered_depth": args.render_valid_alpha_minimum is not None,
         "uses_gaussian_geometry_for_triangulation": False,
         "mapping_query_count": len(cameras),
         "full_mapping_query_count": len(mapping),
@@ -194,8 +230,22 @@ def _render_feature_cache(args, output: Path) -> dict:
             "nms_radius": args.nms_radius,
             "detection_threshold": args.detection_threshold,
             "background": "black",
-            "render_mode": "RGB",
+            "render_mode": (
+                "RGB+ED" if args.render_valid_alpha_minimum is not None else "RGB"
+            ),
             "rasterize_mode": "antialiased",
+            "render_valid_observation_extraction": (
+                None
+                if args.render_valid_alpha_minimum is None
+                else {
+                    "schema": "lafgs_v6_render_valid_observation_policy",
+                    "version": 1,
+                    "score_gate_stage": "before_native_nms_and_topk",
+                    "minimum_alpha": float(args.render_valid_alpha_minimum),
+                    "neighborhood_radius": int(args.render_valid_neighborhood_radius),
+                    "appearance_reliability_used": False,
+                }
+            ),
         },
         "timing_seconds": {
             "render": render_seconds,
@@ -214,7 +264,10 @@ def _load_cache(path: Path) -> dict:
 
 
 def _validate_cache(payload: dict) -> dict:
-    if payload.get("schema") != "lafgs_rendered_rgb_only_sparse_mapping_cache":
+    if payload.get("schema") not in {
+        "lafgs_rendered_rgb_only_sparse_mapping_cache",
+        RENDER_OBSERVATION_SCHEMA,
+    }:
         raise ValueError("unexpected rendered-RGB cache schema")
     if payload.get("uses_source_mapping_rgb") is not False:
         raise ValueError("cache does not attest rendered-RGB-only mapping")
@@ -599,6 +652,8 @@ def main() -> None:
     parser.add_argument("--keypoints", type=int, default=1024)
     parser.add_argument("--nms-radius", type=int, default=4)
     parser.add_argument("--detection-threshold", type=float, default=0.0)
+    parser.add_argument("--render-valid-alpha-minimum", type=float, default=None)
+    parser.add_argument("--render-valid-neighborhood-radius", type=int, default=4)
     parser.add_argument("--pair-neighbors", type=int, default=6)
     parser.add_argument(
         "--pair-policy",
@@ -645,6 +700,12 @@ def main() -> None:
     args = parser.parse_args()
     if int(args.cpu_threads) < 1:
         parser.error("--cpu-threads must be positive")
+    if args.render_valid_alpha_minimum is not None and not (
+        0.0 <= float(args.render_valid_alpha_minimum) <= 1.0
+    ):
+        parser.error("--render-valid-alpha-minimum must be in [0,1]")
+    if int(args.render_valid_neighborhood_radius) < 0:
+        parser.error("--render-valid-neighborhood-radius must be non-negative")
     torch.set_num_threads(int(args.cpu_threads))
     if not torch.cuda.is_available():
         raise RuntimeError("rendered-RGB Track probe requires CUDA")
