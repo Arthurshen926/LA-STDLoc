@@ -1,5 +1,52 @@
 # Method
 
+## V6 formal mainline: Closed-Loop Projective Anchor Distillation
+
+The formal V6 method begins at the immutable `v4-render-only-frozen` tag and
+does not inherit any V5 adapter experiment.  A mapping observation exists only
+when Gaussian-rendered alpha support is valid **before** native SuperPoint NMS
+and Top-K.  All such observations enter one reciprocal descriptor,
+known-pose-epipolar, cycle/chain-confidence association graph.  V6 has no
+post-hoc support repair, Track parent/child split, child cap, or direct
+depth-surface deployable row.
+
+Every deployable coordinate is reconstructed by robust multi-camera rays with
+the shared physical pixel-center convention.  Gaussian alpha/depth may define
+the rendered domain, propose a local completion neighborhood, and audit
+visibility; neither Gaussian primitive centers nor rendered depth become the
+final Anchor coordinate.  Completion observations must independently pass
+reciprocal descriptor and known-pose epipolar support before the same ray
+triangulator is called.
+
+The current map self-localizes every ordered mapping query with its own
+descriptor observations and affected geometry removed.  The online operation
+inside that replay is exactly the deployment operation: native SuperPoint,
+one global cosine Top-1 Anchor for every query row, and one standard PoseLib
+solve.  The offline-only replay emits explicit L1 visibility, L2
+detectability, L3 matching, and L4 pose-information failures plus clean,
+harmful, and confusion evidence.
+
+Each round evaluates independent descriptor-only, selection-only, and
+L1-targeted reconstruction proposals.  Descriptor updates are bounded tangent
+residuals on stored map vectors, not an online adapter.  Selection enforces the
+ordered hierarchy visibility → detectability → one-to-one matching → pose
+information, rather than a weighted heuristic sum.  Candidate acceptance
+first enforces catastrophe, R5, map-size, and latency guards and then compares
+the frozen lexicographic risk tuple.  Repeated states are rejected and the
+loop stops after at most three rounds or immediately when no proposal is
+accepted.
+
+The only formal online protocol remains native SuperPoint + global Top-1 + one
+PoseLib call.  Retrieval, stronger online features, a learned query adapter,
+group-aware RANSAC, pose refinement, and render-time refinement are outside
+the method.
+
+## V4 compatibility architecture (non-formal in V6)
+
+The remaining sections document the retained V4 artifact/API compatibility
+surface. They do not override the V6 contracts above and are not called by the
+V6 runner.
+
 ## Evidence-Grounded Anchor Registry
 
 LaFGS reconstructs one sparse localization representation, the

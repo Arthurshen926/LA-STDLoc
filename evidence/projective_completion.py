@@ -40,6 +40,7 @@ def build_projective_completion(
     minimum_camera_families: int = 2,
     maximum_rows_per_view: int = 256,
     safety_maximum_components: int = 100000,
+    eligible_query_indices: torch.Tensor | list[int] | None = None,
     device: str = "cuda",
 ) -> dict:
     """Use Gaussian depth only to propose neighborhoods; deploy only ray xyz."""
@@ -62,7 +63,14 @@ def build_projective_completion(
     score_parts = []
     query_parts = []
     keypoint_parts = []
-    for query_index in range(len(observations)):
+    eligible_queries = (
+        set(range(len(observations)))
+        if eligible_query_indices is None
+        else {int(value) for value in torch.as_tensor(eligible_query_indices).tolist()}
+    )
+    if not eligible_queries or min(eligible_queries) < 0 or max(eligible_queries) >= len(observations):
+        raise ValueError("completion eligible query registry is empty or invalid")
+    for query_index in sorted(eligible_queries):
         view = observations.build_view(query_index)
         if view.depth is None and view.keypoint_depth is None:
             raise ValueError("completion requires rendered depth proposals")

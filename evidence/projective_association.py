@@ -94,7 +94,7 @@ def build_projective_association_graph(
     for view in views:
         _render_valid_rows(view)
     descriptors = [view.descriptors.float() for view in views]
-    keypoints = [view.keypoints.float() for view in views]
+    keypoints = [view.physical_keypoints for view in views]
     detector_scores = [view.detector_scores.float() for view in views]
     camera_K = torch.stack([view.intrinsics.float() for view in views])
     pose_w2c = torch.stack([view.pose_w2c.float() for view in views])

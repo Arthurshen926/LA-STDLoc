@@ -81,6 +81,28 @@ def build_self_localization_feedback(
                 "harmful_inlier_anchor_ids": torch.as_tensor(
                     source.get("harmful_inlier_anchor_ids", ())
                 ).long(),
+                "query_rows": torch.as_tensor(source.get("query_rows", ())).long(),
+                "winner_anchor_ids": torch.as_tensor(
+                    source.get("winner_anchor_ids", ())
+                ).long(),
+                "winner_scores": torch.as_tensor(
+                    source.get("winner_scores", ())
+                ).float(),
+                "inlier_query_rows": torch.as_tensor(
+                    source.get("inlier_query_rows", ())
+                ).long(),
+                "inlier_clean_mask": torch.as_tensor(
+                    source.get("inlier_clean_mask", ())
+                ).bool(),
+                "visible_anchor_ids": torch.as_tensor(
+                    source.get("visible_anchor_ids", ())
+                ).long(),
+                "detectable_pairs": torch.as_tensor(
+                    source.get("detectable_pairs", ()), dtype=torch.long
+                ).reshape(-1, 2),
+                "matching_pairs": torch.as_tensor(
+                    source.get("matching_pairs", ()), dtype=torch.long
+                ).reshape(-1, 2),
                 "confusion_pairs": torch.as_tensor(
                     source.get("confusion_pairs", ()), dtype=torch.long
                 ).reshape(-1, 2),

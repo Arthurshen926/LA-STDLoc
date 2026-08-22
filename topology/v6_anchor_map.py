@@ -168,3 +168,115 @@ def identity_metric_state(state: dict, *, map_path: str, map_sha256: str) -> dic
         "step": 0,
         "protocol": "v6_identity_shared_metric",
     }
+
+
+def validate_v6_identity_metric(
+    payload: dict, *, state: dict, map_path: str, map_sha256: str
+) -> None:
+    features = torch.as_tensor(state["anchor_features"])
+    expected_config = {
+        "descriptor_dim": int(features.shape[1]),
+        "rank": 1,
+        "max_residual_norm": 0.0,
+    }
+    if (
+        payload.get("schema") != "lafgs_shared_metric_state"
+        or payload.get("protocol") != "v6_identity_shared_metric"
+        or payload.get("map_path") != str(map_path)
+        or payload.get("map_sha256") != str(map_sha256)
+        or payload.get("metric_config") != expected_config
+        or payload.get("step") != 0
+    ):
+        raise ValueError("V6 metric is not the exact map-bound identity shim")
+    expected_rows = torch.as_tensor(state["anchor_ids"]).long()
+    if not torch.equal(torch.as_tensor(payload.get("landmark_indices")).long(), expected_rows):
+        raise ValueError("V6 identity metric rows differ from the map")
+    metric = SharedLowRankMetric(**expected_config)
+    try:
+        metric.load_state_dict(payload["metric_state_dict"], strict=True)
+    except (KeyError, RuntimeError) as error:
+        raise ValueError("V6 identity metric state differs") from error
+    if any(bool(torch.count_nonzero(parameter)) for parameter in metric.parameters()):
+        raise ValueError("V6 formal map forbids a learned online metric")
+
+
+def subset_projective_anchor_map(state: dict, selected: torch.Tensor) -> dict:
+    selected = torch.as_tensor(selected).long().reshape(-1)
+    count = int(torch.as_tensor(state["anchor_ids"]).numel())
+    if selected.numel() == 0 or bool((selected < 0).any()) or bool((selected >= count).any()):
+        raise ValueError("selected V6 Anchor rows are empty or out of range")
+    if not torch.equal(selected, torch.unique(selected, sorted=True)):
+        raise ValueError("selected V6 Anchor rows must be unique and sorted")
+    output = dict(state)
+    row_fields = (
+        "anchor_xyz", "anchor_features", "source_primitive_ids", "track_cluster_ids",
+        "anchor_type", "dependency_group_ids", "coarse_dependency_group_ids",
+        "fine_identity_ids", "anchor_parent_identity_ids",
+        "anchor_correlation_group_ids", "anchor_position_covariance",
+        "anchor_matchability", "anchor_candidate_kind",
+    )
+    for field in row_fields:
+        value = state.get(field)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            output[field] = [value[index] for index in selected.tolist()]
+        else:
+            output[field] = torch.as_tensor(value)[selected].clone()
+    output["anchor_ids"] = torch.arange(selected.numel(), dtype=torch.long)
+    for field in (
+        "track_cluster_ids", "dependency_group_ids", "coarse_dependency_group_ids",
+        "fine_identity_ids", "anchor_parent_identity_ids", "anchor_correlation_group_ids",
+    ):
+        if field in output:
+            output[field] = torch.arange(selected.numel(), dtype=torch.long)
+    source_csr = state["projective_anchor_observations"]
+    offsets = torch.as_tensor(source_csr["observation_offsets"]).long()
+    query = torch.as_tensor(source_csr["query_indices"]).long()
+    keypoint = torch.as_tensor(source_csr["keypoint_indices"]).long()
+    output_offsets = [0]
+    output_query = []
+    output_keypoint = []
+    for row in selected.tolist():
+        start, stop = int(offsets[row]), int(offsets[row + 1])
+        output_query.append(query[start:stop])
+        output_keypoint.append(keypoint[start:stop])
+        output_offsets.append(output_offsets[-1] + stop - start)
+    output["projective_anchor_observations"] = {
+        **dict(source_csr),
+        "observation_offsets": torch.tensor(output_offsets, dtype=torch.long),
+        "query_indices": torch.cat(output_query),
+        "keypoint_indices": torch.cat(output_keypoint),
+    }
+    output["canonical_anchor_count"] = int(selected.numel())
+    output["micro_anchor_count"] = int(selected.numel())
+    return output
+
+
+def projective_candidates_from_map(state: dict) -> dict:
+    construction = state.get("projective_anchor_construction", {})
+    if construction.get("final_xyz_source") != "fixed_camera_robust_ray_triangulation":
+        raise ValueError("only a V6 pure-ray map can become projective candidates")
+    return {
+        "schema": ANCHOR_CANDIDATE_SCHEMA,
+        "version": 2,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "query_names": list(state["v6_mapping_query_names"]),
+        "query_bins": torch.as_tensor(state["v6_mapping_query_bins"]).long(),
+        "anchor_xyz": torch.as_tensor(state["anchor_xyz"]).float(),
+        "anchor_features": torch.as_tensor(state["anchor_features"]).float(),
+        "anchor_position_covariance": torch.as_tensor(
+            state["anchor_position_covariance"]
+        ).float(),
+        "identity_reliability": torch.as_tensor(state["anchor_matchability"]).float(),
+        "geometry_reliability": torch.ones_like(
+            torch.as_tensor(state["anchor_matchability"]).float()
+        ),
+        "candidate_kind": list(state["anchor_candidate_kind"]),
+        "projective_anchor_observations": {
+            key: value
+            for key, value in state["projective_anchor_observations"].items()
+            if key in {"observation_offsets", "query_indices", "keypoint_indices"}
+        },
+    }

@@ -47,7 +47,7 @@ def reconstruct_projective_anchors(
     confidence = torch.as_tensor(tracks["confidence"]).float()
     track_count = int(association["diagnostics"]["track_count"])
     views = [observations.build_view(index) for index in range(len(observations))]
-    keypoints = [view.keypoints.float() for view in views]
+    keypoints = [view.physical_keypoints for view in views]
     descriptors = [view.descriptors.float() for view in views]
     detector_scores = [view.detector_scores.float() for view in views]
     uv = _gather(keypoints, query_index, keypoint_index)

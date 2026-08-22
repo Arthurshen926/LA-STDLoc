@@ -85,7 +85,7 @@ class LeaveOneQueryOutProjectiveMap:
             [view.keypoints.shape[0] for view in self.views], dtype=torch.long
         )
         packed_offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
-        packed_uv = torch.cat([view.keypoints.float() for view in self.views])
+        packed_uv = torch.cat([view.physical_keypoints for view in self.views])
         uv = packed_uv[packed_offsets[query] + keypoint]
         detector = torch.cat(
             [view.detector_scores.float() for view in self.views]

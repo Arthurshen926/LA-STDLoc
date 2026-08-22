@@ -44,11 +44,26 @@ feedback:
   failure_layers: [L1, L2, L3, L4]
   descriptor_trust_region: 0.05
 
+proposals:
+  independent_arms: [descriptor, selection, reconstruction]
+  descriptor:
+    map_tangent_residual_only: true
+    online_adapter: false
+  reconstruction:
+    target_failure_layer: L1
+    reciprocal_descriptor_support: true
+    known_pose_epipolar_support: true
+  combined_arm_requires_fresh_feedback: true
+
 selection:
   layers: [visibility, detectability, matching, pose]
   catastrophic_must_not_increase: true
   recall_5cm_must_not_decrease: true
   state_hash_must_not_repeat: true
+  maximum_rounds: 3
+  risk_order:
+    [catastrophic_100cm, cvar95_te, one_minus_r5, mean_te, median_te,
+     anchor_count, online_latency_ms]
 
 compatibility:
   historical_runner_default: false

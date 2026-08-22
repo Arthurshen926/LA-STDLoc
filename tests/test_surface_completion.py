@@ -68,7 +68,8 @@ def test_rendered_surface_completion_builds_nontrack_multiview_candidate() -> No
         sum(int(record["positive_indices"].numel()) for record in teacher["records"])
         == 3
     )
-    assert graph["provenance_legal_hit_strong_count"].tolist() == [3]
+    assert graph["provenance_legal_hit_strong_count"].tolist() == [0]
+    assert graph["feedback_outcomes_observed"] is False
     assert graph["provenance_harmful_solver_inlier_count"].tolist() == [0]
 
 

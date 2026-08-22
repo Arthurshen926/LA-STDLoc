@@ -64,10 +64,7 @@ def test_render_provider_reproduces_legacy_track_inputs_exactly() -> None:
     assert view.source_kind == "gaussian_render"
     assert view.depth is records[view.image_name]["native_depth"]
     assert view.alpha is records[view.image_name]["native_alpha"]
-    assert (
-        view.surface_support
-        is records[view.image_name]["native_appearance_reliability"]
-    )
+    assert view.surface_support is None
 
 
 def test_real_provider_preserves_requested_query_order() -> None:
@@ -90,7 +87,7 @@ def test_real_provider_preserves_requested_query_order() -> None:
         ("pose_w2c", torch.eye(3)),
         ("native_input_hw", [[6, 9]]),
         ("native_depth", torch.ones((1, 6, 9))),
-        ("native_appearance_reliability", torch.ones((4, 1))),
+        ("native_surface_support", torch.ones((4, 1))),
     ],
 )
 def test_provider_rejects_noncanonical_shapes(field: str, value) -> None:
