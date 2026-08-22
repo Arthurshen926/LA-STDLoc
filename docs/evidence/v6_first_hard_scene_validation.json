@@ -54,7 +54,16 @@
         "decision": "REJECT_CATASTROPHIC_AND_RECALL_REGRESSION",
         "summary_sha256": "bc07502a6b0882cb8a63c4d1192e2bd12ad6b124574be4a08dc8c70adda418d6"
       },
-      "round_decision": "STOP_NO_ACCEPTED_PROPOSAL"
+      "round_decision": "STOP_NO_ACCEPTED_PROPOSAL",
+      "formal_runner_replay": {
+        "producer_git_commit": "5e806d938f74f79603988215a742eefcf4d54a61",
+        "run_sha256": "b1c86552ce06f606501a7d223a5867a4309ea613ff5d0c300d5a99bda76833ca",
+        "baseline_summary_sha256": "ae1608b6b7b0cecc8b18e1b8b04c9b8e4294b57311ebf66d799de536f880a34e",
+        "descriptor_summary_sha256": "df83c7768b4e34df4109d1abbd785ffc93c7d7903320c1272204dc59514271ff",
+        "selection_summary_sha256": "4d293b708ff7ab15623de15ae55694d28d0f573eee18f4f7658118aa7461e448",
+        "accepted_arm": null,
+        "final_map_is_baseline": true
+      }
     },
     "Cambridge/ShopFacade": {
       "mapping_views": 32,
