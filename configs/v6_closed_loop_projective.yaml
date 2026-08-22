@@ -46,6 +46,7 @@ feedback:
   query_local_geometry_loo: true
   failure_layers: [L1, L2, L3, L4]
   descriptor_trust_region: 0.05
+  cpu_threads: 1
 
 proposals:
   independent_arms: [descriptor, selection, reconstruction]

@@ -57,6 +57,11 @@ def _require(path: Path, expected: str, label: str) -> str:
 
 
 def run(args: argparse.Namespace) -> dict:
+    if int(args.cpu_threads) < 1:
+        raise ValueError("CPU thread count must be positive")
+    torch.set_num_threads(int(args.cpu_threads))
+    os.environ["OMP_NUM_THREADS"] = str(int(args.cpu_threads))
+    os.environ["MKL_NUM_THREADS"] = str(int(args.cpu_threads))
     producer = _producer()
     paths = {
         "map": args.map.resolve(),
@@ -121,6 +126,7 @@ def run(args: argparse.Namespace) -> dict:
         "feedback_sha256": sha256_file(output),
         "producer": producer,
         "input_sha256": hashes,
+        "cpu_threads": int(args.cpu_threads),
     }
     (args.output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
@@ -138,6 +144,7 @@ def main() -> None:
     parser.add_argument("--expected-observation-cache-sha256", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cpu-threads", type=int, default=1)
     parser.add_argument("--positive-radius-px", type=float, default=2.0)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--required-rank", type=int, default=4)
