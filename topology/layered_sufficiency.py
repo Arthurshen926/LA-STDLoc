@@ -65,19 +65,24 @@ def select_layered_sufficiency(
     for layer in LAYER_NAMES:
         state = states[layer]
         while bool((state.counts < target).any()):
-            feasible = [
-                candidate
-                for candidate in order
-                if candidate not in selected_set
-                and any(
+            # The policy chooses the first feasible row in reliability order.
+            # Stop at that row instead of materializing the full feasible list;
+            # this is selection-exact and avoids thousands of unused matching
+            # replays on every addition.
+            chosen = None
+            for candidate in order:
+                if candidate in selected_set:
+                    continue
+                if any(
                     state.counts[query] < target[query]
                     and state.would_augment(candidate, query)
                     for query in layer_edges[layer][candidate]
-                )
-            ]
-            if not feasible:
+                ):
+                    chosen = candidate
+                    break
+            if chosen is None:
                 break
-            add(feasible[0], f"{layer}_sufficiency")
+            add(chosen, f"{layer}_sufficiency")
             if len(selected) >= int(maximum_anchors):
                 break
         if len(selected) >= int(maximum_anchors):
