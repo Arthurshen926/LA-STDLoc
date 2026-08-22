@@ -27,7 +27,7 @@ test or a real-scene evidence artifact before the V6 mainline can be frozen.
 | # | Plan item | V6 implementation status |
 |---|---|---|
 | 1 | Immutable V4 baseline | Done: `v4-render-only-frozen` |
-| 2 | Clean V6 branch and schemas | Done: `codex/v6-closed-loop-projective-anchor` |
+| 2 | Clean V6 branch and schemas | Done: `codex/v6-closed-loop-projective-anchor`; the tracked ANSI-control dump file was removed |
 | 3 | Surface duplicate/pixel/covariance/self-certification bugs | Implemented and covered by focused tests; full-suite rerun pending |
 | 4 | Alpha validity before SuperPoint NMS/Top-K | Implemented and unit-tested |
 | 5 | Rebuild hard/protection observations, Tracks, geometry | Partial gate done: fresh 32-view Stairs hard + Shop protection artifacts; full-scene rebuild follows the partial gate |
