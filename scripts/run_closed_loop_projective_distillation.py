@@ -124,6 +124,27 @@ def run(args: argparse.Namespace) -> dict:
         baseline_payload = json.loads(baseline_summary_path.read_text())
         feedback_path = Path(baseline_payload["feedback_path"])
         feedback_sha = baseline_payload["feedback_sha256"]
+        if sum(int(value) for value in baseline_payload["failure_layer_counts"].values()) == 0:
+            decision = {
+                "schema": "closed_loop_distillation_round_v1",
+                "version": 1,
+                "uses_source_mapping_rgb": False,
+                "uses_test_queries": False,
+                "round_index": round_index,
+                "baseline_map_sha256": map_sha,
+                "baseline_summary_sha256": sha256_file(baseline_summary_path),
+                "decisions": [],
+                "accepted_arm": None,
+                "accepted_map_sha256": None,
+                "stop": True,
+                "stop_reason": "no_feedback_deficit",
+            }
+            decision_path = round_dir / "acceptance.json"
+            decision_path.write_text(
+                json.dumps(decision, indent=2, sort_keys=True) + "\n"
+            )
+            rounds.append(decision)
+            break
         arms = ["descriptor", "selection"]
         if (
             int(baseline_payload["failure_layer_counts"].get("L1", 0)) > 0
