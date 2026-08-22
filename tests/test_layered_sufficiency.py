@@ -26,3 +26,21 @@ def test_layered_selector_meets_each_rank_before_pose() -> None:
     reasons = [row["reason"] for row in result["trace"]]
     assert reasons[0] == "visibility_sufficiency"
     assert result["contract"]["hierarchical_not_weighted_sum"] is True
+
+
+def test_pose_stage_stops_when_only_unreachable_query_is_deficient() -> None:
+    edges = [{0: (0,)}, {1: (0,)}]
+    information = [
+        {0: torch.eye(6, dtype=torch.float64)},
+        {0: torch.eye(6, dtype=torch.float64), 1: torch.zeros((6, 6), dtype=torch.float64)},
+    ]
+    result = select_layered_sufficiency(
+        layer_edges={name: edges for name in ("visibility", "detectability", "matching")},
+        reliability=torch.tensor([1.0, 0.9]),
+        pose_information=information,
+        matching_target=0,
+        pose_logdet_target=0.0,
+        maximum_anchors=2,
+    )
+    assert result["selected_anchor_rows"].tolist() == [0]
+    assert result["unmet"]["pose"] == 1

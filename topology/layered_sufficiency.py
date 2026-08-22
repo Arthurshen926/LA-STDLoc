@@ -54,15 +54,20 @@ def select_layered_sufficiency(
     else:
         if not isinstance(information, Sequence) or len(information) != candidate_count:
             raise ValueError("sparse pose information must have one mapping per candidate")
-        query_count = max(
+        information_query_count = max(
             (int(query) for candidate in information for query in candidate),
             default=-1,
         ) + 1
-        if query_count <= 0:
-            query_count = max(
-                (int(query) for edges in layer_edges.values() for candidate in edges for query in candidate),
-                default=-1,
-            ) + 1
+        edge_query_count = max(
+            (
+                int(query)
+                for edges in layer_edges.values()
+                for candidate in edges
+                for query in candidate
+            ),
+            default=-1,
+        ) + 1
+        query_count = max(information_query_count, edge_query_count)
         if query_count <= 0:
             raise ValueError("cannot infer query count from sparse pose information")
     target = _targets(matching_target, query_count)
@@ -124,7 +129,8 @@ def select_layered_sufficiency(
 
     while len(selected) < int(maximum_anchors):
         current = pose_score(base)
-        if bool((current >= float(pose_logdet_target)).all()):
+        deficient = current < float(pose_logdet_target)
+        if not bool(deficient.any()):
             break
         best = None
         best_gain = float("-inf")
@@ -138,7 +144,7 @@ def select_layered_sufficiency(
                     )[1]
                     - current[None],
                     min=0,
-                ).sum(1)
+                )[:, deficient].sum(1)
                 for candidate, gain in zip(chunk.tolist(), gains.tolist()):
                     if candidate not in selected_set and float(gain) > best_gain:
                         best, best_gain = candidate, float(gain)
@@ -149,6 +155,8 @@ def select_layered_sufficiency(
                 gain = 0.0
                 for query, matrix in information[candidate].items():
                     query = int(query)
+                    if not bool(deficient[query]):
+                        continue
                     value = torch.as_tensor(matrix).double()
                     gain += float(
                         torch.clamp(
@@ -171,8 +179,13 @@ def select_layered_sufficiency(
         "layer_counts": {name: states[name].counts.tolist() for name in LAYER_NAMES},
         "pose_logdet": pose_score(base).tolist(),
         "unmet": {
-            name: int(np.maximum(target - states[name].counts, 0).sum())
-            for name in LAYER_NAMES
+            **{
+                name: int(np.maximum(target - states[name].counts, 0).sum())
+                for name in LAYER_NAMES
+            },
+            "pose": int(
+                (pose_score(base) < float(pose_logdet_target)).sum().item()
+            ),
         },
         "contract": {
             "hierarchical_not_weighted_sum": True,
