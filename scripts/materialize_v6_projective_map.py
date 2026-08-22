@@ -79,6 +79,11 @@ def _json(value: dict, path: Path) -> None:
 
 def run(args: argparse.Namespace) -> dict:
     started = time.perf_counter()
+    if int(args.cpu_threads) < 1:
+        raise ValueError("CPU thread count must be positive")
+    torch.set_num_threads(int(args.cpu_threads))
+    os.environ["OMP_NUM_THREADS"] = str(int(args.cpu_threads))
+    os.environ["MKL_NUM_THREADS"] = str(int(args.cpu_threads))
     identity = _identity()
     cache_path = args.observation_cache.resolve()
     actual_cache_sha = sha256_file(cache_path)
@@ -192,6 +197,7 @@ def run(args: argparse.Namespace) -> dict:
             "reconstruction_and_completion": reconstruction_seconds,
             "total": time.perf_counter() - started,
         },
+        "cpu_threads": int(args.cpu_threads),
     }
     _json(report, args.output_dir / "report.json")
     return report
@@ -203,6 +209,7 @@ def main() -> None:
     parser.add_argument("--expected-observation-cache-sha256", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--cpu-threads", type=int, default=1)
     parser.add_argument("--pair-neighbors", type=int, default=6)
     parser.add_argument("--minimum-similarity", type=float, default=0.65)
     parser.add_argument("--minimum-margin", type=float, default=0.01)

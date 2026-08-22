@@ -38,6 +38,7 @@ geometry:
   maximum_reprojection_px: 2.0
   triangulation_workers: 2
   parallel_triangulation_minimum_tracks: 5000
+  cpu_threads: 1
 
 feedback:
   schema: self_localization_feedback_v1
