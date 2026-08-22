@@ -112,6 +112,17 @@ def build_self_localization_feedback(
                 "pose_information_contribution": float(
                     source["pose_information_contribution"]
                 ),
+                "pose_information_rank": int(source.get("pose_information_rank", 0)),
+                "pose_information_logdet": float(
+                    source.get("pose_information_logdet", float("-inf"))
+                ),
+                "clean_inlier_pose_anchor_ids": torch.as_tensor(
+                    source.get("clean_inlier_pose_anchor_ids", ())
+                ).long(),
+                "clean_inlier_pose_information": torch.as_tensor(
+                    source.get("clean_inlier_pose_information", ()),
+                    dtype=torch.float64,
+                ).reshape(-1, 6, 6),
                 "pose_success": bool(source["pose_success"]),
                 "query_descriptor_loo": True,
                 "query_geometry_loo": bool(source["query_geometry_loo"]),

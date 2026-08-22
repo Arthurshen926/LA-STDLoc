@@ -14,6 +14,11 @@ from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from localization.matcher import global_cosine_topk
 from localization.pose_solver import solve_absolute_pose
 from map_learning.self_localization_feedback import build_self_localization_feedback
+from topology.pose_information import (
+    fisher_contributions,
+    pose_jacobian_analytic,
+    task_scaled_pose_jacobian,
+)
 
 
 def _maximum_matching(edges: list[list[int]]) -> tuple[int, list[tuple[int, int]]]:
@@ -187,14 +192,15 @@ def evaluate_query_local_feedback(
         center_gt = -(gt[:3, :3].T @ gt[:3, 3])
         te_cm = float(torch.linalg.norm(center_est - center_gt) * 100.0)
         online_latency_ms = (time.perf_counter() - online_started) * 1000.0
-        clean_ids = winners[inliers][correct[inliers]] if inliers.numel() else torch.empty(0, dtype=torch.long)
+        clean_rows = inliers[correct[inliers]] if inliers.numel() else torch.empty(0, dtype=torch.long)
+        clean_ids = winners[clean_rows]
         harmful_ids = winners[inliers][~correct[inliers]] if inliers.numel() else torch.empty(0, dtype=torch.long)
-        confusion = torch.stack((winners[~correct], torch.full_like(winners[~correct], -1)), dim=1) if bool((~correct).any()) else torch.empty((0, 2), dtype=torch.long)
         dense_scores = query_descriptor @ bank.to(device).T
         dense_scores[:, ~active.to(device)] = -torch.inf
         best_positive = []
         best_wrong = []
         correct_anchor_ranks = []
+        confusion_pairs = []
         for row, positives in enumerate(positive_edges):
             if positives:
                 positive_tensor = torch.tensor(positives, device=device)
@@ -207,6 +213,32 @@ def evaluate_query_local_feedback(
                     torch.isin(order, positive_tensor), as_tuple=False
                 ).reshape(-1)
                 correct_anchor_ranks.append(int(positions[0]) + 1)
+                if not bool(correct[row]):
+                    best = int(positive_tensor[torch.argmax(dense_scores[row, positive_tensor])])
+                    confusion_pairs.append((int(winners[row]), best))
+        if clean_ids.numel():
+            clean_jacobian = pose_jacobian_analytic(
+                xyz[clean_ids].double(),
+                view.intrinsics.double(),
+                view.pose_w2c.double(),
+            )
+            clean_jacobian = task_scaled_pose_jacobian(
+                clean_jacobian,
+                translation_scale=0.05,
+                rotation_scale=math.radians(5.0),
+            )
+            clean_information = fisher_contributions(clean_jacobian)
+            total_information = clean_information.sum(0)
+            information_rank = int(torch.linalg.matrix_rank(total_information))
+            information_logdet = float(
+                torch.linalg.slogdet(
+                    total_information + torch.eye(6, dtype=torch.float64) * 1e-9
+                )[1]
+            )
+        else:
+            clean_information = torch.empty((0, 6, 6), dtype=torch.float64)
+            information_rank = 0
+            information_logdet = float("-inf")
         feedback_records.append(
             {
                 "image_name": name,
@@ -227,12 +259,18 @@ def evaluate_query_local_feedback(
                 "visible_anchor_ids": visible_rows,
                 "detectable_pairs": torch.tensor(detectable_pairs, dtype=torch.long).reshape(-1, 2),
                 "matching_pairs": torch.tensor(matching_pairs, dtype=torch.long).reshape(-1, 2),
-                "confusion_pairs": confusion,
+                "confusion_pairs": torch.tensor(
+                    confusion_pairs, dtype=torch.long
+                ).reshape(-1, 2),
                 "dependency_group_ids": torch.unique(
                     torch.as_tensor(state["dependency_group_ids"])[winners]
                 ),
-                "pose_information_contribution": float(len(clean_ids)),
-                "pose_information_sufficient": int(len(clean_ids)) >= int(required_rank),
+                "clean_inlier_pose_anchor_ids": clean_ids,
+                "clean_inlier_pose_information": clean_information,
+                "pose_information_rank": information_rank,
+                "pose_information_logdet": information_logdet,
+                "pose_information_contribution": information_logdet,
+                "pose_information_sufficient": information_rank >= 6,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
                 "query_geometry_loo": True,
             }

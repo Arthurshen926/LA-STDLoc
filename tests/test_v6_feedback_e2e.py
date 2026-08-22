@@ -71,3 +71,11 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert result["summary"]["recall_5cm_5deg_percent"] == 100.0
     assert all(row["pose_solves"] == 1 for row in result["queries"])
     assert all(record["query_geometry_loo"] for record in result["feedback"]["records"])
+    assert all(
+        record["clean_inlier_pose_information"].shape[1:] == (6, 6)
+        for record in result["feedback"]["records"]
+    )
+    assert all(
+        record["pose_information_rank"] == 6
+        for record in result["feedback"]["records"]
+    )

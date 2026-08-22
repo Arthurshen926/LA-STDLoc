@@ -106,9 +106,19 @@ def selection_only_proposal(
             layers["detectability"][anchor][query_index].add(row)
         for row, anchor in torch.as_tensor(record["matching_pairs"]).long().tolist():
             layers["matching"][anchor][query_index].add(row)
-        for anchor in torch.as_tensor(record["clean_inlier_anchor_ids"]).long().tolist():
-            previous = information[anchor].get(query_index, torch.zeros((6, 6), dtype=torch.float64))
-            information[anchor][query_index] = previous + torch.eye(6, dtype=torch.float64)
+        pose_ids = torch.as_tensor(
+            record.get("clean_inlier_pose_anchor_ids", ())
+        ).long()
+        pose_information = torch.as_tensor(
+            record.get("clean_inlier_pose_information", ()), dtype=torch.float64
+        ).reshape(-1, 6, 6)
+        if pose_ids.numel() != pose_information.shape[0]:
+            raise ValueError("pose information and Anchor IDs do not align")
+        for anchor, contribution in zip(pose_ids.tolist(), pose_information):
+            previous = information[anchor].get(
+                query_index, torch.zeros((6, 6), dtype=torch.float64)
+            )
+            information[anchor][query_index] = previous + contribution
     candidate_edges = {
         name: [
             {query: tuple(sorted(rows)) for query, rows in candidate.items()}
