@@ -20,6 +20,14 @@
       "anchor_count": 4062,
       "map_sha256": "b530f0f2dcbaa22d663fd5fa51357898156bfdbb4fa6ce62f7cef358d6e62ae6",
       "offline_seconds": 19.600,
+      "render_valid_stats4": {
+        "artifact_sha256": "2f95c0a6dd4a0a09ad8d0b54c81484a0e62b72408af706c38a9620d507a5391d",
+        "raw_detector_rows": 8192,
+        "valid_detector_rows": 8192,
+        "invalid_or_boundary_rows_removed": 0,
+        "valid_region_pixel_fraction": 1.0,
+        "gate_result": "NEUTRAL_FULL_RENDER_SUPPORT"
+      },
       "baseline": {
         "median_te_cm": 0.4868897646665573,
         "mean_te_cm": 2.8263519098982215,
@@ -68,5 +76,6 @@
     }
   },
   "timing_note": "Online timing was collected under unrelated full-GPU contention and is excluded from realtime claims. LOO rematerialization is reported separately from online matching and PoseLib.",
+  "render_valid_note": "The alpha validity implementation is active before NMS/Top-K, but the four-view Stairs probe had full alpha support and therefore removed zero rows. No additional appearance/reliability gate is justified by this probe.",
   "scientific_conclusion": "The first V6 hard-scene loop is operational and conservative: query-local self-localization feedback rejected both harmful offline map proposals and preserved the baseline."
 }
