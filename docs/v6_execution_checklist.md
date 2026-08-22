@@ -39,4 +39,4 @@ test or a real-scene evidence artifact before the V6 mainline can be frozen.
 | 11 | Reconstruction arm and complete round-one panel | Implemented; Stairs had no L1 so reconstruction was ineligible, while both eligible arms were evaluated |
 | 12 | Lexicographic guarded acceptance and round two | Round zero stopped correctly because no proposal passed; round two is therefore forbidden rather than pending |
 | 13 | Full 24-scene panel | Intentionally pending hard/protection gate |
-| 14 | Method/config/runner alignment | Method/config/scripts aligned; first real-scene evidence is frozen in `docs/evidence/v6_first_hard_scene_validation.json` |
+| 14 | Method/config/runner alignment | Method/config aligned; `scripts/run_closed_loop_projective_distillation.py` is the bounded formal loop and first real-scene evidence is frozen in `docs/evidence/v6_first_hard_scene_validation.json` |

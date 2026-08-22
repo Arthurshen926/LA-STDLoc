@@ -41,6 +41,14 @@ PoseLib call.  Retrieval, stronger online features, a learned query adapter,
 group-aware RANSAC, pose refinement, and render-time refinement are outside
 the method.
 
+The executable closed loop is
+`scripts/run_closed_loop_projective_distillation.py`.  It evaluates the
+current map, creates only the feedback-eligible independent arms, evaluates
+each arm with fresh query-local LOO, applies the hard guards and lexicographic
+risk, and either advances to the accepted map or stops.  It cannot execute
+more than three rounds and does not create a reconstruction arm when no L1
+deficit exists.
+
 ## V4 compatibility architecture (non-formal in V6)
 
 The remaining sections document the retained V4 artifact/API compatibility
