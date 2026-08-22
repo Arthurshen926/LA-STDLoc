@@ -82,6 +82,42 @@
         "failure_layers": {"L1": 0, "L2": 0, "L3": 0, "L4": 0},
         "decision": "PROTECTION_PASS_STOP_NO_FAILURE"
       }
+    },
+    "Cambridge/GreatCourt": {
+      "mapping_views": 32,
+      "observation_cache_sha256": "bbc16753650400cd5699a9c495a8dc0af3c6f631b5c4d68e522372038f60315d",
+      "render_valid_stats": {
+        "raw_detector_rows": 65536,
+        "valid_detector_rows": 65536,
+        "invalid_or_boundary_rows_removed": 0,
+        "valid_region_pixel_fraction": 1.0
+      },
+      "association_components": 1808,
+      "ray_triangulated_anchors": 1801,
+      "map_sha256": "79003d493fb491b80e849fd227fc52cda2a0d384a61b9f125ec23d0d36b8202b",
+      "offline_seconds": 12.615987228229642,
+      "contract_fix": "base geometry uses parallax/reprojection/conditioning; global pose bin remains continuous identity evidence rather than a hard cross-bin gate",
+      "baseline": {
+        "median_te_cm": 2751.6973876953125,
+        "mean_te_cm": 6426.877667099237,
+        "p90_te_cm": 17992.009179687506,
+        "cvar95_te_cm": 39986.4794921875,
+        "recall_5cm_5deg_percent": 3.125,
+        "catastrophic_100cm_count": 22,
+        "raw_gt_precision_percent": 2.05841064453125,
+        "inlier_gt_precision_percent": 52.352231604342585,
+        "correct_anchor_recall_at_1_percent": 66.15988229524277,
+        "correct_anchor_recall_at_16_percent": 81.7067189798921,
+        "mean_poselib_iterations": 86975.6875,
+        "failure_layers": {"L1": 2, "L2": 5, "L3": 8, "L4": 16},
+        "summary_sha256": "abefe3ecd63de4c2551c7d7f23b8c312f28c3f0d1a65f5340030695661ae193a"
+      },
+      "reconstruction_only": {
+        "proposal_available": false,
+        "reason": "no_descriptor_consistent_projective_completion",
+        "decision": "NO_PROPOSAL_DO_NOT_RELAX_GATES"
+      },
+      "interpretation": "The bounded 32-view cache is a hard-scene diagnostic, not a deployable GreatCourt map. It exposes all four deficit layers and requires the full mapping-view rebuild before accuracy conclusions."
     }
   },
   "timing_note": "Online timing was collected under unrelated full-GPU contention and is excluded from realtime claims. LOO rematerialization is reported separately from online matching and PoseLib.",
