@@ -108,8 +108,8 @@ def test_raster_provenance_caller_requests_rgb_only_load(
     assert isinstance(result, FakeGaussian)
     assert calls == [("init", 3), ("load", ply, 0), ("cuda",), ("eval",)]
 def test_rgbd_background_matches_gsplat_raster_channels():
-    assert _render_mode_channel_count("RGB+ED") == 4
+    assert _render_mode_channel_count("RGB+ED") == 3
     background = _background_for_channels(
-        torch.tensor([0.1, 0.2, 0.3]), 4, torch.device("cpu"), torch.float32
+        torch.tensor([0.1, 0.2, 0.3]), 3, torch.device("cpu"), torch.float32
     )
-    assert background.tolist() == pytest.approx([0.1, 0.2, 0.3, 0.0])
+    assert background.tolist() == pytest.approx([0.1, 0.2, 0.3])

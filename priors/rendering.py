@@ -44,10 +44,10 @@ def _render_mode_channel_count(render_mode):
     if mode == "ED":
         return 1
     if mode in {"RGB+D", "RGB+ED"}:
-        # gsplat concatenates depth before rasterization, so its background
-        # contract is [camera, RGBD channels], even though the caller supplies
-        # only an RGB background.  The depth background remains zero.
-        return 4
+        # gsplat appends both the rendered depth channel and its zero
+        # background internally.  Supplying RGBD here would therefore append
+        # depth twice and fail the rasterizer channel contract.
+        return 3
     return 3
 
 
