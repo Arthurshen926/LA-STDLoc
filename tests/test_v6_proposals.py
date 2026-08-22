@@ -1,6 +1,15 @@
 import torch
 
+from scripts.propose_v6_round import _jsonable
+
 from topology.v6_anchor_map import subset_projective_anchor_map
+
+
+def test_selection_report_tensors_are_json_serializable() -> None:
+    assert _jsonable({"rows": torch.tensor([1, 2]), "nested": (torch.tensor(3),)}) == {
+        "rows": [1, 2],
+        "nested": [3],
+    }
 
 
 def test_subset_rebuilds_projective_csr() -> None:

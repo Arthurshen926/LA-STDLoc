@@ -55,6 +55,16 @@ def _save(value: dict, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _jsonable(value):
+    if isinstance(value, torch.Tensor):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
 def run(args: argparse.Namespace) -> dict:
     commit = _clean_commit()
     state, map_sha = _load(args.map, args.expected_map_sha256, "map")
@@ -170,7 +180,7 @@ def run(args: argparse.Namespace) -> dict:
             "metric_sha256": sha256_file(metric_path),
         },
         "anchor_count": int(torch.as_tensor(proposal["anchor_ids"]).numel()),
-        "selection_report": selection_report,
+        "selection_report": _jsonable(selection_report),
     }
     (args.output_dir / "proposal.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
