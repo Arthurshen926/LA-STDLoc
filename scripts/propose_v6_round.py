@@ -85,6 +85,7 @@ def run(args: argparse.Namespace) -> dict:
     observations = GaussianRenderObservationProvider(cache)
     arm = args.arm
     selection_report = None
+    unavailable_reason = None
     if arm in {"descriptor", "descriptor_selection"}:
         proposal = descriptor_only_proposal(
             state, observations, feedback, trust_region=args.descriptor_trust_region
@@ -121,38 +122,66 @@ def run(args: argparse.Namespace) -> dict:
         ]
         if not l1_queries:
             raise ValueError("reconstruction proposal has no L1 query")
-        completion = build_projective_completion(
-            observations,
-            association,
-            voxel_size_m=args.completion_voxel_size_m,
-            alpha_minimum=args.alpha_minimum,
-            minimum_similarity=args.completion_minimum_similarity,
-            minimum_margin=args.minimum_margin,
-            maximum_epipolar_error_px=args.maximum_epipolar_error_px,
-            minimum_observations=args.minimum_views,
-            minimum_camera_families=args.minimum_camera_families,
-            maximum_rows_per_view=args.completion_maximum_rows_per_view,
-            safety_maximum_components=args.completion_safety_maximum_components,
-            eligible_query_indices=l1_queries,
-            device=args.device,
-        )
-        merged = merge_projective_candidates(
-            [projective_candidates_from_map(state), completion]
-        )
-        proposal = materialize_projective_anchor_map(
-            merged,
-            lineage={
-                **dict(state.get("provenance", {})),
-                "v6_parent_map_sha256": map_sha,
-                "v6_reconstruction_feedback_sha256": feedback_sha,
-                "v6_l1_query_count": len(l1_queries),
-            },
-        )
+        try:
+            completion = build_projective_completion(
+                observations,
+                association,
+                voxel_size_m=args.completion_voxel_size_m,
+                alpha_minimum=args.alpha_minimum,
+                minimum_similarity=args.completion_minimum_similarity,
+                minimum_margin=args.minimum_margin,
+                maximum_epipolar_error_px=args.maximum_epipolar_error_px,
+                minimum_observations=args.minimum_views,
+                minimum_camera_families=args.minimum_camera_families,
+                maximum_rows_per_view=args.completion_maximum_rows_per_view,
+                safety_maximum_components=args.completion_safety_maximum_components,
+                eligible_query_indices=l1_queries,
+                device=args.device,
+            )
+        except ValueError as error:
+            if str(error) != "depth proposals produced no descriptor-consistent component":
+                raise
+            proposal = None
+            unavailable_reason = "no_descriptor_consistent_projective_completion"
+        if unavailable_reason is None:
+            merged = merge_projective_candidates(
+                [projective_candidates_from_map(state), completion]
+            )
+            proposal = materialize_projective_anchor_map(
+                merged,
+                lineage={
+                    **dict(state.get("provenance", {})),
+                    "v6_parent_map_sha256": map_sha,
+                    "v6_reconstruction_feedback_sha256": feedback_sha,
+                    "v6_l1_query_count": len(l1_queries),
+                },
+            )
     else:
         raise ValueError(f"unknown proposal arm {arm}")
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
     args.output_dir.mkdir(parents=True)
+    if proposal is None:
+        report = {
+            "schema": "lafgs_v6_round_proposal",
+            "version": 1,
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "arm": arm,
+            "proposal_available": False,
+            "unavailable_reason": unavailable_reason,
+            "producer_git_commit": commit,
+            "input_sha256": {
+                "map": map_sha,
+                "observation_cache": cache_sha,
+                "feedback": feedback_sha,
+            },
+            "anchor_count": int(torch.as_tensor(state["anchor_ids"]).numel()),
+        }
+        (args.output_dir / "proposal.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n"
+        )
+        return report
     map_path = args.output_dir / "proposal_map.pt"
     _save(proposal, map_path)
     proposal_sha = sha256_file(map_path)
@@ -167,6 +196,7 @@ def run(args: argparse.Namespace) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "arm": arm,
+        "proposal_available": True,
         "producer_git_commit": commit,
         "input_sha256": {
             "map": map_sha,

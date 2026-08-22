@@ -163,6 +163,8 @@ def run(args: argparse.Namespace) -> dict:
                 root=root,
             )
             proposal = json.loads((proposal_dir / "proposal.json").read_text())
+            if proposal.get("proposal_available") is False:
+                continue
             evaluation_dir = round_dir / f"evaluation_{arm}"
             _run(
                 _evaluation_command(
