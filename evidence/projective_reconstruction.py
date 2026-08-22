@@ -6,6 +6,7 @@ import torch
 
 from common.v6_contracts import ANCHOR_CANDIDATE_SCHEMA, ASSOCIATION_GRAPH_SCHEMA
 from evidence.observation_provider import ObservationProvider
+from evidence.parallel_triangulation import robust_triangulate_associations_fresh_cpu
 from evidence.tracks import fuse_projective_anchor_observations
 from evidence.triangulation import robust_triangulate_associations
 
@@ -31,6 +32,8 @@ def reconstruct_projective_anchors(
     maximum_reprojection_px: float = 2.0,
     maximum_condition_number: float = 1e6,
     descriptor_trim_fraction: float = 0.2,
+    parallel_workers: int = 2,
+    parallel_minimum_tracks: int = 5000,
 ) -> dict:
     if association.get("schema") != ASSOCIATION_GRAPH_SCHEMA:
         raise ValueError("V6 reconstruction requires projective association v2")
@@ -51,7 +54,12 @@ def reconstruct_projective_anchors(
     descriptors = [view.descriptors.float() for view in views]
     detector_scores = [view.detector_scores.float() for view in views]
     uv = _gather(keypoints, query_index, keypoint_index)
-    geometry = robust_triangulate_associations(
+    triangulator = (
+        robust_triangulate_associations_fresh_cpu
+        if track_count >= int(parallel_minimum_tracks) and int(parallel_workers) > 1
+        else robust_triangulate_associations
+    )
+    triangulation_arguments = dict(
         landmark_count=track_count,
         landmark_index=track_index,
         query_index=query_index,
@@ -75,6 +83,12 @@ def reconstruct_projective_anchors(
         minimum_rendered_depth_observations=0,
         surface_support_enabled=False,
     )
+    if triangulator is robust_triangulate_associations_fresh_cpu:
+        geometry = triangulator(
+            worker_count=int(parallel_workers), **triangulation_arguments
+        )
+    else:
+        geometry = triangulator(**triangulation_arguments)
     eligible = torch.as_tensor(geometry["triangulated"]).bool()
     selected = torch.nonzero(eligible, as_tuple=False).reshape(-1)
     if selected.numel() == 0:
@@ -155,5 +169,10 @@ def reconstruct_projective_anchors(
             "gaussian_primitive_center_used": False,
             "one_observation_per_camera": True,
             "continuous_identity_and_geometry_reliability": True,
+            "triangulation_execution": (
+                "fresh_cpu_fixed_contiguous_shards"
+                if triangulator is robust_triangulate_associations_fresh_cpu
+                else "serial_cpu"
+            ),
         },
     }

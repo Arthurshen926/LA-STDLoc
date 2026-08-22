@@ -36,6 +36,8 @@ geometry:
   minimum_camera_families: 2
   minimum_parallax_deg: 1.0
   maximum_reprojection_px: 2.0
+  triangulation_workers: 2
+  parallel_triangulation_minimum_tracks: 5000
 
 feedback:
   schema: self_localization_feedback_v1

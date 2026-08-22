@@ -32,6 +32,7 @@ _SOURCE_PATHS = (
     "evidence/projective_association.py",
     "evidence/projective_completion.py",
     "evidence/projective_reconstruction.py",
+    "evidence/parallel_triangulation.py",
     "evidence/triangulation.py",
     "evidence/tracks.py",
     "topology/v6_anchor_map.py",
@@ -109,6 +110,8 @@ def run(args: argparse.Namespace) -> dict:
         minimum_view_bins=args.minimum_camera_families,
         minimum_parallax_deg=args.minimum_parallax_deg,
         maximum_reprojection_px=args.maximum_reprojection_px,
+        parallel_workers=args.triangulation_workers,
+        parallel_minimum_tracks=args.parallel_triangulation_minimum_tracks,
     )
     base["candidate_kind"] = "projective_track"
     parts = [base]
@@ -208,6 +211,8 @@ def main() -> None:
     parser.add_argument("--minimum-camera-families", type=int, default=2)
     parser.add_argument("--minimum-parallax-deg", type=float, default=1.0)
     parser.add_argument("--maximum-reprojection-px", type=float, default=2.0)
+    parser.add_argument("--triangulation-workers", type=int, default=2)
+    parser.add_argument("--parallel-triangulation-minimum-tracks", type=int, default=5000)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--enable-projective-completion", action="store_true")
     parser.add_argument("--completion-voxel-size-m", type=float, default=0.05)
