@@ -8,6 +8,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.spatial import cKDTree
 
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
@@ -58,16 +59,18 @@ def _layer_edges(
     result = [[] for _ in range(int(keypoints.shape[0]))]
     if keypoints.numel() == 0 or visible_rows.numel() == 0:
         return result
-    for start in range(0, int(visible_rows.numel()), 2048):
-        anchors = visible_rows[start : start + 2048]
-        distance = torch.cdist(keypoints.float(), projected[anchors].float())
-        query, local = torch.nonzero(
-            distance <= float(radius_px), as_tuple=True
-        )
-        for row, candidate in zip(query.tolist(), anchors[local].tolist()):
-            result[row].append(int(candidate))
-    for values in result:
-        values.sort()
+    if not float(radius_px) > 0:
+        raise ValueError("positive radius must be positive")
+    visible_xy = projected[visible_rows].float().numpy()
+    tree = cKDTree(visible_xy)
+    neighbors = tree.query_ball_point(
+        keypoints.float().numpy(), r=float(radius_px), return_sorted=True
+    )
+    for row, local_rows in enumerate(neighbors):
+        if len(local_rows):
+            result[row] = visible_rows[
+                torch.as_tensor(local_rows, dtype=torch.long)
+            ].tolist()
     return result
 
 
@@ -100,17 +103,25 @@ def _positive_score_statistics(
         rows_list = positive_query_rows[start : start + int(chunk_size)]
         rows = torch.tensor(rows_list, dtype=torch.long, device=dense_scores.device)
         maximum_degree = max(len(positives_by_row[row]) for row in rows_list)
-        padded = torch.full(
+        padded_cpu = torch.full(
             (len(rows_list), maximum_degree),
             -1,
             dtype=torch.long,
-            device=dense_scores.device,
         )
-        for local, row in enumerate(rows_list):
-            values = positives_by_row[row]
-            padded[local, : len(values)] = torch.tensor(
-                values, dtype=torch.long, device=dense_scores.device
-            )
+        lengths = torch.tensor(
+            [len(positives_by_row[row]) for row in rows_list], dtype=torch.long
+        )
+        flat = torch.tensor(
+            [anchor for row in rows_list for anchor in positives_by_row[row]],
+            dtype=torch.long,
+        )
+        local = torch.repeat_interleave(torch.arange(len(rows_list)), lengths)
+        offsets = torch.cat((lengths.new_zeros(1), lengths.cumsum(0)))
+        within = torch.arange(flat.numel()) - torch.repeat_interleave(
+            offsets[:-1], lengths
+        )
+        padded_cpu[local, within] = flat
+        padded = padded_cpu.to(dense_scores.device)
         valid = padded >= 0
         gathered = dense_scores[rows[:, None], padded.clamp_min(0)]
         gathered = gathered.masked_fill(~valid, -torch.inf)
