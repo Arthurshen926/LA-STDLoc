@@ -34,11 +34,17 @@ WINNER_MASK_FIELDS = (
 )
 FAILURE_LAYERS = ("L1", "L2", "L3", "L4")
 REQUIRED_PRODUCER_SOURCES = {
+    "scripts/evaluate_v6_self_localization.py",
+    "common/v6_contracts.py",
+    "evidence/observation_provider.py",
     "map_learning/v6_feedback_evaluator.py",
     "map_learning/self_localization_feedback.py",
     "evidence/projective_loo.py",
+    "evidence/projective_reconstruction.py",
     "localization/matcher.py",
     "localization/pose_solver.py",
+    "topology/layered_sufficiency.py",
+    "topology/pose_information.py",
 }
 PAIRED_PROTOCOL_FIELDS = (
     "positive_identity",
@@ -47,6 +53,8 @@ PAIRED_PROTOCOL_FIELDS = (
     "required_matching_rank",
     "required_visibility_rank",
     "required_detectable_rank",
+    "pose_logdet_target",
+    "pose_min_eigenvalue_target",
     "ransac_reprojection_px",
     "ransac_seed",
     "loo_pose_neighbors",
@@ -107,6 +115,13 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     if missing_protocol:
         raise ValueError(f"{label} evaluation protocol is incomplete: {missing_protocol}")
     protocol = {key: contract[key] for key in PAIRED_PROTOCOL_FIELDS}
+    pose_logdet_target = float(protocol["pose_logdet_target"])
+    if not math.isfinite(pose_logdet_target):
+        raise ValueError(f"{label} pose logdet target is not finite")
+    _finite_nonnegative(
+        protocol["pose_min_eigenvalue_target"],
+        label=f"{label} pose minimum-eigenvalue target",
+    )
 
     producer = value.get("producer")
     if not isinstance(producer, dict) or producer.get("worktree_clean") is not True:
@@ -145,6 +160,11 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
         for feedback_key, contract_key in feedback_rank_fields.items()
     ):
         raise ValueError(f"{label} outer/embedded required-rank contract differs")
+    for key in ("pose_logdet_target", "pose_min_eigenvalue_target"):
+        if float(feedback.get(key, float("nan"))) != float(contract[key]):
+            raise ValueError(
+                f"{label} outer/embedded pose-information target differs at {key}"
+            )
 
     names = list(feedback.get("query_names", ()))
     records = list(feedback.get("records", ()))

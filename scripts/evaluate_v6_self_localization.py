@@ -12,7 +12,11 @@ import subprocess
 import torch
 
 from common.hashing import sha256_file
-from common.v6_contracts import RENDER_OBSERVATION_SCHEMA, require_schema
+from common.v6_contracts import (
+    FEEDBACK_VERSION,
+    RENDER_OBSERVATION_SCHEMA,
+    require_schema,
+)
 from evidence.observation_provider import GaussianRenderObservationProvider
 from map_learning.v6_feedback_evaluator import evaluate_query_local_feedback
 from topology.v6_anchor_map import validate_v6_identity_metric
@@ -20,12 +24,16 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 
 _SOURCE_PATHS = (
     "scripts/evaluate_v6_self_localization.py",
+    "common/v6_contracts.py",
+    "evidence/observation_provider.py",
     "map_learning/v6_feedback_evaluator.py",
     "map_learning/self_localization_feedback.py",
     "evidence/projective_loo.py",
     "evidence/projective_reconstruction.py",
     "localization/matcher.py",
     "localization/pose_solver.py",
+    "topology/layered_sufficiency.py",
+    "topology/pose_information.py",
 )
 
 
@@ -114,6 +122,8 @@ def run(args: argparse.Namespace) -> dict:
         required_visibility_rank=args.required_visibility_rank,
         required_detectable_rank=args.required_detectable_rank,
         loo_affected_anchor_policy=args.loo_affected_anchor_policy,
+        pose_logdet_target=args.pose_logdet_target,
+        pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
     )
     result["producer"] = producer
     result["input_sha256"] = hashes
@@ -127,7 +137,7 @@ def run(args: argparse.Namespace) -> dict:
         temporary.unlink(missing_ok=True)
     summary = {
         "schema": "lafgs_v6_query_local_feedback_summary",
-        "version": 4,
+        "version": FEEDBACK_VERSION,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "summary": result["summary"],
@@ -192,6 +202,8 @@ def main() -> None:
         help="rebuild is required for descriptor identity supervision; purge is diagnostic-only",
     )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
+    parser.add_argument("--pose-logdet-target", type=float, default=0.0)
+    parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=2026)
     run(parser.parse_args())
 

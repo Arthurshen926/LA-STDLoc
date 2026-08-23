@@ -12,6 +12,7 @@ from map_learning.v6_feedback_evaluator import (
     _maximum_matching,
     _partition_identity_edges,
     _positive_score_statistics,
+    _reconstruction_training_query_mask,
     _reconstruction_target_query_mask,
     _selection_training_query_mask,
     _visible_spatial_rank,
@@ -67,6 +68,18 @@ def test_topology_training_dependency_masks_fail_closed() -> None:
         "v6_selection_distillation": {"training_query_indices": torch.tensor([0, 2])},
     }
     assert _reconstruction_target_query_mask(state, 3).tolist() == [False, True, False]
+    assert _reconstruction_training_query_mask(state, 3).tolist() == [True] * 3
+    split_reconstruction = {
+        "v6_reconstruction_distillation": {
+            "target_query_indices": torch.tensor([1]),
+            "training_query_indices": torch.tensor([0, 1]),
+            "eligible_support_query_indices": torch.tensor([0, 1]),
+            "training_query_registry_explicit": True,
+        }
+    }
+    assert _reconstruction_training_query_mask(
+        split_reconstruction, 3
+    ).tolist() == [True, True, False]
     legacy_reconstruction = {
         "provenance": {"v6_reconstruction_feedback_sha256": "f" * 64}
     }
@@ -79,6 +92,11 @@ def test_topology_training_dependency_masks_fail_closed() -> None:
         "anchor_candidate_kind": ["depth_proposed_projective_completion"]
     }
     assert _reconstruction_target_query_mask(initial_completion, 3).tolist() == [
+        False,
+        False,
+        False,
+    ]
+    assert _reconstruction_training_query_mask(initial_completion, 3).tolist() == [
         False,
         False,
         False,

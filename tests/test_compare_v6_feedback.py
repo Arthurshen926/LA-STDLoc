@@ -29,14 +29,18 @@ _SOURCES = {
     for path, character in zip(
         (
             "scripts/evaluate_v6_self_localization.py",
+            "common/v6_contracts.py",
+            "evidence/observation_provider.py",
             "map_learning/v6_feedback_evaluator.py",
             "map_learning/self_localization_feedback.py",
             "evidence/projective_loo.py",
             "evidence/projective_reconstruction.py",
             "localization/matcher.py",
             "localization/pose_solver.py",
+            "topology/layered_sufficiency.py",
+            "topology/pose_information.py",
         ),
-        "1234567",
+        "123456789ab",
     )
 }
 
@@ -89,6 +93,8 @@ def _protocol(independent_count: int) -> dict:
         "required_matching_rank": 4,
         "required_visibility_rank": 4,
         "required_detectable_rank": 4,
+        "pose_logdet_target": 0.0,
+        "pose_min_eigenvalue_target": 0.0,
         "ransac_reprojection_px": 4.0,
         "ransac_seed": 7,
         "loo_pose_neighbors": 3,
@@ -152,6 +158,8 @@ def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict
         "required_matching_rank": 4,
         "required_visibility_rank": 4,
         "required_detectable_rank": 4,
+        "pose_logdet_target": 0.0,
+        "pose_min_eigenvalue_target": 0.0,
         "failure_layer_counts": failure_counts,
         "independent_mapping_validation_query_count": independent_count,
         "top1_exact_identity_correct_count": class_totals[0],

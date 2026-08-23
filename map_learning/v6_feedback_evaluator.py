@@ -32,6 +32,11 @@ from topology.pose_information import (
 )
 
 
+_POSE_INFORMATION_REGULARIZATION = 1e-9
+_POSE_TRANSLATION_SCALE_M = 0.05
+_POSE_ROTATION_SCALE_DEG = 5.0
+
+
 def _maximum_matching(edges: list[list[int]]) -> tuple[int, list[tuple[int, int]]]:
     row_for_anchor: dict[int, int] = {}
 
@@ -667,6 +672,40 @@ def _reconstruction_target_query_mask(state: dict, query_count: int) -> torch.Te
     return mask
 
 
+def _reconstruction_training_query_mask(
+    state: dict, query_count: int
+) -> torch.Tensor:
+    """Queries used anywhere by feedback-driven reconstruction.
+
+    Target replay is narrower: target-query depth selects seed regions, while
+    every training query may supply eligible reconstruction observations.  An
+    older report without an explicit training/support registry is therefore
+    not evidence of independence and is conservatively treated as depending
+    on every mapping query.
+    """
+
+    target = _reconstruction_target_query_mask(state, query_count)
+    report = state.get("v6_reconstruction_distillation")
+    if not isinstance(report, dict):
+        return target
+    dependency = torch.zeros(int(query_count), dtype=torch.bool)
+    registry_present = False
+    for key in ("training_query_indices", "eligible_support_query_indices"):
+        if key not in report:
+            continue
+        registry_present = True
+        rows = torch.as_tensor(report[key], dtype=torch.long).reshape(-1)
+        if rows.numel() and (
+            int(rows.min()) < 0 or int(rows.max()) >= int(query_count)
+        ):
+            raise ValueError("reconstruction training/support registry is invalid")
+        dependency[rows] = True
+    if not registry_present or not bool(dependency.any()):
+        dependency[:] = True
+    dependency |= target
+    return dependency
+
+
 def _selection_training_query_mask(state: dict, query_count: int) -> torch.Tensor:
     """Queries whose feedback directly determined Anchor selection."""
 
@@ -704,10 +743,21 @@ def evaluate_query_local_feedback(
     required_visibility_rank: int = 4,
     required_detectable_rank: int | None = None,
     loo_affected_anchor_policy: str = "rebuild",
+    pose_logdet_target: float = 0.0,
+    pose_min_eigenvalue_target: float = 0.0,
 ) -> dict:
     """One global Top-1 and one standard PoseLib solve per mapping query."""
 
     evaluation_started = time.perf_counter()
+    if not math.isfinite(float(pose_logdet_target)):
+        raise ValueError("pose logdet target must be finite")
+    if (
+        not math.isfinite(float(pose_min_eigenvalue_target))
+        or float(pose_min_eigenvalue_target) < 0.0
+    ):
+        raise ValueError(
+            "pose minimum-eigenvalue target must be finite and non-negative"
+        )
     require_mapping_only(state.get("provenance", {}), label="V6 feedback map")
     # Purging every Anchor touched by the held-out pose neighborhood is a
     # conservative, leakage-free holdout that scales to full maps.  It is not
@@ -728,6 +778,9 @@ def evaluate_query_local_feedback(
     descriptor_training_split = descriptor_masks["training_split"]
     descriptor_gradient_reused = descriptor_masks["gradient_reused"]
     reconstruction_target_reused = _reconstruction_target_query_mask(
+        state, len(observations)
+    )
+    reconstruction_training_reused = _reconstruction_training_query_mask(
         state, len(observations)
     )
     selection_training_reused = _selection_training_query_mask(state, len(observations))
@@ -925,21 +978,28 @@ def evaluate_query_local_feedback(
             )
             clean_jacobian = task_scaled_pose_jacobian(
                 clean_jacobian,
-                translation_scale=0.05,
-                rotation_scale=math.radians(5.0),
+                translation_scale=_POSE_TRANSLATION_SCALE_M,
+                rotation_scale=math.radians(_POSE_ROTATION_SCALE_DEG),
             )
             clean_information = fisher_contributions(clean_jacobian)
             total_information = clean_information.sum(0)
-            information_rank = int(torch.linalg.matrix_rank(total_information))
-            information_logdet = float(
-                torch.linalg.slogdet(
-                    total_information + torch.eye(6, dtype=torch.float64) * 1e-9
-                )[1]
-            )
         else:
             clean_information = torch.empty((0, 6, 6), dtype=torch.float64)
-            information_rank = 0
-            information_logdet = float("-inf")
+            total_information = torch.zeros((6, 6), dtype=torch.float64)
+        total_information = (total_information + total_information.T) * 0.5
+        information_rank = int(torch.linalg.matrix_rank(total_information))
+        regularized_information = total_information + (
+            torch.eye(6, dtype=torch.float64) * _POSE_INFORMATION_REGULARIZATION
+        )
+        information_logdet = float(torch.linalg.slogdet(regularized_information)[1])
+        information_min_eigenvalue = float(
+            torch.linalg.eigvalsh(regularized_information)[0].clamp_min(0.0)
+        )
+        information_sufficient = bool(
+            information_rank >= 6
+            and information_logdet >= float(pose_logdet_target)
+            and information_min_eigenvalue >= float(pose_min_eigenvalue_target)
+        )
         exact_identity_pairs = _edge_pairs(identity_partition["lineage"])
         active_identity_pairs = _edge_pairs(identity_partition["active_identity"])
         exact_identity_positive_pairs = _edge_pairs(positive_edges)
@@ -1051,8 +1111,16 @@ def evaluate_query_local_feedback(
                 "clean_inlier_pose_information": clean_information,
                 "pose_information_rank": information_rank,
                 "pose_information_logdet": information_logdet,
+                "pose_information_min_eigenvalue": information_min_eigenvalue,
                 "pose_information_contribution": information_logdet,
-                "pose_information_sufficient": information_rank >= 6,
+                "pose_information_sufficient": information_sufficient,
+                "pose_logdet_target": float(pose_logdet_target),
+                "pose_min_eigenvalue_target": float(
+                    pose_min_eigenvalue_target
+                ),
+                "pose_information_regularization": (
+                    _POSE_INFORMATION_REGULARIZATION
+                ),
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
                 "estimated_pose_w2c": pose,
                 "te_cm": te_cm,
@@ -1071,11 +1139,14 @@ def evaluate_query_local_feedback(
                 ),
                 "query_raw_geometry_observation_loo": True,
                 "query_candidate_topology_loo": not bool(
-                    reconstruction_target_reused[query_index]
+                    reconstruction_training_reused[query_index]
                     or selection_training_reused[query_index]
                 ),
                 "reconstruction_target_query_reused": bool(
                     reconstruction_target_reused[query_index]
+                ),
+                "reconstruction_training_query_reused": bool(
+                    reconstruction_training_reused[query_index]
                 ),
                 "selection_training_query_reused": bool(
                     selection_training_reused[query_index]
@@ -1088,7 +1159,7 @@ def evaluate_query_local_feedback(
                             and not descriptor_training_split[query_index]
                         )
                     )
-                    and not reconstruction_target_reused[query_index]
+                    and not reconstruction_training_reused[query_index]
                     and not selection_training_reused[query_index]
                 ),
                 "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
@@ -1138,6 +1209,9 @@ def evaluate_query_local_feedback(
                 "reconstruction_target_query_reused": bool(
                     reconstruction_target_reused[query_index]
                 ),
+                "reconstruction_training_query_reused": bool(
+                    reconstruction_training_reused[query_index]
+                ),
                 "selection_training_query_reused": bool(
                     selection_training_reused[query_index]
                 ),
@@ -1149,9 +1223,13 @@ def evaluate_query_local_feedback(
                             and not descriptor_training_split[query_index]
                         )
                     )
-                    and not reconstruction_target_reused[query_index]
+                    and not reconstruction_training_reused[query_index]
                     and not selection_training_reused[query_index]
                 ),
+                "pose_information_rank": information_rank,
+                "pose_information_logdet": information_logdet,
+                "pose_information_min_eigenvalue": information_min_eigenvalue,
+                "pose_information_sufficient": information_sufficient,
                 "detectable_matching_pairs": detectable_pairs,
                 "top1_correct_pairs": matching_pairs,
             }
@@ -1169,6 +1247,8 @@ def evaluate_query_local_feedback(
         source_map_sha256=source_map_sha256,
         query_cache_sha256=query_cache_sha256,
         positive_identity_contract=positive_identity_contract,
+        pose_logdet_target=float(pose_logdet_target),
+        pose_min_eigenvalue_target=float(pose_min_eigenvalue_target),
     )
     summary = _summary(query_rows)
     summary["anchor_count"] = int(base_xyz.shape[0])
@@ -1251,10 +1331,14 @@ def evaluate_query_local_feedback(
             "query_geometry_loo": not bool(reconstruction_target_reused.any()),
             "query_raw_geometry_observation_loo": True,
             "query_candidate_topology_loo": not bool(
-                reconstruction_target_reused.any() or selection_training_reused.any()
+                reconstruction_training_reused.any()
+                or selection_training_reused.any()
             ),
             "reconstruction_target_reuse_query_count": int(
                 reconstruction_target_reused.sum()
+            ),
+            "reconstruction_training_reuse_query_count": int(
+                reconstruction_training_reused.sum()
             ),
             "selection_training_reuse_query_count": int(
                 selection_training_reused.sum()
@@ -1292,6 +1376,19 @@ def evaluate_query_local_feedback(
             "pose_information_anchor_unique": True,
             "pose_information_unique_row_policy": (
                 "lowest_gt_reprojection_residual_then_highest_descriptor_score"
+            ),
+            "pose_information_task_translation_scale_m": (
+                _POSE_TRANSLATION_SCALE_M
+            ),
+            "pose_information_task_rotation_scale_deg": (
+                _POSE_ROTATION_SCALE_DEG
+            ),
+            "pose_information_regularization": _POSE_INFORMATION_REGULARIZATION,
+            "pose_logdet_target": float(pose_logdet_target),
+            "pose_min_eigenvalue_target": float(pose_min_eigenvalue_target),
+            "pose_information_sufficiency": (
+                "unregularized_rank_ge_6_and_task_scaled_regularized_"
+                "logdet_and_min_eigenvalue_meet_targets"
             ),
             "alpha_minimum": float(alpha_minimum),
             "required_matching_rank": int(required_rank),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import math
 
 import torch
 
@@ -85,9 +86,26 @@ def build_self_localization_feedback(
     positive_identity_contract: dict,
     required_visibility_rank: int | None = None,
     required_detectable_rank: int | None = None,
+    pose_logdet_target: float = 0.0,
+    pose_min_eigenvalue_target: float = 0.0,
+    pose_information_regularization: float = 1e-9,
 ) -> dict:
     names = validate_ordered_query_registry(query_names)
     require_exact_identity_positive_contract(positive_identity_contract)
+    if not math.isfinite(float(pose_logdet_target)):
+        raise ValueError("pose logdet target must be finite")
+    if (
+        not math.isfinite(float(pose_min_eigenvalue_target))
+        or float(pose_min_eigenvalue_target) < 0.0
+    ):
+        raise ValueError(
+            "pose minimum-eigenvalue target must be finite and non-negative"
+        )
+    if (
+        not math.isfinite(float(pose_information_regularization))
+        or float(pose_information_regularization) <= 0.0
+    ):
+        raise ValueError("pose information regularization must be finite and positive")
     if len(records) != len(names):
         raise ValueError("feedback records do not align with mapping queries")
     normalized = []
@@ -96,12 +114,49 @@ def build_self_localization_feedback(
     for query_index, (name, source) in enumerate(zip(names, records)):
         if str(source.get("image_name")) != name:
             raise ValueError("feedback record registry differs")
+        pose_rank = int(source.get("pose_information_rank", -1))
+        pose_logdet = float(source.get("pose_information_logdet", float("nan")))
+        pose_min_eigenvalue = float(
+            source.get("pose_information_min_eigenvalue", float("nan"))
+        )
+        record_logdet_target = float(
+            source.get("pose_logdet_target", float("nan"))
+        )
+        record_min_eigenvalue_target = float(
+            source.get("pose_min_eigenvalue_target", float("nan"))
+        )
+        record_regularization = float(
+            source.get("pose_information_regularization", float("nan"))
+        )
+        if (
+            not 0 <= pose_rank <= 6
+            or not math.isfinite(pose_logdet)
+            or not math.isfinite(pose_min_eigenvalue)
+            or pose_min_eigenvalue < 0.0
+        ):
+            raise ValueError("feedback pose-information diagnostics are invalid")
+        if (
+            record_logdet_target != float(pose_logdet_target)
+            or record_min_eigenvalue_target != float(pose_min_eigenvalue_target)
+            or record_regularization != float(pose_information_regularization)
+        ):
+            raise ValueError("feedback pose-information threshold contract differs")
+        pose_sufficient = source.get("pose_information_sufficient")
+        expected_pose_sufficient = bool(
+            pose_rank >= 6
+            and pose_logdet >= float(pose_logdet_target)
+            and pose_min_eigenvalue >= float(pose_min_eigenvalue_target)
+        )
+        if not isinstance(pose_sufficient, bool) or (
+            pose_sufficient != expected_pose_sufficient
+        ):
+            raise ValueError("feedback pose-information sufficiency label differs")
         layers = active_failure_layers(
             visible_rank=int(source["visible_rank"]),
             detectable_rank=int(source["detectable_rank"]),
             matching_rank=int(source["matching_rank"]),
             required_rank=int(required_rank),
-            pose_information_sufficient=bool(source["pose_information_sufficient"]),
+            pose_information_sufficient=pose_sufficient,
             pose_success=bool(source["pose_success"]),
             required_visibility_rank=required_visibility_rank,
             required_detectable_rank=required_detectable_rank,
@@ -190,8 +245,12 @@ def build_self_localization_feedback(
         )
         if not isinstance(descriptor_identity_supervision_available, bool):
             raise ValueError("descriptor identity supervision status is required")
-        affected_anchor_policy = str(source.get("affected_anchor_policy", "rebuild"))
-        if affected_anchor_policy not in {"rebuild", "purge"}:
+        affected_anchor_policy = source.get("affected_anchor_policy")
+        if affected_anchor_policy is None:
+            raise ValueError("affected-Anchor policy is required")
+        if not isinstance(affected_anchor_policy, str) or (
+            affected_anchor_policy not in {"rebuild", "purge"}
+        ):
             raise ValueError("affected-Anchor policy is invalid")
         if descriptor_identity_supervision_available != (
             affected_anchor_policy == "rebuild"
@@ -393,9 +452,16 @@ def build_self_localization_feedback(
                 "pose_information_contribution": float(
                     source["pose_information_contribution"]
                 ),
-                "pose_information_rank": int(source.get("pose_information_rank", 0)),
-                "pose_information_logdet": float(
-                    source.get("pose_information_logdet", float("-inf"))
+                "pose_information_rank": pose_rank,
+                "pose_information_logdet": pose_logdet,
+                "pose_information_min_eigenvalue": pose_min_eigenvalue,
+                "pose_information_sufficient": pose_sufficient,
+                "pose_logdet_target": float(pose_logdet_target),
+                "pose_min_eigenvalue_target": float(
+                    pose_min_eigenvalue_target
+                ),
+                "pose_information_regularization": float(
+                    pose_information_regularization
                 ),
                 "clean_inlier_pose_anchor_ids": pose_anchor_ids,
                 "clean_inlier_pose_query_rows": pose_query_rows,
@@ -420,6 +486,9 @@ def build_self_localization_feedback(
                 ),
                 "reconstruction_target_query_reused": bool(
                     source.get("reconstruction_target_query_reused", False)
+                ),
+                "reconstruction_training_query_reused": bool(
+                    source.get("reconstruction_training_query_reused", False)
                 ),
                 "query_geometry_loo": bool(source["query_geometry_loo"]),
                 "query_raw_geometry_observation_loo": bool(
@@ -476,6 +545,13 @@ def build_self_localization_feedback(
             required_rank
             if required_detectable_rank is None
             else required_detectable_rank
+        ),
+        "pose_logdet_target": float(pose_logdet_target),
+        "pose_min_eigenvalue_target": float(pose_min_eigenvalue_target),
+        "pose_information_regularization": float(pose_information_regularization),
+        "pose_information_sufficiency": (
+            "unregularized_rank_ge_6_and_task_scaled_regularized_"
+            "logdet_and_min_eigenvalue_meet_targets"
         ),
         "records": normalized,
         "failure_layer_counts": counts,
@@ -557,6 +633,10 @@ def build_self_localization_feedback(
         ),
         "reconstruction_target_reuse_query_count": sum(
             int(record["reconstruction_target_query_reused"]) for record in normalized
+        ),
+        "reconstruction_training_reuse_query_count": sum(
+            int(record["reconstruction_training_query_reused"])
+            for record in normalized
         ),
         "selection_training_reuse_query_count": sum(
             int(record["selection_training_query_reused"]) for record in normalized

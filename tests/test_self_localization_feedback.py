@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from common.v6_contracts import exact_identity_positive_contract
+from common.v6_contracts import FEEDBACK_VERSION, exact_identity_positive_contract
 from map_learning.self_localization_feedback import (
     active_failure_layers,
     build_self_localization_feedback,
@@ -83,6 +83,12 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
                 "best_wrong_score": 0.8,
                 "pose_information_sufficient": True,
                 "pose_information_contribution": 1.0,
+                "pose_information_rank": 6,
+                "pose_information_logdet": 1.0,
+                "pose_information_min_eigenvalue": 1.0,
+                "pose_logdet_target": 0.0,
+                "pose_min_eigenvalue_target": 0.0,
+                "pose_information_regularization": 1e-9,
                 "pose_success": True,
                 "query_geometry_loo": True,
                 "query_rows": torch.tensor([0]),
@@ -119,7 +125,7 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
         ],
     )
     assert result["success_count"] == 1
-    assert result["version"] == 4
+    assert result["version"] == FEEDBACK_VERSION
     assert result["failure_layer_counts_are_overlapping"] is True
     assert result["failure_query_count"] == 0
     assert result["query_descriptor_loo_count"] == 1
@@ -139,11 +145,41 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
     assert result["records"][0]["identity_supervision_available"] is True
     assert result["pose_information_anchor_unique"] is True
     assert result["records"][0]["visible_anchor_image_cells"].tolist() == [0, 5]
+    assert result["records"][0]["pose_information_sufficient"] is True
+    assert result["records"][0]["pose_information_min_eigenvalue"] == 1.0
+    assert result["pose_logdet_target"] == 0.0
+    assert result["pose_min_eigenvalue_target"] == 0.0
     assert result["visibility_evidence_contract"] == {
         "edge_identity": "query_image_grid_cell",
         "grid_shape": [4, 4],
         "raw_visible_anchor_count_is_not_visibility_rank": True,
     }
+
+    missing_policy = dict(result["records"][0])
+    missing_policy.pop("affected_anchor_policy")
+    with pytest.raises(ValueError, match="affected-Anchor policy is required"):
+        build_self_localization_feedback(
+            query_names=["q"],
+            required_rank=1,
+            source_map_sha256="a" * 64,
+            query_cache_sha256="b" * 64,
+            positive_identity_contract=exact_identity_positive_contract(),
+            records=[missing_policy],
+        )
+
+    wrong_pose_label = dict(result["records"][0])
+    wrong_pose_label["pose_information_sufficient"] = False
+    with pytest.raises(
+        ValueError, match="pose-information sufficiency label differs"
+    ):
+        build_self_localization_feedback(
+            query_names=["q"],
+            required_rank=1,
+            source_map_sha256="a" * 64,
+            query_cache_sha256="b" * 64,
+            positive_identity_contract=exact_identity_positive_contract(),
+            records=[wrong_pose_label],
+        )
 
     purge_record = dict(result["records"][0])
     purge_record["pose_information_sufficient"] = True

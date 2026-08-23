@@ -1,5 +1,6 @@
 import torch
 
+from common.v6_contracts import FEEDBACK_VERSION
 from evidence.observation_provider import GaussianRenderObservationProvider
 from map_learning.v6_feedback_evaluator import evaluate_query_local_feedback
 
@@ -81,7 +82,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         record["pose_information_rank"] == 6 for record in result["feedback"]["records"]
     )
     assert result["version"] == 3
-    assert result["feedback"]["version"] == 4
+    assert result["feedback"]["version"] == FEEDBACK_VERSION
     assert result["feedback"]["identity_positive_count"] == 20
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
     assert result["contract"]["identity_supervision_unavailable_query_count"] == 0
@@ -106,3 +107,11 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         )
         assert record["estimated_pose_w2c"].shape == (4, 4)
         assert torch.isfinite(record["estimated_pose_w2c"]).all()
+        assert record["pose_information_min_eigenvalue"] >= 0.0
+        assert record["pose_information_sufficient"] is (
+            record["pose_information_rank"] >= 6
+            and record["pose_information_logdet"] >= 0.0
+            and record["pose_information_min_eigenvalue"] >= 0.0
+        )
+        assert record["pose_logdet_target"] == 0.0
+        assert record["pose_min_eigenvalue_target"] == 0.0
