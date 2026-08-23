@@ -46,6 +46,9 @@ def _write_feedback_summary(
     cache_sha256: str,
     calibration_sha256: str,
     calibration_binding_sha256: str,
+    calibration_binding_map_role: str = "current_map",
+    calibration_binding_source_map_sha256: str | None = None,
+    calibration_binding_candidate_arm: str | None = None,
     contract_overrides: dict | None = None,
     cpu_threads: int = 4,
 ) -> tuple[Path, str]:
@@ -76,6 +79,13 @@ def _write_feedback_summary(
         "pose_solves_per_query": 1,
         "retrieval": False,
         "refinement": False,
+        "calibration_binding_map_role": calibration_binding_map_role,
+        "calibration_binding_source_map_sha256": (
+            map_sha256
+            if calibration_binding_source_map_sha256 is None
+            else calibration_binding_source_map_sha256
+        ),
+        "calibration_binding_candidate_arm": calibration_binding_candidate_arm,
     }
     contract.update(contract_overrides or {})
     _write_json(
@@ -241,6 +251,7 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
         calls.append(command)
         script = Path(command[1]).name
         if script == "evaluate_v6_self_localization.py":
+            candidate_mode = "--candidate-parent-map-sha256" in command
             _write_feedback_summary(
                 Path(_flag(command, "--output-dir")),
                 map_sha256=_flag(command, "--expected-map-sha256"),
@@ -252,6 +263,17 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                 calibration_binding_sha256=_flag(
                     command,
                     "--expected-feedback-calibration-binding-sha256",
+                ),
+                calibration_binding_map_role=(
+                    "candidate_parent_map" if candidate_mode else "current_map"
+                ),
+                calibration_binding_source_map_sha256=(
+                    _flag(command, "--candidate-parent-map-sha256")
+                    if candidate_mode
+                    else _flag(command, "--expected-map-sha256")
+                ),
+                calibration_binding_candidate_arm=(
+                    _flag(command, "--candidate-arm") if candidate_mode else None
                 ),
                 contract_overrides={
                     "positive_radius_px": float(
@@ -485,6 +507,14 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
     for command in evaluation_calls[1:]:
         assert Path(_flag(command, "--map")).name == "proposal_map.pt"
         assert Path(_flag(command, "--metric")).name == "identity_metric.pt"
+        assert _flag(command, "--candidate-parent-map-sha256") == hashes["map"]
+        assert _flag(command, "--candidate-arm") in {
+            "descriptor_loss",
+            "selection",
+            "reconstruction",
+        }
+    assert "--candidate-parent-map-sha256" not in evaluation_calls[0]
+    assert "--candidate-arm" not in evaluation_calls[0]
     for command in paired_calls:
         assert _flag(command, "--expected-baseline-map-sha256") == hashes["map"]
         assert Path(_flag(command, "--candidate-map")).name == "proposal_map.pt"

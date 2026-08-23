@@ -19,6 +19,8 @@ from common.v6_contracts import (
     require_schema,
 )
 from common.v6_pipeline_contract import (
+    FORMAL_FEEDBACK_CANDIDATE_ARMS,
+    resolve_v6_feedback_calibration_map_lineage,
     validate_v6_feedback_calibration_binding,
     validate_v6_feedback_scene_calibration,
 )
@@ -130,6 +132,12 @@ def run(args: argparse.Namespace) -> dict:
     query_registry_sha256 = ordered_query_registry_sha256(cache_names)
     if list(state.get("v6_mapping_query_names", ())) != cache_names:
         raise ValueError("V6 map and observation query registries differ")
+    calibration_map_lineage = resolve_v6_feedback_calibration_map_lineage(
+        state=state,
+        current_map_sha256=hashes["map"],
+        candidate_parent_map_sha256=args.candidate_parent_map_sha256,
+        candidate_arm=args.candidate_arm,
+    )
     calibrated_ransac_reprojection_px = validate_v6_feedback_scene_calibration(
         calibration,
         query_count=len(cache_names),
@@ -142,7 +150,9 @@ def run(args: argparse.Namespace) -> dict:
         )
     validate_v6_feedback_calibration_binding(
         calibration_binding,
-        map_sha256=hashes["map"],
+        map_sha256=calibration_map_lineage[
+            "calibration_binding_source_map_sha256"
+        ],
         observation_cache_sha256=hashes["observation_cache"],
         calibration_sha256=hashes["scene_calibration"],
         query_registry_sha256=query_registry_sha256,
@@ -180,6 +190,7 @@ def run(args: argparse.Namespace) -> dict:
     result["producer"] = producer
     result["input_sha256"] = hashes
     result["map_path"] = str(paths["map"])
+    result["contract"].update(calibration_map_lineage)
     temporary = args.output_dir / f".feedback.{os.getpid()}.tmp"
     output = args.output_dir / "feedback.pt"
     try:
@@ -244,6 +255,8 @@ def main() -> None:
     parser.add_argument(
         "--expected-feedback-calibration-binding-sha256", required=True
     )
+    parser.add_argument("--candidate-parent-map-sha256")
+    parser.add_argument("--candidate-arm", choices=FORMAL_FEEDBACK_CANDIDATE_ARMS)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=1)

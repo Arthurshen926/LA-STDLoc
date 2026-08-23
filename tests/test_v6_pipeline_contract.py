@@ -2,7 +2,10 @@ import pytest
 import torch
 
 from common.v6_contracts import ordered_query_registry_sha256
-from common.v6_pipeline_contract import validate_v6_pipeline_inputs
+from common.v6_pipeline_contract import (
+    resolve_v6_feedback_calibration_map_lineage,
+    validate_v6_pipeline_inputs,
+)
 
 
 def _inputs():
@@ -167,4 +170,86 @@ def test_full_v6_pipeline_contract_rejects_partial_or_unbound_paths(
             association_graph=association,
             association_graph_sha256="assoc",
             materialization_report=report,
+        )
+
+
+def test_feedback_calibration_baseline_binds_current_map() -> None:
+    current = "a" * 64
+    assert resolve_v6_feedback_calibration_map_lineage(
+        state={}, current_map_sha256=current
+    ) == {
+        "calibration_binding_map_role": "current_map",
+        "calibration_binding_source_map_sha256": current,
+        "calibration_binding_candidate_arm": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "arm", ("descriptor_loss", "selection", "reconstruction")
+)
+def test_feedback_calibration_candidate_binds_exact_parent_and_arm(arm: str) -> None:
+    parent = "a" * 64
+    state = {
+        "provenance": {
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "v6_parent_map_sha256": parent,
+            "v6_latest_proposal_arm": arm,
+            "v6_proposal_history": [
+                {"parent_map_sha256": parent, "arm": arm}
+            ],
+        }
+    }
+    assert resolve_v6_feedback_calibration_map_lineage(
+        state=state,
+        current_map_sha256="b" * 64,
+        candidate_parent_map_sha256=parent,
+        candidate_arm=arm,
+    ) == {
+        "calibration_binding_map_role": "candidate_parent_map",
+        "calibration_binding_source_map_sha256": parent,
+        "calibration_binding_candidate_arm": arm,
+    }
+
+
+def test_feedback_calibration_candidate_rejects_forged_parent() -> None:
+    state = {
+        "provenance": {
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "v6_parent_map_sha256": "c" * 64,
+            "v6_latest_proposal_arm": "selection",
+            "v6_proposal_history": [
+                {"parent_map_sha256": "c" * 64, "arm": "selection"}
+            ],
+        }
+    }
+    with pytest.raises(ValueError, match="parent SHA differs"):
+        resolve_v6_feedback_calibration_map_lineage(
+            state=state,
+            current_map_sha256="b" * 64,
+            candidate_parent_map_sha256="a" * 64,
+            candidate_arm="selection",
+        )
+
+
+def test_feedback_calibration_candidate_rejects_forged_history() -> None:
+    parent = "a" * 64
+    state = {
+        "provenance": {
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "v6_parent_map_sha256": parent,
+            "v6_latest_proposal_arm": "reconstruction",
+            "v6_proposal_history": [
+                {"parent_map_sha256": "c" * 64, "arm": "reconstruction"}
+            ],
+        }
+    }
+    with pytest.raises(ValueError, match="proposal history differs"):
+        resolve_v6_feedback_calibration_map_lineage(
+            state=state,
+            current_map_sha256="b" * 64,
+            candidate_parent_map_sha256=parent,
+            candidate_arm="reconstruction",
         )

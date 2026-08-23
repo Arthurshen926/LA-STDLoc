@@ -16,6 +16,7 @@ import torch
 
 from common.hashing import sha256_file
 from common.v6_contracts import FEEDBACK_SCHEMA, require_schema
+from common.v6_pipeline_contract import FORMAL_FEEDBACK_CANDIDATE_ARMS
 
 
 EVALUATION_SCHEMA = "lafgs_v6_query_local_feedback_evaluation"
@@ -116,6 +117,25 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     if missing_protocol:
         raise ValueError(f"{label} evaluation protocol is incomplete: {missing_protocol}")
     protocol = {key: contract[key] for key in PAIRED_PROTOCOL_FIELDS}
+    calibration_binding_map_role = contract.get("calibration_binding_map_role")
+    calibration_binding_source_map_sha = contract.get(
+        "calibration_binding_source_map_sha256"
+    )
+    calibration_binding_candidate_arm = contract.get(
+        "calibration_binding_candidate_arm"
+    )
+    if calibration_binding_map_role not in {"current_map", "candidate_parent_map"}:
+        raise ValueError(f"{label} calibration-binding map role is invalid")
+    if not _is_sha256(calibration_binding_source_map_sha):
+        raise ValueError(f"{label} calibration-binding source map SHA is invalid")
+    if calibration_binding_map_role == "current_map":
+        if (
+            calibration_binding_source_map_sha != value.get("input_sha256", {}).get("map")
+            or calibration_binding_candidate_arm is not None
+        ):
+            raise ValueError(f"{label} baseline calibration-binding lineage differs")
+    elif calibration_binding_candidate_arm not in FORMAL_FEEDBACK_CANDIDATE_ARMS:
+        raise ValueError(f"{label} calibration-binding candidate arm is invalid")
     pose_logdet_target = float(protocol["pose_logdet_target"])
     if not math.isfinite(pose_logdet_target):
         raise ValueError(f"{label} pose logdet target is not finite")
@@ -376,6 +396,11 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
         "feedback_calibration_binding_sha256": str(
             feedback_calibration_binding_sha
         ),
+        "calibration_binding_map_role": calibration_binding_map_role,
+        "calibration_binding_source_map_sha256": str(
+            calibration_binding_source_map_sha
+        ),
+        "calibration_binding_candidate_arm": calibration_binding_candidate_arm,
         "anchor_count": int(summary["anchor_count"]),
         "protocol": protocol,
         "producer_source_sha256": dict(source_sha256),
@@ -882,6 +907,17 @@ def _load_map_pair(
     parent_sha = candidate_input["provenance"].get("v6_parent_map_sha256")
     if parent_sha != baseline_input["sha256"]:
         raise ValueError("candidate map parent is not the baseline map")
+    candidate_arm = candidate["calibration_binding_candidate_arm"]
+    if candidate_input["provenance"].get("v6_latest_proposal_arm") != candidate_arm:
+        raise ValueError("candidate map arm differs from calibration-binding arm")
+    history = candidate_input["provenance"].get("v6_proposal_history")
+    if not isinstance(history, list) or not history or not isinstance(history[-1], dict):
+        raise ValueError("candidate map proposal history is missing")
+    if (
+        history[-1].get("parent_map_sha256") != baseline_input["sha256"]
+        or history[-1].get("arm") != candidate_arm
+    ):
+        raise ValueError("candidate map proposal history differs from calibration")
 
     baseline_identities = set(baseline_input["identity_digests"])
     candidate_identities = set(candidate_input["identity_digests"])
@@ -942,6 +978,20 @@ def compare_feedback_files(
     )
     if baseline["names"] != candidate["names"]:
         raise ValueError("baseline and candidate query registries differ")
+    if baseline["calibration_binding_map_role"] != "current_map":
+        raise ValueError("baseline calibration binding does not bind its current map")
+    if candidate["calibration_binding_map_role"] != "candidate_parent_map":
+        raise ValueError("candidate calibration binding does not bind its parent map")
+    if (
+        baseline["calibration_binding_source_map_sha256"]
+        != baseline["map_sha256"]
+    ):
+        raise ValueError("baseline calibration-binding source map differs")
+    if (
+        candidate["calibration_binding_source_map_sha256"]
+        != baseline["map_sha256"]
+    ):
+        raise ValueError("candidate calibration-binding parent is not the baseline")
     if baseline["cache_sha256"] != candidate["cache_sha256"]:
         raise ValueError("baseline and candidate observation caches differ")
     if (
@@ -1026,6 +1076,12 @@ def compare_feedback_files(
             ],
             "shared_feedback_calibration_binding_sha256": baseline[
                 "feedback_calibration_binding_sha256"
+            ],
+            "immutable_calibration_source_map_sha256": baseline[
+                "map_sha256"
+            ],
+            "candidate_calibration_binding_arm": candidate[
+                "calibration_binding_candidate_arm"
             ],
             "identity_safe_feedback_required": True,
             "independent_subset_source": (

@@ -21,6 +21,73 @@ _OBSERVATION_CSR_SCHEMA = "lafgs_projective_anchor_observations"
 _MATERIALIZATION_REPORT_SCHEMA = "lafgs_v6_projective_map_materialization_report"
 FEEDBACK_CALIBRATION_BINDING_SCHEMA = "lafgs_v6_feedback_calibration_binding"
 FEEDBACK_SCENE_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
+FORMAL_FEEDBACK_CANDIDATE_ARMS = (
+    "descriptor_loss",
+    "selection",
+    "reconstruction",
+)
+
+
+def _is_sha256(value: object) -> bool:
+    text = str(value).lower()
+    return len(text) == 64 and all(
+        character in "0123456789abcdef" for character in text
+    )
+
+
+def resolve_v6_feedback_calibration_map_lineage(
+    *,
+    state: Mapping,
+    current_map_sha256: str,
+    candidate_parent_map_sha256: str | None = None,
+    candidate_arm: str | None = None,
+) -> dict:
+    """Resolve the immutable source map attested by a feedback calibration.
+
+    Baseline evaluation binds the current map itself.  A formal proposal may
+    reuse that same calibration only when its serialized provenance exactly
+    identifies the bound map as its parent and identifies the requested arm.
+    """
+
+    if not _is_sha256(current_map_sha256):
+        raise ValueError("current feedback map SHA256 is invalid")
+    candidate_mode = candidate_parent_map_sha256 is not None or candidate_arm is not None
+    if not candidate_mode:
+        return {
+            "calibration_binding_map_role": "current_map",
+            "calibration_binding_source_map_sha256": str(current_map_sha256).lower(),
+            "calibration_binding_candidate_arm": None,
+        }
+    if candidate_parent_map_sha256 is None or candidate_arm is None:
+        raise ValueError(
+            "candidate parent map SHA and candidate arm must be supplied together"
+        )
+    if not _is_sha256(candidate_parent_map_sha256):
+        raise ValueError("candidate parent map SHA256 is invalid")
+    if candidate_arm not in FORMAL_FEEDBACK_CANDIDATE_ARMS:
+        raise ValueError(f"unsupported formal feedback candidate arm: {candidate_arm}")
+    provenance = state.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("candidate feedback map provenance is missing")
+    require_mapping_only(provenance, label="candidate feedback map")
+    expected_parent = str(candidate_parent_map_sha256).lower()
+    if provenance.get("v6_parent_map_sha256") != expected_parent:
+        raise ValueError("candidate feedback map parent SHA differs from calibration")
+    if provenance.get("v6_latest_proposal_arm") != candidate_arm:
+        raise ValueError("candidate feedback map proposal arm differs")
+    history = provenance.get("v6_proposal_history")
+    if not isinstance(history, list) or not history or not isinstance(history[-1], Mapping):
+        raise ValueError("candidate feedback map proposal history is missing")
+    if (
+        history[-1].get("parent_map_sha256") != expected_parent
+        or history[-1].get("arm") != candidate_arm
+    ):
+        raise ValueError("candidate feedback map proposal history differs")
+    return {
+        "calibration_binding_map_role": "candidate_parent_map",
+        "calibration_binding_source_map_sha256": expected_parent,
+        "calibration_binding_candidate_arm": candidate_arm,
+    }
 
 
 def validate_v6_feedback_scene_calibration(

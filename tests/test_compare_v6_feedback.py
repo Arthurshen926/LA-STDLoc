@@ -111,7 +111,14 @@ def _protocol(independent_count: int) -> dict:
     }
 
 
-def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict:
+def _evaluation(
+    records: list[dict],
+    *,
+    map_sha: str,
+    anchor_count: int,
+    calibration_source_map_sha: str | None = None,
+    candidate_arm: str | None = None,
+) -> dict:
     names = [record["image_name"] for record in records]
     queries = []
     for record in records:
@@ -176,6 +183,22 @@ def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict
             "feedback_calibration_binding": _FEEDBACK_CALIBRATION_BINDING_SHA,
         },
     }
+    contract = _protocol(independent_count)
+    contract.update(
+        {
+            "calibration_binding_map_role": (
+                "current_map"
+                if calibration_source_map_sha is None
+                else "candidate_parent_map"
+            ),
+            "calibration_binding_source_map_sha256": (
+                map_sha
+                if calibration_source_map_sha is None
+                else calibration_source_map_sha
+            ),
+            "calibration_binding_candidate_arm": candidate_arm,
+        }
+    )
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
         "version": 4,
@@ -184,7 +207,7 @@ def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict
         "queries": queries,
         "summary": {"anchor_count": anchor_count},
         "feedback": feedback,
-        "contract": _protocol(independent_count),
+        "contract": contract,
         "producer": {
             "git_commit": "a" * 40,
             "worktree_clean": True,
@@ -211,6 +234,7 @@ def _write_map(
     identities: list[list[tuple[int, int]]],
     *,
     parent_sha: str | None = None,
+    candidate_arm: str = "descriptor_loss",
     updated_rows: list[int] | None = None,
 ) -> str:
     offsets = [0]
@@ -229,7 +253,10 @@ def _write_map(
         provenance.update(
             {
                 "v6_parent_map_sha256": parent_sha,
-                "v6_latest_proposal_arm": "descriptor_selection",
+                "v6_latest_proposal_arm": candidate_arm,
+                "v6_proposal_history": [
+                    {"parent_map_sha256": parent_sha, "arm": candidate_arm}
+                ],
             }
         )
     state = {
@@ -326,7 +353,13 @@ def _artifacts(tmp_path: Path) -> dict:
         ),
     ]
     baseline = _evaluation(baseline_records, map_sha=baseline_map_sha, anchor_count=3)
-    candidate = _evaluation(candidate_records, map_sha=candidate_map_sha, anchor_count=4)
+    candidate = _evaluation(
+        candidate_records,
+        map_sha=candidate_map_sha,
+        anchor_count=4,
+        calibration_source_map_sha=baseline_map_sha,
+        candidate_arm="descriptor_loss",
+    )
     baseline_feedback = tmp_path / "baseline_feedback.pt"
     candidate_feedback = tmp_path / "candidate_feedback.pt"
     return {
@@ -400,6 +433,39 @@ def test_paired_diagnostics_use_stable_anchor_identity_and_cover_metrics(
         run(SimpleNamespace(**_compare_kwargs(artifacts), output=output))
 
 
+@pytest.mark.parametrize(
+    "arm", ("descriptor_loss", "selection", "reconstruction")
+)
+def test_paired_calibration_lineage_accepts_each_formal_candidate_arm(
+    tmp_path: Path,
+    arm: str,
+) -> None:
+    artifacts = _artifacts(tmp_path)
+    state = torch.load(
+        artifacts["candidate_map"], map_location="cpu", weights_only=False
+    )
+    state["provenance"]["v6_latest_proposal_arm"] = arm
+    state["provenance"]["v6_proposal_history"][-1]["arm"] = arm
+    artifacts["candidate_map_sha"] = _save(state, artifacts["candidate_map"])
+    candidate = _evaluation(
+        artifacts["candidate"]["feedback"]["records"],
+        map_sha=artifacts["candidate_map_sha"],
+        anchor_count=4,
+        calibration_source_map_sha=artifacts["baseline_map_sha"],
+        candidate_arm=arm,
+    )
+    artifacts["candidate_feedback_sha"] = _save(
+        candidate, artifacts["candidate_feedback"]
+    )
+
+    result = compare_feedback_files(**_compare_kwargs(artifacts))
+
+    assert result["comparison_contract"]["candidate_calibration_binding_arm"] == arm
+    assert result["comparison_contract"][
+        "immutable_calibration_source_map_sha256"
+    ] == artifacts["baseline_map_sha"]
+
+
 def test_rank_zero_transitions_and_missing_pose_fail_closed(tmp_path: Path) -> None:
     artifacts = _artifacts(tmp_path)
     baseline = deepcopy(artifacts["baseline"])
@@ -423,6 +489,8 @@ def test_rank_zero_transitions_and_missing_pose_fail_closed(tmp_path: Path) -> N
         candidate["feedback"]["records"],
         map_sha=artifacts["candidate_map_sha"],
         anchor_count=4,
+        calibration_source_map_sha=artifacts["baseline_map_sha"],
+        candidate_arm="descriptor_loss",
     )
     artifacts["baseline_feedback_sha"] = _save(baseline, artifacts["baseline_feedback"])
     artifacts["candidate_feedback_sha"] = _save(candidate, artifacts["candidate_feedback"])
@@ -532,6 +600,8 @@ def test_map_lineage_and_unique_fingerprints_fail_closed(tmp_path: Path) -> None
         artifacts["candidate"]["feedback"]["records"],
         map_sha=artifacts["candidate_map_sha"],
         anchor_count=4,
+        calibration_source_map_sha=artifacts["baseline_map_sha"],
+        candidate_arm="descriptor_loss",
     )
     artifacts["candidate_feedback_sha"] = _save(candidate, artifacts["candidate_feedback"])
     with pytest.raises(ValueError, match="parent is not the baseline"):
@@ -548,6 +618,8 @@ def test_map_lineage_and_unique_fingerprints_fail_closed(tmp_path: Path) -> None
         artifacts["candidate"]["feedback"]["records"],
         map_sha=duplicate_sha,
         anchor_count=4,
+        calibration_source_map_sha=artifacts["baseline_map_sha"],
+        candidate_arm="descriptor_loss",
     )
     artifacts["candidate_map"] = duplicate_map
     artifacts["candidate_map_sha"] = duplicate_sha
@@ -555,4 +627,30 @@ def test_map_lineage_and_unique_fingerprints_fail_closed(tmp_path: Path) -> None
         duplicate_candidate, artifacts["candidate_feedback"]
     )
     with pytest.raises(ValueError, match="fingerprints are not unique"):
+        compare_feedback_files(**_compare_kwargs(artifacts))
+
+
+def test_candidate_calibration_lineage_rejects_forged_proposal_history(
+    tmp_path: Path,
+) -> None:
+    artifacts = _artifacts(tmp_path)
+    state = torch.load(
+        artifacts["candidate_map"], map_location="cpu", weights_only=False
+    )
+    state["provenance"]["v6_proposal_history"][-1]["parent_map_sha256"] = (
+        "0" * 64
+    )
+    artifacts["candidate_map_sha"] = _save(state, artifacts["candidate_map"])
+    candidate = _evaluation(
+        artifacts["candidate"]["feedback"]["records"],
+        map_sha=artifacts["candidate_map_sha"],
+        anchor_count=4,
+        calibration_source_map_sha=artifacts["baseline_map_sha"],
+        candidate_arm="descriptor_loss",
+    )
+    artifacts["candidate_feedback_sha"] = _save(
+        candidate, artifacts["candidate_feedback"]
+    )
+
+    with pytest.raises(ValueError, match="proposal history differs"):
         compare_feedback_files(**_compare_kwargs(artifacts))

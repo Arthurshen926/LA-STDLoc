@@ -179,10 +179,14 @@ def _evaluation_command(
     metric_path: Path,
     metric_sha256: str,
     output_dir: Path,
+    candidate_parent_map_sha256: str | None = None,
+    candidate_arm: str | None = None,
 ) -> list[str]:
     if args.ransac_reprojection_px is None:
         raise ValueError("RANSAC threshold was not resolved from scene calibration")
-    return [
+    if (candidate_parent_map_sha256 is None) != (candidate_arm is None):
+        raise ValueError("candidate parent map SHA and arm must be paired")
+    command = [
         sys.executable,
         str(root / "scripts/evaluate_v6_self_localization.py"),
         "--map",
@@ -234,6 +238,16 @@ def _evaluation_command(
         "--seed",
         str(args.seed),
     ]
+    if candidate_parent_map_sha256 is not None:
+        command.extend(
+            [
+                "--candidate-parent-map-sha256",
+                candidate_parent_map_sha256,
+                "--candidate-arm",
+                str(candidate_arm),
+            ]
+        )
+    return command
 
 
 def _proposal_command(
@@ -382,6 +396,8 @@ def _validate_feedback_summary(
     map_sha256: str,
     metric_sha256: str,
     cache_sha256: str,
+    candidate_parent_map_sha256: str | None = None,
+    candidate_arm: str | None = None,
 ) -> dict:
     summary_path = summary_path.resolve()
     summary_artifact = _artifact(
@@ -408,6 +424,8 @@ def _validate_feedback_summary(
     }
     if summary.get("input_sha256") != expected_inputs:
         raise ValueError("feedback summary input SHA registry differs")
+    if (candidate_parent_map_sha256 is None) != (candidate_arm is None):
+        raise ValueError("candidate parent map SHA and arm must be paired")
     contract = summary.get("contract")
     if not isinstance(contract, Mapping):
         raise ValueError("feedback summary contract is missing")
@@ -434,6 +452,17 @@ def _validate_feedback_summary(
         "pose_solves_per_query": 1,
         "retrieval": False,
         "refinement": False,
+        "calibration_binding_map_role": (
+            "current_map"
+            if candidate_parent_map_sha256 is None
+            else "candidate_parent_map"
+        ),
+        "calibration_binding_source_map_sha256": (
+            map_sha256
+            if candidate_parent_map_sha256 is None
+            else candidate_parent_map_sha256
+        ),
+        "calibration_binding_candidate_arm": candidate_arm,
     }
 
     def matches(actual: object, expected: object) -> bool:
@@ -497,6 +526,8 @@ def _evaluate(
     map_artifact: dict,
     metric_artifact: dict,
     output_dir: Path,
+    candidate_parent_map_sha256: str | None = None,
+    candidate_arm: str | None = None,
 ) -> tuple[dict, list[str]]:
     command = _evaluation_command(
         args,
@@ -506,6 +537,8 @@ def _evaluate(
         metric_path=Path(metric_artifact["path"]),
         metric_sha256=metric_artifact["sha256"],
         output_dir=output_dir,
+        candidate_parent_map_sha256=candidate_parent_map_sha256,
+        candidate_arm=candidate_arm,
     )
     _run_command(command, root=root)
     result = _validate_feedback_summary(
@@ -515,6 +548,8 @@ def _evaluate(
         map_sha256=map_artifact["sha256"],
         metric_sha256=metric_artifact["sha256"],
         cache_sha256=args.expected_observation_cache_sha256,
+        candidate_parent_map_sha256=candidate_parent_map_sha256,
+        candidate_arm=candidate_arm,
     )
     return result, command
 
@@ -922,6 +957,8 @@ def run(
             map_artifact=candidate["map"],
             metric_artifact=candidate["metric"],
             output_dir=arm_root / "evaluation",
+            candidate_parent_map_sha256=map_artifact["sha256"],
+            candidate_arm=arm,
         )
         paired_output = arm_root / "paired_diagnostics.json"
         paired_command = _paired_command(
