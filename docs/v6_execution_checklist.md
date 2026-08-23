@@ -1,42 +1,88 @@
 # V6 execution checklist
 
-V6 starts from tagged commit `v4-render-only-frozen` and does not inherit any
-historical V5 adapter or target-materialization branch.  The only formal
-deployment protocol is native SuperPoint, global Top-1 per query row, and one
-standard PoseLib solve.
+This checklist describes the formal V6 run contract. It does not record a
+result before the corresponding SHA-bound artifact exists, and it does not
+authorize automatic acceptance or winner selection.
 
-The required dependency order is:
+## Frozen construction contract
 
-1. render-valid observations;
-2. one evidence-gated multiview association graph;
-3. ray-triangulated Projective Anchors, including completion proposals;
-4. query-local LOO L1--L4 feedback;
-5. independent descriptor, reconstruction, and selection proposals;
-6. exact mapping replay and lexicographic guarded acceptance;
-7. repeat until no proposal is accepted, with a maximum of three rounds.
+- [ ] Start from the immutable `v4-render-only-frozen` baseline; do not import
+  a V5 adapter or target-materialization experiment.
+- [ ] Use Gaussian-rendered mapping images only. Reject source mapping RGB and
+  any test-query dependency.
+- [ ] Apply rendered-alpha validity before native SuperPoint NMS and Top-K.
+- [ ] Build one reciprocal-descriptor, known-pose-epipolar,
+  cycle/chain-confidence association graph.
+- [ ] Materialize all deployable Anchor coordinates through robust
+  multi-camera rays. Rendered depth and Gaussian centers may propose/audit but
+  never become the deployed coordinate.
+- [ ] SHA-validate the map, identity metric, rendered observation cache,
+  association graph, materialization report, scene calibration, and feedback
+  calibration binding before launching a formal subprocess.
 
-The following are compatibility-only and forbidden from the V6 default
-runner: appearance ensemble, post-hoc support repair, parent/child Track
-semantics, child caps, direct-depth deployable Surface Anchors, source RGB,
-render-to-real adapters, retrieval, stronger online features, group-aware
-PoseLib variants, and pose refinement.
+## Feedback contract
 
-Every item in the external fourteen-item implementation plan is tracked by a
-test or a real-scene evidence artifact before the V6 mainline can be frozen.
+- [ ] Use fresh v5 feedback for the baseline and every candidate.
+- [ ] Use query-local pose-neighborhood exclusion with exact affected-Anchor
+  rebuild. `purge` is diagnostic-only and is not descriptor supervision.
+- [ ] Treat exact projective identity as the only strong descriptor positive;
+  ignore geometry-compatible non-identities.
+- [ ] Keep L1 image-cell visibility, L2 detectability, L3 one-to-one matching,
+  and L4 task-scaled pose information as separate recorded targets.
+- [ ] Use native SuperPoint, one global cosine Top-1 per query row, and exactly
+  one standard PoseLib solve inside every replay.
+- [ ] Use the RANSAC threshold from the SHA-bound Gaussian-render mapping-only
+  scene calibration. The calibration-binding artifact must attest the same
+  map SHA, cache SHA, calibration SHA, ordered-query-registry SHA, and count.
+  The 4-pixel setting is only the strict diagnostic protocol.
 
-| # | Plan item | V6 implementation status |
+## Feedback-action holdout
+
+- [ ] Generate the split from the exact baseline feedback SHA with
+  `--validation-sequence seq2`.
+- [ ] Confirm that D2/D3 descriptor gradients, S1 selection, and R1 targets and
+  support observations consume only the training side of that split.
+- [ ] Describe `seq2` only as a feedback-action holdout: the immutable initial
+  map was already built with all mapping sequences, including `seq2`.
+- [ ] Keep all test queries sealed during feedback generation, proposal
+  construction, paired diagnostics, and manual review.
+
+## Independent preregistered panel
+
+Use `scripts/run_v6_feedback_core_pipeline.py` as the only formal runner. Run
+one arm per invocation so that every arm has the same parent map and baseline
+feedback and no candidate is chained into another candidate.
+
+| Arm | Frozen change | Required weights/scope |
 |---|---|---|
-| 1 | Immutable V4 baseline | Done: `v4-render-only-frozen` |
-| 2 | Clean V6 branch and schemas | Done: `codex/v6-closed-loop-projective-anchor`; the tracked ANSI-control dump file was removed |
-| 3 | Surface duplicate/pixel/covariance/self-certification bugs | Implemented and covered by focused tests; full-suite rerun pending |
-| 4 | Alpha validity before SuperPoint NMS/Top-K | Implemented and unit-tested |
-| 5 | Rebuild hard/protection observations, Tracks, geometry | Partial gate done: fresh 32-view Stairs + GreatCourt hard and Shop protection artifacts; full-scene rebuild follows the partial gate |
-| 6 | Carry support into one unified association | Implemented in `projective_association_graph_v2` |
-| 7 | Remove repair/parent-child/child-cap from formal path | Implemented; all are absent from V6 materializer |
-| 8 | Replace direct Surface rows with projective completion | Implemented: depth proposal + reciprocal/epipolar + pure-ray xyz |
-| 9 | Formal query-local descriptor and geometry LOO feedback | Implemented and run on Stairs/Shop with true per-inlier 6x6 Fisher information |
-| 10 | Descriptor-only and selection-only arms | Implemented and evaluated on Stairs; both rejected by hard guards |
-| 11 | Reconstruction arm and complete round-one panel | Implemented; Stairs had no L1, while GreatCourt L1 replay emitted an explicit No-Proposal because no completion passed descriptor/geometric gates |
-| 12 | Lexicographic guarded acceptance and round two | Round zero stopped correctly because no proposal passed; round two is therefore forbidden rather than pending |
-| 13 | Full 24-scene panel | Intentionally pending hard/protection gate |
-| 14 | Method/config/runner alignment | Method/config aligned; `scripts/run_closed_loop_projective_distillation.py` is the bounded formal loop and first real-scene evidence is frozen in `docs/evidence/v6_first_hard_scene_validation.json` |
+| D2 | Exact-identity descriptor P1+P2 | `pose_critical_weight=0`, `tail_query_weight=0` |
+| D3 | D2 plus P3 pose/tail weighting | `pose_critical_weight=2`, `tail_query_weight=1`; every other descriptor hyperparameter equals D2 |
+| S1 | Layered Anchor selection only | Same baseline; training split only |
+| R1 | L1-targeted pure-ray reconstruction only | Same baseline; training targets and support only |
+
+For every arm:
+
+- [ ] Produce a full training checkpoint for exact rebuild and fresh feedback.
+- [ ] Produce a compact deployment map/metric with the same deployed Anchor
+  IDs, coordinates, and baked descriptors but without dense training state.
+- [ ] Run fresh v5 feedback on the full checkpoint, not the compact export.
+- [ ] Produce paired diagnostics against the common baseline and record all
+  producer, input, output, and calibration SHAs.
+- [ ] Do not apply an automatic hard gate, mutate a winner pointer, or advance
+  to a second round. Submit the four preregistered reports to external manual
+  review.
+
+`scripts/run_closed_loop_projective_distillation.py` and other historical
+closed-loop runners are legacy diagnostic/reproduction paths, not formal V6
+entry points.
+
+## Final freeze and test
+
+- [ ] Complete manual review using mapping feedback and the declared
+  feedback-action holdout only.
+- [ ] Freeze exactly one method configuration and compact deployment artifact,
+  including their commit and SHA registries.
+- [ ] Run the sealed test set once after that freeze.
+- [ ] Report the observed result without changing the chosen arm, thresholds,
+  map, or configuration. Do not claim an improvement or state of the art before
+  the real artifact and result exist.

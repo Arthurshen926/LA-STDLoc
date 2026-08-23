@@ -1,53 +1,93 @@
 # Method
 
-## V6 formal mainline: Closed-Loop Projective Anchor Distillation
+## V6 formal mainline: independent feedback-core convergence
 
-The formal V6 method begins at the immutable `v4-render-only-frozen` tag and
-does not inherit any V5 adapter experiment.  A mapping observation exists only
-when Gaussian-rendered alpha support is valid **before** native SuperPoint NMS
-and Top-K.  All such observations enter one reciprocal descriptor,
-known-pose-epipolar, cycle/chain-confidence association graph.  V6 has no
-post-hoc support repair, Track parent/child split, child cap, or direct
-depth-surface deployable row.
+The formal V6 method begins at the immutable `v4-render-only-frozen` baseline
+and does not inherit any V5 adapter experiment. Its mapping images are renders
+from the Gaussian model, not the original mapping RGB images. A mapping
+observation exists only when rendered alpha support is valid **before** native
+SuperPoint NMS and Top-K. All surviving observations enter one reciprocal-
+descriptor, known-pose-epipolar, cycle/chain-confidence association graph.
+V6 has no post-hoc support repair, Track parent/child split, child cap, or
+direct depth-surface deployable row.
 
 Every deployable coordinate is reconstructed by robust multi-camera rays with
-the shared physical pixel-center convention.  Gaussian alpha/depth may define
+the shared physical pixel-center convention. Gaussian alpha/depth may define
 the rendered domain, propose a local completion neighborhood, and audit
 visibility; neither Gaussian primitive centers nor rendered depth become the
-final Anchor coordinate.  Completion observations must independently pass
-reciprocal descriptor and known-pose epipolar support before the same ray
-triangulator is called.
+final Anchor coordinate. Completion observations must independently pass
+reciprocal descriptor and known-pose epipolar support before the same pure-ray
+triangulator is called. Thus the formal construction order is:
 
-The current map self-localizes every ordered mapping query with its own
-descriptor observations and affected geometry removed.  The online operation
-inside that replay is exactly the deployment operation: native SuperPoint,
-one global cosine Top-1 Anchor for every query row, and one standard PoseLib
-solve.  The offline-only replay emits explicit L1 visibility, L2
-detectability, L3 matching, and L4 pose-information failures plus clean,
-harmful, and confusion evidence.
+```text
+Gaussian render -> alpha-before-NMS observations -> unified association
+-> pure-ray Projective Anchor map -> query-local v5 feedback
+-> independent D2/D3/S1/R1 proposals -> compact deployment export
+```
 
-Each round evaluates independent descriptor-only, selection-only, and
-L1-targeted reconstruction proposals.  Descriptor updates are bounded tangent
-residuals on stored map vectors, not an online adapter.  Selection enforces the
-ordered hierarchy visibility → detectability → one-to-one matching → pose
-information, rather than a weighted heuristic sum.  Candidate acceptance
-first enforces catastrophe, R5, map-size, and latency guards and then compares
-the frozen lexicographic risk tuple.  Repeated states are rejected and the
-loop stops after at most three rounds or immediately when no proposal is
-accepted.
+The baseline and every proposal receive fresh v5 feedback. For each ordered
+mapping query, the offline evaluator removes a pose neighborhood and exactly
+rebuilds every affected Anchor from the remaining observations. Strong
+descriptor positives require exact projective identity; a geometrically
+compatible non-identity is ignored rather than relabelled as a positive or a
+negative. The operation measured inside that replay is exactly the deployment
+operation: native SuperPoint, one global cosine Top-1 Anchor for every query
+row, and one standard PoseLib solve. The evaluator emits separate L1
+image-cell visibility, L2 detectability, L3 one-to-one matching, and L4
+task-scaled pose-information failures, together with clean, harmful, and
+confusion evidence.
 
-The only formal online protocol remains native SuperPoint + global Top-1 + one
-PoseLib call.  Retrieval, stronger online features, a learned query adapter,
-group-aware RANSAC, pose refinement, and render-time refinement are outside
-the method.
+The preregistered panel contains four independent arms, all starting from the
+same immutable map and baseline feedback; candidates are never chained:
 
-The executable closed loop is
-`scripts/run_closed_loop_projective_distillation.py`.  It evaluates the
-current map, creates only the feedback-eligible independent arms, evaluates
-each arm with fresh query-local LOO, applies the hard guards and lexicographic
-risk, and either advances to the accepted map or stops.  It cannot execute
-more than three rounds and does not create a reconstruction arm when no L1
-deficit exists.
+- **D2** applies the common exact-identity descriptor loss (P1+P2) with
+  `pose_critical_weight=0` and `tail_query_weight=0`.
+- **D3** differs from D2 only by enabling the preregistered P3 weights,
+  `pose_critical_weight=2` and `tail_query_weight=1`.
+- **S1** changes only Anchor selection, using the layered visibility,
+  detectability, one-to-one matching, and pose-information objectives.
+- **R1** changes only L1-targeted projective reconstruction.
+
+Each proposal is evaluated with fresh query-local feedback and paired against
+the same baseline. The formal runner records diagnostics and artifacts but
+does not apply an automatic hard gate, accept a candidate, choose a winner, or
+start another round. Acceptance and method selection are an explicit external
+manual review of the preregistered panel.
+
+The whole-sequence `seq2` split is a **feedback-action holdout**. D2/D3 do not
+use it for descriptor gradients, S1 does not use it to select Anchors, and R1
+does not use it as a target or reconstruction-support query. However, the
+initial immutable map was constructed from all mapping sequences, including
+`seq2`; consequently `seq2` is not an independent validation set for initial
+map construction. Paired results on it must be described only as validation
+of the feedback-driven action.
+
+The 4-pixel RANSAC setting is retained only for the strict diagnostic replay.
+Formal feedback uses the threshold in the SHA-bound Gaussian-render
+mapping-only `scene_calibration.json`. A second SHA-bound calibration-binding
+artifact attests that exact calibration to the map, observation cache, and
+ordered query registry. Baseline and candidate feedback must carry the same
+two calibration SHAs.
+
+Training checkpoints retain the dense evidence required for exact rebuild and
+audit. Compact export bakes the final per-Anchor descriptor and removes this
+training-only state. The only formal online protocol is therefore the compact
+Anchor map plus native SuperPoint, global Top-1, and one PoseLib call.
+Retrieval, stronger online features, a learned query adapter, group-aware
+RANSAC, pose refinement, and render-time refinement are outside the method.
+
+The sole formal orchestrator is
+`scripts/run_v6_feedback_core_pipeline.py`. A one-arm invocation performs the
+proposal, full-checkpoint fresh feedback, compact export, and paired
+diagnostics. Four one-arm invocations are used because D2 and D3 have different
+descriptor weights. `scripts/run_closed_loop_projective_distillation.py` is a
+legacy diagnostic/reproduction entry point and cannot define a formal result.
+
+Mapping feedback and manual arm review occur without access to test queries.
+After the method, candidate, configuration, and deployment artifact have been
+frozen, the test set is evaluated once. Test results cannot be used to revise
+the arm choice, thresholds, or map. No formal D2/D3/S1/R1 or test result is
+claimed here until its SHA-bound artifact has actually been produced.
 
 ## V4 compatibility architecture (non-formal in V6)
 
