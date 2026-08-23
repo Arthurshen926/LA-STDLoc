@@ -365,8 +365,24 @@ def reciprocal_epipolar_matches(
             diagnostics,
         )
 
-    values_ab, indices_ab = torch.topk(similarity, k=2, dim=1)
-    values_ba, indices_ba = torch.topk(similarity, k=2, dim=0)
+    # A completion voxel can legitimately contain only one candidate in one
+    # camera.  Such a row has no competing descriptor, so preserve the usual
+    # top-1 match and represent the missing runner-up as negative infinity.
+    # For two or more candidates this is the exact historical top-k path.
+    values_ab, indices_ab = torch.topk(
+        similarity, k=min(2, int(similarity.shape[1])), dim=1
+    )
+    if values_ab.shape[1] == 1:
+        values_ab = torch.cat(
+            (values_ab, torch.full_like(values_ab, -torch.inf)), dim=1
+        )
+    values_ba, indices_ba = torch.topk(
+        similarity, k=min(2, int(similarity.shape[0])), dim=0
+    )
+    if values_ba.shape[0] == 1:
+        values_ba = torch.cat(
+            (values_ba, torch.full_like(values_ba, -torch.inf)), dim=0
+        )
     source = torch.arange(
         descriptors_a.shape[0], device=similarity.device, dtype=torch.long
     )
