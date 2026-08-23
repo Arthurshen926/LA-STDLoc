@@ -653,8 +653,12 @@ def selection_only_proposal(
     feedback: dict,
     *,
     maximum_anchors: int,
+    visibility_target: int,
+    detectability_target: int,
     matching_target: int,
     pose_logdet_target: float,
+    pose_min_eigenvalue_target: float | None = None,
+    training_query_indices: torch.Tensor | Sequence[int] | None = None,
 ) -> tuple[dict, dict]:
     """Hierarchical visibility→detectability→matching→pose selection arm."""
 
@@ -665,13 +669,66 @@ def selection_only_proposal(
         for name in ("visibility", "detectability", "matching")
     }
     information: list[dict[int, torch.Tensor]] = [dict() for _ in range(count)]
-    for query_index, record in enumerate(feedback["records"]):
-        for anchor in torch.as_tensor(record["visible_anchor_ids"]).long().tolist():
-            layers["visibility"][anchor][query_index].add(anchor)
+    query_count = len(feedback["records"])
+    training_registry_explicit = training_query_indices is not None
+    round_training_queries = (
+        torch.arange(query_count, dtype=torch.long)
+        if training_query_indices is None
+        else torch.as_tensor(training_query_indices, dtype=torch.long).reshape(-1)
+    )
+    round_training_queries = torch.unique(round_training_queries, sorted=True)
+    if round_training_queries.numel() == 0 or (
+        int(round_training_queries.min()) < 0
+        or int(round_training_queries.max()) >= query_count
+    ):
+        raise ValueError("selection training query registry is empty or invalid")
+    prior_report = state.get("v6_selection_distillation")
+    prior_training_queries = torch.empty(0, dtype=torch.long)
+    prior_dependency_present = isinstance(prior_report, dict)
+    if prior_dependency_present:
+        prior_training_queries = torch.as_tensor(
+            prior_report.get("training_query_indices", ()), dtype=torch.long
+        ).reshape(-1)
+        if prior_training_queries.numel() == 0:
+            # Legacy selection maps did not serialize the dependency registry.
+            prior_training_queries = torch.arange(query_count, dtype=torch.long)
+        if (
+            int(prior_training_queries.min()) < 0
+            or int(prior_training_queries.max()) >= query_count
+        ):
+            raise ValueError("prior selection training query registry is invalid")
+    cumulative_training_queries = torch.unique(
+        torch.cat((prior_training_queries, round_training_queries)), sorted=True
+    )
+    cumulative_registry_explicit = training_registry_explicit
+    if prior_dependency_present:
+        cumulative_registry_explicit = bool(
+            prior_report.get("training_query_registry_explicit", False)
+            and training_registry_explicit
+        )
+
+    for local_query_index, source_query_index in enumerate(
+        round_training_queries.tolist()
+    ):
+        record = feedback["records"][source_query_index]
+        visible_ids = torch.as_tensor(record["visible_anchor_ids"]).long().reshape(-1)
+        visible_cells = torch.as_tensor(
+            record["visible_anchor_image_cells"]
+        ).long().reshape(-1)
+        if visible_ids.shape != visible_cells.shape:
+            raise ValueError("visible Anchor IDs and image cells do not align")
+        if visible_ids.numel() != torch.unique(visible_ids).numel():
+            raise ValueError("visible Anchor IDs must be unique per query")
+        if bool((visible_cells < 0).any()):
+            raise ValueError("visibility image-cell IDs must be non-negative")
+        if bool(((visible_ids < 0) | (visible_ids >= count)).any()):
+            raise ValueError("visible Anchor IDs are outside the map registry")
+        for anchor, image_cell in zip(visible_ids.tolist(), visible_cells.tolist()):
+            layers["visibility"][anchor][local_query_index].add(image_cell)
         for row, anchor in torch.as_tensor(record["detectable_pairs"]).long().tolist():
-            layers["detectability"][anchor][query_index].add(row)
+            layers["detectability"][anchor][local_query_index].add(row)
         for row, anchor in torch.as_tensor(record["matching_pairs"]).long().tolist():
-            layers["matching"][anchor][query_index].add(row)
+            layers["matching"][anchor][local_query_index].add(row)
         pose_ids = torch.as_tensor(
             record.get("clean_inlier_pose_anchor_ids", ())
         ).long()
@@ -680,11 +737,14 @@ def selection_only_proposal(
         ).reshape(-1, 6, 6)
         if pose_ids.numel() != pose_information.shape[0]:
             raise ValueError("pose information and Anchor IDs do not align")
+        if pose_ids.numel() != torch.unique(pose_ids).numel():
+            raise ValueError("pose information must have one row per unique Anchor")
+        if bool(((pose_ids < 0) | (pose_ids >= count)).any()):
+            raise ValueError("pose-information Anchor IDs are outside the map registry")
+        if not bool(torch.isfinite(pose_information).all()):
+            raise ValueError("pose information must be finite")
         for anchor, contribution in zip(pose_ids.tolist(), pose_information):
-            previous = information[anchor].get(
-                query_index, torch.zeros((6, 6), dtype=torch.float64)
-            )
-            information[anchor][query_index] = previous + contribution
+            information[anchor][local_query_index] = contribution
     candidate_edges = {
         name: [
             {query: tuple(sorted(rows)) for query, rows in candidate.items()}
@@ -696,22 +756,37 @@ def selection_only_proposal(
         layer_edges=candidate_edges,
         reliability=torch.as_tensor(state["anchor_matchability"]).float(),
         pose_information=information,
+        visibility_target=int(visibility_target),
+        detectability_target=int(detectability_target),
         matching_target=int(matching_target),
         pose_logdet_target=float(pose_logdet_target),
+        pose_min_eigenvalue_target=pose_min_eigenvalue_target,
         maximum_anchors=int(maximum_anchors),
+        query_count=int(round_training_queries.numel()),
     )
     selected = torch.sort(result["selected_anchor_rows"]).values
     proposal = subset_projective_anchor_map(state, selected)
     proposal["v6_selection_distillation"] = {
         "schema": "lafgs_v6_layered_sufficiency_selection",
-        "version": 2,
+        "version": 3,
         "selected_source_rows": selected,
-        "training_query_indices": torch.arange(
-            len(feedback["records"]), dtype=torch.long
-        ),
-        "training_query_registry_explicit": False,
+        "training_query_indices": cumulative_training_queries,
+        "selected_query_indices": cumulative_training_queries,
+        "round_training_query_indices": round_training_queries,
+        "round_selected_query_indices": round_training_queries,
+        "training_query_registry_explicit": cumulative_registry_explicit,
+        "selection_round": int(
+            prior_report.get("selection_round", 0)
+            if isinstance(prior_report, dict)
+            else 0
+        )
+        + 1,
         "hierarchy": ["visibility", "detectability", "matching", "pose"],
         "weighted_heuristic_sum": False,
+        "visibility_evidence_unit": "query_image_grid_cell",
+        "detectability_evidence_unit": "query_keypoint_row",
+        "matching_evidence_unit": "query_keypoint_row",
+        "pose_evidence_unit": "unique_anchor_per_query",
         "report": result,
     }
     return proposal, result

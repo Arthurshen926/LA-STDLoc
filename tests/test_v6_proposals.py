@@ -3,9 +3,18 @@ import torch
 import torch.nn.functional as F
 
 from evidence.observation_provider import GaussianRenderObservationProvider
-from map_learning.v6_proposals import descriptor_loss_proposal
+import map_learning.v6_proposals as v6_proposals
+from map_learning.v6_proposals import (
+    descriptor_loss_proposal,
+    selection_only_proposal,
+)
 from common.hashing import sha256_file
-from common.v6_contracts import FEEDBACK_SCHEMA, ordered_query_registry_sha256
+from common.v6_contracts import (
+    FEEDBACK_SCHEMA,
+    FEEDBACK_VERSION,
+    exact_identity_positive_contract,
+    ordered_query_registry_sha256,
+)
 from scripts.propose_v6_round import (
     _attach_reconstruction_distillation,
     _jsonable,
@@ -174,6 +183,8 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     )
     feedback = {
         "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q"],
@@ -288,6 +299,8 @@ def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
         )
     feedback = {
         "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": names,
@@ -496,4 +509,125 @@ def test_proposal_inputs_reject_compact_map_and_registry_mismatch() -> None:
             feedback=feedback,
             map_sha="m",
             cache_sha="c",
+        )
+
+
+def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -> None:
+    captured = {}
+
+    def fake_select(**kwargs):
+        captured.update(kwargs)
+        return {
+            "selected_anchor_rows": torch.tensor([0, 2]),
+            "unmet": {},
+        }
+
+    monkeypatch.setattr(v6_proposals, "select_layered_sufficiency", fake_select)
+    monkeypatch.setattr(
+        v6_proposals,
+        "subset_projective_anchor_map",
+        lambda state, selected: {"anchor_ids": state["anchor_ids"][selected]},
+    )
+    state = {
+        "anchor_ids": torch.arange(3),
+        "anchor_matchability": torch.tensor([0.9, 0.8, 0.7]),
+        "v6_selection_distillation": {
+            "training_query_indices": torch.tensor([0]),
+            "training_query_registry_explicit": True,
+            "selection_round": 1,
+        },
+    }
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "records": [
+            {
+                "visible_anchor_ids": torch.tensor([1]),
+                "visible_anchor_image_cells": torch.tensor([1]),
+                "detectable_pairs": torch.tensor([[1, 1]]),
+                "matching_pairs": torch.tensor([[1, 1]]),
+                "clean_inlier_pose_anchor_ids": torch.tensor([1]),
+                "clean_inlier_pose_information": torch.eye(6).unsqueeze(0),
+            },
+            {
+                "visible_anchor_ids": torch.tensor([0, 1, 2]),
+                "visible_anchor_image_cells": torch.tensor([5, 5, 7]),
+                "detectable_pairs": torch.tensor([[10, 0], [11, 1]]),
+                "matching_pairs": torch.tensor([[10, 0]]),
+                "clean_inlier_pose_anchor_ids": torch.tensor([0, 2]),
+                "clean_inlier_pose_information": torch.stack(
+                    [torch.eye(6), torch.eye(6) * 2]
+                ),
+            }
+        ],
+    }
+    proposal, _ = selection_only_proposal(
+        state,
+        feedback,
+        maximum_anchors=2,
+        visibility_target=2,
+        detectability_target=3,
+        matching_target=4,
+        pose_logdet_target=5.0,
+        pose_min_eigenvalue_target=0.25,
+        training_query_indices=[1],
+    )
+
+    assert captured["layer_edges"]["visibility"] == [
+        {0: (5,)},
+        {0: (5,)},
+        {0: (7,)},
+    ]
+    assert captured["visibility_target"] == 2
+    assert captured["detectability_target"] == 3
+    assert captured["matching_target"] == 4
+    assert captured["pose_min_eigenvalue_target"] == 0.25
+    assert captured["query_count"] == 1
+    assert set(captured["pose_information"][0]) == {0}
+    assert set(captured["pose_information"][2]) == {0}
+    report = proposal["v6_selection_distillation"]
+    assert report["visibility_evidence_unit"] == "query_image_grid_cell"
+    assert report["pose_evidence_unit"] == "unique_anchor_per_query"
+    assert report["training_query_indices"].tolist() == [0, 1]
+    assert report["round_training_query_indices"].tolist() == [1]
+    assert report["training_query_registry_explicit"] is True
+    assert report["selection_round"] == 2
+
+
+def test_selection_rejects_duplicate_pose_rows_for_one_anchor() -> None:
+    state = {
+        "anchor_ids": torch.arange(1),
+        "anchor_matchability": torch.ones(1),
+    }
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "records": [
+            {
+                "visible_anchor_ids": torch.tensor([0]),
+                "visible_anchor_image_cells": torch.tensor([0]),
+                "detectable_pairs": torch.tensor([[0, 0]]),
+                "matching_pairs": torch.tensor([[0, 0]]),
+                "clean_inlier_pose_anchor_ids": torch.tensor([0, 0]),
+                "clean_inlier_pose_information": torch.stack(
+                    [torch.eye(6), torch.eye(6)]
+                ),
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="one row per unique Anchor"):
+        selection_only_proposal(
+            state,
+            feedback,
+            maximum_anchors=1,
+            visibility_target=1,
+            detectability_target=1,
+            matching_target=1,
+            pose_logdet_target=0.0,
         )
