@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from pathlib import Path
 from typing import Sequence
@@ -18,13 +17,13 @@ from common.v6_contracts import (
     require_mapping_only,
     validate_ordered_query_registry,
 )
-from common.v6_pipeline_contract import FEEDBACK_CALIBRATION_BINDING_SCHEMA
+from common.v6_pipeline_contract import (
+    FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+    validate_v6_feedback_scene_calibration,
+)
 
 
 _MAP_SCHEMA = "lafgs_materialized_anchor_map"
-_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
-
-
 def _is_sha256(value: object) -> bool:
     text = str(value).lower()
     return len(text) == 64 and all(
@@ -42,48 +41,6 @@ def _require_file_sha(path: Path, expected: str, *, label: str) -> str:
     if actual != str(expected).lower():
         raise ValueError(f"{label} SHA differs: expected {expected}, got {actual}")
     return actual
-
-
-def _validate_calibration(calibration: dict, *, query_count: int) -> None:
-    sources = calibration.get("sources")
-    if not isinstance(sources, dict):
-        raise ValueError("scene calibration source registry is missing")
-    uses_test_queries = calibration.get(
-        "uses_test_queries", sources.get("uses_test_queries")
-    )
-    if (
-        calibration.get("schema") != _CALIBRATION_SCHEMA
-        or uses_test_queries is not False
-        or sources.get("uses_source_mapping_rgb") is not False
-        or sources.get("mapping_source") != "gaussian_render"
-    ):
-        raise ValueError(
-            "scene calibration is not a Gaussian-render mapping-only contract"
-        )
-    parameters = calibration.get("parameters")
-    if not isinstance(parameters, dict):
-        raise ValueError("scene calibration parameter registry is missing")
-    ransac = parameters.get("ransac_reprojection_px")
-    if (
-        isinstance(ransac, bool)
-        or not isinstance(ransac, (int, float))
-        or not math.isfinite(float(ransac))
-        or float(ransac) <= 0.0
-    ):
-        raise ValueError("scene calibration has no valid RANSAC threshold")
-    statistics = calibration.get("statistics")
-    if not isinstance(statistics, dict):
-        raise ValueError("scene calibration statistics registry is missing")
-    calibrated_count = statistics.get("query_count")
-    if (
-        not isinstance(calibrated_count, int)
-        or isinstance(calibrated_count, bool)
-        or calibrated_count != int(query_count)
-    ):
-        raise ValueError(
-            "scene calibration and map query counts differ: "
-            f"{calibrated_count!r} != {int(query_count)!r}"
-        )
 
 
 def build_binding(args: argparse.Namespace) -> dict:
@@ -119,7 +76,7 @@ def build_binding(args: argparse.Namespace) -> dict:
     calibration = json.loads(calibration_path.read_text())
     if not isinstance(calibration, dict):
         raise ValueError("scene calibration is not a JSON object")
-    _validate_calibration(calibration, query_count=len(names))
+    validate_v6_feedback_scene_calibration(calibration, query_count=len(names))
     return {
         "schema": FEEDBACK_CALIBRATION_BINDING_SCHEMA,
         "version": 1,

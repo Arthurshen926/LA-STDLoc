@@ -36,6 +36,7 @@ FAILURE_LAYERS = ("L1", "L2", "L3", "L4")
 REQUIRED_PRODUCER_SOURCES = {
     "scripts/evaluate_v6_self_localization.py",
     "common/v6_contracts.py",
+    "common/v6_pipeline_contract.py",
     "evidence/observation_provider.py",
     "map_learning/v6_feedback_evaluator.py",
     "map_learning/self_localization_feedback.py",
@@ -96,8 +97,8 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     value = torch.load(path.resolve(), map_location="cpu", weights_only=False)
     if not isinstance(value, dict):
         raise ValueError(f"{label} is not a dictionary")
-    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 3:
-        raise ValueError(f"{label} is not a V6 identity-safe evaluation v3")
+    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 4:
+        raise ValueError(f"{label} is not a V6 identity-safe evaluation v4")
     if value.get("uses_source_mapping_rgb") is not False or value.get("uses_test_queries") is not False:
         raise ValueError(f"{label} is not mapping-only/test-free")
     feedback = value.get("feedback")
@@ -144,12 +145,33 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     cache_sha = outer_input.get("observation_cache")
     map_sha = outer_input.get("map")
     metric_sha = outer_input.get("metric")
-    if not all(_is_sha256(digest) for digest in (cache_sha, map_sha, metric_sha)):
-        raise ValueError(f"{label} map/metric/cache SHA registry is invalid")
+    scene_calibration_sha = outer_input.get("scene_calibration")
+    feedback_calibration_binding_sha = outer_input.get(
+        "feedback_calibration_binding"
+    )
+    if not all(
+        _is_sha256(digest)
+        for digest in (
+            cache_sha,
+            map_sha,
+            metric_sha,
+            scene_calibration_sha,
+            feedback_calibration_binding_sha,
+        )
+    ):
+        raise ValueError(
+            f"{label} map/metric/cache/calibration SHA registry is invalid"
+        )
     if feedback_input.get("query_cache") != cache_sha:
         raise ValueError(f"{label} outer/embedded observation cache differs")
     if feedback_input.get("map") != outer_input.get("map"):
         raise ValueError(f"{label} outer/embedded map SHA differs")
+    for field in ("scene_calibration", "feedback_calibration_binding"):
+        embedded_sha = feedback_input.get(field)
+        if not _is_sha256(embedded_sha):
+            raise ValueError(f"{label} embedded {field} SHA is invalid")
+        if embedded_sha != outer_input[field]:
+            raise ValueError(f"{label} outer/embedded {field} SHA differs")
     feedback_rank_fields = {
         "required_matching_rank": "required_matching_rank",
         "required_visibility_rank": "required_visibility_rank",
@@ -350,6 +372,10 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
         "map_sha256": str(map_sha),
         "metric_sha256": str(metric_sha),
         "cache_sha256": str(cache_sha),
+        "scene_calibration_sha256": str(scene_calibration_sha),
+        "feedback_calibration_binding_sha256": str(
+            feedback_calibration_binding_sha
+        ),
         "anchor_count": int(summary["anchor_count"]),
         "protocol": protocol,
         "producer_source_sha256": dict(source_sha256),
@@ -918,6 +944,18 @@ def compare_feedback_files(
         raise ValueError("baseline and candidate query registries differ")
     if baseline["cache_sha256"] != candidate["cache_sha256"]:
         raise ValueError("baseline and candidate observation caches differ")
+    if (
+        baseline["scene_calibration_sha256"]
+        != candidate["scene_calibration_sha256"]
+    ):
+        raise ValueError("baseline and candidate scene calibrations differ")
+    if (
+        baseline["feedback_calibration_binding_sha256"]
+        != candidate["feedback_calibration_binding_sha256"]
+    ):
+        raise ValueError(
+            "baseline and candidate feedback calibration bindings differ"
+        )
     if baseline["protocol"] != candidate["protocol"]:
         raise ValueError("baseline and candidate evaluation protocols differ")
     if baseline["producer_source_sha256"] != candidate["producer_source_sha256"]:
@@ -983,6 +1021,12 @@ def compare_feedback_files(
         "comparison_contract": {
             "paired_ordered_query_registry": True,
             "shared_observation_cache_sha256": baseline["cache_sha256"],
+            "shared_scene_calibration_sha256": baseline[
+                "scene_calibration_sha256"
+            ],
+            "shared_feedback_calibration_binding_sha256": baseline[
+                "feedback_calibration_binding_sha256"
+            ],
             "identity_safe_feedback_required": True,
             "independent_subset_source": (
                 "baseline_and_candidate.feedback.records."

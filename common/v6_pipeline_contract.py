@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 
 import torch
 
@@ -19,6 +20,92 @@ _MAP_SCHEMA = "lafgs_materialized_anchor_map"
 _OBSERVATION_CSR_SCHEMA = "lafgs_projective_anchor_observations"
 _MATERIALIZATION_REPORT_SCHEMA = "lafgs_v6_projective_map_materialization_report"
 FEEDBACK_CALIBRATION_BINDING_SCHEMA = "lafgs_v6_feedback_calibration_binding"
+FEEDBACK_SCENE_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
+
+
+def validate_v6_feedback_scene_calibration(
+    calibration: Mapping,
+    *,
+    query_count: int | None = None,
+) -> float:
+    """Validate the formal render-only calibration and return its RANSAC value."""
+
+    sources = calibration.get("sources")
+    if not isinstance(sources, Mapping):
+        raise ValueError("scene calibration source registry is missing")
+    uses_test_queries = calibration.get(
+        "uses_test_queries", sources.get("uses_test_queries")
+    )
+    if (
+        calibration.get("schema") != FEEDBACK_SCENE_CALIBRATION_SCHEMA
+        or uses_test_queries is not False
+        or sources.get("uses_source_mapping_rgb") is not False
+        or sources.get("mapping_source") != "gaussian_render"
+    ):
+        raise ValueError(
+            "scene calibration is not a Gaussian-render mapping-only contract"
+        )
+    parameters = calibration.get("parameters")
+    if not isinstance(parameters, Mapping):
+        raise ValueError("scene calibration parameter registry is missing")
+    value = parameters.get("ransac_reprojection_px")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+    ):
+        raise ValueError("scene calibration has no valid RANSAC threshold")
+    statistics = calibration.get("statistics")
+    if not isinstance(statistics, Mapping):
+        raise ValueError("scene calibration statistics registry is missing")
+    calibrated_count = statistics.get("query_count")
+    if (
+        not isinstance(calibrated_count, int)
+        or isinstance(calibrated_count, bool)
+        or calibrated_count <= 0
+    ):
+        raise ValueError("scene calibration mapping query count is invalid")
+    if query_count is not None and calibrated_count != int(query_count):
+        raise ValueError(
+            "scene calibration and mapping query counts differ: "
+            f"{calibrated_count!r} != {int(query_count)!r}"
+        )
+    return float(value)
+
+
+def validate_v6_feedback_calibration_binding(
+    binding: Mapping,
+    *,
+    map_sha256: str,
+    observation_cache_sha256: str,
+    calibration_sha256: str,
+    query_registry_sha256: str,
+    query_count: int,
+) -> None:
+    """Require an exact, closed calibration-to-feedback input attestation."""
+
+    expected = {
+        "schema": FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+        "version": 1,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "map_sha256": str(map_sha256),
+        "observation_cache_sha256": str(observation_cache_sha256),
+        "calibration_sha256": str(calibration_sha256),
+        "ordered_query_registry_sha256": str(query_registry_sha256),
+        "query_count": int(query_count),
+    }
+    if dict(binding) != expected:
+        differing = sorted(
+            key
+            for key in set(binding) | set(expected)
+            if binding.get(key) != expected.get(key)
+        )
+        raise ValueError(
+            "feedback calibration binding differs from validated pipeline at: "
+            + ", ".join(differing)
+        )
 
 
 def _require_true(value: bool, message: str) -> None:

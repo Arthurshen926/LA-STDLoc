@@ -64,6 +64,8 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         observations=observations,
         source_map_sha256="a" * 64,
         query_cache_sha256="b" * 64,
+        scene_calibration_sha256="c" * 64,
+        feedback_calibration_binding_sha256="d" * 64,
         device=torch.device("cpu"),
         positive_radius_px=1.0,
         alpha_minimum=0.05,
@@ -81,13 +83,19 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert all(
         record["pose_information_rank"] == 6 for record in result["feedback"]["records"]
     )
-    assert result["version"] == 3
+    assert result["version"] == 4
     assert result["feedback"]["version"] == FEEDBACK_VERSION
     assert result["feedback"]["identity_positive_count"] == 20
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
     assert result["contract"]["identity_supervision_unavailable_query_count"] == 0
     assert result["feedback"]["pose_information_anchor_unique"] is True
     assert result["feedback"]["descriptor_identity_supervision_available"] is True
+    assert result["feedback"]["input_sha256"] == {
+        "map": "a" * 64,
+        "query_cache": "b" * 64,
+        "scene_calibration": "c" * 64,
+        "feedback_calibration_binding": "d" * 64,
+    }
     for record in result["feedback"]["records"]:
         assert record["identity_positive_count"] == 4
         assert torch.equal(

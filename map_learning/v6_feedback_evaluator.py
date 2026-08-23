@@ -733,6 +733,8 @@ def evaluate_query_local_feedback(
     observations: ObservationProvider,
     source_map_sha256: str,
     query_cache_sha256: str,
+    scene_calibration_sha256: str,
+    feedback_calibration_binding_sha256: str,
     device: torch.device,
     positive_radius_px: float,
     alpha_minimum: float,
@@ -1246,6 +1248,10 @@ def evaluate_query_local_feedback(
         ),
         source_map_sha256=source_map_sha256,
         query_cache_sha256=query_cache_sha256,
+        scene_calibration_sha256=scene_calibration_sha256,
+        feedback_calibration_binding_sha256=(
+            feedback_calibration_binding_sha256
+        ),
         positive_identity_contract=positive_identity_contract,
         pose_logdet_target=float(pose_logdet_target),
         pose_min_eigenvalue_target=float(pose_min_eigenvalue_target),
@@ -1295,7 +1301,7 @@ def evaluate_query_local_feedback(
     descriptor_query_loo = not bool(descriptor_gradient_reused.any())
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 3,
+        "version": 4,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": query_rows,

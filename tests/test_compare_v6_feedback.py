@@ -17,6 +17,8 @@ from scripts.compare_v6_feedback import compare_feedback_files, run
 
 
 _CACHE_SHA = "c" * 64
+_SCENE_CALIBRATION_SHA = "e" * 64
+_FEEDBACK_CALIBRATION_BINDING_SHA = "f" * 64
 _MASK_FIELDS = (
     "top1_exact_identity_correct_mask",
     "top1_geometry_compatible_ambiguous_mask",
@@ -30,6 +32,7 @@ _SOURCES = {
         (
             "scripts/evaluate_v6_self_localization.py",
             "common/v6_contracts.py",
+            "common/v6_pipeline_contract.py",
             "evidence/observation_provider.py",
             "map_learning/v6_feedback_evaluator.py",
             "map_learning/self_localization_feedback.py",
@@ -40,7 +43,7 @@ _SOURCES = {
             "topology/layered_sufficiency.py",
             "topology/pose_information.py",
         ),
-        "123456789ab",
+        "123456789abc",
     )
 }
 
@@ -166,11 +169,16 @@ def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict
         "top1_geometry_compatible_ambiguous_count": class_totals[1],
         "top1_identity_projective_incompatible_count": class_totals[2],
         "top1_negative_count": class_totals[3],
-        "input_sha256": {"map": map_sha, "query_cache": _CACHE_SHA},
+        "input_sha256": {
+            "map": map_sha,
+            "query_cache": _CACHE_SHA,
+            "scene_calibration": _SCENE_CALIBRATION_SHA,
+            "feedback_calibration_binding": _FEEDBACK_CALIBRATION_BINDING_SHA,
+        },
     }
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 3,
+        "version": 4,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": queries,
@@ -187,6 +195,8 @@ def _evaluation(records: list[dict], *, map_sha: str, anchor_count: int) -> dict
             "map": map_sha,
             "metric": "d" * 64,
             "observation_cache": _CACHE_SHA,
+            "scene_calibration": _SCENE_CALIBRATION_SHA,
+            "feedback_calibration_binding": _FEEDBACK_CALIBRATION_BINDING_SHA,
         },
     }
 
@@ -355,6 +365,16 @@ def test_paired_diagnostics_use_stable_anchor_identity_and_cover_metrics(
 
     assert output.is_file()
     assert result["comparison_contract"]["cross_map_anchor_identity_verified"] is True
+    assert (
+        result["comparison_contract"]["shared_scene_calibration_sha256"]
+        == _SCENE_CALIBRATION_SHA
+    )
+    assert (
+        result["comparison_contract"][
+            "shared_feedback_calibration_binding_sha256"
+        ]
+        == _FEEDBACK_CALIBRATION_BINDING_SHA
+    )
     assert result["inputs"]["candidate_map"]["matched_parent_anchor_count"] == 2
     assert result["inputs"]["candidate_map"]["new_anchor_count"] == 2
     full = result["scopes"]["full"]
@@ -421,6 +441,8 @@ def test_rank_zero_transitions_and_missing_pose_fail_closed(tmp_path: Path) -> N
     ("mutation", "message"),
     (
         ("cache", "observation caches differ"),
+        ("scene_calibration", "scene calibrations differ"),
+        ("calibration_binding", "feedback calibration bindings differ"),
         ("protocol", "evaluation protocols differ"),
         ("source", "evaluator source registries differ"),
         ("registry", "ordered query registry differs"),
@@ -434,6 +456,14 @@ def test_pairing_rejects_mismatched_inputs(
     if mutation == "cache":
         candidate["input_sha256"]["observation_cache"] = "e" * 64
         candidate["feedback"]["input_sha256"]["query_cache"] = "e" * 64
+    elif mutation == "scene_calibration":
+        candidate["input_sha256"]["scene_calibration"] = "1" * 64
+        candidate["feedback"]["input_sha256"]["scene_calibration"] = "1" * 64
+    elif mutation == "calibration_binding":
+        candidate["input_sha256"]["feedback_calibration_binding"] = "2" * 64
+        candidate["feedback"]["input_sha256"][
+            "feedback_calibration_binding"
+        ] = "2" * 64
     elif mutation == "protocol":
         candidate["contract"]["positive_radius_px"] = 8.0
     elif mutation == "source":
@@ -444,6 +474,52 @@ def test_pairing_rejects_mismatched_inputs(
         candidate["feedback"]["query_names"][1] = "other"
     artifacts["candidate_feedback_sha"] = _save(candidate, artifacts["candidate_feedback"])
     with pytest.raises(ValueError, match=message):
+        compare_feedback_files(**_compare_kwargs(artifacts))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("scene_calibration", "feedback_calibration_binding"),
+)
+def test_evaluation_rejects_outer_embedded_calibration_sha_mismatch(
+    tmp_path: Path, field: str
+) -> None:
+    artifacts = _artifacts(tmp_path)
+    candidate = deepcopy(artifacts["candidate"])
+    candidate["feedback"]["input_sha256"][field] = "0" * 64
+    artifacts["candidate_feedback_sha"] = _save(
+        candidate, artifacts["candidate_feedback"]
+    )
+
+    with pytest.raises(ValueError, match=rf"outer/embedded {field} SHA differs"):
+        compare_feedback_files(**_compare_kwargs(artifacts))
+
+
+@pytest.mark.parametrize(
+    ("registry", "field"),
+    (
+        ("outer", "scene_calibration"),
+        ("outer", "feedback_calibration_binding"),
+        ("embedded", "scene_calibration"),
+        ("embedded", "feedback_calibration_binding"),
+    ),
+)
+def test_evaluation_requires_calibration_sha_registry(
+    tmp_path: Path, registry: str, field: str
+) -> None:
+    artifacts = _artifacts(tmp_path)
+    candidate = deepcopy(artifacts["candidate"])
+    target = (
+        candidate["input_sha256"]
+        if registry == "outer"
+        else candidate["feedback"]["input_sha256"]
+    )
+    target.pop(field)
+    artifacts["candidate_feedback_sha"] = _save(
+        candidate, artifacts["candidate_feedback"]
+    )
+
+    with pytest.raises(ValueError, match="calibration SHA|embedded .* SHA"):
         compare_feedback_files(**_compare_kwargs(artifacts))
 
 

@@ -44,6 +44,8 @@ def _write_feedback_summary(
     map_sha256: str,
     metric_sha256: str,
     cache_sha256: str,
+    calibration_sha256: str,
+    calibration_binding_sha256: str,
     contract_overrides: dict | None = None,
     cpu_threads: int = 4,
 ) -> tuple[Path, str]:
@@ -93,6 +95,8 @@ def _write_feedback_summary(
                 "map": map_sha256,
                 "metric": metric_sha256,
                 "observation_cache": cache_sha256,
+                "scene_calibration": calibration_sha256,
+                "feedback_calibration_binding": calibration_binding_sha256,
             },
         },
     )
@@ -242,6 +246,13 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                 map_sha256=_flag(command, "--expected-map-sha256"),
                 metric_sha256=_flag(command, "--expected-metric-sha256"),
                 cache_sha256=_flag(command, "--expected-observation-cache-sha256"),
+                calibration_sha256=_flag(
+                    command, "--expected-scene-calibration-sha256"
+                ),
+                calibration_binding_sha256=_flag(
+                    command,
+                    "--expected-feedback-calibration-binding-sha256",
+                ),
                 contract_overrides={
                     "positive_radius_px": float(
                         _flag(command, "--positive-radius-px")
@@ -460,6 +471,12 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
         )
     for command in evaluation_calls:
         assert _flag(command, "--loo-affected-anchor-policy") == "rebuild"
+        assert _flag(command, "--expected-scene-calibration-sha256") == (
+            hashes["calibration"]
+        )
+        assert _flag(
+            command, "--expected-feedback-calibration-binding-sha256"
+        ) == hashes["calibration_binding"]
         assert float(_flag(command, "--ransac-reprojection-px")) == (
             _CALIBRATED_RANSAC_PX
         )
@@ -505,6 +522,8 @@ def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypat
         map_sha256=hashes["map"],
         metric_sha256=hashes["metric"],
         cache_sha256=hashes["cache"],
+        calibration_sha256=hashes["calibration"],
+        calibration_binding_sha256=hashes["calibration_binding"],
     )
     args.baseline_feedback_summary = summary_path
     args.expected_baseline_feedback_summary_sha256 = summary_sha
@@ -526,6 +545,34 @@ def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypat
         Path(_flag(command, "--map")).name == "proposal_map.pt"
         for command in evaluation_calls
     )
+
+
+def test_precomputed_feedback_requires_self_contained_calibration_lineage(
+    tmp_path: Path,
+) -> None:
+    args, hashes = _arguments(tmp_path)
+    args.ransac_reprojection_px = _CALIBRATED_RANSAC_PX
+    summary_path, _ = _write_feedback_summary(
+        tmp_path / "legacy-precomputed",
+        map_sha256=hashes["map"],
+        metric_sha256=hashes["metric"],
+        cache_sha256=hashes["cache"],
+        calibration_sha256=hashes["calibration"],
+        calibration_binding_sha256=hashes["calibration_binding"],
+    )
+    summary = json.loads(summary_path.read_text())
+    summary["input_sha256"].pop("feedback_calibration_binding")
+    summary_sha = _write_json(summary_path, summary)
+
+    with pytest.raises(ValueError, match="input SHA registry differs"):
+        runner._validate_feedback_summary(
+            summary_path,
+            args=args,
+            expected_summary_sha256=summary_sha,
+            map_sha256=hashes["map"],
+            metric_sha256=hashes["metric"],
+            cache_sha256=hashes["cache"],
+        )
 
 
 def test_runner_rejects_ransac_override_that_differs_from_calibration(
@@ -674,6 +721,8 @@ def test_precomputed_feedback_protocol_must_match_current_runner(
         map_sha256=hashes["map"],
         metric_sha256=hashes["metric"],
         cache_sha256=hashes["cache"],
+        calibration_sha256=hashes["calibration"],
+        calibration_binding_sha256=hashes["calibration_binding"],
         contract_overrides={field: bad_value},
     )
 

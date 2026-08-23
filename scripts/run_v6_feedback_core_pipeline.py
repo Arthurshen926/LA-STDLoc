@@ -31,7 +31,8 @@ from common.v6_contracts import (
     require_schema,
 )
 from common.v6_pipeline_contract import (
-    FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+    validate_v6_feedback_calibration_binding,
+    validate_v6_feedback_scene_calibration,
     validate_v6_pipeline_inputs,
 )
 from topology.v6_anchor_map import validate_v6_identity_metric
@@ -39,7 +40,6 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 
 RUN_SCHEMA = "lafgs_v6_feedback_core_independent_arms_run"
 RUN_VERSION = 1
-SCENE_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
 ARM_CHOICES = ("descriptor_loss", "selection", "reconstruction")
 _SOURCE_PATHS = (
     "scripts/run_v6_feedback_core_pipeline.py",
@@ -111,33 +111,7 @@ def _load_scene_calibration(
         expected,
         label="mapping-only scene calibration",
     )
-    sources = calibration.get("sources")
-    if not isinstance(sources, Mapping):
-        raise ValueError("scene calibration source registry is missing")
-    uses_test_queries = calibration.get(
-        "uses_test_queries", sources.get("uses_test_queries")
-    )
-    if (
-        calibration.get("schema") != SCENE_CALIBRATION_SCHEMA
-        or uses_test_queries is not False
-        or sources.get("uses_source_mapping_rgb") is not False
-        or sources.get("mapping_source") != "gaussian_render"
-    ):
-        raise ValueError(
-            "scene calibration is not a Gaussian-render mapping-only contract"
-        )
-    parameters = calibration.get("parameters")
-    if not isinstance(parameters, Mapping):
-        raise ValueError("scene calibration parameter registry is missing")
-    calibrated_value = parameters.get("ransac_reprojection_px")
-    if (
-        isinstance(calibrated_value, bool)
-        or not isinstance(calibrated_value, (int, float))
-        or not math.isfinite(float(calibrated_value))
-        or float(calibrated_value) <= 0.0
-    ):
-        raise ValueError("scene calibration has no valid RANSAC threshold")
-    resolved = float(calibrated_value)
+    resolved = validate_v6_feedback_scene_calibration(calibration)
     if requested_ransac_reprojection_px is not None:
         requested = float(requested_ransac_reprojection_px)
         if not math.isfinite(requested) or requested != resolved:
@@ -146,39 +120,6 @@ def _load_scene_calibration(
                 f"{requested!r} != {resolved!r}"
             )
     return calibration, artifact, resolved
-
-
-def _validate_feedback_calibration_binding(
-    binding: dict,
-    *,
-    map_sha256: str,
-    observation_cache_sha256: str,
-    calibration_sha256: str,
-    pipeline_contract: Mapping,
-) -> None:
-    expected = {
-        "schema": FEEDBACK_CALIBRATION_BINDING_SCHEMA,
-        "version": 1,
-        "uses_source_mapping_rgb": False,
-        "uses_test_queries": False,
-        "map_sha256": map_sha256,
-        "observation_cache_sha256": observation_cache_sha256,
-        "calibration_sha256": calibration_sha256,
-        "ordered_query_registry_sha256": pipeline_contract.get(
-            "ordered_query_registry_sha256"
-        ),
-        "query_count": pipeline_contract.get("mapping_query_count"),
-    }
-    if binding != expected:
-        differing = sorted(
-            key
-            for key in set(binding) | set(expected)
-            if binding.get(key) != expected.get(key)
-        )
-        raise ValueError(
-            "feedback calibration binding differs from validated pipeline at: "
-            + ", ".join(differing)
-        )
 
 
 def _producer(root: Path) -> dict:
@@ -256,6 +197,14 @@ def _evaluation_command(
         str(args.observation_cache.resolve()),
         "--expected-observation-cache-sha256",
         args.expected_observation_cache_sha256,
+        "--scene-calibration",
+        str(args.scene_calibration.resolve()),
+        "--expected-scene-calibration-sha256",
+        args.expected_scene_calibration_sha256,
+        "--feedback-calibration-binding",
+        str(args.feedback_calibration_binding.resolve()),
+        "--expected-feedback-calibration-binding-sha256",
+        args.expected_feedback_calibration_binding_sha256,
         "--output-dir",
         str(output_dir.resolve()),
         "--device",
@@ -452,6 +401,10 @@ def _validate_feedback_summary(
         "map": map_sha256,
         "metric": metric_sha256,
         "observation_cache": cache_sha256,
+        "scene_calibration": args.expected_scene_calibration_sha256,
+        "feedback_calibration_binding": (
+            args.expected_feedback_calibration_binding_sha256
+        ),
     }
     if summary.get("input_sha256") != expected_inputs:
         raise ValueError("feedback summary input SHA registry differs")
@@ -879,12 +832,15 @@ def run(
             "scene calibration and observation query counts differ: "
             f"{calibrated_query_count!r} != {observation_query_count!r}"
         )
-    _validate_feedback_calibration_binding(
+    validate_v6_feedback_calibration_binding(
         calibration_binding,
         map_sha256=map_artifact["sha256"],
         observation_cache_sha256=cache_artifact["sha256"],
         calibration_sha256=calibration_artifact["sha256"],
-        pipeline_contract=pipeline_contract,
+        query_registry_sha256=str(
+            pipeline_contract["ordered_query_registry_sha256"]
+        ),
+        query_count=int(pipeline_contract["mapping_query_count"]),
     )
     validate_v6_identity_metric(
         metric,

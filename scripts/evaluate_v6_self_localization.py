@@ -15,7 +15,12 @@ from common.hashing import sha256_file
 from common.v6_contracts import (
     FEEDBACK_VERSION,
     RENDER_OBSERVATION_SCHEMA,
+    ordered_query_registry_sha256,
     require_schema,
+)
+from common.v6_pipeline_contract import (
+    validate_v6_feedback_calibration_binding,
+    validate_v6_feedback_scene_calibration,
 )
 from evidence.observation_provider import GaussianRenderObservationProvider
 from map_learning.v6_feedback_evaluator import evaluate_query_local_feedback
@@ -25,6 +30,7 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 _SOURCE_PATHS = (
     "scripts/evaluate_v6_self_localization.py",
     "common/v6_contracts.py",
+    "common/v6_pipeline_contract.py",
     "evidence/observation_provider.py",
     "map_learning/v6_feedback_evaluator.py",
     "map_learning/self_localization_feedback.py",
@@ -81,6 +87,8 @@ def run(args: argparse.Namespace) -> dict:
         "map": args.map.resolve(),
         "metric": args.metric.resolve(),
         "observation_cache": args.observation_cache.resolve(),
+        "scene_calibration": args.scene_calibration.resolve(),
+        "feedback_calibration_binding": args.feedback_calibration_binding.resolve(),
     }
     hashes = {
         "map": _require(paths["map"], args.expected_map_sha256, "map"),
@@ -89,6 +97,16 @@ def run(args: argparse.Namespace) -> dict:
             paths["observation_cache"],
             args.expected_observation_cache_sha256,
             "observation cache",
+        ),
+        "scene_calibration": _require(
+            paths["scene_calibration"],
+            args.expected_scene_calibration_sha256,
+            "scene calibration",
+        ),
+        "feedback_calibration_binding": _require(
+            paths["feedback_calibration_binding"],
+            args.expected_feedback_calibration_binding_sha256,
+            "feedback calibration binding",
         ),
     }
     if args.output_dir.exists():
@@ -99,19 +117,53 @@ def run(args: argparse.Namespace) -> dict:
     cache = torch.load(
         paths["observation_cache"], map_location="cpu", weights_only=False
     )
+    calibration = json.loads(paths["scene_calibration"].read_text())
+    calibration_binding = json.loads(
+        paths["feedback_calibration_binding"].read_text()
+    )
+    if not isinstance(calibration, dict):
+        raise ValueError("scene calibration is not a JSON object")
+    if not isinstance(calibration_binding, dict):
+        raise ValueError("feedback calibration binding is not a JSON object")
     require_schema(cache, RENDER_OBSERVATION_SCHEMA, label="V6 observations")
+    cache_names = list(cache.get("query_names", cache.get("queries", {})))
+    query_registry_sha256 = ordered_query_registry_sha256(cache_names)
+    if list(state.get("v6_mapping_query_names", ())) != cache_names:
+        raise ValueError("V6 map and observation query registries differ")
+    calibrated_ransac_reprojection_px = validate_v6_feedback_scene_calibration(
+        calibration,
+        query_count=len(cache_names),
+    )
+    if float(args.ransac_reprojection_px) != calibrated_ransac_reprojection_px:
+        raise ValueError(
+            "RANSAC threshold differs from scene calibration: "
+            f"{float(args.ransac_reprojection_px)!r} != "
+            f"{calibrated_ransac_reprojection_px!r}"
+        )
+    validate_v6_feedback_calibration_binding(
+        calibration_binding,
+        map_sha256=hashes["map"],
+        observation_cache_sha256=hashes["observation_cache"],
+        calibration_sha256=hashes["scene_calibration"],
+        query_registry_sha256=query_registry_sha256,
+        query_count=len(cache_names),
+    )
     validate_v6_identity_metric(
         metric,
         state=state,
         map_path=str(paths["map"]),
         map_sha256=hashes["map"],
     )
-    observations = GaussianRenderObservationProvider(cache)
+    observations = GaussianRenderObservationProvider(cache, query_names=cache_names)
     result = evaluate_query_local_feedback(
         state=state,
         observations=observations,
         source_map_sha256=hashes["map"],
         query_cache_sha256=hashes["observation_cache"],
+        scene_calibration_sha256=hashes["scene_calibration"],
+        feedback_calibration_binding_sha256=hashes[
+            "feedback_calibration_binding"
+        ],
         device=torch.device(args.device),
         positive_radius_px=args.positive_radius_px,
         alpha_minimum=args.alpha_minimum,
@@ -186,6 +238,12 @@ def main() -> None:
     parser.add_argument("--expected-metric-sha256", required=True)
     parser.add_argument("--observation-cache", type=Path, required=True)
     parser.add_argument("--expected-observation-cache-sha256", required=True)
+    parser.add_argument("--scene-calibration", type=Path, required=True)
+    parser.add_argument("--expected-scene-calibration-sha256", required=True)
+    parser.add_argument("--feedback-calibration-binding", type=Path, required=True)
+    parser.add_argument(
+        "--expected-feedback-calibration-binding-sha256", required=True
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=1)
@@ -201,7 +259,7 @@ def main() -> None:
         default="rebuild",
         help="rebuild is required for descriptor identity supervision; purge is diagnostic-only",
     )
-    parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
+    parser.add_argument("--ransac-reprojection-px", type=float, required=True)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
     parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=2026)

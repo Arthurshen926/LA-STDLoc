@@ -70,6 +70,8 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
         required_rank=1,
         source_map_sha256="a" * 64,
         query_cache_sha256="b" * 64,
+        scene_calibration_sha256="c" * 64,
+        feedback_calibration_binding_sha256="d" * 64,
         positive_identity_contract=exact_identity_positive_contract(),
         records=[
             {
@@ -149,6 +151,12 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
     assert result["records"][0]["pose_information_min_eigenvalue"] == 1.0
     assert result["pose_logdet_target"] == 0.0
     assert result["pose_min_eigenvalue_target"] == 0.0
+    assert result["input_sha256"] == {
+        "map": "a" * 64,
+        "query_cache": "b" * 64,
+        "scene_calibration": "c" * 64,
+        "feedback_calibration_binding": "d" * 64,
+    }
     assert result["visibility_evidence_contract"] == {
         "edge_identity": "query_image_grid_cell",
         "grid_shape": [4, 4],
@@ -163,6 +171,8 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
             required_rank=1,
             source_map_sha256="a" * 64,
             query_cache_sha256="b" * 64,
+            scene_calibration_sha256="c" * 64,
+            feedback_calibration_binding_sha256="d" * 64,
             positive_identity_contract=exact_identity_positive_contract(),
             records=[missing_policy],
         )
@@ -177,6 +187,8 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
             required_rank=1,
             source_map_sha256="a" * 64,
             query_cache_sha256="b" * 64,
+            scene_calibration_sha256="c" * 64,
+            feedback_calibration_binding_sha256="d" * 64,
             positive_identity_contract=exact_identity_positive_contract(),
             records=[wrong_pose_label],
         )
@@ -193,6 +205,8 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
             required_rank=1,
             source_map_sha256="a" * 64,
             query_cache_sha256="b" * 64,
+            scene_calibration_sha256="c" * 64,
+            feedback_calibration_binding_sha256="d" * 64,
             positive_identity_contract=exact_identity_positive_contract(),
             records=[purge_record],
         )
@@ -210,6 +224,8 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
         required_rank=1,
         source_map_sha256="a" * 64,
         query_cache_sha256="b" * 64,
+        scene_calibration_sha256="c" * 64,
+        feedback_calibration_binding_sha256="d" * 64,
         positive_identity_contract=exact_identity_positive_contract(),
         records=[purge_record],
     )

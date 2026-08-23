@@ -83,6 +83,8 @@ def build_self_localization_feedback(
     required_rank: int,
     source_map_sha256: str,
     query_cache_sha256: str,
+    scene_calibration_sha256: str,
+    feedback_calibration_binding_sha256: str,
     positive_identity_contract: dict,
     required_visibility_rank: int | None = None,
     required_detectable_rank: int | None = None,
@@ -656,6 +658,10 @@ def build_self_localization_feedback(
         "input_sha256": {
             "map": str(source_map_sha256),
             "query_cache": str(query_cache_sha256),
+            "scene_calibration": str(scene_calibration_sha256),
+            "feedback_calibration_binding": str(
+                feedback_calibration_binding_sha256
+            ),
         },
         "deployment_protocol": (
             "query_local_affected_anchor_"

@@ -132,7 +132,9 @@ def test_binding_rejects_calibration_query_count_mismatch(tmp_path: Path):
         query_count=3,
     )
 
-    with pytest.raises(ValueError, match="calibration and map query counts differ"):
+    with pytest.raises(
+        ValueError, match="calibration and mapping query counts differ"
+    ):
         binder.build_binding(arguments)
 
 
