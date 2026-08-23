@@ -50,18 +50,52 @@ class LeaveOneQueryOutProjectiveMap:
         self.maximum_reprojection_px = float(maximum_reprojection_px)
         self.descriptor_trim_fraction = float(descriptor_trim_fraction)
         self.views = [observations.build_view(index) for index in range(len(observations))]
+        view_counts = torch.tensor(
+            [view.keypoints.shape[0] for view in self.views], dtype=torch.long
+        )
+        self.packed_offsets = torch.cat(
+            (view_counts.new_zeros(1), view_counts.cumsum(0))
+        )
+        self.packed_uv = torch.cat(
+            [view.physical_keypoints for view in self.views]
+        )
+        self.packed_detector = torch.cat(
+            [view.detector_scores.float() for view in self.views]
+        )
+        self.packed_descriptor = torch.cat(
+            [view.descriptors.float() for view in self.views]
+        )
+        self.camera_K = torch.stack(
+            [view.intrinsics.float() for view in self.views]
+        )
+        self.pose_w2c = torch.stack(
+            [view.pose_w2c.float() for view in self.views]
+        )
         anchor_for_observation = torch.repeat_interleave(
             torch.arange(count, dtype=torch.long), offsets[1:] - offsets[:-1]
         )
         self.anchor_for_observation = anchor_for_observation
+        if query.numel() and (
+            int(query.min()) < 0 or int(query.max()) >= len(self.views)
+        ):
+            raise ValueError("V6 observation query index is out of range")
+        query_counts = torch.bincount(query, minlength=len(self.views))
+        self.query_observation_offsets = torch.cat(
+            (query_counts.new_zeros(1), query_counts.cumsum(0))
+        )
+        self.query_observation_order = torch.argsort(query, stable=True)
 
     @torch.no_grad()
     def query_update(self, excluded_query: int) -> dict:
         excluded_query = int(excluded_query)
         if excluded_query < 0 or excluded_query >= len(self.observations):
             raise IndexError(excluded_query)
-        removed = self.query == excluded_query
-        affected = torch.unique(self.anchor_for_observation[removed], sorted=True)
+        query_start = int(self.query_observation_offsets[excluded_query])
+        query_stop = int(self.query_observation_offsets[excluded_query + 1])
+        removed_positions = self.query_observation_order[query_start:query_stop]
+        affected = torch.unique(
+            self.anchor_for_observation[removed_positions], sorted=True
+        )
         if affected.numel() == 0:
             return {
                 "anchor_rows": affected,
@@ -71,33 +105,32 @@ class LeaveOneQueryOutProjectiveMap:
                     (0, int(torch.as_tensor(self.state["anchor_features"]).shape[1]))
                 ),
             }
-        lookup = torch.full(
-            (int(torch.as_tensor(self.state["anchor_ids"]).numel()),),
-            -1,
-            dtype=torch.long,
+        lengths = self.offsets[affected + 1] - self.offsets[affected]
+        local_anchor = torch.repeat_interleave(
+            torch.arange(affected.numel(), dtype=torch.long), lengths
         )
-        lookup[affected] = torch.arange(affected.numel())
-        keep = (~removed) & (lookup[self.anchor_for_observation] >= 0)
-        query = self.query[keep]
-        keypoint = self.keypoint[keep]
-        local_anchor = lookup[self.anchor_for_observation[keep]]
-        counts = torch.tensor(
-            [view.keypoints.shape[0] for view in self.views], dtype=torch.long
+        group_offsets = torch.cat((lengths.new_zeros(1), lengths.cumsum(0)))
+        starts = torch.repeat_interleave(self.offsets[affected], lengths)
+        within = torch.arange(int(lengths.sum()), dtype=torch.long) - (
+            torch.repeat_interleave(group_offsets[:-1], lengths)
         )
-        packed_offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
-        packed_uv = torch.cat([view.physical_keypoints for view in self.views])
-        uv = packed_uv[packed_offsets[query] + keypoint]
-        detector = torch.cat(
-            [view.detector_scores.float() for view in self.views]
-        )[packed_offsets[query] + keypoint]
+        positions = starts + within
+        keep = self.query[positions] != excluded_query
+        positions = positions[keep]
+        local_anchor = local_anchor[keep]
+        query = self.query[positions]
+        keypoint = self.keypoint[positions]
+        packed_rows = self.packed_offsets[query] + keypoint
+        uv = self.packed_uv[packed_rows]
+        detector = self.packed_detector[packed_rows]
         geometry = robust_triangulate_associations(
             landmark_count=int(affected.numel()),
             landmark_index=local_anchor,
             query_index=query,
             uv=uv,
             confidence=detector.clamp_min(1e-6),
-            camera_K=torch.stack([view.intrinsics.float() for view in self.views]),
-            pose_w2c=torch.stack([view.pose_w2c.float() for view in self.views]),
+            camera_K=self.camera_K,
+            pose_w2c=self.pose_w2c,
             query_bin=self.query_bins,
             rendered_depth=None,
             maximum_observations_per_landmark=32,
@@ -116,10 +149,19 @@ class LeaveOneQueryOutProjectiveMap:
         )
         valid = torch.as_tensor(geometry["triangulated"]).bool()
         output_features = torch.as_tensor(self.state["anchor_features"])[affected].clone()
-        packed_descriptor = torch.cat([view.descriptors.float() for view in self.views])
-        selected_descriptor = packed_descriptor[packed_offsets[query] + keypoint]
+        selected_descriptor = self.packed_descriptor[packed_rows]
+        selected_counts = torch.bincount(
+            local_anchor, minlength=int(affected.numel())
+        )
+        selected_offsets = torch.cat(
+            (selected_counts.new_zeros(1), selected_counts.cumsum(0))
+        )
         for local in torch.nonzero(valid, as_tuple=False).reshape(-1).tolist():
-            rows = torch.nonzero(local_anchor == local, as_tuple=False).reshape(-1)
+            rows = torch.arange(
+                int(selected_offsets[local]),
+                int(selected_offsets[local + 1]),
+                dtype=torch.long,
+            )
             output_features[local] = fuse_projective_anchor_observations(
                 selected_descriptor[rows],
                 self.query_bins[query[rows]],
