@@ -44,6 +44,8 @@ def _evaluate(
             "--positive-radius-px", str(args.positive_radius_px),
             "--alpha-minimum", str(args.alpha_minimum),
             "--required-rank", str(args.required_rank),
+            "--required-visibility-rank", str(args.required_visibility_rank),
+            "--required-detectable-rank", str(args.required_detectable_rank),
             "--loo-pose-neighbors", str(args.loo_pose_neighbors),
             "--ransac-reprojection-px", str(args.ransac_reprojection_px),
             "--seed", str(args.seed),
@@ -293,6 +295,8 @@ def main() -> None:
     parser.add_argument("--positive-radius-px", type=float, default=2.0)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--required-rank", type=int, default=16)
+    parser.add_argument("--required-visibility-rank", type=int, default=4)
+    parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--descriptor-rounds", type=int, default=1)

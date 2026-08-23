@@ -273,6 +273,8 @@ def evaluate_query_local_feedback(
     ransac_reprojection_px: float,
     seed: int,
     loo_pose_neighbors: int = 1,
+    required_visibility_rank: int = 4,
+    required_detectable_rank: int | None = None,
 ) -> dict:
     """One global Top-1 and one standard PoseLib solve per mapping query."""
 
@@ -492,6 +494,12 @@ def evaluate_query_local_feedback(
         query_names=list(observations.names),
         records=feedback_records,
         required_rank=int(required_rank),
+        required_visibility_rank=int(required_visibility_rank),
+        required_detectable_rank=(
+            int(required_rank)
+            if required_detectable_rank is None
+            else int(required_detectable_rank)
+        ),
         source_map_sha256=source_map_sha256,
         query_cache_sha256=query_cache_sha256,
     )

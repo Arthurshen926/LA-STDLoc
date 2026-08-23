@@ -105,6 +105,8 @@ def run(args: argparse.Namespace) -> dict:
         ransac_reprojection_px=args.ransac_reprojection_px,
         seed=args.seed,
         loo_pose_neighbors=args.loo_pose_neighbors,
+        required_visibility_rank=args.required_visibility_rank,
+        required_detectable_rank=args.required_detectable_rank,
     )
     result["producer"] = producer
     result["input_sha256"] = hashes
@@ -149,6 +151,8 @@ def main() -> None:
     parser.add_argument("--positive-radius-px", type=float, default=2.0)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--required-rank", type=int, default=16)
+    parser.add_argument("--required-visibility-rank", type=int, default=4)
+    parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)

@@ -20,13 +20,25 @@ def active_failure_layers(
     required_rank: int,
     pose_information_sufficient: bool,
     pose_success: bool,
+    required_visibility_rank: int | None = None,
+    required_detectable_rank: int | None = None,
 ) -> tuple[str, ...]:
     """Return all active deficits while retaining hierarchical diagnostics."""
 
     layers = []
-    if int(visible_rank) < int(required_rank):
+    visibility_target = (
+        int(required_rank)
+        if required_visibility_rank is None
+        else int(required_visibility_rank)
+    )
+    detectable_target = (
+        int(required_rank)
+        if required_detectable_rank is None
+        else int(required_detectable_rank)
+    )
+    if int(visible_rank) < visibility_target:
         layers.append("L1")
-    if int(detectable_rank) < int(required_rank):
+    if int(detectable_rank) < detectable_target:
         layers.append("L2")
     if int(matching_rank) < int(required_rank):
         layers.append("L3")
@@ -62,6 +74,8 @@ def build_self_localization_feedback(
     required_rank: int,
     source_map_sha256: str,
     query_cache_sha256: str,
+    required_visibility_rank: int | None = None,
+    required_detectable_rank: int | None = None,
 ) -> dict:
     names = validate_ordered_query_registry(query_names)
     if len(records) != len(names):
@@ -79,6 +93,8 @@ def build_self_localization_feedback(
             required_rank=int(required_rank),
             pose_information_sufficient=bool(source["pose_information_sufficient"]),
             pose_success=bool(source["pose_success"]),
+            required_visibility_rank=required_visibility_rank,
+            required_detectable_rank=required_detectable_rank,
         )
         layer = layers[0] if layers else None
         for active in layers:
@@ -86,6 +102,18 @@ def build_self_localization_feedback(
         if not layers:
             success_count += 1
         required = max(int(required_rank), 1)
+        visibility_required = max(
+            required
+            if required_visibility_rank is None
+            else int(required_visibility_rank),
+            1,
+        )
+        detectable_required = max(
+            required
+            if required_detectable_rank is None
+            else int(required_detectable_rank),
+            1,
+        )
         normalized.append(
             {
                 "query_index": query_index,
@@ -93,8 +121,14 @@ def build_self_localization_feedback(
                 "failure_layer": layer,
                 "failure_layers": list(layers),
                 "deficits": {
-                    "visibility": max(required - int(source["visible_rank"]), 0) / required,
-                    "detectability": max(required - int(source["detectable_rank"]), 0) / required,
+                    "visibility": max(
+                        visibility_required - int(source["visible_rank"]), 0
+                    )
+                    / visibility_required,
+                    "detectability": max(
+                        detectable_required - int(source["detectable_rank"]), 0
+                    )
+                    / detectable_required,
                     "matching": max(required - int(source["matching_rank"]), 0) / required,
                     "pose": float(
                         not bool(source["pose_information_sufficient"])
@@ -185,6 +219,16 @@ def build_self_localization_feedback(
         "uses_test_queries": False,
         "query_names": list(names),
         "required_matching_rank": int(required_rank),
+        "required_visibility_rank": int(
+            required_rank
+            if required_visibility_rank is None
+            else required_visibility_rank
+        ),
+        "required_detectable_rank": int(
+            required_rank
+            if required_detectable_rank is None
+            else required_detectable_rank
+        ),
         "records": normalized,
         "failure_layer_counts": counts,
         "success_count": success_count,
