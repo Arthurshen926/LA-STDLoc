@@ -124,4 +124,6 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
     assert result["records"][0]["legal_positive_exists"] is True
     assert result["records"][0]["te_cm"] == 1.0
     assert result["identity_positive_count"] == 1
+    assert result["identity_supervision_unavailable_query_count"] == 0
+    assert result["records"][0]["identity_supervision_available"] is True
     assert result["pose_information_anchor_unique"] is True

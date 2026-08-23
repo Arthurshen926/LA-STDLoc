@@ -308,6 +308,7 @@ def build_self_localization_feedback(
                 "identity_positive_count": identity_positive_count,
                 "identity_active_count": identity_active_count,
                 "identity_lineage_count": identity_lineage_count,
+                "identity_supervision_available": identity_lineage_count > 0,
                 "identity_inactive_count": int(
                     source.get("identity_inactive_count", 0)
                 ),
@@ -418,6 +419,9 @@ def build_self_localization_feedback(
         "success_count": success_count,
         "identity_lineage_count": sum(
             record["identity_lineage_count"] for record in normalized
+        ),
+        "identity_supervision_unavailable_query_count": sum(
+            int(not record["identity_supervision_available"]) for record in normalized
         ),
         "identity_positive_count": sum(
             record["identity_positive_count"] for record in normalized

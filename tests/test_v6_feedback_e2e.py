@@ -84,6 +84,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert result["feedback"]["version"] == 3
     assert result["feedback"]["identity_positive_count"] == 20
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
+    assert result["contract"]["identity_supervision_unavailable_query_count"] == 0
     assert result["feedback"]["pose_information_anchor_unique"] is True
     for record in result["feedback"]["records"]:
         assert record["identity_positive_count"] == 4

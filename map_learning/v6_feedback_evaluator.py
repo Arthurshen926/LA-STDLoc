@@ -1153,6 +1153,9 @@ def evaluate_query_local_feedback(
             "affected_anchor_policy": loo_affected_anchor_policy,
             "positive_radius_px": float(positive_radius_px),
             "positive_identity": positive_identity_contract,
+            "identity_supervision_unavailable_query_count": int(
+                feedback["identity_supervision_unavailable_query_count"]
+            ),
             "positive_radius_role": "projective_compatibility_and_ambiguity_ignore",
             "descriptor_strong_positives_are_exact_identity_only": True,
             "geometry_compatible_nonidentity_is_ignored": True,
