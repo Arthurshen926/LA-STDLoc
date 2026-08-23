@@ -181,6 +181,9 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     assert 0.0 <= report["residual_cap_hit_fraction"] <= 1.0
     assert report["final_objective"] >= report["final_ranking_loss"]
     assert report["final_objective"] <= report["initial_objective"] + 1e-8
+    assert report["effective_coordinate_learning_rate"] == pytest.approx(
+        0.1 / 2**0.5
+    )
 
 
 def test_compact_deployment_export_removes_dense_training_state() -> None:

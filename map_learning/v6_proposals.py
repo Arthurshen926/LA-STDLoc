@@ -234,7 +234,15 @@ def descriptor_loss_proposal(
     train_device = torch.device(device)
     base_active = observation_features[active].to(train_device)
     residual = torch.nn.Parameter(initial_residual[active].to(train_device))
-    optimizer = torch.optim.Adam([residual], lr=float(learning_rate))
+    # Adam's nominal learning rate is applied per coordinate.  Without this
+    # normalization, a 256-D descriptor receives a first vector step about
+    # sqrt(256) times larger than the requested trust-scale step.
+    effective_coordinate_learning_rate = float(learning_rate) / float(
+        features.shape[1]
+    ) ** 0.5
+    optimizer = torch.optim.Adam(
+        [residual], lr=effective_coordinate_learning_rate
+    )
     generator = torch.Generator().manual_seed(2026)
 
     def raw_tangent(value: torch.Tensor) -> torch.Tensor:
@@ -393,6 +401,8 @@ def descriptor_loss_proposal(
         "clean_weight": float(clean_weight),
         "trust_weight": float(trust_weight),
         "learning_rate": float(learning_rate),
+        "effective_coordinate_learning_rate": effective_coordinate_learning_rate,
+        "learning_rate_is_descriptor_vector_scale": True,
         "epochs": int(epochs),
         "batch_size": int(batch_size),
         "maximum_triplets_per_query": int(maximum_triplets_per_query),
