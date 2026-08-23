@@ -48,8 +48,19 @@ def _component_statistics(
     mean_confidence /= count
     descriptor_consistency = torch.zeros(track_count)
     distinct_families = torch.zeros(track_count, dtype=torch.long)
+    # Materialize the stable per-Track row order once.  Recomputing
+    # ``nonzero(track_index == track)`` for every Track is O(T * O) and
+    # dominates full-scene runs; stable sorting preserves the exact original
+    # observation order used by the historical per-Track reductions.
+    ordered_rows = torch.argsort(track_index, stable=True)
+    track_offsets = torch.cat(
+        (
+            torch.zeros(1, dtype=torch.long),
+            torch.bincount(track_index, minlength=track_count).cumsum(0),
+        )
+    )
     for track in range(track_count):
-        rows = torch.nonzero(track_index == track, as_tuple=False).reshape(-1)
+        rows = ordered_rows[track_offsets[track] : track_offsets[track + 1]]
         prototype = F.normalize(observation_descriptor[rows].mean(0), dim=0)
         descriptor_consistency[track] = (
             observation_descriptor[rows] @ prototype

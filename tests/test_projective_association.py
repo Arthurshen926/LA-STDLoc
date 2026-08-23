@@ -45,3 +45,40 @@ def test_identity_reliability_is_continuous_not_a_track_type() -> None:
     )
     assert 0.0 < float(stats["identity_reliability"][0]) <= 1.0
     assert stats["distinct_camera_family_count"].tolist() == [3]
+
+
+def test_component_statistics_preserve_stable_observation_order() -> None:
+    tracks = {
+        "track_index": torch.tensor([1, 0, 1, 0, 1, 0]),
+        "query_index": torch.tensor([0, 0, 1, 1, 2, 2]),
+        "keypoint_index": torch.tensor([0, 1, 0, 1, 0, 1]),
+        "confidence": torch.tensor([0.3, 0.4, 0.5, 0.6, 0.7, 0.8]),
+        "track_level": torch.tensor([1, 2]),
+    }
+    descriptors = [
+        torch.tensor([[1.0, 0.0], [0.8, 0.2]]),
+        torch.tensor([[0.9, 0.1], [0.7, 0.3]]),
+        torch.tensor([[0.6, 0.4], [0.5, 0.5]]),
+    ]
+    stats = _component_statistics(
+        tracks, descriptors, torch.tensor([0, 1, 1]), 2
+    )
+
+    normalized = [torch.nn.functional.normalize(value, dim=1) for value in descriptors]
+    observations = torch.stack(
+        [
+            normalized[int(query)][int(keypoint)]
+            for query, keypoint in zip(
+                tracks["query_index"], tracks["keypoint_index"]
+            )
+        ]
+    )
+    expected = []
+    for track in range(2):
+        rows = torch.nonzero(tracks["track_index"] == track).reshape(-1)
+        prototype = torch.nn.functional.normalize(
+            observations[rows].mean(0), dim=0
+        )
+        expected.append((observations[rows] @ prototype).mean().clamp(0, 1))
+    assert torch.equal(stats["descriptor_consistency"], torch.stack(expected))
+    assert stats["distinct_camera_family_count"].tolist() == [2, 2]
