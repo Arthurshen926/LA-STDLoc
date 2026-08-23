@@ -121,11 +121,35 @@ def run(args: argparse.Namespace) -> dict:
         temporary.unlink(missing_ok=True)
     summary = {
         "schema": "lafgs_v6_query_local_feedback_summary",
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "summary": result["summary"],
+        "descriptor_validation_summary": result["descriptor_validation_summary"],
+        "independent_mapping_validation_summary": result[
+            "independent_mapping_validation_summary"
+        ],
+        "descriptor_training_replay_summary": result[
+            "descriptor_training_replay_summary"
+        ],
+        "descriptor_gradient_reuse_summary": result[
+            "descriptor_gradient_reuse_summary"
+        ],
+        "reconstruction_target_replay_summary": result[
+            "reconstruction_target_replay_summary"
+        ],
+        "selection_training_replay_summary": result[
+            "selection_training_replay_summary"
+        ],
         "failure_layer_counts": result["feedback"]["failure_layer_counts"],
+        "failure_layer_counts_are_overlapping": result["feedback"][
+            "failure_layer_counts_are_overlapping"
+        ],
+        "failure_query_count": result["feedback"]["failure_query_count"],
+        "multi_layer_failure_query_count": result["feedback"][
+            "multi_layer_failure_query_count"
+        ],
+        "contract": result["contract"],
         "feedback_path": str(output.resolve()),
         "feedback_sha256": sha256_file(output),
         "producer": producer,

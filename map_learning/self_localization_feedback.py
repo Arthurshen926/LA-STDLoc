@@ -205,16 +205,45 @@ def build_self_localization_feedback(
                     dtype=torch.float64,
                 ).reshape(-1, 6, 6),
                 "pose_success": bool(source["pose_success"]),
-                "query_descriptor_loo": True,
+                "query_descriptor_loo": bool(
+                    source.get("query_descriptor_loo", True)
+                ),
+                "descriptor_training_query_reused": bool(
+                    source.get("descriptor_training_query_reused", False)
+                ),
+                "descriptor_training_split_member": bool(
+                    source.get("descriptor_training_split_member", False)
+                ),
+                "reconstruction_target_query_reused": bool(
+                    source.get("reconstruction_target_query_reused", False)
+                ),
                 "query_geometry_loo": bool(source["query_geometry_loo"]),
+                "query_raw_geometry_observation_loo": bool(
+                    source.get(
+                        "query_raw_geometry_observation_loo",
+                        source["query_geometry_loo"],
+                    )
+                ),
+                "query_candidate_topology_loo": bool(
+                    source.get("query_candidate_topology_loo", True)
+                ),
                 "pose_neighborhood_loo": bool(
                     source.get("pose_neighborhood_loo", False)
+                ),
+                "affected_anchor_policy": str(
+                    source.get("affected_anchor_policy", "rebuild")
+                ),
+                "selection_training_query_reused": bool(
+                    source.get("selection_training_query_reused", False)
+                ),
+                "independent_mapping_validation_query": bool(
+                    source.get("independent_mapping_validation_query", False)
                 ),
             }
         )
     return {
         "schema": FEEDBACK_SCHEMA,
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": list(names),
@@ -231,10 +260,55 @@ def build_self_localization_feedback(
         ),
         "records": normalized,
         "failure_layer_counts": counts,
+        "failure_layer_counts_are_overlapping": True,
+        "failure_query_count": len(names) - success_count,
+        "multi_layer_failure_query_count": sum(
+            int(len(record["failure_layers"]) > 1) for record in normalized
+        ),
         "success_count": success_count,
+        "query_descriptor_loo_count": sum(
+            int(record["query_descriptor_loo"]) for record in normalized
+        ),
+        "descriptor_gradient_reuse_query_count": sum(
+            int(record["descriptor_training_query_reused"])
+            for record in normalized
+        ),
+        "descriptor_training_split_query_count": sum(
+            int(record["descriptor_training_split_member"])
+            for record in normalized
+        ),
+        "reconstruction_target_reuse_query_count": sum(
+            int(record["reconstruction_target_query_reused"])
+            for record in normalized
+        ),
+        "selection_training_reuse_query_count": sum(
+            int(record["selection_training_query_reused"])
+            for record in normalized
+        ),
+        "query_raw_geometry_observation_loo_count": sum(
+            int(record["query_raw_geometry_observation_loo"])
+            for record in normalized
+        ),
+        "query_candidate_topology_loo_count": sum(
+            int(record["query_candidate_topology_loo"])
+            for record in normalized
+        ),
+        "independent_mapping_validation_query_count": sum(
+            int(record["independent_mapping_validation_query"])
+            for record in normalized
+        ),
+        "affected_anchor_policies": sorted(
+            {record["affected_anchor_policy"] for record in normalized}
+        ),
         "input_sha256": {
             "map": str(source_map_sha256),
             "query_cache": str(query_cache_sha256),
         },
-        "deployment_protocol": "query_local_loo_global_top1_one_standard_poselib",
+        "deployment_protocol": (
+            "query_local_affected_anchor_"
+            + "_or_".join(
+                sorted({record["affected_anchor_policy"] for record in normalized})
+            )
+            + "_global_top1_one_standard_poselib"
+        ),
     }

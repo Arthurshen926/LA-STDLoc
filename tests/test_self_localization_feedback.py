@@ -35,4 +35,12 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
         }],
     )
     assert result["success_count"] == 1
+    assert result["version"] == 2
+    assert result["failure_layer_counts_are_overlapping"] is True
+    assert result["failure_query_count"] == 0
+    assert result["query_descriptor_loo_count"] == 1
+    assert result["affected_anchor_policies"] == ["rebuild"]
+    assert "affected_anchor_rebuild" in result["deployment_protocol"]
+    assert result["records"][0]["query_raw_geometry_observation_loo"] is True
+    assert result["records"][0]["query_candidate_topology_loo"] is True
     assert result["records"][0]["positive_wrong_margin"] > 0

@@ -17,6 +17,69 @@ def _run(command: list[str], *, root: Path) -> None:
     subprocess.run(command, cwd=root, check=True)
 
 
+def _evaluation_metadata(summary: dict, *, baseline: bool = False) -> dict:
+    if baseline:
+        policy = summary.get("contract", {}).get("affected_anchor_policy", "unknown")
+        role = {
+            "purge": "mapping_purged_holdout_baseline",
+            "rebuild": "mapping_exact_rebuild_holdout_baseline",
+        }.get(policy, f"mapping_{policy}_holdout_baseline")
+    else:
+        roles = []
+        if summary.get("independent_mapping_validation_summary") is not None:
+            roles.append("independent_mapping_validation")
+        elif summary.get("descriptor_validation_summary") is not None:
+            roles.append("descriptor_only_holdout_with_other_dependency_replay")
+        if summary.get("descriptor_training_replay_summary") is not None:
+            roles.append("descriptor_training_replay")
+        if summary.get("reconstruction_target_replay_summary") is not None:
+            roles.append("reconstruction_target_replay")
+        if summary.get("selection_training_replay_summary") is not None:
+            roles.append("selection_training_replay")
+        role = "+".join(roles) if roles else "mapping_purged_holdout_candidate"
+    return {
+        "evaluation_role": role,
+        "descriptor_validation_summary": summary.get(
+            "descriptor_validation_summary"
+        ),
+        "independent_mapping_validation_summary": summary.get(
+            "independent_mapping_validation_summary"
+        ),
+        "descriptor_training_replay_summary": summary.get(
+            "descriptor_training_replay_summary"
+        ),
+        "descriptor_gradient_reuse_summary": summary.get(
+            "descriptor_gradient_reuse_summary"
+        ),
+        "reconstruction_target_replay_summary": summary.get(
+            "reconstruction_target_replay_summary"
+        ),
+        "selection_training_replay_summary": summary.get(
+            "selection_training_replay_summary"
+        ),
+        "failure_layer_counts_are_overlapping": summary.get(
+            "failure_layer_counts_are_overlapping"
+        ),
+        "failure_query_count": summary.get("failure_query_count"),
+        "multi_layer_failure_query_count": summary.get(
+            "multi_layer_failure_query_count"
+        ),
+        "contract": summary.get("contract"),
+    }
+
+
+def _proposal_metadata(proposal: dict) -> dict:
+    output = proposal.get("output", {})
+    return {
+        "proposal_report": proposal.get("_report_path"),
+        "proposal_report_sha256": proposal.get("_report_sha256"),
+        "training_checkpoint_size_bytes": output.get(
+            "training_checkpoint_size_bytes"
+        ),
+        "deployment_map_size_bytes": output.get("deployment_map_size_bytes"),
+    }
+
+
 def _evaluate(
     args: argparse.Namespace,
     *,
@@ -88,10 +151,25 @@ def _propose(
         "--descriptor-batch-size", str(args.descriptor_batch_size),
         "--descriptor-maximum-triplets-per-query",
         str(args.descriptor_maximum_triplets_per_query),
+        "--descriptor-clean-fraction", str(args.descriptor_clean_fraction),
+        "--descriptor-clean-weight", str(args.descriptor_clean_weight),
+        "--descriptor-trust-weight", str(args.descriptor_trust_weight),
         "--maximum-anchors", str(args.selection_maximum_anchors),
         "--matching-target", str(args.required_rank),
         "--pose-logdet-target", str(args.pose_logdet_target),
     ]
+    if (
+        arm in {"descriptor_loss", "descriptor_selection"}
+        and args.descriptor_training_query_indices is not None
+    ):
+        command.extend(
+            [
+                "--descriptor-training-query-indices",
+                str(args.descriptor_training_query_indices),
+                "--expected-descriptor-training-query-indices-sha256",
+                args.expected_descriptor_training_query_indices_sha256,
+            ]
+        )
     if arm == "reconstruction":
         command.extend(
             [
@@ -101,11 +179,26 @@ def _propose(
             ]
         )
     _run(command, root=root)
-    return json.loads((output / "proposal.json").read_text())
+    report_path = output / "proposal.json"
+    report = json.loads(report_path.read_text())
+    report["_report_path"] = str(report_path.resolve())
+    report["_report_sha256"] = sha256_file(report_path)
+    return report
 
 
 def run(args: argparse.Namespace) -> dict:
     root = Path(__file__).resolve().parents[1]
+    for field in (
+        "map",
+        "metric",
+        "observation_cache",
+        "association_graph",
+        "descriptor_training_query_indices",
+        "output_dir",
+    ):
+        value = getattr(args, field, None)
+        if value is not None:
+            setattr(args, field, Path(value).resolve())
     dirty = subprocess.run(
         ["git", "status", "--porcelain=v1"],
         cwd=root,
@@ -119,6 +212,16 @@ def run(args: argparse.Namespace) -> dict:
         raise FileExistsError(args.output_dir)
     if int(args.descriptor_rounds) < 1:
         raise ValueError("at least one descriptor round is required")
+    if (args.descriptor_training_query_indices is None) != (
+        args.expected_descriptor_training_query_indices_sha256 is None
+    ):
+        raise ValueError("descriptor training split path and SHA must be paired")
+    if (
+        args.descriptor_training_query_indices is not None
+        and sha256_file(args.descriptor_training_query_indices)
+        != args.expected_descriptor_training_query_indices_sha256
+    ):
+        raise ValueError("descriptor training split SHA differs")
     if bool(args.run_reconstruction) and (
         args.association_graph is None
         or args.expected_association_graph_sha256 is None
@@ -130,6 +233,15 @@ def run(args: argparse.Namespace) -> dict:
     map_sha = args.expected_map_sha256
     metric_path = args.metric.resolve()
     metric_sha = args.expected_metric_sha256
+    baseline_map_path = map_path
+    baseline_map_sha = map_sha
+    baseline_metric_path = metric_path
+    baseline_metric_sha = metric_sha
+    deployment_map_path = None
+    deployment_map_sha = None
+    deployment_metric_path = None
+    deployment_metric_sha = None
+    candidate_available = False
     stages = []
 
     summary_path, summary = _evaluate(
@@ -144,15 +256,25 @@ def run(args: argparse.Namespace) -> dict:
     stages.append(
         {
             "stage": "baseline",
+            "stage_kind": "evaluation",
             "map": str(map_path),
             "map_sha256": map_sha,
             "summary": str(summary_path),
             "metrics": summary["summary"],
             "failure_layer_counts": summary["failure_layer_counts"],
+            "metric": str(metric_path),
+            "metric_sha256": metric_sha,
+            "deployment_map": str(map_path),
+            "deployment_map_sha256": map_sha,
+            "deployment_metric": str(metric_path),
+            "deployment_metric_sha256": metric_sha,
+            **_evaluation_metadata(summary, baseline=True),
         }
     )
 
     for round_index in range(int(args.descriptor_rounds)):
+        if int(summary["failure_layer_counts"].get("L3", 0)) == 0:
+            break
         proposal = _propose(
             args,
             root=root,
@@ -163,11 +285,26 @@ def run(args: argparse.Namespace) -> dict:
             output=args.output_dir / f"stage_{len(stages):02d}_descriptor_proposal",
         )
         if proposal.get("proposal_available") is False:
+            stages.append(
+                {
+                    "stage": f"descriptor_round_{round_index + 1}_unavailable",
+                    "stage_kind": "proposal_attempt",
+                    "arm": "descriptor_loss",
+                    "proposal_available": False,
+                    "unavailable_reason": proposal.get("unavailable_reason"),
+                    **_proposal_metadata(proposal),
+                }
+            )
             break
         map_path = Path(proposal["output"]["map"])
         map_sha = proposal["output"]["map_sha256"]
         metric_path = Path(proposal["output"]["metric"])
         metric_sha = proposal["output"]["metric_sha256"]
+        deployment_map_path = Path(proposal["output"]["deployment_map"])
+        deployment_map_sha = proposal["output"]["deployment_map_sha256"]
+        deployment_metric_path = Path(proposal["output"]["deployment_metric"])
+        deployment_metric_sha = proposal["output"]["deployment_metric_sha256"]
+        candidate_available = True
         summary_path, summary = _evaluate(
             args,
             root=root,
@@ -180,11 +317,20 @@ def run(args: argparse.Namespace) -> dict:
         stages.append(
             {
                 "stage": f"descriptor_round_{round_index + 1}",
+                "stage_kind": "evaluation",
                 "map": str(map_path),
                 "map_sha256": map_sha,
+                "metric": str(metric_path),
+                "metric_sha256": metric_sha,
+                "deployment_map": str(deployment_map_path),
+                "deployment_map_sha256": deployment_map_sha,
+                "deployment_metric": str(deployment_metric_path),
+                "deployment_metric_sha256": deployment_metric_sha,
                 "summary": str(summary_path),
                 "metrics": summary["summary"],
                 "failure_layer_counts": summary["failure_layer_counts"],
+                **_proposal_metadata(proposal),
+                **_evaluation_metadata(summary),
             }
         )
 
@@ -203,6 +349,11 @@ def run(args: argparse.Namespace) -> dict:
             map_sha = proposal["output"]["map_sha256"]
             metric_path = Path(proposal["output"]["metric"])
             metric_sha = proposal["output"]["metric_sha256"]
+            deployment_map_path = Path(proposal["output"]["deployment_map"])
+            deployment_map_sha = proposal["output"]["deployment_map_sha256"]
+            deployment_metric_path = Path(proposal["output"]["deployment_metric"])
+            deployment_metric_sha = proposal["output"]["deployment_metric_sha256"]
+            candidate_available = True
             summary_path, summary = _evaluate(
                 args,
                 root=root,
@@ -215,11 +366,31 @@ def run(args: argparse.Namespace) -> dict:
             stages.append(
                 {
                     "stage": "reconstruction",
+                    "stage_kind": "evaluation",
                     "map": str(map_path),
                     "map_sha256": map_sha,
+                    "metric": str(metric_path),
+                    "metric_sha256": metric_sha,
+                    "deployment_map": str(deployment_map_path),
+                    "deployment_map_sha256": deployment_map_sha,
+                    "deployment_metric": str(deployment_metric_path),
+                    "deployment_metric_sha256": deployment_metric_sha,
                     "summary": str(summary_path),
                     "metrics": summary["summary"],
                     "failure_layer_counts": summary["failure_layer_counts"],
+                    **_proposal_metadata(proposal),
+                    **_evaluation_metadata(summary),
+                }
+            )
+        else:
+            stages.append(
+                {
+                    "stage": "reconstruction_unavailable",
+                    "stage_kind": "proposal_attempt",
+                    "arm": "reconstruction",
+                    "proposal_available": False,
+                    "unavailable_reason": proposal.get("unavailable_reason"),
+                    **_proposal_metadata(proposal),
                 }
             )
 
@@ -237,6 +408,11 @@ def run(args: argparse.Namespace) -> dict:
         map_sha = proposal["output"]["map_sha256"]
         metric_path = Path(proposal["output"]["metric"])
         metric_sha = proposal["output"]["metric_sha256"]
+        deployment_map_path = Path(proposal["output"]["deployment_map"])
+        deployment_map_sha = proposal["output"]["deployment_map_sha256"]
+        deployment_metric_path = Path(proposal["output"]["deployment_metric"])
+        deployment_metric_sha = proposal["output"]["deployment_metric_sha256"]
+        candidate_available = True
         summary_path, summary = _evaluate(
             args,
             root=root,
@@ -249,29 +425,94 @@ def run(args: argparse.Namespace) -> dict:
         stages.append(
             {
                 "stage": "selection_after_fresh_feedback",
+                "stage_kind": "evaluation",
                 "map": str(map_path),
                 "map_sha256": map_sha,
+                "metric": str(metric_path),
+                "metric_sha256": metric_sha,
+                "deployment_map": str(deployment_map_path),
+                "deployment_map_sha256": deployment_map_sha,
+                "deployment_metric": str(deployment_metric_path),
+                "deployment_metric_sha256": deployment_metric_sha,
                 "summary": str(summary_path),
                 "metrics": summary["summary"],
                 "failure_layer_counts": summary["failure_layer_counts"],
+                **_proposal_metadata(proposal),
+                **_evaluation_metadata(summary),
             }
         )
 
     result = {
         "schema": "lafgs_v6_mainline_convergence_run",
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "automatic_hard_gate_acceptance": False,
+        "candidate_acceptance_status": "external_review_required",
+        "candidate_available": candidate_available,
         "feedback_protocol": {
             "loo_pose_neighbors": int(args.loo_pose_neighbors),
             "affected_anchor_policy": args.loo_affected_anchor_policy,
+            "descriptor_training_split": (
+                None
+                if args.descriptor_training_query_indices is None
+                else {
+                    "path": str(args.descriptor_training_query_indices.resolve()),
+                    "sha256": (
+                        args.expected_descriptor_training_query_indices_sha256
+                    ),
+                }
+            ),
+        },
+        "configuration": {
+            "device": args.device,
+            "cpu_threads": int(args.cpu_threads),
+            "seed": int(args.seed),
+            "positive_radius_px": float(args.positive_radius_px),
+            "alpha_minimum": float(args.alpha_minimum),
+            "required_matching_rank": int(args.required_rank),
+            "required_visibility_rank": int(args.required_visibility_rank),
+            "required_detectable_rank": int(args.required_detectable_rank),
+            "ransac_reprojection_px": float(args.ransac_reprojection_px),
+            "descriptor_rounds": int(args.descriptor_rounds),
+            "descriptor_trust_region": float(args.descriptor_trust_region),
+            "descriptor_margin": float(args.descriptor_margin),
+            "descriptor_temperature": float(args.descriptor_temperature),
+            "descriptor_learning_rate": float(args.descriptor_learning_rate),
+            "descriptor_epochs": int(args.descriptor_epochs),
+            "descriptor_batch_size": int(args.descriptor_batch_size),
+            "descriptor_maximum_triplets_per_query": int(
+                args.descriptor_maximum_triplets_per_query
+            ),
+            "descriptor_clean_fraction": float(args.descriptor_clean_fraction),
+            "descriptor_clean_weight": float(args.descriptor_clean_weight),
+            "descriptor_trust_weight": float(args.descriptor_trust_weight),
+            "run_reconstruction": bool(args.run_reconstruction),
+            "run_selection": bool(args.run_selection),
+            "selection_maximum_anchors": int(args.selection_maximum_anchors),
+            "pose_logdet_target": float(args.pose_logdet_target),
         },
         "stages": stages,
-        "final_map": str(map_path),
-        "final_map_sha256": map_sha,
-        "final_metric": str(metric_path),
-        "final_metric_sha256": metric_sha,
+        "baseline_map": str(baseline_map_path),
+        "baseline_map_sha256": baseline_map_sha,
+        "baseline_metric": str(baseline_metric_path),
+        "baseline_metric_sha256": baseline_metric_sha,
+        "last_candidate_map": str(map_path) if candidate_available else None,
+        "last_candidate_map_sha256": map_sha if candidate_available else None,
+        "last_candidate_metric": str(metric_path) if candidate_available else None,
+        "last_candidate_metric_sha256": metric_sha if candidate_available else None,
+        "last_candidate_deployment_map": (
+            str(deployment_map_path) if candidate_available else None
+        ),
+        "last_candidate_deployment_map_sha256": (
+            deployment_map_sha if candidate_available else None
+        ),
+        "last_candidate_deployment_metric": (
+            str(deployment_metric_path) if candidate_available else None
+        ),
+        "last_candidate_deployment_metric_sha256": (
+            deployment_metric_sha if candidate_available else None
+        ),
         "online_protocol": "native_superpoint_global_top1_one_standard_poselib",
     }
     temporary = args.output_dir / f".run.{os.getpid()}.tmp"
@@ -317,6 +558,11 @@ def main() -> None:
     parser.add_argument("--descriptor-epochs", type=int, default=5)
     parser.add_argument("--descriptor-batch-size", type=int, default=8192)
     parser.add_argument("--descriptor-maximum-triplets-per-query", type=int, default=128)
+    parser.add_argument("--descriptor-clean-fraction", type=float, default=0.25)
+    parser.add_argument("--descriptor-clean-weight", type=float, default=0.25)
+    parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
+    parser.add_argument("--descriptor-training-query-indices", type=Path)
+    parser.add_argument("--expected-descriptor-training-query-indices-sha256")
     parser.add_argument("--run-reconstruction", action="store_true")
     parser.add_argument("--run-selection", action="store_true")
     parser.add_argument("--selection-maximum-anchors", type=int, default=20000)

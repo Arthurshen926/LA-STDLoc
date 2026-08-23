@@ -74,3 +74,12 @@ def test_loo_retriangulates_from_remaining_physical_pixel_centers() -> None:
     assert purged["contract"]["query_descriptor_loo"] is True
     assert purged["contract"]["query_geometry_loo"] is True
     assert purged["contract"]["affected_anchor_policy"] == "purge"
+
+    compact = {
+        **state,
+        "provenance": {"v6_compact_deployment_export": True},
+    }
+    with pytest.raises(ValueError, match="training checkpoint"):
+        LeaveOneQueryOutProjectiveMap(
+            compact, provider, affected_anchor_policy="rebuild"
+        )

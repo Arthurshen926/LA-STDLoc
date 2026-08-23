@@ -55,6 +55,20 @@ class LeaveOneQueryOutProjectiveMap:
         if affected_anchor_policy not in {"rebuild", "purge"}:
             raise ValueError("affected_anchor_policy must be 'rebuild' or 'purge'")
         self.affected_anchor_policy = affected_anchor_policy
+        if (
+            self.affected_anchor_policy == "rebuild"
+            and (
+                state.get("provenance", {}).get("v6_compact_deployment_export")
+                is True
+                or (
+                    isinstance(state.get("v6_descriptor_distillation"), dict)
+                    and state.get("anchor_descriptor_residual") is None
+                )
+            )
+        ):
+            raise ValueError(
+                "affected-Anchor rebuild requires the descriptor training checkpoint"
+            )
         anchor_for_observation = torch.repeat_interleave(
             torch.arange(count, dtype=torch.long), offsets[1:] - offsets[:-1]
         )

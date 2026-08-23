@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 
 
@@ -11,6 +13,7 @@ ASSOCIATION_GRAPH_SCHEMA = "projective_association_graph_v2"
 ANCHOR_CANDIDATE_SCHEMA = "projective_anchor_candidates_v2"
 FEEDBACK_SCHEMA = "self_localization_feedback_v1"
 ROUND_SCHEMA = "closed_loop_distillation_round_v1"
+DESCRIPTOR_SPLIT_SCHEMA = "lafgs_v6_sequence_block_descriptor_split"
 
 
 def require_mapping_only(payload: Mapping, *, label: str) -> None:
@@ -39,3 +42,11 @@ def validate_ordered_query_registry(names: Sequence[str]) -> tuple[str, ...]:
     if len(set(ordered)) != len(ordered):
         raise ValueError("ordered query registry contains duplicates")
     return ordered
+
+
+def ordered_query_registry_sha256(names: Sequence[str]) -> str:
+    ordered = validate_ordered_query_registry(names)
+    serialized = json.dumps(
+        list(ordered), ensure_ascii=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(serialized).hexdigest()

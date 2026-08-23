@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
+from common.hashing import sha256_file
 from common.config import (
     load_scene_calibration,
     load_mainline_config,
@@ -17,6 +18,24 @@ from data.datasets import ColmapDataset
 from evaluation.bootstrap import materialize_a0
 from evaluation.evaluator import evaluate_dataset
 from localization.localizer import SparseLocalizer
+
+
+def _input_artifact_contract(
+    map_path: Path, descriptor_state_path: Path, *, descriptor_role: str
+) -> dict:
+    if descriptor_role not in {"metric_state", "context_state"}:
+        raise ValueError("unknown descriptor state role")
+    return {
+        "map": {
+            "path": str(map_path.resolve()),
+            "sha256": sha256_file(map_path),
+        },
+        "descriptor_state": {
+            "role": descriptor_role,
+            "path": str(descriptor_state_path.resolve()),
+            "sha256": sha256_file(descriptor_state_path),
+        },
+    }
 
 
 def main() -> None:
@@ -147,6 +166,18 @@ def main() -> None:
     reprojection_error_px = resolve_reprojection_error_px(
         deployment, calibration_cameras, scene_calibration
     )
+    descriptor_state_path = (
+        args.context_state.resolve()
+        if args.context_state is not None
+        else metric_path.resolve()
+    )
+    artifact_contract = _input_artifact_contract(
+        map_path,
+        descriptor_state_path,
+        descriptor_role=(
+            "context_state" if args.context_state is not None else "metric_state"
+        ),
+    )
     localizer = SparseLocalizer(
         map_path,
         metric_path,
@@ -174,11 +205,40 @@ def main() -> None:
         cameras=cameras,
         output=args.output,
     )
+    if (
+        sha256_file(map_path) != artifact_contract["map"]["sha256"]
+        or sha256_file(descriptor_state_path)
+        != artifact_contract["descriptor_state"]["sha256"]
+    ):
+        raise RuntimeError("evaluation input artifact changed while localization ran")
+    result["summary"].update(
+        {
+            "evaluated_split": args.split,
+            "random_seed": int(args.seed),
+            "input_map_path": artifact_contract["map"]["path"],
+            "input_map_sha256": artifact_contract["map"]["sha256"],
+            "input_descriptor_state_role": artifact_contract["descriptor_state"][
+                "role"
+            ],
+            "input_descriptor_state_path": artifact_contract["descriptor_state"][
+                "path"
+            ],
+            "input_descriptor_state_sha256": artifact_contract[
+                "descriptor_state"
+            ]["sha256"],
+        }
+    )
+    # ``evaluate_dataset`` writes its generic summary before the CLI-specific
+    # artifact contract is known.  Persist the enriched summary so every real
+    # localization result is unambiguously bound to the evaluated map.
+    (args.output / "summary.json").write_text(
+        json.dumps(result["summary"], indent=2, sort_keys=True) + "\n"
+    )
     (args.output / "deployment_contract.json").write_text(
         json.dumps(
             {
                 "schema": "lafgs_sparse_deployment_contract",
-                "version": 1,
+                "version": 2,
                 "keypoint_count": int(keypoint_count),
                 "nms_radius": int(deployment["nms"]),
                 "ransac_reprojection_px": float(reprojection_error_px),
@@ -206,6 +266,7 @@ def main() -> None:
                 "descriptor_protocol": (
                     "mccd" if args.context_state is not None else "shared_metric"
                 ),
+                "input_artifacts": artifact_contract,
                 "photometric_canonicalization_contract": (
                     localizer.photometric_canonicalization_contract
                 ),

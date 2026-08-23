@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from scipy.spatial import cKDTree
 
+from common.v6_contracts import require_mapping_only
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from localization.matcher import global_cosine_topk
@@ -253,10 +254,127 @@ def _summary(rows: list[dict]) -> dict:
         "online_latency_ms": float(
             np.mean([row["online_latency_ms"] for row in rows])
         ),
+        "oracle_feedback_localization_latency_ms": float(
+            np.mean([row["online_latency_ms"] for row in rows])
+        ),
         "loo_feedback_latency_ms": float(
             np.mean([row["loo_feedback_latency_ms"] for row in rows])
         ),
     }
+
+
+def _descriptor_training_query_masks(state: dict, query_count: int) -> dict:
+    """Return declared training-split and direct-gradient query masks.
+
+    Older residual checkpoints did not serialize this registry.  When a
+    non-zero residual exists without a registry, fail closed and treat every
+    mapping query as training-reused rather than claiming query LOO.
+    """
+
+    training_split = torch.zeros(int(query_count), dtype=torch.bool)
+    gradient_reused = torch.zeros(int(query_count), dtype=torch.bool)
+    explicit = False
+    report = state.get("v6_descriptor_distillation")
+    if isinstance(report, dict):
+        training_value = report.get("training_query_indices")
+        selected_value = report.get("selected_query_indices", training_value)
+        if training_value is not None:
+            rows = torch.as_tensor(training_value, dtype=torch.long).reshape(-1)
+            if rows.numel() and (
+                int(rows.min()) < 0 or int(rows.max()) >= int(query_count)
+            ):
+                raise ValueError("descriptor training query registry is invalid")
+            training_split[rows] = True
+        if selected_value is not None:
+            rows = torch.as_tensor(selected_value, dtype=torch.long).reshape(-1)
+            if rows.numel() and (
+                int(rows.min()) < 0 or int(rows.max()) >= int(query_count)
+            ):
+                raise ValueError("descriptor gradient query registry is invalid")
+            gradient_reused[rows] = True
+        explicit = bool(report.get("training_query_registry_explicit", False))
+        if training_value is not None or selected_value is not None:
+            return {
+                "training_split": training_split,
+                "gradient_reused": gradient_reused,
+                "training_registry_explicit": explicit,
+                "descriptor_dependency_present": True,
+            }
+        training_split[:] = True
+        gradient_reused[:] = True
+        return {
+            "training_split": training_split,
+            "gradient_reused": gradient_reused,
+            "training_registry_explicit": False,
+            "descriptor_dependency_present": True,
+        }
+    residual = state.get("anchor_descriptor_residual")
+    if residual is not None and bool(torch.as_tensor(residual).abs().max() > 0):
+        training_split[:] = True
+        gradient_reused[:] = True
+        dependency_present = True
+    else:
+        dependency_present = False
+    return {
+        "training_split": training_split,
+        "gradient_reused": gradient_reused,
+        "training_registry_explicit": False,
+        "descriptor_dependency_present": dependency_present,
+    }
+
+
+def _descriptor_training_query_mask(state: dict, query_count: int) -> torch.Tensor:
+    """Backward-compatible direct-gradient mask used by focused tests/tools."""
+
+    return _descriptor_training_query_masks(state, query_count)["gradient_reused"]
+
+
+def _reconstruction_target_query_mask(
+    state: dict, query_count: int
+) -> torch.Tensor:
+    """Queries whose rendered depth selected a reconstruction seed region."""
+
+    mask = torch.zeros(int(query_count), dtype=torch.bool)
+    report = state.get("v6_reconstruction_distillation")
+    if not isinstance(report, dict):
+        kinds = state.get("anchor_candidate_kind", ())
+        legacy_reconstruction = (
+            state.get("provenance", {}).get("v6_reconstruction_feedback_sha256")
+            is not None
+            or any("completion" in str(value) for value in kinds)
+        )
+        if legacy_reconstruction:
+            mask[:] = True
+        return mask
+    rows = torch.as_tensor(
+        report.get("target_query_indices", ()), dtype=torch.long
+    ).reshape(-1)
+    if rows.numel() and (
+        int(rows.min()) < 0 or int(rows.max()) >= int(query_count)
+    ):
+        raise ValueError("reconstruction target query registry is invalid")
+    mask[rows] = True
+    return mask
+
+
+def _selection_training_query_mask(state: dict, query_count: int) -> torch.Tensor:
+    """Queries whose feedback directly determined Anchor selection."""
+
+    mask = torch.zeros(int(query_count), dtype=torch.bool)
+    report = state.get("v6_selection_distillation")
+    if not isinstance(report, dict):
+        return mask
+    rows = torch.as_tensor(
+        report.get("training_query_indices", ()), dtype=torch.long
+    ).reshape(-1)
+    # Older selection maps did not serialize dependencies.  Fail closed.
+    if rows.numel() == 0:
+        mask[:] = True
+        return mask
+    if int(rows.min()) < 0 or int(rows.max()) >= int(query_count):
+        raise ValueError("selection training query registry is invalid")
+    mask[rows] = True
+    return mask
 
 
 @torch.inference_mode()
@@ -280,12 +398,10 @@ def evaluate_query_local_feedback(
     """One global Top-1 and one standard PoseLib solve per mapping query."""
 
     evaluation_started = time.perf_counter()
-    if state.get("provenance", {}).get("uses_test_queries") is not False:
-        raise ValueError("V6 feedback requires a test-free map")
-    # Purging every Anchor touched by the held-out pose neighborhood is exact
-    # with respect to leakage and scales to full maps.  Rebuilding thousands
-    # of affected tracks independently for every query is needlessly weaker
-    # cross-validation and prohibitively expensive at Cambridge scale.
+    require_mapping_only(state.get("provenance", {}), label="V6 feedback map")
+    # Purging every Anchor touched by the held-out pose neighborhood is a
+    # conservative, leakage-free holdout that scales to full maps.  It is not
+    # equivalent to rebuilding Anchors that retain enough support.
     replay = LeaveOneQueryOutProjectiveMap(
         state,
         observations,
@@ -295,6 +411,17 @@ def evaluate_query_local_feedback(
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
     feedback_records = []
+    descriptor_masks = _descriptor_training_query_masks(
+        state, len(observations)
+    )
+    descriptor_training_split = descriptor_masks["training_split"]
+    descriptor_gradient_reused = descriptor_masks["gradient_reused"]
+    reconstruction_target_reused = _reconstruction_target_query_mask(
+        state, len(observations)
+    )
+    selection_training_reused = _selection_training_query_mask(
+        state, len(observations)
+    )
     pose_neighborhoods = _pose_neighborhoods(observations, loo_pose_neighbors)
     print(
         f"[v6-feedback] prepared {loo_affected_anchor_policy} "
@@ -486,7 +613,40 @@ def evaluate_query_local_feedback(
                 "pose_information_contribution": information_logdet,
                 "pose_information_sufficient": information_rank >= 6,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
-                "query_geometry_loo": True,
+                "query_descriptor_loo": not bool(
+                    descriptor_gradient_reused[query_index]
+                ),
+                "descriptor_training_query_reused": bool(
+                    descriptor_gradient_reused[query_index]
+                ),
+                "descriptor_training_split_member": bool(
+                    descriptor_training_split[query_index]
+                ),
+                "query_geometry_loo": not bool(
+                    reconstruction_target_reused[query_index]
+                ),
+                "query_raw_geometry_observation_loo": True,
+                "query_candidate_topology_loo": not bool(
+                    reconstruction_target_reused[query_index]
+                    or selection_training_reused[query_index]
+                ),
+                "reconstruction_target_query_reused": bool(
+                    reconstruction_target_reused[query_index]
+                ),
+                "selection_training_query_reused": bool(
+                    selection_training_reused[query_index]
+                ),
+                "independent_mapping_validation_query": bool(
+                    (
+                        not descriptor_masks["descriptor_dependency_present"]
+                        or (
+                            descriptor_masks["training_registry_explicit"]
+                            and not descriptor_training_split[query_index]
+                        )
+                    )
+                    and not reconstruction_target_reused[query_index]
+                    and not selection_training_reused[query_index]
+                ),
                 "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
                 "affected_anchor_policy": update["contract"][
                     "affected_anchor_policy"
@@ -514,6 +674,29 @@ def evaluate_query_local_feedback(
                 "poselib_iterations": int(estimate.diagnostics.get("iterations", 0)),
                 "online_latency_ms": online_latency_ms,
                 "loo_feedback_latency_ms": loo_latency_ms,
+                "descriptor_training_query_reused": bool(
+                    descriptor_gradient_reused[query_index]
+                ),
+                "descriptor_training_split_member": bool(
+                    descriptor_training_split[query_index]
+                ),
+                "reconstruction_target_query_reused": bool(
+                    reconstruction_target_reused[query_index]
+                ),
+                "selection_training_query_reused": bool(
+                    selection_training_reused[query_index]
+                ),
+                "independent_mapping_validation_query": bool(
+                    (
+                        not descriptor_masks["descriptor_dependency_present"]
+                        or (
+                            descriptor_masks["training_registry_explicit"]
+                            and not descriptor_training_split[query_index]
+                        )
+                    )
+                    and not reconstruction_target_reused[query_index]
+                    and not selection_training_reused[query_index]
+                ),
                 "detectable_matching_pairs": detectable_pairs,
                 "top1_correct_pairs": matching_pairs,
             }
@@ -533,20 +716,122 @@ def evaluate_query_local_feedback(
     )
     summary = _summary(query_rows)
     summary["anchor_count"] = int(base_xyz.shape[0])
+    validation_rows = []
+    if bool(descriptor_masks["training_registry_explicit"]):
+        validation_rows = [
+            row
+            for row in query_rows
+            if not bool(row["descriptor_training_split_member"])
+        ]
+    training_replay_rows = [
+        row for row in query_rows if bool(row["descriptor_training_split_member"])
+    ]
+    gradient_reuse_rows = [
+        row for row in query_rows if bool(row["descriptor_training_query_reused"])
+    ]
+    validation_summary = None if not validation_rows else _summary(validation_rows)
+    independent_validation_rows = [
+        row
+        for row in query_rows
+        if bool(row["independent_mapping_validation_query"])
+    ]
+    independent_validation_summary = (
+        None
+        if not independent_validation_rows
+        else _summary(independent_validation_rows)
+    )
+    training_replay_summary = (
+        None if not training_replay_rows else _summary(training_replay_rows)
+    )
+    gradient_reuse_summary = (
+        None if not gradient_reuse_rows else _summary(gradient_reuse_rows)
+    )
+    reconstruction_replay_rows = [
+        row
+        for row in query_rows
+        if bool(row["reconstruction_target_query_reused"])
+    ]
+    reconstruction_replay_summary = (
+        None
+        if not reconstruction_replay_rows
+        else _summary(reconstruction_replay_rows)
+    )
+    selection_replay_rows = [
+        row for row in query_rows if bool(row["selection_training_query_reused"])
+    ]
+    selection_replay_summary = (
+        None if not selection_replay_rows else _summary(selection_replay_rows)
+    )
+    descriptor_query_loo = not bool(descriptor_gradient_reused.any())
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": query_rows,
         "summary": summary,
+        "descriptor_validation_summary": validation_summary,
+        "independent_mapping_validation_summary": independent_validation_summary,
+        "descriptor_training_replay_summary": training_replay_summary,
+        "descriptor_gradient_reuse_summary": gradient_reuse_summary,
+        "reconstruction_target_replay_summary": reconstruction_replay_summary,
+        "selection_training_replay_summary": selection_replay_summary,
         "feedback": feedback,
         "contract": {
-            "query_descriptor_loo": True,
-            "query_geometry_loo": True,
+            "query_descriptor_loo": descriptor_query_loo,
+            "descriptor_training_split_query_count": int(
+                descriptor_training_split.sum()
+            ),
+            "descriptor_gradient_reuse_query_count": int(
+                descriptor_gradient_reused.sum()
+            ),
+            "descriptor_validation_query_count": len(validation_rows),
+            "independent_mapping_validation_query_count": len(
+                independent_validation_rows
+            ),
+            "descriptor_training_registry_explicit": bool(
+                descriptor_masks["training_registry_explicit"]
+            ),
+            "descriptor_dependency_present": bool(
+                descriptor_masks["descriptor_dependency_present"]
+            ),
+            "independent_mapping_validation_available": bool(
+                independent_validation_rows
+            ),
+            "query_geometry_loo": not bool(reconstruction_target_reused.any()),
+            "query_raw_geometry_observation_loo": True,
+            "query_candidate_topology_loo": not bool(
+                reconstruction_target_reused.any()
+                or selection_training_reused.any()
+            ),
+            "reconstruction_target_reuse_query_count": int(
+                reconstruction_target_reused.sum()
+            ),
+            "selection_training_reuse_query_count": int(
+                selection_training_reused.sum()
+            ),
             "pose_neighborhood_loo": int(loo_pose_neighbors) > 1,
             "loo_pose_neighbors": int(loo_pose_neighbors),
             "affected_anchor_policy": loo_affected_anchor_policy,
+            "positive_radius_px": float(positive_radius_px),
+            "alpha_minimum": float(alpha_minimum),
+            "required_matching_rank": int(required_rank),
+            "required_visibility_rank": int(required_visibility_rank),
+            "required_detectable_rank": int(
+                required_rank
+                if required_detectable_rank is None
+                else required_detectable_rank
+            ),
+            "ransac_reprojection_px": float(ransac_reprojection_px),
+            "ransac_seed": int(seed),
+            "evaluation_device": str(device),
+            "affected_anchor_holdout_is_exact_rebuild": (
+                loo_affected_anchor_policy == "rebuild"
+            ),
+            "purged_holdout_is_exact_rebuild": (
+                False if loo_affected_anchor_policy == "purge" else None
+            ),
+            "reported_online_latency_is_oracle_feedback_localization": True,
             "global_top1": True,
             "pose_solves_per_query": 1,
             "retrieval": False,

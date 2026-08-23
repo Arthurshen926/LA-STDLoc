@@ -171,6 +171,57 @@ def materialize_projective_anchor_map(candidates: dict, *, lineage: dict) -> dic
     }
 
 
+def compact_projective_deployment_map(state: dict) -> dict:
+    """Bake descriptors and remove training-only dense tensors.
+
+    The returned map preserves the online ``anchor_features`` API and query
+    registry, but cannot be used for another descriptor-training round or for
+    exact affected-Anchor rebuild.  The full proposal checkpoint remains the
+    auditable training artifact.
+    """
+
+    if state.get("schema") != "lafgs_materialized_anchor_map":
+        raise ValueError("compact deployment export requires a V6 anchor map")
+    output = dict(state)
+    removed = []
+    for field in ("anchor_observation_features", "anchor_descriptor_residual"):
+        if field in output:
+            output.pop(field)
+            removed.append(field)
+    report = output.get("v6_descriptor_distillation")
+    if isinstance(report, dict):
+        report = dict(report)
+        for rows_field, count_field in (
+            ("updated_anchor_rows", "updated_anchor_count"),
+            ("round_updated_anchor_rows", "round_updated_anchor_count"),
+        ):
+            updated = report.pop(rows_field, None)
+            if updated is not None:
+                report.setdefault(
+                    count_field, int(torch.as_tensor(updated).numel())
+                )
+        report["training_state_available"] = False
+        report["deployed_features_baked"] = True
+        output["v6_descriptor_distillation"] = report
+    selection = output.get("v6_selection_distillation")
+    if isinstance(selection, dict):
+        selection = dict(selection)
+        selected = selection.pop("selected_source_rows", None)
+        if selected is not None:
+            selection["selected_anchor_count"] = int(
+                torch.as_tensor(selected).numel()
+            )
+        selection.pop("report", None)
+        selection["training_diagnostics_available"] = False
+        output["v6_selection_distillation"] = selection
+    output["provenance"] = {
+        **dict(state.get("provenance", {})),
+        "v6_compact_deployment_export": True,
+        "v6_training_only_fields_removed": removed,
+    }
+    return output
+
+
 def identity_metric_state(state: dict, *, map_path: str, map_sha256: str) -> dict:
     features = torch.as_tensor(state["anchor_features"]).float()
     metric = SharedLowRankMetric(
@@ -276,6 +327,27 @@ def subset_projective_anchor_map(state: dict, selected: torch.Tensor) -> dict:
     }
     output["canonical_anchor_count"] = int(selected.numel())
     output["micro_anchor_count"] = int(selected.numel())
+    report = state.get("v6_descriptor_distillation")
+    if isinstance(report, dict):
+        report = dict(report)
+        old_to_new = torch.full((count,), -1, dtype=torch.long)
+        old_to_new[selected] = torch.arange(selected.numel(), dtype=torch.long)
+        for rows_field, count_field in (
+            ("updated_anchor_rows", "updated_anchor_count"),
+            ("round_updated_anchor_rows", "round_updated_anchor_count"),
+        ):
+            updated = torch.as_tensor(
+                report.get(rows_field, ()), dtype=torch.long
+            ).reshape(-1)
+            if updated.numel() and (
+                int(updated.min()) < 0 or int(updated.max()) >= count
+            ):
+                raise ValueError("descriptor updated Anchor registry is invalid")
+            remapped = old_to_new[updated] if updated.numel() else updated
+            remapped = remapped[remapped >= 0]
+            report[rows_field] = remapped
+            report[count_field] = int(remapped.numel())
+        output["v6_descriptor_distillation"] = report
     return output
 
 

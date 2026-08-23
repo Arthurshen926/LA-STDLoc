@@ -42,6 +42,7 @@ def build_projective_completion(
     safety_maximum_components: int = 100000,
     eligible_query_indices: torch.Tensor | list[int] | None = None,
     target_query_indices: torch.Tensor | list[int] | None = None,
+    excluded_support_query_indices: torch.Tensor | list[int] | None = None,
     device: str = "cuda",
 ) -> dict:
     """Use Gaussian depth only to propose neighborhoods; deploy only ray xyz."""
@@ -82,7 +83,23 @@ def build_projective_completion(
         or max(target_queries) >= len(observations)
     ):
         raise ValueError("completion target query registry is empty or invalid")
-    for query_index in sorted(eligible_queries):
+    excluded_support_queries = (
+        set() if target_queries is None else set(target_queries)
+    )
+    if excluded_support_query_indices is not None:
+        excluded_support_queries.update(
+            int(value)
+            for value in torch.as_tensor(excluded_support_query_indices).tolist()
+        )
+    if excluded_support_queries and (
+        min(excluded_support_queries) < 0
+        or max(excluded_support_queries) >= len(observations)
+    ):
+        raise ValueError("completion excluded support registry is invalid")
+    proposal_queries = set(eligible_queries)
+    if target_queries is not None:
+        proposal_queries.update(target_queries)
+    for query_index in sorted(proposal_queries):
         view = observations.build_view(query_index)
         if view.depth is None and view.keypoint_depth is None:
             raise ValueError("completion requires rendered depth proposals")
@@ -128,6 +145,14 @@ def build_projective_completion(
     keypoint = torch.cat(keypoint_parts)
     voxel = torch.floor(proposal_xyz / float(voxel_size_m)).long()
     _, inverse = torch.unique(voxel, dim=0, sorted=True, return_inverse=True)
+    target_voxels = None
+    if target_queries is not None:
+        target_rows = torch.isin(
+            query, torch.tensor(sorted(target_queries), dtype=torch.long)
+        )
+        target_voxels = set(inverse[target_rows].tolist())
+        if not target_voxels:
+            raise ValueError("target queries produced no completion seed region")
     groups = []
     bins = torch.as_tensor(base_association["query_bins"]).long()
     views = [observations.build_view(index) for index in range(len(observations))]
@@ -140,9 +165,22 @@ def build_projective_completion(
         )
     )
     for group in range(voxel_count):
+        if target_voxels is not None and group not in target_voxels:
+            continue
         proposal_rows = ordered_proposals[
             voxel_offsets[group] : voxel_offsets[group + 1]
         ]
+        support = torch.tensor(
+            [
+                int(value) not in excluded_support_queries
+                and int(value) in eligible_queries
+                for value in query[proposal_rows].tolist()
+            ],
+            dtype=torch.bool,
+        )
+        proposal_rows = proposal_rows[support]
+        if proposal_rows.numel() < int(minimum_observations):
+            continue
         unique_queries = torch.unique(query[proposal_rows], sorted=True)
         if unique_queries.numel() < int(minimum_observations):
             continue
@@ -207,12 +245,6 @@ def build_projective_completion(
             rows = order[keep]
             if rows.numel() < int(minimum_observations):
                 continue
-            # A deficient query identifies the region to repair, but support
-            # observations may come from every non-held-out mapping view.
-            if target_queries is not None and not any(
-                int(value) in target_queries for value in query[rows].tolist()
-            ):
-                continue
             if torch.unique(bins[query[rows]]).numel() < int(minimum_camera_families):
                 continue
             groups.append(rows)
@@ -255,6 +287,8 @@ def build_projective_completion(
         gaussian_depth_role="proposal_neighborhood_only",
         target_queries_seed_regions=target_queries is not None,
         support_queries_restricted=eligible_query_indices is not None,
+        target_queries_used_as_anchor_support=False,
+        excluded_support_query_count=len(excluded_support_queries),
         reciprocal_local_descriptor_support=True,
         known_pose_epipolar_support=True,
         final_xyz_source="fixed_camera_robust_ray_triangulation",
