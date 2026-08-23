@@ -121,10 +121,12 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
             "sources": {
                 "uses_source_mapping_rgb": False,
                 "uses_test_queries": False,
+                "mapping_source": "gaussian_render",
             },
             "parameters": {
                 "ransac_reprojection_px": _CALIBRATED_RANSAC_PX,
             },
+            "statistics": {"query_count": 2},
         },
     )
     template = tmp_path / "feedback-template.pt"
@@ -202,6 +204,7 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
             "schema": "lafgs_v6_full_pipeline_input_contract",
             "version": 1,
             "validated": True,
+            "mapping_query_count": 2,
         }
 
     def fake_command(command: list[str], *, root: Path) -> None:
@@ -525,8 +528,52 @@ def test_runner_rejects_non_mapping_scene_calibration(tmp_path: Path):
     )
     args.expected_scene_calibration_sha256 = sha256_file(args.scene_calibration)
 
-    with pytest.raises(ValueError, match="not a mapping-only contract"):
+    with pytest.raises(ValueError, match="mapping-only contract"):
         runner.run(args, invocation_argv=["formal-v6-runner", "--bad-calibration"])
+
+
+@pytest.mark.parametrize(
+    "source_overrides",
+    [
+        {"uses_source_mapping_rgb": True},
+        {"mapping_source": "real_rgb"},
+    ],
+)
+def test_runner_rejects_scene_calibration_from_source_mapping_rgb(
+    tmp_path: Path,
+    source_overrides: dict,
+):
+    args, _ = _arguments(tmp_path)
+    calibration = json.loads(args.scene_calibration.read_text())
+    calibration["sources"].update(source_overrides)
+    args.scene_calibration.write_text(json.dumps(calibration))
+    args.expected_scene_calibration_sha256 = sha256_file(args.scene_calibration)
+
+    with pytest.raises(ValueError, match="Gaussian-render mapping-only contract"):
+        runner.run(args, invocation_argv=["formal-v6-runner", "--bad-source"])
+
+
+def test_runner_rejects_calibration_observation_query_count_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    args, _ = _arguments(tmp_path)
+    calibration = json.loads(args.scene_calibration.read_text())
+    calibration["statistics"]["query_count"] = 3
+    args.scene_calibration.write_text(json.dumps(calibration))
+    args.expected_scene_calibration_sha256 = sha256_file(args.scene_calibration)
+    calls: list[list[str]] = []
+    contract_calls: list[dict] = []
+    _install_mocks(monkeypatch, calls, contract_calls)
+
+    with pytest.raises(
+        ValueError,
+        match="scene calibration and observation query counts differ",
+    ):
+        runner.run(args, invocation_argv=["formal-v6-runner", "--bad-count"])
+
+    assert len(contract_calls) == 1
+    assert calls == []
 
 
 @pytest.mark.parametrize(

@@ -117,8 +117,12 @@ def _load_scene_calibration(
     if (
         calibration.get("schema") != SCENE_CALIBRATION_SCHEMA
         or uses_test_queries is not False
+        or sources.get("uses_source_mapping_rgb") is not False
+        or sources.get("mapping_source") != "gaussian_render"
     ):
-        raise ValueError("scene calibration is not a mapping-only contract")
+        raise ValueError(
+            "scene calibration is not a Gaussian-render mapping-only contract"
+        )
     parameters = calibration.get("parameters")
     if not isinstance(parameters, Mapping):
         raise ValueError("scene calibration parameter registry is missing")
@@ -817,6 +821,22 @@ def run(
         association_graph_sha256=association_artifact["sha256"],
         materialization_report=materialization,
     )
+    statistics = calibration.get("statistics")
+    if not isinstance(statistics, Mapping):
+        raise ValueError("scene calibration statistics registry is missing")
+    calibrated_query_count = statistics.get("query_count")
+    if (
+        not isinstance(calibrated_query_count, int)
+        or isinstance(calibrated_query_count, bool)
+        or calibrated_query_count <= 0
+    ):
+        raise ValueError("scene calibration mapping query count is invalid")
+    observation_query_count = pipeline_contract.get("mapping_query_count")
+    if observation_query_count != calibrated_query_count:
+        raise ValueError(
+            "scene calibration and observation query counts differ: "
+            f"{calibrated_query_count!r} != {observation_query_count!r}"
+        )
     validate_v6_identity_metric(
         metric,
         state=state,
