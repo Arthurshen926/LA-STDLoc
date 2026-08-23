@@ -202,6 +202,10 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
                 "descriptor_triplet_pose_weights": torch.tensor([1.0]),
                 "descriptor_triplet_harmful_inlier_mask": torch.tensor([True]),
                 "descriptor_identity_supervision_available": True,
+                "query_rows": torch.tensor([0]),
+                "winner_anchor_ids": torch.tensor([1]),
+                "exact_identity_pairs": torch.tensor([[0, 0]]),
+                "active_identity_pairs": torch.tensor([[0, 0]]),
                 "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
                 "affected_anchor_policy": "rebuild",
             }
@@ -253,7 +257,7 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     feedback["records"][0]["exact_identity_positive_pairs"] = torch.empty(
         (0, 2), dtype=torch.long
     )
-    with pytest.raises(ValueError, match="lacks exact active identity"):
+    with pytest.raises(ValueError, match="active identity partition differs"):
         descriptor_loss_proposal(state, provider, feedback, device="cpu")
 
 
@@ -332,6 +336,18 @@ def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
                     else torch.empty(0, dtype=torch.bool)
                 ),
                 "descriptor_identity_supervision_available": True,
+                "query_rows": torch.tensor([0, 1]),
+                "winner_anchor_ids": torch.tensor([1, 1]),
+                "exact_identity_pairs": (
+                    torch.tensor([[0, 0]])
+                    if query_index == 0
+                    else torch.empty((0, 2), dtype=torch.long)
+                ),
+                "active_identity_pairs": (
+                    torch.tensor([[0, 0]])
+                    if query_index == 0
+                    else torch.empty((0, 2), dtype=torch.long)
+                ),
                 "exact_identity_positive_pairs": (
                     torch.tensor([[0, 0]])
                     if query_index == 0
@@ -379,6 +395,104 @@ def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
     assert report["query_local_loo_affected_pair_count"] == 2
     assert report["query_observations_excluded_from_training_anchor_bases"] is True
     assert report["query_local_loo_dense_query_anchor_bank_materialized"] is False
+
+
+def _pose_weight_fixture() -> tuple[dict, GaussianRenderObservationProvider, dict]:
+    provider = GaussianRenderObservationProvider(
+        {
+            "uses_source_mapping_rgb": False,
+            "queries": {
+                "q": {
+                    "native_keypoints": torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+                    "native_descriptors": torch.eye(2),
+                    "native_scores": torch.ones(2),
+                    "native_K": torch.eye(3),
+                    "pose_w2c": torch.eye(4),
+                    "native_input_hw": torch.tensor([2, 2]),
+                }
+            },
+        }
+    )
+    state = _with_unaffected_projective_loo(
+        {
+            "anchor_features": torch.tensor([[-1.0, -1.0], [1.0, 1.0]]),
+        },
+        provider,
+    )
+    identity = torch.tensor([[0, 0], [1, 0]])
+    record = {
+        "failure_layers": ["L3", "L4"],
+        "descriptor_triplets": torch.tensor([[0, 0, 1, 0], [1, 0, 1, 0]]),
+        "descriptor_triplet_pose_weights": torch.tensor([1.0, 0.0]),
+        "descriptor_triplet_harmful_inlier_mask": torch.tensor([True, False]),
+        "descriptor_identity_supervision_available": True,
+        "query_rows": torch.tensor([0, 1]),
+        "winner_anchor_ids": torch.tensor([1, 1]),
+        "exact_identity_pairs": identity,
+        "active_identity_pairs": identity,
+        "exact_identity_positive_pairs": identity,
+        "affected_anchor_policy": "rebuild",
+        "te_cm": 100.0,
+    }
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "descriptor_triplet_pose_weight_semantics": (
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "descriptor_triplet_clean_semantics": DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "query_names": ["q"],
+        "records": [record],
+    }
+    return state, provider, feedback
+
+
+def test_pose_weights_survive_memory_chunking_and_pure_l4_filters_rows() -> None:
+    state, provider, feedback = _pose_weight_fixture()
+
+    def train(*, batch_size: int, pose_weight: float) -> dict:
+        return descriptor_loss_proposal(
+            state,
+            provider,
+            feedback,
+            trust_region=0.2,
+            learning_rate=0.1,
+            epochs=1,
+            batch_size=batch_size,
+            maximum_triplets_per_query=2,
+            clean_fraction=0.0,
+            trust_weight=0.0,
+            pose_critical_weight=pose_weight,
+            device="cpu",
+        )
+
+    weighted_chunked = train(batch_size=1, pose_weight=3.0)
+    weighted_full = train(batch_size=2, pose_weight=3.0)
+    unweighted = train(batch_size=1, pose_weight=0.0)
+    assert torch.allclose(
+        weighted_chunked["anchor_descriptor_residual"],
+        weighted_full["anchor_descriptor_residual"],
+        atol=1e-6,
+    )
+    assert not torch.allclose(
+        weighted_chunked["anchor_descriptor_residual"],
+        unweighted["anchor_descriptor_residual"],
+    )
+    assert weighted_chunked["v6_descriptor_distillation"][
+        "weighted_gradient_uses_fixed_global_denominator"
+    ] is True
+
+    feedback["records"][0]["failure_layers"] = ["L4"]
+    pure_l4 = train(batch_size=1, pose_weight=3.0)
+    report = pure_l4["v6_descriptor_distillation"]
+    assert report["triplet_count"] == 1
+    assert report["positive_pose_weight_triplet_count"] == 1
+    del feedback["records"][0]["affected_anchor_policy"]
+    with pytest.raises(ValueError, match="explicit LOO policy"):
+        train(batch_size=1, pose_weight=3.0)
 
 
 def test_compact_deployment_export_removes_dense_training_state() -> None:
@@ -459,6 +573,10 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
                 "descriptor_triplet_pose_weights": torch.tensor([0.0]),
                 "descriptor_triplet_harmful_inlier_mask": torch.tensor([False]),
                 "descriptor_identity_supervision_available": True,
+                "query_rows": torch.tensor([0]),
+                "winner_anchor_ids": torch.tensor([1]),
+                "exact_identity_pairs": torch.tensor([[0, 0]]),
+                "active_identity_pairs": torch.tensor([[0, 0]]),
                 "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
                 "affected_anchor_policy": "rebuild",
             },
@@ -468,6 +586,10 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
                 "descriptor_triplet_pose_weights": torch.tensor([0.0]),
                 "descriptor_triplet_harmful_inlier_mask": torch.tensor([False]),
                 "descriptor_identity_supervision_available": True,
+                "query_rows": torch.tensor([0]),
+                "winner_anchor_ids": torch.tensor([3]),
+                "exact_identity_pairs": torch.tensor([[0, 2]]),
+                "active_identity_pairs": torch.tensor([[0, 2]]),
                 "exact_identity_positive_pairs": torch.tensor([[0, 2]]),
                 "affected_anchor_policy": "rebuild",
             },

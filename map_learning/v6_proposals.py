@@ -132,9 +132,10 @@ def descriptor_loss_proposal(
         raise ValueError(
             "learned descriptor maps require the pre-residual observation bank"
         )
+    if any("affected_anchor_policy" not in record for record in feedback["records"]):
+        raise ValueError("descriptor feedback requires an explicit LOO policy")
     feedback_policies = {
-        str(record.get("affected_anchor_policy", "rebuild"))
-        for record in feedback["records"]
+        str(record["affected_anchor_policy"]) for record in feedback["records"]
     }
     if len(feedback_policies) != 1:
         raise ValueError("descriptor feedback mixes affected-Anchor LOO policies")
@@ -292,24 +293,55 @@ def descriptor_loss_proposal(
 
         def pair_registry(key: str) -> set[tuple[int, int]]:
             pairs = torch.as_tensor(record.get(key, ()), dtype=torch.long).reshape(-1, 2)
-            return {(int(row), int(anchor)) for row, anchor in pairs.tolist()}
+            registry = [
+                (int(row), int(anchor)) for row, anchor in pairs.tolist()
+            ]
+            if len(registry) != len(set(registry)):
+                raise ValueError(f"descriptor feedback {key} contains duplicates")
+            return set(registry)
 
-        exact_pairs = pair_registry("exact_identity_positive_pairs")
-        ignored_pairs = (
-            pair_registry("identity_inactive_pairs")
-            | pair_registry("identity_projective_incompatible_pairs")
-            | pair_registry("projective_compatible_ambiguous_pairs")
+        lineage_pairs = pair_registry("exact_identity_pairs")
+        active_pairs = pair_registry("active_identity_pairs")
+        positive_pairs = pair_registry("exact_identity_positive_pairs")
+        inactive_pairs = pair_registry("identity_inactive_pairs")
+        incompatible_pairs = pair_registry(
+            "identity_projective_incompatible_pairs"
         )
-        for row, positive_anchor, negative_anchor, _ in triplets.tolist():
-            if (row, positive_anchor) not in exact_pairs:
+        ambiguous_pairs = pair_registry("projective_compatible_ambiguous_pairs")
+        if active_pairs != positive_pairs | incompatible_pairs:
+            raise ValueError("descriptor feedback active identity partition differs")
+        if lineage_pairs != active_pairs | inactive_pairs:
+            raise ValueError("descriptor feedback identity lineage partition differs")
+        if lineage_pairs & ambiguous_pairs:
+            raise ValueError("descriptor feedback identity and ambiguity overlap")
+        winner_rows = torch.as_tensor(record.get("query_rows", ())).long().reshape(-1)
+        winner_anchors = torch.as_tensor(
+            record.get("winner_anchor_ids", ())
+        ).long().reshape(-1)
+        if winner_rows.shape != winner_anchors.shape:
+            raise ValueError("descriptor feedback winner rows are not aligned")
+        if winner_rows.numel() != torch.unique(winner_rows).numel():
+            raise ValueError("descriptor feedback winner query rows contain duplicates")
+        winner_by_row = {
+            int(row): int(anchor)
+            for row, anchor in zip(winner_rows.tolist(), winner_anchors.tolist())
+        }
+        ignored_pairs = lineage_pairs | ambiguous_pairs
+        for triplet_index, values in enumerate(triplets.tolist()):
+            row, positive_anchor, negative_anchor, _ = map(int, values)
+            if (row, positive_anchor) not in positive_pairs:
                 raise ValueError(
                     "descriptor triplet positive lacks exact active identity"
                 )
-            if (row, negative_anchor) in exact_pairs or (
-                row,
-                negative_anchor,
-            ) in ignored_pairs:
+            if (row, negative_anchor) in ignored_pairs:
                 raise ValueError("descriptor triplet negative is not legally negative")
+            if (
+                float(pose_weights[triplet_index]) > 0.0
+                and winner_by_row.get(row) != negative_anchor
+            ):
+                raise ValueError(
+                    "positive pose weight must replace the deployed winner"
+                )
 
         # Formal V6 feedback is multi-label.  Normal descriptor ranking is an
         # L3 operation.  A pose-critical L4 row may additionally enter only
@@ -318,7 +350,9 @@ def descriptor_loss_proposal(
         layer_set = (
             None if record_layers is None else {str(layer) for layer in record_layers}
         )
-        regular_eligible = layer_set is None or bool(eligible_layers & layer_set)
+        regular_eligible = layer_set is None or bool(
+            (eligible_layers - {"L4"}) & layer_set
+        )
         pose_eligible = bool(
             float(pose_critical_weight) > 0.0
             and layer_set is not None
@@ -327,8 +361,15 @@ def descriptor_loss_proposal(
         )
         if not regular_eligible and not pose_eligible:
             continue
+        if not regular_eligible:
+            pose_critical_rows = pose_weights > 0
+            triplets = triplets[pose_critical_rows]
+            pose_weights = pose_weights[pose_critical_rows]
+            harmful = harmful[pose_critical_rows]
         view = observations.build_view(query_index)
-        rows, positive, negative, clean = triplets.T
+        rows, positive, negative, clean = (
+            value.contiguous() for value in triplets.T
+        )
         valid = (
             (rows >= 0)
             & (rows < view.descriptors.shape[0])
@@ -532,6 +573,8 @@ def descriptor_loss_proposal(
     def full_loss(
         residual_value: torch.Tensor,
         rows: torch.Tensor,
+        *,
+        normalization_weight: float | None = None,
     ) -> torch.Tensor:
         q = query[rows].to(train_device)
         device_rows = rows.to(train_device)
@@ -559,9 +602,15 @@ def descriptor_loss_proposal(
             (float(margin) + negative_score - positive_score)
             / max(float(temperature), 1e-6)
         ) * float(temperature)
-        return (ranking * weight).sum() / weight.sum().clamp_min(1e-8)
+        denominator = (
+            weight.sum().clamp_min(1e-8)
+            if normalization_weight is None
+            else weight.new_tensor(float(normalization_weight)).clamp_min(1e-8)
+        )
+        return (ranking * weight).sum() / denominator
 
     all_rows = torch.arange(query.shape[0])
+    global_training_weight = float(training_triplet_weight.sum())
     with torch.no_grad():
         _, initial_bounded_tangent = _bounded_descriptor_bank(
             base_active, residual, trust_region
@@ -577,14 +626,21 @@ def descriptor_loss_proposal(
         optimizer_last_objective = initial_objective
     for epoch in range(1, int(epochs) + 1):
         order = torch.randperm(query.shape[0], generator=generator)
+        optimizer.zero_grad(set_to_none=True)
         for start in range(0, query.shape[0], int(batch_size)):
             rows = order[start : start + int(batch_size)]
-            ranking_loss = full_loss(residual, rows)
-            regularizer = trust_penalty(raw_tangent(residual))
-            loss = ranking_loss + float(trust_weight) * regularizer
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
+            # ``batch_size`` is a memory chunk only.  Accumulating every chunk
+            # against one frozen global denominator gives the exact weighted
+            # full-objective gradient, even for batch_size=1.
+            ranking_partial = full_loss(
+                residual,
+                rows,
+                normalization_weight=global_training_weight,
+            )
+            ranking_partial.backward()
+        if float(trust_weight) > 0.0:
+            (float(trust_weight) * trust_penalty(raw_tangent(residual))).backward()
+        optimizer.step()
         with torch.no_grad():
             epoch_ranking = float(full_loss(residual, all_rows).cpu())
             epoch_regularizer = float(trust_penalty(raw_tangent(residual)).cpu())
@@ -634,7 +690,7 @@ def descriptor_loss_proposal(
     proposal["anchor_features"] = output_features
     proposal["v6_descriptor_distillation"] = {
         "schema": "lafgs_v6_counterfactual_descriptor_loss_distillation",
-        "version": 3,
+        "version": 4,
         "updated_anchor_rows": cumulative_updated_anchors,
         "round_updated_anchor_rows": active,
         "triplet_count": int(query.shape[0]),
@@ -698,6 +754,14 @@ def descriptor_loss_proposal(
         "tail_query_weight": float(tail_query_weight),
         "tail_te_quantile": 0.95,
         "tail_te_threshold_cm": tail_te_threshold_cm,
+        "tail_query_definition": "training_split_translation_error_q95_all_layers",
+        "round_tail_query_indices": torch.tensor(
+            sorted(tail_query_set), dtype=torch.long
+        ),
+        "selected_tail_query_indices": torch.tensor(
+            sorted(set(selected_query.tolist()) & tail_query_set),
+            dtype=torch.long,
+        ),
         "selected_tail_query_count": len(
             set(selected_query.tolist()) & tail_query_set
         ),
@@ -714,6 +778,9 @@ def descriptor_loss_proposal(
         "learning_rate_is_descriptor_vector_scale": True,
         "epochs": int(epochs),
         "batch_size": int(batch_size),
+        "batch_size_role": "memory_chunk_for_exact_full_objective_gradient",
+        "optimizer_step_count": int(epochs),
+        "weighted_gradient_uses_fixed_global_denominator": True,
         "maximum_triplets_per_query": int(maximum_triplets_per_query),
         "sampling_seed": 2026,
         "online_model_added": False,

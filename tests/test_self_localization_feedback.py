@@ -104,6 +104,7 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
                 "descriptor_triplet_pose_weights": torch.tensor([0.0]),
                 "descriptor_triplet_legal_pair_clean_mask": torch.tensor([True]),
                 "descriptor_identity_supervision_available": True,
+                "affected_anchor_policy": "rebuild",
                 "visible_anchor_ids": torch.tensor([2, 3]),
                 "visible_anchor_image_cells": torch.tensor([0, 5]),
                 "clean_inlier_pose_anchor_ids": torch.tensor([2]),

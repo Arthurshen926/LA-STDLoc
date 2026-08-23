@@ -189,7 +189,9 @@ def test_positive_statistics_excludes_ambiguous_anchors_from_negative() -> None:
 
 
 def test_counterfactual_pose_weight_measures_actual_winner_consensus_flip() -> None:
-    xyz = torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]])
+    xyz = torch.tensor(
+        [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [3.0, 0.0, 1.0]]
+    )
     current = torch.eye(4)
     current[0, 3] = -1.0
     kwargs = {
@@ -211,6 +213,11 @@ def test_counterfactual_pose_weight_measures_actual_winner_consensus_flip() -> N
         winners=torch.tensor([0]), **kwargs
     )
     assert ignored.tolist() == [0.0]
+    half = _fixed_hypothesis_counterfactual_pose_weights(
+        winners=torch.tensor([2]),
+        **{**kwargs, "triplets": torch.tensor([[0, 0, 2, 0]])},
+    )
+    assert half.tolist() == [0.5]
 
 
 def test_pose_information_keeps_lowest_residual_row_per_anchor() -> None:

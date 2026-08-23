@@ -324,6 +324,10 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
             )
         else:
             assert (
+                command.count("--expected-mapping-training-query-indices-sha256")
+                == 1
+            )
+            assert (
                 _flag(
                     command,
                     "--expected-mapping-training-query-indices-sha256",
