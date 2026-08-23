@@ -7,6 +7,14 @@ from scripts.run_closed_loop_projective_distillation import (
 )
 
 
+def test_formal_runner_includes_joint_descriptor_selection_arm() -> None:
+    source = Path(
+        "/tmp/stdloc-wt-v6-closed-loop-projective/"
+        "scripts/run_closed_loop_projective_distillation.py"
+    ).read_text()
+    assert '["descriptor", "selection", "descriptor_selection"]' in source
+
+
 def _args() -> Namespace:
     return Namespace(
         observation_cache=Path("observations.pt"),

@@ -145,7 +145,10 @@ def run(args: argparse.Namespace) -> dict:
             )
             rounds.append(decision)
             break
-        arms = ["descriptor", "selection"]
+        # Evaluate the independent mechanisms and their required joint arm.
+        # A descriptor update can change which compact subset is sufficient;
+        # rejecting both independent arms must not hide a useful combination.
+        arms = ["descriptor", "selection", "descriptor_selection"]
         if (
             int(baseline_payload["failure_layer_counts"].get("L1", 0)) > 0
             and args.association_graph is not None

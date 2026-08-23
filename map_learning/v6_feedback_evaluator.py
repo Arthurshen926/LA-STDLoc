@@ -71,6 +71,37 @@ def _layer_edges(
     return result
 
 
+def _positive_score_statistics(
+    row_scores: torch.Tensor, positives: list[int]
+) -> tuple[float, float, int, int]:
+    """Return the exact stable-rank statistics without a full argsort.
+
+    Stable descending argsort breaks equal-score ties by the original Anchor
+    row.  Counting strictly larger scores and equal scores at smaller rows is
+    therefore exactly equivalent and linear in the bank size.
+    """
+
+    if not positives:
+        raise ValueError("positive score statistics require a positive Anchor")
+    positive_rows = torch.tensor(
+        positives, dtype=torch.long, device=row_scores.device
+    )
+    positive_scores = row_scores[positive_rows]
+    best_positive = positive_scores.max()
+    best_anchor = int(positive_rows[positive_scores == best_positive].min())
+    anchor_rows = torch.arange(row_scores.numel(), device=row_scores.device)
+    rank = 1 + int(
+        (
+            (row_scores > best_positive)
+            | ((row_scores == best_positive) & (anchor_rows < best_anchor))
+        ).sum()
+    )
+    wrong_scores = row_scores.clone()
+    wrong_scores[positive_rows] = -torch.inf
+    best_wrong = wrong_scores.max()
+    return float(best_positive), float(best_wrong), rank, best_anchor
+
+
 def _summary(rows: list[dict]) -> dict:
     te = np.asarray([row["te_cm"] for row in rows], dtype=np.float64)
     ae = np.asarray([row["ae_deg"] for row in rows], dtype=np.float64)
@@ -219,18 +250,13 @@ def evaluate_query_local_feedback(
         confusion_pairs = []
         for row, positives in enumerate(positive_edges):
             if positives:
-                positive_tensor = torch.tensor(positives, device=device)
-                best_positive.append(float(dense_scores[row, positive_tensor].max()))
-                mask = torch.ones(bank.shape[0], dtype=torch.bool, device=device)
-                mask[positive_tensor] = False
-                best_wrong.append(float(dense_scores[row, mask].max()))
-                order = torch.argsort(dense_scores[row], descending=True, stable=True)
-                positions = torch.nonzero(
-                    torch.isin(order, positive_tensor), as_tuple=False
-                ).reshape(-1)
-                correct_anchor_ranks.append(int(positions[0]) + 1)
+                positive_score, wrong_score, rank, best = (
+                    _positive_score_statistics(dense_scores[row], positives)
+                )
+                best_positive.append(positive_score)
+                best_wrong.append(wrong_score)
+                correct_anchor_ranks.append(rank)
                 if not bool(correct[row]):
-                    best = int(positive_tensor[torch.argmax(dense_scores[row, positive_tensor])])
                     confusion_pairs.append((int(winners[row]), best))
         if clean_ids.numel():
             clean_jacobian = pose_jacobian_analytic(
