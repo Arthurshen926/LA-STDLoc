@@ -72,34 +72,78 @@ def _layer_edges(
 
 
 def _positive_score_statistics(
-    row_scores: torch.Tensor, positives: list[int]
-) -> tuple[float, float, int, int]:
-    """Return the exact stable-rank statistics without a full argsort.
+    dense_scores: torch.Tensor,
+    positives_by_row: list[list[int]],
+    *,
+    chunk_size: int = 64,
+) -> dict[int, tuple[float, float, int, int]]:
+    """Return exact stable-rank statistics with one bank scan per query row.
 
     Stable descending argsort breaks equal-score ties by the original Anchor
-    row.  Counting strictly larger scores and equal scores at smaller rows is
-    therefore exactly equivalent and linear in the bank size.
+    row. Counting larger scores plus equal scores at smaller rows is exactly
+    equivalent. Rows are processed in bounded batches so rank and best-wrong
+    share one vectorized scan rather than separately scanning the full bank
+    for every positive keypoint.
     """
 
-    if not positives:
-        raise ValueError("positive score statistics require a positive Anchor")
-    positive_rows = torch.tensor(
-        positives, dtype=torch.long, device=row_scores.device
-    )
-    positive_scores = row_scores[positive_rows]
-    best_positive = positive_scores.max()
-    best_anchor = int(positive_rows[positive_scores == best_positive].min())
-    anchor_rows = torch.arange(row_scores.numel(), device=row_scores.device)
-    rank = 1 + int(
-        (
-            (row_scores > best_positive)
-            | ((row_scores == best_positive) & (anchor_rows < best_anchor))
-        ).sum()
-    )
-    wrong_scores = row_scores.clone()
-    wrong_scores[positive_rows] = -torch.inf
-    best_wrong = wrong_scores.max()
-    return float(best_positive), float(best_wrong), rank, best_anchor
+    if dense_scores.ndim != 2 or len(positives_by_row) != dense_scores.shape[0]:
+        raise ValueError("positive edges and dense score rows differ")
+    if int(chunk_size) < 1:
+        raise ValueError("positive statistics chunk size must be positive")
+    positive_query_rows = [
+        row for row, positives in enumerate(positives_by_row) if positives
+    ]
+    result: dict[int, tuple[float, float, int, int]] = {}
+    anchor_count = int(dense_scores.shape[1])
+    anchor_rows = torch.arange(anchor_count, device=dense_scores.device)
+    for start in range(0, len(positive_query_rows), int(chunk_size)):
+        rows_list = positive_query_rows[start : start + int(chunk_size)]
+        rows = torch.tensor(rows_list, dtype=torch.long, device=dense_scores.device)
+        maximum_degree = max(len(positives_by_row[row]) for row in rows_list)
+        padded = torch.full(
+            (len(rows_list), maximum_degree),
+            -1,
+            dtype=torch.long,
+            device=dense_scores.device,
+        )
+        for local, row in enumerate(rows_list):
+            values = positives_by_row[row]
+            padded[local, : len(values)] = torch.tensor(
+                values, dtype=torch.long, device=dense_scores.device
+            )
+        valid = padded >= 0
+        gathered = dense_scores[rows[:, None], padded.clamp_min(0)]
+        gathered = gathered.masked_fill(~valid, -torch.inf)
+        best_positive = gathered.max(1).values
+        best_anchor = torch.where(
+            valid & (gathered == best_positive[:, None]),
+            padded,
+            anchor_count,
+        ).min(1).values
+        scores = dense_scores[rows]
+        ranks = 1 + (
+            (scores > best_positive[:, None])
+            | (
+                (scores == best_positive[:, None])
+                & (anchor_rows[None] < best_anchor[:, None])
+            )
+        ).sum(1)
+        wrong = scores.clone()
+        local_rows = torch.arange(len(rows_list), device=dense_scores.device)
+        local_rows = local_rows[:, None].expand_as(padded)
+        wrong[local_rows[valid], padded[valid]] = -torch.inf
+        best_wrong = wrong.max(1).values
+        packed = torch.stack(
+            [best_positive, best_wrong, ranks, best_anchor], dim=1
+        ).cpu()
+        for row, values in zip(rows_list, packed.tolist()):
+            result[row] = (
+                float(values[0]),
+                float(values[1]),
+                int(values[2]),
+                int(values[3]),
+            )
+    return result
 
 
 def _summary(rows: list[dict]) -> dict:
@@ -248,11 +292,12 @@ def evaluate_query_local_feedback(
         best_wrong = []
         correct_anchor_ranks = []
         confusion_pairs = []
+        positive_statistics = _positive_score_statistics(
+            dense_scores, positive_edges
+        )
         for row, positives in enumerate(positive_edges):
             if positives:
-                positive_score, wrong_score, rank, best = (
-                    _positive_score_statistics(dense_scores[row], positives)
-                )
+                positive_score, wrong_score, rank, best = positive_statistics[row]
                 best_positive.append(positive_score)
                 best_wrong.append(wrong_score)
                 correct_anchor_ranks.append(rank)

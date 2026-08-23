@@ -13,19 +13,35 @@ def test_maximum_matching_prevents_duplicate_anchor_votes() -> None:
 
 
 def test_positive_statistics_match_stable_argsort_with_ties() -> None:
-    scores = torch.tensor([0.7, 0.9, 0.9, -0.1, 0.8, 0.9])
-    positives = [2, 4, 5]
-    best_positive, best_wrong, rank, best_anchor = _positive_score_statistics(
-        scores, positives
+    scores = torch.tensor(
+        [
+            [0.7, 0.9, 0.9, -0.1, 0.8, 0.9],
+            [0.2, 0.1, 0.3, 0.3, -0.5, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ]
     )
-    order = torch.argsort(scores, descending=True, stable=True)
-    oracle_rank = min(
-        int(torch.nonzero(order == anchor, as_tuple=False)[0]) + 1
-        for anchor in positives
-    )
-    wrong = scores.clone()
-    wrong[torch.tensor(positives)] = -torch.inf
-    assert best_positive == float(scores[positives].max())
-    assert best_wrong == float(wrong.max())
-    assert rank == oracle_rank
-    assert best_anchor == 2
+    positives_by_row = [[2, 4, 5], [], [3, 5]]
+    result = _positive_score_statistics(scores, positives_by_row, chunk_size=1)
+    assert set(result) == {0, 2}
+    for row, positives in enumerate(positives_by_row):
+        if not positives:
+            continue
+        order = torch.argsort(scores[row], descending=True, stable=True)
+        oracle_rank = min(
+            int(torch.nonzero(order == anchor, as_tuple=False)[0]) + 1
+            for anchor in positives
+        )
+        wrong = scores[row].clone()
+        wrong[torch.tensor(positives)] = -torch.inf
+        positive, best_wrong, rank, best_anchor = result[row]
+        positive_scores = scores[row, positives]
+        expected_positive = positive_scores.max()
+        expected_anchor = min(
+            anchor
+            for anchor in positives
+            if scores[row, anchor] == expected_positive
+        )
+        assert positive == float(expected_positive)
+        assert best_wrong == float(wrong.max())
+        assert rank == oracle_rank
+        assert best_anchor == expected_anchor
