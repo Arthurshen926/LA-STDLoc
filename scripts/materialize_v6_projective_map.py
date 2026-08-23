@@ -106,6 +106,16 @@ def run(args: argparse.Namespace) -> dict:
         minimum_track_views=args.minimum_views,
         device=args.device,
     )
+    # Bind the reusable graph to the exact rendered-observation registry.  The
+    # report also carries this lineage, but the graph must remain self-auditing
+    # when it is copied independently for a later feedback reconstruction arm.
+    association = {
+        **association,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "input_sha256": {"observation_cache": actual_cache_sha},
+        "producer": identity,
+    }
     association_seconds = time.perf_counter() - association_started
     reconstruction_started = time.perf_counter()
     base = reconstruct_projective_anchors(
@@ -139,19 +149,22 @@ def run(args: argparse.Namespace) -> dict:
         parts.append(completion)
     candidates = merge_projective_candidates(parts)
     reconstruction_seconds = time.perf_counter() - reconstruction_started
+    association_path = args.output_dir / "association_graph.pt"
+    _save(association, association_path)
+    association_sha = sha256_file(association_path)
     lineage = {
         "v6_observation_cache": str(cache_path),
         "v6_observation_cache_sha256": actual_cache_sha,
+        "v6_association_graph": str(association_path.resolve()),
+        "v6_association_graph_sha256": association_sha,
         "v6_producer": identity,
         "v6_round": 0,
         "projective_completion_enabled": bool(args.enable_projective_completion),
     }
     state = materialize_projective_anchor_map(candidates, lineage=lineage)
-    association_path = args.output_dir / "association_graph.pt"
     candidates_path = args.output_dir / "projective_anchor_candidates.pt"
     map_path = args.output_dir / "projective_anchor_map.pt"
     metric_path = args.output_dir / "identity_metric.pt"
-    _save(association, association_path)
     _save(candidates, candidates_path)
     _save(state, map_path)
     map_sha = sha256_file(map_path)
@@ -168,7 +181,7 @@ def run(args: argparse.Namespace) -> dict:
         "input": {"observation_cache": str(cache_path), "sha256": actual_cache_sha},
         "output": {
             "association_graph": str(association_path.resolve()),
-            "association_graph_sha256": sha256_file(association_path),
+            "association_graph_sha256": association_sha,
             "candidates": str(candidates_path.resolve()),
             "candidates_sha256": sha256_file(candidates_path),
             "map": str(map_path.resolve()),

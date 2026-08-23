@@ -88,7 +88,36 @@ def test_full_v6_pipeline_contract_accepts_bound_gaussian_projective_map():
     )
     assert result["exact_identity_observation_count"] == 1
     assert result["unified_association"] is True
+    assert result["association_graph_self_bound"] is False
     assert result["final_xyz_pure_ray"] is True
+
+
+def test_full_v6_pipeline_contract_accepts_new_self_bound_association():
+    cache, state, association, _ = _inputs()
+    association["input_sha256"] = {"observation_cache": "cache"}
+    result = validate_v6_pipeline_inputs(
+        state=state,
+        observation_cache=cache,
+        observation_cache_sha256="cache",
+        map_sha256="map",
+        association_graph=association,
+        association_graph_sha256="assoc",
+    )
+    assert result["association_graph_self_bound"] is True
+    assert result["materialization_report_bound"] is False
+
+
+def test_full_v6_pipeline_contract_rejects_unbound_legacy_association():
+    cache, state, association, _ = _inputs()
+    with pytest.raises(ValueError, match="lacks mapping-only observation lineage"):
+        validate_v6_pipeline_inputs(
+            state=state,
+            observation_cache=cache,
+            observation_cache_sha256="cache",
+            map_sha256="map",
+            association_graph=association,
+            association_graph_sha256="assoc",
+        )
 
 
 @pytest.mark.parametrize(

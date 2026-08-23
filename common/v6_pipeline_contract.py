@@ -127,11 +127,27 @@ def validate_v6_pipeline_inputs(
     if association_bound != (association_graph_sha256 is not None):
         raise ValueError("association graph and SHA must be supplied together")
     if association_graph is not None:
-        require_schema(
-            association_graph,
-            ASSOCIATION_GRAPH_SCHEMA,
-            label="V6 unified association graph",
+        if association_graph.get("schema") != ASSOCIATION_GRAPH_SCHEMA:
+            raise ValueError(
+                "V6 unified association graph schema differs: "
+                f"{association_graph.get('schema')} != {ASSOCIATION_GRAPH_SCHEMA}"
+            )
+        association_self_bound = (
+            association_graph.get("uses_source_mapping_rgb") is False
+            and association_graph.get("uses_test_queries") is False
+            and association_graph.get("input_sha256", {}).get(
+                "observation_cache"
+            )
+            == observation_cache_sha256
         )
+        # Early V6 graphs predated self-contained lineage.  They remain
+        # admissible only with the SHA-bound materialization report that was
+        # emitted in the same run; new materializers write the binding into
+        # both places.
+        if not association_self_bound and materialization_report is None:
+            raise ValueError(
+                "association graph lacks mapping-only observation lineage"
+            )
         contract = association_graph.get("contract", {})
         required_association = {
             "render_valid_observations_required": True,
@@ -178,6 +194,13 @@ def validate_v6_pipeline_inputs(
                 contracts.get(field),
                 f"materialization report does not certify {field}",
             )
+    association_self_bound = bool(
+        association_graph is not None
+        and association_graph.get("uses_source_mapping_rgb") is False
+        and association_graph.get("uses_test_queries") is False
+        and association_graph.get("input_sha256", {}).get("observation_cache")
+        == observation_cache_sha256
+    )
 
     return {
         "schema": "lafgs_v6_full_pipeline_input_contract",
@@ -188,6 +211,7 @@ def validate_v6_pipeline_inputs(
         "map_sha256": map_sha256,
         "association_graph_sha256": association_graph_sha256,
         "association_graph_bound": association_bound,
+        "association_graph_self_bound": association_self_bound,
         "materialization_report_bound": report_bound,
         "mapping_query_count": len(cache_names),
         "anchor_count": anchor_count,
