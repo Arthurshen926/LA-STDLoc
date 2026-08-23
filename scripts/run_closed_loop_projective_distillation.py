@@ -83,6 +83,35 @@ def _proposal_command(
         "--output-dir", str(output),
         "--device", args.device,
         "--descriptor-trust-region", str(args.descriptor_trust_region),
+        "--descriptor-margin", str(getattr(args, "descriptor_margin", 0.05)),
+        "--descriptor-temperature", str(
+            getattr(args, "descriptor_temperature", 0.04)
+        ),
+        "--descriptor-learning-rate", str(
+            getattr(args, "descriptor_learning_rate", 0.02)
+        ),
+        "--descriptor-epochs", str(getattr(args, "descriptor_epochs", 5)),
+        "--descriptor-batch-size", str(
+            getattr(args, "descriptor_batch_size", 8192)
+        ),
+        "--descriptor-maximum-triplets-per-query", str(
+            getattr(args, "descriptor_maximum_triplets_per_query", 128)
+        ),
+        "--descriptor-clean-fraction", str(
+            getattr(args, "descriptor_clean_fraction", 0.25)
+        ),
+        "--descriptor-clean-weight", str(
+            getattr(args, "descriptor_clean_weight", 0.25)
+        ),
+        "--descriptor-trust-weight", str(
+            getattr(args, "descriptor_trust_weight", 0.1)
+        ),
+        "--descriptor-pose-critical-weight", str(
+            getattr(args, "descriptor_pose_critical_weight", 0.0)
+        ),
+        "--descriptor-tail-query-weight", str(
+            getattr(args, "descriptor_tail_query_weight", 0.0)
+        ),
         "--maximum-anchors", str(args.maximum_anchor_count),
         "--visibility-target", str(args.required_visibility_rank),
         "--detectability-target", str(args.required_detectable_rank),
@@ -102,7 +131,11 @@ def _proposal_command(
     mapping_split_sha = getattr(
         args, "expected_mapping_training_query_indices_sha256", None
     )
-    if arm in {"selection", "descriptor_selection"} and mapping_split is not None:
+    if arm in {
+        "descriptor_loss",
+        "selection",
+        "descriptor_selection",
+    } and mapping_split is not None:
         command.extend(
             [
                 "--mapping-training-query-indices",
@@ -126,11 +159,11 @@ def _eligible_arms(
     arms: list[str] = []
     skipped: list[dict[str, str]] = []
     if anchor_count <= int(maximum_anchor_count):
-        arms.append("descriptor")
+        arms.append("descriptor_loss")
     else:
         skipped.append(
             {
-                "arm": "descriptor",
+                "arm": "descriptor_loss",
                 "reason": "descriptor_only_preserves_anchor_count_above_hard_limit",
             }
         )
@@ -378,6 +411,17 @@ def main() -> None:
     )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--descriptor-trust-region", type=float, default=0.05)
+    parser.add_argument("--descriptor-margin", type=float, default=0.05)
+    parser.add_argument("--descriptor-temperature", type=float, default=0.04)
+    parser.add_argument("--descriptor-learning-rate", type=float, default=0.02)
+    parser.add_argument("--descriptor-epochs", type=int, default=5)
+    parser.add_argument("--descriptor-batch-size", type=int, default=8192)
+    parser.add_argument("--descriptor-maximum-triplets-per-query", type=int, default=128)
+    parser.add_argument("--descriptor-clean-fraction", type=float, default=0.25)
+    parser.add_argument("--descriptor-clean-weight", type=float, default=0.25)
+    parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
+    parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
+    parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
     parser.add_argument("--mapping-training-query-indices", type=Path)
     parser.add_argument("--expected-mapping-training-query-indices-sha256")
     parser.add_argument(

@@ -19,7 +19,7 @@ def test_formal_runner_includes_joint_descriptor_selection_arm() -> None:
         maximum_anchor_count=100,
         has_association_graph=True,
     )
-    assert arms == ["descriptor", "selection", "descriptor_selection"]
+    assert arms == ["descriptor_loss", "selection", "descriptor_selection"]
     assert skipped == []
 
 
@@ -35,7 +35,7 @@ def test_formal_runner_skips_descriptor_only_when_it_cannot_be_compact() -> None
     assert arms == ["selection", "descriptor_selection", "reconstruction"]
     assert skipped == [
         {
-            "arm": "descriptor",
+            "arm": "descriptor_loss",
             "reason": "descriptor_only_preserves_anchor_count_above_hard_limit",
         }
     ]
@@ -150,6 +150,32 @@ def test_formal_runner_uses_independent_evaluation_targets_for_selection() -> No
     assert value("--visibility-target") == "4"
     assert value("--detectability-target") == "16"
     assert value("--matching-target") == "16"
+
+
+def test_formal_runner_uses_latest_loss_and_split_for_descriptor_arm() -> None:
+    args = _args()
+    args.mapping_training_query_indices = Path("sequence-split.json")
+    args.expected_mapping_training_query_indices_sha256 = "s" * 64
+    args.descriptor_pose_critical_weight = 3.0
+    args.descriptor_tail_query_weight = 1.0
+    command = _proposal_command(
+        args,
+        root=Path("/repo"),
+        arm="descriptor_loss",
+        map_path=Path("map.pt"),
+        map_sha="m" * 64,
+        feedback_path=Path("feedback.pt"),
+        feedback_sha="f" * 64,
+        output=Path("round/proposal"),
+    )
+
+    def value(flag: str) -> str:
+        return command[command.index(flag) + 1]
+
+    assert value("--descriptor-margin") == "0.05"
+    assert value("--descriptor-pose-critical-weight") == "3.0"
+    assert value("--descriptor-tail-query-weight") == "1.0"
+    assert value("--mapping-training-query-indices") == "sequence-split.json"
     assert value("--pose-min-eigenvalue-target") == "0.0"
     assert value("--mapping-training-query-indices") == "sequence-split.json"
     assert value("--expected-mapping-training-query-indices-sha256") == "s" * 64

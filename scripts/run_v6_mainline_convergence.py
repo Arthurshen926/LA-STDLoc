@@ -154,6 +154,9 @@ def _propose(
         "--descriptor-clean-fraction", str(args.descriptor_clean_fraction),
         "--descriptor-clean-weight", str(args.descriptor_clean_weight),
         "--descriptor-trust-weight", str(args.descriptor_trust_weight),
+        "--descriptor-pose-critical-weight",
+        str(args.descriptor_pose_critical_weight),
+        "--descriptor-tail-query-weight", str(args.descriptor_tail_query_weight),
         "--maximum-anchors", str(args.selection_maximum_anchors),
         "--visibility-target", str(args.required_visibility_rank),
         "--detectability-target", str(args.required_detectable_rank),
@@ -505,6 +508,12 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_clean_fraction": float(args.descriptor_clean_fraction),
             "descriptor_clean_weight": float(args.descriptor_clean_weight),
             "descriptor_trust_weight": float(args.descriptor_trust_weight),
+            "descriptor_pose_critical_weight": float(
+                args.descriptor_pose_critical_weight
+            ),
+            "descriptor_tail_query_weight": float(
+                args.descriptor_tail_query_weight
+            ),
             "run_reconstruction": bool(args.run_reconstruction),
             "run_selection": bool(args.run_selection),
             "selection_maximum_anchors": int(args.selection_maximum_anchors),
@@ -582,6 +591,8 @@ def main() -> None:
     parser.add_argument("--descriptor-clean-fraction", type=float, default=0.25)
     parser.add_argument("--descriptor-clean-weight", type=float, default=0.25)
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
+    parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
+    parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
     parser.add_argument("--descriptor-training-query-indices", type=Path)
     parser.add_argument("--expected-descriptor-training-query-indices-sha256")
     parser.add_argument("--run-reconstruction", action="store_true")

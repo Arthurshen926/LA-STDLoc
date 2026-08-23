@@ -296,6 +296,8 @@ def run(args: argparse.Namespace) -> dict:
                 clean_fraction=args.descriptor_clean_fraction,
                 clean_weight=args.descriptor_clean_weight,
                 trust_weight=args.descriptor_trust_weight,
+                pose_critical_weight=args.descriptor_pose_critical_weight,
+                tail_query_weight=args.descriptor_tail_query_weight,
                 training_query_indices=descriptor_training_queries,
                 device=args.device,
             )
@@ -453,6 +455,10 @@ def run(args: argparse.Namespace) -> dict:
         "descriptor_clean_fraction": float(args.descriptor_clean_fraction),
         "descriptor_clean_weight": float(args.descriptor_clean_weight),
         "descriptor_trust_weight": float(args.descriptor_trust_weight),
+        "descriptor_pose_critical_weight": float(
+            args.descriptor_pose_critical_weight
+        ),
+        "descriptor_tail_query_weight": float(args.descriptor_tail_query_weight),
         "maximum_anchors": int(args.maximum_anchors),
         "visibility_target": int(args.visibility_target),
         "detectability_target": int(args.detectability_target),
@@ -648,6 +654,8 @@ def main() -> None:
     parser.add_argument("--descriptor-clean-fraction", type=float, default=0.25)
     parser.add_argument("--descriptor-clean-weight", type=float, default=0.25)
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
+    parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
+    parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
     parser.add_argument(
         "--mapping-training-query-indices",
         "--descriptor-training-query-indices",

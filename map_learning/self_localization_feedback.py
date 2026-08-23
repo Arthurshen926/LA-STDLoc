@@ -7,6 +7,8 @@ from collections.abc import Sequence
 import torch
 
 from common.v6_contracts import (
+    DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
+    DESCRIPTOR_POSE_WEIGHT_SEMANTICS,
     FEEDBACK_SCHEMA,
     FEEDBACK_VERSION,
     require_exact_identity_positive_contract,
@@ -167,13 +169,11 @@ def build_self_localization_feedback(
         ).reshape(-1)
         if descriptor_triplet_pose_weights.numel() != descriptor_triplets.shape[0]:
             raise ValueError("descriptor triplet pose-weight rows are not aligned")
-        if not torch.equal(
-            descriptor_triplet_pose_weights,
-            descriptor_triplet_harmful.float(),
+        if not bool(torch.isfinite(descriptor_triplet_pose_weights).all()) or bool(
+            ((descriptor_triplet_pose_weights < 0.0)
+             | (descriptor_triplet_pose_weights > 1.0)).any()
         ):
-            raise ValueError(
-                "descriptor triplet pose weights must encode harmful inliers"
-            )
+            raise ValueError("descriptor triplet pose weights must be finite in [0,1]")
         descriptor_triplet_legal_pair_clean = torch.as_tensor(
             source.get("descriptor_triplet_legal_pair_clean_mask", ()),
             dtype=torch.bool,
@@ -456,10 +456,14 @@ def build_self_localization_feedback(
             "raw_visible_anchor_count_is_not_visibility_rank": True,
         },
         "descriptor_triplet_pose_weight_semantics": (
-            "harmful_poselib_inlier_indicator_only_not_training_weight"
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "descriptor_triplet_pose_weight_formula": (
+            "max(0,((I[pos@gt]-I[pos@current])-"
+            "(I[neg@gt]-I[neg@current]))/2) when neg_is_deployed_winner"
         ),
         "descriptor_triplet_clean_semantics": (
-            "exact_positive_score_ge_best_legal_negative_score_zero_margin"
+            DESCRIPTOR_CLEAN_LABEL_SEMANTICS
         ),
         "estimated_pose_w2c_role": ("paired_winning_pose_diagnostic_only_not_training"),
         "required_matching_rank": int(required_rank),
@@ -519,6 +523,14 @@ def build_self_localization_feedback(
         ),
         "descriptor_triplet_harmful_inlier_count": sum(
             int(record["descriptor_triplet_harmful_inlier_mask"].sum())
+            for record in normalized
+        ),
+        "descriptor_triplet_positive_pose_weight_count": sum(
+            int((record["descriptor_triplet_pose_weights"] > 0).sum())
+            for record in normalized
+        ),
+        "descriptor_triplet_pose_weight_sum": sum(
+            float(record["descriptor_triplet_pose_weights"].sum())
             for record in normalized
         ),
         "descriptor_triplet_legal_pair_clean_count": sum(

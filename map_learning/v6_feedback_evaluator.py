@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from scipy.spatial import cKDTree
 
 from common.v6_contracts import (
+    DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
+    DESCRIPTOR_POSE_WEIGHT_SEMANTICS,
     exact_identity_positive_contract,
     require_mapping_only,
 )
@@ -448,6 +450,61 @@ def _legal_descriptor_pair_is_clean(
         and math.isfinite(legal_negative_score)
         and positive_score >= legal_negative_score
     )
+
+
+def _fixed_hypothesis_counterfactual_pose_weights(
+    *,
+    triplets: torch.Tensor,
+    winners: torch.Tensor,
+    keypoints: torch.Tensor,
+    xyz: torch.Tensor,
+    intrinsics: torch.Tensor,
+    current_pose_w2c: torch.Tensor,
+    ground_truth_pose_w2c: torch.Tensor,
+    reprojection_error_px: float,
+) -> torch.Tensor:
+    """Score an actual winner flip against fixed current/ground-truth hypotheses.
+
+    The online solver is unchanged.  Offline, each legal negative-to-exact-positive
+    replacement receives the normalized improvement in the standard RANSAC
+    consensus margin ``support(GT) - support(current)``.  A row that does not
+    replace the deployed winner cannot change the current hypothesis and gets
+    zero weight.
+    """
+
+    values = torch.as_tensor(triplets, dtype=torch.long).reshape(-1, 4)
+    if values.numel() == 0:
+        return torch.empty(0, dtype=torch.float32)
+    rows, positive, negative, _ = values.T
+    if bool((rows < 0).any()) or bool((rows >= keypoints.shape[0]).any()):
+        raise ValueError("descriptor counterfactual query row is invalid")
+    if bool((positive < 0).any()) or bool((positive >= xyz.shape[0]).any()):
+        raise ValueError("descriptor counterfactual positive Anchor is invalid")
+    if bool((negative < 0).any()) or bool((negative >= xyz.shape[0]).any()):
+        raise ValueError("descriptor counterfactual negative Anchor is invalid")
+
+    def residual(anchor_rows: torch.Tensor, pose_w2c: torch.Tensor) -> torch.Tensor:
+        projected, depth = _project(
+            xyz[anchor_rows].float(), intrinsics.float(), pose_w2c.float()
+        )
+        error = torch.linalg.norm(projected - keypoints[rows].float(), dim=1)
+        valid = torch.isfinite(error) & torch.isfinite(depth) & (depth > 0)
+        return torch.where(valid, error, torch.full_like(error, float("inf")))
+
+    threshold = float(reprojection_error_px)
+    if not threshold > 0.0:
+        raise ValueError("counterfactual reprojection threshold must be positive")
+    positive_gt = residual(positive, ground_truth_pose_w2c) <= threshold
+    positive_current = residual(positive, current_pose_w2c) <= threshold
+    negative_gt = residual(negative, ground_truth_pose_w2c) <= threshold
+    negative_current = residual(negative, current_pose_w2c) <= threshold
+    before_margin = negative_gt.float() - negative_current.float()
+    after_margin = positive_gt.float() - positive_current.float()
+    # Each binary hypothesis-support margin lies in [-1, 1], hence a winner
+    # replacement can improve it by at most two.
+    gain = ((after_margin - before_margin) / 2.0).clamp(0.0, 1.0)
+    deployed_winner_replaced = winners[rows].long() == negative
+    return gain * deployed_winner_replaced.float()
 
 
 def _summary(rows: list[dict]) -> dict:
@@ -892,6 +949,19 @@ def evaluate_query_local_feedback(
         triplet_legal_pair_clean_mask = torch.tensor(
             descriptor_triplet_legal_pair_clean, dtype=torch.bool
         )
+        descriptor_triplet_tensor = torch.tensor(
+            descriptor_triplets, dtype=torch.long
+        ).reshape(-1, 4)
+        triplet_pose_weights = _fixed_hypothesis_counterfactual_pose_weights(
+            triplets=descriptor_triplet_tensor,
+            winners=winners,
+            keypoints=keypoints,
+            xyz=xyz,
+            intrinsics=view.intrinsics,
+            current_pose_w2c=pose,
+            ground_truth_pose_w2c=view.pose_w2c,
+            reprojection_error_px=float(ransac_reprojection_px),
+        )
         feedback_records.append(
             {
                 "image_name": name,
@@ -958,11 +1028,9 @@ def evaluate_query_local_feedback(
                 "confusion_pairs": torch.tensor(
                     confusion_pairs, dtype=torch.long
                 ).reshape(-1, 3),
-                "descriptor_triplets": torch.tensor(
-                    descriptor_triplets, dtype=torch.long
-                ).reshape(-1, 4),
+                "descriptor_triplets": descriptor_triplet_tensor,
                 "descriptor_triplet_harmful_inlier_mask": triplet_harmful_mask,
-                "descriptor_triplet_pose_weights": triplet_harmful_mask.float(),
+                "descriptor_triplet_pose_weights": triplet_pose_weights,
                 "descriptor_triplet_legal_pair_clean_mask": (
                     triplet_legal_pair_clean_mask
                 ),
@@ -1203,10 +1271,14 @@ def evaluate_query_local_feedback(
             "descriptor_strong_positives_are_exact_identity_only": True,
             "geometry_compatible_nonidentity_is_ignored": True,
             "descriptor_triplet_pose_weight_semantics": (
-                "harmful_poselib_inlier_indicator_only_not_training_weight"
+                DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+            ),
+            "descriptor_triplet_pose_weight_formula": (
+                "max(0,((I[pos@gt]-I[pos@current])-"
+                "(I[neg@gt]-I[neg@current]))/2) when neg_is_deployed_winner"
             ),
             "descriptor_triplet_clean_semantics": (
-                "exact_positive_score_ge_best_legal_negative_score_zero_margin"
+                DESCRIPTOR_CLEAN_LABEL_SEMANTICS
             ),
             "descriptor_identity_supervision_available": (
                 descriptor_identity_supervision_available

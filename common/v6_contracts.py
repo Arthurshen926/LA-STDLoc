@@ -12,10 +12,16 @@ RENDER_OBSERVATION_SCHEMA = "render_observation_cache_v2"
 ASSOCIATION_GRAPH_SCHEMA = "projective_association_graph_v2"
 ANCHOR_CANDIDATE_SCHEMA = "projective_anchor_candidates_v2"
 FEEDBACK_SCHEMA = "self_localization_feedback_v2"
-FEEDBACK_VERSION = 3
+FEEDBACK_VERSION = 4
 POSITIVE_IDENTITY_CONTRACT_SCHEMA = "lafgs_v6_exact_identity_positive_contract"
 ROUND_SCHEMA = "closed_loop_distillation_round_v1"
 DESCRIPTOR_SPLIT_SCHEMA = "lafgs_v6_sequence_block_descriptor_split"
+DESCRIPTOR_POSE_WEIGHT_SEMANTICS = (
+    "fixed_current_vs_ground_truth_ransac_consensus_margin_gain_0_1"
+)
+DESCRIPTOR_CLEAN_LABEL_SEMANTICS = (
+    "exact_positive_score_ge_best_legal_negative_score_zero_margin"
+)
 
 
 def require_mapping_only(payload: Mapping, *, label: str) -> None:

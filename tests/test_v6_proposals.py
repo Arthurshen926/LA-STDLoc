@@ -10,6 +10,8 @@ from map_learning.v6_proposals import (
 )
 from common.hashing import sha256_file
 from common.v6_contracts import (
+    DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
+    DESCRIPTOR_POSE_WEIGHT_SEMANTICS,
     FEEDBACK_SCHEMA,
     FEEDBACK_VERSION,
     exact_identity_positive_contract,
@@ -185,6 +187,10 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
         "schema": FEEDBACK_SCHEMA,
         "version": FEEDBACK_VERSION,
         "positive_identity_contract": exact_identity_positive_contract(),
+        "descriptor_triplet_pose_weight_semantics": (
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "descriptor_triplet_clean_semantics": DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q"],
@@ -193,6 +199,10 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
                 # The cached label is intentionally wrong.  Proposal training
                 # must classify this from the current query-local margin.
                 "descriptor_triplets": torch.tensor([[0, 0, 1, 1]]),
+                "descriptor_triplet_pose_weights": torch.tensor([1.0]),
+                "descriptor_triplet_harmful_inlier_mask": torch.tensor([True]),
+                "descriptor_identity_supervision_available": True,
+                "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
                 "affected_anchor_policy": "rebuild",
             }
         ],
@@ -211,6 +221,7 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
         batch_size=1,
         maximum_triplets_per_query=1,
         clean_fraction=0.0,
+        pose_critical_weight=2.0,
         device="cpu",
     )
     after = float(
@@ -232,9 +243,17 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     assert report["error_triplet_count"] == 1
     assert report["clean_triplet_count"] == 0
     assert report["clean_labels_recomputed_from_query_local_current_margin"] is True
+    assert report["positive_pose_weight_triplet_count"] == 1
+    assert report["pose_critical_weight"] == 2.0
 
     feedback["records"][0]["affected_anchor_policy"] = "purge"
     with pytest.raises(ValueError, match="purge feedback is diagnostic-only"):
+        descriptor_loss_proposal(state, provider, feedback, device="cpu")
+    feedback["records"][0]["affected_anchor_policy"] = "rebuild"
+    feedback["records"][0]["exact_identity_positive_pairs"] = torch.empty(
+        (0, 2), dtype=torch.long
+    )
+    with pytest.raises(ValueError, match="lacks exact active identity"):
         descriptor_loss_proposal(state, provider, feedback, device="cpu")
 
 
@@ -302,6 +321,22 @@ def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
                     if query_index == 0
                     else torch.empty((0, 4), dtype=torch.long)
                 ),
+                "descriptor_triplet_pose_weights": (
+                    torch.tensor([0.0])
+                    if query_index == 0
+                    else torch.empty(0)
+                ),
+                "descriptor_triplet_harmful_inlier_mask": (
+                    torch.tensor([False])
+                    if query_index == 0
+                    else torch.empty(0, dtype=torch.bool)
+                ),
+                "descriptor_identity_supervision_available": True,
+                "exact_identity_positive_pairs": (
+                    torch.tensor([[0, 0]])
+                    if query_index == 0
+                    else torch.empty((0, 2), dtype=torch.long)
+                ),
                 "excluded_query_indices": torch.tensor([query_index]),
                 "affected_anchor_policy": "rebuild",
             }
@@ -310,6 +345,10 @@ def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
         "schema": FEEDBACK_SCHEMA,
         "version": FEEDBACK_VERSION,
         "positive_identity_contract": exact_identity_positive_contract(),
+        "descriptor_triplet_pose_weight_semantics": (
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "descriptor_triplet_clean_semantics": DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": names,
@@ -406,6 +445,10 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
         "schema": FEEDBACK_SCHEMA,
         "version": FEEDBACK_VERSION,
         "positive_identity_contract": exact_identity_positive_contract(),
+        "descriptor_triplet_pose_weight_semantics": (
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "descriptor_triplet_clean_semantics": DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q0", "q1"],
@@ -413,11 +456,19 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
             {
                 "failure_layers": ["L3"],
                 "descriptor_triplets": torch.tensor([[0, 0, 1, 0]]),
+                "descriptor_triplet_pose_weights": torch.tensor([0.0]),
+                "descriptor_triplet_harmful_inlier_mask": torch.tensor([False]),
+                "descriptor_identity_supervision_available": True,
+                "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
                 "affected_anchor_policy": "rebuild",
             },
             {
                 "failure_layers": ["L3"],
                 "descriptor_triplets": torch.tensor([[0, 2, 3, 0]]),
+                "descriptor_triplet_pose_weights": torch.tensor([0.0]),
+                "descriptor_triplet_harmful_inlier_mask": torch.tensor([False]),
+                "descriptor_identity_supervision_available": True,
+                "exact_identity_positive_pairs": torch.tensor([[0, 2]]),
                 "affected_anchor_policy": "rebuild",
             },
         ],

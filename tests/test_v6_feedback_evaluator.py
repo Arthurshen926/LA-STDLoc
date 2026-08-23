@@ -6,6 +6,7 @@ from map_learning.v6_feedback_evaluator import (
     _descriptor_training_query_mask,
     _descriptor_training_query_masks,
     _exact_identity_anchor_by_query,
+    _fixed_hypothesis_counterfactual_pose_weights,
     _layer_edges,
     _legal_descriptor_pair_is_clean,
     _maximum_matching,
@@ -185,6 +186,31 @@ def test_positive_statistics_excludes_ambiguous_anchors_from_negative() -> None:
     # beats every legal negative and is therefore a clean protection pair.
     assert _legal_descriptor_pair_is_clean(positive, negative) is True
     assert _legal_descriptor_pair_is_clean(0.5, 0.5) is True
+
+
+def test_counterfactual_pose_weight_measures_actual_winner_consensus_flip() -> None:
+    xyz = torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]])
+    current = torch.eye(4)
+    current[0, 3] = -1.0
+    kwargs = {
+        "triplets": torch.tensor([[0, 0, 1, 0]]),
+        "keypoints": torch.tensor([[0.0, 0.0]]),
+        "xyz": xyz,
+        "intrinsics": torch.eye(3),
+        "current_pose_w2c": current,
+        "ground_truth_pose_w2c": torch.eye(4),
+        "reprojection_error_px": 0.25,
+    }
+    weight = _fixed_hypothesis_counterfactual_pose_weights(
+        winners=torch.tensor([1]), **kwargs
+    )
+    assert weight.tolist() == [1.0]
+    # A legal pair that does not replace the deployed Top-1 is not a pose
+    # counterfactual action, even if the two fixed hypotheses disagree on it.
+    ignored = _fixed_hypothesis_counterfactual_pose_weights(
+        winners=torch.tensor([0]), **kwargs
+    )
+    assert ignored.tolist() == [0.0]
 
 
 def test_pose_information_keeps_lowest_residual_row_per_anchor() -> None:

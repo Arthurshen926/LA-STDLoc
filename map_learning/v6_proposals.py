@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+import math
 
 import torch
 import torch.nn.functional as F
 
-from common.v6_contracts import FEEDBACK_SCHEMA, require_schema
+from common.v6_contracts import (
+    DESCRIPTOR_CLEAN_LABEL_SEMANTICS,
+    DESCRIPTOR_POSE_WEIGHT_SEMANTICS,
+    FEEDBACK_SCHEMA,
+    require_schema,
+)
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from topology.layered_sufficiency import select_layered_sufficiency
@@ -42,6 +48,8 @@ def descriptor_loss_proposal(
     clean_fraction: float = 0.25,
     clean_weight: float = 0.25,
     trust_weight: float = 0.1,
+    pose_critical_weight: float = 0.0,
+    tail_query_weight: float = 0.0,
     training_query_indices: torch.Tensor | Sequence[int] | None = None,
     eligible_failure_layers: Sequence[str] = ("L3",),
     device: str = "cuda",
@@ -69,8 +77,23 @@ def descriptor_loss_proposal(
         raise ValueError("descriptor training schedule must be positive")
     if not 0.0 <= float(clean_fraction) <= 1.0:
         raise ValueError("clean triplet fraction must lie in [0,1]")
-    if float(clean_weight) < 0.0 or float(trust_weight) < 0.0:
+    if (
+        float(clean_weight) < 0.0
+        or float(trust_weight) < 0.0
+        or float(pose_critical_weight) < 0.0
+        or float(tail_query_weight) < 0.0
+    ):
         raise ValueError("descriptor loss weights must be non-negative")
+    if (
+        feedback.get("descriptor_triplet_pose_weight_semantics")
+        != DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+    ):
+        raise ValueError("descriptor feedback pose-weight semantics differ")
+    if (
+        feedback.get("descriptor_triplet_clean_semantics")
+        != DESCRIPTOR_CLEAN_LABEL_SEMANTICS
+    ):
+        raise ValueError("descriptor feedback clean-label semantics differ")
 
     query_count = len(feedback["records"])
     training_registry_explicit = training_query_indices is not None
@@ -209,6 +232,8 @@ def descriptor_loss_proposal(
     positive_parts = []
     negative_parts = []
     clean_parts = []
+    pose_weight_parts = []
+    harmful_parts = []
     selected_query_parts = []
     positive_loo_base_parts = []
     negative_loo_base_parts = []
@@ -217,21 +242,90 @@ def descriptor_loss_proposal(
     clean_budget = int(round(int(maximum_triplets_per_query) * float(clean_fraction)))
     error_budget = int(maximum_triplets_per_query) - clean_budget
     selected_query_indices = []
+    finite_training_te = torch.tensor(
+        [
+            float(record["te_cm"])
+            for query_index, record in enumerate(feedback["records"])
+            if query_index in training_query_set
+            and record.get("te_cm") is not None
+            and math.isfinite(float(record["te_cm"]))
+        ],
+        dtype=torch.float64,
+    )
+    tail_te_threshold_cm = (
+        None
+        if finite_training_te.numel() == 0
+        else float(torch.quantile(finite_training_te, 0.95))
+    )
+    tail_query_set = {
+        query_index
+        for query_index, record in enumerate(feedback["records"])
+        if query_index in training_query_set
+        and tail_te_threshold_cm is not None
+        and record.get("te_cm") is not None
+        and float(record["te_cm"]) >= tail_te_threshold_cm
+    }
     for query_index, record in enumerate(feedback["records"]):
         if query_index not in training_query_set:
-            continue
-        # Formal V6 feedback is multi-label.  Descriptor ranking is an L3
-        # operation; updating the whole map from already-sufficient queries
-        # caused most residuals to saturate without improving pose tails.
-        record_layers = record.get("failure_layers")
-        if record_layers is not None and not (
-            eligible_layers & {str(layer) for layer in record_layers}
-        ):
             continue
         triplets = (
             torch.as_tensor(record.get("descriptor_triplets", ())).long().reshape(-1, 4)
         )
         if triplets.numel() == 0:
+            continue
+        if record.get("descriptor_identity_supervision_available") is not True:
+            raise ValueError("descriptor triplets lack rebuild identity supervision")
+        if bool(((triplets[:, 3] != 0) & (triplets[:, 3] != 1)).any()):
+            raise ValueError("descriptor triplet clean labels must be binary")
+        pose_weights = torch.as_tensor(
+            record.get("descriptor_triplet_pose_weights", ()), dtype=torch.float32
+        ).reshape(-1)
+        harmful = torch.as_tensor(
+            record.get("descriptor_triplet_harmful_inlier_mask", ()), dtype=torch.bool
+        ).reshape(-1)
+        if pose_weights.numel() != triplets.shape[0] or harmful.numel() != triplets.shape[0]:
+            raise ValueError("descriptor triplet supervision rows are not aligned")
+        if not bool(torch.isfinite(pose_weights).all()) or bool(
+            ((pose_weights < 0.0) | (pose_weights > 1.0)).any()
+        ):
+            raise ValueError("descriptor triplet pose weights must be finite in [0,1]")
+
+        def pair_registry(key: str) -> set[tuple[int, int]]:
+            pairs = torch.as_tensor(record.get(key, ()), dtype=torch.long).reshape(-1, 2)
+            return {(int(row), int(anchor)) for row, anchor in pairs.tolist()}
+
+        exact_pairs = pair_registry("exact_identity_positive_pairs")
+        ignored_pairs = (
+            pair_registry("identity_inactive_pairs")
+            | pair_registry("identity_projective_incompatible_pairs")
+            | pair_registry("projective_compatible_ambiguous_pairs")
+        )
+        for row, positive_anchor, negative_anchor, _ in triplets.tolist():
+            if (row, positive_anchor) not in exact_pairs:
+                raise ValueError(
+                    "descriptor triplet positive lacks exact active identity"
+                )
+            if (row, negative_anchor) in exact_pairs or (
+                row,
+                negative_anchor,
+            ) in ignored_pairs:
+                raise ValueError("descriptor triplet negative is not legally negative")
+
+        # Formal V6 feedback is multi-label.  Normal descriptor ranking is an
+        # L3 operation.  A pose-critical L4 row may additionally enter only
+        # when its fixed-hypothesis counterfactual weight is positive.
+        record_layers = record.get("failure_layers")
+        layer_set = (
+            None if record_layers is None else {str(layer) for layer in record_layers}
+        )
+        regular_eligible = layer_set is None or bool(eligible_layers & layer_set)
+        pose_eligible = bool(
+            float(pose_critical_weight) > 0.0
+            and layer_set is not None
+            and "L4" in layer_set
+            and (pose_weights > 0).any()
+        )
+        if not regular_eligible and not pose_eligible:
             continue
         view = observations.build_view(query_index)
         rows, positive, negative, clean = triplets.T
@@ -244,11 +338,8 @@ def descriptor_loss_proposal(
             & (negative < features.shape[0])
             & (positive != negative)
         )
-        rows, positive, negative, clean = (
-            value[valid] for value in (rows, positive, negative, clean)
-        )
-        if rows.numel() == 0:
-            continue
+        if not bool(valid.all()):
+            raise ValueError("descriptor triplet contains an invalid row or Anchor")
         descriptors = F.normalize(view.descriptors[rows].float(), dim=1)
         candidate_active, candidate_loo_base, affected_rows = (
             query_local_observation_bank(
@@ -287,9 +378,14 @@ def descriptor_loss_proposal(
         clean = current_margin >= float(margin)
         error_rows = torch.nonzero(clean == 0, as_tuple=False).reshape(-1)
         clean_rows = torch.nonzero(clean != 0, as_tuple=False).reshape(-1)
-        error_rows = error_rows[torch.argsort(current_margin[error_rows], stable=True)][
-            :error_budget
-        ]
+        error_rows = error_rows[torch.argsort(current_margin[error_rows], stable=True)]
+        if float(pose_critical_weight) > 0.0 and error_rows.numel():
+            error_rows = error_rows[
+                torch.argsort(
+                    pose_weights[error_rows], descending=True, stable=True
+                )
+            ]
+        error_rows = error_rows[:error_budget]
         clean_rows = clean_rows[torch.argsort(current_margin[clean_rows], stable=True)][
             :clean_budget
         ]
@@ -300,6 +396,8 @@ def descriptor_loss_proposal(
         positive_parts.append(positive[chosen])
         negative_parts.append(negative[chosen])
         clean_parts.append(clean[chosen].bool())
+        pose_weight_parts.append(pose_weights[chosen])
+        harmful_parts.append(harmful[chosen])
         selected_query_parts.append(torch.full_like(positive[chosen], query_index))
         positive_loo_base_parts.append(positive_loo_base[chosen])
         negative_loo_base_parts.append(negative_loo_base[chosen])
@@ -335,10 +433,41 @@ def descriptor_loss_proposal(
     positive = torch.cat(positive_parts)
     negative = torch.cat(negative_parts)
     clean = torch.cat(clean_parts)
+    pose_weight = torch.cat(pose_weight_parts)
+    harmful = torch.cat(harmful_parts)
     selected_query = torch.cat(selected_query_parts)
     positive_loo_base = torch.cat(positive_loo_base_parts)
     negative_loo_base = torch.cat(negative_loo_base_parts)
     active = torch.unique(torch.cat((positive, negative)), sorted=True)
+    base_triplet_weight = torch.where(
+        clean,
+        torch.full_like(pose_weight, float(clean_weight)),
+        torch.ones_like(pose_weight),
+    )
+    raw_triplet_weight = base_triplet_weight * (
+        1.0 + float(pose_critical_weight) * pose_weight
+    )
+    query_weight_sum = torch.zeros(query_count, dtype=raw_triplet_weight.dtype)
+    query_weight_sum.scatter_add_(0, selected_query, raw_triplet_weight)
+    normalized_triplet_weight = raw_triplet_weight / query_weight_sum[
+        selected_query
+    ].clamp_min(1e-8)
+    selected_tail_query = torch.tensor(
+        [int(query_index) in tail_query_set for query_index in selected_query.tolist()],
+        dtype=torch.bool,
+    )
+    query_tail_factor = torch.where(
+        selected_tail_query,
+        torch.full_like(
+            normalized_triplet_weight, 1.0 + float(tail_query_weight)
+        ),
+        torch.ones_like(normalized_triplet_weight),
+    )
+    training_triplet_weight = normalized_triplet_weight * query_tail_factor
+    if not bool(torch.isfinite(training_triplet_weight).all()) or not bool(
+        training_triplet_weight.sum() > 0
+    ):
+        raise ValueError("descriptor triplet weights have no finite positive mass")
     cumulative_updated_anchors = torch.unique(
         torch.cat((prior_updated_anchors, active.cpu())), sorted=True
     )
@@ -425,11 +554,7 @@ def descriptor_loss_proposal(
         )
         positive_score = (q * positive_bank).sum(1)
         negative_score = (q * negative_bank).sum(1)
-        weight = torch.where(
-            clean[rows].to(train_device),
-            torch.full_like(positive_score, float(clean_weight)),
-            torch.ones_like(positive_score),
-        )
+        weight = training_triplet_weight[rows].to(train_device)
         ranking = F.softplus(
             (float(margin) + negative_score - positive_score)
             / max(float(temperature), 1e-6)
@@ -515,6 +640,13 @@ def descriptor_loss_proposal(
         "triplet_count": int(query.shape[0]),
         "error_triplet_count": int((~clean).sum()),
         "clean_triplet_count": int(clean.sum()),
+        "harmful_inlier_triplet_count": int(harmful.sum()),
+        "positive_pose_weight_triplet_count": int((pose_weight > 0).sum()),
+        "pose_weight_sum": float(pose_weight.sum()),
+        "pose_weight_mean": float(pose_weight.mean()),
+        "pose_critical_error_triplet_count": int(
+            ((~clean) & (pose_weight > 0)).sum()
+        ),
         "queries_with_triplets": len(selected_per_query),
         "training_query_indices": cumulative_training_queries,
         "training_query_registry_explicit": cumulative_registry_explicit,
@@ -562,6 +694,21 @@ def descriptor_loss_proposal(
         "clean_weight": float(clean_weight),
         "clean_labels_recomputed_from_query_local_current_margin": True,
         "trust_weight": float(trust_weight),
+        "pose_critical_weight": float(pose_critical_weight),
+        "tail_query_weight": float(tail_query_weight),
+        "tail_te_quantile": 0.95,
+        "tail_te_threshold_cm": tail_te_threshold_cm,
+        "selected_tail_query_count": len(
+            set(selected_query.tolist()) & tail_query_set
+        ),
+        "triplet_weights_normalized_within_query": True,
+        "triplet_weight_sum_after_query_and_tail_weighting": float(
+            training_triplet_weight.sum()
+        ),
+        "descriptor_triplet_pose_weight_semantics": (
+            DESCRIPTOR_POSE_WEIGHT_SEMANTICS
+        ),
+        "pose_critical_l4_rows_require_positive_counterfactual_weight": True,
         "learning_rate": float(learning_rate),
         "effective_coordinate_learning_rate": effective_coordinate_learning_rate,
         "learning_rate_is_descriptor_vector_scale": True,

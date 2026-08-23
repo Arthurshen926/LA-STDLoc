@@ -127,7 +127,7 @@ def run(args: argparse.Namespace) -> dict:
         temporary.unlink(missing_ok=True)
     summary = {
         "schema": "lafgs_v6_query_local_feedback_summary",
-        "version": 3,
+        "version": 4,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "summary": result["summary"],

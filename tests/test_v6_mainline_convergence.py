@@ -38,6 +38,8 @@ def _args(tmp_path: Path) -> Namespace:
         descriptor_clean_fraction=0.25,
         descriptor_clean_weight=0.25,
         descriptor_trust_weight=0.1,
+        descriptor_pose_critical_weight=0.0,
+        descriptor_tail_query_weight=0.0,
         descriptor_training_query_indices=None,
         expected_descriptor_training_query_indices_sha256=None,
         run_reconstruction=False,

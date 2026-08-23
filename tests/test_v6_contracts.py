@@ -5,6 +5,7 @@ import pytest
 from common.v6_contracts import (
     ASSOCIATION_GRAPH_SCHEMA,
     FEEDBACK_SCHEMA,
+    FEEDBACK_VERSION,
     exact_identity_positive_contract,
     round_directory,
     require_exact_identity_positive_contract,
@@ -62,7 +63,7 @@ def test_v6_feedback_contract_rejects_radius_only_legacy_artifacts() -> None:
         require_schema(
             {
                 "schema": FEEDBACK_SCHEMA,
-                "version": 3,
+                "version": FEEDBACK_VERSION,
                 "uses_source_mapping_rgb": False,
                 "uses_test_queries": False,
             },

@@ -118,7 +118,7 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
         ],
     )
     assert result["success_count"] == 1
-    assert result["version"] == 3
+    assert result["version"] == 4
     assert result["failure_layer_counts_are_overlapping"] is True
     assert result["failure_query_count"] == 0
     assert result["query_descriptor_loo_count"] == 1
