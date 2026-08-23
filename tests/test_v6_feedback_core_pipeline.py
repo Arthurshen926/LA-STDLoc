@@ -12,12 +12,16 @@ from common.v6_contracts import (
     DESCRIPTOR_SPLIT_SCHEMA,
     FEEDBACK_VERSION,
     exact_identity_positive_contract,
+    ordered_query_registry_sha256,
 )
+from common.v6_pipeline_contract import FEEDBACK_CALIBRATION_BINDING_SCHEMA
 from scripts import run_v6_feedback_core_pipeline as runner
 
 
 _FEEDBACK_BYTES = b"mock-v6-feedback-v4\n"
 _CALIBRATED_RANSAC_PX = 11.954343111400277
+_QUERY_NAMES = ["q0", "q1"]
+_QUERY_REGISTRY_SHA256 = ordered_query_registry_sha256(_QUERY_NAMES)
 
 
 def _write_torch(path: Path, value: dict) -> str:
@@ -129,6 +133,21 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
             "statistics": {"query_count": 2},
         },
     )
+    calibration_binding_path = tmp_path / "feedback_calibration_binding.json"
+    calibration_binding_sha256 = _write_json(
+        calibration_binding_path,
+        {
+            "schema": FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+            "version": 1,
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+            "map_sha256": map_sha256,
+            "observation_cache_sha256": cache_sha256,
+            "calibration_sha256": calibration_sha256,
+            "ordered_query_registry_sha256": _QUERY_REGISTRY_SHA256,
+            "query_count": len(_QUERY_NAMES),
+        },
+    )
     template = tmp_path / "feedback-template.pt"
     template.write_bytes(_FEEDBACK_BYTES)
     feedback_sha256 = sha256_file(template)
@@ -171,6 +190,10 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
             str(calibration_path),
             "--expected-scene-calibration-sha256",
             calibration_sha256,
+            "--feedback-calibration-binding",
+            str(calibration_binding_path),
+            "--expected-feedback-calibration-binding-sha256",
+            calibration_binding_sha256,
             "--mapping-training-query-indices",
             str(split_path),
             "--expected-mapping-training-query-indices-sha256",
@@ -192,6 +215,7 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
         "association": association_sha256,
         "materialization": materialization_sha256,
         "calibration": calibration_sha256,
+        "calibration_binding": calibration_binding_sha256,
         "split": split_sha256,
         "feedback": feedback_sha256,
     }
@@ -205,6 +229,7 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
             "version": 1,
             "validated": True,
             "mapping_query_count": 2,
+            "ordered_query_registry_sha256": _QUERY_REGISTRY_SHA256,
         }
 
     def fake_command(command: list[str], *, root: Path) -> None:
@@ -378,6 +403,9 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
     assert result["selected_winner"] is None
     assert result["baseline"]["reused_precomputed"] is False
     assert result["inputs"]["scene_calibration"]["sha256"] == hashes["calibration"]
+    assert result["inputs"]["feedback_calibration_binding"]["sha256"] == (
+        hashes["calibration_binding"]
+    )
     assert result["inputs"]["mapping_training_split"]["sha256"] == hashes["split"]
     assert result["configuration"]["ransac_reprojection_px"] == (
         _CALIBRATED_RANSAC_PX
@@ -571,6 +599,43 @@ def test_runner_rejects_calibration_observation_query_count_mismatch(
         match="scene calibration and observation query counts differ",
     ):
         runner.run(args, invocation_argv=["formal-v6-runner", "--bad-count"])
+
+    assert len(contract_calls) == 1
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("map_sha256", "0" * 64),
+        ("observation_cache_sha256", "1" * 64),
+        ("calibration_sha256", "2" * 64),
+        ("ordered_query_registry_sha256", "3" * 64),
+        ("query_count", 3),
+    ],
+)
+def test_runner_rejects_feedback_calibration_binding_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+    field: str,
+    bad_value: object,
+):
+    args, _ = _arguments(tmp_path)
+    binding = json.loads(args.feedback_calibration_binding.read_text())
+    binding[field] = bad_value
+    args.feedback_calibration_binding.write_text(json.dumps(binding))
+    args.expected_feedback_calibration_binding_sha256 = sha256_file(
+        args.feedback_calibration_binding
+    )
+    calls: list[list[str]] = []
+    contract_calls: list[dict] = []
+    _install_mocks(monkeypatch, calls, contract_calls)
+
+    with pytest.raises(
+        ValueError,
+        match=f"feedback calibration binding differs.*{field}",
+    ):
+        runner.run(args, invocation_argv=["formal-v6-runner", "--bad-binding"])
 
     assert len(contract_calls) == 1
     assert calls == []

@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from common.v6_contracts import ordered_query_registry_sha256
 from common.v6_pipeline_contract import validate_v6_pipeline_inputs
 
 
@@ -90,6 +91,9 @@ def test_full_v6_pipeline_contract_accepts_bound_gaussian_projective_map():
     assert result["unified_association"] is True
     assert result["association_graph_self_bound"] is False
     assert result["final_xyz_pure_ray"] is True
+    assert result["ordered_query_registry_sha256"] == (
+        ordered_query_registry_sha256(["q0"])
+    )
 
 
 def test_full_v6_pipeline_contract_accepts_new_self_bound_association():

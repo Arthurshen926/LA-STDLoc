@@ -9,6 +9,7 @@ import torch
 from common.v6_contracts import (
     ASSOCIATION_GRAPH_SCHEMA,
     RENDER_OBSERVATION_SCHEMA,
+    ordered_query_registry_sha256,
     require_mapping_only,
     require_schema,
 )
@@ -17,6 +18,7 @@ from common.v6_contracts import (
 _MAP_SCHEMA = "lafgs_materialized_anchor_map"
 _OBSERVATION_CSR_SCHEMA = "lafgs_projective_anchor_observations"
 _MATERIALIZATION_REPORT_SCHEMA = "lafgs_v6_projective_map_materialization_report"
+FEEDBACK_CALIBRATION_BINDING_SCHEMA = "lafgs_v6_feedback_calibration_binding"
 
 
 def _require_true(value: bool, message: str) -> None:
@@ -116,6 +118,7 @@ def validate_v6_pipeline_inputs(
     cache_names = list(
         observation_cache.get("query_names", observation_cache.get("queries", {}))
     )
+    query_registry_sha256 = ordered_query_registry_sha256(cache_names)
     if list(state.get("v6_mapping_query_names", ())) != cache_names:
         raise ValueError("V6 map and observation query registries differ")
     if query_indices.numel() and (
@@ -214,6 +217,7 @@ def validate_v6_pipeline_inputs(
         "association_graph_self_bound": association_self_bound,
         "materialization_report_bound": report_bound,
         "mapping_query_count": len(cache_names),
+        "ordered_query_registry_sha256": query_registry_sha256,
         "anchor_count": anchor_count,
         "exact_identity_observation_count": int(query_indices.numel()),
         "render_valid_before_nms": True,

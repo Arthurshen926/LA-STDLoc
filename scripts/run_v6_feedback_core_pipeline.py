@@ -30,7 +30,10 @@ from common.v6_contracts import (
     require_mapping_only,
     require_schema,
 )
-from common.v6_pipeline_contract import validate_v6_pipeline_inputs
+from common.v6_pipeline_contract import (
+    FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+    validate_v6_pipeline_inputs,
+)
 from topology.v6_anchor_map import validate_v6_identity_metric
 
 
@@ -143,6 +146,39 @@ def _load_scene_calibration(
                 f"{requested!r} != {resolved!r}"
             )
     return calibration, artifact, resolved
+
+
+def _validate_feedback_calibration_binding(
+    binding: dict,
+    *,
+    map_sha256: str,
+    observation_cache_sha256: str,
+    calibration_sha256: str,
+    pipeline_contract: Mapping,
+) -> None:
+    expected = {
+        "schema": FEEDBACK_CALIBRATION_BINDING_SCHEMA,
+        "version": 1,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "map_sha256": map_sha256,
+        "observation_cache_sha256": observation_cache_sha256,
+        "calibration_sha256": calibration_sha256,
+        "ordered_query_registry_sha256": pipeline_contract.get(
+            "ordered_query_registry_sha256"
+        ),
+        "query_count": pipeline_contract.get("mapping_query_count"),
+    }
+    if binding != expected:
+        differing = sorted(
+            key
+            for key in set(binding) | set(expected)
+            if binding.get(key) != expected.get(key)
+        )
+        raise ValueError(
+            "feedback calibration binding differs from validated pipeline at: "
+            + ", ".join(differing)
+        )
 
 
 def _producer(root: Path) -> dict:
@@ -763,6 +799,7 @@ def run(
         "association_graph",
         "materialization_report",
         "scene_calibration",
+        "feedback_calibration_binding",
         "mapping_training_query_indices",
         "baseline_feedback_summary",
         "output_dir",
@@ -790,6 +827,11 @@ def run(
         )
     )
     args.ransac_reprojection_px = calibrated_ransac_reprojection_px
+    calibration_binding, calibration_binding_artifact = _load_json(
+        args.feedback_calibration_binding,
+        args.expected_feedback_calibration_binding_sha256,
+        label="feedback calibration binding",
+    )
 
     state, map_artifact = _load_torch(
         args.map, args.expected_map_sha256, label="baseline map"
@@ -837,6 +879,13 @@ def run(
             "scene calibration and observation query counts differ: "
             f"{calibrated_query_count!r} != {observation_query_count!r}"
         )
+    _validate_feedback_calibration_binding(
+        calibration_binding,
+        map_sha256=map_artifact["sha256"],
+        observation_cache_sha256=cache_artifact["sha256"],
+        calibration_sha256=calibration_artifact["sha256"],
+        pipeline_contract=pipeline_contract,
+    )
     validate_v6_identity_metric(
         metric,
         state=state,
@@ -847,7 +896,8 @@ def run(
     # the inputs.  Releasing the 25+ GB observation payload here keeps one
     # parent process per independent arm cheap enough to run D2/D3/S1/R1 in
     # parallel; each child still reloads and SHA-validates its own exact input.
-    del state, metric, cache, association, materialization, calibration
+    del state, metric, cache, association, materialization
+    del calibration, calibration_binding
     gc.collect()
     producer = _producer(root)
     args.output_dir.mkdir(parents=True)
@@ -983,6 +1033,7 @@ def run(
             "association_graph": association_artifact,
             "materialization_report": materialization_artifact,
             "scene_calibration": calibration_artifact,
+            "feedback_calibration_binding": calibration_binding_artifact,
             "mapping_training_split": split_artifact,
         },
         "configuration": _configuration(args),
@@ -1019,6 +1070,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-materialization-report-sha256", required=True)
     parser.add_argument("--scene-calibration", type=Path, required=True)
     parser.add_argument("--expected-scene-calibration-sha256", required=True)
+    parser.add_argument("--feedback-calibration-binding", type=Path, required=True)
+    parser.add_argument(
+        "--expected-feedback-calibration-binding-sha256", required=True
+    )
     parser.add_argument("--mapping-training-query-indices", type=Path)
     parser.add_argument("--expected-mapping-training-query-indices-sha256")
     parser.add_argument("--baseline-feedback-summary", type=Path)
