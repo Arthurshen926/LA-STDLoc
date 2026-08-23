@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+import gc
 import json
 import os
 from pathlib import Path
@@ -33,6 +34,7 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 
 RUN_SCHEMA = "lafgs_v6_feedback_core_independent_arms_run"
 RUN_VERSION = 1
+ARM_CHOICES = ("descriptor_loss", "selection", "reconstruction")
 _SOURCE_PATHS = (
     "scripts/run_v6_feedback_core_pipeline.py",
     "scripts/evaluate_v6_self_localization.py",
@@ -269,10 +271,7 @@ def _proposal_command(
         "--completion-safety-maximum-components",
         str(args.completion_safety_maximum_components),
     ]
-    if args.mapping_training_query_indices is not None and arm in {
-        "descriptor_loss",
-        "selection",
-    }:
+    if args.mapping_training_query_indices is not None and arm in ARM_CHOICES:
         command.extend(
             [
                 "--mapping-training-query-indices",
@@ -454,16 +453,18 @@ def _load_proposal(
         "observation_cache": args.expected_observation_cache_sha256,
         "feedback": baseline_feedback["feedback"]["sha256"],
     }
-    if args.mapping_training_query_indices is not None and arm in {
-        "descriptor_loss",
-        "selection",
-    }:
+    if args.mapping_training_query_indices is not None and arm in ARM_CHOICES:
+        split_role = (
+            "reconstruction_training_query_indices"
+            if arm == "reconstruction"
+            else "descriptor_training_query_indices"
+        )
         expected_input.update(
             {
                 "mapping_training_query_indices": (
                     args.expected_mapping_training_query_indices_sha256
                 ),
-                "descriptor_training_query_indices": (
+                split_role: (
                     args.expected_mapping_training_query_indices_sha256
                 ),
             }
@@ -548,6 +549,20 @@ def _load_proposal(
     }
 
 
+def _selected_arms(args: argparse.Namespace) -> list[str]:
+    if args.arms is None:
+        arms = ["descriptor_loss", "selection"]
+    else:
+        arms = [str(arm) for arm in args.arms]
+        if not arms:
+            raise ValueError("at least one V6 proposal arm is required")
+        if len(arms) != len(set(arms)):
+            raise ValueError("V6 proposal arms must be unique")
+    if bool(args.run_reconstruction) and "reconstruction" not in arms:
+        arms.append("reconstruction")
+    return arms
+
+
 def _configuration(args: argparse.Namespace) -> dict:
     return {
         "device": args.device,
@@ -578,7 +593,8 @@ def _configuration(args: argparse.Namespace) -> dict:
         "selection_maximum_anchors": int(args.selection_maximum_anchors),
         "pose_logdet_target": float(args.pose_logdet_target),
         "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
-        "run_reconstruction": bool(args.run_reconstruction),
+        "requested_arms": _selected_arms(args),
+        "run_reconstruction": "reconstruction" in _selected_arms(args),
         "completion_voxel_size_m": float(args.completion_voxel_size_m),
         "completion_minimum_similarity": float(args.completion_minimum_similarity),
         "completion_minimum_margin": float(args.completion_minimum_margin),
@@ -670,6 +686,12 @@ def run(
         map_path=map_artifact["path"],
         map_sha256=map_artifact["sha256"],
     )
+    # The formal runner only needs immutable artifact metadata after validating
+    # the inputs.  Releasing the 25+ GB observation payload here keeps one
+    # parent process per independent arm cheap enough to run D2/D3/S1/R1 in
+    # parallel; each child still reloads and SHA-validates its own exact input.
+    del state, metric, cache, association, materialization
+    gc.collect()
     producer = _producer(root)
     args.output_dir.mkdir(parents=True)
 
@@ -696,9 +718,7 @@ def run(
         args, feedback_sha256=baseline["feedback"]["sha256"]
     )
 
-    arms = ["descriptor_loss", "selection"]
-    if args.run_reconstruction:
-        arms.append("reconstruction")
+    arms = _selected_arms(args)
     arm_reports = []
     for arm in arms:
         arm_root = args.output_dir / f"arm_{arm}"
@@ -816,6 +836,7 @@ def run(
             "all_arms_parent_map_sha256": map_artifact["sha256"],
             "all_arms_feedback_sha256": baseline["feedback"]["sha256"],
             "candidate_chaining": False,
+            "parent_input_payloads_released_before_subprocesses": True,
             "arms": arms,
         },
         "arms": arm_reports,
@@ -869,6 +890,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--selection-maximum-anchors", type=int, default=20000)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
     parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
+    parser.add_argument(
+        "--arms",
+        nargs="+",
+        choices=ARM_CHOICES,
+        help=(
+            "Independent proposal arms to run. Defaults to descriptor_loss and "
+            "selection; --run-reconstruction remains a compatibility shortcut."
+        ),
+    )
     parser.add_argument("--run-reconstruction", action="store_true")
     parser.add_argument("--completion-voxel-size-m", type=float, default=0.05)
     parser.add_argument("--completion-minimum-similarity", type=float, default=0.7)

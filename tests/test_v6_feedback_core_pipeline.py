@@ -202,10 +202,15 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                     command,
                     "--expected-mapping-training-query-indices-sha256",
                 )
+                split_role = (
+                    "reconstruction_training_query_indices"
+                    if arm == "reconstruction"
+                    else "descriptor_training_query_indices"
+                )
                 input_sha.update(
                     {
                         "mapping_training_query_indices": split_sha,
-                        "descriptor_training_query_indices": split_sha,
+                        split_role: split_sha,
                     }
                 )
             if "--association-graph" in command:
@@ -292,6 +297,7 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
         "all_arms_parent_map_sha256": hashes["map"],
         "all_arms_feedback_sha256": hashes["feedback"],
         "candidate_chaining": False,
+        "parent_input_payloads_released_before_subprocesses": True,
         "arms": ["descriptor_loss", "selection", "reconstruction"],
     }
 
@@ -317,23 +323,21 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
         assert _flag(command, "--descriptor-pose-critical-weight") == "2.5"
         assert _flag(command, "--descriptor-tail-query-weight") == "1.75"
         if _flag(command, "--arm") == "reconstruction":
-            assert "--mapping-training-query-indices" not in command
             assert (
                 _flag(command, "--expected-association-graph-sha256")
                 == hashes["association"]
             )
-        else:
-            assert (
-                command.count("--expected-mapping-training-query-indices-sha256")
-                == 1
+        assert (
+            command.count("--expected-mapping-training-query-indices-sha256")
+            == 1
+        )
+        assert (
+            _flag(
+                command,
+                "--expected-mapping-training-query-indices-sha256",
             )
-            assert (
-                _flag(
-                    command,
-                    "--expected-mapping-training-query-indices-sha256",
-                )
-                == hashes["split"]
-            )
+            == hashes["split"]
+        )
     for command in evaluation_calls:
         assert _flag(command, "--loo-affected-anchor-policy") == "rebuild"
     for command in evaluation_calls[1:]:
@@ -396,3 +400,30 @@ def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypat
         Path(_flag(command, "--map")).name == "proposal_map.pt"
         for command in evaluation_calls
     )
+
+
+def test_runner_can_execute_one_predeclared_independent_arm(
+    tmp_path: Path, monkeypatch
+):
+    args, hashes = _arguments(tmp_path)
+    args.arms = ["descriptor_loss"]
+    calls: list[list[str]] = []
+    contract_calls: list[dict] = []
+    _install_mocks(monkeypatch, calls, contract_calls)
+
+    result = runner.run(args, invocation_argv=["formal-v6-runner", "--d2"])
+
+    assert result["configuration"]["requested_arms"] == ["descriptor_loss"]
+    assert result["independent_arm_contract"]["arms"] == ["descriptor_loss"]
+    proposal_calls = [
+        command for command in calls if Path(command[1]).name == "propose_v6_round.py"
+    ]
+    evaluation_calls = [
+        command
+        for command in calls
+        if Path(command[1]).name == "evaluate_v6_self_localization.py"
+    ]
+    assert len(proposal_calls) == 1
+    assert _flag(proposal_calls[0], "--arm") == "descriptor_loss"
+    assert _flag(proposal_calls[0], "--expected-feedback-sha256") == hashes["feedback"]
+    assert len(evaluation_calls) == 2
