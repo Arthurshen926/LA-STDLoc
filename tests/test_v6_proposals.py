@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -23,8 +24,11 @@ from scripts.propose_v6_round import (
     _attach_reconstruction_distillation,
     _jsonable,
     _load_query_indices,
+    _reconstruction_training_scope,
+    _training_split_input_sha,
     _validate_proposal_inputs,
 )
+import scripts.propose_v6_round as propose_v6_round
 
 from topology.v6_anchor_map import (
     compact_projective_deployment_map,
@@ -98,12 +102,18 @@ def test_descriptor_training_split_is_sha_bound(tmp_path) -> None:
 
 
 def test_reconstruction_preserves_training_dependencies() -> None:
+    old_split_sha = "b" * 64
+    new_split_sha = "a" * 64
     state = {
         "v6_descriptor_distillation": {"training_query_indices": torch.tensor([0])},
         "v6_selection_distillation": {"training_query_indices": torch.tensor([1])},
         "v6_reconstruction_distillation": {
-            "target_query_indices": torch.tensor([2]),
-            "excluded_support_query_indices": torch.tensor([2, 3]),
+            "version": 2,
+            "target_query_indices": torch.tensor([0]),
+            "excluded_support_query_indices": torch.tensor([0, 1]),
+            "training_query_indices": torch.tensor([0, 1]),
+            "training_query_registry_explicit": True,
+            "training_split_artifact_sha256s": [old_split_sha],
             "reconstruction_round": 1,
         },
     }
@@ -111,9 +121,18 @@ def test_reconstruction_preserves_training_dependencies() -> None:
     _attach_reconstruction_distillation(
         proposal,
         state,
-        {"contract": {"target_queries_used_as_anchor_support": False}},
+        {
+            "contract": {
+                "target_queries_seed_regions": True,
+                "support_queries_restricted": True,
+                "target_queries_used_as_anchor_support": False,
+            }
+        },
         target_query_indices=[4],
         excluded_support_query_indices=[4, 5],
+        training_query_indices=[4, 5],
+        query_count=6,
+        training_split_sha256=new_split_sha,
     )
     assert (
         proposal["v6_descriptor_distillation"]
@@ -123,9 +142,185 @@ def test_reconstruction_preserves_training_dependencies() -> None:
         1
     ]
     report = proposal["v6_reconstruction_distillation"]
-    assert report["target_query_indices"].tolist() == [2, 4]
-    assert report["excluded_support_query_indices"].tolist() == [2, 3, 4, 5]
+    assert report["version"] == 2
+    assert report["target_query_indices"].tolist() == [0, 4]
+    assert report["excluded_support_query_indices"].tolist() == [0, 1, 4, 5]
+    assert report["training_query_indices"].tolist() == [0, 1, 4, 5]
+    assert report["round_training_query_indices"].tolist() == [4, 5]
+    assert report["validation_query_indices"].tolist() == [2, 3]
+    assert report["round_validation_query_indices"].tolist() == [0, 1, 2, 3]
+    assert report["training_split_artifact_sha256s"] == [
+        old_split_sha,
+        new_split_sha,
+    ]
+    assert report["validation_queries_used_as_target_seed_or_support"] is False
     assert report["reconstruction_round"] == 2
+
+
+def test_reconstruction_scope_keeps_validation_sequence_out_of_arm() -> None:
+    records = [
+        {
+            "query_index": 0,
+            "failure_layers": ["L1"],
+            "excluded_query_indices": torch.tensor([0, 1]),
+        },
+        {
+            "query_index": 1,
+            "failure_layers": ["L1"],
+            "excluded_query_indices": torch.tensor([0, 1, 2]),
+        },
+        {"query_index": 2, "failure_layers": ["L3"]},
+        {"query_index": 3, "failure_layers": ["L1"]},
+        {
+            "query_index": 4,
+            "failure_layers": ["L1"],
+            "excluded_query_indices": torch.tensor([3, 4]),
+        },
+    ]
+    scope = _reconstruction_training_scope(
+        {"records": records}, training_query_indices=[0, 2, 4]
+    )
+    assert scope == {
+        "training_query_indices": [0, 2, 4],
+        "validation_query_indices": [1, 3],
+        "target_query_indices": [0, 4],
+        "excluded_support_query_indices": [0, 4],
+    }
+
+
+def test_reconstruction_split_sha_uses_mapping_and_arm_specific_keys() -> None:
+    digest = "a" * 64
+    assert _training_split_input_sha("reconstruction", digest) == {
+        "mapping_training_query_indices": digest,
+        "reconstruction_training_query_indices": digest,
+    }
+    assert _training_split_input_sha("selection", digest) == {
+        "mapping_training_query_indices": digest,
+        "descriptor_training_query_indices": digest,
+    }
+
+
+def test_reconstruction_run_passes_only_training_queries_to_completion(
+    tmp_path, monkeypatch
+) -> None:
+    split_sha = "a" * 64
+    feedback = {
+        "query_names": ["train/l1", "seq2/l1", "train/ok"],
+        "records": [
+            {
+                "query_index": 0,
+                "failure_layers": ["L1"],
+                "excluded_query_indices": torch.tensor([0, 1]),
+            },
+            {
+                "query_index": 1,
+                "failure_layers": ["L1"],
+                "excluded_query_indices": torch.tensor([0, 1]),
+            },
+            {"query_index": 2, "failure_layers": []},
+        ],
+    }
+    artifacts = {
+        "map": ({"provenance": {}, "anchor_ids": torch.tensor([0])}, "m" * 64),
+        "observation cache": ({}, "c" * 64),
+        "feedback": ({"feedback": feedback}, "f" * 64),
+        "association graph": ({}, "e" * 64),
+    }
+    captured = {}
+    split_call = {}
+
+    monkeypatch.setattr(propose_v6_round, "_clean_commit", lambda: "0" * 40)
+    monkeypatch.setattr(
+        propose_v6_round,
+        "_load",
+        lambda path, expected, label: artifacts[label],
+    )
+    monkeypatch.setattr(
+        propose_v6_round, "_validate_proposal_inputs", lambda **kwargs: None
+    )
+    monkeypatch.setattr(propose_v6_round, "require_schema", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        propose_v6_round, "GaussianRenderObservationProvider", lambda cache: object()
+    )
+    def load_split(*args, **kwargs):
+        split_call.update(kwargs)
+        return [0, 2], split_sha
+
+    monkeypatch.setattr(propose_v6_round, "_load_query_indices", load_split)
+
+    def unavailable_completion(*args, **kwargs):
+        captured.update(kwargs)
+        raise ValueError("no unused render-valid observations for completion")
+
+    monkeypatch.setattr(
+        propose_v6_round, "build_projective_completion", unavailable_completion
+    )
+    args = SimpleNamespace(
+        arm="reconstruction",
+        map=tmp_path / "map.pt",
+        expected_map_sha256="m" * 64,
+        observation_cache=tmp_path / "cache.pt",
+        expected_observation_cache_sha256="c" * 64,
+        feedback=tmp_path / "feedback.pt",
+        expected_feedback_sha256="f" * 64,
+        descriptor_training_query_indices=tmp_path / "split.json",
+        expected_descriptor_training_query_indices_sha256=split_sha,
+        association_graph=tmp_path / "association.pt",
+        expected_association_graph_sha256="e" * 64,
+        output_dir=tmp_path / "proposal",
+        device="cpu",
+        descriptor_trust_region=0.05,
+        descriptor_margin=0.05,
+        descriptor_temperature=0.04,
+        descriptor_learning_rate=0.02,
+        descriptor_epochs=1,
+        descriptor_batch_size=1,
+        descriptor_maximum_triplets_per_query=1,
+        descriptor_clean_fraction=0.25,
+        descriptor_clean_weight=0.25,
+        descriptor_trust_weight=0.1,
+        descriptor_pose_critical_weight=0.0,
+        descriptor_tail_query_weight=0.0,
+        maximum_anchors=10,
+        visibility_target=1,
+        detectability_target=1,
+        matching_target=1,
+        pose_logdet_target=0.0,
+        pose_min_eigenvalue_target=0.0,
+        selection_pose_information_chunk_size=16,
+        completion_voxel_size_m=0.05,
+        alpha_minimum=0.05,
+        completion_minimum_similarity=0.7,
+        minimum_margin=0.01,
+        maximum_epipolar_error_px=2.0,
+        minimum_views=3,
+        minimum_camera_families=2,
+        completion_maximum_rows_per_view=32,
+        completion_safety_maximum_components=100,
+    )
+
+    report = propose_v6_round.run(args)
+
+    assert split_call["require_source_feedback_match"] is True
+    assert split_call["feedback_sha256"] == "f" * 64
+    assert captured["eligible_query_indices"] == [0, 2]
+    assert captured["target_query_indices"] == [0]
+    assert captured["excluded_support_query_indices"] == [0]
+    assert report["proposal_available"] is False
+    assert report["reconstruction_training_scope"] == {
+        "training_query_indices": [0, 2],
+        "validation_query_indices": [1],
+        "target_query_indices": [0],
+        "excluded_support_query_indices": [0],
+    }
+    assert report["input_sha256"] == {
+        "map": "m" * 64,
+        "observation_cache": "c" * 64,
+        "feedback": "f" * 64,
+        "mapping_training_query_indices": split_sha,
+        "reconstruction_training_query_indices": split_sha,
+        "association_graph": "e" * 64,
+    }
 
 
 def test_subset_rebuilds_projective_csr() -> None:

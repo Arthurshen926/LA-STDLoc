@@ -126,31 +126,31 @@ def _load_query_indices(
 ) -> tuple[list[int] | None, str | None]:
     if path is None:
         if expected_sha256 is not None:
-            raise ValueError("descriptor training split SHA has no input file")
+            raise ValueError("mapping training split SHA has no input file")
         return None, None
     if expected_sha256 is None:
-        raise ValueError("descriptor training split requires an expected SHA")
+        raise ValueError("mapping training split requires an expected SHA")
     serialized = path.read_bytes()
     actual_sha256 = hashlib.sha256(serialized).hexdigest()
     if actual_sha256 != expected_sha256:
-        raise ValueError("descriptor training split SHA differs")
+        raise ValueError("mapping training split SHA differs")
     value = json.loads(serialized)
     if not isinstance(value, dict):
-        raise ValueError("descriptor training split must be a bound document")
-    require_schema(value, DESCRIPTOR_SPLIT_SCHEMA, label="descriptor training split")
+        raise ValueError("mapping training split must be a bound document")
+    require_schema(value, DESCRIPTOR_SPLIT_SCHEMA, label="mapping training split")
     if (
         require_source_feedback_match
         and value.get("source_feedback_sha256") != feedback_sha256
     ):
-        raise ValueError("descriptor training split is not bound to the feedback")
+        raise ValueError("mapping training split is not bound to the feedback")
     if query_names is None or value.get(
         "query_names_sha256"
     ) != ordered_query_registry_sha256(query_names):
-        raise ValueError("descriptor training split query registry differs")
+        raise ValueError("mapping training split query registry differs")
     training = value.get("training_query_indices")
     validation = value.get("validation_query_indices")
     if not isinstance(training, list) or not isinstance(validation, list):
-        raise ValueError("descriptor training split indices must be lists")
+        raise ValueError("mapping training split indices must be lists")
     rows = [int(row) for row in training]
     held_out = [int(row) for row in validation]
     expected_rows = list(range(len(query_names)))
@@ -159,7 +159,7 @@ def _load_query_indices(
         or held_out != sorted(set(held_out))
         or sorted(rows + held_out) != expected_rows
     ):
-        raise ValueError("descriptor training split is not an exact partition")
+        raise ValueError("mapping training split is not an exact partition")
     return rows, actual_sha256
 
 
@@ -170,52 +170,150 @@ def _attach_reconstruction_distillation(
     *,
     target_query_indices: list[int],
     excluded_support_query_indices: list[int],
+    training_query_indices: list[int],
+    query_count: int,
+    training_split_sha256: str,
 ) -> None:
     for field in ("v6_descriptor_distillation", "v6_selection_distillation"):
         report = state.get(field)
         if isinstance(report, dict):
             proposal[field] = dict(report)
     prior = state.get("v6_reconstruction_distillation")
+    query_count = int(query_count)
+    if query_count < 1:
+        raise ValueError("reconstruction query registry must be non-empty")
+
+    def registry(value, *, label: str, non_empty: bool = False) -> torch.Tensor:
+        rows = torch.as_tensor(value, dtype=torch.long).reshape(-1)
+        if (
+            (non_empty and rows.numel() == 0)
+            or rows.numel() != torch.unique(rows).numel()
+            or (rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= query_count))
+        ):
+            raise ValueError(f"{label} query registry is invalid")
+        return torch.sort(rows).values
+
+    round_training = registry(
+        training_query_indices,
+        label="round reconstruction training",
+        non_empty=True,
+    )
+    round_targets = registry(
+        target_query_indices,
+        label="round reconstruction target",
+    )
+    round_excluded = registry(
+        excluded_support_query_indices,
+        label="round reconstruction excluded support",
+    )
+    if (
+        round_targets.numel()
+        and not bool(torch.isin(round_targets, round_training).all())
+    ) or (
+        round_excluded.numel()
+        and not bool(torch.isin(round_excluded, round_training).all())
+    ):
+        raise ValueError("reconstruction targets/support exclusions must be training-only")
+    all_queries = torch.arange(query_count, dtype=torch.long)
+    round_validation = all_queries[~torch.isin(all_queries, round_training)]
+    prior_training_explicit = True
+    prior_training = torch.empty(0, dtype=torch.long)
+    if isinstance(prior, dict):
+        prior_training_value = prior.get("training_query_indices")
+        if prior_training_value is None:
+            # Legacy reconstruction reports cannot establish an arm-level holdout.
+            prior_training = all_queries
+            prior_training_explicit = False
+        else:
+            prior_training = registry(
+                prior_training_value,
+                label="prior reconstruction training",
+                non_empty=True,
+            )
+            prior_training_explicit = bool(
+                prior.get("training_query_registry_explicit", False)
+            )
+    cumulative_training = torch.unique(
+        torch.cat((prior_training, round_training)), sorted=True
+    )
+    cumulative_validation = all_queries[
+        ~torch.isin(all_queries, cumulative_training)
+    ]
     prior_targets = torch.as_tensor(
         prior.get("target_query_indices", ()) if isinstance(prior, dict) else (),
         dtype=torch.long,
     ).reshape(-1)
-    targets = torch.unique(
-        torch.cat(
-            (prior_targets, torch.tensor(target_query_indices, dtype=torch.long))
-        ),
-        sorted=True,
-    )
+    prior_targets = registry(prior_targets, label="prior reconstruction target")
+    if (
+        prior_targets.numel()
+        and not bool(torch.isin(prior_targets, prior_training).all())
+    ):
+        raise ValueError("prior reconstruction targets are outside its training split")
+    targets = torch.unique(torch.cat((prior_targets, round_targets)), sorted=True)
     prior_excluded = torch.as_tensor(
         prior.get("excluded_support_query_indices", ())
         if isinstance(prior, dict)
         else (),
         dtype=torch.long,
     ).reshape(-1)
-    excluded = torch.unique(
-        torch.cat(
-            (
-                prior_excluded,
-                torch.tensor(excluded_support_query_indices, dtype=torch.long),
-            )
-        ),
-        sorted=True,
+    prior_excluded = registry(
+        prior_excluded, label="prior reconstruction excluded support"
     )
+    if (
+        prior_excluded.numel()
+        and not bool(torch.isin(prior_excluded, prior_training).all())
+    ):
+        raise ValueError(
+            "prior reconstruction support exclusions are outside its training split"
+        )
+    excluded = torch.unique(torch.cat((prior_excluded, round_excluded)), sorted=True)
+    contract = dict(completion.get("contract", {}))
+    if (
+        contract.get("target_queries_seed_regions") is not True
+        or contract.get("support_queries_restricted") is not True
+        or contract.get("target_queries_used_as_anchor_support") is not False
+    ):
+        raise ValueError("completion does not preserve the reconstruction split contract")
+    split_shas = list(
+        prior.get("training_split_artifact_sha256s", ())
+        if isinstance(prior, dict)
+        else ()
+    )
+    all_split_shas = [*split_shas, training_split_sha256]
+    if any(
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value.lower())
+        for value in all_split_shas
+    ):
+        raise ValueError("reconstruction training split SHA registry is invalid")
+    if isinstance(prior, dict) and prior_training_explicit and not split_shas:
+        raise ValueError("prior reconstruction training split SHA registry is missing")
+    if training_split_sha256 not in split_shas:
+        split_shas.append(training_split_sha256)
     proposal["v6_reconstruction_distillation"] = {
         "schema": "lafgs_v6_target_seeded_projective_completion",
-        "version": 1,
+        "version": 2,
         "target_query_indices": targets,
-        "round_target_query_indices": torch.tensor(
-            target_query_indices, dtype=torch.long
-        ),
+        "round_target_query_indices": round_targets,
         "excluded_support_query_indices": excluded,
-        "round_excluded_support_query_indices": torch.tensor(
-            excluded_support_query_indices, dtype=torch.long
-        ),
+        "round_excluded_support_query_indices": round_excluded,
+        "training_query_indices": cumulative_training,
+        "round_training_query_indices": round_training,
+        "validation_query_indices": cumulative_validation,
+        "round_validation_query_indices": round_validation,
+        "eligible_support_query_indices": cumulative_training,
+        "round_eligible_support_query_indices": round_training,
+        "training_query_registry_explicit": prior_training_explicit,
+        "training_split_artifact_sha256s": split_shas,
+        "round_training_split_artifact_sha256": training_split_sha256,
+        "arm_level_holdout_query_indices": cumulative_validation,
+        "round_arm_level_holdout_query_indices": round_validation,
+        "validation_queries_used_as_target_seed_or_support": False,
         "target_query_depth_used_for_seed_region": True,
         "target_queries_used_as_anchor_support": False,
         "final_xyz_source": "fixed_camera_robust_ray_triangulation",
-        "completion_contract": dict(completion.get("contract", {})),
+        "completion_contract": contract,
         "reconstruction_round": int(
             prior.get("reconstruction_round", 0)
             if isinstance(prior, dict)
@@ -223,6 +321,63 @@ def _attach_reconstruction_distillation(
         )
         + 1,
     }
+
+
+def _reconstruction_training_scope(
+    feedback: dict,
+    training_query_indices: list[int],
+) -> dict[str, list[int]]:
+    """Resolve training-only L1 targets and neighbor exclusions."""
+
+    records = list(feedback.get("records", ()))
+    query_count = len(records)
+    training = [int(value) for value in training_query_indices]
+    if (
+        not training
+        or training != sorted(set(training))
+        or training[0] < 0
+        or training[-1] >= query_count
+    ):
+        raise ValueError("reconstruction training query registry is invalid")
+    training_set = set(training)
+    targets = []
+    excluded = set()
+    for query_index in training:
+        record = records[query_index]
+        if int(record.get("query_index", query_index)) != query_index:
+            raise ValueError("reconstruction feedback query registry differs")
+        if "L1" not in record.get(
+            "failure_layers", (record.get("failure_layer"),)
+        ):
+            continue
+        targets.append(query_index)
+        neighbors = torch.as_tensor(
+            record.get("excluded_query_indices", (query_index,)), dtype=torch.long
+        ).reshape(-1)
+        if neighbors.numel() and (
+            int(neighbors.min()) < 0 or int(neighbors.max()) >= query_count
+        ):
+            raise ValueError("reconstruction excluded-neighbor registry is invalid")
+        excluded.update(int(value) for value in neighbors.tolist() if value in training_set)
+    validation = sorted(set(range(query_count)) - training_set)
+    return {
+        "training_query_indices": training,
+        "validation_query_indices": validation,
+        "target_query_indices": targets,
+        "excluded_support_query_indices": sorted(excluded),
+    }
+
+
+def _training_split_input_sha(arm: str, split_sha256: str | None) -> dict[str, str]:
+    if split_sha256 is None:
+        return {}
+    result = {"mapping_training_query_indices": split_sha256}
+    result[
+        "reconstruction_training_query_indices"
+        if arm == "reconstruction"
+        else "descriptor_training_query_indices"
+    ] = split_sha256
+    return result
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -257,7 +412,12 @@ def run(args: argparse.Namespace) -> dict:
             feedback,
             trust_region=args.descriptor_trust_region,
         )
-    elif arm in {"descriptor_loss", "descriptor_selection", "selection"}:
+    elif arm in {
+        "descriptor_loss",
+        "descriptor_selection",
+        "selection",
+        "reconstruction",
+    }:
         (
             descriptor_training_queries,
             descriptor_training_split_sha,
@@ -266,16 +426,20 @@ def run(args: argparse.Namespace) -> dict:
             args.expected_descriptor_training_query_indices_sha256,
             feedback_sha256=feedback_sha,
             query_names=list(feedback["query_names"]),
-            require_source_feedback_match=not any(
-                isinstance(state.get(field), dict)
-                for field in (
-                    "v6_descriptor_distillation",
-                    "v6_reconstruction_distillation",
-                    "v6_selection_distillation",
+            require_source_feedback_match=(
+                arm == "reconstruction"
+                or not any(
+                    isinstance(state.get(field), dict)
+                    for field in (
+                        "v6_descriptor_distillation",
+                        "v6_reconstruction_distillation",
+                        "v6_selection_distillation",
+                    )
                 )
             ),
         )
     selection_report = None
+    reconstruction_scope = None
     unavailable_reason = None
     association_sha = None
     if arm == "descriptor":
@@ -347,6 +511,13 @@ def run(args: argparse.Namespace) -> dict:
         )
     elif arm == "reconstruction":
         if (
+            descriptor_training_queries is None
+            or descriptor_training_split_sha is None
+        ):
+            raise ValueError(
+                "reconstruction requires a SHA-bound mapping training split"
+            )
+        if (
             args.association_graph is None
             or args.expected_association_graph_sha256 is None
         ):
@@ -359,61 +530,56 @@ def run(args: argparse.Namespace) -> dict:
         require_schema(
             association, ASSOCIATION_GRAPH_SCHEMA, label="association graph"
         )
-        l1_queries = [
-            record["query_index"]
-            for record in feedback["records"]
-            if "L1"
-            in record.get("failure_layers", (record.get("failure_layer"),))
+        reconstruction_scope = _reconstruction_training_scope(
+            feedback, descriptor_training_queries
+        )
+        l1_queries = reconstruction_scope["target_query_indices"]
+        excluded_support_queries = reconstruction_scope[
+            "excluded_support_query_indices"
         ]
         if not l1_queries:
-            raise ValueError("reconstruction proposal has no L1 query")
-        excluded_support_queries = sorted(
-            {
-                int(query_index)
-                for record in feedback["records"]
-                if "L1"
-                in record.get("failure_layers", (record.get("failure_layer"),))
-                for query_index in torch.as_tensor(
-                    record.get("excluded_query_indices", (record["query_index"],))
-                ).tolist()
-            }
-        )
-        try:
-            completion = build_projective_completion(
-                observations,
-                association,
-                voxel_size_m=args.completion_voxel_size_m,
-                alpha_minimum=args.alpha_minimum,
-                minimum_similarity=args.completion_minimum_similarity,
-                minimum_margin=args.minimum_margin,
-                maximum_epipolar_error_px=args.maximum_epipolar_error_px,
-                minimum_observations=args.minimum_views,
-                minimum_camera_families=args.minimum_camera_families,
-                maximum_rows_per_view=args.completion_maximum_rows_per_view,
-                safety_maximum_components=args.completion_safety_maximum_components,
-                target_query_indices=l1_queries,
-                excluded_support_query_indices=excluded_support_queries,
-                device=args.device,
-            )
-        except ValueError as error:
-            unavailable = {
-                "no unused render-valid observations for completion": (
-                    "no_unused_render_valid_completion_observations"
-                ),
-                "target queries produced no completion seed region": (
-                    "no_target_completion_seed_region"
-                ),
-                "depth proposals produced no descriptor-consistent component": (
-                    "no_descriptor_consistent_projective_completion"
-                ),
-                "association graph contains no ray-triangulated Anchor": (
-                    "no_ray_triangulated_completion_anchor"
-                ),
-            }
-            if str(error) not in unavailable:
-                raise
             proposal = None
-            unavailable_reason = unavailable[str(error)]
+            unavailable_reason = "no_training_split_l1_query"
+        else:
+            try:
+                completion = build_projective_completion(
+                    observations,
+                    association,
+                    voxel_size_m=args.completion_voxel_size_m,
+                    alpha_minimum=args.alpha_minimum,
+                    minimum_similarity=args.completion_minimum_similarity,
+                    minimum_margin=args.minimum_margin,
+                    maximum_epipolar_error_px=args.maximum_epipolar_error_px,
+                    minimum_observations=args.minimum_views,
+                    minimum_camera_families=args.minimum_camera_families,
+                    maximum_rows_per_view=args.completion_maximum_rows_per_view,
+                    safety_maximum_components=(
+                        args.completion_safety_maximum_components
+                    ),
+                    eligible_query_indices=descriptor_training_queries,
+                    target_query_indices=l1_queries,
+                    excluded_support_query_indices=excluded_support_queries,
+                    device=args.device,
+                )
+            except ValueError as error:
+                unavailable = {
+                    "no unused render-valid observations for completion": (
+                        "no_unused_render_valid_completion_observations"
+                    ),
+                    "target queries produced no completion seed region": (
+                        "no_target_completion_seed_region"
+                    ),
+                    "depth proposals produced no descriptor-consistent component": (
+                        "no_descriptor_consistent_projective_completion"
+                    ),
+                    "association graph contains no ray-triangulated Anchor": (
+                        "no_ray_triangulated_completion_anchor"
+                    ),
+                }
+                if str(error) not in unavailable:
+                    raise
+                proposal = None
+                unavailable_reason = unavailable[str(error)]
         if unavailable_reason is None:
             merged = merge_projective_candidates(
                 [projective_candidates_from_map(state), completion]
@@ -424,6 +590,15 @@ def run(args: argparse.Namespace) -> dict:
                     **dict(state.get("provenance", {})),
                     "v6_parent_map_sha256": map_sha,
                     "v6_reconstruction_feedback_sha256": feedback_sha,
+                    "v6_reconstruction_training_split_sha256": (
+                        descriptor_training_split_sha
+                    ),
+                    "v6_reconstruction_training_query_count": len(
+                        descriptor_training_queries
+                    ),
+                    "v6_reconstruction_holdout_query_count": len(
+                        reconstruction_scope["validation_query_indices"]
+                    ),
                     "v6_l1_query_count": len(l1_queries),
                 },
             )
@@ -433,6 +608,9 @@ def run(args: argparse.Namespace) -> dict:
                 completion,
                 target_query_indices=l1_queries,
                 excluded_support_query_indices=excluded_support_queries,
+                training_query_indices=descriptor_training_queries,
+                query_count=len(feedback["records"]),
+                training_split_sha256=descriptor_training_split_sha,
             )
     else:
         raise ValueError(f"unknown proposal arm {arm}")
@@ -489,6 +667,11 @@ def run(args: argparse.Namespace) -> dict:
         "completion_safety_maximum_components": int(
             args.completion_safety_maximum_components
         ),
+        "reconstruction_mapping_training_split_required": arm == "reconstruction",
+        "reconstruction_training_only_targets_seeds_and_support": (
+            arm == "reconstruction"
+        ),
+        "reconstruction_arm_level_holdout": arm == "reconstruction",
     }
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
@@ -508,18 +691,7 @@ def run(args: argparse.Namespace) -> dict:
                 "map": map_sha,
                 "observation_cache": cache_sha,
                 "feedback": feedback_sha,
-                **(
-                    {
-                        "mapping_training_query_indices": (
-                            descriptor_training_split_sha
-                        ),
-                        "descriptor_training_query_indices": (
-                            descriptor_training_split_sha
-                        )
-                    }
-                    if descriptor_training_split_sha is not None
-                    else {}
-                ),
+                **_training_split_input_sha(arm, descriptor_training_split_sha),
                 **(
                     {"association_graph": association_sha}
                     if association_sha is not None
@@ -527,6 +699,7 @@ def run(args: argparse.Namespace) -> dict:
                 ),
             },
             "anchor_count": int(torch.as_tensor(state["anchor_ids"]).numel()),
+            "reconstruction_training_scope": reconstruction_scope,
         }
         (args.output_dir / "proposal.json").write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -542,7 +715,14 @@ def run(args: argparse.Namespace) -> dict:
             "observation_cache_sha256": cache_sha,
             "feedback_sha256": feedback_sha,
             "mapping_training_split_sha256": descriptor_training_split_sha,
-            "descriptor_training_split_sha256": descriptor_training_split_sha,
+            "descriptor_training_split_sha256": (
+                descriptor_training_split_sha
+                if arm in {"descriptor_loss", "descriptor_selection", "selection"}
+                else None
+            ),
+            "reconstruction_training_split_sha256": (
+                descriptor_training_split_sha if arm == "reconstruction" else None
+            ),
             "association_graph_sha256": association_sha,
         }
     )
@@ -589,14 +769,7 @@ def run(args: argparse.Namespace) -> dict:
             "map": map_sha,
             "observation_cache": cache_sha,
             "feedback": feedback_sha,
-            **(
-                {
-                    "mapping_training_query_indices": descriptor_training_split_sha,
-                    "descriptor_training_query_indices": descriptor_training_split_sha,
-                }
-                if descriptor_training_split_sha is not None
-                else {}
-            ),
+            **_training_split_input_sha(arm, descriptor_training_split_sha),
             **(
                 {"association_graph": association_sha}
                 if association_sha is not None
@@ -623,6 +796,7 @@ def run(args: argparse.Namespace) -> dict:
         "reconstruction_distillation": _jsonable(
             proposal.get("v6_reconstruction_distillation")
         ),
+        "reconstruction_training_scope": reconstruction_scope,
     }
     (args.output_dir / "proposal.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
@@ -670,11 +844,16 @@ def main() -> None:
         "--descriptor-training-query-indices",
         dest="descriptor_training_query_indices",
         type=Path,
+        help=(
+            "SHA-bound mapping train/validation split; required by reconstruction "
+            "and used by descriptor/selection arms"
+        ),
     )
     parser.add_argument(
         "--expected-mapping-training-query-indices-sha256",
         "--expected-descriptor-training-query-indices-sha256",
         dest="expected_descriptor_training_query_indices_sha256",
+        help="Expected SHA256 of the mapping train/validation split",
     )
     parser.add_argument("--maximum-anchors", type=int, default=20000)
     parser.add_argument("--visibility-target", type=int, default=4)
