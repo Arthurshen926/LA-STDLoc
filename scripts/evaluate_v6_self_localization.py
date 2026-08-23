@@ -32,12 +32,18 @@ _SOURCE_PATHS = (
 def _producer() -> dict:
     root = Path(__file__).resolve().parents[1]
     commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
         text=True,
     ).stdout.strip()
     dirty = subprocess.run(
-        ["git", "status", "--porcelain=v1"], cwd=root, check=True,
-        capture_output=True, text=True,
+        ["git", "status", "--porcelain=v1"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     if dirty:
         raise RuntimeError("V6 feedback evaluator requires a clean worktree")
@@ -121,7 +127,7 @@ def run(args: argparse.Namespace) -> dict:
         temporary.unlink(missing_ok=True)
     summary = {
         "schema": "lafgs_v6_query_local_feedback_summary",
-        "version": 2,
+        "version": 3,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "summary": result["summary"],
@@ -182,7 +188,8 @@ def main() -> None:
     parser.add_argument(
         "--loo-affected-anchor-policy",
         choices=("purge", "rebuild"),
-        default="purge",
+        default="rebuild",
+        help="rebuild is required for descriptor identity supervision; purge is diagnostic-only",
     )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)

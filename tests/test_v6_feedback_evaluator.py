@@ -7,11 +7,13 @@ from map_learning.v6_feedback_evaluator import (
     _descriptor_training_query_masks,
     _exact_identity_anchor_by_query,
     _layer_edges,
+    _legal_descriptor_pair_is_clean,
     _maximum_matching,
     _partition_identity_edges,
     _positive_score_statistics,
     _reconstruction_target_query_mask,
     _selection_training_query_mask,
+    _visible_spatial_rank,
 )
 
 
@@ -92,6 +94,18 @@ def test_maximum_matching_prevents_duplicate_anchor_votes() -> None:
     assert len({anchor for _, anchor in pairs}) == 3
 
 
+def test_visibility_rank_counts_image_cells_not_anchor_rows() -> None:
+    projected = torch.tensor([[1.0, 1.0], [20.0, 20.0], [80.0, 20.0]])
+    assert (
+        _visible_spatial_rank(
+            projected,
+            torch.arange(3),
+            image_hw=(100, 100),
+        )
+        == 2
+    )
+
+
 def test_spatial_positive_edges_match_dense_distance_oracle() -> None:
     generator = torch.Generator().manual_seed(91)
     keypoints = torch.rand((37, 2), generator=generator) * 100
@@ -164,9 +178,13 @@ def test_positive_statistics_excludes_ambiguous_anchors_from_negative() -> None:
     positive, negative, rank, positive_anchor, negative_anchor = result[0]
     assert abs(positive - 0.8) < 1e-6
     assert abs(negative - 0.7) < 1e-6
-    assert rank == 3
+    assert rank == 1
     assert positive_anchor == 0
     assert negative_anchor == 3
+    # Raw global Top-1 is ignored Anchor 1, but the exact positive already
+    # beats every legal negative and is therefore a clean protection pair.
+    assert _legal_descriptor_pair_is_clean(positive, negative) is True
+    assert _legal_descriptor_pair_is_clean(0.5, 0.5) is True
 
 
 def test_pose_information_keeps_lowest_residual_row_per_anchor() -> None:

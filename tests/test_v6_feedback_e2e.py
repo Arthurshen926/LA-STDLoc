@@ -86,6 +86,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
     assert result["contract"]["identity_supervision_unavailable_query_count"] == 0
     assert result["feedback"]["pose_information_anchor_unique"] is True
+    assert result["feedback"]["descriptor_identity_supervision_available"] is True
     for record in result["feedback"]["records"]:
         assert record["identity_positive_count"] == 4
         assert torch.equal(
@@ -98,3 +99,10 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         assert record["descriptor_triplet_pose_weights"].shape == (
             record["descriptor_triplets"].shape[0],
         )
+        assert record["descriptor_identity_supervision_available"] is True
+        assert torch.equal(
+            record["descriptor_triplet_legal_pair_clean_mask"],
+            record["descriptor_triplets"][:, 3].bool(),
+        )
+        assert record["estimated_pose_w2c"].shape == (4, 4)
+        assert torch.isfinite(record["estimated_pose_w2c"]).all()

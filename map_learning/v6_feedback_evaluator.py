@@ -19,6 +19,10 @@ from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from localization.matcher import global_cosine_topk
 from localization.pose_solver import solve_absolute_pose
 from map_learning.self_localization_feedback import build_self_localization_feedback
+from topology.layered_sufficiency import (
+    DEFAULT_VISIBILITY_GRID,
+    visibility_image_cells,
+)
 from topology.pose_information import (
     fisher_contributions,
     pose_jacobian_analytic,
@@ -259,20 +263,19 @@ def _visible_spatial_rank(
     visible_rows: torch.Tensor,
     *,
     image_hw: tuple[int, int],
-    grid_rows: int = 4,
-    grid_cols: int = 4,
+    grid_rows: int = DEFAULT_VISIBILITY_GRID[0],
+    grid_cols: int = DEFAULT_VISIBILITY_GRID[1],
 ) -> int:
     """Count independently occupied image cells, not raw visible Anchors."""
 
     if visible_rows.numel() == 0:
         return 0
-    height, width = image_hw
-    xy = projected[visible_rows]
-    columns = torch.floor(xy[:, 0] / max(float(width), 1.0) * grid_cols).long()
-    rows = torch.floor(xy[:, 1] / max(float(height), 1.0) * grid_rows).long()
-    columns = columns.clamp(0, grid_cols - 1)
-    rows = rows.clamp(0, grid_rows - 1)
-    return int(torch.unique(rows * grid_cols + columns).numel())
+    cells = visibility_image_cells(
+        projected[visible_rows],
+        image_hw=image_hw,
+        grid_shape=(grid_rows, grid_cols),
+    )
+    return int(torch.unique(cells).numel())
 
 
 def _pose_neighborhoods(
@@ -338,6 +341,11 @@ def _positive_score_statistics(
         ignored_by_row = [[] for _ in positives_by_row]
     if len(ignored_by_row) != len(positives_by_row):
         raise ValueError("ignored edges and dense score rows differ")
+    if any(
+        set(positives) & set(ignored)
+        for positives, ignored in zip(positives_by_row, ignored_by_row)
+    ):
+        raise ValueError("positive and ignored Anchor identities overlap")
     if int(chunk_size) < 1:
         raise ValueError("positive statistics chunk size must be positive")
     positive_query_rows = [
@@ -383,17 +391,8 @@ def _positive_score_statistics(
             .values
         )
         scores = dense_scores[rows]
-        ranks = 1 + (
-            (scores > best_positive[:, None])
-            | (
-                (scores == best_positive[:, None])
-                & (anchor_rows[None] < best_anchor[:, None])
-            )
-        ).sum(1)
+        ranking_scores = scores.clone()
         wrong = scores.clone()
-        local_rows = torch.arange(len(rows_list), device=dense_scores.device)
-        local_rows = local_rows[:, None].expand_as(padded)
-        wrong[local_rows[valid], padded[valid]] = -torch.inf
         ignored_lengths = torch.tensor(
             [len(ignored_by_row[row]) for row in rows_list], dtype=torch.long
         )
@@ -407,7 +406,18 @@ def _positive_score_statistics(
                 torch.arange(len(rows_list), device=dense_scores.device),
                 ignored_lengths.to(dense_scores.device),
             )
+            ranking_scores[ignored_local, ignored_anchor] = -torch.inf
             wrong[ignored_local, ignored_anchor] = -torch.inf
+        ranks = 1 + (
+            (ranking_scores > best_positive[:, None])
+            | (
+                (ranking_scores == best_positive[:, None])
+                & (anchor_rows[None] < best_anchor[:, None])
+            )
+        ).sum(1)
+        local_rows = torch.arange(len(rows_list), device=dense_scores.device)
+        local_rows = local_rows[:, None].expand_as(padded)
+        wrong[local_rows[valid], padded[valid]] = -torch.inf
         best_wrong = wrong.max(1).values
         best_wrong_anchor = torch.where(
             torch.isfinite(best_wrong),
@@ -426,6 +436,18 @@ def _positive_score_statistics(
                 int(values[4]),
             )
     return result
+
+
+def _legal_descriptor_pair_is_clean(
+    positive_score: float, legal_negative_score: float
+) -> bool:
+    """Classify a feedback pair without consulting ignored global winners."""
+
+    return bool(
+        math.isfinite(positive_score)
+        and math.isfinite(legal_negative_score)
+        and positive_score >= legal_negative_score
+    )
 
 
 def _summary(rows: list[dict]) -> dict:
@@ -640,6 +662,7 @@ def evaluate_query_local_feedback(
     )
     identity_anchor_by_query = _exact_identity_anchor_by_query(state, observations)
     positive_identity_contract = exact_identity_positive_contract()
+    descriptor_identity_supervision_available = loo_affected_anchor_policy == "rebuild"
     base_xyz = torch.as_tensor(state["anchor_xyz"]).float()
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
@@ -701,11 +724,11 @@ def evaluate_query_local_feedback(
                 view.alpha[y, x] >= float(alpha_minimum)
             )
         visible_rows = torch.nonzero(visible, as_tuple=False).reshape(-1)
-        visible_rank = _visible_spatial_rank(
-            projected,
-            visible_rows,
+        visible_image_cells = visibility_image_cells(
+            projected[visible_rows],
             image_hw=(height, width),
         )
+        visible_rank = int(torch.unique(visible_image_cells).numel())
         keypoints = view.physical_keypoints.float()
         geometry_edges = _layer_edges(
             keypoints, projected, visible_rows, float(positive_radius_px)
@@ -804,6 +827,7 @@ def evaluate_query_local_feedback(
         confusion_pairs = []
         descriptor_triplets = []
         descriptor_triplet_harmful_inlier = []
+        descriptor_triplet_legal_pair_clean = []
         positive_statistics = _positive_score_statistics(
             dense_scores, positive_edges, ignored_by_row=ignored_edges
         )
@@ -821,13 +845,21 @@ def evaluate_query_local_feedback(
                 correct_anchor_ranks.append(rank)
                 if bool(negative[row]):
                     confusion_pairs.append((row, int(winners[row]), best))
-                if best_wrong_anchor >= 0 and math.isfinite(wrong_score):
+                if (
+                    descriptor_identity_supervision_available
+                    and best_wrong_anchor >= 0
+                    and math.isfinite(wrong_score)
+                ):
+                    legal_pair_clean = _legal_descriptor_pair_is_clean(
+                        positive_score, wrong_score
+                    )
                     descriptor_triplets.append(
-                        (row, best, best_wrong_anchor, int(bool(correct[row])))
+                        (row, best, best_wrong_anchor, int(legal_pair_clean))
                     )
                     descriptor_triplet_harmful_inlier.append(
                         bool((harmful_rows == row).any())
                     )
+                    descriptor_triplet_legal_pair_clean.append(legal_pair_clean)
         if pose_clean_ids.numel():
             clean_jacobian = pose_jacobian_analytic(
                 xyz[pose_clean_ids].double(),
@@ -856,6 +888,9 @@ def evaluate_query_local_feedback(
         exact_identity_positive_pairs = _edge_pairs(positive_edges)
         triplet_harmful_mask = torch.tensor(
             descriptor_triplet_harmful_inlier, dtype=torch.bool
+        )
+        triplet_legal_pair_clean_mask = torch.tensor(
+            descriptor_triplet_legal_pair_clean, dtype=torch.bool
         )
         feedback_records.append(
             {
@@ -886,6 +921,7 @@ def evaluate_query_local_feedback(
                 if inliers.numel()
                 else torch.empty(0, dtype=torch.bool),
                 "visible_anchor_ids": visible_rows,
+                "visible_anchor_image_cells": visible_image_cells,
                 "exact_identity_pairs": exact_identity_pairs,
                 "exact_identity_lineage_pairs": exact_identity_pairs,
                 "active_identity_pairs": active_identity_pairs,
@@ -927,6 +963,12 @@ def evaluate_query_local_feedback(
                 ).reshape(-1, 4),
                 "descriptor_triplet_harmful_inlier_mask": triplet_harmful_mask,
                 "descriptor_triplet_pose_weights": triplet_harmful_mask.float(),
+                "descriptor_triplet_legal_pair_clean_mask": (
+                    triplet_legal_pair_clean_mask
+                ),
+                "descriptor_identity_supervision_available": (
+                    descriptor_identity_supervision_available
+                ),
                 "excluded_query_indices": excluded_queries,
                 "dependency_group_ids": torch.unique(
                     torch.as_tensor(state["dependency_group_ids"])[winners]
@@ -944,6 +986,7 @@ def evaluate_query_local_feedback(
                 "pose_information_contribution": information_logdet,
                 "pose_information_sufficient": information_rank >= 6,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
+                "estimated_pose_w2c": pose,
                 "te_cm": te_cm,
                 "ae_deg": ae_deg,
                 "query_descriptor_loo": not bool(
@@ -1161,6 +1204,18 @@ def evaluate_query_local_feedback(
             "geometry_compatible_nonidentity_is_ignored": True,
             "descriptor_triplet_pose_weight_semantics": (
                 "harmful_poselib_inlier_indicator_only_not_training_weight"
+            ),
+            "descriptor_triplet_clean_semantics": (
+                "exact_positive_score_ge_best_legal_negative_score_zero_margin"
+            ),
+            "descriptor_identity_supervision_available": (
+                descriptor_identity_supervision_available
+            ),
+            "diagnostic_purge_suppresses_descriptor_triplets": (
+                loo_affected_anchor_policy == "purge"
+            ),
+            "estimated_pose_w2c_role": (
+                "paired_winning_pose_diagnostic_only_not_training"
             ),
             "pose_information_anchor_unique": True,
             "pose_information_unique_row_policy": (

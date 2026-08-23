@@ -12,6 +12,7 @@ from common.v6_contracts import (
     require_exact_identity_positive_contract,
     validate_ordered_query_registry,
 )
+from topology.layered_sufficiency import DEFAULT_VISIBILITY_GRID
 
 
 FAILURE_LAYERS = ("L1", "L2", "L3", "L4")
@@ -173,6 +174,38 @@ def build_self_localization_feedback(
             raise ValueError(
                 "descriptor triplet pose weights must encode harmful inliers"
             )
+        descriptor_triplet_legal_pair_clean = torch.as_tensor(
+            source.get("descriptor_triplet_legal_pair_clean_mask", ()),
+            dtype=torch.bool,
+        ).reshape(-1)
+        if descriptor_triplet_legal_pair_clean.numel() != descriptor_triplets.shape[0]:
+            raise ValueError("descriptor triplet legal-pair rows are not aligned")
+        if not torch.equal(
+            descriptor_triplet_legal_pair_clean,
+            descriptor_triplets[:, 3].bool(),
+        ):
+            raise ValueError("descriptor triplet clean labels differ from legal pairs")
+        descriptor_identity_supervision_available = source.get(
+            "descriptor_identity_supervision_available"
+        )
+        if not isinstance(descriptor_identity_supervision_available, bool):
+            raise ValueError("descriptor identity supervision status is required")
+        affected_anchor_policy = str(source.get("affected_anchor_policy", "rebuild"))
+        if affected_anchor_policy not in {"rebuild", "purge"}:
+            raise ValueError("affected-Anchor policy is invalid")
+        if descriptor_identity_supervision_available != (
+            affected_anchor_policy == "rebuild"
+        ):
+            raise ValueError(
+                "descriptor identity supervision requires affected-Anchor rebuild"
+            )
+        if (
+            not descriptor_identity_supervision_available
+            and descriptor_triplets.numel()
+        ):
+            raise ValueError(
+                "diagnostic purge feedback cannot contain descriptor triplets"
+            )
         identity_positive_count = int(source.get("identity_positive_count", -1))
         identity_active_count = int(source.get("identity_active_count", -1))
         identity_lineage_count = int(source.get("identity_lineage_count", -1))
@@ -228,6 +261,24 @@ def build_self_localization_feedback(
             raise ValueError("pose information contains duplicate Anchors")
         if source.get("pose_information_anchor_unique") is not True:
             raise ValueError("pose information must certify Anchor uniqueness")
+        estimated_pose_value = source.get("estimated_pose_w2c")
+        if estimated_pose_value is None:
+            raise ValueError("estimated pose is required")
+        estimated_pose_w2c = torch.as_tensor(estimated_pose_value, dtype=torch.float64)
+        if estimated_pose_w2c.shape != (4, 4) or not bool(
+            torch.isfinite(estimated_pose_w2c).all()
+        ):
+            raise ValueError("estimated pose must be a finite 4x4 matrix")
+        visible_anchor_ids = torch.as_tensor(
+            source.get("visible_anchor_ids", ()), dtype=torch.long
+        ).reshape(-1)
+        visible_anchor_image_cells = torch.as_tensor(
+            source.get("visible_anchor_image_cells", ()), dtype=torch.long
+        ).reshape(-1)
+        if visible_anchor_ids.shape != visible_anchor_image_cells.shape:
+            raise ValueError("visible Anchor IDs and image cells do not align")
+        if bool((visible_anchor_image_cells < 0).any()):
+            raise ValueError("visibility image-cell IDs must be non-negative")
         normalized.append(
             {
                 "query_index": query_index,
@@ -287,9 +338,8 @@ def build_self_localization_feedback(
                 "inlier_clean_mask": torch.as_tensor(
                     source.get("inlier_clean_mask", ())
                 ).bool(),
-                "visible_anchor_ids": torch.as_tensor(
-                    source.get("visible_anchor_ids", ())
-                ).long(),
+                "visible_anchor_ids": visible_anchor_ids,
+                "visible_anchor_image_cells": visible_anchor_image_cells,
                 "exact_identity_pairs": exact_identity_pairs,
                 "exact_identity_lineage_pairs": exact_identity_pairs,
                 "active_identity_pairs": active_identity_pairs,
@@ -328,6 +378,12 @@ def build_self_localization_feedback(
                 "descriptor_triplets": descriptor_triplets,
                 "descriptor_triplet_harmful_inlier_mask": (descriptor_triplet_harmful),
                 "descriptor_triplet_pose_weights": (descriptor_triplet_pose_weights),
+                "descriptor_triplet_legal_pair_clean_mask": (
+                    descriptor_triplet_legal_pair_clean
+                ),
+                "descriptor_identity_supervision_available": (
+                    descriptor_identity_supervision_available
+                ),
                 "excluded_query_indices": torch.as_tensor(
                     source.get("excluded_query_indices", (query_index,))
                 ).long(),
@@ -352,6 +408,7 @@ def build_self_localization_feedback(
                 ),
                 "clean_inlier_pose_information": pose_information,
                 "pose_success": bool(source["pose_success"]),
+                "estimated_pose_w2c": estimated_pose_w2c,
                 "te_cm": float(source["te_cm"]),
                 "ae_deg": float(source["ae_deg"]),
                 "query_descriptor_loo": bool(source.get("query_descriptor_loo", True)),
@@ -377,9 +434,7 @@ def build_self_localization_feedback(
                 "pose_neighborhood_loo": bool(
                     source.get("pose_neighborhood_loo", False)
                 ),
-                "affected_anchor_policy": str(
-                    source.get("affected_anchor_policy", "rebuild")
-                ),
+                "affected_anchor_policy": affected_anchor_policy,
                 "selection_training_query_reused": bool(
                     source.get("selection_training_query_reused", False)
                 ),
@@ -395,9 +450,18 @@ def build_self_localization_feedback(
         "uses_test_queries": False,
         "query_names": list(names),
         "positive_identity_contract": dict(positive_identity_contract),
+        "visibility_evidence_contract": {
+            "edge_identity": "query_image_grid_cell",
+            "grid_shape": list(DEFAULT_VISIBILITY_GRID),
+            "raw_visible_anchor_count_is_not_visibility_rank": True,
+        },
         "descriptor_triplet_pose_weight_semantics": (
             "harmful_poselib_inlier_indicator_only_not_training_weight"
         ),
+        "descriptor_triplet_clean_semantics": (
+            "exact_positive_score_ge_best_legal_negative_score_zero_margin"
+        ),
+        "estimated_pose_w2c_role": ("paired_winning_pose_diagnostic_only_not_training"),
         "required_matching_rank": int(required_rank),
         "required_visibility_rank": int(
             required_rank
@@ -456,6 +520,13 @@ def build_self_localization_feedback(
         "descriptor_triplet_harmful_inlier_count": sum(
             int(record["descriptor_triplet_harmful_inlier_mask"].sum())
             for record in normalized
+        ),
+        "descriptor_triplet_legal_pair_clean_count": sum(
+            int(record["descriptor_triplet_legal_pair_clean_mask"].sum())
+            for record in normalized
+        ),
+        "descriptor_identity_supervision_available": all(
+            record["descriptor_identity_supervision_available"] for record in normalized
         ),
         "pose_information_duplicate_rows_removed": sum(
             record["pose_information_duplicate_rows_removed"] for record in normalized
