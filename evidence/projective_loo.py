@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 
 from evidence.observation_provider import ObservationProvider
@@ -22,6 +24,7 @@ class LeaveOneQueryOutProjectiveMap:
         minimum_parallax_deg: float = 1.0,
         maximum_reprojection_px: float = 2.0,
         descriptor_trim_fraction: float = 0.2,
+        affected_anchor_policy: Literal["rebuild", "purge"] = "rebuild",
     ) -> None:
         names = list(state.get("v6_mapping_query_names", ()))
         if names != list(observations.names):
@@ -49,6 +52,30 @@ class LeaveOneQueryOutProjectiveMap:
         self.minimum_parallax_deg = float(minimum_parallax_deg)
         self.maximum_reprojection_px = float(maximum_reprojection_px)
         self.descriptor_trim_fraction = float(descriptor_trim_fraction)
+        if affected_anchor_policy not in {"rebuild", "purge"}:
+            raise ValueError("affected_anchor_policy must be 'rebuild' or 'purge'")
+        self.affected_anchor_policy = affected_anchor_policy
+        anchor_for_observation = torch.repeat_interleave(
+            torch.arange(count, dtype=torch.long), offsets[1:] - offsets[:-1]
+        )
+        self.anchor_for_observation = anchor_for_observation
+        if query.numel() and (
+            int(query.min()) < 0 or int(query.max()) >= len(observations)
+        ):
+            raise ValueError("V6 observation query index is out of range")
+        query_counts = torch.bincount(query, minlength=len(observations))
+        self.query_observation_offsets = torch.cat(
+            (query_counts.new_zeros(1), query_counts.cumsum(0))
+        )
+        self.query_observation_order = torch.argsort(query, stable=True)
+
+        # Purged LOO is the scalable, conservative cross-validation policy:
+        # an Anchor touched by any held-out camera is made unavailable.  It
+        # cannot leak held-out descriptor or geometry evidence, and none of
+        # the expensive per-query retriangulation tables are needed.
+        if self.affected_anchor_policy == "purge":
+            self.views = []
+            return
         self.views = [observations.build_view(index) for index in range(len(observations))]
         view_counts = torch.tensor(
             [view.keypoints.shape[0] for view in self.views], dtype=torch.long
@@ -71,19 +98,6 @@ class LeaveOneQueryOutProjectiveMap:
         self.pose_w2c = torch.stack(
             [view.pose_w2c.float() for view in self.views]
         )
-        anchor_for_observation = torch.repeat_interleave(
-            torch.arange(count, dtype=torch.long), offsets[1:] - offsets[:-1]
-        )
-        self.anchor_for_observation = anchor_for_observation
-        if query.numel() and (
-            int(query.min()) < 0 or int(query.max()) >= len(self.views)
-        ):
-            raise ValueError("V6 observation query index is out of range")
-        query_counts = torch.bincount(query, minlength=len(self.views))
-        self.query_observation_offsets = torch.cat(
-            (query_counts.new_zeros(1), query_counts.cumsum(0))
-        )
-        self.query_observation_order = torch.argsort(query, stable=True)
 
     @torch.no_grad()
     def query_update(
@@ -135,6 +149,34 @@ class LeaveOneQueryOutProjectiveMap:
                     (0, int(torch.as_tensor(self.state["anchor_features"]).shape[1]))
                 ),
                 "excluded_queries": excluded,
+                "contract": {
+                    "query_descriptor_loo": True,
+                    "query_geometry_loo": True,
+                    "pose_neighborhood_loo": int(excluded.numel()) > 1,
+                    "affected_anchor_policy": self.affected_anchor_policy,
+                    "affected_anchors_rebuilt": False,
+                    "gaussian_depth_used_for_final_xyz": False,
+                },
+            }
+        if self.affected_anchor_policy == "purge":
+            return {
+                "anchor_rows": affected,
+                "valid": torch.zeros(affected.numel(), dtype=torch.bool),
+                "anchor_xyz": torch.as_tensor(self.state["anchor_xyz"])[
+                    affected
+                ].float(),
+                "anchor_features": torch.as_tensor(
+                    self.state["anchor_features"]
+                )[affected].float(),
+                "excluded_queries": excluded,
+                "contract": {
+                    "query_descriptor_loo": True,
+                    "query_geometry_loo": True,
+                    "pose_neighborhood_loo": int(excluded.numel()) > 1,
+                    "affected_anchor_policy": "purge",
+                    "affected_anchors_rebuilt": False,
+                    "gaussian_depth_used_for_final_xyz": False,
+                },
             }
         lengths = self.offsets[affected + 1] - self.offsets[affected]
         local_anchor = torch.repeat_interleave(
@@ -215,6 +257,8 @@ class LeaveOneQueryOutProjectiveMap:
                 "query_descriptor_loo": True,
                 "query_geometry_loo": True,
                 "pose_neighborhood_loo": int(excluded.numel()) > 1,
+                "affected_anchor_policy": "rebuild",
+                "affected_anchors_rebuilt": True,
                 "gaussian_depth_used_for_final_xyz": False,
             },
         }

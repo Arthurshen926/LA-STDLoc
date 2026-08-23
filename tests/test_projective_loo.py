@@ -65,3 +65,12 @@ def test_loo_retriangulates_from_remaining_physical_pixel_centers() -> None:
     )
     assert neighborhood["excluded_queries"].tolist() == [0, 1]
     assert neighborhood["valid"].tolist() == [False]
+
+    purged = LeaveOneQueryOutProjectiveMap(
+        state, provider, affected_anchor_policy="purge"
+    ).query_update(0, excluded_queries=[0, 1])
+    assert purged["anchor_rows"].tolist() == [0]
+    assert purged["valid"].tolist() == [False]
+    assert purged["contract"]["query_descriptor_loo"] is True
+    assert purged["contract"]["query_geometry_loo"] is True
+    assert purged["contract"]["affected_anchor_policy"] == "purge"

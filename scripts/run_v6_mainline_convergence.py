@@ -47,6 +47,7 @@ def _evaluate(
             "--required-visibility-rank", str(args.required_visibility_rank),
             "--required-detectable-rank", str(args.required_detectable_rank),
             "--loo-pose-neighbors", str(args.loo_pose_neighbors),
+            "--loo-affected-anchor-policy", args.loo_affected_anchor_policy,
             "--ransac-reprojection-px", str(args.ransac_reprojection_px),
             "--seed", str(args.seed),
         ],
@@ -262,6 +263,10 @@ def run(args: argparse.Namespace) -> dict:
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "automatic_hard_gate_acceptance": False,
+        "feedback_protocol": {
+            "loo_pose_neighbors": int(args.loo_pose_neighbors),
+            "affected_anchor_policy": args.loo_affected_anchor_policy,
+        },
         "stages": stages,
         "final_map": str(map_path),
         "final_map_sha256": map_sha,
@@ -298,6 +303,11 @@ def main() -> None:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
+    parser.add_argument(
+        "--loo-affected-anchor-policy",
+        choices=("purge", "rebuild"),
+        default="purge",
+    )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--descriptor-rounds", type=int, default=1)
     parser.add_argument("--descriptor-trust-region", type=float, default=0.05)

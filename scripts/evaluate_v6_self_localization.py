@@ -107,6 +107,7 @@ def run(args: argparse.Namespace) -> dict:
         loo_pose_neighbors=args.loo_pose_neighbors,
         required_visibility_rank=args.required_visibility_rank,
         required_detectable_rank=args.required_detectable_rank,
+        loo_affected_anchor_policy=args.loo_affected_anchor_policy,
     )
     result["producer"] = producer
     result["input_sha256"] = hashes
@@ -154,6 +155,11 @@ def main() -> None:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
+    parser.add_argument(
+        "--loo-affected-anchor-policy",
+        choices=("purge", "rebuild"),
+        default="purge",
+    )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--seed", type=int, default=2026)
     run(parser.parse_args())

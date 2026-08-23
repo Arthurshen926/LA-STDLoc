@@ -275,18 +275,40 @@ def evaluate_query_local_feedback(
     loo_pose_neighbors: int = 1,
     required_visibility_rank: int = 4,
     required_detectable_rank: int | None = None,
+    loo_affected_anchor_policy: str = "rebuild",
 ) -> dict:
     """One global Top-1 and one standard PoseLib solve per mapping query."""
 
+    evaluation_started = time.perf_counter()
     if state.get("provenance", {}).get("uses_test_queries") is not False:
         raise ValueError("V6 feedback requires a test-free map")
-    replay = LeaveOneQueryOutProjectiveMap(state, observations)
+    # Purging every Anchor touched by the held-out pose neighborhood is exact
+    # with respect to leakage and scales to full maps.  Rebuilding thousands
+    # of affected tracks independently for every query is needlessly weaker
+    # cross-validation and prohibitively expensive at Cambridge scale.
+    replay = LeaveOneQueryOutProjectiveMap(
+        state,
+        observations,
+        affected_anchor_policy=loo_affected_anchor_policy,
+    )
     base_xyz = torch.as_tensor(state["anchor_xyz"]).float()
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
     feedback_records = []
     pose_neighborhoods = _pose_neighborhoods(observations, loo_pose_neighbors)
+    print(
+        f"[v6-feedback] prepared {loo_affected_anchor_policy} "
+        "pose-neighborhood LOO "
+        f"for {len(observations)} queries and {base_xyz.shape[0]} Anchors "
+        f"in {time.perf_counter() - evaluation_started:.1f}s",
+        flush=True,
+    )
     for query_index, name in enumerate(observations.names):
+        if query_index % 25 == 0:
+            print(
+                f"[v6-feedback] query {query_index + 1}/{len(observations)}: {name}",
+                flush=True,
+            )
         view = observations.build_view(query_index)
         loo_started = time.perf_counter()
         excluded_queries = pose_neighborhoods[query_index]
@@ -295,13 +317,16 @@ def evaluate_query_local_feedback(
         )
         loo_latency_ms = (time.perf_counter() - loo_started) * 1000.0
         online_started = time.perf_counter()
-        xyz = base_xyz.clone()
-        bank = base_bank.clone()
+        xyz = base_xyz
+        bank = base_bank
         active = torch.ones(xyz.shape[0], dtype=torch.bool)
         affected = update["anchor_rows"]
         if affected.numel():
-            xyz[affected] = update["anchor_xyz"]
-            bank[affected] = F.normalize(update["anchor_features"], dim=1)
+            if bool(update["valid"].any()):
+                xyz = base_xyz.clone()
+                bank = base_bank.clone()
+                xyz[affected] = update["anchor_xyz"]
+                bank[affected] = F.normalize(update["anchor_features"], dim=1)
             active[affected] = update["valid"]
         projected, depth = _project(xyz, view.intrinsics.float(), view.pose_w2c.float())
         height, width = view.image_hw
@@ -463,6 +488,9 @@ def evaluate_query_local_feedback(
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
                 "query_geometry_loo": True,
                 "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
+                "affected_anchor_policy": update["contract"][
+                    "affected_anchor_policy"
+                ],
             }
         )
         query_rows.append(
@@ -518,6 +546,7 @@ def evaluate_query_local_feedback(
             "query_geometry_loo": True,
             "pose_neighborhood_loo": int(loo_pose_neighbors) > 1,
             "loo_pose_neighbors": int(loo_pose_neighbors),
+            "affected_anchor_policy": loo_affected_anchor_policy,
             "global_top1": True,
             "pose_solves_per_query": 1,
             "retrieval": False,
