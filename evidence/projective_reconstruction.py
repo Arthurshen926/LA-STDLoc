@@ -110,8 +110,17 @@ def reconstruct_projective_anchors(
     offsets = [0]
     csr_query = []
     csr_keypoint = []
+    ordered_rows = torch.argsort(selected_track, stable=True)
+    selected_offsets = torch.cat(
+        (
+            torch.zeros(1, dtype=torch.long),
+            torch.bincount(
+                selected_track, minlength=int(selected.numel())
+            ).cumsum(0),
+        )
+    )
     for anchor in range(int(selected.numel())):
-        rows = torch.nonzero(selected_track == anchor, as_tuple=False).reshape(-1)
+        rows = ordered_rows[selected_offsets[anchor] : selected_offsets[anchor + 1]]
         features.append(
             fuse_projective_anchor_observations(
                 selected_descriptors[rows],

@@ -119,8 +119,18 @@ def build_projective_completion(
     groups = []
     bins = torch.as_tensor(base_association["query_bins"]).long()
     views = [observations.build_view(index) for index in range(len(observations))]
-    for group in torch.unique(inverse, sorted=True).tolist():
-        proposal_rows = torch.nonzero(inverse == group, as_tuple=False).reshape(-1)
+    ordered_proposals = torch.argsort(inverse, stable=True)
+    voxel_count = int(inverse.max()) + 1
+    voxel_offsets = torch.cat(
+        (
+            torch.zeros(1, dtype=torch.long),
+            torch.bincount(inverse, minlength=voxel_count).cumsum(0),
+        )
+    )
+    for group in range(voxel_count):
+        proposal_rows = ordered_proposals[
+            voxel_offsets[group] : voxel_offsets[group + 1]
+        ]
         unique_queries = torch.unique(query[proposal_rows], sorted=True)
         if unique_queries.numel() < int(minimum_observations):
             continue

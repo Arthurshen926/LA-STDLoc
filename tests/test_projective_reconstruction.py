@@ -1,6 +1,7 @@
 import inspect
 
 import pytest
+import torch
 
 from common.v6_contracts import ASSOCIATION_GRAPH_SCHEMA
 from evidence.observation_provider import GaussianRenderObservationProvider
@@ -37,3 +38,15 @@ def test_base_reconstruction_does_not_require_cross_global_pose_bins() -> None:
         "minimum_view_bins"
     ]
     assert parameter.default == 1
+
+
+def test_stable_group_materialization_preserves_legacy_row_order() -> None:
+    group = torch.tensor([2, 0, 1, 2, 0, 2, 1])
+    order = torch.argsort(group, stable=True)
+    offsets = torch.cat(
+        (torch.zeros(1, dtype=torch.long), torch.bincount(group).cumsum(0))
+    )
+    for index in range(3):
+        legacy = torch.nonzero(group == index, as_tuple=False).reshape(-1)
+        packed = order[offsets[index] : offsets[index + 1]]
+        assert torch.equal(packed, legacy)
