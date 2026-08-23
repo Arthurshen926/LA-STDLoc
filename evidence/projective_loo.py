@@ -30,7 +30,10 @@ class LeaveOneQueryOutProjectiveMap:
         if names != list(observations.names):
             raise ValueError("V6 map and observation registries differ")
         construction = state.get("projective_anchor_construction", {})
-        if construction.get("final_xyz_source") != "fixed_camera_robust_ray_triangulation":
+        if (
+            construction.get("final_xyz_source")
+            != "fixed_camera_robust_ray_triangulation"
+        ):
             raise ValueError("LOO replay requires the V6 pure-ray map")
         csr = state.get("projective_anchor_observations", {})
         offsets = torch.as_tensor(csr.get("observation_offsets")).long()
@@ -55,15 +58,11 @@ class LeaveOneQueryOutProjectiveMap:
         if affected_anchor_policy not in {"rebuild", "purge"}:
             raise ValueError("affected_anchor_policy must be 'rebuild' or 'purge'")
         self.affected_anchor_policy = affected_anchor_policy
-        if (
-            self.affected_anchor_policy == "rebuild"
-            and (
-                state.get("provenance", {}).get("v6_compact_deployment_export")
-                is True
-                or (
-                    isinstance(state.get("v6_descriptor_distillation"), dict)
-                    and state.get("anchor_descriptor_residual") is None
-                )
+        if self.affected_anchor_policy == "rebuild" and (
+            state.get("provenance", {}).get("v6_compact_deployment_export") is True
+            or (
+                isinstance(state.get("v6_descriptor_distillation"), dict)
+                and state.get("anchor_descriptor_residual") is None
             )
         ):
             raise ValueError(
@@ -90,28 +89,24 @@ class LeaveOneQueryOutProjectiveMap:
         if self.affected_anchor_policy == "purge":
             self.views = []
             return
-        self.views = [observations.build_view(index) for index in range(len(observations))]
+        self.views = [
+            observations.build_view(index) for index in range(len(observations))
+        ]
         view_counts = torch.tensor(
             [view.keypoints.shape[0] for view in self.views], dtype=torch.long
         )
         self.packed_offsets = torch.cat(
             (view_counts.new_zeros(1), view_counts.cumsum(0))
         )
-        self.packed_uv = torch.cat(
-            [view.physical_keypoints for view in self.views]
-        )
+        self.packed_uv = torch.cat([view.physical_keypoints for view in self.views])
         self.packed_detector = torch.cat(
             [view.detector_scores.float() for view in self.views]
         )
         self.packed_descriptor = torch.cat(
             [view.descriptors.float() for view in self.views]
         )
-        self.camera_K = torch.stack(
-            [view.intrinsics.float() for view in self.views]
-        )
-        self.pose_w2c = torch.stack(
-            [view.pose_w2c.float() for view in self.views]
-        )
+        self.camera_K = torch.stack([view.intrinsics.float() for view in self.views])
+        self.pose_w2c = torch.stack([view.pose_w2c.float() for view in self.views])
 
     @torch.no_grad()
     def query_update(
@@ -119,13 +114,17 @@ class LeaveOneQueryOutProjectiveMap:
         excluded_query: int,
         *,
         excluded_queries: torch.Tensor | list[int] | tuple[int, ...] | None = None,
+        requested_anchor_rows: torch.Tensor | list[int] | tuple[int, ...] | None = None,
     ) -> dict:
         """Rebuild affected Anchors after removing a pose-neighborhood.
 
         ``excluded_query`` remains explicit because it is the query being
         localized.  ``excluded_queries`` may additionally contain nearby
         mapping cameras.  Passing no neighborhood preserves the historical
-        single-image LOO behavior.
+        single-image LOO behavior.  ``requested_anchor_rows`` restricts the
+        replay to a sparse Anchor subset while preserving the same result for
+        those rows; this is used by descriptor training to avoid materializing
+        a query-by-map descriptor tensor.
         """
 
         excluded_query = int(excluded_query)
@@ -139,27 +138,42 @@ class LeaveOneQueryOutProjectiveMap:
             torch.cat((excluded, torch.tensor([excluded_query], dtype=torch.long))),
             sorted=True,
         )
-        if excluded.numel() == 0 or int(excluded.min()) < 0 or int(excluded.max()) >= len(
-            self.observations
+        if (
+            excluded.numel() == 0
+            or int(excluded.min()) < 0
+            or int(excluded.max()) >= len(self.observations)
         ):
             raise IndexError("excluded query neighborhood is out of range")
         removed_parts = []
         for query_index in excluded.tolist():
             query_start = int(self.query_observation_offsets[query_index])
             query_stop = int(self.query_observation_offsets[query_index + 1])
-            removed_parts.append(
-                self.query_observation_order[query_start:query_stop]
-            )
+            removed_parts.append(self.query_observation_order[query_start:query_stop])
         removed_positions = torch.cat(removed_parts)
         affected = torch.unique(
             self.anchor_for_observation[removed_positions], sorted=True
         )
+        requested_subset = requested_anchor_rows is not None
+        if requested_anchor_rows is not None:
+            requested = torch.unique(
+                torch.as_tensor(requested_anchor_rows, dtype=torch.long).reshape(-1),
+                sorted=True,
+            )
+            anchor_count = int(torch.as_tensor(self.state["anchor_ids"]).numel())
+            if requested.numel() and (
+                int(requested.min()) < 0 or int(requested.max()) >= anchor_count
+            ):
+                raise IndexError("requested Anchor row is out of range")
+            affected = affected[torch.isin(affected, requested)]
         if affected.numel() == 0:
             return {
                 "anchor_rows": affected,
                 "valid": torch.empty(0, dtype=torch.bool),
                 "anchor_xyz": torch.empty((0, 3)),
                 "anchor_features": torch.empty(
+                    (0, int(torch.as_tensor(self.state["anchor_features"]).shape[1]))
+                ),
+                "anchor_observation_features": torch.empty(
                     (0, int(torch.as_tensor(self.state["anchor_features"]).shape[1]))
                 ),
                 "excluded_queries": excluded,
@@ -169,6 +183,7 @@ class LeaveOneQueryOutProjectiveMap:
                     "pose_neighborhood_loo": int(excluded.numel()) > 1,
                     "affected_anchor_policy": self.affected_anchor_policy,
                     "affected_anchors_rebuilt": False,
+                    "requested_anchor_subset": requested_subset,
                     "gaussian_depth_used_for_final_xyz": False,
                 },
             }
@@ -179,8 +194,13 @@ class LeaveOneQueryOutProjectiveMap:
                 "anchor_xyz": torch.as_tensor(self.state["anchor_xyz"])[
                     affected
                 ].float(),
-                "anchor_features": torch.as_tensor(
-                    self.state["anchor_features"]
+                "anchor_features": torch.as_tensor(self.state["anchor_features"])[
+                    affected
+                ].float(),
+                "anchor_observation_features": torch.as_tensor(
+                    self.state.get(
+                        "anchor_observation_features", self.state["anchor_features"]
+                    )
                 )[affected].float(),
                 "excluded_queries": excluded,
                 "contract": {
@@ -189,6 +209,7 @@ class LeaveOneQueryOutProjectiveMap:
                     "pose_neighborhood_loo": int(excluded.numel()) > 1,
                     "affected_anchor_policy": "purge",
                     "affected_anchors_rebuilt": False,
+                    "requested_anchor_subset": requested_subset,
                     "gaussian_depth_used_for_final_xyz": False,
                 },
             }
@@ -235,11 +256,14 @@ class LeaveOneQueryOutProjectiveMap:
             surface_support_enabled=False,
         )
         valid = torch.as_tensor(geometry["triangulated"]).bool()
-        output_features = torch.as_tensor(self.state["anchor_features"])[affected].clone()
+        output_observation_features = torch.as_tensor(
+            self.state.get("anchor_observation_features", self.state["anchor_features"])
+        )[affected].clone()
+        output_features = torch.as_tensor(self.state["anchor_features"])[
+            affected
+        ].clone()
         selected_descriptor = self.packed_descriptor[packed_rows]
-        selected_counts = torch.bincount(
-            local_anchor, minlength=int(affected.numel())
-        )
+        selected_counts = torch.bincount(local_anchor, minlength=int(affected.numel()))
         selected_offsets = torch.cat(
             (selected_counts.new_zeros(1), selected_counts.cumsum(0))
         )
@@ -255,6 +279,7 @@ class LeaveOneQueryOutProjectiveMap:
                 detector_weight=detector[rows],
                 trim_fraction=self.descriptor_trim_fraction,
             )
+            output_observation_features[local] = fused
             residuals = self.state.get("anchor_descriptor_residual")
             if residuals is not None:
                 residual = torch.as_tensor(residuals)[affected[local]].float()
@@ -266,6 +291,7 @@ class LeaveOneQueryOutProjectiveMap:
             "valid": valid,
             "anchor_xyz": torch.as_tensor(geometry["triangulated_xyz"]).float(),
             "anchor_features": output_features.float(),
+            "anchor_observation_features": output_observation_features.float(),
             "excluded_queries": excluded,
             "contract": {
                 "query_descriptor_loo": True,
@@ -273,6 +299,7 @@ class LeaveOneQueryOutProjectiveMap:
                 "pose_neighborhood_loo": int(excluded.numel()) > 1,
                 "affected_anchor_policy": "rebuild",
                 "affected_anchors_rebuilt": True,
+                "requested_anchor_subset": requested_subset,
                 "gaussian_depth_used_for_final_xyz": False,
             },
         }

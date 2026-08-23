@@ -10,6 +10,7 @@ import torch.nn.functional as F
 
 from common.v6_contracts import FEEDBACK_SCHEMA, require_schema
 from evidence.observation_provider import ObservationProvider
+from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from topology.layered_sufficiency import select_layered_sufficiency
 from topology.v6_anchor_map import subset_projective_anchor_map
 
@@ -22,9 +23,7 @@ def _bounded_descriptor_bank(
     base = F.normalize(base, dim=1)
     tangent = residual - (residual * base).sum(1, keepdim=True) * base
     norm = torch.linalg.norm(tangent, dim=1, keepdim=True)
-    tangent = tangent * torch.clamp(
-        float(trust_region) / norm.clamp_min(1e-8), max=1.0
-    )
+    tangent = tangent * torch.clamp(float(trust_region) / norm.clamp_min(1e-8), max=1.0)
     return F.normalize(base + tangent, dim=1), tangent
 
 
@@ -51,8 +50,10 @@ def descriptor_loss_proposal(
 
     Query descriptors and the online frontend remain frozen.  Incorrect
     winners provide swap/miss supervision, while a deterministic clean subset
-    preserves already-correct margins.  The residual is stored separately so
-    query-local LOO can reapply it after rebuilding an Anchor descriptor.
+    preserves already-correct margins.  Every score is evaluated against the
+    same query-local LOO Anchor base that generated its feedback triplet.  A
+    single map-side residual remains shared across queries and is stored
+    separately so deployment and later LOO replay use the same update.
     """
 
     require_schema(feedback, FEEDBACK_SCHEMA, label="self-localization feedback")
@@ -97,8 +98,68 @@ def descriptor_loss_proposal(
     initial_residual = torch.as_tensor(
         state.get("anchor_descriptor_residual", torch.zeros_like(features))
     ).float()
-    if observation_features.shape != features.shape or initial_residual.shape != features.shape:
+    if (
+        observation_features.shape != features.shape
+        or initial_residual.shape != features.shape
+    ):
         raise ValueError("descriptor base/residual rows do not align with the map")
+    if "anchor_observation_features" not in state and bool(
+        initial_residual.abs().max() > 0
+    ):
+        raise ValueError(
+            "learned descriptor maps require the pre-residual observation bank"
+        )
+    feedback_policies = {
+        str(record.get("affected_anchor_policy", "rebuild"))
+        for record in feedback["records"]
+    }
+    if len(feedback_policies) != 1:
+        raise ValueError("descriptor feedback mixes affected-Anchor LOO policies")
+    loo_policy = next(iter(feedback_policies))
+    if loo_policy not in {"rebuild", "purge"}:
+        raise ValueError("descriptor feedback has an invalid affected-Anchor policy")
+    loo_replay = LeaveOneQueryOutProjectiveMap(
+        state,
+        observations,
+        affected_anchor_policy=loo_policy,
+    )
+
+    def query_local_observation_bank(
+        query_index: int,
+        record: dict,
+        anchor_rows: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return sparse LOO bases and the rows rebuilt for one query."""
+
+        active_rows = torch.unique(anchor_rows.long(), sorted=True)
+        excluded_queries = torch.as_tensor(
+            record.get("excluded_query_indices", (query_index,)),
+            dtype=torch.long,
+        ).reshape(-1)
+        update = loo_replay.query_update(
+            query_index,
+            excluded_queries=excluded_queries,
+            requested_anchor_rows=active_rows,
+        )
+        local_base = observation_features[active_rows].clone()
+        affected_rows = torch.as_tensor(update["anchor_rows"]).long()
+        if affected_rows.numel():
+            affected_local = torch.searchsorted(active_rows, affected_rows)
+            if not torch.equal(active_rows[affected_local], affected_rows):
+                raise RuntimeError("sparse LOO replay returned an unrequested Anchor")
+            valid = torch.as_tensor(update["valid"]).bool()
+            if not bool(valid.all()):
+                invalid = affected_rows[~valid]
+                raise ValueError(
+                    "descriptor triplet references a query-local LOO-invalid "
+                    f"Anchor: {invalid[:8].tolist()}"
+                )
+            local_base[affected_local] = F.normalize(
+                torch.as_tensor(update["anchor_observation_features"]).float(),
+                dim=1,
+            )
+        return active_rows, local_base, affected_rows
+
     prior_report = state.get("v6_descriptor_distillation")
     prior_training_queries = torch.empty(0, dtype=torch.long)
     prior_selected_queries = torch.empty(0, dtype=torch.long)
@@ -145,6 +206,10 @@ def descriptor_loss_proposal(
     positive_parts = []
     negative_parts = []
     clean_parts = []
+    selected_query_parts = []
+    positive_loo_base_parts = []
+    negative_loo_base_parts = []
+    affected_pair_key_parts = []
     selected_per_query = []
     clean_budget = int(round(int(maximum_triplets_per_query) * float(clean_fraction)))
     error_budget = int(maximum_triplets_per_query) - clean_budget
@@ -160,7 +225,9 @@ def descriptor_loss_proposal(
             eligible_layers & {str(layer) for layer in record_layers}
         ):
             continue
-        triplets = torch.as_tensor(record.get("descriptor_triplets", ())).long().reshape(-1, 4)
+        triplets = (
+            torch.as_tensor(record.get("descriptor_triplets", ())).long().reshape(-1, 4)
+        )
         if triplets.numel() == 0:
             continue
         view = observations.build_view(query_index)
@@ -180,18 +247,48 @@ def descriptor_loss_proposal(
         if rows.numel() == 0:
             continue
         descriptors = F.normalize(view.descriptors[rows].float(), dim=1)
-        current_margin = (
-            (descriptors * features[positive]).sum(1)
-            - (descriptors * features[negative]).sum(1)
+        candidate_active, candidate_loo_base, affected_rows = (
+            query_local_observation_bank(
+                query_index,
+                record,
+                torch.cat((positive, negative)),
+            )
         )
+        positive_candidate_local = torch.searchsorted(candidate_active, positive)
+        negative_candidate_local = torch.searchsorted(candidate_active, negative)
+        positive_loo_base = candidate_loo_base[positive_candidate_local]
+        negative_loo_base = candidate_loo_base[negative_candidate_local]
+        _, positive_map_residual = _bounded_descriptor_bank(
+            observation_features[positive],
+            initial_residual[positive],
+            trust_region,
+        )
+        _, negative_map_residual = _bounded_descriptor_bank(
+            observation_features[negative],
+            initial_residual[negative],
+            trust_region,
+        )
+        positive_current, _ = _bounded_descriptor_bank(
+            positive_loo_base,
+            positive_map_residual,
+            trust_region,
+        )
+        negative_current, _ = _bounded_descriptor_bank(
+            negative_loo_base,
+            negative_map_residual,
+            trust_region,
+        )
+        current_margin = (descriptors * positive_current).sum(1) - (
+            descriptors * negative_current
+        ).sum(1)
         error_rows = torch.nonzero(clean == 0, as_tuple=False).reshape(-1)
         clean_rows = torch.nonzero(clean != 0, as_tuple=False).reshape(-1)
-        error_rows = error_rows[
-            torch.argsort(current_margin[error_rows], stable=True)
-        ][:error_budget]
-        clean_rows = clean_rows[
-            torch.argsort(current_margin[clean_rows], stable=True)
-        ][:clean_budget]
+        error_rows = error_rows[torch.argsort(current_margin[error_rows], stable=True)][
+            :error_budget
+        ]
+        clean_rows = clean_rows[torch.argsort(current_margin[clean_rows], stable=True)][
+            :clean_budget
+        ]
         chosen = torch.cat((error_rows, clean_rows))
         if chosen.numel() == 0:
             continue
@@ -199,6 +296,17 @@ def descriptor_loss_proposal(
         positive_parts.append(positive[chosen])
         negative_parts.append(negative[chosen])
         clean_parts.append(clean[chosen].bool())
+        selected_query_parts.append(torch.full_like(positive[chosen], query_index))
+        positive_loo_base_parts.append(positive_loo_base[chosen])
+        negative_loo_base_parts.append(negative_loo_base[chosen])
+        selected_anchors = torch.unique(
+            torch.cat((positive[chosen], negative[chosen])), sorted=True
+        )
+        selected_affected = affected_rows[torch.isin(affected_rows, selected_anchors)]
+        if selected_affected.numel():
+            affected_pair_key_parts.append(
+                query_index * features.shape[0] + selected_affected
+            )
         selected_per_query.append(int(chosen.numel()))
         selected_query_indices.append(query_index)
     if not query_parts:
@@ -223,26 +331,59 @@ def descriptor_loss_proposal(
     positive = torch.cat(positive_parts)
     negative = torch.cat(negative_parts)
     clean = torch.cat(clean_parts)
+    selected_query = torch.cat(selected_query_parts)
+    positive_loo_base = torch.cat(positive_loo_base_parts)
+    negative_loo_base = torch.cat(negative_loo_base_parts)
     active = torch.unique(torch.cat((positive, negative)), sorted=True)
     cumulative_updated_anchors = torch.unique(
         torch.cat((prior_updated_anchors, active.cpu())), sorted=True
     )
     lookup = torch.full((features.shape[0],), -1, dtype=torch.long)
     lookup[active] = torch.arange(active.numel())
-    positive_local = lookup[positive]
-    negative_local = lookup[negative]
+    pair_keys = torch.cat(
+        (
+            selected_query * features.shape[0] + positive,
+            selected_query * features.shape[0] + negative,
+        )
+    )
+    pair_bases = torch.cat((positive_loo_base, negative_loo_base))
+    pair_order = torch.argsort(pair_keys, stable=True)
+    ordered_pair_keys = pair_keys[pair_order]
+    first_pair = torch.ones_like(ordered_pair_keys, dtype=torch.bool)
+    first_pair[1:] = ordered_pair_keys[1:] != ordered_pair_keys[:-1]
+    unique_pair_keys = ordered_pair_keys[first_pair]
+    loo_pair_base = pair_bases[pair_order[first_pair]]
+    positive_pair = torch.searchsorted(
+        unique_pair_keys,
+        selected_query * features.shape[0] + positive,
+    )
+    negative_pair = torch.searchsorted(
+        unique_pair_keys,
+        selected_query * features.shape[0] + negative,
+    )
+    pair_anchor = torch.remainder(unique_pair_keys, features.shape[0])
+    pair_anchor_local = lookup[pair_anchor]
+    if bool((pair_anchor_local < 0).any()):
+        raise RuntimeError("query-local LOO pair references an inactive Anchor")
+    affected_pair_count = int(
+        torch.unique(torch.cat(affected_pair_key_parts), sorted=True).numel()
+        if affected_pair_key_parts
+        else 0
+    )
     train_device = torch.device(device)
     base_active = observation_features[active].to(train_device)
+    loo_pair_base = loo_pair_base.to(train_device)
+    pair_anchor_local = pair_anchor_local.to(train_device)
+    positive_pair = positive_pair.to(train_device)
+    negative_pair = negative_pair.to(train_device)
     residual = torch.nn.Parameter(initial_residual[active].to(train_device))
     # Adam's nominal learning rate is applied per coordinate.  Without this
     # normalization, a 256-D descriptor receives a first vector step about
     # sqrt(256) times larger than the requested trust-scale step.
-    effective_coordinate_learning_rate = float(learning_rate) / float(
-        features.shape[1]
-    ) ** 0.5
-    optimizer = torch.optim.Adam(
-        [residual], lr=effective_coordinate_learning_rate
+    effective_coordinate_learning_rate = (
+        float(learning_rate) / float(features.shape[1]) ** 0.5
     )
+    optimizer = torch.optim.Adam([residual], lr=effective_coordinate_learning_rate)
     generator = torch.Generator().manual_seed(2026)
 
     def raw_tangent(value: torch.Tensor) -> torch.Tensor:
@@ -255,10 +396,31 @@ def descriptor_loss_proposal(
         # outside the ball and therefore supplies no radial gradient.
         return tangent.square().sum(1).mean() / float(trust_region) ** 2
 
-    def full_loss(bank: torch.Tensor, rows: torch.Tensor) -> torch.Tensor:
+    def full_loss(
+        residual_value: torch.Tensor,
+        rows: torch.Tensor,
+    ) -> torch.Tensor:
         q = query[rows].to(train_device)
-        positive_score = (q * bank[positive_local[rows].to(train_device)]).sum(1)
-        negative_score = (q * bank[negative_local[rows].to(train_device)]).sum(1)
+        device_rows = rows.to(train_device)
+        _, bounded_map_residual = _bounded_descriptor_bank(
+            base_active,
+            residual_value,
+            trust_region,
+        )
+        positive_pair_rows = positive_pair[device_rows]
+        negative_pair_rows = negative_pair[device_rows]
+        positive_bank, _ = _bounded_descriptor_bank(
+            loo_pair_base[positive_pair_rows],
+            bounded_map_residual[pair_anchor_local[positive_pair_rows]],
+            trust_region,
+        )
+        negative_bank, _ = _bounded_descriptor_bank(
+            loo_pair_base[negative_pair_rows],
+            bounded_map_residual[pair_anchor_local[negative_pair_rows]],
+            trust_region,
+        )
+        positive_score = (q * positive_bank).sum(1)
+        negative_score = (q * negative_bank).sum(1)
         weight = torch.where(
             clean[rows].to(train_device),
             torch.full_like(positive_score, float(clean_weight)),
@@ -272,13 +434,12 @@ def descriptor_loss_proposal(
 
     all_rows = torch.arange(query.shape[0])
     with torch.no_grad():
-        initial_bank, initial_bounded_tangent = _bounded_descriptor_bank(
+        _, initial_bounded_tangent = _bounded_descriptor_bank(
             base_active, residual, trust_region
         )
+        initial_active_residual = residual.detach().clone()
         initial_raw_tangent = raw_tangent(residual)
-        initial_loss = float(
-            full_loss(initial_bank, all_rows).cpu()
-        )
+        initial_loss = float(full_loss(residual, all_rows).cpu())
         initial_regularizer = float(trust_penalty(initial_raw_tangent).cpu())
         initial_objective = initial_loss + float(trust_weight) * initial_regularizer
         best_objective = initial_objective
@@ -289,20 +450,14 @@ def descriptor_loss_proposal(
         order = torch.randperm(query.shape[0], generator=generator)
         for start in range(0, query.shape[0], int(batch_size)):
             rows = order[start : start + int(batch_size)]
-            bank, _ = _bounded_descriptor_bank(
-                base_active, residual, trust_region
-            )
-            ranking_loss = full_loss(bank, rows)
+            ranking_loss = full_loss(residual, rows)
             regularizer = trust_penalty(raw_tangent(residual))
             loss = ranking_loss + float(trust_weight) * regularizer
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
         with torch.no_grad():
-            epoch_bank, _ = _bounded_descriptor_bank(
-                base_active, residual, trust_region
-            )
-            epoch_ranking = float(full_loss(epoch_bank, all_rows).cpu())
+            epoch_ranking = float(full_loss(residual, all_rows).cpu())
             epoch_regularizer = float(trust_penalty(raw_tangent(residual)).cpu())
             optimizer_last_objective = (
                 epoch_ranking + float(trust_weight) * epoch_regularizer
@@ -319,26 +474,22 @@ def descriptor_loss_proposal(
             base_active, best_residual, trust_region
         )
         final_raw_tangent = raw_tangent(best_residual)
-        final_loss = float(
-            full_loss(trained_bank, all_rows).cpu()
-        )
+        final_loss = float(full_loss(best_residual, all_rows).cpu())
         error_rows = torch.nonzero(~clean, as_tuple=False).reshape(-1)
         clean_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
 
-        def split_loss(bank: torch.Tensor, rows: torch.Tensor) -> float | None:
-            return None if rows.numel() == 0 else float(full_loss(bank, rows).cpu())
+        def split_loss(value: torch.Tensor, rows: torch.Tensor) -> float | None:
+            return None if rows.numel() == 0 else float(full_loss(value, rows).cpu())
 
-        initial_error_loss = split_loss(initial_bank, error_rows)
-        final_error_loss = split_loss(trained_bank, error_rows)
-        initial_clean_loss = split_loss(initial_bank, clean_rows)
-        final_clean_loss = split_loss(trained_bank, clean_rows)
+        initial_error_loss = split_loss(initial_active_residual, error_rows)
+        final_error_loss = split_loss(best_residual, error_rows)
+        initial_clean_loss = split_loss(initial_active_residual, clean_rows)
+        final_clean_loss = split_loss(best_residual, clean_rows)
         final_regularizer = float(trust_penalty(final_raw_tangent).cpu())
         initial_mean_norm = float(
             torch.linalg.norm(initial_bounded_tangent, dim=1).mean().cpu()
         )
-        final_mean_norm = float(
-            torch.linalg.norm(trained_residual, dim=1).mean().cpu()
-        )
+        final_mean_norm = float(torch.linalg.norm(trained_residual, dim=1).mean().cpu())
         trained_norm = torch.linalg.norm(trained_residual, dim=1)
         cap_tolerance = max(float(trust_region) * 1e-4, 1e-7)
         cap_hit_count = int(
@@ -354,7 +505,7 @@ def descriptor_loss_proposal(
     proposal["anchor_features"] = output_features
     proposal["v6_descriptor_distillation"] = {
         "schema": "lafgs_v6_counterfactual_descriptor_loss_distillation",
-        "version": 2,
+        "version": 3,
         "updated_anchor_rows": cumulative_updated_anchors,
         "round_updated_anchor_rows": active,
         "triplet_count": int(query.shape[0]),
@@ -384,8 +535,7 @@ def descriptor_loss_proposal(
         "trust_regularizer_normalized_by_radius": True,
         "initial_residual_mean_norm": initial_mean_norm,
         "final_residual_mean_norm": final_mean_norm,
-        "initial_objective": initial_loss
-        + float(trust_weight) * initial_regularizer,
+        "initial_objective": initial_loss + float(trust_weight) * initial_regularizer,
         "final_objective": final_loss + float(trust_weight) * final_regularizer,
         "optimizer_last_objective": optimizer_last_objective,
         "best_epoch": best_epoch,
@@ -394,6 +544,13 @@ def descriptor_loss_proposal(
         "residual_cap_hit_fraction": cap_hit_count / max(int(active.numel()), 1),
         "updated_anchor_count": int(cumulative_updated_anchors.numel()),
         "round_updated_anchor_count": int(active.numel()),
+        "query_local_loo_descriptor_training": True,
+        "query_local_loo_base_source": "sparse_active_anchor_replay",
+        "query_local_loo_affected_anchor_policy": loo_policy,
+        "query_local_loo_pair_count": int(unique_pair_keys.numel()),
+        "query_local_loo_affected_pair_count": affected_pair_count,
+        "query_local_loo_dense_query_anchor_bank_materialized": False,
+        "query_observations_excluded_from_training_anchor_bases": True,
         "margin": float(margin),
         "temperature": float(temperature),
         "trust_region": float(trust_region),

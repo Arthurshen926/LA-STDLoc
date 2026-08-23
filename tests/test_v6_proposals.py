@@ -1,10 +1,11 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
 from evidence.observation_provider import GaussianRenderObservationProvider
 from map_learning.v6_proposals import descriptor_loss_proposal
 from common.hashing import sha256_file
-from common.v6_contracts import ordered_query_registry_sha256
+from common.v6_contracts import FEEDBACK_SCHEMA, ordered_query_registry_sha256
 from scripts.propose_v6_round import (
     _attach_reconstruction_distillation,
     _jsonable,
@@ -16,6 +17,28 @@ from topology.v6_anchor_map import (
     compact_projective_deployment_map,
     subset_projective_anchor_map,
 )
+
+
+def _with_unaffected_projective_loo(
+    state: dict,
+    provider: GaussianRenderObservationProvider,
+) -> dict:
+    """Attach a minimal V6 replay contract for unit losses with no affected row."""
+
+    output = dict(state)
+    anchor_count = int(torch.as_tensor(output["anchor_features"]).shape[0])
+    output["anchor_ids"] = torch.arange(anchor_count)
+    output["v6_mapping_query_names"] = list(provider.names)
+    output["v6_mapping_query_bins"] = torch.arange(len(provider))
+    output["projective_anchor_construction"] = {
+        "final_xyz_source": "fixed_camera_robust_ray_triangulation"
+    }
+    output["projective_anchor_observations"] = {
+        "observation_offsets": torch.zeros(anchor_count + 1, dtype=torch.long),
+        "query_indices": torch.empty(0, dtype=torch.long),
+        "keypoint_indices": torch.empty(0, dtype=torch.long),
+    }
+    return output
 
 
 def test_selection_report_tensors_are_json_serializable() -> None:
@@ -74,12 +97,13 @@ def test_reconstruction_preserves_training_dependencies() -> None:
         target_query_indices=[4],
         excluded_support_query_indices=[4, 5],
     )
-    assert proposal["v6_descriptor_distillation"] is not state[
-        "v6_descriptor_distillation"
+    assert (
+        proposal["v6_descriptor_distillation"]
+        is not state["v6_descriptor_distillation"]
+    )
+    assert proposal["v6_selection_distillation"]["training_query_indices"].tolist() == [
+        1
     ]
-    assert proposal["v6_selection_distillation"][
-        "training_query_indices"
-    ].tolist() == [1]
     report = proposal["v6_reconstruction_distillation"]
     assert report["target_query_indices"].tolist() == [2, 4]
     assert report["excluded_support_query_indices"].tolist() == [2, 3, 4, 5]
@@ -114,8 +138,13 @@ def test_subset_rebuilds_projective_csr() -> None:
     }
     selected = subset_projective_anchor_map(state, torch.tensor([0, 2]))
     assert selected["anchor_ids"].tolist() == [0, 1]
-    assert selected["projective_anchor_observations"]["observation_offsets"].tolist() == [0, 1, 2]
-    assert selected["projective_anchor_observations"]["query_indices"].tolist() == [0, 2]
+    assert selected["projective_anchor_observations"][
+        "observation_offsets"
+    ].tolist() == [0, 1, 2]
+    assert selected["projective_anchor_observations"]["query_indices"].tolist() == [
+        0,
+        2,
+    ]
     report = selected["v6_descriptor_distillation"]
     assert report["updated_anchor_rows"].tolist() == [0, 1]
     assert report["round_updated_anchor_rows"].tolist() == [1]
@@ -137,17 +166,21 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
             },
         }
     )
-    state = {
-        "anchor_features": torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
-    }
+    state = _with_unaffected_projective_loo(
+        {
+            "anchor_features": torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+        },
+        provider,
+    )
     feedback = {
-        "schema": "self_localization_feedback_v1",
+        "schema": FEEDBACK_SCHEMA,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q"],
         "records": [
             {
                 "descriptor_triplets": torch.tensor([[0, 0, 1, 0]]),
+                "affected_anchor_policy": "rebuild",
             }
         ],
     }
@@ -173,17 +206,118 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     )
     assert after > before
     assert proposal["anchor_descriptor_residual"].shape == (2, 2)
-    assert proposal["v6_descriptor_distillation"]["final_ranking_loss"] < proposal[
-        "v6_descriptor_distillation"
-    ]["initial_ranking_loss"]
+    assert (
+        proposal["v6_descriptor_distillation"]["final_ranking_loss"]
+        < proposal["v6_descriptor_distillation"]["initial_ranking_loss"]
+    )
     report = proposal["v6_descriptor_distillation"]
     assert report["selected_query_indices"].tolist() == [0]
     assert 0.0 <= report["residual_cap_hit_fraction"] <= 1.0
     assert report["final_objective"] >= report["final_ranking_loss"]
     assert report["final_objective"] <= report["initial_objective"] + 1e-8
-    assert report["effective_coordinate_learning_rate"] == pytest.approx(
-        0.1 / 2**0.5
+    assert report["effective_coordinate_learning_rate"] == pytest.approx(0.1 / 2**0.5)
+
+
+def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
+    xyz = torch.tensor([[0.0, 0.0, 5.0], [1.0, 0.5, 6.0]])
+    K = torch.tensor([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
+    names = []
+    queries = {}
+    for query_index, center_x in enumerate((0.0, 0.5, 1.0, 1.5, 2.0)):
+        name = f"q{query_index}"
+        names.append(name)
+        pose = torch.eye(4)
+        pose[0, 3] = -center_x
+        camera = xyz @ pose[:3, :3].T + pose[:3, 3]
+        physical = (camera @ K.T)[:, :2] / camera[:, 2:]
+        # q0 makes the full positive look perfect.  Every remaining observation
+        # makes its exact LOO descriptor orthogonal to q0 instead.
+        descriptors = (
+            torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+            if query_index == 0
+            else torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+        )
+        queries[name] = {
+            "native_keypoints": physical - 0.5,
+            "native_descriptors": descriptors,
+            "native_scores": torch.ones(2),
+            "native_K": K,
+            "pose_w2c": pose,
+            "native_input_hw": torch.tensor([100, 100]),
+        }
+    provider = GaussianRenderObservationProvider(
+        {"uses_source_mapping_rgb": False, "queries": queries},
+        query_names=names,
     )
+    state = {
+        "anchor_ids": torch.arange(2),
+        "anchor_xyz": xyz,
+        "anchor_features": torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        "anchor_observation_features": torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+        "v6_mapping_query_names": names,
+        "v6_mapping_query_bins": torch.arange(5),
+        "projective_anchor_construction": {
+            "final_xyz_source": "fixed_camera_robust_ray_triangulation"
+        },
+        "projective_anchor_observations": {
+            "schema": "lafgs_projective_anchor_observations",
+            "version": 1,
+            "observation_offsets": torch.tensor([0, 5, 10]),
+            "query_indices": torch.arange(5).repeat(2),
+            "keypoint_indices": torch.cat(
+                (
+                    torch.zeros(5, dtype=torch.long),
+                    torch.ones(5, dtype=torch.long),
+                )
+            ),
+        },
+    }
+    records = []
+    for query_index in range(5):
+        records.append(
+            {
+                "failure_layers": ["L3"] if query_index == 0 else [],
+                "descriptor_triplets": (
+                    torch.tensor([[0, 0, 1, 0]])
+                    if query_index == 0
+                    else torch.empty((0, 4), dtype=torch.long)
+                ),
+                "excluded_query_indices": torch.tensor([query_index]),
+                "affected_anchor_policy": "rebuild",
+            }
+        )
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "query_names": names,
+        "records": records,
+    }
+    proposal = descriptor_loss_proposal(
+        state,
+        provider,
+        feedback,
+        training_query_indices=[0],
+        trust_region=0.2,
+        margin=0.0,
+        temperature=0.04,
+        learning_rate=0.01,
+        epochs=1,
+        batch_size=1,
+        maximum_triplets_per_query=1,
+        clean_fraction=0.0,
+        trust_weight=0.0,
+        device="cpu",
+    )
+    report = proposal["v6_descriptor_distillation"]
+    expected_loo_loss = float(F.softplus(torch.tensor(25.0)) * 0.04)
+    full_bank_loss = float(F.softplus(torch.tensor(0.0)) * 0.04)
+    assert report["initial_ranking_loss"] == pytest.approx(expected_loo_loss)
+    assert report["initial_ranking_loss"] != pytest.approx(full_bank_loss)
+    assert report["query_local_loo_pair_count"] == 2
+    assert report["query_local_loo_affected_pair_count"] == 2
+    assert report["query_observations_excluded_from_training_anchor_bases"] is True
+    assert report["query_local_loo_dense_query_anchor_bank_materialized"] is False
 
 
 def test_compact_deployment_export_removes_dense_training_state() -> None:
@@ -204,7 +338,9 @@ def test_compact_deployment_export_removes_dense_training_state() -> None:
     assert torch.equal(compact["anchor_features"], state["anchor_features"])
     assert compact["v6_descriptor_distillation"]["updated_anchor_count"] == 2
     assert compact["v6_descriptor_distillation"]["training_state_available"] is False
-    assert compact["v6_descriptor_distillation"]["selected_query_indices"].tolist() == [3]
+    assert compact["v6_descriptor_distillation"]["selected_query_indices"].tolist() == [
+        3
+    ]
 
 
 def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
@@ -231,18 +367,21 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
             },
         }
     )
-    state = {
-        "anchor_features": torch.tensor(
-            [
-                [0.0, 1.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0],
-                [0.0, 1.0, 0.0],
-            ]
-        )
-    }
+    state = _with_unaffected_projective_loo(
+        {
+            "anchor_features": torch.tensor(
+                [
+                    [0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0],
+                ]
+            )
+        },
+        provider,
+    )
     feedback = {
-        "schema": "self_localization_feedback_v1",
+        "schema": FEEDBACK_SCHEMA,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q0", "q1"],
@@ -250,10 +389,12 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
             {
                 "failure_layers": ["L3"],
                 "descriptor_triplets": torch.tensor([[0, 0, 1, 0]]),
+                "affected_anchor_policy": "rebuild",
             },
             {
                 "failure_layers": ["L3"],
                 "descriptor_triplets": torch.tensor([[0, 2, 3, 0]]),
+                "affected_anchor_policy": "rebuild",
             },
         ],
     }
@@ -302,7 +443,7 @@ def test_proposal_inputs_fail_closed_on_cache_mismatch() -> None:
         "uses_test_queries": False,
     }
     feedback = {
-        "schema": "self_localization_feedback_v1",
+        "schema": FEEDBACK_SCHEMA,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "input_sha256": {"map": "m", "query_cache": "wrong"},
@@ -327,7 +468,7 @@ def test_proposal_inputs_reject_compact_map_and_registry_mismatch() -> None:
         "queries": {"q": {}},
     }
     feedback = {
-        "schema": "self_localization_feedback_v1",
+        "schema": FEEDBACK_SCHEMA,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["other"],
