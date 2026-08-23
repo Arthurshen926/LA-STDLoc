@@ -86,6 +86,67 @@ def _proposal_command(
     return command
 
 
+def _eligible_arms(
+    baseline_payload: dict,
+    *,
+    maximum_anchor_count: int,
+    has_association_graph: bool,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Return only arms that can satisfy the frozen deployment constraints."""
+
+    anchor_count = int(baseline_payload["summary"]["anchor_count"])
+    arms: list[str] = []
+    skipped: list[dict[str, str]] = []
+    if anchor_count <= int(maximum_anchor_count):
+        arms.append("descriptor")
+    else:
+        skipped.append(
+            {
+                "arm": "descriptor",
+                "reason": "descriptor_only_preserves_anchor_count_above_hard_limit",
+            }
+        )
+    arms.extend(["selection", "descriptor_selection"])
+    if (
+        int(baseline_payload["failure_layer_counts"].get("L1", 0)) > 0
+        and has_association_graph
+    ):
+        arms.append("reconstruction")
+    return arms, skipped
+
+
+def _load_initial_baseline(
+    args: argparse.Namespace,
+    *,
+    map_sha: str,
+    metric_sha: str,
+) -> tuple[Path, dict] | None:
+    path = args.initial_baseline_summary
+    expected = args.expected_initial_baseline_summary_sha256
+    if bool(path) != bool(expected):
+        raise ValueError(
+            "initial baseline summary path and expected SHA must be supplied together"
+        )
+    if path is None:
+        return None
+    path = path.resolve()
+    if sha256_file(path) != expected:
+        raise ValueError("initial baseline summary SHA mismatch")
+    payload = json.loads(path.read_text())
+    inputs = payload.get("input_sha256", {})
+    required = {
+        "map": map_sha,
+        "metric": metric_sha,
+        "observation_cache": args.expected_observation_cache_sha256,
+    }
+    if any(inputs.get(key) != value for key, value in required.items()):
+        raise ValueError("initial baseline does not bind the frozen runner inputs")
+    feedback = Path(payload["feedback_path"])
+    if sha256_file(feedback) != payload["feedback_sha256"]:
+        raise ValueError("initial baseline feedback SHA mismatch")
+    return path, payload
+
+
 def run(args: argparse.Namespace) -> dict:
     root = Path(__file__).resolve().parents[1]
     dirty = subprocess.run(
@@ -109,19 +170,25 @@ def run(args: argparse.Namespace) -> dict:
     metric_sha = args.expected_metric_sha256
     seen = {map_sha}
     rounds = []
+    initial_baseline = _load_initial_baseline(
+        args, map_sha=map_sha, metric_sha=metric_sha
+    )
     for round_index in range(3):
         round_dir = args.output_dir / f"round_{round_index:02d}"
         round_dir.mkdir()
-        baseline_dir = round_dir / "baseline"
-        _run(
-            _evaluation_command(
-                args, root=root, map_path=map_path, map_sha=map_sha,
-                metric_path=metric_path, metric_sha=metric_sha, output=baseline_dir,
-            ),
-            root=root,
-        )
-        baseline_summary_path = baseline_dir / "summary.json"
-        baseline_payload = json.loads(baseline_summary_path.read_text())
+        if round_index == 0 and initial_baseline is not None:
+            baseline_summary_path, baseline_payload = initial_baseline
+        else:
+            baseline_dir = round_dir / "baseline"
+            _run(
+                _evaluation_command(
+                    args, root=root, map_path=map_path, map_sha=map_sha,
+                    metric_path=metric_path, metric_sha=metric_sha, output=baseline_dir,
+                ),
+                root=root,
+            )
+            baseline_summary_path = baseline_dir / "summary.json"
+            baseline_payload = json.loads(baseline_summary_path.read_text())
         feedback_path = Path(baseline_payload["feedback_path"])
         feedback_sha = baseline_payload["feedback_sha256"]
         if sum(int(value) for value in baseline_payload["failure_layer_counts"].values()) == 0:
@@ -148,12 +215,11 @@ def run(args: argparse.Namespace) -> dict:
         # Evaluate the independent mechanisms and their required joint arm.
         # A descriptor update can change which compact subset is sufficient;
         # rejecting both independent arms must not hide a useful combination.
-        arms = ["descriptor", "selection", "descriptor_selection"]
-        if (
-            int(baseline_payload["failure_layer_counts"].get("L1", 0)) > 0
-            and args.association_graph is not None
-        ):
-            arms.append("reconstruction")
+        arms, skipped_arms = _eligible_arms(
+            baseline_payload,
+            maximum_anchor_count=args.maximum_anchor_count,
+            has_association_graph=args.association_graph is not None,
+        )
         candidate_rows = []
         for arm in arms:
             proposal_dir = round_dir / f"proposal_{arm}"
@@ -207,6 +273,8 @@ def run(args: argparse.Namespace) -> dict:
             )
         _run(command, root=root)
         decision = json.loads(decision_path.read_text())
+        decision["skipped_arms"] = skipped_arms
+        decision_path.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n")
         rounds.append(decision)
         if decision["stop"]:
             break
@@ -252,6 +320,8 @@ def main() -> None:
     parser.add_argument("--association-graph", type=Path)
     parser.add_argument("--expected-association-graph-sha256")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--initial-baseline-summary", type=Path)
+    parser.add_argument("--expected-initial-baseline-summary-sha256")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026)
