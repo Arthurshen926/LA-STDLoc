@@ -18,7 +18,16 @@ from common.v6_contracts import (
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from topology.layered_sufficiency import select_layered_sufficiency
+from topology.pose_information import (
+    fisher_contributions,
+    pose_jacobian_analytic,
+    task_scaled_pose_jacobian,
+)
 from topology.v6_anchor_map import subset_projective_anchor_map
+
+
+_SELECTION_TRANSLATION_SCALE_M = 0.05
+_SELECTION_ROTATION_SCALE_DEG = 5.0
 
 
 def _bounded_descriptor_bank(
@@ -867,8 +876,74 @@ def descriptor_only_proposal(
     return proposal
 
 
+def _selection_pairs(
+    record: dict,
+    field: str,
+    *,
+    anchor_count: int,
+    query_row_count: int,
+) -> torch.Tensor:
+    pairs = torch.as_tensor(record.get(field, ()), dtype=torch.long)
+    if pairs.numel() == 0:
+        return torch.empty((0, 2), dtype=torch.long)
+    if pairs.ndim != 2 or pairs.shape[1] != 2:
+        raise ValueError(f"{field} must have shape [N,2]")
+    rows = pairs[:, 0]
+    anchors = pairs[:, 1]
+    if bool(((rows < 0) | (rows >= int(query_row_count))).any()):
+        raise ValueError(f"{field} query rows are outside the observation registry")
+    if bool(((anchors < 0) | (anchors >= int(anchor_count))).any()):
+        raise ValueError(f"{field} Anchor IDs are outside the map registry")
+    return pairs
+
+
+@torch.no_grad()
+def _potential_pose_information(
+    xyz: torch.Tensor,
+    anchor_ids: torch.Tensor,
+    *,
+    intrinsics: torch.Tensor,
+    pose_w2c: torch.Tensor,
+    chunk_size: int,
+) -> dict[int, torch.Tensor]:
+    """Return one GT-geometry Fisher row per unique candidate Anchor."""
+
+    anchor_ids = torch.unique(torch.as_tensor(anchor_ids).long(), sorted=True)
+    if anchor_ids.numel() == 0:
+        return {}
+    result: dict[int, torch.Tensor] = {}
+    K = torch.as_tensor(intrinsics).double()
+    pose = torch.as_tensor(pose_w2c).double()
+    if not bool(torch.isfinite(K).all()) or not bool(torch.isfinite(pose).all()):
+        raise ValueError("selection mapping camera calibration must be finite")
+    for start in range(0, int(anchor_ids.numel()), int(chunk_size)):
+        rows = anchor_ids[start : start + int(chunk_size)]
+        points = torch.as_tensor(xyz)[rows].double()
+        homogeneous = torch.cat(
+            (points, torch.ones((points.shape[0], 1), dtype=points.dtype)), dim=1
+        )
+        camera = (pose @ homogeneous.T).T[:, :3]
+        if not bool(torch.isfinite(camera).all()) or bool((camera[:, 2] <= 0).any()):
+            raise ValueError(
+                "potential-pose candidate is non-finite or not in front of its mapping camera"
+            )
+        jacobian = pose_jacobian_analytic(points, K, pose)
+        jacobian = task_scaled_pose_jacobian(
+            jacobian,
+            translation_scale=_SELECTION_TRANSLATION_SCALE_M,
+            rotation_scale=math.radians(_SELECTION_ROTATION_SCALE_DEG),
+        )
+        contributions = fisher_contributions(jacobian)
+        if not bool(torch.isfinite(contributions).all()):
+            raise ValueError("potential pose information must be finite")
+        for anchor, contribution in zip(rows.tolist(), contributions):
+            result[int(anchor)] = contribution
+    return result
+
+
 def selection_only_proposal(
     state: dict,
+    observations: ObservationProvider,
     feedback: dict,
     *,
     maximum_anchors: int,
@@ -877,12 +952,20 @@ def selection_only_proposal(
     matching_target: int,
     pose_logdet_target: float,
     pose_min_eigenvalue_target: float | None = None,
+    pose_information_chunk_size: int = 4096,
     training_query_indices: torch.Tensor | Sequence[int] | None = None,
 ) -> tuple[dict, dict]:
-    """Hierarchical visibility→detectability→matching→pose selection arm."""
+    """Select with fixed-layer evidence and GT-geometry potential Fisher."""
 
     require_schema(feedback, FEEDBACK_SCHEMA, label="self-localization feedback")
+    if list(feedback.get("query_names", ())) != list(observations.names):
+        raise ValueError("feedback and observation registries differ")
+    if int(pose_information_chunk_size) < 1:
+        raise ValueError("selection pose-information chunk size must be positive")
     count = int(torch.as_tensor(state["anchor_ids"]).numel())
+    xyz = torch.as_tensor(state["anchor_xyz"]).float()
+    if xyz.shape != (count, 3) or not bool(torch.isfinite(xyz).all()):
+        raise ValueError("selection Anchor xyz must be finite and map-aligned")
     layers = {
         name: [defaultdict(set) for _ in range(count)]
         for name in ("visibility", "detectability", "matching")
@@ -926,14 +1009,17 @@ def selection_only_proposal(
             and training_registry_explicit
         )
 
+    potential_pose_edge_count = 0
+    potential_pose_query_count = 0
     for local_query_index, source_query_index in enumerate(
         round_training_queries.tolist()
     ):
         record = feedback["records"][source_query_index]
+        view = observations.build_view(source_query_index)
         visible_ids = torch.as_tensor(record["visible_anchor_ids"]).long().reshape(-1)
-        visible_cells = torch.as_tensor(
-            record["visible_anchor_image_cells"]
-        ).long().reshape(-1)
+        visible_cells = (
+            torch.as_tensor(record["visible_anchor_image_cells"]).long().reshape(-1)
+        )
         if visible_ids.shape != visible_cells.shape:
             raise ValueError("visible Anchor IDs and image cells do not align")
         if visible_ids.numel() != torch.unique(visible_ids).numel():
@@ -944,25 +1030,63 @@ def selection_only_proposal(
             raise ValueError("visible Anchor IDs are outside the map registry")
         for anchor, image_cell in zip(visible_ids.tolist(), visible_cells.tolist()):
             layers["visibility"][anchor][local_query_index].add(image_cell)
-        for row, anchor in torch.as_tensor(record["detectable_pairs"]).long().tolist():
+        detectable_pairs = _selection_pairs(
+            record,
+            "detectable_pairs",
+            anchor_count=count,
+            query_row_count=int(view.descriptors.shape[0]),
+        )
+        matching_pairs = _selection_pairs(
+            record,
+            "matching_pairs",
+            anchor_count=count,
+            query_row_count=int(view.descriptors.shape[0]),
+        )
+        exact_geometry_pairs = _selection_pairs(
+            record,
+            "exact_identity_positive_pairs",
+            anchor_count=count,
+            query_row_count=int(view.descriptors.shape[0]),
+        )
+        ambiguous_geometry_pairs = _selection_pairs(
+            record,
+            "projective_compatible_ambiguous_pairs",
+            anchor_count=count,
+            query_row_count=int(view.descriptors.shape[0]),
+        )
+        for row, anchor in detectable_pairs.tolist():
             layers["detectability"][anchor][local_query_index].add(row)
-        for row, anchor in torch.as_tensor(record["matching_pairs"]).long().tolist():
+        for row, anchor in matching_pairs.tolist():
             layers["matching"][anchor][local_query_index].add(row)
-        pose_ids = torch.as_tensor(
-            record.get("clean_inlier_pose_anchor_ids", ())
-        ).long()
-        pose_information = torch.as_tensor(
-            record.get("clean_inlier_pose_information", ()), dtype=torch.float64
-        ).reshape(-1, 6, 6)
-        if pose_ids.numel() != pose_information.shape[0]:
-            raise ValueError("pose information and Anchor IDs do not align")
-        if pose_ids.numel() != torch.unique(pose_ids).numel():
-            raise ValueError("pose information must have one row per unique Anchor")
-        if bool(((pose_ids < 0) | (pose_ids >= count)).any()):
-            raise ValueError("pose-information Anchor IDs are outside the map registry")
-        if not bool(torch.isfinite(pose_information).all()):
-            raise ValueError("pose information must be finite")
-        for anchor, contribution in zip(pose_ids.tolist(), pose_information):
+        candidate_ids = torch.unique(
+            torch.cat(
+                (exact_geometry_pairs[:, 1], ambiguous_geometry_pairs[:, 1])
+            ),
+            sorted=True,
+        )
+        layered_candidate_ids = torch.unique(
+            torch.cat((detectable_pairs[:, 1], matching_pairs[:, 1])), sorted=True
+        )
+        if layered_candidate_ids.numel() and not bool(
+            torch.isin(layered_candidate_ids, candidate_ids).all()
+        ):
+            raise ValueError(
+                "layered detectable/matching evidence is absent from geometry pairs"
+            )
+        if candidate_ids.numel() and not bool(
+            torch.isin(candidate_ids, visible_ids).all()
+        ):
+            raise ValueError("pose-information candidates must be visible Anchors")
+        potential = _potential_pose_information(
+            xyz,
+            candidate_ids,
+            intrinsics=view.intrinsics,
+            pose_w2c=view.pose_w2c,
+            chunk_size=int(pose_information_chunk_size),
+        )
+        potential_pose_edge_count += len(potential)
+        potential_pose_query_count += int(bool(potential))
+        for anchor, contribution in potential.items():
             information[anchor][local_query_index] = contribution
     candidate_edges = {
         name: [
@@ -983,11 +1107,27 @@ def selection_only_proposal(
         maximum_anchors=int(maximum_anchors),
         query_count=int(round_training_queries.numel()),
     )
+    result["potential_pose_information"] = {
+        "source": "mapping_gt_pose_intrinsics_and_source_map_xyz",
+        "candidate_pool": (
+            "all_unique_feedback_exact_or_ambiguous_geometry_candidate_anchors"
+        ),
+        "realized_clean_inlier_conditioned": False,
+        "unique_anchor_per_query": True,
+        "sparse_query_anchor_storage": True,
+        "dense_query_anchor_tensor_materialized": False,
+        "edge_count": int(potential_pose_edge_count),
+        "query_count_with_edges": int(potential_pose_query_count),
+        "chunk_size": int(pose_information_chunk_size),
+        "translation_scale_m": _SELECTION_TRANSLATION_SCALE_M,
+        "rotation_scale_deg": _SELECTION_ROTATION_SCALE_DEG,
+        "measurement_weight": 1.0,
+    }
     selected = torch.sort(result["selected_anchor_rows"]).values
     proposal = subset_projective_anchor_map(state, selected)
     proposal["v6_selection_distillation"] = {
         "schema": "lafgs_v6_layered_sufficiency_selection",
-        "version": 3,
+        "version": 4,
         "selected_source_rows": selected,
         "training_query_indices": cumulative_training_queries,
         "selected_query_indices": cumulative_training_queries,
@@ -1005,7 +1145,13 @@ def selection_only_proposal(
         "visibility_evidence_unit": "query_image_grid_cell",
         "detectability_evidence_unit": "query_keypoint_row",
         "matching_evidence_unit": "query_keypoint_row",
-        "pose_evidence_unit": "unique_anchor_per_query",
+        "pose_evidence_unit": (
+            "unique_detectable_or_matching_anchor_per_query_gt_geometry_potential"
+        ),
+        "pose_information_source": ("mapping_gt_pose_intrinsics_and_source_map_xyz"),
+        "pose_information_realized_clean_inlier_conditioned": False,
+        "pose_information_chunk_size": int(pose_information_chunk_size),
+        "potential_pose_information_edge_count": int(potential_pose_edge_count),
         "report": result,
     }
     return proposal, result

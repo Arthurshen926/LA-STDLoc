@@ -1,3 +1,5 @@
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -27,6 +29,11 @@ from scripts.propose_v6_round import (
 from topology.v6_anchor_map import (
     compact_projective_deployment_map,
     subset_projective_anchor_map,
+)
+from topology.pose_information import (
+    fisher_contributions,
+    pose_jacobian_analytic,
+    task_scaled_pose_jacobian,
 )
 
 
@@ -700,7 +707,26 @@ def test_proposal_inputs_reject_compact_map_and_registry_mismatch() -> None:
         )
 
 
-def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -> None:
+def _selection_provider() -> GaussianRenderObservationProvider:
+    intrinsics = torch.tensor([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
+    queries = {}
+    for name, row_count in (("q0", 2), ("q1", 12)):
+        queries[name] = {
+            "native_keypoints": torch.zeros((row_count, 2)),
+            "native_descriptors": torch.ones((row_count, 2)),
+            "native_scores": torch.ones(row_count),
+            "native_K": intrinsics,
+            "pose_w2c": torch.eye(4),
+            "native_input_hw": torch.tensor([100, 100]),
+        }
+    return GaussianRenderObservationProvider(
+        {"uses_source_mapping_rgb": False, "queries": queries}
+    )
+
+
+def test_selection_uses_potential_pose_information_and_independent_layers(
+    monkeypatch,
+) -> None:
     captured = {}
 
     def fake_select(**kwargs):
@@ -718,6 +744,7 @@ def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -
     )
     state = {
         "anchor_ids": torch.arange(3),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 5.0], [1.0, 0.0, 5.0], [0.0, 1.0, 5.0]]),
         "anchor_matchability": torch.tensor([0.9, 0.8, 0.7]),
         "v6_selection_distillation": {
             "training_query_indices": torch.tensor([0]),
@@ -731,12 +758,17 @@ def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -
         "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
+        "query_names": ["q0", "q1"],
         "records": [
             {
                 "visible_anchor_ids": torch.tensor([1]),
                 "visible_anchor_image_cells": torch.tensor([1]),
                 "detectable_pairs": torch.tensor([[1, 1]]),
                 "matching_pairs": torch.tensor([[1, 1]]),
+                "exact_identity_positive_pairs": torch.tensor([[1, 1]]),
+                "projective_compatible_ambiguous_pairs": torch.empty(
+                    (0, 2), dtype=torch.long
+                ),
                 "clean_inlier_pose_anchor_ids": torch.tensor([1]),
                 "clean_inlier_pose_information": torch.eye(6).unsqueeze(0),
             },
@@ -745,15 +777,18 @@ def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -
                 "visible_anchor_image_cells": torch.tensor([5, 5, 7]),
                 "detectable_pairs": torch.tensor([[10, 0], [11, 1]]),
                 "matching_pairs": torch.tensor([[10, 0]]),
-                "clean_inlier_pose_anchor_ids": torch.tensor([0, 2]),
-                "clean_inlier_pose_information": torch.stack(
-                    [torch.eye(6), torch.eye(6) * 2]
+                "exact_identity_positive_pairs": torch.tensor([[10, 0]]),
+                "projective_compatible_ambiguous_pairs": torch.tensor(
+                    [[11, 1], [9, 2]]
                 ),
-            }
+                "clean_inlier_pose_anchor_ids": torch.tensor([0]),
+                "clean_inlier_pose_information": torch.eye(6).unsqueeze(0),
+            },
         ],
     }
     proposal, _ = selection_only_proposal(
         state,
+        _selection_provider(),
         feedback,
         maximum_anchors=2,
         visibility_target=2,
@@ -761,6 +796,7 @@ def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -
         matching_target=4,
         pose_logdet_target=5.0,
         pose_min_eigenvalue_target=0.25,
+        pose_information_chunk_size=1,
         training_query_indices=[1],
     )
 
@@ -775,19 +811,57 @@ def test_selection_uses_image_cells_and_independent_layer_targets(monkeypatch) -
     assert captured["pose_min_eigenvalue_target"] == 0.25
     assert captured["query_count"] == 1
     assert set(captured["pose_information"][0]) == {0}
+    assert set(captured["pose_information"][1]) == {0}
     assert set(captured["pose_information"][2]) == {0}
+    view = _selection_provider().build_view(1)
+    jacobian = pose_jacobian_analytic(
+        state["anchor_xyz"][:1].double(),
+        view.intrinsics.double(),
+        view.pose_w2c.double(),
+    )
+    expected = fisher_contributions(
+        task_scaled_pose_jacobian(
+            jacobian,
+            translation_scale=0.05,
+            rotation_scale=math.radians(5.0),
+        )
+    )[0]
+    assert torch.allclose(captured["pose_information"][0][0], expected)
     report = proposal["v6_selection_distillation"]
     assert report["visibility_evidence_unit"] == "query_image_grid_cell"
-    assert report["pose_evidence_unit"] == "unique_anchor_per_query"
+    assert report["version"] == 4
+    assert report["pose_information_realized_clean_inlier_conditioned"] is False
+    assert report["potential_pose_information_edge_count"] == 3
+    assert report["pose_information_chunk_size"] == 1
+    potential = report["report"]["potential_pose_information"]
+    assert potential["candidate_pool"] == (
+        "all_unique_feedback_exact_or_ambiguous_geometry_candidate_anchors"
+    )
+    assert potential["dense_query_anchor_tensor_materialized"] is False
     assert report["training_query_indices"].tolist() == [0, 1]
     assert report["round_training_query_indices"].tolist() == [1]
     assert report["training_query_registry_explicit"] is True
     assert report["selection_round"] == 2
 
 
-def test_selection_rejects_duplicate_pose_rows_for_one_anchor() -> None:
+def test_selection_deduplicates_potential_anchor_and_ignores_realized_pose_rows(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def fake_select(**kwargs):
+        captured.update(kwargs)
+        return {"selected_anchor_rows": torch.tensor([0]), "unmet": {}}
+
+    monkeypatch.setattr(v6_proposals, "select_layered_sufficiency", fake_select)
+    monkeypatch.setattr(
+        v6_proposals,
+        "subset_projective_anchor_map",
+        lambda state, selected: {"anchor_ids": state["anchor_ids"][selected]},
+    )
     state = {
         "anchor_ids": torch.arange(1),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 5.0]]),
         "anchor_matchability": torch.ones(1),
     }
     feedback = {
@@ -796,26 +870,59 @@ def test_selection_rejects_duplicate_pose_rows_for_one_anchor() -> None:
         "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
+        "query_names": ["q0", "q1"],
         "records": [
             {
                 "visible_anchor_ids": torch.tensor([0]),
                 "visible_anchor_image_cells": torch.tensor([0]),
-                "detectable_pairs": torch.tensor([[0, 0]]),
+                "detectable_pairs": torch.tensor([[0, 0], [1, 0]]),
                 "matching_pairs": torch.tensor([[0, 0]]),
+                "exact_identity_positive_pairs": torch.tensor([[0, 0], [1, 0]]),
+                "projective_compatible_ambiguous_pairs": torch.empty(
+                    (0, 2), dtype=torch.long
+                ),
                 "clean_inlier_pose_anchor_ids": torch.tensor([0, 0]),
                 "clean_inlier_pose_information": torch.stack(
                     [torch.eye(6), torch.eye(6)]
                 ),
-            }
+            },
+            {
+                "visible_anchor_ids": torch.tensor([0]),
+                "visible_anchor_image_cells": torch.tensor([0]),
+                "detectable_pairs": torch.tensor([[0, 0]]),
+                "matching_pairs": torch.empty((0, 2), dtype=torch.long),
+                "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
+                "projective_compatible_ambiguous_pairs": torch.empty(
+                    (0, 2), dtype=torch.long
+                ),
+            },
         ],
     }
-    with pytest.raises(ValueError, match="one row per unique Anchor"):
+    proposal, _ = selection_only_proposal(
+        state,
+        _selection_provider(),
+        feedback,
+        maximum_anchors=1,
+        visibility_target=1,
+        detectability_target=1,
+        matching_target=1,
+        pose_logdet_target=0.0,
+        training_query_indices=[0],
+    )
+    assert set(captured["pose_information"][0]) == {0}
+    assert (
+        proposal["v6_selection_distillation"]["potential_pose_information_edge_count"]
+        == 1
+    )
+    with pytest.raises(ValueError, match="chunk size must be positive"):
         selection_only_proposal(
             state,
+            _selection_provider(),
             feedback,
             maximum_anchors=1,
             visibility_target=1,
             detectability_target=1,
             matching_target=1,
             pose_logdet_target=0.0,
+            pose_information_chunk_size=0,
         )

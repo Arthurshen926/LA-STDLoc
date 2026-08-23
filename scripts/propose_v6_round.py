@@ -309,6 +309,7 @@ def run(args: argparse.Namespace) -> dict:
         if arm == "descriptor_selection" and proposal is not None:
             proposal, selection_report = selection_only_proposal(
                 proposal,
+                observations,
                 feedback,
                 maximum_anchors=args.maximum_anchors,
                 visibility_target=args.visibility_target,
@@ -316,6 +317,9 @@ def run(args: argparse.Namespace) -> dict:
                 matching_target=args.matching_target,
                 pose_logdet_target=args.pose_logdet_target,
                 pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
+                pose_information_chunk_size=(
+                    args.selection_pose_information_chunk_size
+                ),
                 training_query_indices=descriptor_training_queries,
             )
         if proposal is not None and descriptor_training_split_sha is not None:
@@ -330,6 +334,7 @@ def run(args: argparse.Namespace) -> dict:
     elif arm == "selection":
         proposal, selection_report = selection_only_proposal(
             state,
+            observations,
             feedback,
             maximum_anchors=args.maximum_anchors,
             visibility_target=args.visibility_target,
@@ -337,6 +342,7 @@ def run(args: argparse.Namespace) -> dict:
             matching_target=args.matching_target,
             pose_logdet_target=args.pose_logdet_target,
             pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
+            pose_information_chunk_size=args.selection_pose_information_chunk_size,
             training_query_indices=descriptor_training_queries,
         )
     elif arm == "reconstruction":
@@ -465,6 +471,9 @@ def run(args: argparse.Namespace) -> dict:
         "matching_target": int(args.matching_target),
         "pose_logdet_target": float(args.pose_logdet_target),
         "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
+        "selection_pose_information_chunk_size": int(
+            args.selection_pose_information_chunk_size
+        ),
         "completion_voxel_size_m": float(args.completion_voxel_size_m),
         "alpha_minimum": float(args.alpha_minimum),
         "completion_minimum_similarity": float(
@@ -673,6 +682,9 @@ def main() -> None:
     parser.add_argument("--matching-target", type=int, default=16)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
     parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
+    parser.add_argument(
+        "--selection-pose-information-chunk-size", type=int, default=4096
+    )
     parser.add_argument("--completion-voxel-size-m", type=float, default=0.05)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--completion-minimum-similarity", type=float, default=0.7)
