@@ -86,13 +86,43 @@ class LeaveOneQueryOutProjectiveMap:
         self.query_observation_order = torch.argsort(query, stable=True)
 
     @torch.no_grad()
-    def query_update(self, excluded_query: int) -> dict:
+    def query_update(
+        self,
+        excluded_query: int,
+        *,
+        excluded_queries: torch.Tensor | list[int] | tuple[int, ...] | None = None,
+    ) -> dict:
+        """Rebuild affected Anchors after removing a pose-neighborhood.
+
+        ``excluded_query`` remains explicit because it is the query being
+        localized.  ``excluded_queries`` may additionally contain nearby
+        mapping cameras.  Passing no neighborhood preserves the historical
+        single-image LOO behavior.
+        """
+
         excluded_query = int(excluded_query)
         if excluded_query < 0 or excluded_query >= len(self.observations):
             raise IndexError(excluded_query)
-        query_start = int(self.query_observation_offsets[excluded_query])
-        query_stop = int(self.query_observation_offsets[excluded_query + 1])
-        removed_positions = self.query_observation_order[query_start:query_stop]
+        excluded = torch.as_tensor(
+            [excluded_query] if excluded_queries is None else excluded_queries,
+            dtype=torch.long,
+        ).reshape(-1)
+        excluded = torch.unique(
+            torch.cat((excluded, torch.tensor([excluded_query], dtype=torch.long))),
+            sorted=True,
+        )
+        if excluded.numel() == 0 or int(excluded.min()) < 0 or int(excluded.max()) >= len(
+            self.observations
+        ):
+            raise IndexError("excluded query neighborhood is out of range")
+        removed_parts = []
+        for query_index in excluded.tolist():
+            query_start = int(self.query_observation_offsets[query_index])
+            query_stop = int(self.query_observation_offsets[query_index + 1])
+            removed_parts.append(
+                self.query_observation_order[query_start:query_stop]
+            )
+        removed_positions = torch.cat(removed_parts)
         affected = torch.unique(
             self.anchor_for_observation[removed_positions], sorted=True
         )
@@ -104,6 +134,7 @@ class LeaveOneQueryOutProjectiveMap:
                 "anchor_features": torch.empty(
                     (0, int(torch.as_tensor(self.state["anchor_features"]).shape[1]))
                 ),
+                "excluded_queries": excluded,
             }
         lengths = self.offsets[affected + 1] - self.offsets[affected]
         local_anchor = torch.repeat_interleave(
@@ -115,7 +146,7 @@ class LeaveOneQueryOutProjectiveMap:
             torch.repeat_interleave(group_offsets[:-1], lengths)
         )
         positions = starts + within
-        keep = self.query[positions] != excluded_query
+        keep = ~torch.isin(self.query[positions], excluded)
         positions = positions[keep]
         local_anchor = local_anchor[keep]
         query = self.query[positions]
@@ -162,20 +193,28 @@ class LeaveOneQueryOutProjectiveMap:
                 int(selected_offsets[local + 1]),
                 dtype=torch.long,
             )
-            output_features[local] = fuse_projective_anchor_observations(
+            fused = fuse_projective_anchor_observations(
                 selected_descriptor[rows],
                 self.query_bins[query[rows]],
                 detector_weight=detector[rows],
                 trim_fraction=self.descriptor_trim_fraction,
             )
+            residuals = self.state.get("anchor_descriptor_residual")
+            if residuals is not None:
+                residual = torch.as_tensor(residuals)[affected[local]].float()
+                residual = residual - torch.dot(residual, fused) * fused
+                fused = torch.nn.functional.normalize(fused + residual, dim=0)
+            output_features[local] = fused
         return {
             "anchor_rows": affected,
             "valid": valid,
             "anchor_xyz": torch.as_tensor(geometry["triangulated_xyz"]).float(),
             "anchor_features": output_features.float(),
+            "excluded_queries": excluded,
             "contract": {
                 "query_descriptor_loo": True,
                 "query_geometry_loo": True,
+                "pose_neighborhood_loo": int(excluded.numel()) > 1,
                 "gaussian_depth_used_for_final_xyz": False,
             },
         }

@@ -59,3 +59,9 @@ def test_loo_retriangulates_from_remaining_physical_pixel_centers() -> None:
     update = LeaveOneQueryOutProjectiveMap(state, provider).query_update(0)
     assert update["valid"].tolist() == [True]
     assert torch.allclose(update["anchor_xyz"][0], point, atol=1e-4, rtol=0)
+
+    neighborhood = LeaveOneQueryOutProjectiveMap(state, provider).query_update(
+        0, excluded_queries=[0, 1]
+    )
+    assert neighborhood["excluded_queries"].tolist() == [0, 1]
+    assert neighborhood["valid"].tolist() == [False]

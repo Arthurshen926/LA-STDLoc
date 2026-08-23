@@ -12,6 +12,29 @@ from common.v6_contracts import FEEDBACK_SCHEMA, validate_ordered_query_registry
 FAILURE_LAYERS = ("L1", "L2", "L3", "L4")
 
 
+def active_failure_layers(
+    *,
+    visible_rank: int,
+    detectable_rank: int,
+    matching_rank: int,
+    required_rank: int,
+    pose_information_sufficient: bool,
+    pose_success: bool,
+) -> tuple[str, ...]:
+    """Return all active deficits while retaining hierarchical diagnostics."""
+
+    layers = []
+    if int(visible_rank) < int(required_rank):
+        layers.append("L1")
+    if int(detectable_rank) < int(required_rank):
+        layers.append("L2")
+    if int(matching_rank) < int(required_rank):
+        layers.append("L3")
+    if not bool(pose_information_sufficient) or not bool(pose_success):
+        layers.append("L4")
+    return tuple(layers)
+
+
 def classify_failure_layer(
     *,
     visible_rank: int,
@@ -45,10 +68,11 @@ def build_self_localization_feedback(
         raise ValueError("feedback records do not align with mapping queries")
     normalized = []
     counts = {layer: 0 for layer in FAILURE_LAYERS}
+    success_count = 0
     for query_index, (name, source) in enumerate(zip(names, records)):
         if str(source.get("image_name")) != name:
             raise ValueError("feedback record registry differs")
-        layer = classify_failure_layer(
+        layers = active_failure_layers(
             visible_rank=int(source["visible_rank"]),
             detectable_rank=int(source["detectable_rank"]),
             matching_rank=int(source["matching_rank"]),
@@ -56,16 +80,33 @@ def build_self_localization_feedback(
             pose_information_sufficient=bool(source["pose_information_sufficient"]),
             pose_success=bool(source["pose_success"]),
         )
-        if layer is not None:
-            counts[layer] += 1
+        layer = layers[0] if layers else None
+        for active in layers:
+            counts[active] += 1
+        if not layers:
+            success_count += 1
+        required = max(int(required_rank), 1)
         normalized.append(
             {
                 "query_index": query_index,
                 "image_name": name,
                 "failure_layer": layer,
+                "failure_layers": list(layers),
+                "deficits": {
+                    "visibility": max(required - int(source["visible_rank"]), 0) / required,
+                    "detectability": max(required - int(source["detectable_rank"]), 0) / required,
+                    "matching": max(required - int(source["matching_rank"]), 0) / required,
+                    "pose": float(
+                        not bool(source["pose_information_sufficient"])
+                        or not bool(source["pose_success"])
+                    ),
+                },
                 "legal_positive_exists": bool(source["visible_rank"] > 0),
                 "detector_accessible": bool(source["detectable_rank"] > 0),
                 "visible_rank": int(source["visible_rank"]),
+                "visible_anchor_count": int(
+                    source.get("visible_anchor_count", source["visible_rank"])
+                ),
                 "detectable_rank": int(source["detectable_rank"]),
                 "correct_anchor_rank": int(source["correct_anchor_rank"]),
                 "matching_rank": int(source["matching_rank"]),
@@ -105,7 +146,13 @@ def build_self_localization_feedback(
                 ).reshape(-1, 2),
                 "confusion_pairs": torch.as_tensor(
                     source.get("confusion_pairs", ()), dtype=torch.long
-                ).reshape(-1, 2),
+                ).reshape(-1, 3),
+                "descriptor_triplets": torch.as_tensor(
+                    source.get("descriptor_triplets", ()), dtype=torch.long
+                ).reshape(-1, 4),
+                "excluded_query_indices": torch.as_tensor(
+                    source.get("excluded_query_indices", (query_index,))
+                ).long(),
                 "dependency_group_ids": torch.as_tensor(
                     source.get("dependency_group_ids", ())
                 ).long(),
@@ -126,6 +173,9 @@ def build_self_localization_feedback(
                 "pose_success": bool(source["pose_success"]),
                 "query_descriptor_loo": True,
                 "query_geometry_loo": bool(source["query_geometry_loo"]),
+                "pose_neighborhood_loo": bool(
+                    source.get("pose_neighborhood_loo", False)
+                ),
             }
         )
     return {
@@ -137,7 +187,7 @@ def build_self_localization_feedback(
         "required_matching_rank": int(required_rank),
         "records": normalized,
         "failure_layer_counts": counts,
-        "success_count": len(names) - sum(counts.values()),
+        "success_count": success_count,
         "input_sha256": {
             "map": str(source_map_sha256),
             "query_cache": str(query_cache_sha256),

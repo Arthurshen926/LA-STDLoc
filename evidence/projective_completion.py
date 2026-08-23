@@ -41,6 +41,7 @@ def build_projective_completion(
     maximum_rows_per_view: int = 256,
     safety_maximum_components: int = 100000,
     eligible_query_indices: torch.Tensor | list[int] | None = None,
+    target_query_indices: torch.Tensor | list[int] | None = None,
     device: str = "cuda",
 ) -> dict:
     """Use Gaussian depth only to propose neighborhoods; deploy only ray xyz."""
@@ -70,6 +71,17 @@ def build_projective_completion(
     )
     if not eligible_queries or min(eligible_queries) < 0 or max(eligible_queries) >= len(observations):
         raise ValueError("completion eligible query registry is empty or invalid")
+    target_queries = (
+        None
+        if target_query_indices is None
+        else {int(value) for value in torch.as_tensor(target_query_indices).tolist()}
+    )
+    if target_queries is not None and (
+        not target_queries
+        or min(target_queries) < 0
+        or max(target_queries) >= len(observations)
+    ):
+        raise ValueError("completion target query registry is empty or invalid")
     for query_index in sorted(eligible_queries):
         view = observations.build_view(query_index)
         if view.depth is None and view.keypoint_depth is None:
@@ -195,6 +207,12 @@ def build_projective_completion(
             rows = order[keep]
             if rows.numel() < int(minimum_observations):
                 continue
+            # A deficient query identifies the region to repair, but support
+            # observations may come from every non-held-out mapping view.
+            if target_queries is not None and not any(
+                int(value) in target_queries for value in query[rows].tolist()
+            ):
+                continue
             if torch.unique(bins[query[rows]]).numel() < int(minimum_camera_families):
                 continue
             groups.append(rows)
@@ -235,6 +253,8 @@ def build_projective_completion(
     result["candidate_kind"] = "depth_proposed_projective_completion"
     result["contract"].update(
         gaussian_depth_role="proposal_neighborhood_only",
+        target_queries_seed_regions=target_queries is not None,
+        support_queries_restricted=eligible_query_indices is not None,
         reciprocal_local_descriptor_support=True,
         known_pose_epipolar_support=True,
         final_xyz_source="fixed_camera_robust_ray_triangulation",

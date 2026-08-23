@@ -15,7 +15,11 @@ from common.hashing import sha256_file
 from common.v6_contracts import ASSOCIATION_GRAPH_SCHEMA, FEEDBACK_SCHEMA, require_schema
 from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.projective_completion import build_projective_completion
-from map_learning.v6_proposals import descriptor_only_proposal, selection_only_proposal
+from map_learning.v6_proposals import (
+    descriptor_loss_proposal,
+    descriptor_only_proposal,
+    selection_only_proposal,
+)
 from topology.v6_anchor_map import (
     identity_metric_state,
     materialize_projective_anchor_map,
@@ -86,10 +90,25 @@ def run(args: argparse.Namespace) -> dict:
     arm = args.arm
     selection_report = None
     unavailable_reason = None
-    if arm in {"descriptor", "descriptor_selection"}:
-        proposal = descriptor_only_proposal(
-            state, observations, feedback, trust_region=args.descriptor_trust_region
-        )
+    if arm in {"descriptor", "descriptor_loss", "descriptor_selection"}:
+        if arm == "descriptor":
+            proposal = descriptor_only_proposal(
+                state, observations, feedback, trust_region=args.descriptor_trust_region
+            )
+        else:
+            proposal = descriptor_loss_proposal(
+                state,
+                observations,
+                feedback,
+                trust_region=args.descriptor_trust_region,
+                margin=args.descriptor_margin,
+                temperature=args.descriptor_temperature,
+                learning_rate=args.descriptor_learning_rate,
+                epochs=args.descriptor_epochs,
+                batch_size=args.descriptor_batch_size,
+                maximum_triplets_per_query=args.descriptor_maximum_triplets_per_query,
+                device=args.device,
+            )
         if arm == "descriptor_selection":
             proposal, selection_report = selection_only_proposal(
                 proposal,
@@ -135,7 +154,7 @@ def run(args: argparse.Namespace) -> dict:
                 minimum_camera_families=args.minimum_camera_families,
                 maximum_rows_per_view=args.completion_maximum_rows_per_view,
                 safety_maximum_components=args.completion_safety_maximum_components,
-                eligible_query_indices=l1_queries,
+                target_query_indices=l1_queries,
                 device=args.device,
             )
         except ValueError as error:
@@ -220,7 +239,7 @@ def run(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", choices=("descriptor", "selection", "descriptor_selection", "reconstruction"), required=True)
+    parser.add_argument("--arm", choices=("descriptor", "descriptor_loss", "selection", "descriptor_selection", "reconstruction"), required=True)
     parser.add_argument("--map", type=Path, required=True)
     parser.add_argument("--expected-map-sha256", required=True)
     parser.add_argument("--observation-cache", type=Path, required=True)
@@ -232,6 +251,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--descriptor-trust-region", type=float, default=0.05)
+    parser.add_argument("--descriptor-margin", type=float, default=0.05)
+    parser.add_argument("--descriptor-temperature", type=float, default=0.04)
+    parser.add_argument("--descriptor-learning-rate", type=float, default=0.02)
+    parser.add_argument("--descriptor-epochs", type=int, default=5)
+    parser.add_argument("--descriptor-batch-size", type=int, default=8192)
+    parser.add_argument("--descriptor-maximum-triplets-per-query", type=int, default=128)
     parser.add_argument("--maximum-anchors", type=int, default=20000)
     parser.add_argument("--matching-target", type=int, default=4)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)

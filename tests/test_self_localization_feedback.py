@@ -1,4 +1,5 @@
 from map_learning.self_localization_feedback import (
+    active_failure_layers,
     build_self_localization_feedback,
     classify_failure_layer,
 )
@@ -9,6 +10,14 @@ def test_failure_layers_are_hierarchical() -> None:
     assert classify_failure_layer(visible_rank=4, detectable_rank=3, matching_rank=0, required_rank=4, pose_information_sufficient=False, pose_success=False) == "L2"
     assert classify_failure_layer(visible_rank=4, detectable_rank=4, matching_rank=3, required_rank=4, pose_information_sufficient=False, pose_success=False) == "L3"
     assert classify_failure_layer(visible_rank=4, detectable_rank=4, matching_rank=4, required_rank=4, pose_information_sufficient=False, pose_success=True) == "L4"
+    assert active_failure_layers(
+        visible_rank=1,
+        detectable_rank=2,
+        matching_rank=3,
+        required_rank=4,
+        pose_information_sufficient=False,
+        pose_success=False,
+    ) == ("L1", "L2", "L3", "L4")
 
 
 def test_feedback_serializes_required_counterfactual_fields() -> None:

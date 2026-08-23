@@ -49,7 +49,7 @@ def test_positive_statistics_match_stable_argsort_with_ties() -> None:
         )
         wrong = scores[row].clone()
         wrong[torch.tensor(positives)] = -torch.inf
-        positive, best_wrong, rank, best_anchor = result[row]
+        positive, best_wrong, rank, best_anchor, best_wrong_anchor = result[row]
         positive_scores = scores[row, positives]
         expected_positive = positive_scores.max()
         expected_anchor = min(
@@ -59,5 +59,6 @@ def test_positive_statistics_match_stable_argsort_with_ties() -> None:
         )
         assert positive == float(expected_positive)
         assert best_wrong == float(wrong.max())
+        assert best_wrong_anchor == int(torch.argmax(wrong))
         assert rank == oracle_rank
         assert best_anchor == expected_anchor

@@ -74,12 +74,74 @@ def _layer_edges(
     return result
 
 
+def _visible_spatial_rank(
+    projected: torch.Tensor,
+    visible_rows: torch.Tensor,
+    *,
+    image_hw: tuple[int, int],
+    grid_rows: int = 4,
+    grid_cols: int = 4,
+) -> int:
+    """Count independently occupied image cells, not raw visible Anchors."""
+
+    if visible_rows.numel() == 0:
+        return 0
+    height, width = image_hw
+    xy = projected[visible_rows]
+    columns = torch.floor(xy[:, 0] / max(float(width), 1.0) * grid_cols).long()
+    rows = torch.floor(xy[:, 1] / max(float(height), 1.0) * grid_rows).long()
+    columns = columns.clamp(0, grid_cols - 1)
+    rows = rows.clamp(0, grid_rows - 1)
+    return int(torch.unique(rows * grid_cols + columns).numel())
+
+
+def _pose_neighborhoods(
+    observations: ObservationProvider,
+    neighbor_count: int,
+) -> list[torch.Tensor]:
+    """Return deterministic query-local pose neighborhoods.
+
+    Translation and rotation are normalized by their mapping-trajectory
+    nearest-neighbor scales.  This avoids filename/sequence heuristics while
+    preventing adjacent trajectory frames from leaking into LOO maps.
+    """
+
+    count = len(observations)
+    neighbor_count = min(max(int(neighbor_count), 1), count)
+    if neighbor_count == 1:
+        return [torch.tensor([index], dtype=torch.long) for index in range(count)]
+    poses = torch.stack(
+        [observations.build_view(index).pose_w2c.float() for index in range(count)]
+    )
+    rotations = poses[:, :3, :3]
+    centers = -(rotations.transpose(1, 2) @ poses[:, :3, 3, None]).squeeze(-1)
+    translation = torch.cdist(centers, centers)
+    trace = torch.einsum("aij,bij->ab", rotations, rotations)
+    rotation = torch.acos(((trace - 1.0) * 0.5).clamp(-1.0, 1.0))
+    diagonal = torch.eye(count, dtype=torch.bool)
+
+    def nearest_scale(distance: torch.Tensor, fallback: float) -> torch.Tensor:
+        masked = distance.masked_fill(diagonal | (distance <= 1e-8), torch.inf)
+        nearest = masked.min(1).values
+        finite = nearest[torch.isfinite(nearest)]
+        if finite.numel() == 0:
+            return torch.tensor(float(fallback), dtype=distance.dtype)
+        return finite.median().clamp_min(1e-6)
+
+    translation_scale = nearest_scale(translation, 1.0)
+    rotation_scale = nearest_scale(rotation, math.radians(15.0))
+    distance = translation / translation_scale + rotation / rotation_scale
+    # Stable sorting makes repeated/same-pose cameras deterministic.
+    order = torch.argsort(distance, dim=1, stable=True)
+    return [torch.sort(order[index, :neighbor_count]).values for index in range(count)]
+
+
 def _positive_score_statistics(
     dense_scores: torch.Tensor,
     positives_by_row: list[list[int]],
     *,
     chunk_size: int = 64,
-) -> dict[int, tuple[float, float, int, int]]:
+) -> dict[int, tuple[float, float, int, int, int]]:
     """Return exact stable-rank statistics with one bank scan per query row.
 
     Stable descending argsort breaks equal-score ties by the original Anchor
@@ -144,8 +206,9 @@ def _positive_score_statistics(
         local_rows = local_rows[:, None].expand_as(padded)
         wrong[local_rows[valid], padded[valid]] = -torch.inf
         best_wrong = wrong.max(1).values
+        best_wrong_anchor = torch.argmax(wrong, dim=1)
         packed = torch.stack(
-            [best_positive, best_wrong, ranks, best_anchor], dim=1
+            [best_positive, best_wrong, ranks, best_anchor, best_wrong_anchor], dim=1
         ).cpu()
         for row, values in zip(rows_list, packed.tolist()):
             result[row] = (
@@ -153,6 +216,7 @@ def _positive_score_statistics(
                 float(values[1]),
                 int(values[2]),
                 int(values[3]),
+                int(values[4]),
             )
     return result
 
@@ -208,6 +272,7 @@ def evaluate_query_local_feedback(
     required_rank: int,
     ransac_reprojection_px: float,
     seed: int,
+    loo_pose_neighbors: int = 1,
 ) -> dict:
     """One global Top-1 and one standard PoseLib solve per mapping query."""
 
@@ -218,10 +283,14 @@ def evaluate_query_local_feedback(
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
     feedback_records = []
+    pose_neighborhoods = _pose_neighborhoods(observations, loo_pose_neighbors)
     for query_index, name in enumerate(observations.names):
         view = observations.build_view(query_index)
         loo_started = time.perf_counter()
-        update = replay.query_update(query_index)
+        excluded_queries = pose_neighborhoods[query_index]
+        update = replay.query_update(
+            query_index, excluded_queries=excluded_queries
+        )
         loo_latency_ms = (time.perf_counter() - loo_started) * 1000.0
         online_started = time.perf_counter()
         xyz = base_xyz.clone()
@@ -251,6 +320,11 @@ def evaluate_query_local_feedback(
                 view.alpha[y, x] >= float(alpha_minimum)
             )
         visible_rows = torch.nonzero(visible, as_tuple=False).reshape(-1)
+        visible_rank = _visible_spatial_rank(
+            projected,
+            visible_rows,
+            image_hw=(height, width),
+        )
         keypoints = view.physical_keypoints.float()
         positive_edges = _layer_edges(
             keypoints, projected, visible_rows, float(positive_radius_px)
@@ -303,17 +377,27 @@ def evaluate_query_local_feedback(
         best_wrong = []
         correct_anchor_ranks = []
         confusion_pairs = []
+        descriptor_triplets = []
         positive_statistics = _positive_score_statistics(
             dense_scores, positive_edges
         )
         for row, positives in enumerate(positive_edges):
             if positives:
-                positive_score, wrong_score, rank, best = positive_statistics[row]
+                (
+                    positive_score,
+                    wrong_score,
+                    rank,
+                    best,
+                    best_wrong_anchor,
+                ) = positive_statistics[row]
                 best_positive.append(positive_score)
                 best_wrong.append(wrong_score)
                 correct_anchor_ranks.append(rank)
                 if not bool(correct[row]):
-                    confusion_pairs.append((int(winners[row]), best))
+                    confusion_pairs.append((row, int(winners[row]), best))
+                descriptor_triplets.append(
+                    (row, best, best_wrong_anchor, int(bool(correct[row])))
+                )
         if clean_ids.numel():
             clean_jacobian = pose_jacobian_analytic(
                 xyz[clean_ids].double(),
@@ -340,7 +424,8 @@ def evaluate_query_local_feedback(
         feedback_records.append(
             {
                 "image_name": name,
-                "visible_rank": int(visible_rows.numel()),
+                "visible_rank": int(visible_rank),
+                "visible_anchor_count": int(visible_rows.numel()),
                 "detectable_rank": int(detectable_rank),
                 "correct_anchor_rank": min(correct_anchor_ranks, default=0),
                 "matching_rank": int(matching_rank),
@@ -359,7 +444,11 @@ def evaluate_query_local_feedback(
                 "matching_pairs": torch.tensor(matching_pairs, dtype=torch.long).reshape(-1, 2),
                 "confusion_pairs": torch.tensor(
                     confusion_pairs, dtype=torch.long
-                ).reshape(-1, 2),
+                ).reshape(-1, 3),
+                "descriptor_triplets": torch.tensor(
+                    descriptor_triplets, dtype=torch.long
+                ).reshape(-1, 4),
+                "excluded_query_indices": excluded_queries,
                 "dependency_group_ids": torch.unique(
                     torch.as_tensor(state["dependency_group_ids"])[winners]
                 ),
@@ -371,6 +460,7 @@ def evaluate_query_local_feedback(
                 "pose_information_sufficient": information_rank >= 6,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
                 "query_geometry_loo": True,
+                "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
             }
         )
         query_rows.append(
@@ -418,6 +508,8 @@ def evaluate_query_local_feedback(
         "contract": {
             "query_descriptor_loo": True,
             "query_geometry_loo": True,
+            "pose_neighborhood_loo": int(loo_pose_neighbors) > 1,
+            "loo_pose_neighbors": int(loo_pose_neighbors),
             "global_top1": True,
             "pose_solves_per_query": 1,
             "retrieval": False,

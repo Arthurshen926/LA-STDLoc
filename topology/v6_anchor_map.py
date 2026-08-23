@@ -56,6 +56,25 @@ def merge_projective_candidates(parts: list[dict]) -> dict:
         "anchor_features": torch.cat(
             [torch.as_tensor(part["anchor_features"]).float() for part in parts]
         ),
+        "anchor_observation_features": torch.cat(
+            [
+                torch.as_tensor(
+                    part.get("anchor_observation_features", part["anchor_features"])
+                ).float()
+                for part in parts
+            ]
+        ),
+        "anchor_descriptor_residual": torch.cat(
+            [
+                torch.as_tensor(
+                    part.get(
+                        "anchor_descriptor_residual",
+                        torch.zeros_like(torch.as_tensor(part["anchor_features"])),
+                    )
+                ).float()
+                for part in parts
+            ]
+        ),
         "anchor_position_covariance": torch.cat(
             [torch.as_tensor(part["anchor_position_covariance"]).float() for part in parts]
         ),
@@ -99,6 +118,12 @@ def materialize_projective_anchor_map(candidates: dict, *, lineage: dict) -> dic
         "anchor_ids": anchor_ids,
         "anchor_xyz": xyz,
         "anchor_features": features,
+        "anchor_observation_features": torch.as_tensor(
+            candidates.get("anchor_observation_features", features)
+        ).float(),
+        "anchor_descriptor_residual": torch.as_tensor(
+            candidates.get("anchor_descriptor_residual", torch.zeros_like(features))
+        ).float(),
         "source_primitive_ids": torch.full((count,), -1, dtype=torch.long),
         "track_cluster_ids": torch.arange(count, dtype=torch.long),
         "anchor_type": torch.ones(count, dtype=torch.long),
@@ -209,7 +234,8 @@ def subset_projective_anchor_map(state: dict, selected: torch.Tensor) -> dict:
         raise ValueError("selected V6 Anchor rows must be unique and sorted")
     output = dict(state)
     row_fields = (
-        "anchor_xyz", "anchor_features", "source_primitive_ids", "track_cluster_ids",
+        "anchor_xyz", "anchor_features", "anchor_observation_features",
+        "anchor_descriptor_residual", "source_primitive_ids", "track_cluster_ids",
         "anchor_type", "dependency_group_ids", "coarse_dependency_group_ids",
         "fine_identity_ids", "anchor_parent_identity_ids",
         "anchor_correlation_group_ids", "anchor_position_covariance",
@@ -266,6 +292,15 @@ def projective_candidates_from_map(state: dict) -> dict:
         "query_bins": torch.as_tensor(state["v6_mapping_query_bins"]).long(),
         "anchor_xyz": torch.as_tensor(state["anchor_xyz"]).float(),
         "anchor_features": torch.as_tensor(state["anchor_features"]).float(),
+        "anchor_observation_features": torch.as_tensor(
+            state.get("anchor_observation_features", state["anchor_features"])
+        ).float(),
+        "anchor_descriptor_residual": torch.as_tensor(
+            state.get(
+                "anchor_descriptor_residual",
+                torch.zeros_like(torch.as_tensor(state["anchor_features"])),
+            )
+        ).float(),
         "anchor_position_covariance": torch.as_tensor(
             state["anchor_position_covariance"]
         ).float(),
