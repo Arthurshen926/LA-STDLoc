@@ -337,11 +337,13 @@ def _reconstruction_target_query_mask(
     mask = torch.zeros(int(query_count), dtype=torch.bool)
     report = state.get("v6_reconstruction_distillation")
     if not isinstance(report, dict):
-        kinds = state.get("anchor_candidate_kind", ())
+        # Initial mapping completion Anchors share the same candidate kind as
+        # later feedback-targeted reconstruction, so kind alone is not a
+        # dependency signal.  Legacy targeted rounds did persist this exact
+        # feedback lineage even before the target registry was added.
         legacy_reconstruction = (
             state.get("provenance", {}).get("v6_reconstruction_feedback_sha256")
             is not None
-            or any("completion" in str(value) for value in kinds)
         )
         if legacy_reconstruction:
             mask[:] = True

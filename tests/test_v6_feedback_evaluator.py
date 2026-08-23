@@ -58,6 +58,12 @@ def test_topology_training_dependency_masks_fail_closed() -> None:
     assert _reconstruction_target_query_mask(
         legacy_reconstruction, 3
     ).tolist() == [True, True, True]
+    initial_completion = {
+        "anchor_candidate_kind": ["depth_proposed_projective_completion"]
+    }
+    assert _reconstruction_target_query_mask(
+        initial_completion, 3
+    ).tolist() == [False, False, False]
     assert _selection_training_query_mask(state, 3).tolist() == [True, False, True]
     assert _selection_training_query_mask(
         {"v6_selection_distillation": {}}, 3
