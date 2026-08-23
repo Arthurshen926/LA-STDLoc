@@ -25,7 +25,7 @@ def _args(tmp_path: Path) -> Namespace:
         required_visibility_rank=4,
         required_detectable_rank=16,
         loo_pose_neighbors=3,
-        loo_affected_anchor_policy="purge",
+        loo_affected_anchor_policy="rebuild",
         ransac_reprojection_px=4.0,
         descriptor_rounds=1,
         descriptor_trust_region=0.05,
@@ -44,6 +44,7 @@ def _args(tmp_path: Path) -> Namespace:
         run_selection=False,
         selection_maximum_anchors=100,
         pose_logdet_target=0.0,
+        pose_min_eigenvalue_target=0.0,
     )
 
 
@@ -63,7 +64,7 @@ def _summary(*, l1: int, l3: int, learned: bool = False) -> dict:
         ),
         "reconstruction_target_replay_summary": None,
         "selection_training_replay_summary": None,
-        "contract": {"affected_anchor_policy": "purge"},
+        "contract": {"affected_anchor_policy": "rebuild"},
     }
 
 
@@ -163,3 +164,42 @@ def test_runner_records_unavailable_proposal(tmp_path, monkeypatch) -> None:
     assert attempt["proposal_available"] is False
     assert attempt["unavailable_reason"] == "no_trainable_l3_descriptor_triplets"
     assert attempt["proposal_report_sha256"] == "r" * 64
+
+
+def test_runner_passes_independent_layer_and_pose_targets(tmp_path, monkeypatch) -> None:
+    captured = []
+    output = tmp_path / "proposal"
+    args = _args(tmp_path)
+    args.descriptor_training_query_indices = tmp_path / "sequence-split.json"
+    args.expected_descriptor_training_query_indices_sha256 = "s" * 64
+
+    def fake_run(command, *, root):
+        captured.extend(command)
+        output.mkdir()
+        (output / "proposal.json").write_text("{}\n")
+
+    monkeypatch.setattr(runner, "_run", fake_run)
+    runner._propose(
+        args,
+        root=tmp_path,
+        arm="selection",
+        map_path=tmp_path / "map.pt",
+        map_sha="m" * 64,
+        feedback_summary={
+            "feedback_path": str(tmp_path / "feedback.pt"),
+            "feedback_sha256": "f" * 64,
+        },
+        output=output,
+    )
+
+    def value(flag):
+        return captured[captured.index(flag) + 1]
+
+    assert value("--visibility-target") == "4"
+    assert value("--detectability-target") == "16"
+    assert value("--matching-target") == "16"
+    assert value("--pose-min-eigenvalue-target") == "0.0"
+    assert value("--mapping-training-query-indices") == str(
+        tmp_path / "sequence-split.json"
+    )
+    assert value("--expected-mapping-training-query-indices-sha256") == "s" * 64

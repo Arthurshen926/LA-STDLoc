@@ -49,6 +49,8 @@ def _evaluation_command(
             getattr(args, "required_detectable_rank", args.required_rank)
         ),
         "--loo-pose-neighbors", str(getattr(args, "loo_pose_neighbors", 1)),
+        "--loo-affected-anchor-policy",
+        str(getattr(args, "loo_affected_anchor_policy", "rebuild")),
         "--ransac-reprojection-px", str(args.ransac_reprojection_px),
         "--seed", str(args.seed),
     ]
@@ -65,6 +67,9 @@ def _proposal_command(
     feedback_sha: str,
     output: Path,
 ) -> list[str]:
+    matching_target = getattr(args, "matching_target", None)
+    if matching_target is None:
+        matching_target = args.required_rank
     command = [
         sys.executable,
         str(root / "scripts/propose_v6_round.py"),
@@ -79,8 +84,11 @@ def _proposal_command(
         "--device", args.device,
         "--descriptor-trust-region", str(args.descriptor_trust_region),
         "--maximum-anchors", str(args.maximum_anchor_count),
-        "--matching-target", str(args.matching_target),
+        "--visibility-target", str(args.required_visibility_rank),
+        "--detectability-target", str(args.required_detectable_rank),
+        "--matching-target", str(matching_target),
         "--pose-logdet-target", str(args.pose_logdet_target),
+        "--pose-min-eigenvalue-target", str(args.pose_min_eigenvalue_target),
     ]
     if arm == "reconstruction":
         command.extend(
@@ -88,6 +96,19 @@ def _proposal_command(
                 "--association-graph", str(args.association_graph),
                 "--expected-association-graph-sha256",
                 args.expected_association_graph_sha256,
+            ]
+        )
+    mapping_split = getattr(args, "mapping_training_query_indices", None)
+    mapping_split_sha = getattr(
+        args, "expected_mapping_training_query_indices_sha256", None
+    )
+    if arm in {"selection", "descriptor_selection"} and mapping_split is not None:
+        command.extend(
+            [
+                "--mapping-training-query-indices",
+                str(mapping_split),
+                "--expected-mapping-training-query-indices-sha256",
+                str(mapping_split_sha),
             ]
         )
     return command
@@ -162,6 +183,18 @@ def run(args: argparse.Namespace) -> dict:
     ).stdout.strip()
     if dirty:
         raise RuntimeError("V6 closed-loop runner requires a clean worktree")
+    if getattr(args, "loo_affected_anchor_policy", "rebuild") != "rebuild":
+        raise ValueError(
+            "formal V6 closed loop requires exact query-local Anchor rebuild"
+        )
+    mapping_split = getattr(args, "mapping_training_query_indices", None)
+    mapping_split_sha = getattr(
+        args, "expected_mapping_training_query_indices_sha256", None
+    )
+    if (mapping_split is None) != (mapping_split_sha is None):
+        raise ValueError("mapping training split path and SHA must be paired")
+    if mapping_split is not None and sha256_file(mapping_split) != mapping_split_sha:
+        raise ValueError("mapping training split SHA differs")
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=root, check=True,
         capture_output=True, text=True,
@@ -338,10 +371,22 @@ def main() -> None:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
+    parser.add_argument(
+        "--loo-affected-anchor-policy",
+        choices=("purge", "rebuild"),
+        default="rebuild",
+    )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--descriptor-trust-region", type=float, default=0.05)
-    parser.add_argument("--matching-target", type=int, default=4)
+    parser.add_argument("--mapping-training-query-indices", type=Path)
+    parser.add_argument("--expected-mapping-training-query-indices-sha256")
+    parser.add_argument(
+        "--matching-target",
+        type=int,
+        help="selection matching target (defaults to --required-rank)",
+    )
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
+    parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
     parser.add_argument("--maximum-anchor-count", type=int, required=True)
     parser.add_argument("--maximum-online-latency-ms", type=float, required=True)
     run(parser.parse_args())

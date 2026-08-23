@@ -75,12 +75,18 @@ def _args() -> Namespace:
         positive_radius_px=2.0,
         alpha_minimum=0.05,
         required_rank=4,
+        required_visibility_rank=4,
+        required_detectable_rank=16,
+        loo_affected_anchor_policy="rebuild",
         ransac_reprojection_px=4.0,
         seed=2026,
         descriptor_trust_region=0.05,
         maximum_anchor_count=100,
-        matching_target=4,
+        matching_target=None,
         pose_logdet_target=0.0,
+        pose_min_eigenvalue_target=0.0,
+        mapping_training_query_indices=None,
+        expected_mapping_training_query_indices_sha256=None,
         association_graph=Path("association.pt"),
         expected_association_graph_sha256="a" * 64,
     )
@@ -100,6 +106,7 @@ def test_closed_loop_runner_freezes_single_pass_evaluation_contract() -> None:
     assert "evaluate_v6_self_localization.py" in command[1]
     assert "--observation-cache" in command
     assert "--expected-observation-cache-sha256" in command
+    assert command[command.index("--loo-affected-anchor-policy") + 1] == "rebuild"
 
 
 def test_reconstruction_arm_is_bound_to_frozen_association() -> None:
@@ -119,3 +126,30 @@ def test_reconstruction_arm_is_bound_to_frozen_association() -> None:
         "--expected-association-graph-sha256",
         "a" * 64,
     ]
+
+
+def test_formal_runner_uses_independent_evaluation_targets_for_selection() -> None:
+    args = _args()
+    args.required_rank = 16
+    args.mapping_training_query_indices = Path("sequence-split.json")
+    args.expected_mapping_training_query_indices_sha256 = "s" * 64
+    command = _proposal_command(
+        args,
+        root=Path("/repo"),
+        arm="selection",
+        map_path=Path("map.pt"),
+        map_sha="m" * 64,
+        feedback_path=Path("feedback.pt"),
+        feedback_sha="f" * 64,
+        output=Path("round/proposal"),
+    )
+
+    def value(flag: str) -> str:
+        return command[command.index(flag) + 1]
+
+    assert value("--visibility-target") == "4"
+    assert value("--detectability-target") == "16"
+    assert value("--matching-target") == "16"
+    assert value("--pose-min-eigenvalue-target") == "0.0"
+    assert value("--mapping-training-query-indices") == "sequence-split.json"
+    assert value("--expected-mapping-training-query-indices-sha256") == "s" * 64

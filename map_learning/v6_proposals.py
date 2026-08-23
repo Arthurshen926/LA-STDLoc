@@ -116,8 +116,11 @@ def descriptor_loss_proposal(
     if len(feedback_policies) != 1:
         raise ValueError("descriptor feedback mixes affected-Anchor LOO policies")
     loo_policy = next(iter(feedback_policies))
-    if loo_policy not in {"rebuild", "purge"}:
-        raise ValueError("descriptor feedback has an invalid affected-Anchor policy")
+    if loo_policy != "rebuild":
+        raise ValueError(
+            "descriptor training requires exact query-local Anchor rebuild; "
+            "purge feedback is diagnostic-only"
+        )
     loo_replay = LeaveOneQueryOutProjectiveMap(
         state,
         observations,
@@ -281,6 +284,7 @@ def descriptor_loss_proposal(
         current_margin = (descriptors * positive_current).sum(1) - (
             descriptors * negative_current
         ).sum(1)
+        clean = current_margin >= float(margin)
         error_rows = torch.nonzero(clean == 0, as_tuple=False).reshape(-1)
         clean_rows = torch.nonzero(clean != 0, as_tuple=False).reshape(-1)
         error_rows = error_rows[torch.argsort(current_margin[error_rows], stable=True)][
@@ -556,6 +560,7 @@ def descriptor_loss_proposal(
         "trust_region": float(trust_region),
         "clean_fraction": float(clean_fraction),
         "clean_weight": float(clean_weight),
+        "clean_labels_recomputed_from_query_local_current_margin": True,
         "trust_weight": float(trust_weight),
         "learning_rate": float(learning_rate),
         "effective_coordinate_learning_rate": effective_coordinate_learning_rate,

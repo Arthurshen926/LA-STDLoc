@@ -190,7 +190,9 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
         "query_names": ["q"],
         "records": [
             {
-                "descriptor_triplets": torch.tensor([[0, 0, 1, 0]]),
+                # The cached label is intentionally wrong.  Proposal training
+                # must classify this from the current query-local margin.
+                "descriptor_triplets": torch.tensor([[0, 0, 1, 1]]),
                 "affected_anchor_policy": "rebuild",
             }
         ],
@@ -227,6 +229,13 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     assert report["final_objective"] >= report["final_ranking_loss"]
     assert report["final_objective"] <= report["initial_objective"] + 1e-8
     assert report["effective_coordinate_learning_rate"] == pytest.approx(0.1 / 2**0.5)
+    assert report["error_triplet_count"] == 1
+    assert report["clean_triplet_count"] == 0
+    assert report["clean_labels_recomputed_from_query_local_current_margin"] is True
+
+    feedback["records"][0]["affected_anchor_policy"] = "purge"
+    with pytest.raises(ValueError, match="purge feedback is diagnostic-only"):
+        descriptor_loss_proposal(state, provider, feedback, device="cpu")
 
 
 def test_descriptor_loss_scores_sparse_query_local_loo_bases() -> None:
@@ -395,6 +404,8 @@ def test_descriptor_training_dependencies_accumulate_across_rounds() -> None:
     )
     feedback = {
         "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["q0", "q1"],
@@ -457,6 +468,8 @@ def test_proposal_inputs_fail_closed_on_cache_mismatch() -> None:
     }
     feedback = {
         "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "input_sha256": {"map": "m", "query_cache": "wrong"},
@@ -482,6 +495,8 @@ def test_proposal_inputs_reject_compact_map_and_registry_mismatch() -> None:
     }
     feedback = {
         "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "query_names": ["other"],

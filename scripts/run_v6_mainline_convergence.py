@@ -155,18 +155,21 @@ def _propose(
         "--descriptor-clean-weight", str(args.descriptor_clean_weight),
         "--descriptor-trust-weight", str(args.descriptor_trust_weight),
         "--maximum-anchors", str(args.selection_maximum_anchors),
+        "--visibility-target", str(args.required_visibility_rank),
+        "--detectability-target", str(args.required_detectable_rank),
         "--matching-target", str(args.required_rank),
         "--pose-logdet-target", str(args.pose_logdet_target),
+        "--pose-min-eigenvalue-target", str(args.pose_min_eigenvalue_target),
     ]
     if (
-        arm in {"descriptor_loss", "descriptor_selection"}
+        arm in {"descriptor_loss", "descriptor_selection", "selection"}
         and args.descriptor_training_query_indices is not None
     ):
         command.extend(
             [
-                "--descriptor-training-query-indices",
+                "--mapping-training-query-indices",
                 str(args.descriptor_training_query_indices),
-                "--expected-descriptor-training-query-indices-sha256",
+                "--expected-mapping-training-query-indices-sha256",
                 args.expected_descriptor_training_query_indices_sha256,
             ]
         )
@@ -212,6 +215,11 @@ def run(args: argparse.Namespace) -> dict:
         raise FileExistsError(args.output_dir)
     if int(args.descriptor_rounds) < 1:
         raise ValueError("at least one descriptor round is required")
+    if args.loo_affected_anchor_policy != "rebuild":
+        raise ValueError(
+            "V6 mainline requires exact query-local Anchor rebuild; "
+            "purge is evaluator-only diagnostic mode"
+        )
     if (args.descriptor_training_query_indices is None) != (
         args.expected_descriptor_training_query_indices_sha256 is None
     ):
@@ -463,6 +471,16 @@ def run(args: argparse.Namespace) -> dict:
                     ),
                 }
             ),
+            "mapping_training_split": (
+                None
+                if args.descriptor_training_query_indices is None
+                else {
+                    "path": str(args.descriptor_training_query_indices.resolve()),
+                    "sha256": (
+                        args.expected_descriptor_training_query_indices_sha256
+                    ),
+                }
+            ),
         },
         "configuration": {
             "device": args.device,
@@ -491,6 +509,9 @@ def run(args: argparse.Namespace) -> dict:
             "run_selection": bool(args.run_selection),
             "selection_maximum_anchors": int(args.selection_maximum_anchors),
             "pose_logdet_target": float(args.pose_logdet_target),
+            "pose_min_eigenvalue_target": float(
+                args.pose_min_eigenvalue_target
+            ),
         },
         "stages": stages,
         "baseline_map": str(baseline_map_path),
@@ -547,7 +568,7 @@ def main() -> None:
     parser.add_argument(
         "--loo-affected-anchor-policy",
         choices=("purge", "rebuild"),
-        default="purge",
+        default="rebuild",
     )
     parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
     parser.add_argument("--descriptor-rounds", type=int, default=1)
@@ -567,6 +588,7 @@ def main() -> None:
     parser.add_argument("--run-selection", action="store_true")
     parser.add_argument("--selection-maximum-anchors", type=int, default=20000)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
+    parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
     run(parser.parse_args())
 
 

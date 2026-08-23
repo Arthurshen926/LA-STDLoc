@@ -257,7 +257,7 @@ def run(args: argparse.Namespace) -> dict:
             feedback,
             trust_region=args.descriptor_trust_region,
         )
-    elif arm in {"descriptor_loss", "descriptor_selection"}:
+    elif arm in {"descriptor_loss", "descriptor_selection", "selection"}:
         (
             descriptor_training_queries,
             descriptor_training_split_sha,
@@ -266,8 +266,13 @@ def run(args: argparse.Namespace) -> dict:
             args.expected_descriptor_training_query_indices_sha256,
             feedback_sha256=feedback_sha,
             query_names=list(feedback["query_names"]),
-            require_source_feedback_match=not isinstance(
-                state.get("v6_descriptor_distillation"), dict
+            require_source_feedback_match=not any(
+                isinstance(state.get(field), dict)
+                for field in (
+                    "v6_descriptor_distillation",
+                    "v6_reconstruction_distillation",
+                    "v6_selection_distillation",
+                )
             ),
         )
     selection_report = None
@@ -304,8 +309,12 @@ def run(args: argparse.Namespace) -> dict:
                 proposal,
                 feedback,
                 maximum_anchors=args.maximum_anchors,
+                visibility_target=args.visibility_target,
+                detectability_target=args.detectability_target,
                 matching_target=args.matching_target,
                 pose_logdet_target=args.pose_logdet_target,
+                pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
+                training_query_indices=descriptor_training_queries,
             )
         if proposal is not None and descriptor_training_split_sha is not None:
             report = dict(proposal["v6_descriptor_distillation"])
@@ -321,8 +330,12 @@ def run(args: argparse.Namespace) -> dict:
             state,
             feedback,
             maximum_anchors=args.maximum_anchors,
+            visibility_target=args.visibility_target,
+            detectability_target=args.detectability_target,
             matching_target=args.matching_target,
             pose_logdet_target=args.pose_logdet_target,
+            pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
+            training_query_indices=descriptor_training_queries,
         )
     elif arm == "reconstruction":
         if (
@@ -415,6 +428,17 @@ def run(args: argparse.Namespace) -> dict:
             )
     else:
         raise ValueError(f"unknown proposal arm {arm}")
+    if (
+        proposal is not None
+        and selection_report is not None
+        and descriptor_training_split_sha is not None
+    ):
+        report = dict(proposal["v6_selection_distillation"])
+        prior_split_shas = list(report.get("training_split_artifact_sha256s", ()))
+        if descriptor_training_split_sha not in prior_split_shas:
+            prior_split_shas.append(descriptor_training_split_sha)
+        report["training_split_artifact_sha256s"] = prior_split_shas
+        proposal["v6_selection_distillation"] = report
     proposal_configuration = {
         "device": args.device,
         "descriptor_trust_region": float(args.descriptor_trust_region),
@@ -430,8 +454,11 @@ def run(args: argparse.Namespace) -> dict:
         "descriptor_clean_weight": float(args.descriptor_clean_weight),
         "descriptor_trust_weight": float(args.descriptor_trust_weight),
         "maximum_anchors": int(args.maximum_anchors),
+        "visibility_target": int(args.visibility_target),
+        "detectability_target": int(args.detectability_target),
         "matching_target": int(args.matching_target),
         "pose_logdet_target": float(args.pose_logdet_target),
+        "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
         "completion_voxel_size_m": float(args.completion_voxel_size_m),
         "alpha_minimum": float(args.alpha_minimum),
         "completion_minimum_similarity": float(
@@ -468,6 +495,9 @@ def run(args: argparse.Namespace) -> dict:
                 "feedback": feedback_sha,
                 **(
                     {
+                        "mapping_training_query_indices": (
+                            descriptor_training_split_sha
+                        ),
                         "descriptor_training_query_indices": (
                             descriptor_training_split_sha
                         )
@@ -496,6 +526,7 @@ def run(args: argparse.Namespace) -> dict:
             "parent_map_sha256": map_sha,
             "observation_cache_sha256": cache_sha,
             "feedback_sha256": feedback_sha,
+            "mapping_training_split_sha256": descriptor_training_split_sha,
             "descriptor_training_split_sha256": descriptor_training_split_sha,
             "association_graph_sha256": association_sha,
         }
@@ -544,7 +575,10 @@ def run(args: argparse.Namespace) -> dict:
             "observation_cache": cache_sha,
             "feedback": feedback_sha,
             **(
-                {"descriptor_training_query_indices": descriptor_training_split_sha}
+                {
+                    "mapping_training_query_indices": descriptor_training_split_sha,
+                    "descriptor_training_query_indices": descriptor_training_split_sha,
+                }
                 if descriptor_training_split_sha is not None
                 else {}
             ),
@@ -614,11 +648,23 @@ def main() -> None:
     parser.add_argument("--descriptor-clean-fraction", type=float, default=0.25)
     parser.add_argument("--descriptor-clean-weight", type=float, default=0.25)
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
-    parser.add_argument("--descriptor-training-query-indices", type=Path)
-    parser.add_argument("--expected-descriptor-training-query-indices-sha256")
+    parser.add_argument(
+        "--mapping-training-query-indices",
+        "--descriptor-training-query-indices",
+        dest="descriptor_training_query_indices",
+        type=Path,
+    )
+    parser.add_argument(
+        "--expected-mapping-training-query-indices-sha256",
+        "--expected-descriptor-training-query-indices-sha256",
+        dest="expected_descriptor_training_query_indices_sha256",
+    )
     parser.add_argument("--maximum-anchors", type=int, default=20000)
-    parser.add_argument("--matching-target", type=int, default=4)
+    parser.add_argument("--visibility-target", type=int, default=4)
+    parser.add_argument("--detectability-target", type=int, default=16)
+    parser.add_argument("--matching-target", type=int, default=16)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
+    parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)
     parser.add_argument("--completion-voxel-size-m", type=float, default=0.05)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--completion-minimum-similarity", type=float, default=0.7)
