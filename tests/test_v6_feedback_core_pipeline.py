@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import pytest
 import torch
 
 from common.hashing import sha256_file
-from common.v6_contracts import DESCRIPTOR_SPLIT_SCHEMA, FEEDBACK_VERSION
+from common.v6_contracts import (
+    DESCRIPTOR_SPLIT_SCHEMA,
+    FEEDBACK_VERSION,
+    exact_identity_positive_contract,
+)
 from scripts import run_v6_feedback_core_pipeline as runner
 
 
 _FEEDBACK_BYTES = b"mock-v6-feedback-v4\n"
+_CALIBRATED_RANSAC_PX = 11.954343111400277
 
 
 def _write_torch(path: Path, value: dict) -> str:
@@ -33,12 +40,38 @@ def _write_feedback_summary(
     map_sha256: str,
     metric_sha256: str,
     cache_sha256: str,
+    contract_overrides: dict | None = None,
+    cpu_threads: int = 4,
 ) -> tuple[Path, str]:
     directory.mkdir(parents=True, exist_ok=True)
     feedback_path = directory / "feedback.pt"
     feedback_path.write_bytes(_FEEDBACK_BYTES)
     feedback_sha256 = sha256_file(feedback_path)
     summary_path = directory / "summary.json"
+    contract = {
+        "positive_radius_px": 2.0,
+        "positive_identity": exact_identity_positive_contract(),
+        "alpha_minimum": 0.05,
+        "required_matching_rank": 16,
+        "required_visibility_rank": 4,
+        "required_detectable_rank": 16,
+        "pose_logdet_target": 0.0,
+        "pose_min_eigenvalue_target": 0.0,
+        "loo_pose_neighbors": 3,
+        "pose_neighborhood_loo": True,
+        "affected_anchor_policy": "rebuild",
+        "affected_anchor_holdout_is_exact_rebuild": True,
+        "descriptor_identity_supervision_available": True,
+        "diagnostic_purge_suppresses_descriptor_triplets": False,
+        "ransac_reprojection_px": _CALIBRATED_RANSAC_PX,
+        "ransac_seed": 2026,
+        "evaluation_device": "cpu",
+        "global_top1": True,
+        "pose_solves_per_query": 1,
+        "retrieval": False,
+        "refinement": False,
+    }
+    contract.update(contract_overrides or {})
     _write_json(
         summary_path,
         {
@@ -48,11 +81,8 @@ def _write_feedback_summary(
             "uses_test_queries": False,
             "summary": {"anchor_count": 1},
             "failure_layer_counts": {"L1": 0, "L2": 0, "L3": 0, "L4": 0},
-            "contract": {
-                "affected_anchor_policy": "rebuild",
-                "affected_anchor_holdout_is_exact_rebuild": True,
-                "descriptor_identity_supervision_available": True,
-            },
+            "contract": contract,
+            "cpu_threads": cpu_threads,
             "feedback_path": str(feedback_path.resolve()),
             "feedback_sha256": feedback_sha256,
             "input_sha256": {
@@ -82,6 +112,21 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
     association_sha256 = _write_torch(association_path, {})
     materialization_path = tmp_path / "materialization.json"
     materialization_sha256 = _write_json(materialization_path, {})
+    calibration_path = tmp_path / "scene_calibration.json"
+    calibration_sha256 = _write_json(
+        calibration_path,
+        {
+            "schema": "lafgs_mapping_only_scene_calibration",
+            "version": 2,
+            "sources": {
+                "uses_source_mapping_rgb": False,
+                "uses_test_queries": False,
+            },
+            "parameters": {
+                "ransac_reprojection_px": _CALIBRATED_RANSAC_PX,
+            },
+        },
+    )
     template = tmp_path / "feedback-template.pt"
     template.write_bytes(_FEEDBACK_BYTES)
     feedback_sha256 = sha256_file(template)
@@ -120,6 +165,10 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
             str(materialization_path),
             "--expected-materialization-report-sha256",
             materialization_sha256,
+            "--scene-calibration",
+            str(calibration_path),
+            "--expected-scene-calibration-sha256",
+            calibration_sha256,
             "--mapping-training-query-indices",
             str(split_path),
             "--expected-mapping-training-query-indices-sha256",
@@ -140,6 +189,7 @@ def _arguments(tmp_path: Path) -> tuple[object, dict[str, str]]:
         "cache": cache_sha256,
         "association": association_sha256,
         "materialization": materialization_sha256,
+        "calibration": calibration_sha256,
         "split": split_sha256,
         "feedback": feedback_sha256,
     }
@@ -164,6 +214,38 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                 map_sha256=_flag(command, "--expected-map-sha256"),
                 metric_sha256=_flag(command, "--expected-metric-sha256"),
                 cache_sha256=_flag(command, "--expected-observation-cache-sha256"),
+                contract_overrides={
+                    "positive_radius_px": float(
+                        _flag(command, "--positive-radius-px")
+                    ),
+                    "alpha_minimum": float(_flag(command, "--alpha-minimum")),
+                    "required_matching_rank": int(_flag(command, "--required-rank")),
+                    "required_visibility_rank": int(
+                        _flag(command, "--required-visibility-rank")
+                    ),
+                    "required_detectable_rank": int(
+                        _flag(command, "--required-detectable-rank")
+                    ),
+                    "pose_logdet_target": float(
+                        _flag(command, "--pose-logdet-target")
+                    ),
+                    "pose_min_eigenvalue_target": float(
+                        _flag(command, "--pose-min-eigenvalue-target")
+                    ),
+                    "loo_pose_neighbors": int(
+                        _flag(command, "--loo-pose-neighbors")
+                    ),
+                    "pose_neighborhood_loo": int(
+                        _flag(command, "--loo-pose-neighbors")
+                    )
+                    > 1,
+                    "ransac_reprojection_px": float(
+                        _flag(command, "--ransac-reprojection-px")
+                    ),
+                    "ransac_seed": int(_flag(command, "--seed")),
+                    "evaluation_device": _flag(command, "--device"),
+                },
+                cpu_threads=int(_flag(command, "--cpu-threads")),
             )
             return
         if script == "propose_v6_round.py":
@@ -292,7 +374,14 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
     assert result["winner_selection_performed"] is False
     assert result["selected_winner"] is None
     assert result["baseline"]["reused_precomputed"] is False
+    assert result["inputs"]["scene_calibration"]["sha256"] == hashes["calibration"]
     assert result["inputs"]["mapping_training_split"]["sha256"] == hashes["split"]
+    assert result["configuration"]["ransac_reprojection_px"] == (
+        _CALIBRATED_RANSAC_PX
+    )
+    assert result["configuration"]["ransac_reprojection_source"] == (
+        "scene_calibration.parameters.ransac_reprojection_px"
+    )
     assert result["independent_arm_contract"] == {
         "all_arms_parent_map_sha256": hashes["map"],
         "all_arms_feedback_sha256": hashes["feedback"],
@@ -340,6 +429,11 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
         )
     for command in evaluation_calls:
         assert _flag(command, "--loo-affected-anchor-policy") == "rebuild"
+        assert float(_flag(command, "--ransac-reprojection-px")) == (
+            _CALIBRATED_RANSAC_PX
+        )
+        assert _flag(command, "--pose-logdet-target") == "0.0"
+        assert _flag(command, "--pose-min-eigenvalue-target") == "0.0"
     for command in evaluation_calls[1:]:
         assert Path(_flag(command, "--map")).name == "proposal_map.pt"
         assert Path(_flag(command, "--metric")).name == "identity_metric.pt"
@@ -374,6 +468,7 @@ def test_runner_uses_one_fresh_baseline_and_independent_compact_arms(
 
 def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypatch):
     args, hashes = _arguments(tmp_path)
+    args.ransac_reprojection_px = _CALIBRATED_RANSAC_PX
     summary_path, summary_sha = _write_feedback_summary(
         tmp_path / "precomputed",
         map_sha256=hashes["map"],
@@ -400,6 +495,108 @@ def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypat
         Path(_flag(command, "--map")).name == "proposal_map.pt"
         for command in evaluation_calls
     )
+
+
+def test_runner_rejects_ransac_override_that_differs_from_calibration(
+    tmp_path: Path,
+):
+    args, _ = _arguments(tmp_path)
+    args.ransac_reprojection_px = 4.0
+
+    with pytest.raises(
+        ValueError,
+        match="requested RANSAC threshold differs from scene calibration",
+    ):
+        runner.run(args, invocation_argv=["formal-v6-runner", "--bad-ransac"])
+
+
+def test_runner_rejects_non_mapping_scene_calibration(tmp_path: Path):
+    args, _ = _arguments(tmp_path)
+    args.scene_calibration.write_text(
+        json.dumps(
+            {
+                "schema": "not-a-mapping-calibration",
+                "sources": {"uses_test_queries": False},
+                "parameters": {
+                    "ransac_reprojection_px": _CALIBRATED_RANSAC_PX,
+                },
+            }
+        )
+    )
+    args.expected_scene_calibration_sha256 = sha256_file(args.scene_calibration)
+
+    with pytest.raises(ValueError, match="not a mapping-only contract"):
+        runner.run(args, invocation_argv=["formal-v6-runner", "--bad-calibration"])
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("positive_radius_px", 3.0),
+        ("alpha_minimum", 0.1),
+        ("required_matching_rank", 15),
+        ("required_visibility_rank", 5),
+        ("required_detectable_rank", 15),
+        ("pose_logdet_target", 1.0),
+        ("pose_min_eigenvalue_target", 1.0),
+        ("loo_pose_neighbors", 2),
+        ("affected_anchor_policy", "purge"),
+        ("ransac_reprojection_px", 4.0),
+        ("ransac_seed", 2027),
+        ("evaluation_device", "cuda"),
+        ("global_top1", False),
+        ("pose_solves_per_query", 2),
+        ("retrieval", True),
+        ("refinement", True),
+    ],
+)
+def test_precomputed_feedback_protocol_must_match_current_runner(
+    tmp_path: Path,
+    field: str,
+    bad_value: object,
+):
+    args, hashes = _arguments(tmp_path)
+    args.ransac_reprojection_px = _CALIBRATED_RANSAC_PX
+    summary_path, summary_sha = _write_feedback_summary(
+        tmp_path / f"precomputed-{field}",
+        map_sha256=hashes["map"],
+        metric_sha256=hashes["metric"],
+        cache_sha256=hashes["cache"],
+        contract_overrides={field: bad_value},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=f"feedback summary contract differs at {field}",
+    ):
+        runner._validate_feedback_summary(
+            summary_path,
+            args=args,
+            expected_summary_sha256=summary_sha,
+            map_sha256=hashes["map"],
+            metric_sha256=hashes["metric"],
+            cache_sha256=hashes["cache"],
+        )
+
+
+def test_child_processes_receive_repository_pythonpath(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(command, *, cwd, check, env):
+        captured.update(command=command, cwd=cwd, check=check, env=env)
+
+    monkeypatch.setenv("PYTHONPATH", "/external/pythonpath")
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    root = Path("/repo").resolve()
+    runner._run_command(["python", "child.py"], root=root)
+
+    assert captured["cwd"] == root
+    assert captured["check"] is True
+    assert captured["env"]["PYTHONPATH"].split(os.pathsep) == [
+        str(root),
+        "/external/pythonpath",
+    ]
 
 
 def test_runner_can_execute_one_predeclared_independent_arm(

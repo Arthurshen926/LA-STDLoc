@@ -14,6 +14,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 import gc
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -25,6 +26,7 @@ from common.hashing import sha256_file
 from common.v6_contracts import (
     DESCRIPTOR_SPLIT_SCHEMA,
     FEEDBACK_VERSION,
+    require_exact_identity_positive_contract,
     require_mapping_only,
     require_schema,
 )
@@ -34,6 +36,7 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 
 RUN_SCHEMA = "lafgs_v6_feedback_core_independent_arms_run"
 RUN_VERSION = 1
+SCENE_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
 ARM_CHOICES = ("descriptor_loss", "selection", "reconstruction")
 _SOURCE_PATHS = (
     "scripts/run_v6_feedback_core_pipeline.py",
@@ -94,6 +97,50 @@ def _load_json(path: Path, expected: str, *, label: str) -> tuple[dict, dict]:
     return value, artifact
 
 
+def _load_scene_calibration(
+    path: Path,
+    expected: str,
+    *,
+    requested_ransac_reprojection_px: float | None,
+) -> tuple[dict, dict, float]:
+    calibration, artifact = _load_json(
+        path,
+        expected,
+        label="mapping-only scene calibration",
+    )
+    sources = calibration.get("sources")
+    if not isinstance(sources, Mapping):
+        raise ValueError("scene calibration source registry is missing")
+    uses_test_queries = calibration.get(
+        "uses_test_queries", sources.get("uses_test_queries")
+    )
+    if (
+        calibration.get("schema") != SCENE_CALIBRATION_SCHEMA
+        or uses_test_queries is not False
+    ):
+        raise ValueError("scene calibration is not a mapping-only contract")
+    parameters = calibration.get("parameters")
+    if not isinstance(parameters, Mapping):
+        raise ValueError("scene calibration parameter registry is missing")
+    calibrated_value = parameters.get("ransac_reprojection_px")
+    if (
+        isinstance(calibrated_value, bool)
+        or not isinstance(calibrated_value, (int, float))
+        or not math.isfinite(float(calibrated_value))
+        or float(calibrated_value) <= 0.0
+    ):
+        raise ValueError("scene calibration has no valid RANSAC threshold")
+    resolved = float(calibrated_value)
+    if requested_ransac_reprojection_px is not None:
+        requested = float(requested_ransac_reprojection_px)
+        if not math.isfinite(requested) or requested != resolved:
+            raise ValueError(
+                "requested RANSAC threshold differs from scene calibration: "
+                f"{requested!r} != {resolved!r}"
+            )
+    return calibration, artifact, resolved
+
+
 def _producer(root: Path) -> dict:
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -122,7 +169,14 @@ def _producer(root: Path) -> dict:
 
 
 def _run_command(command: list[str], *, root: Path) -> None:
-    subprocess.run(command, cwd=root, check=True)
+    environment = os.environ.copy()
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(root)
+        if not existing_pythonpath
+        else os.pathsep.join((str(root), existing_pythonpath))
+    )
+    subprocess.run(command, cwd=root, check=True, env=environment)
 
 
 def _value(command: Sequence[str], flag: str) -> str:
@@ -145,6 +199,8 @@ def _evaluation_command(
     metric_sha256: str,
     output_dir: Path,
 ) -> list[str]:
+    if args.ransac_reprojection_px is None:
+        raise ValueError("RANSAC threshold was not resolved from scene calibration")
     return [
         sys.executable,
         str(root / "scripts/evaluate_v6_self_localization.py"),
@@ -176,6 +232,10 @@ def _evaluation_command(
         str(args.required_visibility_rank),
         "--required-detectable-rank",
         str(args.required_detectable_rank),
+        "--pose-logdet-target",
+        str(args.pose_logdet_target),
+        "--pose-min-eigenvalue-target",
+        str(args.pose_min_eigenvalue_target),
         "--loo-pose-neighbors",
         str(args.loo_pose_neighbors),
         "--loo-affected-anchor-policy",
@@ -328,6 +388,7 @@ def _paired_command(
 def _validate_feedback_summary(
     summary_path: Path,
     *,
+    args: argparse.Namespace,
     expected_summary_sha256: str | None,
     map_sha256: str,
     metric_sha256: str,
@@ -354,13 +415,73 @@ def _validate_feedback_summary(
     }
     if summary.get("input_sha256") != expected_inputs:
         raise ValueError("feedback summary input SHA registry differs")
-    contract = summary.get("contract", {})
+    contract = summary.get("contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError("feedback summary contract is missing")
+    if args.ransac_reprojection_px is None:
+        raise ValueError("RANSAC threshold was not resolved from scene calibration")
+    expected_contract = {
+        "positive_radius_px": float(args.positive_radius_px),
+        "alpha_minimum": float(args.alpha_minimum),
+        "required_matching_rank": int(args.required_rank),
+        "required_visibility_rank": int(args.required_visibility_rank),
+        "required_detectable_rank": int(args.required_detectable_rank),
+        "pose_logdet_target": float(args.pose_logdet_target),
+        "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
+        "loo_pose_neighbors": int(args.loo_pose_neighbors),
+        "pose_neighborhood_loo": int(args.loo_pose_neighbors) > 1,
+        "affected_anchor_policy": "rebuild",
+        "affected_anchor_holdout_is_exact_rebuild": True,
+        "descriptor_identity_supervision_available": True,
+        "diagnostic_purge_suppresses_descriptor_triplets": False,
+        "ransac_reprojection_px": float(args.ransac_reprojection_px),
+        "ransac_seed": int(args.seed),
+        "evaluation_device": str(args.device),
+        "global_top1": True,
+        "pose_solves_per_query": 1,
+        "retrieval": False,
+        "refinement": False,
+    }
+
+    def matches(actual: object, expected: object) -> bool:
+        if isinstance(expected, bool):
+            return actual is expected
+        if isinstance(expected, int):
+            return (
+                isinstance(actual, int)
+                and not isinstance(actual, bool)
+                and actual == expected
+            )
+        if isinstance(expected, float):
+            return (
+                isinstance(actual, (int, float))
+                and not isinstance(actual, bool)
+                and math.isfinite(float(actual))
+                and float(actual) == expected
+            )
+        return actual == expected
+
+    for field, expected in expected_contract.items():
+        actual = contract.get(field)
+        if not matches(actual, expected):
+            raise ValueError(
+                "feedback summary contract differs at "
+                f"{field}: {actual!r} != {expected!r}"
+            )
+    require_exact_identity_positive_contract(
+        contract.get("positive_identity"),
+        label="feedback summary positive identity contract",
+    )
+    cpu_threads = summary.get("cpu_threads")
     if (
-        contract.get("affected_anchor_policy") != "rebuild"
-        or contract.get("affected_anchor_holdout_is_exact_rebuild") is not True
-        or contract.get("descriptor_identity_supervision_available") is not True
+        not isinstance(cpu_threads, int)
+        or isinstance(cpu_threads, bool)
+        or cpu_threads != int(args.cpu_threads)
     ):
-        raise ValueError("formal baseline feedback requires exact identity rebuild")
+        raise ValueError(
+            "feedback summary CPU thread count differs: "
+            f"{cpu_threads!r} != {int(args.cpu_threads)!r}"
+        )
     feedback_path = Path(summary.get("feedback_path", "")).resolve()
     feedback_artifact = _artifact(
         feedback_path,
@@ -396,6 +517,7 @@ def _evaluate(
     _run_command(command, root=root)
     result = _validate_feedback_summary(
         output_dir / "summary.json",
+        args=args,
         expected_summary_sha256=None,
         map_sha256=map_artifact["sha256"],
         metric_sha256=metric_artifact["sha256"],
@@ -564,6 +686,8 @@ def _selected_arms(args: argparse.Namespace) -> list[str]:
 
 
 def _configuration(args: argparse.Namespace) -> dict:
+    if args.ransac_reprojection_px is None:
+        raise ValueError("RANSAC threshold was not resolved from scene calibration")
     return {
         "device": args.device,
         "cpu_threads": int(args.cpu_threads),
@@ -576,6 +700,9 @@ def _configuration(args: argparse.Namespace) -> dict:
         "loo_pose_neighbors": int(args.loo_pose_neighbors),
         "loo_affected_anchor_policy": "rebuild",
         "ransac_reprojection_px": float(args.ransac_reprojection_px),
+        "ransac_reprojection_source": (
+            "scene_calibration.parameters.ransac_reprojection_px"
+        ),
         "descriptor_trust_region": float(args.descriptor_trust_region),
         "descriptor_margin": float(args.descriptor_margin),
         "descriptor_temperature": float(args.descriptor_temperature),
@@ -631,6 +758,7 @@ def run(
         "observation_cache",
         "association_graph",
         "materialization_report",
+        "scene_calibration",
         "mapping_training_query_indices",
         "baseline_feedback_summary",
         "output_dir",
@@ -649,6 +777,15 @@ def run(
         args.expected_mapping_training_query_indices_sha256 is None
     ):
         raise ValueError("mapping training split path and SHA must be paired")
+
+    calibration, calibration_artifact, calibrated_ransac_reprojection_px = (
+        _load_scene_calibration(
+            args.scene_calibration,
+            args.expected_scene_calibration_sha256,
+            requested_ransac_reprojection_px=args.ransac_reprojection_px,
+        )
+    )
+    args.ransac_reprojection_px = calibrated_ransac_reprojection_px
 
     state, map_artifact = _load_torch(
         args.map, args.expected_map_sha256, label="baseline map"
@@ -690,7 +827,7 @@ def run(
     # the inputs.  Releasing the 25+ GB observation payload here keeps one
     # parent process per independent arm cheap enough to run D2/D3/S1/R1 in
     # parallel; each child still reloads and SHA-validates its own exact input.
-    del state, metric, cache, association, materialization
+    del state, metric, cache, association, materialization, calibration
     gc.collect()
     producer = _producer(root)
     args.output_dir.mkdir(parents=True)
@@ -707,6 +844,7 @@ def run(
     else:
         baseline = _validate_feedback_summary(
             args.baseline_feedback_summary,
+            args=args,
             expected_summary_sha256=(args.expected_baseline_feedback_summary_sha256),
             map_sha256=map_artifact["sha256"],
             metric_sha256=metric_artifact["sha256"],
@@ -824,6 +962,7 @@ def run(
             "observation_cache": cache_artifact,
             "association_graph": association_artifact,
             "materialization_report": materialization_artifact,
+            "scene_calibration": calibration_artifact,
             "mapping_training_split": split_artifact,
         },
         "configuration": _configuration(args),
@@ -858,6 +997,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-association-graph-sha256", required=True)
     parser.add_argument("--materialization-report", type=Path, required=True)
     parser.add_argument("--expected-materialization-report-sha256", required=True)
+    parser.add_argument("--scene-calibration", type=Path, required=True)
+    parser.add_argument("--expected-scene-calibration-sha256", required=True)
     parser.add_argument("--mapping-training-query-indices", type=Path)
     parser.add_argument("--expected-mapping-training-query-indices-sha256")
     parser.add_argument("--baseline-feedback-summary", type=Path)
@@ -872,7 +1013,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
-    parser.add_argument("--ransac-reprojection-px", type=float, default=4.0)
+    parser.add_argument(
+        "--ransac-reprojection-px",
+        type=float,
+        help=(
+            "Optional assertion that must exactly match the mapping-only scene "
+            "calibration; the calibration always supplies the formal threshold."
+        ),
+    )
     parser.add_argument("--descriptor-trust-region", type=float, default=0.05)
     parser.add_argument("--descriptor-margin", type=float, default=0.05)
     parser.add_argument("--descriptor-temperature", type=float, default=0.04)
