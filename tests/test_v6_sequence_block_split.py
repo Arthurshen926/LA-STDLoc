@@ -1,12 +1,19 @@
+from common.v6_contracts import (
+    FEEDBACK_SCHEMA,
+    FEEDBACK_VERSION,
+    exact_identity_positive_contract,
+)
 from scripts.make_v6_sequence_block_split import build_sequence_block_split
 
 
 def test_sequence_block_split_never_splits_a_sequence() -> None:
     names = ["seq1/a.png", "seq1/b.png", "seq2/a.png", "seq3/a.png"]
     feedback = {
-        "schema": "self_localization_feedback_v1",
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
+        "positive_identity_contract": exact_identity_positive_contract(),
         "query_names": names,
         "records": [
             {"failure_layers": ["L3"]},

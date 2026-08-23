@@ -47,6 +47,8 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
             "final_xyz_source": "fixed_camera_robust_ray_triangulation"
         },
         "projective_anchor_observations": {
+            "schema": "lafgs_projective_anchor_observations",
+            "version": 1,
             "observation_offsets": offsets,
             "query_indices": torch.arange(5).repeat(4),
             "keypoint_indices": torch.arange(4).repeat_interleave(5),
@@ -76,6 +78,22 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         for record in result["feedback"]["records"]
     )
     assert all(
-        record["pose_information_rank"] == 6
-        for record in result["feedback"]["records"]
+        record["pose_information_rank"] == 6 for record in result["feedback"]["records"]
     )
+    assert result["version"] == 3
+    assert result["feedback"]["version"] == 3
+    assert result["feedback"]["identity_positive_count"] == 20
+    assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
+    assert result["feedback"]["pose_information_anchor_unique"] is True
+    for record in result["feedback"]["records"]:
+        assert record["identity_positive_count"] == 4
+        assert torch.equal(
+            record["winner_identity_correct_mask"], torch.ones(4, dtype=torch.bool)
+        )
+        assert (
+            record["clean_inlier_pose_anchor_ids"].unique().numel()
+            == record["clean_inlier_pose_anchor_ids"].numel()
+        )
+        assert record["descriptor_triplet_pose_weights"].shape == (
+            record["descriptor_triplets"].shape[0],
+        )

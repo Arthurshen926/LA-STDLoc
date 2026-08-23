@@ -10,7 +10,10 @@ import torch
 import torch.nn.functional as F
 from scipy.spatial import cKDTree
 
-from common.v6_contracts import require_mapping_only
+from common.v6_contracts import (
+    exact_identity_positive_contract,
+    require_mapping_only,
+)
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
 from localization.matcher import global_cosine_topk
@@ -73,6 +76,182 @@ def _layer_edges(
                 torch.as_tensor(local_rows, dtype=torch.long)
             ].tolist()
     return result
+
+
+def _exact_identity_anchor_by_query(
+    state: dict,
+    observations: ObservationProvider,
+) -> list[torch.Tensor]:
+    """Resolve each mapping keypoint to its one certified Anchor identity.
+
+    The projective observation CSR is association lineage, unlike a reprojection
+    radius.  A query/keypoint occurring under multiple Anchors is therefore an
+    invalid identity artifact rather than a multi-positive training example.
+    """
+
+    names = list(state.get("v6_mapping_query_names", ()))
+    if names != list(observations.names):
+        raise ValueError("V6 map and identity query registries differ")
+    csr = state.get("projective_anchor_observations")
+    if not isinstance(csr, dict):
+        raise ValueError(
+            "exact identity positives require projective Anchor observations"
+        )
+    if (
+        csr.get("schema") != "lafgs_projective_anchor_observations"
+        or int(csr.get("version", -1)) != 1
+    ):
+        raise ValueError("unsupported exact identity observation schema")
+    required_fields = (
+        "observation_offsets",
+        "query_indices",
+        "keypoint_indices",
+    )
+    if any(field not in csr for field in required_fields):
+        raise ValueError("exact identity observation CSR fields are incomplete")
+    offsets = torch.as_tensor(csr.get("observation_offsets"))
+    query = torch.as_tensor(csr.get("query_indices"))
+    keypoint = torch.as_tensor(csr.get("keypoint_indices"))
+    anchor_count = int(torch.as_tensor(state["anchor_ids"]).numel())
+    if offsets.dtype != torch.long or offsets.shape != (anchor_count + 1,):
+        raise ValueError("exact identity observation offsets must be int64 [N+1]")
+    if (
+        query.dtype != torch.long
+        or keypoint.dtype != torch.long
+        or query.ndim != 1
+        or keypoint.shape != query.shape
+    ):
+        raise ValueError("exact identity observation columns must be aligned int64")
+    if (
+        int(offsets[0]) != 0
+        or bool((offsets[1:] <= offsets[:-1]).any())
+        or int(offsets[-1]) != int(query.numel())
+    ):
+        raise ValueError(
+            "every Anchor must have a non-empty exact identity observation row"
+        )
+    if query.numel() and (
+        int(query.min()) < 0 or int(query.max()) >= len(observations)
+    ):
+        raise ValueError("exact identity query index is out of range")
+
+    anchor = torch.repeat_interleave(
+        torch.arange(anchor_count, dtype=torch.long), offsets[1:] - offsets[:-1]
+    )
+    order = torch.argsort(query, stable=True)
+    counts = torch.bincount(query, minlength=len(observations))
+    query_offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+    result = []
+    for query_index in range(len(observations)):
+        view = observations.build_view(query_index)
+        row_count = int(view.descriptors.shape[0])
+        identity = torch.full((row_count,), -1, dtype=torch.long)
+        start = int(query_offsets[query_index])
+        stop = int(query_offsets[query_index + 1])
+        positions = order[start:stop]
+        rows = keypoint[positions]
+        if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= row_count):
+            raise ValueError(
+                f"exact identity keypoint index is invalid for {view.image_name}"
+            )
+        if rows.numel() != torch.unique(rows).numel():
+            raise ValueError(
+                f"query/keypoint identity is assigned to multiple Anchors: "
+                f"{view.image_name}"
+            )
+        identity[rows] = anchor[positions]
+        result.append(identity)
+    return result
+
+
+def _partition_identity_edges(
+    identity_anchor: torch.Tensor,
+    geometry_edges: list[list[int]],
+    active: torch.Tensor,
+) -> dict[str, list[list[int]]]:
+    """Partition candidates into exact positives, ignores, and negatives."""
+
+    if identity_anchor.shape != (len(geometry_edges),):
+        raise ValueError("identity and geometry query rows differ")
+    exact = [[] for _ in geometry_edges]
+    ambiguous = [[] for _ in geometry_edges]
+    incompatible = [[] for _ in geometry_edges]
+    inactive = [[] for _ in geometry_edges]
+    active_identity = [[] for _ in geometry_edges]
+    ignored = [[] for _ in geometry_edges]
+    lineage = [[] for _ in geometry_edges]
+    for row, geometry in enumerate(geometry_edges):
+        identity = int(identity_anchor[row])
+        geometry_set = set(int(anchor) for anchor in geometry)
+        if identity >= 0:
+            lineage[row] = [identity]
+            if not bool(active[identity]):
+                inactive[row] = [identity]
+            else:
+                active_identity[row] = [identity]
+                if identity in geometry_set:
+                    exact[row] = [identity]
+                else:
+                    incompatible[row] = [identity]
+        ambiguous[row] = sorted(anchor for anchor in geometry_set if anchor != identity)
+        ignored[row] = sorted(set(ambiguous[row] + incompatible[row]))
+    return {
+        "lineage": lineage,
+        "exact": exact,
+        "ambiguous": ambiguous,
+        "incompatible": incompatible,
+        "inactive": inactive,
+        "active_identity": active_identity,
+        "ignored": ignored,
+    }
+
+
+def _edge_pairs(edges: list[list[int]]) -> torch.Tensor:
+    return torch.tensor(
+        [(row, anchor) for row, anchors in enumerate(edges) for anchor in anchors],
+        dtype=torch.long,
+    ).reshape(-1, 2)
+
+
+def _anchor_unique_pose_rows(
+    query_rows: torch.Tensor,
+    anchor_ids: torch.Tensor,
+    *,
+    keypoints: torch.Tensor,
+    projected: torch.Tensor,
+    winner_scores: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Keep one independent pose constraint per Anchor.
+
+    The lowest known-pose reprojection residual wins.  Descriptor score and
+    query-row index deterministically break exact residual ties.
+    """
+
+    query_rows = torch.as_tensor(query_rows, dtype=torch.long).reshape(-1)
+    anchor_ids = torch.as_tensor(anchor_ids, dtype=torch.long).reshape(-1)
+    if query_rows.shape != anchor_ids.shape:
+        raise ValueError("pose query rows and Anchor IDs differ")
+    selected_rows = []
+    selected_residuals = []
+    for anchor in torch.unique(anchor_ids, sorted=True).tolist():
+        candidates = query_rows[anchor_ids == int(anchor)]
+        residual = torch.linalg.norm(
+            keypoints[candidates] - projected[int(anchor)], dim=1
+        )
+        minimum = residual.min()
+        tied = candidates[residual == minimum]
+        if tied.numel() > 1:
+            scores = winner_scores[tied]
+            tied = tied[scores == scores.max()]
+        chosen = int(tied.min())
+        selected_rows.append(chosen)
+        selected_residuals.append(
+            float(torch.linalg.norm(keypoints[chosen] - projected[int(anchor)]))
+        )
+    return (
+        torch.tensor(selected_rows, dtype=torch.long),
+        torch.tensor(selected_residuals, dtype=torch.float64),
+    )
 
 
 def _visible_spatial_rank(
@@ -141,6 +320,7 @@ def _positive_score_statistics(
     dense_scores: torch.Tensor,
     positives_by_row: list[list[int]],
     *,
+    ignored_by_row: list[list[int]] | None = None,
     chunk_size: int = 64,
 ) -> dict[int, tuple[float, float, int, int, int]]:
     """Return exact stable-rank statistics with one bank scan per query row.
@@ -154,12 +334,16 @@ def _positive_score_statistics(
 
     if dense_scores.ndim != 2 or len(positives_by_row) != dense_scores.shape[0]:
         raise ValueError("positive edges and dense score rows differ")
+    if ignored_by_row is None:
+        ignored_by_row = [[] for _ in positives_by_row]
+    if len(ignored_by_row) != len(positives_by_row):
+        raise ValueError("ignored edges and dense score rows differ")
     if int(chunk_size) < 1:
         raise ValueError("positive statistics chunk size must be positive")
     positive_query_rows = [
         row for row, positives in enumerate(positives_by_row) if positives
     ]
-    result: dict[int, tuple[float, float, int, int]] = {}
+    result: dict[int, tuple[float, float, int, int, int]] = {}
     anchor_count = int(dense_scores.shape[1])
     anchor_rows = torch.arange(anchor_count, device=dense_scores.device)
     for start in range(0, len(positive_query_rows), int(chunk_size)):
@@ -189,11 +373,15 @@ def _positive_score_statistics(
         gathered = dense_scores[rows[:, None], padded.clamp_min(0)]
         gathered = gathered.masked_fill(~valid, -torch.inf)
         best_positive = gathered.max(1).values
-        best_anchor = torch.where(
-            valid & (gathered == best_positive[:, None]),
-            padded,
-            anchor_count,
-        ).min(1).values
+        best_anchor = (
+            torch.where(
+                valid & (gathered == best_positive[:, None]),
+                padded,
+                anchor_count,
+            )
+            .min(1)
+            .values
+        )
         scores = dense_scores[rows]
         ranks = 1 + (
             (scores > best_positive[:, None])
@@ -206,8 +394,26 @@ def _positive_score_statistics(
         local_rows = torch.arange(len(rows_list), device=dense_scores.device)
         local_rows = local_rows[:, None].expand_as(padded)
         wrong[local_rows[valid], padded[valid]] = -torch.inf
+        ignored_lengths = torch.tensor(
+            [len(ignored_by_row[row]) for row in rows_list], dtype=torch.long
+        )
+        if int(ignored_lengths.sum()):
+            ignored_anchor = torch.tensor(
+                [anchor for row in rows_list for anchor in ignored_by_row[row]],
+                dtype=torch.long,
+                device=dense_scores.device,
+            )
+            ignored_local = torch.repeat_interleave(
+                torch.arange(len(rows_list), device=dense_scores.device),
+                ignored_lengths.to(dense_scores.device),
+            )
+            wrong[ignored_local, ignored_anchor] = -torch.inf
         best_wrong = wrong.max(1).values
-        best_wrong_anchor = torch.argmax(wrong, dim=1)
+        best_wrong_anchor = torch.where(
+            torch.isfinite(best_wrong),
+            torch.argmax(wrong, dim=1),
+            torch.full_like(torch.argmax(wrong, dim=1), -1),
+        )
         packed = torch.stack(
             [best_positive, best_wrong, ranks, best_anchor, best_wrong_anchor], dim=1
         ).cpu()
@@ -231,6 +437,11 @@ def _summary(rows: list[dict]) -> dict:
     inlier_count = sum(int(row["inliers"]) for row in rows)
     clean_inlier_count = sum(int(row["clean_inliers"]) for row in rows)
     positive_rows = sum(int(row["positive_rows"]) for row in rows)
+    identity_lineage_rows = sum(int(row["identity_lineage_rows"]) for row in rows)
+    ambiguous_rows = sum(int(row["geometry_ambiguous_rows"]) for row in rows)
+    exact_correct_rows = sum(
+        int(row["top1_exact_identity_correct_rows"]) for row in rows
+    )
     return {
         "query_count": len(rows),
         "median_te_cm": float(np.median(te)),
@@ -240,8 +451,32 @@ def _summary(rows: list[dict]) -> dict:
         "median_ae_deg": float(np.median(ae)),
         "recall_5cm_5deg_percent": float(np.mean((te < 5.0) & (ae < 5.0)) * 100.0),
         "catastrophic_100cm_count": int((te >= 100.0).sum()),
-        "raw_gt_precision_percent": 100.0 * correct_count / max(correspondence_count, 1),
-        "inlier_gt_precision_percent": 100.0 * clean_inlier_count / max(inlier_count, 1),
+        "raw_gt_precision_percent": 100.0
+        * correct_count
+        / max(correspondence_count, 1),
+        "raw_exact_identity_precision_percent": (
+            100.0 * exact_correct_rows / max(correspondence_count, 1)
+        ),
+        "exact_identity_lineage_rows": identity_lineage_rows,
+        "exact_identity_positive_rows": positive_rows,
+        "geometry_compatible_ambiguous_rows": ambiguous_rows,
+        "top1_exact_identity_correct_rows": exact_correct_rows,
+        "top1_geometry_compatible_ambiguous_rows": sum(
+            int(row["top1_geometry_ambiguous_rows"]) for row in rows
+        ),
+        "top1_identity_projective_incompatible_rows": sum(
+            int(row["top1_identity_incompatible_rows"]) for row in rows
+        ),
+        "top1_negative_rows": sum(int(row["top1_negative_rows"]) for row in rows),
+        "exact_identity_top1_recall_percent": (
+            100.0 * exact_correct_rows / max(positive_rows, 1)
+        ),
+        "pose_information_duplicate_rows_removed": sum(
+            int(row["pose_information_duplicate_rows_removed"]) for row in rows
+        ),
+        "inlier_gt_precision_percent": 100.0
+        * clean_inlier_count
+        / max(inlier_count, 1),
         "correct_anchor_recall_at_1_percent": 100.0
         * sum(int(row["correct_anchor_rank_le_1"]) for row in rows)
         / max(positive_rows, 1),
@@ -251,9 +486,7 @@ def _summary(rows: list[dict]) -> dict:
         "mean_poselib_iterations": float(
             np.mean([row["poselib_iterations"] for row in rows])
         ),
-        "online_latency_ms": float(
-            np.mean([row["online_latency_ms"] for row in rows])
-        ),
+        "online_latency_ms": float(np.mean([row["online_latency_ms"] for row in rows])),
         "oracle_feedback_localization_latency_ms": float(
             np.mean([row["online_latency_ms"] for row in rows])
         ),
@@ -329,9 +562,7 @@ def _descriptor_training_query_mask(state: dict, query_count: int) -> torch.Tens
     return _descriptor_training_query_masks(state, query_count)["gradient_reused"]
 
 
-def _reconstruction_target_query_mask(
-    state: dict, query_count: int
-) -> torch.Tensor:
+def _reconstruction_target_query_mask(state: dict, query_count: int) -> torch.Tensor:
     """Queries whose rendered depth selected a reconstruction seed region."""
 
     mask = torch.zeros(int(query_count), dtype=torch.bool)
@@ -351,9 +582,7 @@ def _reconstruction_target_query_mask(
     rows = torch.as_tensor(
         report.get("target_query_indices", ()), dtype=torch.long
     ).reshape(-1)
-    if rows.numel() and (
-        int(rows.min()) < 0 or int(rows.max()) >= int(query_count)
-    ):
+    if rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= int(query_count)):
         raise ValueError("reconstruction target query registry is invalid")
     mask[rows] = True
     return mask
@@ -409,21 +638,19 @@ def evaluate_query_local_feedback(
         observations,
         affected_anchor_policy=loo_affected_anchor_policy,
     )
+    identity_anchor_by_query = _exact_identity_anchor_by_query(state, observations)
+    positive_identity_contract = exact_identity_positive_contract()
     base_xyz = torch.as_tensor(state["anchor_xyz"]).float()
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
     feedback_records = []
-    descriptor_masks = _descriptor_training_query_masks(
-        state, len(observations)
-    )
+    descriptor_masks = _descriptor_training_query_masks(state, len(observations))
     descriptor_training_split = descriptor_masks["training_split"]
     descriptor_gradient_reused = descriptor_masks["gradient_reused"]
     reconstruction_target_reused = _reconstruction_target_query_mask(
         state, len(observations)
     )
-    selection_training_reused = _selection_training_query_mask(
-        state, len(observations)
-    )
+    selection_training_reused = _selection_training_query_mask(state, len(observations))
     pose_neighborhoods = _pose_neighborhoods(observations, loo_pose_neighbors)
     print(
         f"[v6-feedback] prepared {loo_affected_anchor_policy} "
@@ -441,9 +668,7 @@ def evaluate_query_local_feedback(
         view = observations.build_view(query_index)
         loo_started = time.perf_counter()
         excluded_queries = pose_neighborhoods[query_index]
-        update = replay.query_update(
-            query_index, excluded_queries=excluded_queries
-        )
+        update = replay.query_update(query_index, excluded_queries=excluded_queries)
         loo_latency_ms = (time.perf_counter() - loo_started) * 1000.0
         online_started = time.perf_counter()
         xyz = base_xyz
@@ -482,10 +707,16 @@ def evaluate_query_local_feedback(
             image_hw=(height, width),
         )
         keypoints = view.physical_keypoints.float()
-        positive_edges = _layer_edges(
+        geometry_edges = _layer_edges(
             keypoints, projected, visible_rows, float(positive_radius_px)
         )
-        detectable_rank, detectable_pairs = _maximum_matching(positive_edges)
+        identity_partition = _partition_identity_edges(
+            identity_anchor_by_query[query_index], geometry_edges, active
+        )
+        positive_edges = identity_partition["exact"]
+        ambiguous_edges = identity_partition["ambiguous"]
+        ignored_edges = identity_partition["ignored"]
+        detectable_rank, detectable_pairs = _maximum_matching(geometry_edges)
         query_descriptor = F.normalize(view.descriptors.float(), dim=1).to(device)
         active_rows = torch.nonzero(active, as_tuple=False).reshape(-1)
         if active_rows.numel() < 4:
@@ -501,8 +732,23 @@ def evaluate_query_local_feedback(
             [int(winner) in positive_edges[row] for row, winner in enumerate(winners)],
             dtype=torch.bool,
         )
+        ambiguous = torch.tensor(
+            [int(winner) in ambiguous_edges[row] for row, winner in enumerate(winners)],
+            dtype=torch.bool,
+        )
+        identity_incompatible = torch.tensor(
+            [
+                int(winner) in identity_partition["incompatible"][row]
+                for row, winner in enumerate(winners)
+            ],
+            dtype=torch.bool,
+        )
+        negative = ~(correct | ambiguous | identity_incompatible)
         matching_rank, matching_pairs = _maximum_matching(
-            [[int(winners[row])] if bool(correct[row]) else [] for row in range(len(winners))]
+            [
+                [int(winners[row])] if bool(correct[row]) else []
+                for row in range(len(winners))
+            ]
         )
         estimate = solve_absolute_pose(
             keypoints.numpy(),
@@ -524,9 +770,32 @@ def evaluate_query_local_feedback(
         center_gt = -(gt[:3, :3].T @ gt[:3, 3])
         te_cm = float(torch.linalg.norm(center_est - center_gt) * 100.0)
         online_latency_ms = (time.perf_counter() - online_started) * 1000.0
-        clean_rows = inliers[correct[inliers]] if inliers.numel() else torch.empty(0, dtype=torch.long)
+        clean_rows = (
+            inliers[correct[inliers]]
+            if inliers.numel()
+            else torch.empty(0, dtype=torch.long)
+        )
         clean_ids = winners[clean_rows]
-        harmful_ids = winners[inliers][~correct[inliers]] if inliers.numel() else torch.empty(0, dtype=torch.long)
+        harmful_rows = (
+            inliers[negative[inliers]]
+            if inliers.numel()
+            else torch.empty(0, dtype=torch.long)
+        )
+        harmful_ids = winners[harmful_rows]
+        ambiguous_inlier_rows = (
+            inliers[(ambiguous | identity_incompatible)[inliers]]
+            if inliers.numel()
+            else torch.empty(0, dtype=torch.long)
+        )
+        winner_scores = matches.scores[:, 0].cpu()
+        pose_clean_rows, pose_reprojection_errors = _anchor_unique_pose_rows(
+            clean_rows,
+            clean_ids,
+            keypoints=keypoints,
+            projected=projected,
+            winner_scores=winner_scores,
+        )
+        pose_clean_ids = winners[pose_clean_rows]
         dense_scores = query_descriptor @ bank.to(device).T
         dense_scores[:, ~active.to(device)] = -torch.inf
         best_positive = []
@@ -534,8 +803,9 @@ def evaluate_query_local_feedback(
         correct_anchor_ranks = []
         confusion_pairs = []
         descriptor_triplets = []
+        descriptor_triplet_harmful_inlier = []
         positive_statistics = _positive_score_statistics(
-            dense_scores, positive_edges
+            dense_scores, positive_edges, ignored_by_row=ignored_edges
         )
         for row, positives in enumerate(positive_edges):
             if positives:
@@ -549,14 +819,18 @@ def evaluate_query_local_feedback(
                 best_positive.append(positive_score)
                 best_wrong.append(wrong_score)
                 correct_anchor_ranks.append(rank)
-                if not bool(correct[row]):
+                if bool(negative[row]):
                     confusion_pairs.append((row, int(winners[row]), best))
-                descriptor_triplets.append(
-                    (row, best, best_wrong_anchor, int(bool(correct[row])))
-                )
-        if clean_ids.numel():
+                if best_wrong_anchor >= 0 and math.isfinite(wrong_score):
+                    descriptor_triplets.append(
+                        (row, best, best_wrong_anchor, int(bool(correct[row])))
+                    )
+                    descriptor_triplet_harmful_inlier.append(
+                        bool((harmful_rows == row).any())
+                    )
+        if pose_clean_ids.numel():
             clean_jacobian = pose_jacobian_analytic(
-                xyz[clean_ids].double(),
+                xyz[pose_clean_ids].double(),
                 view.intrinsics.double(),
                 view.pose_w2c.double(),
             )
@@ -577,6 +851,12 @@ def evaluate_query_local_feedback(
             clean_information = torch.empty((0, 6, 6), dtype=torch.float64)
             information_rank = 0
             information_logdet = float("-inf")
+        exact_identity_pairs = _edge_pairs(identity_partition["lineage"])
+        active_identity_pairs = _edge_pairs(identity_partition["active_identity"])
+        exact_identity_positive_pairs = _edge_pairs(positive_edges)
+        triplet_harmful_mask = torch.tensor(
+            descriptor_triplet_harmful_inlier, dtype=torch.bool
+        )
         feedback_records.append(
             {
                 "image_name": name,
@@ -590,31 +870,82 @@ def evaluate_query_local_feedback(
                 "best_wrong_score": max(best_wrong, default=-1.0),
                 "clean_inlier_anchor_ids": torch.unique(clean_ids),
                 "harmful_inlier_anchor_ids": torch.unique(harmful_ids),
+                "ambiguous_inlier_anchor_ids": torch.unique(
+                    winners[ambiguous_inlier_rows]
+                ),
                 "query_rows": torch.arange(keypoints.shape[0], dtype=torch.long),
                 "winner_anchor_ids": winners,
-                "winner_scores": matches.scores[:, 0].cpu(),
+                "winner_scores": winner_scores,
+                "winner_identity_correct_mask": correct,
+                "top1_exact_identity_correct_mask": correct,
+                "top1_geometry_compatible_ambiguous_mask": ambiguous,
+                "top1_identity_projective_incompatible_mask": (identity_incompatible),
+                "top1_negative_mask": negative,
                 "inlier_query_rows": inliers,
-                "inlier_clean_mask": correct[inliers] if inliers.numel() else torch.empty(0, dtype=torch.bool),
+                "inlier_clean_mask": correct[inliers]
+                if inliers.numel()
+                else torch.empty(0, dtype=torch.bool),
                 "visible_anchor_ids": visible_rows,
-                "detectable_pairs": torch.tensor(detectable_pairs, dtype=torch.long).reshape(-1, 2),
-                "matching_pairs": torch.tensor(matching_pairs, dtype=torch.long).reshape(-1, 2),
+                "exact_identity_pairs": exact_identity_pairs,
+                "exact_identity_lineage_pairs": exact_identity_pairs,
+                "active_identity_pairs": active_identity_pairs,
+                "exact_identity_positive_pairs": exact_identity_positive_pairs,
+                "identity_inactive_pairs": _edge_pairs(identity_partition["inactive"]),
+                "identity_projective_incompatible_pairs": _edge_pairs(
+                    identity_partition["incompatible"]
+                ),
+                "projective_compatible_ambiguous_pairs": _edge_pairs(ambiguous_edges),
+                "identity_positive_count": sum(
+                    int(bool(edges)) for edges in positive_edges
+                ),
+                "identity_active_count": sum(
+                    int(bool(edges)) for edges in identity_partition["active_identity"]
+                ),
+                "identity_lineage_count": sum(
+                    int(bool(edges)) for edges in identity_partition["lineage"]
+                ),
+                "identity_inactive_count": sum(
+                    int(bool(edges)) for edges in identity_partition["inactive"]
+                ),
+                "identity_projective_incompatible_count": sum(
+                    int(bool(edges)) for edges in identity_partition["incompatible"]
+                ),
+                "geometry_ambiguous_count": sum(
+                    len(edges) for edges in ambiguous_edges
+                ),
+                "detectable_pairs": torch.tensor(
+                    detectable_pairs, dtype=torch.long
+                ).reshape(-1, 2),
+                "matching_pairs": torch.tensor(
+                    matching_pairs, dtype=torch.long
+                ).reshape(-1, 2),
                 "confusion_pairs": torch.tensor(
                     confusion_pairs, dtype=torch.long
                 ).reshape(-1, 3),
                 "descriptor_triplets": torch.tensor(
                     descriptor_triplets, dtype=torch.long
                 ).reshape(-1, 4),
+                "descriptor_triplet_harmful_inlier_mask": triplet_harmful_mask,
+                "descriptor_triplet_pose_weights": triplet_harmful_mask.float(),
                 "excluded_query_indices": excluded_queries,
                 "dependency_group_ids": torch.unique(
                     torch.as_tensor(state["dependency_group_ids"])[winners]
                 ),
-                "clean_inlier_pose_anchor_ids": clean_ids,
+                "clean_inlier_pose_anchor_ids": pose_clean_ids,
+                "clean_inlier_pose_query_rows": pose_clean_rows,
+                "clean_inlier_pose_reprojection_errors_px": (pose_reprojection_errors),
+                "pose_information_duplicate_rows_removed": int(
+                    clean_rows.numel() - pose_clean_rows.numel()
+                ),
+                "pose_information_anchor_unique": True,
                 "clean_inlier_pose_information": clean_information,
                 "pose_information_rank": information_rank,
                 "pose_information_logdet": information_logdet,
                 "pose_information_contribution": information_logdet,
                 "pose_information_sufficient": information_rank >= 6,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
+                "te_cm": te_cm,
+                "ae_deg": ae_deg,
                 "query_descriptor_loo": not bool(
                     descriptor_gradient_reused[query_index]
                 ),
@@ -650,9 +981,7 @@ def evaluate_query_local_feedback(
                     and not selection_training_reused[query_index]
                 ),
                 "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
-                "affected_anchor_policy": update["contract"][
-                    "affected_anchor_policy"
-                ],
+                "affected_anchor_policy": update["contract"]["affected_anchor_policy"],
             }
         )
         query_rows.append(
@@ -665,6 +994,19 @@ def evaluate_query_local_feedback(
                 "clean_inliers": int(correct[inliers].sum()) if inliers.numel() else 0,
                 "correct_winners": int(correct.sum()),
                 "positive_rows": int(len(correct_anchor_ranks)),
+                "identity_lineage_rows": sum(
+                    int(bool(edges)) for edges in identity_partition["lineage"]
+                ),
+                "geometry_ambiguous_rows": sum(
+                    int(bool(edges)) for edges in ambiguous_edges
+                ),
+                "top1_exact_identity_correct_rows": int(correct.sum()),
+                "top1_geometry_ambiguous_rows": int(ambiguous.sum()),
+                "top1_identity_incompatible_rows": int(identity_incompatible.sum()),
+                "top1_negative_rows": int(negative.sum()),
+                "pose_information_duplicate_rows_removed": int(
+                    clean_rows.numel() - pose_clean_rows.numel()
+                ),
                 "correct_anchor_rank_le_1": int(
                     sum(rank <= 1 for rank in correct_anchor_ranks)
                 ),
@@ -715,6 +1057,7 @@ def evaluate_query_local_feedback(
         ),
         source_map_sha256=source_map_sha256,
         query_cache_sha256=query_cache_sha256,
+        positive_identity_contract=positive_identity_contract,
     )
     summary = _summary(query_rows)
     summary["anchor_count"] = int(base_xyz.shape[0])
@@ -733,9 +1076,7 @@ def evaluate_query_local_feedback(
     ]
     validation_summary = None if not validation_rows else _summary(validation_rows)
     independent_validation_rows = [
-        row
-        for row in query_rows
-        if bool(row["independent_mapping_validation_query"])
+        row for row in query_rows if bool(row["independent_mapping_validation_query"])
     ]
     independent_validation_summary = (
         None
@@ -749,14 +1090,10 @@ def evaluate_query_local_feedback(
         None if not gradient_reuse_rows else _summary(gradient_reuse_rows)
     )
     reconstruction_replay_rows = [
-        row
-        for row in query_rows
-        if bool(row["reconstruction_target_query_reused"])
+        row for row in query_rows if bool(row["reconstruction_target_query_reused"])
     ]
     reconstruction_replay_summary = (
-        None
-        if not reconstruction_replay_rows
-        else _summary(reconstruction_replay_rows)
+        None if not reconstruction_replay_rows else _summary(reconstruction_replay_rows)
     )
     selection_replay_rows = [
         row for row in query_rows if bool(row["selection_training_query_reused"])
@@ -767,7 +1104,7 @@ def evaluate_query_local_feedback(
     descriptor_query_loo = not bool(descriptor_gradient_reused.any())
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 2,
+        "version": 3,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": query_rows,
@@ -803,8 +1140,7 @@ def evaluate_query_local_feedback(
             "query_geometry_loo": not bool(reconstruction_target_reused.any()),
             "query_raw_geometry_observation_loo": True,
             "query_candidate_topology_loo": not bool(
-                reconstruction_target_reused.any()
-                or selection_training_reused.any()
+                reconstruction_target_reused.any() or selection_training_reused.any()
             ),
             "reconstruction_target_reuse_query_count": int(
                 reconstruction_target_reused.sum()
@@ -816,6 +1152,17 @@ def evaluate_query_local_feedback(
             "loo_pose_neighbors": int(loo_pose_neighbors),
             "affected_anchor_policy": loo_affected_anchor_policy,
             "positive_radius_px": float(positive_radius_px),
+            "positive_identity": positive_identity_contract,
+            "positive_radius_role": "projective_compatibility_and_ambiguity_ignore",
+            "descriptor_strong_positives_are_exact_identity_only": True,
+            "geometry_compatible_nonidentity_is_ignored": True,
+            "descriptor_triplet_pose_weight_semantics": (
+                "harmful_poselib_inlier_indicator_only_not_training_weight"
+            ),
+            "pose_information_anchor_unique": True,
+            "pose_information_unique_row_policy": (
+                "lowest_gt_reprojection_residual_then_highest_descriptor_score"
+            ),
             "alpha_minimum": float(alpha_minimum),
             "required_matching_rank": int(required_rank),
             "required_visibility_rank": int(required_visibility_rank),
