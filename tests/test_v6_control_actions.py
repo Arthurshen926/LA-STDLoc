@@ -35,13 +35,14 @@ def test_minimal_pose_correction_set_replays_discrete_solver_boundary() -> None:
         ground_truth_pose_w2c=torch.eye(4),
         reprojection_error_px=4.0,
         maximum_set_size=3,
-        beam_width=4,
+        beam_width=2,
         solver=_counting_solver,
     )
     assert result["correction_found"] is True
     assert result["selected_rows"].numel() == 2
     assert result["baseline"]["success"] is False
     assert result["best"]["success"] is True
+    assert result["evaluated_action_set_count"] < result["enumerated_action_set_count"]
 
 
 def test_minimum_norm_action_crosses_requested_cosine_boundary() -> None:

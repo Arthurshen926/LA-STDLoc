@@ -151,17 +151,45 @@ def minimal_pose_correction_set(
             "selected_positive_anchors": torch.empty(0, dtype=torch.long),
             "candidate_count": int(rows.numel()),
             "evaluated_action_set_count": len(evaluations),
+            "enumerated_action_set_count": len(evaluations),
         }
+    # Use mapping-pose reprojection gain only to order the finite action pool.
+    # It can never declare success: every shortlisted node is still accepted
+    # or rejected by the unchanged one-shot PoseLib plant above.
+    truth = torch.as_tensor(ground_truth_pose_w2c).float()
+    calibration = torch.as_tensor(intrinsics).float()
+    positive_xyz = xyz[positives]
+    winner_xyz = xyz[winners[rows]]
+
+    def project(points: torch.Tensor) -> torch.Tensor:
+        camera = points @ truth[:3, :3].T + truth[:3, 3]
+        homogeneous = camera @ calibration.T
+        return homogeneous[:, :2] / homogeneous[:, 2:].clamp_min(1e-8)
+
+    positive_error = torch.linalg.norm(project(positive_xyz) - keypoints[rows], dim=1)
+    winner_error = torch.linalg.norm(project(winner_xyz) - keypoints[rows], dim=1)
+    proxy_gain = (winner_error - positive_error).clamp(-100.0, 100.0)
+    proxy_gain = proxy_gain + 0.01 * priority
     beam = [()]
     successful = None
+    enumerated_action_set_count = 1
     for _depth in range(1, min(int(maximum_set_size), int(rows.numel())) + 1):
         expanded = set()
         for parent in beam:
             for action in range(rows.numel()):
                 if action not in parent:
                     expanded.add(tuple(sorted((*parent, action))))
+        enumerated_action_set_count += len(expanded)
+        actual_budget = max(4, int(beam_width) * 2)
+        shortlisted = sorted(
+            expanded,
+            key=lambda action_set: (
+                -float(proxy_gain[list(action_set)].sum()),
+                action_set,
+            ),
+        )[:actual_budget]
         ranked = []
-        for action_set in sorted(expanded):
+        for action_set in shortlisted:
             outcome = evaluate(action_set)
             if outcome["risk"] < best["risk"]:
                 best = outcome
@@ -196,6 +224,7 @@ def minimal_pose_correction_set(
         else torch.empty(0, dtype=torch.long),
         "candidate_count": int(rows.numel()),
         "evaluated_action_set_count": len(evaluations),
+        "enumerated_action_set_count": enumerated_action_set_count,
         "candidate_rows": rows,
         "candidate_positive_anchors": positives,
         "candidate_priority": priority,
@@ -412,6 +441,9 @@ def control_oriented_descriptor_proposal(
                 certified_candidate_count
             ),
             "evaluated_action_set_count": search["evaluated_action_set_count"],
+            "enumerated_action_set_count": search[
+                "enumerated_action_set_count"
+            ],
             "minimal_correction_set_size": int(search["selected_rows"].numel()),
             "pose_correction_found": bool(search["correction_found"]),
             "selected_query_rows": search["selected_rows"],
