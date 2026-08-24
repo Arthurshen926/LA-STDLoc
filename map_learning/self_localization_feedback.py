@@ -280,12 +280,16 @@ def build_self_localization_feedback(
         identity_active_count = int(source.get("identity_active_count", -1))
         identity_lineage_count = int(source.get("identity_lineage_count", -1))
         geometry_ambiguous_count = int(source.get("geometry_ambiguous_count", -1))
+        certified_pose_valid_count = int(
+            source.get("certified_pose_valid_alternative_count", -1)
+        )
         if (
             min(
                 identity_positive_count,
                 identity_active_count,
                 identity_lineage_count,
                 geometry_ambiguous_count,
+                certified_pose_valid_count,
             )
             < 0
         ):
@@ -299,10 +303,15 @@ def build_self_localization_feedback(
         exact_identity_positive_pairs = torch.as_tensor(
             source.get("exact_identity_positive_pairs", ()), dtype=torch.long
         ).reshape(-1, 2)
+        certified_pose_valid_pairs = torch.as_tensor(
+            source.get("certified_pose_valid_alternative_pairs", ()),
+            dtype=torch.long,
+        ).reshape(-1, 2)
         if (
             exact_identity_pairs.shape[0] != identity_lineage_count
             or active_identity_pairs.shape[0] != identity_active_count
             or exact_identity_positive_pairs.shape[0] != identity_positive_count
+            or certified_pose_valid_pairs.shape[0] != certified_pose_valid_count
         ):
             raise ValueError("feedback exact identity pairs and counts differ")
         pose_anchor_ids = torch.as_tensor(
@@ -425,6 +434,18 @@ def build_self_localization_feedback(
                     source.get("projective_compatible_ambiguous_pairs", ()),
                     dtype=torch.long,
                 ).reshape(-1, 2),
+                "certified_pose_valid_alternative_pairs": (
+                    certified_pose_valid_pairs
+                ),
+                "pose_valid_depth_supervision_available": bool(
+                    source.get("pose_valid_depth_supervision_available", False)
+                ),
+                "pose_valid_depth_absolute_tolerance_m": float(
+                    source.get("pose_valid_depth_absolute_tolerance_m", 0.25)
+                ),
+                "pose_valid_depth_relative_tolerance": float(
+                    source.get("pose_valid_depth_relative_tolerance", 0.05)
+                ),
                 "identity_positive_count": identity_positive_count,
                 "identity_active_count": identity_active_count,
                 "identity_lineage_count": identity_lineage_count,
@@ -436,6 +457,9 @@ def build_self_localization_feedback(
                     source.get("identity_projective_incompatible_count", 0)
                 ),
                 "geometry_ambiguous_count": geometry_ambiguous_count,
+                "certified_pose_valid_alternative_count": (
+                    certified_pose_valid_count
+                ),
                 "detectable_pairs": torch.as_tensor(
                     source.get("detectable_pairs", ()), dtype=torch.long
                 ).reshape(-1, 2),
@@ -596,6 +620,10 @@ def build_self_localization_feedback(
         ),
         "geometry_compatible_ambiguous_count": sum(
             record["geometry_ambiguous_count"] for record in normalized
+        ),
+        "certified_pose_valid_alternative_count": sum(
+            record["certified_pose_valid_alternative_count"]
+            for record in normalized
         ),
         "top1_exact_identity_correct_count": sum(
             int(record["top1_exact_identity_correct_mask"].sum())

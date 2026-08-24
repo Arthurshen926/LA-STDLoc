@@ -36,7 +36,7 @@ def test_association_repair_requires_repeated_training_evidence_and_no_view_conf
         records.append(
             {
                 "identity_inactive_pairs": torch.tensor([[3, 0]]),
-                "projective_compatible_ambiguous_pairs": torch.tensor([[3, 1], [3, 2]]),
+                "certified_pose_valid_alternative_pairs": torch.tensor([[3, 1], [3, 2]]),
             }
         )
     pairs, report = select_association_repair_pairs(
@@ -62,7 +62,7 @@ def test_association_repair_rejects_overlapping_camera_support():
     }
     record = {
         "identity_inactive_pairs": torch.tensor([[0, 0]]),
-        "projective_compatible_ambiguous_pairs": torch.tensor([[0, 1]]),
+        "certified_pose_valid_alternative_pairs": torch.tensor([[0, 1]]),
     }
     pairs, report = select_association_repair_pairs(
         state,

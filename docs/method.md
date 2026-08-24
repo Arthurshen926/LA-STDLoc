@@ -21,35 +21,37 @@ triangulator is called. Thus the formal construction order is:
 
 ```text
 Gaussian render -> alpha-before-NMS observations -> unified association
--> pure-ray Projective Anchor map -> query-local v5 feedback
--> independent D2/D3/S1/R1 proposals -> compact deployment export
+-> pure-ray Projective Anchor map -> fixed-plant v7 feedback
+-> bounded representation/structure/redundancy actions -> compact deployment export
 ```
 
-The baseline and every proposal receive fresh v5 feedback. For each ordered
-mapping query, the offline evaluator removes a pose neighborhood and exactly
-rebuilds every affected Anchor from the remaining observations. Strong
-descriptor positives require exact projective identity; a geometrically
-compatible non-identity is ignored rather than relabelled as a positive or a
-negative. The operation measured inside that replay is exactly the deployment
-operation: native SuperPoint, one global cosine Top-1 Anchor for every query
-row, and one standard PoseLib solve. The evaluator emits separate L1
+The baseline and every proposal receive fresh v7 feedback. The main observer
+is **F0 fixed-map feedback**: every ordered mapping query localizes against the
+same immutable geometry, descriptor bank, topology, and Anchor subset used by
+the deployment plant. **F1 descriptor-leave-self-out** holds geometry and
+topology fixed and removes only the current query's direct contribution to
+affected Anchor descriptors. Historical pose-neighborhood geometry rebuild is
+retained only as the **F2 stress test**; it is not the main control signal.
+Strong descriptor positives require exact projective identity. A non-identity
+2D neighbor remains diagnostic ambiguity unless aligned surface depth certifies
+it as a pose-valid alternative; missing depth fails closed. The operation
+measured by every observer remains native SuperPoint, one global cosine Top-1
+Anchor for every query row, and one standard PoseLib solve. The evaluator emits separate L1
 image-cell visibility, L2 detectability, L3 one-to-one matching, and L4
 task-scaled pose-information failures, together with clean, harmful, and
 confusion evidence.
 
-The preregistered panel contains four independent arms, all starting from the
-same immutable map and baseline feedback; candidates are never chained:
+The map controller has three bounded actuator families:
 
-- **D2** applies the common exact-identity descriptor loss (P1+P2) with
-  `pose_critical_weight=0` and `tail_query_weight=0`.
-- **D3** differs from D2 only by enabling the preregistered P3 weights,
-  `pose_critical_weight=2` and `tail_query_weight=1`.
-- **S1** changes only Anchor selection, using the layered visibility,
-  detectability, one-to-one matching, and pose-information objectives.
-- **R1** changes only L1-targeted projective reconstruction.
+- **Representation** changes bounded map-side Anchor descriptors using exact
+  identity and, only when available, certified pose-valid alternatives.
+- **Structure** changes observation association or pure-ray geometry using
+  certified multi-view evidence; 2D proximity alone cannot merge Anchors.
+- **Redundancy** removes Anchors only by reverse pruning after representation
+  and structure have converged.
 
-Each proposal is evaluated with fresh query-local feedback and paired against
-the same baseline. The formal runner records diagnostics and artifacts but
+Each proposal is evaluated with fresh F0 feedback, audited with F1, and paired
+against the same baseline. F2 is a low-frequency fragility audit. The formal runner records diagnostics and artifacts but
 does not apply an automatic hard gate, accept a candidate, choose a winner, or
 start another round. Acceptance and method selection are an explicit external
 manual review of the preregistered panel.
@@ -69,8 +71,8 @@ artifact attests that exact calibration to the map, observation cache, and
 ordered query registry. Baseline and candidate feedback must carry the same
 two calibration SHAs.
 
-Training checkpoints retain the dense evidence required for exact rebuild and
-audit. Compact export bakes the final per-Anchor descriptor and removes this
+Training checkpoints retain dense evidence required for F1/F2 audits. Compact
+export bakes the final per-Anchor descriptor and removes this
 training-only state. The only formal online protocol is therefore the compact
 Anchor map plus native SuperPoint, global Top-1, and one PoseLib call.
 Retrieval, stronger online features, a learned query adapter, group-aware

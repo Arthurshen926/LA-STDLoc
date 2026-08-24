@@ -22,11 +22,15 @@ authorize automatic acceptance or winner selection.
 
 ## Feedback contract
 
-- [ ] Use fresh v5 feedback for the baseline and every candidate.
-- [ ] Use query-local pose-neighborhood exclusion with exact affected-Anchor
-  rebuild. `purge` is diagnostic-only and is not descriptor supervision.
-- [ ] Treat exact projective identity as the only strong descriptor positive;
-  ignore geometry-compatible non-identities.
+- [ ] Use fresh v7 feedback for the baseline and every candidate.
+- [ ] Use F0 fixed-map feedback as the main deployment observer. Keep geometry,
+  descriptors, topology, and the Anchor subset fixed across all queries in a
+  round.
+- [ ] Use F1 fixed-geometry descriptor-leave-self-out only to audit direct
+  descriptor self-influence. Use full geometry LOO (F2) only as a stress test.
+- [ ] Treat exact projective identity as the only strong descriptor positive.
+  A non-identity alternative is pose-valid only after aligned surface-depth
+  certification; without depth it remains diagnostic ambiguity/ignore.
 - [ ] Keep L1 image-cell visibility, L2 detectability, L3 one-to-one matching,
   and L4 task-scaled pose information as separate recorded targets.
 - [ ] Use native SuperPoint, one global cosine Top-1 per query row, and exactly
@@ -62,10 +66,11 @@ feedback and no candidate is chained into another candidate.
 
 For every arm:
 
-- [ ] Produce a full training checkpoint for exact rebuild and fresh feedback.
+- [ ] Produce a full training checkpoint for F1/F2 audit and fresh feedback.
 - [ ] Produce a compact deployment map/metric with the same deployed Anchor
   IDs, coordinates, and baked descriptors but without dense training state.
-- [ ] Run fresh v5 feedback on the full checkpoint, not the compact export.
+- [ ] Run fresh v7 F0 feedback on the full checkpoint, not the compact export,
+  and use F1 as a robustness audit when representation changed.
 - [ ] Produce paired diagnostics against the common baseline and record all
   producer, input, output, and calibration SHAs.
 - [ ] Do not apply an automatic hard gate, mutate a winner pointer, or advance

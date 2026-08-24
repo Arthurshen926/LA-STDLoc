@@ -203,7 +203,7 @@ def _evaluation(
     )
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 5,
+        "version": 6,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": queries,

@@ -107,6 +107,11 @@ def test_feedback_serializes_required_counterfactual_fields() -> None:
                 "identity_active_count": 1,
                 "identity_lineage_count": 1,
                 "geometry_ambiguous_count": 0,
+                "certified_pose_valid_alternative_pairs": torch.empty(
+                    (0, 2), dtype=torch.long
+                ),
+                "certified_pose_valid_alternative_count": 0,
+                "pose_valid_depth_supervision_available": False,
                 "descriptor_triplets": torch.tensor([[0, 2, 3, 1]]),
                 "descriptor_triplet_harmful_inlier_mask": torch.tensor([False]),
                 "descriptor_triplet_pose_weights": torch.tensor([0.0]),

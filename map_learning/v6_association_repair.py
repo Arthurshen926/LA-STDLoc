@@ -60,7 +60,7 @@ def select_association_repair_pairs(
         record = records[query_index]
         ambiguous_by_row: dict[int, list[int]] = defaultdict(list)
         ambiguous = torch.as_tensor(
-            record.get("projective_compatible_ambiguous_pairs", ())
+            record.get("certified_pose_valid_alternative_pairs", ())
         ).long().reshape(-1, 2)
         inactive = torch.as_tensor(
             record.get("identity_inactive_pairs", ())

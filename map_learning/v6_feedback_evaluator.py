@@ -89,6 +89,44 @@ def _layer_edges(
     return result
 
 
+def _depth_certified_pose_valid_edges(
+    geometry_edges: list[list[int]],
+    *,
+    anchor_depth: torch.Tensor,
+    keypoint_depth: torch.Tensor | None,
+    absolute_tolerance_m: float = 0.25,
+    relative_tolerance: float = 0.05,
+) -> tuple[list[list[int]], bool]:
+    """Certify non-identity alternatives against a rendered surface depth.
+
+    A 2D reprojection neighborhood alone is never promoted to a pose-valid
+    positive.  When the observation cache has no aligned keypoint depth, the
+    certified set is intentionally empty and the broad edges remain diagnostic
+    ambiguity only.
+    """
+
+    certified = [[] for _ in geometry_edges]
+    if keypoint_depth is None:
+        return certified, False
+    reference = torch.as_tensor(keypoint_depth).float().reshape(-1)
+    if reference.numel() != len(geometry_edges):
+        raise ValueError("keypoint depth and geometry rows differ")
+    for row, anchors in enumerate(geometry_edges):
+        surface = float(reference[row])
+        if not math.isfinite(surface) or surface <= 0.0 or not anchors:
+            continue
+        candidates = torch.as_tensor(anchors, dtype=torch.long)
+        candidate_depth = anchor_depth[candidates].float()
+        tolerance = float(absolute_tolerance_m) + float(relative_tolerance) * surface
+        valid = (
+            torch.isfinite(candidate_depth)
+            & (candidate_depth > 0.0)
+            & ((candidate_depth - surface).abs() <= tolerance)
+        )
+        certified[row] = candidates[valid].tolist()
+    return certified, True
+
+
 def _exact_identity_anchor_by_query(
     state: dict,
     observations: ObservationProvider,
@@ -544,6 +582,10 @@ def _summary(rows: list[dict]) -> dict:
         "exact_identity_lineage_rows": identity_lineage_rows,
         "exact_identity_positive_rows": positive_rows,
         "geometry_compatible_ambiguous_rows": ambiguous_rows,
+        "certified_pose_valid_alternative_rows": sum(
+            int(row.get("certified_pose_valid_alternative_rows", 0))
+            for row in rows
+        ),
         "top1_exact_identity_correct_rows": exact_correct_rows,
         "top1_geometry_compatible_ambiguous_rows": sum(
             int(row["top1_geometry_ambiguous_rows"]) for row in rows
@@ -894,6 +936,19 @@ def evaluate_query_local_feedback(
         )
         positive_edges = identity_partition["exact"]
         ambiguous_edges = identity_partition["ambiguous"]
+        certified_edges, pose_valid_depth_available = (
+            _depth_certified_pose_valid_edges(
+                geometry_edges,
+                anchor_depth=depth,
+                keypoint_depth=view.keypoint_depth,
+            )
+        )
+        certified_alternatives = []
+        for row, anchors in enumerate(certified_edges):
+            identity = int(identity_anchor_by_query[query_index][row])
+            certified_alternatives.append(
+                sorted(int(anchor) for anchor in anchors if int(anchor) != identity)
+            )
         ignored_edges = identity_partition["ignored"]
         detectable_rank, detectable_pairs = _maximum_matching(geometry_edges)
         query_descriptor = F.normalize(view.descriptors.float(), dim=1).to(device)
@@ -1107,6 +1162,14 @@ def evaluate_query_local_feedback(
                     identity_partition["incompatible"]
                 ),
                 "projective_compatible_ambiguous_pairs": _edge_pairs(ambiguous_edges),
+                "certified_pose_valid_alternative_pairs": _edge_pairs(
+                    certified_alternatives
+                ),
+                "pose_valid_depth_supervision_available": bool(
+                    pose_valid_depth_available
+                ),
+                "pose_valid_depth_absolute_tolerance_m": 0.25,
+                "pose_valid_depth_relative_tolerance": 0.05,
                 "identity_positive_count": sum(
                     int(bool(edges)) for edges in positive_edges
                 ),
@@ -1124,6 +1187,9 @@ def evaluate_query_local_feedback(
                 ),
                 "geometry_ambiguous_count": sum(
                     len(edges) for edges in ambiguous_edges
+                ),
+                "certified_pose_valid_alternative_count": sum(
+                    len(edges) for edges in certified_alternatives
                 ),
                 "detectable_pairs": torch.tensor(
                     detectable_pairs, dtype=torch.long
@@ -1239,6 +1305,9 @@ def evaluate_query_local_feedback(
                 ),
                 "geometry_ambiguous_rows": sum(
                     int(bool(edges)) for edges in ambiguous_edges
+                ),
+                "certified_pose_valid_alternative_rows": sum(
+                    int(bool(edges)) for edges in certified_alternatives
                 ),
                 "top1_exact_identity_correct_rows": int(correct.sum()),
                 "top1_geometry_ambiguous_rows": int(ambiguous.sum()),
@@ -1360,7 +1429,7 @@ def evaluate_query_local_feedback(
     )
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 5,
+        "version": 6,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": query_rows,
@@ -1437,6 +1506,8 @@ def evaluate_query_local_feedback(
             "positive_radius_role": "projective_compatibility_and_ambiguity_ignore",
             "descriptor_strong_positives_are_exact_identity_only": True,
             "geometry_compatible_nonidentity_is_ignored": True,
+            "certified_pose_valid_alternatives_require_depth": True,
+            "uncertified_2d_neighbors_are_diagnostic_only": True,
             "descriptor_triplet_pose_weight_semantics": (
                 DESCRIPTOR_POSE_WEIGHT_SEMANTICS
             ),

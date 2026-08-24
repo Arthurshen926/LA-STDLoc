@@ -100,8 +100,8 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     value = torch.load(path.resolve(), map_location="cpu", weights_only=False)
     if not isinstance(value, dict):
         raise ValueError(f"{label} is not a dictionary")
-    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 5:
-        raise ValueError(f"{label} is not a V6 identity-safe evaluation v5")
+    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 6:
+        raise ValueError(f"{label} is not a V6 identity-safe evaluation v6")
     if value.get("uses_source_mapping_rgb") is not False or value.get("uses_test_queries") is not False:
         raise ValueError(f"{label} is not mapping-only/test-free")
     feedback = value.get("feedback")

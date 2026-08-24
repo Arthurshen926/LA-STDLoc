@@ -47,9 +47,9 @@ def _bounded_descriptor_bank(
 
 
 def geometry_consensus_descriptor_feedback(feedback: dict) -> tuple[dict, int]:
-    """Add pose-valid alternative correspondences without relabeling identity.
+    """Add certified pose-valid alternatives without relabeling identity.
 
-    Exact identities remain the only identity positives.  A geometry-compatible
+    Exact identities remain the only identity positives.  A depth-certified
     non-identity Anchor can nevertheless be a valid PnP correspondence, so for
     rows whose deployed winner is a true negative we add one deterministic
     alternative as weak set-formation supervision.
@@ -74,7 +74,7 @@ def geometry_consensus_descriptor_feedback(feedback: dict) -> tuple[dict, int]:
         }
         alternatives = defaultdict(list)
         ambiguous = torch.as_tensor(
-            record.get("projective_compatible_ambiguous_pairs", ())
+            record.get("certified_pose_valid_alternative_pairs", ())
         ).long().reshape(-1, 2)
         for row, anchor in ambiguous.tolist():
             alternatives[int(row)].append(int(anchor))
@@ -441,7 +441,7 @@ def descriptor_loss_proposal(
         incompatible_pairs = pair_registry(
             "identity_projective_incompatible_pairs"
         )
-        ambiguous_pairs = pair_registry("projective_compatible_ambiguous_pairs")
+        ambiguous_pairs = pair_registry("certified_pose_valid_alternative_pairs")
         if active_pairs != positive_pairs | incompatible_pairs:
             raise ValueError("descriptor feedback active identity partition differs")
         if lineage_pairs != active_pairs | inactive_pairs:
@@ -1078,7 +1078,7 @@ def descriptor_loss_proposal(
         "online_model_added": False,
         "query_encoder_changed": False,
         "descriptor_positive_mode": (
-            "exact_identity_or_geometry_compatible_pose_alternative"
+            "exact_identity_or_certified_pose_valid_alternative"
             if allow_geometry_compatible_positives
             else "exact_identity_only"
         ),
@@ -1349,9 +1349,9 @@ def selection_only_proposal(
             anchor_count=count,
             query_row_count=int(view.descriptors.shape[0]),
         )
-        ambiguous_geometry_pairs = _selection_pairs(
+        certified_pose_valid_pairs = _selection_pairs(
             record,
-            "projective_compatible_ambiguous_pairs",
+            "certified_pose_valid_alternative_pairs",
             anchor_count=count,
             query_row_count=int(view.descriptors.shape[0]),
         )
@@ -1361,7 +1361,7 @@ def selection_only_proposal(
             layers["matching"][anchor][local_query_index].add(row)
         candidate_ids = torch.unique(
             torch.cat(
-                (exact_geometry_pairs[:, 1], ambiguous_geometry_pairs[:, 1])
+                (exact_geometry_pairs[:, 1], certified_pose_valid_pairs[:, 1])
             ),
             sorted=True,
         )

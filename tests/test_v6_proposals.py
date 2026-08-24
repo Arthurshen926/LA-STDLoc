@@ -83,7 +83,7 @@ def test_geometry_consensus_adds_only_negative_winner_alternatives() -> None:
                 "query_rows": torch.tensor([3, 4]),
                 "winner_anchor_ids": torch.tensor([8, 9]),
                 "top1_negative_mask": torch.tensor([True, False]),
-                "projective_compatible_ambiguous_pairs": torch.tensor(
+                "certified_pose_valid_alternative_pairs": torch.tensor(
                     [[3, 7], [3, 6], [4, 5]]
                 ),
                 "descriptor_triplets": torch.empty((0, 4), dtype=torch.long),
@@ -1018,7 +1018,7 @@ def test_selection_uses_potential_pose_information_and_independent_layers(
                 "detectable_pairs": torch.tensor([[1, 1]]),
                 "matching_pairs": torch.tensor([[1, 1]]),
                 "exact_identity_positive_pairs": torch.tensor([[1, 1]]),
-                "projective_compatible_ambiguous_pairs": torch.empty(
+                "certified_pose_valid_alternative_pairs": torch.empty(
                     (0, 2), dtype=torch.long
                 ),
                 "clean_inlier_pose_anchor_ids": torch.tensor([1]),
@@ -1030,7 +1030,7 @@ def test_selection_uses_potential_pose_information_and_independent_layers(
                 "detectable_pairs": torch.tensor([[10, 0], [11, 1]]),
                 "matching_pairs": torch.tensor([[10, 0]]),
                 "exact_identity_positive_pairs": torch.tensor([[10, 0]]),
-                "projective_compatible_ambiguous_pairs": torch.tensor(
+                "certified_pose_valid_alternative_pairs": torch.tensor(
                     [[11, 1], [9, 2]]
                 ),
                 "clean_inlier_pose_anchor_ids": torch.tensor([0]),
@@ -1130,7 +1130,7 @@ def test_selection_deduplicates_potential_anchor_and_ignores_realized_pose_rows(
                 "detectable_pairs": torch.tensor([[0, 0], [1, 0]]),
                 "matching_pairs": torch.tensor([[0, 0]]),
                 "exact_identity_positive_pairs": torch.tensor([[0, 0], [1, 0]]),
-                "projective_compatible_ambiguous_pairs": torch.empty(
+                "certified_pose_valid_alternative_pairs": torch.empty(
                     (0, 2), dtype=torch.long
                 ),
                 "clean_inlier_pose_anchor_ids": torch.tensor([0, 0]),
@@ -1144,7 +1144,7 @@ def test_selection_deduplicates_potential_anchor_and_ignores_realized_pose_rows(
                 "detectable_pairs": torch.tensor([[0, 0]]),
                 "matching_pairs": torch.empty((0, 2), dtype=torch.long),
                 "exact_identity_positive_pairs": torch.tensor([[0, 0]]),
-                "projective_compatible_ambiguous_pairs": torch.empty(
+                "certified_pose_valid_alternative_pairs": torch.empty(
                     (0, 2), dtype=torch.long
                 ),
             },

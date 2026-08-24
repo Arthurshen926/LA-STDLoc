@@ -2,7 +2,28 @@ import torch
 
 from common.v6_contracts import FEEDBACK_VERSION
 from evidence.observation_provider import GaussianRenderObservationProvider
-from map_learning.v6_feedback_evaluator import evaluate_query_local_feedback
+from map_learning.v6_feedback_evaluator import (
+    _depth_certified_pose_valid_edges,
+    evaluate_query_local_feedback,
+)
+
+
+def test_pose_valid_alternatives_require_surface_depth() -> None:
+    edges = [[0, 1], [1]]
+    certified, available = _depth_certified_pose_valid_edges(
+        edges,
+        anchor_depth=torch.tensor([5.1, 8.0]),
+        keypoint_depth=torch.tensor([5.0, float("nan")]),
+    )
+    assert available is True
+    assert certified == [[0], []]
+    unavailable, available = _depth_certified_pose_valid_edges(
+        edges,
+        anchor_depth=torch.tensor([5.1, 8.0]),
+        keypoint_depth=None,
+    )
+    assert available is False
+    assert unavailable == [[], []]
 
 
 def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
@@ -84,7 +105,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert all(
         record["pose_information_rank"] == 6 for record in result["feedback"]["records"]
     )
-    assert result["version"] == 5
+    assert result["version"] == 6
     assert result["feedback"]["version"] == FEEDBACK_VERSION
     assert result["feedback"]["identity_positive_count"] == 20
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
@@ -143,6 +164,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert fixed["contract"]["deployment_plant_geometry_held_fixed"] is True
     assert fixed["contract"]["query_geometry_loo"] is False
     assert fixed["contract"]["query_descriptor_loo"] is False
+    assert fixed["summary"]["certified_pose_valid_alternative_rows"] == 0
     assert all(
         record["affected_anchor_policy"] == "fixed_map"
         and not record["query_geometry_loo"]
