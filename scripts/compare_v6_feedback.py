@@ -934,7 +934,7 @@ def _load_map_pair(
     if isinstance(report, dict) and "updated_anchor_rows" in report:
         valid_reports = {
             "lafgs_v6_counterfactual_descriptor_distillation": 2,
-            "lafgs_v6_counterfactual_descriptor_loss_distillation": 3,
+            "lafgs_v6_counterfactual_descriptor_loss_distillation": 4,
         }
         if valid_reports.get(report.get("schema")) != int(report.get("version", -1)):
             raise ValueError("candidate descriptor distillation contract differs")

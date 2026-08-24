@@ -276,7 +276,7 @@ def _write_map(
     if updated_rows is not None:
         state["v6_descriptor_distillation"] = {
             "schema": "lafgs_v6_counterfactual_descriptor_loss_distillation",
-            "version": 3,
+            "version": 4,
             "updated_anchor_rows": torch.tensor(updated_rows),
             "updated_anchor_count": len(updated_rows),
         }
