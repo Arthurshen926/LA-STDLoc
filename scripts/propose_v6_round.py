@@ -24,6 +24,7 @@ from common.v6_contracts import (
 )
 from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.projective_completion import build_projective_completion
+from map_learning.v6_association_repair import association_repair_proposal
 from map_learning.v6_proposals import (
     descriptor_loss_proposal,
     descriptor_only_proposal,
@@ -442,6 +443,16 @@ def run(args: argparse.Namespace) -> dict:
     reconstruction_scope = None
     unavailable_reason = None
     association_sha = None
+    reconstruction_strategy = getattr(args, "reconstruction_strategy", "completion")
+    repair_minimum_descriptor_similarity = float(
+        getattr(args, "repair_minimum_descriptor_similarity", 0.9)
+    )
+    repair_maximum_xyz_distance_m = float(
+        getattr(args, "repair_maximum_xyz_distance_m", 0.02)
+    )
+    repair_minimum_query_evidence = int(
+        getattr(args, "repair_minimum_query_evidence", 5)
+    )
     if arm == "descriptor":
         pass
     elif arm in {"descriptor_loss", "descriptor_selection"}:
@@ -517,101 +528,153 @@ def run(args: argparse.Namespace) -> dict:
             raise ValueError(
                 "reconstruction requires a SHA-bound mapping training split"
             )
-        if (
-            args.association_graph is None
-            or args.expected_association_graph_sha256 is None
-        ):
-            raise ValueError("reconstruction requires a SHA-bound association graph")
-        association, association_sha = _load(
-            args.association_graph,
-            args.expected_association_graph_sha256,
-            "association graph",
-        )
-        require_schema(
-            association, ASSOCIATION_GRAPH_SCHEMA, label="association graph"
-        )
         reconstruction_scope = _reconstruction_training_scope(
             feedback, descriptor_training_queries
         )
-        l1_queries = reconstruction_scope["target_query_indices"]
-        excluded_support_queries = reconstruction_scope[
-            "excluded_support_query_indices"
-        ]
-        if not l1_queries:
-            proposal = None
-            unavailable_reason = "no_training_split_l1_query"
-        else:
+        if reconstruction_strategy == "association_repair":
             try:
-                completion = build_projective_completion(
+                proposal, repair_report = association_repair_proposal(
+                    state,
                     observations,
-                    association,
-                    voxel_size_m=args.completion_voxel_size_m,
-                    alpha_minimum=args.alpha_minimum,
-                    minimum_similarity=args.completion_minimum_similarity,
-                    minimum_margin=args.minimum_margin,
-                    maximum_epipolar_error_px=args.maximum_epipolar_error_px,
-                    minimum_observations=args.minimum_views,
-                    minimum_camera_families=args.minimum_camera_families,
-                    maximum_rows_per_view=args.completion_maximum_rows_per_view,
-                    safety_maximum_components=(
-                        args.completion_safety_maximum_components
+                    feedback,
+                    training_query_indices=descriptor_training_queries,
+                    training_split_sha256=descriptor_training_split_sha,
+                    lineage={
+                        **dict(state.get("provenance", {})),
+                        "v6_parent_map_sha256": map_sha,
+                        "v6_reconstruction_feedback_sha256": feedback_sha,
+                        "v6_reconstruction_training_split_sha256": (
+                            descriptor_training_split_sha
+                        ),
+                        "v6_reconstruction_strategy": "association_repair",
+                    },
+                    minimum_descriptor_similarity=(
+                        repair_minimum_descriptor_similarity
                     ),
-                    eligible_query_indices=descriptor_training_queries,
-                    target_query_indices=l1_queries,
-                    excluded_support_query_indices=excluded_support_queries,
-                    device=args.device,
+                    maximum_xyz_distance_m=repair_maximum_xyz_distance_m,
+                    minimum_query_evidence=repair_minimum_query_evidence,
+                    minimum_views=args.minimum_views,
+                    minimum_view_bins=args.minimum_camera_families,
+                    maximum_reprojection_px=args.maximum_epipolar_error_px,
                 )
+                reconstruction_scope = {
+                    **reconstruction_scope,
+                    "strategy": "association_repair",
+                    "selected_pair_count": int(
+                        repair_report["selected_pair_count"]
+                    ),
+                    "successful_pair_count": int(
+                        repair_report["successful_pair_count"]
+                    ),
+                }
             except ValueError as error:
                 unavailable = {
-                    "no unused render-valid observations for completion": (
-                        "no_unused_render_valid_completion_observations"
-                    ),
-                    "target queries produced no completion seed region": (
-                        "no_target_completion_seed_region"
-                    ),
-                    "depth proposals produced no descriptor-consistent component": (
-                        "no_descriptor_consistent_projective_completion"
+                    "association repair selected no fragmented Track pair": (
+                        "no_training_evidenced_association_repair_pair"
                     ),
                     "association graph contains no ray-triangulated Anchor": (
-                        "no_ray_triangulated_completion_anchor"
+                        "no_ray_triangulated_association_repair_anchor"
                     ),
                 }
                 if str(error) not in unavailable:
                     raise
                 proposal = None
                 unavailable_reason = unavailable[str(error)]
-        if unavailable_reason is None:
-            merged = merge_projective_candidates(
-                [projective_candidates_from_map(state), completion]
+        else:
+            if (
+                args.association_graph is None
+                or args.expected_association_graph_sha256 is None
+            ):
+                raise ValueError(
+                    "completion reconstruction requires a SHA-bound association graph"
+                )
+            association, association_sha = _load(
+                args.association_graph,
+                args.expected_association_graph_sha256,
+                "association graph",
             )
-            proposal = materialize_projective_anchor_map(
-                merged,
-                lineage={
-                    **dict(state.get("provenance", {})),
-                    "v6_parent_map_sha256": map_sha,
-                    "v6_reconstruction_feedback_sha256": feedback_sha,
-                    "v6_reconstruction_training_split_sha256": (
-                        descriptor_training_split_sha
-                    ),
-                    "v6_reconstruction_training_query_count": len(
-                        descriptor_training_queries
-                    ),
-                    "v6_reconstruction_holdout_query_count": len(
-                        reconstruction_scope["validation_query_indices"]
-                    ),
-                    "v6_l1_query_count": len(l1_queries),
-                },
+            require_schema(
+                association, ASSOCIATION_GRAPH_SCHEMA, label="association graph"
             )
-            _attach_reconstruction_distillation(
-                proposal,
-                state,
-                completion,
-                target_query_indices=l1_queries,
-                excluded_support_query_indices=excluded_support_queries,
-                training_query_indices=descriptor_training_queries,
-                query_count=len(feedback["records"]),
-                training_split_sha256=descriptor_training_split_sha,
-            )
+            l1_queries = reconstruction_scope["target_query_indices"]
+            excluded_support_queries = reconstruction_scope[
+                "excluded_support_query_indices"
+            ]
+            if not l1_queries:
+                proposal = None
+                unavailable_reason = "no_training_split_l1_query"
+            else:
+                try:
+                    completion = build_projective_completion(
+                        observations,
+                        association,
+                        voxel_size_m=args.completion_voxel_size_m,
+                        alpha_minimum=args.alpha_minimum,
+                        minimum_similarity=args.completion_minimum_similarity,
+                        minimum_margin=args.minimum_margin,
+                        maximum_epipolar_error_px=args.maximum_epipolar_error_px,
+                        minimum_observations=args.minimum_views,
+                        minimum_camera_families=args.minimum_camera_families,
+                        maximum_rows_per_view=args.completion_maximum_rows_per_view,
+                        safety_maximum_components=(
+                            args.completion_safety_maximum_components
+                        ),
+                        eligible_query_indices=descriptor_training_queries,
+                        target_query_indices=l1_queries,
+                        excluded_support_query_indices=excluded_support_queries,
+                        device=args.device,
+                    )
+                except ValueError as error:
+                    unavailable = {
+                        "no unused render-valid observations for completion": (
+                            "no_unused_render_valid_completion_observations"
+                        ),
+                        "target queries produced no completion seed region": (
+                            "no_target_completion_seed_region"
+                        ),
+                        "depth proposals produced no descriptor-consistent component": (
+                            "no_descriptor_consistent_projective_completion"
+                        ),
+                        "association graph contains no ray-triangulated Anchor": (
+                            "no_ray_triangulated_completion_anchor"
+                        ),
+                    }
+                    if str(error) not in unavailable:
+                        raise
+                    proposal = None
+                    unavailable_reason = unavailable[str(error)]
+            if unavailable_reason is None:
+                merged = merge_projective_candidates(
+                    [projective_candidates_from_map(state), completion]
+                )
+                proposal = materialize_projective_anchor_map(
+                    merged,
+                    lineage={
+                        **dict(state.get("provenance", {})),
+                        "v6_parent_map_sha256": map_sha,
+                        "v6_reconstruction_feedback_sha256": feedback_sha,
+                        "v6_reconstruction_training_split_sha256": (
+                            descriptor_training_split_sha
+                        ),
+                        "v6_reconstruction_training_query_count": len(
+                            descriptor_training_queries
+                        ),
+                        "v6_reconstruction_holdout_query_count": len(
+                            reconstruction_scope["validation_query_indices"]
+                        ),
+                        "v6_l1_query_count": len(l1_queries),
+                    },
+                )
+                _attach_reconstruction_distillation(
+                    proposal,
+                    state,
+                    completion,
+                    target_query_indices=l1_queries,
+                    excluded_support_query_indices=excluded_support_queries,
+                    training_query_indices=descriptor_training_queries,
+                    query_count=len(feedback["records"]),
+                    training_split_sha256=descriptor_training_split_sha,
+                )
     else:
         raise ValueError(f"unknown proposal arm {arm}")
     if (
@@ -672,6 +735,10 @@ def run(args: argparse.Namespace) -> dict:
             arm == "reconstruction"
         ),
         "reconstruction_arm_level_holdout": arm == "reconstruction",
+        "reconstruction_strategy": reconstruction_strategy,
+        "repair_minimum_descriptor_similarity": repair_minimum_descriptor_similarity,
+        "repair_maximum_xyz_distance_m": repair_maximum_xyz_distance_m,
+        "repair_minimum_query_evidence": repair_minimum_query_evidence,
     }
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
@@ -873,6 +940,16 @@ def main() -> None:
     parser.add_argument("--minimum-camera-families", type=int, default=2)
     parser.add_argument("--completion-maximum-rows-per-view", type=int, default=256)
     parser.add_argument("--completion-safety-maximum-components", type=int, default=100000)
+    parser.add_argument(
+        "--reconstruction-strategy",
+        choices=("completion", "association_repair"),
+        default="completion",
+    )
+    parser.add_argument(
+        "--repair-minimum-descriptor-similarity", type=float, default=0.9
+    )
+    parser.add_argument("--repair-maximum-xyz-distance-m", type=float, default=0.02)
+    parser.add_argument("--repair-minimum-query-evidence", type=int, default=5)
     run(parser.parse_args())
 
 
