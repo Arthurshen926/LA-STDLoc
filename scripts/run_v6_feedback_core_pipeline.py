@@ -53,6 +53,7 @@ _SOURCE_PATHS = (
     "scripts/compare_v6_feedback.py",
     "common/v6_pipeline_contract.py",
     "common/v6_contracts.py",
+    "map_learning/v6_control_actions.py",
 )
 
 
