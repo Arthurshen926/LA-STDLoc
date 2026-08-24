@@ -87,6 +87,10 @@ entry points.
 
 ## Fixed-map virtual probe bank
 
+- [ ] Before a CUDA render, put the active environment's `bin` and `lib`
+  directories first in `PATH` and `LD_LIBRARY_PATH`, then run the explicit
+  2DGS renderer smoke test.  This prevents a cached extension from silently
+  resolving the host's older `libstdc++`.
 - [ ] Plan interpolation, bounded perturbation, boundary, reverse-view, and
   ambiguity-targeted poses using only mapping evidence.
 - [ ] Select by viewpoint novelty, ambiguity co-visibility, pose-cell coverage,
