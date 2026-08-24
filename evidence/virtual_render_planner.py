@@ -16,9 +16,6 @@ import torch
 
 from features.raster_sampling import sample_raster_at_grid_uv
 
-from features.sampling import unproject_pixels
-
-
 SCHEMA = "lafgs_sufficiency_guided_virtual_render_plan"
 VERSION = 1
 
