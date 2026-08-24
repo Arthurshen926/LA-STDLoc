@@ -717,6 +717,7 @@ def descriptor_loss_proposal(
         rows: torch.Tensor,
         *,
         normalization_weight: float | None = None,
+        normalization_query_count: int | None = None,
     ) -> torch.Tensor:
         q = query[rows].to(train_device)
         device_rows = rows.to(train_device)
@@ -752,27 +753,36 @@ def descriptor_loss_proposal(
         pairwise = (ranking * weight).sum() / denominator
         if loss_mode == "pairwise":
             return pairwise
-        if rows.numel() != query.shape[0]:
-            raise ValueError("set-consensus loss requires the complete query batch")
         probability = torch.sigmoid(
             (positive_score - negative_score) / max(float(temperature), 1e-6)
         )
+        selected_queries = selected_query_device[device_rows]
+        selected_cells = selected_cell_device[device_rows]
         query_probability = probability.new_zeros(query_count)
-        query_probability.scatter_add_(0, selected_query_device, probability)
+        query_probability.scatter_add_(0, selected_queries, probability)
         query_rows_count = probability.new_zeros(query_count)
         query_rows_count.scatter_add_(
-            0, selected_query_device, torch.ones_like(probability)
+            0, selected_queries, torch.ones_like(probability)
         )
         query_present = query_rows_count > 0
+        query_denominator = max(
+            int(query_present.sum())
+            if normalization_query_count is None
+            else int(normalization_query_count),
+            1,
+        )
         count_target = torch.minimum(
             query_rows_count,
             query_rows_count.new_full(
                 query_rows_count.shape, float(consensus_count_target)
             ),
         )
-        count_loss = F.softplus(count_target - query_probability)[query_present].mean()
+        count_loss = (
+            F.softplus(count_target - query_probability)[query_present].sum()
+            / query_denominator
+        )
 
-        cell_key = selected_query_device * visibility_cell_count + selected_cell_device
+        cell_key = selected_queries * visibility_cell_count + selected_cells
         cell_probability_sum = probability.new_zeros(
             query_count * visibility_cell_count
         )
@@ -797,7 +807,10 @@ def descriptor_loss_proposal(
                 query_cell_count.shape, float(consensus_cell_target)
             ),
         )
-        cell_loss = F.softplus(cell_target - query_cell_coverage)[query_present].mean()
+        cell_loss = (
+            F.softplus(cell_target - query_cell_coverage)[query_present].sum()
+            / query_denominator
+        )
         return (
             pairwise
             + float(consensus_count_weight) * count_loss
@@ -806,13 +819,59 @@ def descriptor_loss_proposal(
 
     all_rows = torch.arange(query.shape[0])
     global_training_weight = float(training_triplet_weight.sum())
+    selected_query_count = int(torch.unique(selected_query).numel())
+    training_chunks = [all_rows]
+    if loss_mode == "set_consensus":
+        _, query_row_counts = torch.unique_consecutive(
+            selected_query, return_counts=True
+        )
+        training_chunks = []
+        chunk_start = 0
+        cursor = 0
+        chunk_rows = 0
+        for count in query_row_counts.tolist():
+            count = int(count)
+            if chunk_rows and chunk_rows + count > int(batch_size):
+                training_chunks.append(torch.arange(chunk_start, cursor))
+                chunk_start = cursor
+                chunk_rows = 0
+            cursor += count
+            chunk_rows += count
+        if cursor > chunk_start:
+            training_chunks.append(torch.arange(chunk_start, cursor))
+        # The incremental construction above is deliberately checked rather
+        # than trusted: every query must occur in exactly one complete chunk.
+        if not torch.equal(torch.cat(training_chunks), all_rows):
+            raise RuntimeError("set-consensus query chunks do not cover training rows")
+        for rows in training_chunks:
+            values = selected_query[rows]
+            for query_index in torch.unique(values).tolist():
+                if int((selected_query == query_index).sum()) != int(
+                    (values == query_index).sum()
+                ):
+                    raise RuntimeError("set-consensus chunk splits a training query")
+
+    def evaluation_loss(value: torch.Tensor) -> torch.Tensor:
+        if loss_mode == "pairwise":
+            return full_loss(value, all_rows)
+        return torch.stack(
+            [
+                full_loss(
+                    value,
+                    rows,
+                    normalization_weight=global_training_weight,
+                    normalization_query_count=selected_query_count,
+                )
+                for rows in training_chunks
+            ]
+        ).sum()
     with torch.no_grad():
         _, initial_bounded_tangent = _bounded_descriptor_bank(
             base_active, residual, trust_region
         )
         initial_active_residual = residual.detach().clone()
         initial_raw_tangent = raw_tangent(residual)
-        initial_loss = float(full_loss(residual, all_rows).cpu())
+        initial_loss = float(evaluation_loss(residual).cpu())
         initial_regularizer = float(trust_penalty(initial_raw_tangent).cpu())
         initial_objective = initial_loss + float(trust_weight) * initial_regularizer
         best_objective = initial_objective
@@ -822,7 +881,13 @@ def descriptor_loss_proposal(
     for epoch in range(1, int(epochs) + 1):
         optimizer.zero_grad(set_to_none=True)
         if loss_mode == "set_consensus":
-            full_loss(residual, all_rows).backward()
+            for rows in training_chunks:
+                full_loss(
+                    residual,
+                    rows,
+                    normalization_weight=global_training_weight,
+                    normalization_query_count=selected_query_count,
+                ).backward()
         else:
             order = torch.randperm(query.shape[0], generator=generator)
             for start in range(0, query.shape[0], int(batch_size)):
@@ -840,7 +905,7 @@ def descriptor_loss_proposal(
             (float(trust_weight) * trust_penalty(raw_tangent(residual))).backward()
         optimizer.step()
         with torch.no_grad():
-            epoch_ranking = float(full_loss(residual, all_rows).cpu())
+            epoch_ranking = float(evaluation_loss(residual).cpu())
             epoch_regularizer = float(trust_penalty(raw_tangent(residual)).cpu())
             optimizer_last_objective = (
                 epoch_ranking + float(trust_weight) * epoch_regularizer
@@ -857,12 +922,14 @@ def descriptor_loss_proposal(
             base_active, best_residual, trust_region
         )
         final_raw_tangent = raw_tangent(best_residual)
-        final_loss = float(full_loss(best_residual, all_rows).cpu())
+        final_loss = float(evaluation_loss(best_residual).cpu())
         error_rows = torch.nonzero(~clean, as_tuple=False).reshape(-1)
         clean_rows = torch.nonzero(clean, as_tuple=False).reshape(-1)
 
         def split_loss(value: torch.Tensor, rows: torch.Tensor) -> float | None:
-            return None if rows.numel() == 0 else float(full_loss(value, rows).cpu())
+            if rows.numel() == 0 or loss_mode == "set_consensus":
+                return None
+            return float(full_loss(value, rows).cpu())
 
         initial_error_loss = split_loss(initial_active_residual, error_rows)
         final_error_loss = split_loss(best_residual, error_rows)
@@ -995,6 +1062,12 @@ def descriptor_loss_proposal(
         "consensus_cell_target": float(consensus_cell_target),
         "consensus_count_weight": float(consensus_count_weight),
         "consensus_cell_weight": float(consensus_cell_weight),
+        "set_consensus_complete_query_chunk_count": (
+            len(training_chunks) if loss_mode == "set_consensus" else None
+        ),
+        "set_consensus_chunking_is_exact_gradient_accumulation": (
+            loss_mode == "set_consensus"
+        ),
     }
     return proposal
 
