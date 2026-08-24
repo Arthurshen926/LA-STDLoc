@@ -487,7 +487,7 @@ def run(args: argparse.Namespace) -> dict:
         except ControlActionUnavailable as error:
             proposal = None
             unavailable_reason = str(error).replace(" ", "_")
-            control_action_audits = error.audits
+            control_action_audits = _jsonable(error.audits)
     elif arm in {"descriptor_loss", "descriptor_selection"}:
         try:
             descriptor_feedback = feedback
