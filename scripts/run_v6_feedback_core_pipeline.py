@@ -774,6 +774,49 @@ def _atomic_json(payload: dict, output: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _load_paired_diagnostics(
+    path: Path,
+    *,
+    baseline: dict,
+    baseline_map: dict,
+    candidate: dict,
+    candidate_map: dict,
+    arm: str,
+) -> dict:
+    paired = json.loads(path.read_text())
+    if (
+        not isinstance(paired, dict)
+        or paired.get("schema") != "lafgs_v6_paired_feedback_diagnostics"
+        or int(paired.get("version", -1)) != 1
+        or paired.get("uses_source_mapping_rgb") is not False
+        or paired.get("uses_test_queries") is not False
+        or paired.get("valid") is not True
+    ):
+        raise ValueError(f"{arm} paired diagnostics contract differs")
+    inputs = paired.get("inputs")
+    if not isinstance(inputs, Mapping):
+        raise ValueError(f"{arm} paired diagnostics inputs are missing")
+    expected_inputs = {
+        "baseline_feedback": baseline["feedback"]["sha256"],
+        "baseline_map": baseline_map["sha256"],
+        "candidate_feedback": candidate["feedback"]["sha256"],
+        "candidate_map": candidate_map["sha256"],
+    }
+    for field, expected_sha256 in expected_inputs.items():
+        artifact = inputs.get(field)
+        if not isinstance(artifact, Mapping) or artifact.get("sha256") != expected_sha256:
+            raise ValueError(f"{arm} paired diagnostics {field} SHA differs")
+    contract = paired.get("comparison_contract")
+    if (
+        not isinstance(contract, Mapping)
+        or contract.get("candidate_calibration_binding_arm") != arm
+        or contract.get("immutable_calibration_source_map_sha256")
+        != baseline_map["sha256"]
+    ):
+        raise ValueError(f"{arm} paired diagnostics lineage differs")
+    return paired
+
+
 def run(
     args: argparse.Namespace,
     *,
@@ -796,8 +839,16 @@ def run(
         value = getattr(args, field, None)
         if value is not None:
             setattr(args, field, Path(value).resolve())
+    resume_existing_artifacts = bool(args.resume_existing_artifacts)
     if args.output_dir.exists():
-        raise FileExistsError(args.output_dir)
+        if not resume_existing_artifacts:
+            raise FileExistsError(args.output_dir)
+        if (args.output_dir / "run.json").exists():
+            raise FileExistsError(f"completed V6 run already exists: {args.output_dir}")
+        if args.baseline_feedback_summary is None:
+            raise ValueError(
+                "artifact recovery requires a SHA-bound precomputed baseline summary"
+            )
     if (args.baseline_feedback_summary is None) != (
         args.expected_baseline_feedback_summary_sha256 is None
     ):
@@ -891,7 +942,7 @@ def run(
     del calibration, calibration_binding
     gc.collect()
     producer = _producer(root)
-    args.output_dir.mkdir(parents=True)
+    args.output_dir.mkdir(parents=True, exist_ok=resume_existing_artifacts)
 
     if args.baseline_feedback_summary is None:
         baseline, baseline_command = _evaluate(
@@ -929,9 +980,18 @@ def run(
             feedback=baseline,
             output_dir=proposal_dir,
         )
-        _run_command(proposal_command, root=root)
+        proposal_report_path = proposal_dir / "proposal.json"
+        proposal_reused = False
+        if resume_existing_artifacts and proposal_report_path.is_file():
+            proposal_reused = True
+        else:
+            if resume_existing_artifacts and proposal_dir.exists():
+                raise FileNotFoundError(
+                    f"incomplete proposal cannot be recovered: {proposal_dir}"
+                )
+            _run_command(proposal_command, root=root)
         proposal = _load_proposal(
-            proposal_dir / "proposal.json",
+            proposal_report_path,
             arm=arm,
             args=args,
             baseline_feedback=baseline,
@@ -944,6 +1004,7 @@ def run(
             },
             "proposal": proposal,
             "commands": {"proposal": proposal_command},
+            "reused_existing_artifacts": {"proposal": proposal_reused},
         }
         if not proposal["available"]:
             stage["evaluation"] = None
@@ -951,15 +1012,36 @@ def run(
             arm_reports.append(stage)
             continue
         candidate = proposal["artifacts"]
-        evaluation, evaluation_command = _evaluate(
-            args,
-            root=root,
-            map_artifact=candidate["map"],
-            metric_artifact=candidate["metric"],
-            output_dir=arm_root / "evaluation",
-            candidate_parent_map_sha256=map_artifact["sha256"],
-            candidate_arm=arm,
-        )
+        evaluation_dir = arm_root / "evaluation"
+        evaluation_summary_path = evaluation_dir / "summary.json"
+        evaluation_reused = False
+        if resume_existing_artifacts and evaluation_summary_path.is_file():
+            evaluation = _validate_feedback_summary(
+                evaluation_summary_path,
+                args=args,
+                expected_summary_sha256=sha256_file(evaluation_summary_path),
+                map_sha256=candidate["map"]["sha256"],
+                metric_sha256=candidate["metric"]["sha256"],
+                cache_sha256=args.expected_observation_cache_sha256,
+                candidate_parent_map_sha256=map_artifact["sha256"],
+                candidate_arm=arm,
+            )
+            evaluation_command = None
+            evaluation_reused = True
+        else:
+            if resume_existing_artifacts and evaluation_dir.exists():
+                raise FileNotFoundError(
+                    f"incomplete evaluation cannot be recovered: {evaluation_dir}"
+                )
+            evaluation, evaluation_command = _evaluate(
+                args,
+                root=root,
+                map_artifact=candidate["map"],
+                metric_artifact=candidate["metric"],
+                output_dir=evaluation_dir,
+                candidate_parent_map_sha256=map_artifact["sha256"],
+                candidate_arm=arm,
+            )
         paired_output = arm_root / "paired_diagnostics.json"
         paired_command = _paired_command(
             root=root,
@@ -969,17 +1051,19 @@ def run(
             candidate_map=candidate["map"],
             output=paired_output,
         )
-        _run_command(paired_command, root=root)
-        paired = json.loads(paired_output.read_text())
-        if (
-            not isinstance(paired, dict)
-            or paired.get("schema") != "lafgs_v6_paired_feedback_diagnostics"
-            or int(paired.get("version", -1)) != 1
-            or paired.get("uses_source_mapping_rgb") is not False
-            or paired.get("uses_test_queries") is not False
-            or paired.get("valid") is not True
-        ):
-            raise ValueError(f"{arm} paired diagnostics contract differs")
+        paired_reused = False
+        if resume_existing_artifacts and paired_output.is_file():
+            paired_reused = True
+        else:
+            _run_command(paired_command, root=root)
+        paired = _load_paired_diagnostics(
+            paired_output,
+            baseline=baseline,
+            baseline_map=map_artifact,
+            candidate=evaluation,
+            candidate_map=candidate["map"],
+            arm=arm,
+        )
         stage["evaluation"] = evaluation
         stage["paired_diagnostics"] = {
             "artifact": _artifact(paired_output, label=f"{arm} paired diagnostics"),
@@ -988,6 +1072,9 @@ def run(
         }
         stage["commands"].update(
             {"evaluation": evaluation_command, "paired_diagnostics": paired_command}
+        )
+        stage["reused_existing_artifacts"].update(
+            {"evaluation": evaluation_reused, "paired_diagnostics": paired_reused}
         )
         stage["evaluation_target_contract"] = {
             "fresh_mapping_feedback_target": "full_proposal_training_checkpoint",
@@ -1072,6 +1159,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline-feedback-summary", type=Path)
     parser.add_argument("--expected-baseline-feedback-summary-sha256")
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--resume-existing-artifacts",
+        action="store_true",
+        help=(
+            "Recover an interrupted run only from existing proposal, evaluation, "
+            "and paired artifacts after revalidating their SHA and lineage contracts."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=2026)

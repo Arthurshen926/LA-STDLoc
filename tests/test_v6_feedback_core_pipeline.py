@@ -386,6 +386,15 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
             return
         if script == "compare_v6_feedback.py":
             output = Path(_flag(command, "--output"))
+            arm = output.parent.name.removeprefix("arm_")
+            baseline_feedback_sha = _flag(
+                command, "--expected-baseline-feedback-sha256"
+            )
+            baseline_map_sha = _flag(command, "--expected-baseline-map-sha256")
+            candidate_feedback_sha = _flag(
+                command, "--expected-candidate-feedback-sha256"
+            )
+            candidate_map_sha = _flag(command, "--expected-candidate-map-sha256")
             _write_json(
                 output,
                 {
@@ -394,8 +403,20 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                     "uses_source_mapping_rgb": False,
                     "uses_test_queries": False,
                     "valid": True,
+                    "inputs": {
+                        "baseline_feedback": {"sha256": baseline_feedback_sha},
+                        "baseline_map": {"sha256": baseline_map_sha},
+                        "candidate_feedback": {"sha256": candidate_feedback_sha},
+                        "candidate_map": {"sha256": candidate_map_sha},
+                    },
                     "scopes": {"all_mapping_queries": {}},
-                    "comparison_contract": {"paired": True},
+                    "comparison_contract": {
+                        "paired": True,
+                        "candidate_calibration_binding_arm": arm,
+                        "immutable_calibration_source_map_sha256": (
+                            baseline_map_sha
+                        ),
+                    },
                 },
             )
             return
@@ -575,6 +596,44 @@ def test_runner_reuses_only_sha_bound_rebuild_baseline(tmp_path: Path, monkeypat
         Path(_flag(command, "--map")).name == "proposal_map.pt"
         for command in evaluation_calls
     )
+
+
+def test_runner_recovers_only_complete_sha_bound_arm_artifacts(
+    tmp_path: Path, monkeypatch
+):
+    args, hashes = _arguments(tmp_path)
+    args.arms = ["descriptor_loss"]
+    args.ransac_reprojection_px = _CALIBRATED_RANSAC_PX
+    summary_path, summary_sha = _write_feedback_summary(
+        tmp_path / "precomputed",
+        map_sha256=hashes["map"],
+        metric_sha256=hashes["metric"],
+        cache_sha256=hashes["cache"],
+        calibration_sha256=hashes["calibration"],
+        calibration_binding_sha256=hashes["calibration_binding"],
+    )
+    args.baseline_feedback_summary = summary_path
+    args.expected_baseline_feedback_summary_sha256 = summary_sha
+    calls: list[list[str]] = []
+    contract_calls: list[dict] = []
+    _install_mocks(monkeypatch, calls, contract_calls)
+
+    runner.run(args, invocation_argv=["formal-v6-runner", "--initial"])
+    (args.output_dir / "run.json").unlink()
+    calls.clear()
+    args.resume_existing_artifacts = True
+
+    recovered = runner.run(
+        args, invocation_argv=["formal-v6-runner", "--resume-existing-artifacts"]
+    )
+
+    assert calls == []
+    assert recovered["arms"][0]["reused_existing_artifacts"] == {
+        "proposal": True,
+        "evaluation": True,
+        "paired_diagnostics": True,
+    }
+    assert json.loads((args.output_dir / "run.json").read_text()) == recovered
 
 
 def test_precomputed_feedback_requires_self_contained_calibration_lineage(
