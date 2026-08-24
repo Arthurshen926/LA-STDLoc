@@ -255,15 +255,19 @@ def descriptor_loss_proposal(
     if len(feedback_policies) != 1:
         raise ValueError("descriptor feedback mixes affected-Anchor LOO policies")
     loo_policy = next(iter(feedback_policies))
-    if loo_policy != "rebuild":
+    if loo_policy not in {"fixed_map", "descriptor_only", "rebuild"}:
         raise ValueError(
-            "descriptor training requires exact query-local Anchor rebuild; "
-            "purge feedback is diagnostic-only"
+            "descriptor training requires a deployable fixed-map, descriptor-only, "
+            "or exact-rebuild observer; purge feedback is diagnostic-only"
         )
-    loo_replay = LeaveOneQueryOutProjectiveMap(
-        state,
-        observations,
-        affected_anchor_policy=loo_policy,
+    loo_replay = (
+        None
+        if loo_policy == "fixed_map"
+        else LeaveOneQueryOutProjectiveMap(
+            state,
+            observations,
+            affected_anchor_policy="rebuild",
+        )
     )
 
     def query_local_observation_bank(
@@ -278,12 +282,26 @@ def descriptor_loss_proposal(
             record.get("excluded_query_indices", (query_index,)),
             dtype=torch.long,
         ).reshape(-1)
-        update = loo_replay.query_update(
-            query_index,
-            excluded_queries=excluded_queries,
-            requested_anchor_rows=active_rows,
-        )
         local_base = observation_features[active_rows].clone()
+        if loo_policy == "fixed_map":
+            return active_rows, local_base, torch.empty(0, dtype=torch.long)
+        if loo_policy == "descriptor_only":
+            update = loo_replay.descriptor_only_update(query_index)
+            selected = torch.isin(update["anchor_rows"], active_rows)
+            update = {
+                **update,
+                "anchor_rows": update["anchor_rows"][selected],
+                "valid": update["valid"][selected],
+                "anchor_observation_features": update[
+                    "anchor_observation_features"
+                ][selected],
+            }
+        else:
+            update = loo_replay.query_update(
+                query_index,
+                excluded_queries=excluded_queries,
+                requested_anchor_rows=active_rows,
+            )
         affected_rows = torch.as_tensor(update["anchor_rows"]).long()
         if affected_rows.numel():
             affected_local = torch.searchsorted(active_rows, affected_rows)
@@ -1001,13 +1019,22 @@ def descriptor_loss_proposal(
         "residual_cap_hit_fraction": cap_hit_count / max(int(active.numel()), 1),
         "updated_anchor_count": int(cumulative_updated_anchors.numel()),
         "round_updated_anchor_count": int(active.numel()),
-        "query_local_loo_descriptor_training": True,
-        "query_local_loo_base_source": "sparse_active_anchor_replay",
+        "query_local_loo_descriptor_training": loo_policy != "fixed_map",
+        "feedback_observer_policy": loo_policy,
+        "query_local_loo_base_source": (
+            "fixed_deployment_observation_bank"
+            if loo_policy == "fixed_map"
+            else "descriptor_only_sparse_replay"
+            if loo_policy == "descriptor_only"
+            else "sparse_active_anchor_replay"
+        ),
         "query_local_loo_affected_anchor_policy": loo_policy,
         "query_local_loo_pair_count": int(unique_pair_keys.numel()),
         "query_local_loo_affected_pair_count": affected_pair_count,
         "query_local_loo_dense_query_anchor_bank_materialized": False,
-        "query_observations_excluded_from_training_anchor_bases": True,
+        "query_observations_excluded_from_training_anchor_bases": (
+            loo_policy != "fixed_map"
+        ),
         "margin": float(margin),
         "temperature": float(temperature),
         "trust_region": float(trust_region),

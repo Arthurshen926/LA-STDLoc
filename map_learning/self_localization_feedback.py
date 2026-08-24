@@ -251,15 +251,24 @@ def build_self_localization_feedback(
         if affected_anchor_policy is None:
             raise ValueError("affected-Anchor policy is required")
         if not isinstance(affected_anchor_policy, str) or (
-            affected_anchor_policy not in {"rebuild", "purge"}
+            affected_anchor_policy
+            not in {"fixed_map", "descriptor_only", "rebuild", "purge"}
         ):
             raise ValueError("affected-Anchor policy is invalid")
         if descriptor_identity_supervision_available != (
-            affected_anchor_policy == "rebuild"
+            affected_anchor_policy != "purge"
         ):
             raise ValueError(
-                "descriptor identity supervision requires affected-Anchor rebuild"
+                "descriptor identity supervision is unavailable only for purge"
             )
+        feedback_observer_mode = str(source.get("feedback_observer_mode", "full_loo"))
+        expected_policy = {
+            "fixed_map": "fixed_map",
+            "descriptor_leave_self_out": "descriptor_only",
+            "full_loo": affected_anchor_policy,
+        }.get(feedback_observer_mode)
+        if expected_policy is None or expected_policy != affected_anchor_policy:
+            raise ValueError("feedback observer mode and Anchor policy differ")
         if (
             not descriptor_identity_supervision_available
             and descriptor_triplets.numel()
@@ -480,6 +489,10 @@ def build_self_localization_feedback(
                 "te_cm": float(source["te_cm"]),
                 "ae_deg": float(source["ae_deg"]),
                 "query_descriptor_loo": bool(source.get("query_descriptor_loo", True)),
+                "observer_descriptor_leave_self_out": bool(
+                    source.get("observer_descriptor_leave_self_out", False)
+                ),
+                "feedback_observer_mode": feedback_observer_mode,
                 "descriptor_training_query_reused": bool(
                     source.get("descriptor_training_query_reused", False)
                 ),
@@ -654,6 +667,9 @@ def build_self_localization_feedback(
         ),
         "affected_anchor_policies": sorted(
             {record["affected_anchor_policy"] for record in normalized}
+        ),
+        "feedback_observer_modes": sorted(
+            {record["feedback_observer_mode"] for record in normalized}
         ),
         "input_sha256": {
             "map": str(source_map_sha256),

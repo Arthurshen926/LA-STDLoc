@@ -67,9 +67,11 @@ def _write_feedback_summary(
         "pose_logdet_target": 0.0,
         "pose_min_eigenvalue_target": 0.0,
         "loo_pose_neighbors": 3,
-        "pose_neighborhood_loo": True,
-        "affected_anchor_policy": "rebuild",
-        "affected_anchor_holdout_is_exact_rebuild": True,
+        "feedback_observer_mode": "fixed_map",
+        "deployment_plant_geometry_held_fixed": True,
+        "pose_neighborhood_loo": False,
+        "affected_anchor_policy": "fixed_map",
+        "affected_anchor_holdout_is_exact_rebuild": False,
         "descriptor_identity_supervision_available": True,
         "diagnostic_purge_suppresses_descriptor_triplets": False,
         "ransac_reprojection_px": _CALIBRATED_RANSAC_PX,
@@ -296,10 +298,28 @@ def _install_mocks(monkeypatch, calls: list[list[str]], contract_calls: list[dic
                     "loo_pose_neighbors": int(
                         _flag(command, "--loo-pose-neighbors")
                     ),
-                    "pose_neighborhood_loo": int(
-                        _flag(command, "--loo-pose-neighbors")
+                    "feedback_observer_mode": _flag(
+                        command, "--feedback-observer-mode"
+                    ),
+                    "deployment_plant_geometry_held_fixed": _flag(
+                        command, "--feedback-observer-mode"
                     )
-                    > 1,
+                    != "full_loo",
+                    "pose_neighborhood_loo": (
+                        _flag(command, "--feedback-observer-mode") == "full_loo"
+                        and int(_flag(command, "--loo-pose-neighbors")) > 1
+                    ),
+                    "affected_anchor_policy": (
+                        "fixed_map"
+                        if _flag(command, "--feedback-observer-mode") == "fixed_map"
+                        else "descriptor_only"
+                        if _flag(command, "--feedback-observer-mode")
+                        == "descriptor_leave_self_out"
+                        else "rebuild"
+                    ),
+                    "affected_anchor_holdout_is_exact_rebuild": (
+                        _flag(command, "--feedback-observer-mode") == "full_loo"
+                    ),
                     "ransac_reprojection_px": float(
                         _flag(command, "--ransac-reprojection-px")
                     ),

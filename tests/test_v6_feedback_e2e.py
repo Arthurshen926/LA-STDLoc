@@ -72,6 +72,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         required_rank=4,
         ransac_reprojection_px=2.0,
         seed=2026,
+        feedback_observer_mode="full_loo",
     )
     assert result["summary"]["recall_5cm_5deg_percent"] == 100.0
     assert all(row["pose_solves"] == 1 for row in result["queries"])
@@ -83,7 +84,7 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
     assert all(
         record["pose_information_rank"] == 6 for record in result["feedback"]["records"]
     )
-    assert result["version"] == 4
+    assert result["version"] == 5
     assert result["feedback"]["version"] == FEEDBACK_VERSION
     assert result["feedback"]["identity_positive_count"] == 20
     assert result["feedback"]["geometry_compatible_ambiguous_count"] == 0
@@ -123,3 +124,27 @@ def test_query_local_feedback_runs_one_top1_pose_with_geometry_loo() -> None:
         )
         assert record["pose_logdet_target"] == 0.0
         assert record["pose_min_eigenvalue_target"] == 0.0
+
+    fixed = evaluate_query_local_feedback(
+        state=state,
+        observations=observations,
+        source_map_sha256="a" * 64,
+        query_cache_sha256="b" * 64,
+        scene_calibration_sha256="c" * 64,
+        feedback_calibration_binding_sha256="d" * 64,
+        device=torch.device("cpu"),
+        positive_radius_px=1.0,
+        alpha_minimum=0.05,
+        required_rank=4,
+        ransac_reprojection_px=2.0,
+        seed=2026,
+    )
+    assert fixed["contract"]["feedback_observer_mode"] == "fixed_map"
+    assert fixed["contract"]["deployment_plant_geometry_held_fixed"] is True
+    assert fixed["contract"]["query_geometry_loo"] is False
+    assert fixed["contract"]["query_descriptor_loo"] is False
+    assert all(
+        record["affected_anchor_policy"] == "fixed_map"
+        and not record["query_geometry_loo"]
+        for record in fixed["feedback"]["records"]
+    )

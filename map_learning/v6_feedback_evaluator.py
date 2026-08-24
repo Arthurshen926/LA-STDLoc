@@ -1,4 +1,4 @@
-"""Formal mapping-only query-local feedback for the V6 closed loop."""
+"""Formal fixed-plant mapping feedback and LOO audits for the V6 closed loop."""
 
 from __future__ import annotations
 
@@ -745,10 +745,17 @@ def evaluate_query_local_feedback(
     required_visibility_rank: int = 4,
     required_detectable_rank: int | None = None,
     loo_affected_anchor_policy: str = "rebuild",
+    feedback_observer_mode: str = "fixed_map",
     pose_logdet_target: float = 0.0,
     pose_min_eigenvalue_target: float = 0.0,
 ) -> dict:
-    """One global Top-1 and one standard PoseLib solve per mapping query."""
+    """One global Top-1 and one standard PoseLib solve per mapping query.
+
+    ``fixed_map`` (F0) measures the actual deployment plant.  The optional
+    ``descriptor_leave_self_out`` mode (F1) holds geometry and topology fixed
+    while removing only the current query's direct descriptor contribution.
+    ``full_loo`` (F2) retains the historical geometry-rebuild stress test.
+    """
 
     evaluation_started = time.perf_counter()
     if not math.isfinite(float(pose_logdet_target)):
@@ -761,17 +768,31 @@ def evaluate_query_local_feedback(
             "pose minimum-eigenvalue target must be finite and non-negative"
         )
     require_mapping_only(state.get("provenance", {}), label="V6 feedback map")
-    # Purging every Anchor touched by the held-out pose neighborhood is a
-    # conservative, leakage-free holdout that scales to full maps.  It is not
-    # equivalent to rebuilding Anchors that retain enough support.
-    replay = LeaveOneQueryOutProjectiveMap(
-        state,
-        observations,
-        affected_anchor_policy=loo_affected_anchor_policy,
-    )
+    if feedback_observer_mode not in {
+        "fixed_map",
+        "descriptor_leave_self_out",
+        "full_loo",
+    }:
+        raise ValueError("unknown V6 feedback observer mode")
+    replay = None
+    if feedback_observer_mode != "fixed_map":
+        # F2 may rebuild or conservatively purge affected Anchors.  F1 only
+        # needs access to observation descriptors and never changes geometry.
+        replay = LeaveOneQueryOutProjectiveMap(
+            state,
+            observations,
+            affected_anchor_policy=(
+                "rebuild"
+                if feedback_observer_mode == "descriptor_leave_self_out"
+                else loo_affected_anchor_policy
+            ),
+        )
     identity_anchor_by_query = _exact_identity_anchor_by_query(state, observations)
     positive_identity_contract = exact_identity_positive_contract()
-    descriptor_identity_supervision_available = loo_affected_anchor_policy == "rebuild"
+    descriptor_identity_supervision_available = not (
+        feedback_observer_mode == "full_loo"
+        and loo_affected_anchor_policy == "purge"
+    )
     base_xyz = torch.as_tensor(state["anchor_xyz"]).float()
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     query_rows = []
@@ -788,8 +809,8 @@ def evaluate_query_local_feedback(
     selection_training_reused = _selection_training_query_mask(state, len(observations))
     pose_neighborhoods = _pose_neighborhoods(observations, loo_pose_neighbors)
     print(
-        f"[v6-feedback] prepared {loo_affected_anchor_policy} "
-        "pose-neighborhood LOO "
+        f"[v6-feedback] prepared {feedback_observer_mode} observer "
+        f"({loo_affected_anchor_policy}) "
         f"for {len(observations)} queries and {base_xyz.shape[0]} Anchors "
         f"in {time.perf_counter() - evaluation_started:.1f}s",
         flush=True,
@@ -802,8 +823,26 @@ def evaluate_query_local_feedback(
             )
         view = observations.build_view(query_index)
         loo_started = time.perf_counter()
-        excluded_queries = pose_neighborhoods[query_index]
-        update = replay.query_update(query_index, excluded_queries=excluded_queries)
+        if feedback_observer_mode == "fixed_map":
+            excluded_queries = torch.empty(0, dtype=torch.long)
+            update = {
+                "anchor_rows": torch.empty(0, dtype=torch.long),
+                "valid": torch.empty(0, dtype=torch.bool),
+                "contract": {
+                    "query_descriptor_loo": False,
+                    "query_geometry_loo": False,
+                    "affected_anchor_policy": "fixed_map",
+                    "geometry_held_fixed": True,
+                },
+            }
+        elif feedback_observer_mode == "descriptor_leave_self_out":
+            excluded_queries = torch.tensor([query_index], dtype=torch.long)
+            update = replay.descriptor_only_update(query_index)
+        else:
+            excluded_queries = pose_neighborhoods[query_index]
+            update = replay.query_update(
+                query_index, excluded_queries=excluded_queries
+            )
         loo_latency_ms = (time.perf_counter() - loo_started) * 1000.0
         online_started = time.perf_counter()
         xyz = base_xyz
@@ -812,11 +851,16 @@ def evaluate_query_local_feedback(
         affected = update["anchor_rows"]
         if affected.numel():
             if bool(update["valid"].any()):
-                xyz = base_xyz.clone()
                 bank = base_bank.clone()
-                xyz[affected] = update["anchor_xyz"]
-                bank[affected] = F.normalize(update["anchor_features"], dim=1)
-            active[affected] = update["valid"]
+                valid_affected = affected[update["valid"]]
+                bank[valid_affected] = F.normalize(
+                    update["anchor_features"][update["valid"]], dim=1
+                )
+                if feedback_observer_mode == "full_loo":
+                    xyz = base_xyz.clone()
+                    xyz[valid_affected] = update["anchor_xyz"][update["valid"]]
+            if feedback_observer_mode == "full_loo":
+                active[affected] = update["valid"]
         projected, depth = _project(xyz, view.intrinsics.float(), view.pose_w2c.float())
         height, width = view.image_hw
         visible = (
@@ -1127,8 +1171,13 @@ def evaluate_query_local_feedback(
                 "estimated_pose_w2c": pose,
                 "te_cm": te_cm,
                 "ae_deg": ae_deg,
-                "query_descriptor_loo": not bool(
-                    descriptor_gradient_reused[query_index]
+                "query_descriptor_loo": bool(
+                    feedback_observer_mode != "fixed_map"
+                    and not descriptor_gradient_reused[query_index]
+                ),
+                "observer_descriptor_leave_self_out": bool(
+                    feedback_observer_mode
+                    in {"descriptor_leave_self_out", "full_loo"}
                 ),
                 "descriptor_training_query_reused": bool(
                     descriptor_gradient_reused[query_index]
@@ -1136,10 +1185,13 @@ def evaluate_query_local_feedback(
                 "descriptor_training_split_member": bool(
                     descriptor_training_split[query_index]
                 ),
-                "query_geometry_loo": not bool(
-                    reconstruction_target_reused[query_index]
+                "query_geometry_loo": bool(
+                    feedback_observer_mode == "full_loo"
+                    and not reconstruction_target_reused[query_index]
                 ),
-                "query_raw_geometry_observation_loo": True,
+                "query_raw_geometry_observation_loo": (
+                    feedback_observer_mode == "full_loo"
+                ),
                 "query_candidate_topology_loo": not bool(
                     reconstruction_training_reused[query_index]
                     or selection_training_reused[query_index]
@@ -1164,7 +1216,11 @@ def evaluate_query_local_feedback(
                     and not reconstruction_training_reused[query_index]
                     and not selection_training_reused[query_index]
                 ),
-                "pose_neighborhood_loo": int(excluded_queries.numel()) > 1,
+                "pose_neighborhood_loo": (
+                    feedback_observer_mode == "full_loo"
+                    and int(excluded_queries.numel()) > 1
+                ),
+                "feedback_observer_mode": feedback_observer_mode,
                 "affected_anchor_policy": update["contract"]["affected_anchor_policy"],
             }
         )
@@ -1298,10 +1354,13 @@ def evaluate_query_local_feedback(
     selection_replay_summary = (
         None if not selection_replay_rows else _summary(selection_replay_rows)
     )
-    descriptor_query_loo = not bool(descriptor_gradient_reused.any())
+    descriptor_query_loo = bool(
+        feedback_observer_mode != "fixed_map"
+        and not descriptor_gradient_reused.any()
+    )
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 4,
+        "version": 5,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": query_rows,
@@ -1334,8 +1393,13 @@ def evaluate_query_local_feedback(
             "independent_mapping_validation_available": bool(
                 independent_validation_rows
             ),
-            "query_geometry_loo": not bool(reconstruction_target_reused.any()),
-            "query_raw_geometry_observation_loo": True,
+            "query_geometry_loo": bool(
+                feedback_observer_mode == "full_loo"
+                and not reconstruction_target_reused.any()
+            ),
+            "query_raw_geometry_observation_loo": (
+                feedback_observer_mode == "full_loo"
+            ),
             "query_candidate_topology_loo": not bool(
                 reconstruction_training_reused.any()
                 or selection_training_reused.any()
@@ -1349,9 +1413,22 @@ def evaluate_query_local_feedback(
             "selection_training_reuse_query_count": int(
                 selection_training_reused.sum()
             ),
-            "pose_neighborhood_loo": int(loo_pose_neighbors) > 1,
+            "feedback_observer_mode": feedback_observer_mode,
+            "deployment_plant_geometry_held_fixed": (
+                feedback_observer_mode != "full_loo"
+            ),
+            "pose_neighborhood_loo": (
+                feedback_observer_mode == "full_loo"
+                and int(loo_pose_neighbors) > 1
+            ),
             "loo_pose_neighbors": int(loo_pose_neighbors),
-            "affected_anchor_policy": loo_affected_anchor_policy,
+            "affected_anchor_policy": (
+                "fixed_map"
+                if feedback_observer_mode == "fixed_map"
+                else "descriptor_only"
+                if feedback_observer_mode == "descriptor_leave_self_out"
+                else loo_affected_anchor_policy
+            ),
             "positive_radius_px": float(positive_radius_px),
             "positive_identity": positive_identity_contract,
             "identity_supervision_unavailable_query_count": int(
@@ -1374,7 +1451,8 @@ def evaluate_query_local_feedback(
                 descriptor_identity_supervision_available
             ),
             "diagnostic_purge_suppresses_descriptor_triplets": (
-                loo_affected_anchor_policy == "purge"
+                feedback_observer_mode == "full_loo"
+                and loo_affected_anchor_policy == "purge"
             ),
             "estimated_pose_w2c_role": (
                 "paired_winning_pose_diagnostic_only_not_training"
@@ -1408,10 +1486,14 @@ def evaluate_query_local_feedback(
             "ransac_seed": int(seed),
             "evaluation_device": str(device),
             "affected_anchor_holdout_is_exact_rebuild": (
-                loo_affected_anchor_policy == "rebuild"
+                feedback_observer_mode == "full_loo"
+                and loo_affected_anchor_policy == "rebuild"
             ),
             "purged_holdout_is_exact_rebuild": (
-                False if loo_affected_anchor_policy == "purge" else None
+                False
+                if feedback_observer_mode == "full_loo"
+                and loo_affected_anchor_policy == "purge"
+                else None
             ),
             "reported_online_latency_is_oracle_feedback_localization": True,
             "global_top1": True,

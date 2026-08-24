@@ -109,6 +109,105 @@ class LeaveOneQueryOutProjectiveMap:
         self.pose_w2c = torch.stack([view.pose_w2c.float() for view in self.views])
 
     @torch.no_grad()
+    def descriptor_only_update(self, excluded_query: int) -> dict:
+        """Remove one query's descriptor contribution without changing geometry.
+
+        This is the F1 observer used to measure direct descriptor self-influence.
+        Unlike :meth:`query_update`, it never retriangulates, invalidates, or moves
+        an Anchor.  An affected Anchor with at least one remaining observation is
+        re-fused from those descriptors; otherwise its deployed descriptor is
+        retained and the row is reported as unavailable for the audit.
+        """
+
+        excluded_query = int(excluded_query)
+        if excluded_query < 0 or excluded_query >= len(self.observations):
+            raise IndexError(excluded_query)
+        if self.affected_anchor_policy == "purge":
+            raise ValueError("descriptor-only replay requires observation features")
+
+        query_start = int(self.query_observation_offsets[excluded_query])
+        query_stop = int(self.query_observation_offsets[excluded_query + 1])
+        removed_positions = self.query_observation_order[query_start:query_stop]
+        affected = torch.unique(
+            self.anchor_for_observation[removed_positions], sorted=True
+        )
+        feature_dim = int(torch.as_tensor(self.state["anchor_features"]).shape[1])
+        if affected.numel() == 0:
+            return {
+                "anchor_rows": affected,
+                "valid": torch.empty(0, dtype=torch.bool),
+                "anchor_features": torch.empty((0, feature_dim)),
+                "anchor_observation_features": torch.empty((0, feature_dim)),
+                "excluded_queries": torch.tensor([excluded_query], dtype=torch.long),
+                "contract": {
+                    "query_descriptor_loo": True,
+                    "query_geometry_loo": False,
+                    "affected_anchor_policy": "descriptor_only",
+                    "affected_anchors_rebuilt": False,
+                    "geometry_held_fixed": True,
+                },
+            }
+
+        lengths = self.offsets[affected + 1] - self.offsets[affected]
+        local_anchor = torch.repeat_interleave(
+            torch.arange(affected.numel(), dtype=torch.long), lengths
+        )
+        group_offsets = torch.cat((lengths.new_zeros(1), lengths.cumsum(0)))
+        starts = torch.repeat_interleave(self.offsets[affected], lengths)
+        within = torch.arange(int(lengths.sum()), dtype=torch.long) - (
+            torch.repeat_interleave(group_offsets[:-1], lengths)
+        )
+        positions = starts + within
+        keep = self.query[positions] != excluded_query
+        positions = positions[keep]
+        local_anchor = local_anchor[keep]
+        query = self.query[positions]
+        keypoint = self.keypoint[positions]
+        packed_rows = self.packed_offsets[query] + keypoint
+        detector = self.packed_detector[packed_rows]
+        descriptors = self.packed_descriptor[packed_rows]
+        counts = torch.bincount(local_anchor, minlength=int(affected.numel()))
+        valid = counts > 0
+        offsets = torch.cat((counts.new_zeros(1), counts.cumsum(0)))
+        output_features = torch.as_tensor(self.state["anchor_features"])[
+            affected
+        ].clone()
+        output_observation_features = torch.as_tensor(
+            self.state.get("anchor_observation_features", self.state["anchor_features"])
+        )[affected].clone()
+        residuals = self.state.get("anchor_descriptor_residual")
+        for local in torch.nonzero(valid, as_tuple=False).reshape(-1).tolist():
+            rows = torch.arange(
+                int(offsets[local]), int(offsets[local + 1]), dtype=torch.long
+            )
+            fused = fuse_projective_anchor_observations(
+                descriptors[rows],
+                self.query_bins[query[rows]],
+                detector_weight=detector[rows],
+                trim_fraction=self.descriptor_trim_fraction,
+            )
+            output_observation_features[local] = fused
+            if residuals is not None:
+                residual = torch.as_tensor(residuals)[affected[local]].float()
+                residual = residual - torch.dot(residual, fused) * fused
+                fused = torch.nn.functional.normalize(fused + residual, dim=0)
+            output_features[local] = fused
+        return {
+            "anchor_rows": affected,
+            "valid": valid,
+            "anchor_features": output_features.float(),
+            "anchor_observation_features": output_observation_features.float(),
+            "excluded_queries": torch.tensor([excluded_query], dtype=torch.long),
+            "contract": {
+                "query_descriptor_loo": True,
+                "query_geometry_loo": False,
+                "affected_anchor_policy": "descriptor_only",
+                "affected_anchors_rebuilt": bool(valid.any()),
+                "geometry_held_fixed": True,
+            },
+        }
+
+    @torch.no_grad()
     def query_update(
         self,
         excluded_query: int,

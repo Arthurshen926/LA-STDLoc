@@ -184,6 +184,7 @@ def run(args: argparse.Namespace) -> dict:
         required_visibility_rank=args.required_visibility_rank,
         required_detectable_rank=args.required_detectable_rank,
         loo_affected_anchor_policy=args.loo_affected_anchor_policy,
+        feedback_observer_mode=args.feedback_observer_mode,
         pose_logdet_target=args.pose_logdet_target,
         pose_min_eigenvalue_target=args.pose_min_eigenvalue_target,
     )
@@ -266,6 +267,15 @@ def main() -> None:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
+    parser.add_argument(
+        "--feedback-observer-mode",
+        choices=("fixed_map", "descriptor_leave_self_out", "full_loo"),
+        default="fixed_map",
+        help=(
+            "fixed_map is the deployment observer; descriptor_leave_self_out "
+            "audits direct descriptor self-influence; full_loo is a stress test"
+        ),
+    )
     parser.add_argument(
         "--loo-affected-anchor-policy",
         choices=("purge", "rebuild"),

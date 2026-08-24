@@ -231,6 +231,8 @@ def _evaluation_command(
         str(args.pose_min_eigenvalue_target),
         "--loo-pose-neighbors",
         str(args.loo_pose_neighbors),
+        "--feedback-observer-mode",
+        str(getattr(args, "feedback_observer_mode", "fixed_map")),
         "--loo-affected-anchor-policy",
         "rebuild",
         "--ransac-reprojection-px",
@@ -440,9 +442,27 @@ def _validate_feedback_summary(
         "pose_logdet_target": float(args.pose_logdet_target),
         "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
         "loo_pose_neighbors": int(args.loo_pose_neighbors),
-        "pose_neighborhood_loo": int(args.loo_pose_neighbors) > 1,
-        "affected_anchor_policy": "rebuild",
-        "affected_anchor_holdout_is_exact_rebuild": True,
+        "feedback_observer_mode": str(
+            getattr(args, "feedback_observer_mode", "fixed_map")
+        ),
+        "deployment_plant_geometry_held_fixed": (
+            getattr(args, "feedback_observer_mode", "fixed_map") != "full_loo"
+        ),
+        "pose_neighborhood_loo": (
+            getattr(args, "feedback_observer_mode", "fixed_map") == "full_loo"
+            and int(args.loo_pose_neighbors) > 1
+        ),
+        "affected_anchor_policy": (
+            "fixed_map"
+            if getattr(args, "feedback_observer_mode", "fixed_map") == "fixed_map"
+            else "descriptor_only"
+            if getattr(args, "feedback_observer_mode", "fixed_map")
+            == "descriptor_leave_self_out"
+            else "rebuild"
+        ),
+        "affected_anchor_holdout_is_exact_rebuild": (
+            getattr(args, "feedback_observer_mode", "fixed_map") == "full_loo"
+        ),
         "descriptor_identity_supervision_available": True,
         "diagnostic_purge_suppresses_descriptor_triplets": False,
         "ransac_reprojection_px": float(args.ransac_reprojection_px),
@@ -726,6 +746,9 @@ def _configuration(args: argparse.Namespace) -> dict:
         "required_visibility_rank": int(args.required_visibility_rank),
         "required_detectable_rank": int(args.required_detectable_rank),
         "loo_pose_neighbors": int(args.loo_pose_neighbors),
+        "feedback_observer_mode": str(
+            getattr(args, "feedback_observer_mode", "fixed_map")
+        ),
         "loo_affected_anchor_policy": "rebuild",
         "ransac_reprojection_px": float(args.ransac_reprojection_px),
         "ransac_reprojection_source": (
@@ -1176,6 +1199,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--required-visibility-rank", type=int, default=4)
     parser.add_argument("--required-detectable-rank", type=int, default=16)
     parser.add_argument("--loo-pose-neighbors", type=int, default=3)
+    parser.add_argument(
+        "--feedback-observer-mode",
+        choices=("fixed_map", "descriptor_leave_self_out", "full_loo"),
+        default="fixed_map",
+    )
     parser.add_argument(
         "--ransac-reprojection-px",
         type=float,

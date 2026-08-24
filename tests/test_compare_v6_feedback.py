@@ -101,6 +101,8 @@ def _protocol(independent_count: int) -> dict:
         "ransac_reprojection_px": 4.0,
         "ransac_seed": 7,
         "loo_pose_neighbors": 3,
+        "feedback_observer_mode": "full_loo",
+        "deployment_plant_geometry_held_fixed": False,
         "affected_anchor_policy": "rebuild",
         "global_top1": True,
         "pose_solves_per_query": 1,
@@ -201,7 +203,7 @@ def _evaluation(
     )
     return {
         "schema": "lafgs_v6_query_local_feedback_evaluation",
-        "version": 4,
+        "version": 5,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "queries": queries,

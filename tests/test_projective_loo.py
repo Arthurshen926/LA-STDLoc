@@ -31,7 +31,9 @@ def test_loo_retriangulates_from_remaining_physical_pixel_centers() -> None:
         physical = (camera @ K.T)[:2] / camera[2]
         queries[name] = {
             "native_keypoints": (physical - 0.5)[None],
-            "native_descriptors": torch.tensor([[1.0, 0.0]]),
+            "native_descriptors": torch.tensor(
+                [[0.0, 1.0]] if index == 0 else [[1.0, 0.0]]
+            ),
             "native_scores": torch.tensor([1.0]),
             "native_K": K,
             "pose_w2c": pose,
@@ -59,6 +61,17 @@ def test_loo_retriangulates_from_remaining_physical_pixel_centers() -> None:
     update = LeaveOneQueryOutProjectiveMap(state, provider).query_update(0)
     assert update["valid"].tolist() == [True]
     assert torch.allclose(update["anchor_xyz"][0], point, atol=1e-4, rtol=0)
+
+    descriptor_only = LeaveOneQueryOutProjectiveMap(
+        state, provider
+    ).descriptor_only_update(0)
+    assert descriptor_only["valid"].tolist() == [True]
+    assert torch.allclose(
+        descriptor_only["anchor_observation_features"][0],
+        torch.tensor([1.0, 0.0]),
+    )
+    assert descriptor_only["contract"]["query_geometry_loo"] is False
+    assert descriptor_only["contract"]["geometry_held_fixed"] is True
 
     neighborhood = LeaveOneQueryOutProjectiveMap(state, provider).query_update(
         0, excluded_queries=[0, 1]

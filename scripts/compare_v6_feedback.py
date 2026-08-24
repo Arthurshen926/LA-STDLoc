@@ -60,6 +60,8 @@ PAIRED_PROTOCOL_FIELDS = (
     "ransac_reprojection_px",
     "ransac_seed",
     "loo_pose_neighbors",
+    "feedback_observer_mode",
+    "deployment_plant_geometry_held_fixed",
     "affected_anchor_policy",
     "global_top1",
     "pose_solves_per_query",
@@ -98,8 +100,8 @@ def _load_evaluation(path: Path, expected_sha256: str, *, label: str) -> dict:
     value = torch.load(path.resolve(), map_location="cpu", weights_only=False)
     if not isinstance(value, dict):
         raise ValueError(f"{label} is not a dictionary")
-    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 4:
-        raise ValueError(f"{label} is not a V6 identity-safe evaluation v4")
+    if value.get("schema") != EVALUATION_SCHEMA or int(value.get("version", -1)) != 5:
+        raise ValueError(f"{label} is not a V6 identity-safe evaluation v5")
     if value.get("uses_source_mapping_rgb") is not False or value.get("uses_test_queries") is not False:
         raise ValueError(f"{label} is not mapping-only/test-free")
     feedback = value.get("feedback")
