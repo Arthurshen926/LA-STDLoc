@@ -8,6 +8,7 @@ from common.v6_contracts import (
     exact_identity_positive_contract,
 )
 from map_learning.v6_control_actions import (
+    ControlActionUnavailable,
     control_oriented_descriptor_proposal,
     minimal_pose_correction_set,
     minimum_norm_score_boundary_action,
@@ -118,3 +119,45 @@ def test_control_proposal_uses_only_pose_changing_controllable_rows() -> None:
     assert report["accepted_constraint_count"] == 2
     assert report["updated_anchor_count"] == 2
     assert not torch.equal(proposal["anchor_features"], state["anchor_features"])
+
+
+def test_unavailable_control_action_preserves_per_query_audit() -> None:
+    state = {
+        "anchor_features": torch.tensor([[1.0, 0.0], [0.99, 0.14]]),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+    }
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "query_names": ["q"],
+        "records": [
+            {
+                "pose_success": False,
+                "winner_anchor_ids": torch.zeros(4, dtype=torch.long),
+                "descriptor_triplets": torch.empty((0, 4), dtype=torch.long),
+                "descriptor_triplet_pose_weights": torch.empty(0),
+                "certified_pose_valid_alternative_pairs": torch.empty((0, 2)),
+                "top1_negative_mask": torch.ones(4, dtype=torch.bool),
+            }
+        ],
+    }
+    try:
+        control_oriented_descriptor_proposal(
+            state,
+            _Observations(),
+            feedback,
+            training_query_indices=torch.tensor([0]),
+            trust_region=0.2,
+            margin=0.01,
+            reprojection_error_px=4.0,
+            solver=_counting_solver,
+        )
+    except ControlActionUnavailable as error:
+        assert len(error.audits) == 1
+        assert error.audits[0]["controller_route"] == "structure_or_prior_limited"
+        assert error.audits[0]["candidate_action_count"] == 0
+    else:
+        raise AssertionError("expected a preserved unavailable control audit")

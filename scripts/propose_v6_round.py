@@ -25,7 +25,10 @@ from common.v6_contracts import (
 from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.projective_completion import build_projective_completion
 from map_learning.v6_association_repair import association_repair_proposal
-from map_learning.v6_control_actions import control_oriented_descriptor_proposal
+from map_learning.v6_control_actions import (
+    ControlActionUnavailable,
+    control_oriented_descriptor_proposal,
+)
 from map_learning.v6_proposals import (
     descriptor_loss_proposal,
     descriptor_only_proposal,
@@ -445,6 +448,7 @@ def run(args: argparse.Namespace) -> dict:
     selection_report = None
     reconstruction_scope = None
     unavailable_reason = None
+    control_action_audits = None
     association_sha = None
     reconstruction_strategy = getattr(args, "reconstruction_strategy", "completion")
     repair_minimum_descriptor_similarity = float(
@@ -480,18 +484,10 @@ def run(args: argparse.Namespace) -> dict:
                 proposal["v6_descriptor_distillation"][
                     "training_split_artifact_sha256s"
                 ] = [descriptor_training_split_sha]
-        except ValueError as error:
-            if str(error) not in {
-                "feedback contains no controllable pose correction sets",
-                "controllable correction sets have no joint trust-region action",
-                (
-                    "controllable correction sets violate clean protection or "
-                    "trust region"
-                ),
-            }:
-                raise
+        except ControlActionUnavailable as error:
             proposal = None
             unavailable_reason = str(error).replace(" ", "_")
+            control_action_audits = error.audits
     elif arm in {"descriptor_loss", "descriptor_selection"}:
         try:
             descriptor_feedback = feedback
@@ -876,6 +872,7 @@ def run(args: argparse.Namespace) -> dict:
             },
             "anchor_count": int(torch.as_tensor(state["anchor_ids"]).numel()),
             "reconstruction_training_scope": reconstruction_scope,
+            "control_action_audits": control_action_audits,
         }
         (args.output_dir / "proposal.json").write_text(
             json.dumps(report, indent=2, sort_keys=True) + "\n"

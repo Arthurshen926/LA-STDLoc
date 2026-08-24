@@ -12,6 +12,14 @@ from evidence.observation_provider import ObservationProvider
 from localization.pose_solver import solve_absolute_pose
 
 
+class ControlActionUnavailable(ValueError):
+    """A scientifically valid no-action result with a preserved audit trail."""
+
+    def __init__(self, message: str, *, audits: list[dict]):
+        super().__init__(message)
+        self.audits = audits
+
+
 def _pose_error_cm_deg(
     estimated_w2c: torch.Tensor,
     ground_truth_w2c: torch.Tensor,
@@ -459,7 +467,10 @@ def control_oriented_descriptor_proposal(
         )
         audits.append(audit)
     if not bundles:
-        raise ValueError("feedback contains no controllable pose correction sets")
+        raise ControlActionUnavailable(
+            "feedback contains no controllable pose correction sets",
+            audits=audits,
+        )
 
     # Greedy MPC: admit the highest predicted pose-risk reduction only while
     # the joint minimum-norm action remains inside every Anchor trust ball.
@@ -481,7 +492,10 @@ def control_oriented_descriptor_proposal(
         if joint["feasible"] and joint["maximum_anchor_action_norm"] <= float(trust_region):
             accepted = trial
     if not accepted or joint is None:
-        raise ValueError("controllable correction sets have no joint trust-region action")
+        raise ControlActionUnavailable(
+            "controllable correction sets have no joint trust-region action",
+            audits=audits,
+        )
     def solve_with_clean_protection(values: list[dict]) -> tuple[dict, int]:
         correction_query = torch.cat([value["query"] for value in values])
         correction_positive = torch.cat([value["positive"] for value in values])
@@ -552,8 +566,9 @@ def control_oriented_descriptor_proposal(
             break
         accepted.pop()
     if not accepted:
-        raise ValueError(
-            "controllable correction sets violate clean protection or trust region"
+        raise ControlActionUnavailable(
+            "controllable correction sets violate clean protection or trust region",
+            audits=audits,
         )
     active = joint["active_anchor_rows"]
     output_features = features.clone()
