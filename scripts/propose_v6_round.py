@@ -531,7 +531,11 @@ def run(args: argparse.Namespace) -> dict:
         reconstruction_scope = _reconstruction_training_scope(
             feedback, descriptor_training_queries
         )
-        if reconstruction_strategy == "association_repair":
+        if reconstruction_strategy in (
+            "association_repair",
+            "association_repair_global",
+        ):
+            deploy_repair_globally = reconstruction_strategy.endswith("_global")
             try:
                 proposal, repair_report = association_repair_proposal(
                     state,
@@ -546,7 +550,7 @@ def run(args: argparse.Namespace) -> dict:
                         "v6_reconstruction_training_split_sha256": (
                             descriptor_training_split_sha
                         ),
-                        "v6_reconstruction_strategy": "association_repair",
+                        "v6_reconstruction_strategy": reconstruction_strategy,
                     },
                     minimum_descriptor_similarity=(
                         repair_minimum_descriptor_similarity
@@ -556,10 +560,11 @@ def run(args: argparse.Namespace) -> dict:
                     minimum_views=args.minimum_views,
                     minimum_view_bins=args.minimum_camera_families,
                     maximum_reprojection_px=args.maximum_epipolar_error_px,
+                    deploy_rule_globally=deploy_repair_globally,
                 )
                 reconstruction_scope = {
                     **reconstruction_scope,
-                    "strategy": "association_repair",
+                    "strategy": reconstruction_strategy,
                     "selected_pair_count": int(
                         repair_report["selected_pair_count"]
                     ),
@@ -942,7 +947,7 @@ def main() -> None:
     parser.add_argument("--completion-safety-maximum-components", type=int, default=100000)
     parser.add_argument(
         "--reconstruction-strategy",
-        choices=("completion", "association_repair"),
+        choices=("completion", "association_repair", "association_repair_global"),
         default="completion",
     )
     parser.add_argument(

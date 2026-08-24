@@ -5,7 +5,10 @@ from common.v6_contracts import (
     FEEDBACK_VERSION,
     exact_identity_positive_contract,
 )
-from map_learning.v6_association_repair import select_association_repair_pairs
+from map_learning.v6_association_repair import (
+    deploy_association_repair_rule_globally,
+    select_association_repair_pairs,
+)
 
 
 def _feedback(records):
@@ -71,3 +74,31 @@ def test_association_repair_rejects_overlapping_camera_support():
     )
     assert pairs.numel() == 0
     assert report["observation_conflict_pair_count"] == 1
+
+
+def test_global_repair_deploys_certified_rule_without_validation_feedback():
+    state = {
+        "anchor_xyz": torch.tensor(
+            [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [1.0, 0.0, 0.0], [1.01, 0.0, 0.0]]
+        ),
+        "anchor_features": torch.tensor(
+            [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]
+        ),
+        "projective_anchor_observations": {
+            "observation_offsets": torch.tensor([0, 1, 2, 3, 4]),
+            "query_indices": torch.tensor([0, 1, 2, 3]),
+        },
+    }
+    certified = torch.tensor([[0, 1]])
+    report = {"selected_pair_evidence_counts": torch.tensor([5])}
+    pairs, deployed = deploy_association_repair_rule_globally(
+        state,
+        certified,
+        report,
+        minimum_descriptor_similarity=0.9,
+        maximum_xyz_distance_m=0.02,
+    )
+    assert pairs.tolist() == [[0, 1], [2, 3]]
+    assert deployed["selected_pair_evidence_counts"].tolist() == [5, 0]
+    assert deployed["selection_uses_validation_feedback"] is False
+    assert deployed["feedback_certified_rule_deployed_globally"] is True

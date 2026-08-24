@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 
+import numpy as np
+from scipy.spatial import cKDTree
 import torch
 import torch.nn.functional as F
 
@@ -136,6 +138,105 @@ def select_association_repair_pairs(
     }
 
 
+def deploy_association_repair_rule_globally(
+    state: dict,
+    certified_pairs: torch.Tensor,
+    certified_report: dict,
+    *,
+    minimum_descriptor_similarity: float,
+    maximum_xyz_distance_m: float,
+) -> tuple[torch.Tensor, dict]:
+    """Apply a training-feedback-certified repair rule to the whole source map.
+
+    The action holdout never contributes an edge label.  It may nevertheless be
+    transformed by the rule learned/certified on the training split, just as a
+    deployed model is applied to unseen inputs.  Ray reconstruction remains the
+    final geometric acceptance test.
+    """
+
+    certified_pairs = torch.as_tensor(certified_pairs, dtype=torch.long).reshape(-1, 2)
+    if certified_pairs.numel() == 0:
+        raise ValueError("global association repair requires training-certified pairs")
+    xyz = torch.as_tensor(state["anchor_xyz"]).float().cpu()
+    features = F.normalize(torch.as_tensor(state["anchor_features"]).float().cpu(), dim=1)
+    spatial = cKDTree(xyz.numpy()).query_pairs(
+        r=float(maximum_xyz_distance_m), output_type="ndarray"
+    )
+    spatial = torch.from_numpy(np.asarray(spatial, dtype=np.int64)).long().reshape(-1, 2)
+    if spatial.numel() == 0:
+        raise ValueError("global association repair found no spatial neighbor pair")
+    similarity = (features[spatial[:, 0]] * features[spatial[:, 1]]).sum(dim=1)
+    keep = similarity >= float(minimum_descriptor_similarity)
+    spatial = spatial[keep]
+    similarity = similarity[keep]
+
+    csr = state.get("projective_anchor_observations", {})
+    offsets = torch.as_tensor(csr.get("observation_offsets")).long()
+    query = torch.as_tensor(csr.get("query_indices")).long()
+    certified_counts = torch.as_tensor(
+        certified_report["selected_pair_evidence_counts"]
+    ).long()
+    certified = {
+        tuple(sorted(map(int, pair))): int(count)
+        for pair, count in zip(certified_pairs.tolist(), certified_counts.tolist())
+    }
+    candidates = []
+    observation_conflict_count = 0
+    for index, pair in enumerate(spatial.tolist()):
+        first, second = map(int, pair)
+        first_queries = query[offsets[first] : offsets[first + 1]]
+        second_queries = query[offsets[second] : offsets[second + 1]]
+        if bool(torch.isin(first_queries, second_queries).any()):
+            observation_conflict_count += 1
+            continue
+        key = (first, second)
+        candidates.append(
+            (
+                key,
+                certified.get(key, 0),
+                float(similarity[index]),
+                float(torch.linalg.norm(xyz[first] - xyz[second])),
+            )
+        )
+    # Training-certified pairs receive priority.  The frozen local rule is then
+    # deployed by descriptor agreement and finally by spatial proximity.
+    candidates.sort(key=lambda value: (-value[1], -value[2], value[3], value[0]))
+    selected = []
+    used: set[int] = set()
+    for candidate in candidates:
+        pair = candidate[0]
+        if pair[0] in used or pair[1] in used:
+            continue
+        used.update(pair)
+        selected.append(candidate)
+    pairs = torch.tensor(
+        [pair for pair, _, _, _ in selected], dtype=torch.long
+    ).reshape(-1, 2)
+    return pairs, {
+        **certified_report,
+        "schema": "lafgs_v6_feedback_association_repair_selection",
+        "version": 2,
+        "feedback_certified_pair_count": int(certified_pairs.shape[0]),
+        "global_spatial_pair_count": int(keep.numel()),
+        "global_threshold_pair_count": int(spatial.shape[0]),
+        "global_observation_conflict_pair_count": observation_conflict_count,
+        "global_eligible_pair_count": len(candidates),
+        "selected_pair_count": len(selected),
+        "selected_pairs": pairs,
+        "selected_pair_evidence_counts": torch.tensor(
+            [value[1] for value in selected], dtype=torch.long
+        ),
+        "selected_pair_descriptor_similarities": torch.tensor(
+            [value[2] for value in selected], dtype=torch.float32
+        ),
+        "selected_pair_xyz_distances_m": torch.tensor(
+            [value[3] for value in selected], dtype=torch.float32
+        ),
+        "selection_uses_validation_feedback": False,
+        "feedback_certified_rule_deployed_globally": True,
+    }
+
+
 @torch.no_grad()
 def association_repair_proposal(
     state: dict,
@@ -151,6 +252,7 @@ def association_repair_proposal(
     minimum_views: int = 3,
     minimum_view_bins: int = 2,
     maximum_reprojection_px: float = 2.0,
+    deploy_rule_globally: bool = False,
 ) -> tuple[dict, dict]:
     """Merge certified fragmented pairs and retriangulate them from rays."""
 
@@ -162,6 +264,14 @@ def association_repair_proposal(
         maximum_xyz_distance_m=maximum_xyz_distance_m,
         minimum_query_evidence=minimum_query_evidence,
     )
+    if deploy_rule_globally:
+        pairs, selection = deploy_association_repair_rule_globally(
+            state,
+            pairs,
+            selection,
+            minimum_descriptor_similarity=minimum_descriptor_similarity,
+            maximum_xyz_distance_m=maximum_xyz_distance_m,
+        )
     if pairs.numel() == 0:
         raise ValueError("association repair selected no fragmented Track pair")
     csr = state["projective_anchor_observations"]
@@ -260,6 +370,7 @@ def association_repair_proposal(
         "descriptor_source": "view_balanced_robust_fusion_after_pair_merge",
         "global_support_repair": False,
         "local_pairwise_feedback_repair": True,
+        "feedback_certified_rule_deployed_globally": bool(deploy_rule_globally),
     }
     proposal["v6_reconstruction_distillation"] = report
     return proposal, report
