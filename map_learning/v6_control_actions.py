@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from common.v6_contracts import FEEDBACK_SCHEMA, require_schema
 from evidence.observation_provider import ObservationProvider
 from localization.pose_solver import solve_absolute_pose
+from topology.v6_anchor_map import subset_projective_anchor_map
 
 
 class ControlActionUnavailable(ValueError):
@@ -448,6 +449,11 @@ def control_oriented_descriptor_proposal(
             "pose_correction_found": bool(search["correction_found"]),
             "selected_query_rows": search["selected_rows"],
             "selected_positive_anchors": search["selected_positive_anchors"],
+            "selected_negative_anchors": (
+                winners[search["selected_rows"]]
+                if search["selected_rows"].numel()
+                else torch.empty(0, dtype=torch.long)
+            ),
         }
         if search["correction_found"] and search["selected_rows"].numel():
             rows = search["selected_rows"]
@@ -499,6 +505,109 @@ def control_oriented_descriptor_proposal(
         )
         audits.append(audit)
     if not bundles:
+        # A decision boundary can be too far away for a safe continuous
+        # descriptor action while a tiny discrete map action remains viable.
+        # Suppress only Anchors that are at least three times more often a
+        # legal-negative winner than an exact winner on the training split,
+        # then replay the actual matcher and PoseLib on every proposed repair.
+        correction_audits = [
+            value
+            for value in audits
+            if value["pose_correction_found"]
+            and int(value["minimal_correction_set_size"]) > 0
+        ]
+        candidate_anchors = torch.unique(
+            torch.cat(
+                [value["selected_negative_anchors"] for value in correction_audits]
+            ),
+            sorted=True,
+        ) if correction_audits else torch.empty(0, dtype=torch.long)
+        exact_use = {int(anchor): 0 for anchor in candidate_anchors.tolist()}
+        negative_use = {int(anchor): 0 for anchor in candidate_anchors.tolist()}
+        for query_index in training.tolist():
+            record = feedback["records"][query_index]
+            winner = torch.as_tensor(record.get("winner_anchor_ids", ())).long()
+            exact = torch.as_tensor(
+                record.get("winner_identity_correct_mask", torch.zeros_like(winner))
+            ).bool()
+            negative = torch.as_tensor(
+                record.get("top1_negative_mask", torch.zeros_like(winner))
+            ).bool()
+            for anchor in candidate_anchors.tolist():
+                hit = winner == int(anchor)
+                exact_use[int(anchor)] += int((hit & exact).sum())
+                negative_use[int(anchor)] += int((hit & negative).sum())
+        eligible = {
+            anchor
+            for anchor in candidate_anchors.tolist()
+            if negative_use[anchor] >= 3 * max(exact_use[anchor], 1)
+        }
+        accepted_audits = []
+        suppressed: set[int] = set()
+        for audit in correction_audits:
+            local_suppressed = {
+                int(value) for value in audit["selected_negative_anchors"].tolist()
+            }
+            if not local_suppressed or not local_suppressed <= eligible:
+                continue
+            query_index = int(audit["query_index"])
+            record = feedback["records"][query_index]
+            view = observations.build_view(query_index)
+            patched = torch.as_tensor(record["winner_anchor_ids"]).long().clone()
+            removed = torch.tensor(sorted(local_suppressed), dtype=torch.long)
+            affected = torch.nonzero(
+                torch.isin(patched, removed), as_tuple=False
+            ).reshape(-1)
+            if affected.numel() == 0:
+                continue
+            scores = F.normalize(view.descriptors[affected].float(), dim=1) @ features.T
+            scores[:, removed] = -torch.inf
+            patched[affected] = torch.argmax(scores, dim=1)
+            estimate = solver(
+                view.physical_keypoints.numpy(),
+                xyz[patched].numpy(),
+                view.intrinsics.float().numpy(),
+                reprojection_error_px=float(reprojection_error_px),
+                confidence=0.99999,
+                max_iterations=100000,
+                min_iterations=1000,
+                seed=int(seed),
+            )
+            te_cm, ae_deg = _pose_error_cm_deg(estimate.pose_w2c, view.pose_w2c)
+            audit["anchor_suppression_replay_te_cm"] = te_cm
+            audit["anchor_suppression_replay_ae_deg"] = ae_deg
+            audit["anchor_suppression_replay_success"] = bool(
+                te_cm < 5.0 and ae_deg < 5.0
+            )
+            if audit["anchor_suppression_replay_success"]:
+                accepted_audits.append(audit)
+                suppressed.update(local_suppressed)
+        if suppressed:
+            keep = torch.ones(features.shape[0], dtype=torch.bool)
+            keep[torch.tensor(sorted(suppressed), dtype=torch.long)] = False
+            proposal = subset_projective_anchor_map(
+                state, torch.nonzero(keep, as_tuple=False).reshape(-1)
+            )
+            proposal["v6_selection_distillation"] = {
+                "schema": "lafgs_v6_control_oriented_anchor_suppression",
+                "version": 1,
+                "training_query_indices": training,
+                "selected_query_indices": torch.tensor(
+                    [value["query_index"] for value in accepted_audits],
+                    dtype=torch.long,
+                ),
+                "training_query_registry_explicit": True,
+                "suppressed_source_anchor_rows": torch.tensor(
+                    sorted(suppressed), dtype=torch.long
+                ),
+                "suppressed_anchor_count": len(suppressed),
+                "negative_to_exact_use_minimum_ratio": 3.0,
+                "source_anchor_negative_winner_uses": negative_use,
+                "source_anchor_exact_winner_uses": exact_use,
+                "actual_matcher_and_poselib_replay_required": True,
+                "failed_query_audits": audits,
+            }
+            return proposal
         raise ControlActionUnavailable(
             "feedback contains no controllable pose correction sets",
             audits=audits,

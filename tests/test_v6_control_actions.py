@@ -162,3 +162,53 @@ def test_unavailable_control_action_preserves_per_query_audit() -> None:
         assert error.audits[0]["candidate_action_count"] == 0
     else:
         raise AssertionError("expected a preserved unavailable control audit")
+
+
+def test_control_proposal_falls_back_to_verified_anchor_suppression() -> None:
+    state = {
+        "anchor_ids": torch.arange(2),
+        "anchor_features": torch.tensor([[1.0, 0.0], [0.99, 0.14]]),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+        "projective_anchor_observations": {
+            "observation_offsets": torch.tensor([0, 1, 2]),
+            "query_indices": torch.tensor([0, 0]),
+            "keypoint_indices": torch.tensor([0, 1]),
+        },
+    }
+    triplets = torch.tensor(
+        [[row, 1, 0, 0] for row in range(4)], dtype=torch.long
+    )
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "query_names": ["q"],
+        "records": [
+            {
+                "pose_success": False,
+                "winner_anchor_ids": torch.zeros(4, dtype=torch.long),
+                "winner_identity_correct_mask": torch.zeros(4, dtype=torch.bool),
+                "descriptor_triplets": triplets,
+                "descriptor_triplet_pose_weights": torch.ones(4),
+                "certified_pose_valid_alternative_pairs": torch.empty((0, 2)),
+                "top1_negative_mask": torch.ones(4, dtype=torch.bool),
+            }
+        ],
+    }
+    proposal = control_oriented_descriptor_proposal(
+        state,
+        _Observations(),
+        feedback,
+        training_query_indices=torch.tensor([0]),
+        trust_region=0.001,
+        margin=0.01,
+        reprojection_error_px=4.0,
+        maximum_correction_set_size=3,
+        solver=_counting_solver,
+    )
+    report = proposal["v6_selection_distillation"]
+    assert report["suppressed_source_anchor_rows"].tolist() == [0]
+    assert report["selected_query_indices"].tolist() == [0]
+    assert proposal["anchor_ids"].numel() == 1

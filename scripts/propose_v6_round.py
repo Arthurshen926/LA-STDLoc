@@ -481,7 +481,13 @@ def run(args: argparse.Namespace) -> dict:
                 beam_width=args.control_beam_width,
             )
             if descriptor_training_split_sha is not None:
-                proposal["v6_descriptor_distillation"][
+                dependency_report = proposal.get(
+                    "v6_descriptor_distillation",
+                    proposal.get("v6_selection_distillation"),
+                )
+                if not isinstance(dependency_report, dict):
+                    raise ValueError("control proposal dependency report is missing")
+                dependency_report[
                     "training_split_artifact_sha256s"
                 ] = [descriptor_training_split_sha]
         except ControlActionUnavailable as error:
