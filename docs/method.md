@@ -21,11 +21,11 @@ triangulator is called. Thus the formal construction order is:
 
 ```text
 Gaussian render -> alpha-before-NMS observations -> unified association
--> pure-ray Projective Anchor map -> fixed-plant v7 feedback
+-> pure-ray Projective Anchor map -> fixed-plant v8 feedback
 -> bounded representation/structure/redundancy actions -> compact deployment export
 ```
 
-The baseline and every proposal receive fresh v7 feedback. The main observer
+The baseline and every proposal receive fresh v8 feedback. The main observer
 is **F0 fixed-map feedback**: every ordered mapping query localizes against the
 same immutable geometry, descriptor bank, topology, and Anchor subset used by
 the deployment plant. **F1 descriptor-leave-self-out** holds geometry and
@@ -34,7 +34,10 @@ affected Anchor descriptors. Historical pose-neighborhood geometry rebuild is
 retained only as the **F2 stress test**; it is not the main control signal.
 Strong descriptor positives require exact projective identity. A non-identity
 2D neighbor remains diagnostic ambiguity unless aligned surface depth certifies
-it as a pose-valid alternative; missing depth fails closed. The operation
+it as a pose-valid alternative; missing depth fails closed. Dense rendered
+depth is sampled at the exact sparse keypoint rows when an equivalent
+pre-sampled column is absent; alpha and raster-validity masks remain
+fail-closed. The operation
 measured by every observer remains native SuperPoint, one global cosine Top-1
 Anchor for every query row, and one standard PoseLib solve. The evaluator emits separate L1
 image-cell visibility, L2 detectability, L3 one-to-one matching, and L4
@@ -49,6 +52,24 @@ The map controller has three bounded actuator families:
   certified multi-view evidence; 2D proximity alone cannot merge Anchors.
 - **Redundancy** removes Anchors only by reverse pruning after representation
   and structure have converged.
+
+Representation control is pose-output oriented. For each failed fixed-map
+probe, a bounded beam search replays the unchanged one-shot PoseLib solver to
+find a minimal set of Top-1 replacements that actually recovers the pose. A
+minimum-norm tangent QP then asks whether those score boundaries can be crossed
+inside the Anchor trust region while preserving adjacent clean winner margins.
+Only oracle-effective and trust-feasible bundles become descriptor actions;
+the rest are routed to local structure analysis or marked prior-limited.
+
+Observer excitation is expanded by an immutable virtual-probe plan. Candidate
+poses include trajectory interpolation, bounded perturbations, boundary
+extensions, reverse views, and ambiguity-directed views. Selection combines
+viewpoint novelty, false-attractor co-visibility, PnP image-cell coverage, and
+artifact risk, then assigns a mild sensor-perturbation schedule. These probes
+never enter the map, Anchor-observation CSR, or Track view count. A planned
+pose is not evaluable until the same frozen Gaussian prior supplies RGB and
+alpha/depth z-buffer certification; geometry projection is experiment design,
+not a pose-valid certificate.
 
 Each proposal is evaluated with fresh F0 feedback, audited with F1, and paired
 against the same baseline. F2 is a low-frequency fragility audit. The formal runner records diagnostics and artifacts but

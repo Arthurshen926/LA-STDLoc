@@ -339,6 +339,42 @@ def control_oriented_descriptor_proposal(
         deployed = triplets[:, 2] == winners[triplets[:, 0]] if triplets.numel() else torch.empty(0, dtype=torch.bool)
         triplets = triplets[deployed]
         pose_weight = pose_weight[deployed]
+        certified = torch.as_tensor(
+            record.get("certified_pose_valid_alternative_pairs", ())
+        ).long().reshape(-1, 2)
+        negative_winner = torch.as_tensor(
+            record.get("top1_negative_mask", torch.zeros(winners.numel()))
+        ).bool().reshape(-1)
+        if negative_winner.numel() != winners.numel():
+            raise ValueError("control-action negative-winner mask is not aligned")
+        if certified.numel():
+            certified = certified[negative_winner[certified[:, 0]]]
+            certified_triplets = torch.column_stack(
+                (
+                    certified[:, 0],
+                    certified[:, 1],
+                    winners[certified[:, 0]],
+                    torch.zeros(certified.shape[0], dtype=torch.long),
+                )
+            )
+            existing_keys = {
+                (int(row), int(positive)) for row, positive in triplets[:, :2].tolist()
+            }
+            keep = torch.tensor(
+                [
+                    (int(row), int(positive)) not in existing_keys
+                    for row, positive in certified[:, :2].tolist()
+                ],
+                dtype=torch.bool,
+            )
+            certified_triplets = certified_triplets[keep]
+            triplets = torch.cat((triplets, certified_triplets), dim=0)
+            pose_weight = torch.cat(
+                (pose_weight, torch.zeros(certified_triplets.shape[0]))
+            )
+        certified_candidate_count = int(
+            certified_triplets.shape[0] if certified.numel() else 0
+        )
         priority = pose_weight + 0.01 * (~triplets[:, 3].bool()).float()
         search = minimal_pose_correction_set(
             keypoints=view.physical_keypoints,
@@ -364,6 +400,9 @@ def control_oriented_descriptor_proposal(
             "best_te_cm": search["best"]["te_cm"],
             "best_ae_deg": search["best"]["ae_deg"],
             "candidate_action_count": search["candidate_count"],
+            "certified_pose_valid_candidate_action_count": (
+                certified_candidate_count
+            ),
             "evaluated_action_set_count": search["evaluated_action_set_count"],
             "minimal_correction_set_size": int(search["selected_rows"].numel()),
             "pose_correction_found": bool(search["correction_found"]),

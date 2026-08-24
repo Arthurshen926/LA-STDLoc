@@ -97,6 +97,8 @@ def test_control_proposal_uses_only_pose_changing_controllable_rows() -> None:
                 "winner_anchor_ids": torch.zeros(4, dtype=torch.long),
                 "descriptor_triplets": triplets,
                 "descriptor_triplet_pose_weights": torch.ones(4),
+                "certified_pose_valid_alternative_pairs": torch.empty((0, 2)),
+                "top1_negative_mask": torch.ones(4, dtype=torch.bool),
             }
         ],
     }
