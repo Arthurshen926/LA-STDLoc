@@ -166,13 +166,17 @@ def test_unavailable_control_action_preserves_per_query_audit() -> None:
 
 def test_control_proposal_falls_back_to_verified_anchor_suppression() -> None:
     state = {
-        "anchor_ids": torch.arange(2),
-        "anchor_features": torch.tensor([[1.0, 0.0], [0.99, 0.14]]),
-        "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+        "anchor_ids": torch.arange(3),
+        "anchor_features": torch.tensor(
+            [[1.0, 0.0], [0.99, 0.14], [0.999, 0.04]]
+        ),
+        "anchor_xyz": torch.tensor(
+            [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]]
+        ),
         "projective_anchor_observations": {
-            "observation_offsets": torch.tensor([0, 1, 2]),
-            "query_indices": torch.tensor([0, 0]),
-            "keypoint_indices": torch.tensor([0, 1]),
+            "observation_offsets": torch.tensor([0, 1, 2, 3]),
+            "query_indices": torch.tensor([0, 0, 0]),
+            "keypoint_indices": torch.tensor([0, 1, 2]),
         },
     }
     triplets = torch.tensor(
@@ -209,6 +213,6 @@ def test_control_proposal_falls_back_to_verified_anchor_suppression() -> None:
         solver=_counting_solver,
     )
     report = proposal["v6_selection_distillation"]
-    assert report["suppressed_source_anchor_rows"].tolist() == [0]
+    assert report["suppressed_source_anchor_rows"].tolist() == [0, 2]
     assert report["selected_query_indices"].tolist() == [0]
     assert proposal["anchor_ids"].numel() == 1

@@ -522,8 +522,8 @@ def control_oriented_descriptor_proposal(
             ),
             sorted=True,
         ) if correction_audits else torch.empty(0, dtype=torch.long)
-        exact_use = {int(anchor): 0 for anchor in candidate_anchors.tolist()}
-        negative_use = {int(anchor): 0 for anchor in candidate_anchors.tolist()}
+        exact_count = torch.zeros(features.shape[0], dtype=torch.long)
+        negative_count = torch.zeros(features.shape[0], dtype=torch.long)
         for query_index in training.tolist():
             record = feedback["records"][query_index]
             winner = torch.as_tensor(record.get("winner_anchor_ids", ())).long()
@@ -533,10 +533,19 @@ def control_oriented_descriptor_proposal(
             negative = torch.as_tensor(
                 record.get("top1_negative_mask", torch.zeros_like(winner))
             ).bool()
-            for anchor in candidate_anchors.tolist():
-                hit = winner == int(anchor)
-                exact_use[int(anchor)] += int((hit & exact).sum())
-                negative_use[int(anchor)] += int((hit & negative).sum())
+            exact_count.scatter_add_(
+                0, winner, exact.long()
+            )
+            negative_count.scatter_add_(
+                0, winner, negative.long()
+            )
+        exact_use = {
+            int(anchor): int(exact_count[anchor]) for anchor in candidate_anchors.tolist()
+        }
+        negative_use = {
+            int(anchor): int(negative_count[anchor])
+            for anchor in candidate_anchors.tolist()
+        }
         eligible = {
             anchor
             for anchor in candidate_anchors.tolist()
@@ -582,6 +591,71 @@ def control_oriented_descriptor_proposal(
             if audit["anchor_suppression_replay_success"]:
                 accepted_audits.append(audit)
                 suppressed.update(local_suppressed)
+        # If deleting the current winners only reveals another distractor,
+        # compute the exact finite deletion set required for every desired
+        # positive to become Top1.  Keep it bounded and require the aggregate
+        # training evidence to remain strongly negative-dominant.
+        if not suppressed:
+            for audit in correction_audits:
+                query_index = int(audit["query_index"])
+                record = feedback["records"][query_index]
+                view = observations.build_view(query_index)
+                blockers = []
+                for row, positive in zip(
+                    audit["selected_query_rows"].tolist(),
+                    audit["selected_positive_anchors"].tolist(),
+                ):
+                    descriptor = F.normalize(view.descriptors[int(row)].float(), dim=0)
+                    scores = features @ descriptor
+                    blockers.append(
+                        torch.nonzero(
+                            scores > scores[int(positive)] + 1e-7,
+                            as_tuple=False,
+                        ).reshape(-1)
+                    )
+                blockers = torch.unique(torch.cat(blockers), sorted=True)
+                blocker_exact = int(exact_count[blockers].sum())
+                blocker_negative = int(negative_count[blockers].sum())
+                audit["top1_boundary_blocker_count"] = int(blockers.numel())
+                audit["top1_boundary_blocker_exact_winner_uses"] = blocker_exact
+                audit["top1_boundary_blocker_negative_winner_uses"] = blocker_negative
+                if (
+                    blockers.numel() == 0
+                    or blockers.numel() > 128
+                    or blocker_negative < 3 * max(blocker_exact, 1)
+                ):
+                    audit["top1_boundary_suppression_eligible"] = False
+                    continue
+                audit["top1_boundary_suppression_eligible"] = True
+                patched = torch.as_tensor(record["winner_anchor_ids"]).long().clone()
+                affected = torch.nonzero(
+                    torch.isin(patched, blockers), as_tuple=False
+                ).reshape(-1)
+                scores = F.normalize(view.descriptors[affected].float(), dim=1) @ features.T
+                scores[:, blockers] = -torch.inf
+                patched[affected] = torch.argmax(scores, dim=1)
+                estimate = solver(
+                    view.physical_keypoints.numpy(),
+                    xyz[patched].numpy(),
+                    view.intrinsics.float().numpy(),
+                    reprojection_error_px=float(reprojection_error_px),
+                    confidence=0.99999,
+                    max_iterations=100000,
+                    min_iterations=1000,
+                    seed=int(seed),
+                )
+                te_cm, ae_deg = _pose_error_cm_deg(estimate.pose_w2c, view.pose_w2c)
+                audit["top1_boundary_suppression_replay_te_cm"] = te_cm
+                audit["top1_boundary_suppression_replay_ae_deg"] = ae_deg
+                audit["top1_boundary_suppression_replay_success"] = bool(
+                    te_cm < 5.0 and ae_deg < 5.0
+                )
+                if audit["top1_boundary_suppression_replay_success"]:
+                    accepted_audits.append(audit)
+                    suppressed.update(int(value) for value in blockers.tolist())
+                    for anchor in blockers.tolist():
+                        exact_use[int(anchor)] = int(exact_count[anchor])
+                        negative_use[int(anchor)] = int(negative_count[anchor])
         if suppressed:
             keep = torch.ones(features.shape[0], dtype=torch.bool)
             keep[torch.tensor(sorted(suppressed), dtype=torch.long)] = False
