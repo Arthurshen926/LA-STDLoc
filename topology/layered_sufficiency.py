@@ -135,6 +135,7 @@ def select_layered_sufficiency(
     selected_set: set[int] = set()
     trace = []
     order = torch.argsort(reliability, descending=True, stable=True).tolist()
+    layer_candidate_examination_count = {name: 0 for name in LAYER_NAMES}
 
     def add(candidate: int, reason: str) -> None:
         selected.append(candidate)
@@ -146,15 +147,21 @@ def select_layered_sufficiency(
     for layer in LAYER_NAMES:
         state = states[layer]
         target = layer_targets[layer]
+        cursor = 0
         while bool((state.counts < target).any()):
             # The policy chooses the first feasible row in reliability order.
-            # Stop at that row instead of materializing the full feasible list;
-            # this is selection-exact and avoids thousands of unused matching
-            # replays on every addition.
+            # Coverage and bipartite-matching rank are monotone submodular, so
+            # an Anchor with zero marginal gain cannot regain positive marginal
+            # gain after the selected set grows.  Advancing the cursor is thus
+            # selection-exact and avoids rechecking the same rejected prefix on
+            # every addition.
             chosen = None
-            for candidate in order:
+            while cursor < len(order):
+                candidate = order[cursor]
+                cursor += 1
                 if candidate in selected_set:
                     continue
+                layer_candidate_examination_count[layer] += 1
                 if any(
                     state.counts[query] < target[query]
                     and state.would_augment(candidate, query)
@@ -350,6 +357,8 @@ def select_layered_sufficiency(
             "hierarchical_not_weighted_sum": True,
             "selection_order": [*LAYER_NAMES, "pose"],
             "fixed_edge_graph_required": True,
+            "zero_marginal_candidates_examined_once_per_layer": True,
+            "layer_candidate_examination_count": layer_candidate_examination_count,
             "separate_layer_targets": True,
             "pose_evidence_unit": "unique_anchor_per_query",
             "pose_logdet_target": float(pose_logdet_target),

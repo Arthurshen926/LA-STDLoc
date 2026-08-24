@@ -1,5 +1,6 @@
 import torch
 
+from topology import layered_sufficiency
 from topology.layered_sufficiency import (
     select_layered_sufficiency,
     visibility_image_cells,
@@ -89,6 +90,47 @@ def test_layer_targets_are_independent_and_visibility_counts_image_cells() -> No
         "visibility": [2],
         "detectability": [1],
         "matching": [1],
+    }
+
+
+def test_zero_marginal_prefix_is_not_reexamined(monkeypatch) -> None:
+    calls: dict[int, int] = {}
+    original = layered_sufficiency.IncrementalBipartiteCoverage
+
+    class CountingCoverage(original):
+        def would_augment(self, candidate: int, query: int) -> bool:
+            calls[candidate] = calls.get(candidate, 0) + 1
+            return super().would_augment(candidate, query)
+
+    monkeypatch.setattr(
+        layered_sufficiency, "IncrementalBipartiteCoverage", CountingCoverage
+    )
+    result = select_layered_sufficiency(
+        layer_edges={
+            "visibility": [{0: (0,)}, {}, {}, {}],
+            "detectability": [
+                {0: (0,)},
+                {0: (0,)},
+                {0: (1,)},
+                {0: (2,)},
+            ],
+            "matching": [{}, {}, {}, {}],
+        },
+        reliability=torch.tensor([1.0, 0.9, 0.8, 0.7]),
+        pose_information=torch.zeros(1, 4, 6, 6),
+        visibility_target=1,
+        detectability_target=3,
+        matching_target=0,
+        pose_logdet_target=-200.0,
+        maximum_anchors=4,
+    )
+
+    assert result["selected_anchor_rows"].tolist() == [0, 2, 3]
+    assert calls[1] == 1
+    assert result["contract"]["layer_candidate_examination_count"] == {
+        "visibility": 1,
+        "detectability": 3,
+        "matching": 0,
     }
 
 
