@@ -5,6 +5,7 @@ from map_learning.pose_set_oracle import PoseSetAction
 from map_learning.v6_pose_set_oracle import (
     apply_swaps,
     bounded_minimum_success_set,
+    greedy_unique_geometry_pairs,
     unique_anchor_rows,
 )
 
@@ -33,6 +34,18 @@ def test_bounded_minimum_success_set_finds_joint_pose_flip():
     assert len(selected) == 2
     assert outcome["success"] is True
     assert trace[-1]["depth"] == 2
+
+
+def test_geometry_oracle_keeps_unique_rows_and_anchors_by_residual():
+    pairs = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+    selected = greedy_unique_geometry_pairs(
+        pairs,
+        keypoints=torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+        anchor_xyz=torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+        intrinsics=torch.eye(3),
+        pose_w2c=torch.eye(4),
+    )
+    assert selected.tolist() == [[0, 0], [1, 1]]
 
 
 def test_bounded_minimum_success_set_reports_unavailable():

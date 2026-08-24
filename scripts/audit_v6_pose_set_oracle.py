@@ -30,6 +30,7 @@ from map_learning.v6_feedback_evaluator import _pose_neighborhoods
 from map_learning.v6_pose_set_oracle import (
     apply_swaps,
     bounded_minimum_success_set,
+    greedy_unique_geometry_pairs,
     serialize_actions,
     unique_anchor_rows,
 )
@@ -101,12 +102,17 @@ def _project_error(
 
 def _summarize(rows: list[dict]) -> dict:
     full_success = [bool(row["full_identity"]["success"]) for row in rows]
+    geometry_success = [bool(row["full_geometry"]["success"]) for row in rows]
     correction = [row["correction_set"] for row in rows]
     found = [row for row in correction if row["available"]]
     return {
         "baseline_failed_query_count": len(rows),
         "full_identity_success_count": int(sum(full_success)),
         "full_identity_success_fraction": float(np.mean(full_success)) if rows else 0.0,
+        "full_geometry_success_count": int(sum(geometry_success)),
+        "full_geometry_success_fraction": (
+            float(np.mean(geometry_success)) if rows else 0.0
+        ),
         "bounded_correction_success_count": len(found),
         "bounded_correction_success_fraction": (
             float(len(found) / len(rows)) if rows else 0.0
@@ -117,17 +123,25 @@ def _summarize(rows: list[dict]) -> dict:
         "bounded_correction_depth_maximum": (
             max((int(row["depth"]) for row in found), default=None)
         ),
-        "full_identity_te_cm_median": (
-            float(np.median([row["full_identity"]["te_cm"] for row in rows]))
-            if rows
-            else None
+        "full_identity_available_count": sum(
+            bool(row["full_identity"]["available"]) for row in rows
         ),
-        "full_identity_ae_deg_median": (
-            float(np.median([row["full_identity"]["ae_deg"] for row in rows]))
-            if rows
-            else None
+        "full_identity_te_cm_median": _available_median(
+            rows, "full_identity", "te_cm"
+        ),
+        "full_identity_ae_deg_median": _available_median(
+            rows, "full_identity", "ae_deg"
         ),
     }
+
+
+def _available_median(rows: list[dict], section: str, field: str) -> float | None:
+    values = [
+        float(row[section][field])
+        for row in rows
+        if bool(row[section].get("available"))
+    ]
+    return float(np.median(values)) if values else None
 
 
 @torch.inference_mode()
@@ -252,6 +266,19 @@ def run(args: argparse.Namespace) -> dict:
             cache_key = assignments.tobytes() + rows.tobytes()
             if cache_key in solve_cache:
                 return solve_cache[cache_key]
+            if assignments.shape[0] < 4 or rows.shape[0] < 4:
+                result = {
+                    "available": False,
+                    "te_cm": None,
+                    "ae_deg": None,
+                    "success": False,
+                    "solver_failed": True,
+                    "inlier_count": 0,
+                    "hypotheses": 0,
+                    "risk": 20.0,
+                }
+                solve_cache[cache_key] = result
+                return result
             estimate = solve_absolute_pose(
                 keypoints[torch.from_numpy(rows)].numpy(),
                 xyz[torch.from_numpy(assignments)].numpy(),
@@ -265,6 +292,7 @@ def run(args: argparse.Namespace) -> dict:
             ae_deg, te_cm = pose_error(estimate.pose_w2c, gt_pose.numpy())
             failed = int(np.asarray(estimate.inliers).size) < 4
             result = {
+                "available": True,
                 "te_cm": float(te_cm),
                 "ae_deg": float(ae_deg),
                 "success": bool(te_cm < 100.0 * task_translation_m and ae_deg < task_rotation_deg),
@@ -290,6 +318,27 @@ def run(args: argparse.Namespace) -> dict:
             torch.unique(
                 visibility_image_cells(
                     keypoints[exact_pairs[:, 0]], image_hw=view.image_hw
+                )
+            ).numel()
+        )
+        ambiguous_pairs = torch.as_tensor(
+            record.get("projective_compatible_ambiguous_pairs", ())
+        ).long().reshape(-1, 2)
+        geometry_pairs = greedy_unique_geometry_pairs(
+            torch.cat((exact_pairs, ambiguous_pairs), dim=0),
+            keypoints=keypoints,
+            anchor_xyz=xyz,
+            intrinsics=intrinsics,
+            pose_w2c=gt_pose,
+        )
+        full_geometry = solve(
+            geometry_pairs[:, 1].numpy(), geometry_pairs[:, 0].numpy()
+        )
+        full_geometry["correspondence_count"] = int(geometry_pairs.shape[0])
+        full_geometry["image_cell_count"] = int(
+            torch.unique(
+                visibility_image_cells(
+                    keypoints[geometry_pairs[:, 0]], image_hw=view.image_hw
                 )
             ).numel()
         )
@@ -365,6 +414,7 @@ def run(args: argparse.Namespace) -> dict:
                     "correspondence_count": int(winners.numel()),
                 },
                 "full_identity": full_identity,
+                "full_geometry": full_geometry,
                 "correction_set": correction,
             }
         )
@@ -375,6 +425,7 @@ def run(args: argparse.Namespace) -> dict:
                     "query": completed,
                     "query_count": len(selected_queries),
                     "full_identity_success": full_identity["success"],
+                    "full_geometry_success": full_geometry["success"],
                     "correction_depth": correction["depth"],
                 }
             ),
@@ -383,7 +434,7 @@ def run(args: argparse.Namespace) -> dict:
 
     report = {
         "schema": "lafgs_v6_exact_identity_pose_set_oracle",
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "scope": "mapping_action_holdout_baseline_pose_failures",
@@ -401,6 +452,8 @@ def run(args: argparse.Namespace) -> dict:
             "task_rotation_deg": task_rotation_deg,
             "correction_search_is_globally_exact": False,
             "full_identity_one_vote_per_anchor": True,
+            "full_geometry_one_vote_per_query_row_and_anchor": True,
+            "full_geometry_pair_selection": "greedy_lowest_gt_reprojection_residual",
         },
         "input_sha256": hashes,
         "producer": _producer(),

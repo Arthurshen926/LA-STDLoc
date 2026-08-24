@@ -53,6 +53,48 @@ def unique_anchor_rows(
     return pairs[torch.as_tensor(selected, dtype=torch.long)]
 
 
+def greedy_unique_geometry_pairs(
+    pairs: torch.Tensor,
+    *,
+    keypoints: torch.Tensor,
+    anchor_xyz: torch.Tensor,
+    intrinsics: torch.Tensor,
+    pose_w2c: torch.Tensor,
+) -> torch.Tensor:
+    """Build a deterministic one-row/one-Anchor GT geometry oracle matching."""
+
+    pairs = torch.as_tensor(pairs, dtype=torch.long).reshape(-1, 2)
+    if pairs.numel() == 0:
+        return pairs
+    rows, anchors = pairs.T
+    camera = anchor_xyz[anchors].float() @ pose_w2c[:3, :3].float().T
+    camera = camera + pose_w2c[:3, 3].float()
+    homogeneous = camera @ intrinsics.float().T
+    projected = homogeneous[:, :2] / homogeneous[:, 2:].clamp_min(1e-8)
+    residual = torch.linalg.norm(projected - keypoints[rows].float(), dim=1)
+    valid = torch.isfinite(residual) & (camera[:, 2] > 0)
+    order = sorted(
+        torch.nonzero(valid, as_tuple=False).reshape(-1).tolist(),
+        key=lambda index: (
+            float(residual[index]),
+            int(rows[index]),
+            int(anchors[index]),
+        ),
+    )
+    used_rows: set[int] = set()
+    used_anchors: set[int] = set()
+    selected = []
+    for index in order:
+        row = int(rows[index])
+        anchor = int(anchors[index])
+        if row in used_rows or anchor in used_anchors:
+            continue
+        used_rows.add(row)
+        used_anchors.add(anchor)
+        selected.append(index)
+    return pairs[torch.as_tensor(selected, dtype=torch.long)]
+
+
 def apply_swaps(
     assignments: np.ndarray,
     actions: tuple[PoseSetAction, ...],
