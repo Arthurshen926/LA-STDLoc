@@ -18,6 +18,7 @@ from common.v6_contracts import (
 )
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
+from features.raster_sampling import sample_raster_at_grid_uv
 from localization.matcher import global_cosine_topk
 from localization.pose_solver import solve_absolute_pose
 from map_learning.self_localization_feedback import build_self_localization_feedback
@@ -125,6 +126,44 @@ def _depth_certified_pose_valid_edges(
         )
         certified[row] = candidates[valid].tolist()
     return certified, True
+
+
+def _aligned_keypoint_surface_depth(
+    view,
+    *,
+    alpha_minimum: float,
+) -> tuple[torch.Tensor | None, str]:
+    """Resolve Gaussian surface depth on the exact sparse detector rows.
+
+    Older render caches store the dense native depth/alpha rasters but omit the
+    redundant ``*_at_keypoints`` columns.  Treating those caches as having no
+    depth silently disabled every certified non-identity alternative.  The
+    nearest-cell sampling below is the same frozen raster convention used by
+    projective association/completion; invalid or transparent samples remain
+    unavailable rather than being promoted.
+    """
+
+    if view.keypoint_depth is not None:
+        depth = torch.as_tensor(view.keypoint_depth).float().clone()
+        source = "native_depth_at_keypoints"
+    elif view.depth is not None:
+        depth = sample_raster_at_grid_uv(view.depth, view.keypoints).float()
+        source = "sampled_native_depth_raster_at_sparse_keypoints"
+    else:
+        return None, "unavailable"
+    valid = torch.isfinite(depth) & (depth > 0.0)
+    if view.keypoint_validity is not None:
+        valid &= torch.as_tensor(view.keypoint_validity).bool()
+    elif view.valid_mask is not None:
+        valid &= sample_raster_at_grid_uv(view.valid_mask, view.keypoints).bool()
+    if view.keypoint_alpha is not None:
+        alpha = torch.as_tensor(view.keypoint_alpha).float()
+        valid &= torch.isfinite(alpha) & (alpha >= float(alpha_minimum))
+    elif view.alpha is not None:
+        alpha = sample_raster_at_grid_uv(view.alpha, view.keypoints).float()
+        valid &= torch.isfinite(alpha) & (alpha >= float(alpha_minimum))
+    depth[~valid] = torch.nan
+    return depth, source
 
 
 def _exact_identity_anchor_by_query(
@@ -936,11 +975,17 @@ def evaluate_query_local_feedback(
         )
         positive_edges = identity_partition["exact"]
         ambiguous_edges = identity_partition["ambiguous"]
+        keypoint_surface_depth, pose_valid_depth_source = (
+            _aligned_keypoint_surface_depth(
+                view,
+                alpha_minimum=float(alpha_minimum),
+            )
+        )
         certified_edges, pose_valid_depth_available = (
             _depth_certified_pose_valid_edges(
                 geometry_edges,
                 anchor_depth=depth,
-                keypoint_depth=view.keypoint_depth,
+                keypoint_depth=keypoint_surface_depth,
             )
         )
         certified_alternatives = []
@@ -1168,6 +1213,7 @@ def evaluate_query_local_feedback(
                 "pose_valid_depth_supervision_available": bool(
                     pose_valid_depth_available
                 ),
+                "pose_valid_depth_source": pose_valid_depth_source,
                 "pose_valid_depth_absolute_tolerance_m": 0.25,
                 "pose_valid_depth_relative_tolerance": 0.05,
                 "identity_positive_count": sum(

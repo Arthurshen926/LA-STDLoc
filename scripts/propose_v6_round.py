@@ -25,6 +25,7 @@ from common.v6_contracts import (
 from evidence.observation_provider import GaussianRenderObservationProvider
 from evidence.projective_completion import build_projective_completion
 from map_learning.v6_association_repair import association_repair_proposal
+from map_learning.v6_control_actions import control_oriented_descriptor_proposal
 from map_learning.v6_proposals import (
     descriptor_loss_proposal,
     descriptor_only_proposal,
@@ -415,6 +416,7 @@ def run(args: argparse.Namespace) -> dict:
             trust_region=args.descriptor_trust_region,
         )
     elif arm in {
+        "descriptor_control",
         "descriptor_loss",
         "descriptor_selection",
         "selection",
@@ -456,6 +458,40 @@ def run(args: argparse.Namespace) -> dict:
     )
     if arm == "descriptor":
         pass
+    elif arm == "descriptor_control":
+        try:
+            proposal = control_oriented_descriptor_proposal(
+                state,
+                observations,
+                feedback,
+                training_query_indices=descriptor_training_queries,
+                trust_region=args.descriptor_trust_region,
+                margin=args.descriptor_margin,
+                reprojection_error_px=args.ransac_reprojection_px,
+                maximum_candidates_per_query=(
+                    args.control_maximum_candidates_per_query
+                ),
+                maximum_correction_set_size=(
+                    args.control_maximum_correction_set_size
+                ),
+                beam_width=args.control_beam_width,
+            )
+            if descriptor_training_split_sha is not None:
+                proposal["v6_descriptor_distillation"][
+                    "training_split_artifact_sha256s"
+                ] = [descriptor_training_split_sha]
+        except ValueError as error:
+            if str(error) not in {
+                "feedback contains no controllable pose correction sets",
+                "controllable correction sets have no joint trust-region action",
+                (
+                    "controllable correction sets violate clean protection or "
+                    "trust region"
+                ),
+            }:
+                raise
+            proposal = None
+            unavailable_reason = str(error).replace(" ", "_")
     elif arm in {"descriptor_loss", "descriptor_selection"}:
         try:
             descriptor_feedback = feedback
@@ -751,6 +787,16 @@ def run(args: argparse.Namespace) -> dict:
             args.descriptor_pose_critical_weight
         ),
         "descriptor_tail_query_weight": float(args.descriptor_tail_query_weight),
+        "ransac_reprojection_px": float(
+            getattr(args, "ransac_reprojection_px", 4.0)
+        ),
+        "control_maximum_candidates_per_query": int(
+            getattr(args, "control_maximum_candidates_per_query", 24)
+        ),
+        "control_maximum_correction_set_size": int(
+            getattr(args, "control_maximum_correction_set_size", 8)
+        ),
+        "control_beam_width": int(getattr(args, "control_beam_width", 4)),
             "descriptor_positive_mode": str(
                 getattr(args, "descriptor_positive_mode", "exact")
             ),
@@ -940,6 +986,7 @@ def main() -> None:
         "--arm",
         choices=(
             "descriptor",
+            "descriptor_control",
             "descriptor_loss",
             "selection",
             "descriptor_selection",
@@ -969,6 +1016,14 @@ def main() -> None:
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
     parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
     parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
+    parser.add_argument("--ransac-reprojection-px", type=float, required=True)
+    parser.add_argument(
+        "--control-maximum-candidates-per-query", type=int, default=24
+    )
+    parser.add_argument(
+        "--control-maximum-correction-set-size", type=int, default=8
+    )
+    parser.add_argument("--control-beam-width", type=int, default=4)
     parser.add_argument(
         "--descriptor-positive-mode",
         choices=("exact", "exact_or_geometry"),

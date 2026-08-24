@@ -40,7 +40,12 @@ from topology.v6_anchor_map import validate_v6_identity_metric
 
 RUN_SCHEMA = "lafgs_v6_feedback_core_independent_arms_run"
 RUN_VERSION = 1
-ARM_CHOICES = ("descriptor_loss", "selection", "reconstruction")
+ARM_CHOICES = (
+    "descriptor_control",
+    "descriptor_loss",
+    "selection",
+    "reconstruction",
+)
 _SOURCE_PATHS = (
     "scripts/run_v6_feedback_core_pipeline.py",
     "scripts/evaluate_v6_self_localization.py",
@@ -305,6 +310,14 @@ def _proposal_command(
         str(args.descriptor_pose_critical_weight),
         "--descriptor-tail-query-weight",
         str(args.descriptor_tail_query_weight),
+        "--ransac-reprojection-px",
+        str(args.ransac_reprojection_px),
+        "--control-maximum-candidates-per-query",
+        str(args.control_maximum_candidates_per_query),
+        "--control-maximum-correction-set-size",
+        str(args.control_maximum_correction_set_size),
+        "--control-beam-width",
+        str(args.control_beam_width),
         "--maximum-anchors",
         str(args.selection_maximum_anchors),
         "--visibility-target",
@@ -768,6 +781,13 @@ def _configuration(args: argparse.Namespace) -> dict:
         "descriptor_trust_weight": float(args.descriptor_trust_weight),
         "descriptor_pose_critical_weight": float(args.descriptor_pose_critical_weight),
         "descriptor_tail_query_weight": float(args.descriptor_tail_query_weight),
+        "control_maximum_candidates_per_query": int(
+            args.control_maximum_candidates_per_query
+        ),
+        "control_maximum_correction_set_size": int(
+            args.control_maximum_correction_set_size
+        ),
+        "control_beam_width": int(args.control_beam_width),
         "selection_maximum_anchors": int(args.selection_maximum_anchors),
         "pose_logdet_target": float(args.pose_logdet_target),
         "pose_min_eigenvalue_target": float(args.pose_min_eigenvalue_target),
@@ -1226,6 +1246,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
     parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
     parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--control-maximum-candidates-per-query", type=int, default=24
+    )
+    parser.add_argument(
+        "--control-maximum-correction-set-size", type=int, default=8
+    )
+    parser.add_argument("--control-beam-width", type=int, default=4)
     parser.add_argument("--selection-maximum-anchors", type=int, default=20000)
     parser.add_argument("--pose-logdet-target", type=float, default=0.0)
     parser.add_argument("--pose-min-eigenvalue-target", type=float, default=0.0)

@@ -937,6 +937,7 @@ def _load_map_pair(
         valid_reports = {
             "lafgs_v6_counterfactual_descriptor_distillation": 2,
             "lafgs_v6_counterfactual_descriptor_loss_distillation": 4,
+            "lafgs_v6_control_oriented_descriptor_distillation": 1,
         }
         if valid_reports.get(report.get("schema")) != int(report.get("version", -1)):
             raise ValueError("candidate descriptor distillation contract differs")

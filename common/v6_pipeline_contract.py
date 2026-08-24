@@ -22,6 +22,7 @@ _MATERIALIZATION_REPORT_SCHEMA = "lafgs_v6_projective_map_materialization_report
 FEEDBACK_CALIBRATION_BINDING_SCHEMA = "lafgs_v6_feedback_calibration_binding"
 FEEDBACK_SCENE_CALIBRATION_SCHEMA = "lafgs_mapping_only_scene_calibration"
 FORMAL_FEEDBACK_CANDIDATE_ARMS = (
+    "descriptor_control",
     "descriptor_loss",
     "selection",
     "reconstruction",

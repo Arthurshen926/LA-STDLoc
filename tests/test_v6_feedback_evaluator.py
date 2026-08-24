@@ -2,6 +2,7 @@ import torch
 import pytest
 
 from map_learning.v6_feedback_evaluator import (
+    _aligned_keypoint_surface_depth,
     _anchor_unique_pose_rows,
     _descriptor_training_query_mask,
     _descriptor_training_query_masks,
@@ -30,6 +31,46 @@ class _IdentityObservations:
         return type(
             "View", (), {"descriptors": torch.zeros((2, 4)), "image_name": "q"}
         )()
+
+
+def test_pose_valid_depth_falls_back_to_dense_render_raster() -> None:
+    view = type(
+        "View",
+        (),
+        {
+            "keypoint_depth": None,
+            "depth": torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+            "keypoints": torch.tensor([[0.0, 0.0], [1.0, 1.0]]),
+            "keypoint_validity": None,
+            "valid_mask": torch.tensor([[True, True], [True, False]]),
+            "keypoint_alpha": None,
+            "alpha": torch.tensor([[0.9, 0.9], [0.9, 0.9]]),
+        },
+    )()
+    depth, source = _aligned_keypoint_surface_depth(view, alpha_minimum=0.05)
+    assert source == "sampled_native_depth_raster_at_sparse_keypoints"
+    assert depth[0] == 1.0
+    assert torch.isnan(depth[1])
+
+
+def test_pose_valid_depth_prefers_aligned_sparse_column_and_masks_alpha() -> None:
+    view = type(
+        "View",
+        (),
+        {
+            "keypoint_depth": torch.tensor([2.0, 3.0]),
+            "depth": torch.full((2, 2), 9.0),
+            "keypoints": torch.tensor([[0.0, 0.0], [1.0, 1.0]]),
+            "keypoint_validity": torch.tensor([True, True]),
+            "valid_mask": None,
+            "keypoint_alpha": torch.tensor([0.9, 0.01]),
+            "alpha": None,
+        },
+    )()
+    depth, source = _aligned_keypoint_surface_depth(view, alpha_minimum=0.05)
+    assert source == "native_depth_at_keypoints"
+    assert depth[0] == 2.0
+    assert torch.isnan(depth[1])
 
 
 def test_descriptor_training_query_mask_fails_closed_for_legacy_residual() -> None:
