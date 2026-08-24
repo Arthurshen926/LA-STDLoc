@@ -487,8 +487,22 @@ def run(args: argparse.Namespace) -> dict:
                 device=args.device,
             )
             proposal["v6_descriptor_distillation"][
-                "geometry_consensus_weak_positive_triplet_count"
+                "geometry_consensus_source_triplet_count_all_queries"
             ] = geometry_consensus_triplet_count
+            proposal["v6_descriptor_distillation"][
+                "geometry_consensus_source_triplet_count_training_queries"
+            ] = sum(
+                int(
+                    descriptor_feedback["records"][query_index].get(
+                        "geometry_consensus_weak_positive_triplet_count", 0
+                    )
+                )
+                for query_index in (
+                    range(len(descriptor_feedback["records"]))
+                    if descriptor_training_queries is None
+                    else descriptor_training_queries
+                )
+            )
         except ValueError as error:
             if str(error) != "feedback contains no trainable descriptor triplets":
                 raise

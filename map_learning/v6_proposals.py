@@ -455,6 +455,15 @@ def descriptor_loss_proposal(
         regular_eligible = layer_set is None or bool(
             (eligible_layers - {"L4"}) & layer_set
         )
+        if (
+            allow_geometry_compatible_positives
+            and int(record.get("geometry_consensus_weak_positive_triplet_count", 0)) > 0
+        ):
+            # Set formation is learned from every mapping-training query, not
+            # only from queries already labelled as L3 failures.  Otherwise it
+            # cannot generalize the pose-valid alternative concept to a held-out
+            # sequence whose exact identities disappear under neighborhood LOO.
+            regular_eligible = True
         pose_eligible = bool(
             float(pose_critical_weight) > 0.0
             and layer_set is not None
