@@ -489,6 +489,26 @@ def test_descriptor_loss_uses_confusion_triplet_and_stores_residual() -> None:
     assert report["positive_pose_weight_triplet_count"] == 1
     assert report["pose_critical_weight"] == 2.0
 
+    set_proposal = descriptor_loss_proposal(
+        state,
+        provider,
+        feedback,
+        trust_region=0.2,
+        learning_rate=0.1,
+        epochs=10,
+        batch_size=1,
+        maximum_triplets_per_query=1,
+        clean_fraction=0.0,
+        loss_mode="set_consensus",
+        consensus_count_target=1.0,
+        consensus_cell_target=1.0,
+        device="cpu",
+    )
+    set_report = set_proposal["v6_descriptor_distillation"]
+    assert set_report["loss_mode"] == "set_consensus"
+    assert set_report["set_consensus_joint_query_objective"] is True
+    assert set_report["final_objective"] < set_report["initial_objective"]
+
     feedback["records"][0]["affected_anchor_policy"] = "purge"
     with pytest.raises(ValueError, match="purge feedback is diagnostic-only"):
         descriptor_loss_proposal(state, provider, feedback, device="cpu")

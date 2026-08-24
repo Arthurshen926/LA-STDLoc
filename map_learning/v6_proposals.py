@@ -17,7 +17,11 @@ from common.v6_contracts import (
 )
 from evidence.observation_provider import ObservationProvider
 from evidence.projective_loo import LeaveOneQueryOutProjectiveMap
-from topology.layered_sufficiency import select_layered_sufficiency
+from topology.layered_sufficiency import (
+    DEFAULT_VISIBILITY_GRID,
+    select_layered_sufficiency,
+    visibility_image_cells,
+)
 from topology.pose_information import (
     fisher_contributions,
     pose_jacobian_analytic,
@@ -149,6 +153,11 @@ def descriptor_loss_proposal(
     training_query_indices: torch.Tensor | Sequence[int] | None = None,
     eligible_failure_layers: Sequence[str] = ("L3",),
     allow_geometry_compatible_positives: bool = False,
+    loss_mode: str = "pairwise",
+    consensus_count_target: float = 16.0,
+    consensus_cell_target: float = 4.0,
+    consensus_count_weight: float = 1.0,
+    consensus_cell_weight: float = 1.0,
     device: str = "cuda",
 ) -> dict:
     """Train bounded map-side residuals from actual LOO ranking triplets.
@@ -172,6 +181,15 @@ def descriptor_loss_proposal(
         raise ValueError("descriptor learning rate must be positive")
     if int(epochs) < 1 or int(batch_size) < 1 or int(maximum_triplets_per_query) < 1:
         raise ValueError("descriptor training schedule must be positive")
+    if loss_mode not in {"pairwise", "set_consensus"}:
+        raise ValueError("descriptor loss mode is invalid")
+    if (
+        float(consensus_count_target) <= 0.0
+        or float(consensus_cell_target) <= 0.0
+        or float(consensus_count_weight) < 0.0
+        or float(consensus_cell_weight) < 0.0
+    ):
+        raise ValueError("descriptor consensus targets/weights are invalid")
     if not 0.0 <= float(clean_fraction) <= 1.0:
         raise ValueError("clean triplet fraction must lie in [0,1]")
     if (
@@ -336,6 +354,7 @@ def descriptor_loss_proposal(
     positive_loo_base_parts = []
     negative_loo_base_parts = []
     affected_pair_key_parts = []
+    cell_parts = []
     selected_per_query = []
     clean_budget = int(round(int(maximum_triplets_per_query) * float(clean_fraction)))
     error_budget = int(maximum_triplets_per_query) - clean_budget
@@ -551,6 +570,12 @@ def descriptor_loss_proposal(
         pose_weight_parts.append(pose_weights[chosen])
         harmful_parts.append(harmful[chosen])
         selected_query_parts.append(torch.full_like(positive[chosen], query_index))
+        cell_parts.append(
+            visibility_image_cells(
+                view.physical_keypoints[rows[chosen]].float(),
+                image_hw=view.image_hw,
+            ).long()
+        )
         positive_loo_base_parts.append(positive_loo_base[chosen])
         negative_loo_base_parts.append(negative_loo_base[chosen])
         selected_anchors = torch.unique(
@@ -588,6 +613,7 @@ def descriptor_loss_proposal(
     pose_weight = torch.cat(pose_weight_parts)
     harmful = torch.cat(harmful_parts)
     selected_query = torch.cat(selected_query_parts)
+    selected_cell = torch.cat(cell_parts)
     positive_loo_base = torch.cat(positive_loo_base_parts)
     negative_loo_base = torch.cat(negative_loo_base_parts)
     active = torch.unique(torch.cat((positive, negative)), sorted=True)
@@ -661,6 +687,11 @@ def descriptor_loss_proposal(
     pair_anchor_local = pair_anchor_local.to(train_device)
     positive_pair = positive_pair.to(train_device)
     negative_pair = negative_pair.to(train_device)
+    selected_query_device = selected_query.to(train_device)
+    selected_cell_device = selected_cell.to(train_device)
+    visibility_cell_count = int(
+        DEFAULT_VISIBILITY_GRID[0] * DEFAULT_VISIBILITY_GRID[1]
+    )
     residual = torch.nn.Parameter(initial_residual[active].to(train_device))
     # Adam's nominal learning rate is applied per coordinate.  Without this
     # normalization, a 256-D descriptor receives a first vector step about
@@ -718,7 +749,60 @@ def descriptor_loss_proposal(
             if normalization_weight is None
             else weight.new_tensor(float(normalization_weight)).clamp_min(1e-8)
         )
-        return (ranking * weight).sum() / denominator
+        pairwise = (ranking * weight).sum() / denominator
+        if loss_mode == "pairwise":
+            return pairwise
+        if rows.numel() != query.shape[0]:
+            raise ValueError("set-consensus loss requires the complete query batch")
+        probability = torch.sigmoid(
+            (positive_score - negative_score) / max(float(temperature), 1e-6)
+        )
+        query_probability = probability.new_zeros(query_count)
+        query_probability.scatter_add_(0, selected_query_device, probability)
+        query_rows_count = probability.new_zeros(query_count)
+        query_rows_count.scatter_add_(
+            0, selected_query_device, torch.ones_like(probability)
+        )
+        query_present = query_rows_count > 0
+        count_target = torch.minimum(
+            query_rows_count,
+            query_rows_count.new_full(
+                query_rows_count.shape, float(consensus_count_target)
+            ),
+        )
+        count_loss = F.softplus(count_target - query_probability)[query_present].mean()
+
+        cell_key = selected_query_device * visibility_cell_count + selected_cell_device
+        cell_probability_sum = probability.new_zeros(
+            query_count * visibility_cell_count
+        )
+        cell_probability_sum.scatter_add_(0, cell_key, probability)
+        cell_present = cell_probability_sum > 0
+        cell_coverage = 1.0 - torch.exp(-cell_probability_sum)
+        query_cell_coverage = probability.new_zeros(query_count)
+        query_cell_count = probability.new_zeros(query_count)
+        populated_cells = torch.nonzero(cell_present, as_tuple=False).reshape(-1)
+        populated_queries = torch.div(
+            populated_cells, visibility_cell_count, rounding_mode="floor"
+        )
+        query_cell_coverage.scatter_add_(
+            0, populated_queries, cell_coverage[populated_cells]
+        )
+        query_cell_count.scatter_add_(
+            0, populated_queries, torch.ones_like(cell_coverage[populated_cells])
+        )
+        cell_target = torch.minimum(
+            query_cell_count,
+            query_cell_count.new_full(
+                query_cell_count.shape, float(consensus_cell_target)
+            ),
+        )
+        cell_loss = F.softplus(cell_target - query_cell_coverage)[query_present].mean()
+        return (
+            pairwise
+            + float(consensus_count_weight) * count_loss
+            + float(consensus_cell_weight) * cell_loss
+        )
 
     all_rows = torch.arange(query.shape[0])
     global_training_weight = float(training_triplet_weight.sum())
@@ -736,19 +820,22 @@ def descriptor_loss_proposal(
         best_epoch = 0
         optimizer_last_objective = initial_objective
     for epoch in range(1, int(epochs) + 1):
-        order = torch.randperm(query.shape[0], generator=generator)
         optimizer.zero_grad(set_to_none=True)
-        for start in range(0, query.shape[0], int(batch_size)):
-            rows = order[start : start + int(batch_size)]
-            # ``batch_size`` is a memory chunk only.  Accumulating every chunk
-            # against one frozen global denominator gives the exact weighted
-            # full-objective gradient, even for batch_size=1.
-            ranking_partial = full_loss(
-                residual,
-                rows,
-                normalization_weight=global_training_weight,
-            )
-            ranking_partial.backward()
+        if loss_mode == "set_consensus":
+            full_loss(residual, all_rows).backward()
+        else:
+            order = torch.randperm(query.shape[0], generator=generator)
+            for start in range(0, query.shape[0], int(batch_size)):
+                rows = order[start : start + int(batch_size)]
+                # ``batch_size`` is a memory chunk only.  Accumulating every chunk
+                # against one frozen global denominator gives the exact weighted
+                # full-objective gradient, even for batch_size=1.
+                ranking_partial = full_loss(
+                    residual,
+                    rows,
+                    normalization_weight=global_training_weight,
+                )
+                ranking_partial.backward()
         if float(trust_weight) > 0.0:
             (float(trust_weight) * trust_penalty(raw_tangent(residual))).backward()
         optimizer.step()
@@ -902,6 +989,12 @@ def descriptor_loss_proposal(
             else "exact_identity_only"
         ),
         "geometry_compatible_positive_is_identity_positive": False,
+        "loss_mode": loss_mode,
+        "set_consensus_joint_query_objective": loss_mode == "set_consensus",
+        "consensus_count_target": float(consensus_count_target),
+        "consensus_cell_target": float(consensus_cell_target),
+        "consensus_count_weight": float(consensus_count_weight),
+        "consensus_cell_weight": float(consensus_cell_weight),
     }
     return proposal
 

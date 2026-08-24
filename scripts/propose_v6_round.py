@@ -484,6 +484,19 @@ def run(args: argparse.Namespace) -> dict:
                 allow_geometry_compatible_positives=(
                     args.descriptor_positive_mode == "exact_or_geometry"
                 ),
+                loss_mode=getattr(args, "descriptor_loss_mode", "pairwise"),
+                consensus_count_target=getattr(
+                    args, "descriptor_consensus_count_target", 16.0
+                ),
+                consensus_cell_target=getattr(
+                    args, "descriptor_consensus_cell_target", 4.0
+                ),
+                consensus_count_weight=getattr(
+                    args, "descriptor_consensus_count_weight", 1.0
+                ),
+                consensus_cell_weight=getattr(
+                    args, "descriptor_consensus_cell_weight", 1.0
+                ),
                 device=args.device,
             )
             proposal["v6_descriptor_distillation"][
@@ -741,6 +754,21 @@ def run(args: argparse.Namespace) -> dict:
             "descriptor_positive_mode": str(
                 getattr(args, "descriptor_positive_mode", "exact")
             ),
+            "descriptor_loss_mode": str(
+                getattr(args, "descriptor_loss_mode", "pairwise")
+            ),
+            "descriptor_consensus_count_target": float(
+                getattr(args, "descriptor_consensus_count_target", 16.0)
+            ),
+            "descriptor_consensus_cell_target": float(
+                getattr(args, "descriptor_consensus_cell_target", 4.0)
+            ),
+            "descriptor_consensus_count_weight": float(
+                getattr(args, "descriptor_consensus_count_weight", 1.0)
+            ),
+            "descriptor_consensus_cell_weight": float(
+                getattr(args, "descriptor_consensus_cell_weight", 1.0)
+            ),
         "maximum_anchors": int(args.maximum_anchors),
         "visibility_target": int(args.visibility_target),
         "detectability_target": int(args.detectability_target),
@@ -946,6 +974,15 @@ def main() -> None:
         choices=("exact", "exact_or_geometry"),
         default="exact",
     )
+    parser.add_argument(
+        "--descriptor-loss-mode",
+        choices=("pairwise", "set_consensus"),
+        default="pairwise",
+    )
+    parser.add_argument("--descriptor-consensus-count-target", type=float, default=16.0)
+    parser.add_argument("--descriptor-consensus-cell-target", type=float, default=4.0)
+    parser.add_argument("--descriptor-consensus-count-weight", type=float, default=1.0)
+    parser.add_argument("--descriptor-consensus-cell-weight", type=float, default=1.0)
     parser.add_argument(
         "--mapping-training-query-indices",
         "--descriptor-training-query-indices",
