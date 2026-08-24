@@ -9,6 +9,7 @@ from common.v6_contracts import (
 )
 from evidence.v6_observer_probes import (
     SCHEMA,
+    _select_diverse_candidates,
     build_fixed_map_observer_probe_plan,
 )
 
@@ -84,3 +85,16 @@ def test_fixed_map_probe_plan_is_observer_only_and_ambiguity_targeted() -> None:
         and record["render_status"] == "planned_not_yet_zbuffer_certified"
         for record in plan["selected_probes"]
     )
+
+
+def test_probe_selection_covers_excitation_kinds_before_utility_fill() -> None:
+    selected = _select_diverse_candidates(
+        utility=[1.0, 0.9, 0.8, 0.7, 0.6],
+        kinds=["interpolation", "interpolation", "rotation", "boundary", "reverse"],
+        pose_families=torch.arange(5),
+        budget=4,
+    )
+    assert {"interpolation", "rotation", "boundary", "reverse"} == {
+        ["interpolation", "interpolation", "rotation", "boundary", "reverse"][index]
+        for index in selected
+    }

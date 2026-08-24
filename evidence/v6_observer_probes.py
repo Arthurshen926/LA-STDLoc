@@ -28,6 +28,53 @@ SENSOR_VARIANTS = (
 )
 
 
+def _select_diverse_candidates(
+    *,
+    utility: list[float],
+    kinds: list[str],
+    pose_families: torch.Tensor,
+    budget: int,
+) -> list[int]:
+    """Cover distinct excitation mechanisms before greedily filling utility."""
+
+    if len(utility) != len(kinds) or len(utility) != int(pose_families.numel()):
+        raise ValueError("observer candidate score registry is not aligned")
+    ordered = sorted(
+        range(len(utility)),
+        key=lambda index: (-utility[index], kinds[index], index),
+    )
+    selected: list[int] = []
+    used_family: set[int] = set()
+    available_kinds = sorted(set(kinds))
+    # The kind order itself follows each kind's best attainable utility.  This
+    # avoids an alphabetical preference when the budget is smaller than the
+    # number of excitation mechanisms.
+    available_kinds.sort(
+        key=lambda kind: (
+            -max(utility[index] for index in ordered if kinds[index] == kind),
+            kind,
+        )
+    )
+    for kind in available_kinds:
+        for candidate_index in ordered:
+            family = int(pose_families[candidate_index])
+            if kinds[candidate_index] == kind and family not in used_family:
+                selected.append(candidate_index)
+                used_family.add(family)
+                break
+        if len(selected) == int(budget):
+            return selected
+    for candidate_index in ordered:
+        family = int(pose_families[candidate_index])
+        if candidate_index in selected or family in used_family:
+            continue
+        selected.append(candidate_index)
+        used_family.add(family)
+        if len(selected) == int(budget):
+            break
+    return selected
+
+
 def _project(
     xyz: torch.Tensor,
     intrinsics: torch.Tensor,
@@ -179,19 +226,12 @@ def build_fixed_map_observer_probe_plan(
         value = view_score + ambiguity_score + pose_score - risk_cost
         row["observer_design_utility"] = value
         utility.append(value)
-    selected = []
-    used_family = set()
-    for candidate_index in sorted(
-        range(candidate_count),
-        key=lambda index: (-utility[index], candidates["kind"][index], index),
-    ):
-        family = int(candidates["pose_family"][candidate_index])
-        if family in used_family:
-            continue
-        selected.append(candidate_index)
-        used_family.add(family)
-        if len(selected) == int(selected_pose_budget):
-            break
+    selected = _select_diverse_candidates(
+        utility=utility,
+        kinds=list(candidates["kind"]),
+        pose_families=candidates["pose_family"],
+        budget=int(selected_pose_budget),
+    )
     selected_tensor = torch.tensor(selected, dtype=torch.long)
     selected_records = []
     for order, candidate_index in enumerate(selected):
@@ -236,6 +276,7 @@ def build_fixed_map_observer_probe_plan(
             "pose_cell_coverage_weight": 0.30,
             "artifact_risk_cost": 0.15,
         },
+        "selection_policy": "excitation_kind_coverage_then_family_unique_utility",
         "sensor_variant_registry": list(SENSOR_VARIANTS),
         "selected_probes": selected_records,
         "render_acceptance_contract": {
