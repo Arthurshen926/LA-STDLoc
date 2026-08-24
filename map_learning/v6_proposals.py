@@ -42,6 +42,93 @@ def _bounded_descriptor_bank(
     return F.normalize(base + tangent, dim=1), tangent
 
 
+def geometry_consensus_descriptor_feedback(feedback: dict) -> tuple[dict, int]:
+    """Add pose-valid alternative correspondences without relabeling identity.
+
+    Exact identities remain the only identity positives.  A geometry-compatible
+    non-identity Anchor can nevertheless be a valid PnP correspondence, so for
+    rows whose deployed winner is a true negative we add one deterministic
+    alternative as weak set-formation supervision.
+    """
+
+    require_schema(feedback, FEEDBACK_SCHEMA, label="geometry-consensus feedback")
+    output = dict(feedback)
+    records = []
+    added = 0
+    for record in feedback["records"]:
+        revised = dict(record)
+        rows = torch.as_tensor(record.get("query_rows", ())).long().reshape(-1)
+        winners = torch.as_tensor(record.get("winner_anchor_ids", ())).long().reshape(-1)
+        negative = torch.as_tensor(record.get("top1_negative_mask", ())).bool().reshape(-1)
+        if rows.shape != winners.shape or rows.shape != negative.shape:
+            raise ValueError("geometry-consensus winner rows are not aligned")
+        winner_by_row = {
+            int(row): (int(anchor), bool(is_negative))
+            for row, anchor, is_negative in zip(
+                rows.tolist(), winners.tolist(), negative.tolist()
+            )
+        }
+        alternatives = defaultdict(list)
+        ambiguous = torch.as_tensor(
+            record.get("projective_compatible_ambiguous_pairs", ())
+        ).long().reshape(-1, 2)
+        for row, anchor in ambiguous.tolist():
+            alternatives[int(row)].append(int(anchor))
+        existing = torch.as_tensor(
+            record.get("descriptor_triplets", ())
+        ).long().reshape(-1, 4)
+        existing_rows = set(existing[:, 0].tolist()) if existing.numel() else set()
+        extra = []
+        inlier_rows = set(
+            torch.as_tensor(record.get("inlier_query_rows", ())).long().tolist()
+        )
+        for row in sorted(alternatives):
+            deployed = winner_by_row.get(row)
+            if deployed is None or not deployed[1] or row in existing_rows:
+                continue
+            positive = min(alternatives[row])
+            if positive == deployed[0]:
+                continue
+            extra.append((row, positive, deployed[0], 0))
+        extra_tensor = torch.tensor(extra, dtype=torch.long).reshape(-1, 4)
+        revised["descriptor_triplets"] = torch.cat((existing, extra_tensor), dim=0)
+        old_harmful = torch.as_tensor(
+            record.get("descriptor_triplet_harmful_inlier_mask", ())
+        ).bool().reshape(-1)
+        old_weight = torch.as_tensor(
+            record.get("descriptor_triplet_pose_weights", ())
+        ).float().reshape(-1)
+        old_clean = torch.as_tensor(
+            record.get("descriptor_triplet_legal_pair_clean_mask", ())
+        ).bool().reshape(-1)
+        if not (
+            old_harmful.numel() == old_weight.numel() == old_clean.numel() == existing.shape[0]
+        ):
+            raise ValueError("geometry-consensus source triplet fields are not aligned")
+        extra_harmful = torch.tensor(
+            [row in inlier_rows for row, _, _, _ in extra], dtype=torch.bool
+        )
+        revised["descriptor_triplet_harmful_inlier_mask"] = torch.cat(
+            (old_harmful, extra_harmful)
+        )
+        revised["descriptor_triplet_pose_weights"] = torch.cat(
+            # The alternative is GT-geometry compatible, but we have not run
+            # the fixed-hypothesis counterfactual required by the v5 pose-weight
+            # contract.  Keep that distinct diagnostic at zero.
+            (old_weight, torch.zeros(len(extra), dtype=torch.float32))
+        )
+        revised["descriptor_triplet_legal_pair_clean_mask"] = torch.cat(
+            (old_clean, torch.zeros(len(extra), dtype=torch.bool))
+        )
+        revised["geometry_consensus_weak_positive_triplet_count"] = len(extra)
+        added += len(extra)
+        records.append(revised)
+    output["records"] = records
+    output["geometry_consensus_weak_positive_triplet_count"] = added
+    output["geometry_consensus_uses_test_queries"] = False
+    return output, added
+
+
 def descriptor_loss_proposal(
     state: dict,
     observations: ObservationProvider,
@@ -61,6 +148,7 @@ def descriptor_loss_proposal(
     tail_query_weight: float = 0.0,
     training_query_indices: torch.Tensor | Sequence[int] | None = None,
     eligible_failure_layers: Sequence[str] = ("L3",),
+    allow_geometry_compatible_positives: bool = False,
     device: str = "cuda",
 ) -> dict:
     """Train bounded map-side residuals from actual LOO ranking triplets.
@@ -338,9 +426,14 @@ def descriptor_loss_proposal(
         ignored_pairs = lineage_pairs | ambiguous_pairs
         for triplet_index, values in enumerate(triplets.tolist()):
             row, positive_anchor, negative_anchor, _ = map(int, values)
-            if (row, positive_anchor) not in positive_pairs:
+            allowed_positive_pairs = (
+                positive_pairs | ambiguous_pairs
+                if allow_geometry_compatible_positives
+                else positive_pairs
+            )
+            if (row, positive_anchor) not in allowed_positive_pairs:
                 raise ValueError(
-                    "descriptor triplet positive lacks exact active identity"
+                    "descriptor triplet positive lacks an allowed active correspondence"
                 )
             if (row, negative_anchor) in ignored_pairs:
                 raise ValueError("descriptor triplet negative is not legally negative")
@@ -794,6 +887,12 @@ def descriptor_loss_proposal(
         "sampling_seed": 2026,
         "online_model_added": False,
         "query_encoder_changed": False,
+        "descriptor_positive_mode": (
+            "exact_identity_or_geometry_compatible_pose_alternative"
+            if allow_geometry_compatible_positives
+            else "exact_identity_only"
+        ),
+        "geometry_compatible_positive_is_identity_positive": False,
     }
     return proposal
 

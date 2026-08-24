@@ -9,6 +9,7 @@ from evidence.observation_provider import GaussianRenderObservationProvider
 import map_learning.v6_proposals as v6_proposals
 from map_learning.v6_proposals import (
     descriptor_loss_proposal,
+    geometry_consensus_descriptor_feedback,
     selection_only_proposal,
 )
 from common.hashing import sha256_file
@@ -68,6 +69,42 @@ def test_selection_report_tensors_are_json_serializable() -> None:
         "rows": [1, 2],
         "nested": [3],
     }
+
+
+def test_geometry_consensus_adds_only_negative_winner_alternatives() -> None:
+    feedback = {
+        "schema": FEEDBACK_SCHEMA,
+        "version": FEEDBACK_VERSION,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "positive_identity_contract": exact_identity_positive_contract(),
+        "records": [
+            {
+                "query_rows": torch.tensor([3, 4]),
+                "winner_anchor_ids": torch.tensor([8, 9]),
+                "top1_negative_mask": torch.tensor([True, False]),
+                "projective_compatible_ambiguous_pairs": torch.tensor(
+                    [[3, 7], [3, 6], [4, 5]]
+                ),
+                "descriptor_triplets": torch.empty((0, 4), dtype=torch.long),
+                "descriptor_triplet_harmful_inlier_mask": torch.empty(
+                    0, dtype=torch.bool
+                ),
+                "descriptor_triplet_pose_weights": torch.empty(0),
+                "descriptor_triplet_legal_pair_clean_mask": torch.empty(
+                    0, dtype=torch.bool
+                ),
+                "inlier_query_rows": torch.tensor([3]),
+            }
+        ],
+    }
+    augmented, count = geometry_consensus_descriptor_feedback(feedback)
+    record = augmented["records"][0]
+    assert count == 1
+    assert record["descriptor_triplets"].tolist() == [[3, 6, 8, 0]]
+    assert record["descriptor_triplet_harmful_inlier_mask"].tolist() == [True]
+    assert record["descriptor_triplet_pose_weights"].tolist() == [0.0]
+    assert feedback["records"][0]["descriptor_triplets"].numel() == 0
 
 
 def test_descriptor_training_split_is_sha_bound(tmp_path) -> None:

@@ -28,6 +28,7 @@ from map_learning.v6_association_repair import association_repair_proposal
 from map_learning.v6_proposals import (
     descriptor_loss_proposal,
     descriptor_only_proposal,
+    geometry_consensus_descriptor_feedback,
     selection_only_proposal,
 )
 from topology.v6_anchor_map import (
@@ -457,10 +458,16 @@ def run(args: argparse.Namespace) -> dict:
         pass
     elif arm in {"descriptor_loss", "descriptor_selection"}:
         try:
+            descriptor_feedback = feedback
+            geometry_consensus_triplet_count = 0
+            if args.descriptor_positive_mode == "exact_or_geometry":
+                descriptor_feedback, geometry_consensus_triplet_count = (
+                    geometry_consensus_descriptor_feedback(feedback)
+                )
             proposal = descriptor_loss_proposal(
                 state,
                 observations,
-                feedback,
+                descriptor_feedback,
                 trust_region=args.descriptor_trust_region,
                 margin=args.descriptor_margin,
                 temperature=args.descriptor_temperature,
@@ -474,8 +481,14 @@ def run(args: argparse.Namespace) -> dict:
                 pose_critical_weight=args.descriptor_pose_critical_weight,
                 tail_query_weight=args.descriptor_tail_query_weight,
                 training_query_indices=descriptor_training_queries,
+                allow_geometry_compatible_positives=(
+                    args.descriptor_positive_mode == "exact_or_geometry"
+                ),
                 device=args.device,
             )
+            proposal["v6_descriptor_distillation"][
+                "geometry_consensus_weak_positive_triplet_count"
+            ] = geometry_consensus_triplet_count
         except ValueError as error:
             if str(error) != "feedback contains no trainable descriptor triplets":
                 raise
@@ -711,6 +724,9 @@ def run(args: argparse.Namespace) -> dict:
             args.descriptor_pose_critical_weight
         ),
         "descriptor_tail_query_weight": float(args.descriptor_tail_query_weight),
+            "descriptor_positive_mode": str(
+                getattr(args, "descriptor_positive_mode", "exact")
+            ),
         "maximum_anchors": int(args.maximum_anchors),
         "visibility_target": int(args.visibility_target),
         "detectability_target": int(args.detectability_target),
@@ -911,6 +927,11 @@ def main() -> None:
     parser.add_argument("--descriptor-trust-weight", type=float, default=0.1)
     parser.add_argument("--descriptor-pose-critical-weight", type=float, default=0.0)
     parser.add_argument("--descriptor-tail-query-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--descriptor-positive-mode",
+        choices=("exact", "exact_or_geometry"),
+        default="exact",
+    )
     parser.add_argument(
         "--mapping-training-query-indices",
         "--descriptor-training-query-indices",
