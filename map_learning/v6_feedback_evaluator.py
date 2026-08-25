@@ -1109,16 +1109,24 @@ def evaluate_query_local_feedback(
         dense_scores = query_descriptor @ bank.to(device).T
         dense_scores[:, ~active.to(device)] = -torch.inf
         if extra_prototypes.numel():
-            prototype_scores = query_descriptor @ extra_prototypes.to(device).T
-            for owner in torch.unique(extra_prototype_owners, sorted=True).tolist():
-                rows = torch.nonzero(
-                    extra_prototype_owners == int(owner), as_tuple=False
-                ).reshape(-1).to(device)
-                if bool(active[int(owner)]):
-                    dense_scores[:, int(owner)] = torch.maximum(
-                        dense_scores[:, int(owner)],
-                        prototype_scores[:, rows].max(dim=1).values,
-                    )
+            unique_owners, owner_counts = torch.unique(
+                extra_prototype_owners, sorted=True, return_counts=True
+            )
+            if bool((owner_counts == 1).all()):
+                owners_device = extra_prototype_owners.to(device)
+                dense_scores[:, owners_device] = torch.maximum(
+                    dense_scores[:, owners_device], prototype_scores
+                )
+            else:
+                for owner in unique_owners.tolist():
+                    rows = torch.nonzero(
+                        extra_prototype_owners == int(owner), as_tuple=False
+                    ).reshape(-1).to(device)
+                    if bool(active[int(owner)]):
+                        dense_scores[:, int(owner)] = torch.maximum(
+                            dense_scores[:, int(owner)],
+                            prototype_scores[:, rows].max(dim=1).values,
+                        )
         best_positive = []
         best_wrong = []
         correct_anchor_ranks = []

@@ -14,7 +14,7 @@ from topology.layered_sufficiency import visibility_image_cells
 
 
 SCHEMA = "lafgs_v6_fixed_map_observer_probe_plan"
-VERSION = 1
+VERSION = 2
 SENSOR_VARIANTS = (
     "clean",
     "exposure_down",
@@ -25,6 +25,11 @@ SENSOR_VARIANTS = (
     "sensor_noise_mild",
     "resize_compression_mild",
     "local_occlusion_mild",
+    "white_balance_warm",
+    "white_balance_cool",
+    "contrast_low",
+    "motion_blur_vertical_mild",
+    "defocus_blur_mild",
 )
 
 
@@ -119,6 +124,7 @@ def build_fixed_map_observer_probe_plan(
     selected_pose_budget: int = 32,
     maximum_candidates: int = 512,
     anchor_projection_stride: int = 16,
+    sensor_variants_per_pose: int = 4,
 ) -> dict:
     """Plan observer-only pose/sensor probes without mutating the map.
 
@@ -135,6 +141,8 @@ def build_fixed_map_observer_probe_plan(
         raise ValueError("observer probe budgets must be positive")
     if int(anchor_projection_stride) < 1:
         raise ValueError("observer probe Anchor stride must be positive")
+    if not 1 <= int(sensor_variants_per_pose) <= len(SENSOR_VARIANTS):
+        raise ValueError("sensor variants per pose is outside the registered range")
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
     anchor_count = int(xyz.shape[0])
     ambiguity_rows = _ambiguity_anchor_rows(feedback, anchor_count)
@@ -236,6 +244,13 @@ def build_fixed_map_observer_probe_plan(
     selected_records = []
     for order, candidate_index in enumerate(selected):
         parent = int(candidates["parent_camera_index"][candidate_index])
+        stressed = SENSOR_VARIANTS[1:]
+        offset = (order * max(int(sensor_variants_per_pose) - 1, 1)) % len(stressed)
+        variants = ["clean"]
+        variants.extend(
+            stressed[(offset + index) % len(stressed)]
+            for index in range(int(sensor_variants_per_pose) - 1)
+        )
         selected_records.append(
             {
                 **diagnostics[candidate_index],
@@ -243,10 +258,7 @@ def build_fixed_map_observer_probe_plan(
                 "pose_w2c": candidates["pose_w2c"][candidate_index],
                 "native_K": observations.build_view(parent).intrinsics.float(),
                 "native_input_hw": list(observations.build_view(parent).image_hw),
-                "sensor_variants": [
-                    "clean",
-                    SENSOR_VARIANTS[1 + order % (len(SENSOR_VARIANTS) - 1)],
-                ],
+                "sensor_variants": variants,
                 "render_status": "planned_not_yet_zbuffer_certified",
             }
         )
@@ -278,6 +290,7 @@ def build_fixed_map_observer_probe_plan(
         },
         "selection_policy": "excitation_kind_coverage_then_family_unique_utility",
         "sensor_variant_registry": list(SENSOR_VARIANTS),
+        "sensor_variants_per_pose": int(sensor_variants_per_pose),
         "selected_probes": selected_records,
         "render_acceptance_contract": {
             "immutable_gaussian_prior_required": True,

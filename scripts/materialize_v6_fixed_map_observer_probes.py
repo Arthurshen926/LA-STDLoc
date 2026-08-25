@@ -12,7 +12,7 @@ import torch
 import torch.nn.functional as F
 
 from common.hashing import sha256_file
-from evidence.v6_observer_probes import SCHEMA as PLAN_SCHEMA
+from evidence.v6_observer_probes import SCHEMA as PLAN_SCHEMA, VERSION as PLAN_VERSION
 from features.extractor import FeatureExtractor
 from features.raster_sampling import sample_raster_at_grid_uv
 from priors.models import GaussianModel2D
@@ -20,7 +20,7 @@ from priors.rendering import render_from_pose_gsplat
 
 
 CACHE_SCHEMA = "lafgs_v6_fixed_map_observer_probe_cache"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def _load(path: Path, expected: str, label: str) -> tuple[dict, str]:
@@ -52,6 +52,12 @@ def _sensor_variant(rgb: torch.Tensor, variant: str, *, seed: int) -> torch.Tens
     if variant == "motion_blur_mild":
         kernel = image.new_ones((3, 1, 1, 7)) / 7.0
         return F.conv2d(image[None], kernel, padding=(0, 3), groups=3)[0]
+    if variant == "motion_blur_vertical_mild":
+        kernel = image.new_ones((3, 1, 7, 1)) / 7.0
+        return F.conv2d(image[None], kernel, padding=(3, 0), groups=3)[0]
+    if variant == "defocus_blur_mild":
+        kernel = image.new_ones((3, 1, 5, 5)) / 25.0
+        return F.conv2d(image[None], kernel, padding=2, groups=3)[0]
     if variant == "sensor_noise_mild":
         generator = torch.Generator(device=image.device).manual_seed(int(seed))
         noise = torch.randn(
@@ -76,6 +82,14 @@ def _sensor_variant(rgb: torch.Tensor, variant: str, *, seed: int) -> torch.Tens
         x0, x1 = width * 2 // 5, width * 3 // 5
         output[:, y0:y1, x0:x1] = 0.0
         return output
+    if variant == "white_balance_warm":
+        gains = image.new_tensor([1.08, 1.0, 0.90])[:, None, None]
+        return (image * gains).clamp(0.0, 1.0)
+    if variant == "white_balance_cool":
+        gains = image.new_tensor([0.90, 1.0, 1.08])[:, None, None]
+        return (image * gains).clamp(0.0, 1.0)
+    if variant == "contrast_low":
+        return ((image - 0.5) * 0.75 + 0.5).clamp(0.0, 1.0)
     raise ValueError(f"unsupported observer sensor variant: {variant}")
 
 
@@ -112,6 +126,7 @@ def main() -> None:
     plan, plan_sha = _load(args.plan, args.expected_plan_sha256, "probe plan")
     if (
         plan.get("schema") != PLAN_SCHEMA
+        or int(plan.get("version", -1)) != PLAN_VERSION
         or plan.get("uses_source_mapping_rgb") is not False
         or plan.get("uses_test_queries") is not False
         or plan.get("virtual_probes_added_to_map") is not False
@@ -196,6 +211,8 @@ def main() -> None:
                 "sequence_id": f"virtual_probe/{probe_order:04d}",
                 "probe_index": probe_order,
                 "candidate_index": int(probe["candidate_index"]),
+                "probe_kind": str(probe["kind"]),
+                "pose_family": int(probe["pose_family"]),
                 "sensor_variant": str(variant),
                 "clean_pose_probe": str(variant) == "clean",
                 "pixel_center_offset": 0.5,
@@ -235,6 +252,8 @@ def main() -> None:
         "render_audits": render_audits,
         "probe_count": len(selected),
         "rendered_variant_count": len(records),
+        "sensor_variant_registry": list(plan["sensor_variant_registry"]),
+        "sensor_variants_per_pose": int(plan["sensor_variants_per_pose"]),
         "virtual_probes_added_to_map": False,
         "virtual_probes_added_to_anchor_observations": False,
         "virtual_probes_increase_track_view_count": False,

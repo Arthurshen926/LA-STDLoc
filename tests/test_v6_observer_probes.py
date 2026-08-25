@@ -70,6 +70,7 @@ def test_fixed_map_probe_plan_is_observer_only_and_ambiguity_targeted() -> None:
         selected_pose_budget=4,
         maximum_candidates=32,
         anchor_projection_stride=1,
+        sensor_variants_per_pose=4,
     )
     assert plan["schema"] == SCHEMA
     assert plan["ambiguity_anchor_count"] == 2
@@ -82,6 +83,8 @@ def test_fixed_map_probe_plan_is_observer_only_and_ambiguity_targeted() -> None:
     ] is True
     assert all(
         record["sensor_variants"][0] == "clean"
+        and len(record["sensor_variants"]) == 4
+        and len(set(record["sensor_variants"])) == 4
         and record["render_status"] == "planned_not_yet_zbuffer_certified"
         for record in plan["selected_probes"]
     )

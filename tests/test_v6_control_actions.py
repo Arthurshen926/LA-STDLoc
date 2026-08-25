@@ -274,6 +274,9 @@ def test_probe_sparse_prototype_uses_training_only_and_collapses_to_owner() -> N
                 "image_name": _ProbeObservations.names[index],
                 "control_split": split,
                 "pose_success": False,
+                "oracle_available": True,
+                "oracle_pose_success": True,
+                "controller_route": "descriptor_controllable",
                 "winner_anchor_ids": [0, 0, 0, 0],
                 "winner_scores": [0.99, 0.99, 0.99, 0.99],
                 "descriptor_triplets": [

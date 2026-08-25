@@ -73,7 +73,7 @@ def evaluate_fixed_map_virtual_probes(
     if (
         probe_cache.get("schema")
         != "lafgs_v6_fixed_map_observer_probe_cache"
-        or int(probe_cache.get("version", -1)) != 1
+        or int(probe_cache.get("version", -1)) != 2
         or probe_cache.get("uses_source_mapping_rgb") is not False
         or probe_cache.get("uses_test_queries") is not False
     ):
@@ -119,8 +119,11 @@ def evaluate_fixed_map_virtual_probes(
     if len(probe_indices) < 2:
         raise ValueError("virtual-probe control validation needs at least two poses")
     if validation_probe_indices is None:
-        held_out_count = max(1, int(math.ceil(0.25 * len(probe_indices))))
-        validation_probes = probe_indices[-held_out_count:]
+        validation_probes = [
+            probe for position, probe in enumerate(probe_indices) if position % 4 == 3
+        ]
+        if not validation_probes:
+            validation_probes = [probe_indices[-1]]
     else:
         validation_probes = sorted(
             set(torch.as_tensor(validation_probe_indices).long().reshape(-1).tolist())
@@ -255,6 +258,12 @@ def evaluate_fixed_map_virtual_probes(
                 "sensor_variant": str(
                     probe_cache["queries"][view.image_name]["sensor_variant"]
                 ),
+                "probe_kind": str(
+                    probe_cache["queries"][view.image_name].get("probe_kind", "unknown")
+                ),
+                "pose_family": int(
+                    probe_cache["queries"][view.image_name].get("pose_family", -1)
+                ),
                 "control_split": (
                     "validation"
                     if int(probe_cache["queries"][view.image_name]["probe_index"])
@@ -282,6 +291,15 @@ def evaluate_fixed_map_virtual_probes(
                 "oracle_pose_success": bool(
                     oracle_available and oracle_te_cm < 5.0 and oracle_ae_deg < 5.0
                 ),
+                "controller_route": (
+                    "nominal_success"
+                    if te_cm < 5.0 and ae_deg < 5.0
+                    else "descriptor_controllable"
+                    if oracle_available and oracle_te_cm < 5.0 and oracle_ae_deg < 5.0
+                    else "geometry_solver_limited"
+                    if oracle_available
+                    else "frontend_observation_limited"
+                ),
                 "winner_anchor_ids": winners.tolist(),
                 "winner_scores": winner_scores.tolist(),
                 "top1_negative_mask": top1_negative.tolist(),
@@ -300,6 +318,15 @@ def evaluate_fixed_map_virtual_probes(
     validation_records = [
         record for record in records if record["control_split"] == "validation"
     ]
+    route_counts = {
+        route: sum(record["controller_route"] == route for record in records)
+        for route in (
+            "nominal_success",
+            "descriptor_controllable",
+            "geometry_solver_limited",
+            "frontend_observation_limited",
+        )
+    }
     return {
         "schema": SCHEMA,
         "version": VERSION,
@@ -322,7 +349,7 @@ def evaluate_fixed_map_virtual_probes(
             "seed": int(seed),
         },
         "control_split": {
-            "policy": "pose_grouped_last_quarter_holdout"
+            "policy": "pose_grouped_interleaved_quarter_holdout"
             if validation_probe_indices is None
             else "explicit_pose_group_holdout",
             "training_probe_indices": training_probes,
@@ -344,5 +371,22 @@ def evaluate_fixed_map_virtual_probes(
         "pose_valid_oracle_summary": _summary(oracle_records, "oracle_")
         if oracle_records
         else None,
+        "frontend_correspondence_ceiling": {
+            "controller_route_counts": route_counts,
+            "oracle_available_query_count": len(oracle_records),
+            "oracle_pose_success_query_count": sum(
+                bool(record["oracle_pose_success"]) for record in records
+            ),
+            "mean_certified_pose_valid_row_fraction": float(
+                np.mean(
+                    [
+                        record["certified_pose_valid_row_count"]
+                        / max(record["correspondence_count"], 1)
+                        for record in records
+                    ]
+                )
+            ),
+            "descriptor_actions_must_only_target_oracle_recoverable_failures": True,
+        },
         "records": records,
     }

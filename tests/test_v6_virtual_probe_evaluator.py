@@ -30,7 +30,7 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
     state = {"anchor_xyz": xyz, "anchor_features": torch.eye(4)}
     cache = {
         "schema": "lafgs_v6_fixed_map_observer_probe_cache",
-        "version": 1,
+        "version": 2,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "virtual_probes_added_to_map": False,
@@ -55,6 +55,8 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
                 "pixel_center_offset": 0.5,
                 "probe_index": index,
                 "sensor_variant": "clean",
+                "probe_kind": "interpolation",
+                "pose_family": index,
             }
             for index, name in enumerate(
                 ("virtual/0000/clean", "virtual/0001/clean")
@@ -81,6 +83,10 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
     assert result["control_split"]["training_probe_indices"] == [0]
     assert result["control_split"]["validation_probe_indices"] == [1]
     assert result["control_split"]["validation_used_by_controller"] is False
+    assert record["controller_route"] == "nominal_success"
+    assert result["frontend_correspondence_ceiling"]["controller_route_counts"][
+        "nominal_success"
+    ] == 2
     assert len(record["winner_anchor_ids"]) == 4
     assert len(record["descriptor_triplet_pose_weights"]) == len(
         record["descriptor_triplets"]

@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--selected-pose-budget", type=int, default=32)
     parser.add_argument("--maximum-candidates", type=int, default=512)
     parser.add_argument("--anchor-projection-stride", type=int, default=16)
+    parser.add_argument("--sensor-variants-per-pose", type=int, default=4)
     args = parser.parse_args()
     state, map_sha = _load(args.map, args.expected_map_sha256, "map")
     cache, cache_sha = _load(
@@ -73,6 +74,7 @@ def main() -> None:
         selected_pose_budget=args.selected_pose_budget,
         maximum_candidates=args.maximum_candidates,
         anchor_projection_stride=args.anchor_projection_stride,
+        sensor_variants_per_pose=args.sensor_variants_per_pose,
     )
     _save(payload, args.output)
     print(args.output.resolve())

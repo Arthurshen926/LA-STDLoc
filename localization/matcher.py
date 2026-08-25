@@ -80,21 +80,28 @@ def global_owner_prototype_top1(
             chunk_size=chunk_size,
             anchor_descriptors_normalized=anchor_descriptors_normalized,
         )
-    bank = torch.cat((anchors, prototypes), dim=0)
-    flat = global_cosine_top1(
+    base = global_cosine_top1(
         query_descriptors,
-        bank,
+        anchors,
         chunk_size=chunk_size,
         anchor_descriptors_normalized=anchor_descriptors_normalized,
     )
-    base_count = int(anchors.shape[0])
-    is_prototype = flat.anchor_indices >= base_count
-    owner_rows = flat.anchor_indices.clone()
-    owner_rows[is_prototype] = owners[flat.anchor_indices[is_prototype] - base_count]
+    query = F.normalize(torch.as_tensor(query_descriptors).float(), dim=1)
+    normalized_prototypes = prototypes.float()
+    if not anchor_descriptors_normalized:
+        normalized_prototypes = F.normalize(normalized_prototypes, dim=1)
+    prototype_scores = query @ normalized_prototypes.T
+    best_prototype_scores, best_prototype_rows = prototype_scores.max(dim=1)
+    # Strict improvement preserves the historical base winner on exact ties.
+    use_prototype = best_prototype_scores > base.scores
+    owner_rows = base.anchor_indices.clone()
+    owner_rows[use_prototype] = owners[best_prototype_rows[use_prototype]]
+    scores = base.scores.clone()
+    scores[use_prototype] = best_prototype_scores[use_prototype]
     return Top1Matches(
-        keypoint_indices=flat.keypoint_indices,
+        keypoint_indices=base.keypoint_indices,
         anchor_indices=owner_rows,
-        scores=flat.scores,
+        scores=scores,
     )
 
 

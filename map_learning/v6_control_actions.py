@@ -1067,11 +1067,34 @@ def probe_conditioned_sparse_prototype_proposal(
     )
     audits = []
     bundles = []
+    allowed_routes = {
+        "nominal_success",
+        "descriptor_controllable",
+        "geometry_solver_limited",
+        "frontend_observation_limited",
+    }
     for query_index in training.tolist():
         record = probe_feedback["records"][query_index]
         if record.get("control_split") != "training":
             raise ValueError("controller received a non-training probe record")
+        route = record.get("controller_route")
+        if route not in allowed_routes:
+            raise ValueError("probe controller route is missing or invalid")
         if bool(record.get("pose_success", False)):
+            if route != "nominal_success":
+                raise ValueError("successful probe has an inconsistent controller route")
+            continue
+        if route != "descriptor_controllable":
+            audits.append(
+                {
+                    "query_index": int(query_index),
+                    "image_name": str(record.get("image_name", query_index)),
+                    "controller_route": str(route),
+                    "candidate_action_count": 0,
+                    "pose_correction_found": False,
+                    "action_ineligible_reason": "oracle_does_not_certify_descriptor_recovery",
+                }
+            )
             continue
         view = observations.build_view(query_index)
         winners = torch.as_tensor(record.get("winner_anchor_ids", ())).long()
@@ -1099,6 +1122,7 @@ def probe_conditioned_sparse_prototype_proposal(
         audit = {
             "query_index": int(query_index),
             "image_name": view.image_name,
+            "controller_route": str(route),
             "candidate_action_count": int(search["candidate_count"]),
             "pose_correction_found": bool(search["correction_found"]),
             "baseline_te_cm": float(search["baseline"]["te_cm"]),

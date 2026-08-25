@@ -32,6 +32,21 @@ def test_empty_sparse_owner_prototype_is_exact_baseline() -> None:
     assert torch.equal(actual.scores, expected.scores)
 
 
+def test_sparse_owner_prototype_matches_flat_bank_then_owner_collapse() -> None:
+    generator = torch.Generator().manual_seed(2026)
+    query = torch.randn(11, 8, generator=generator)
+    base = torch.randn(17, 8, generator=generator)
+    prototypes = torch.randn(5, 8, generator=generator)
+    owners = torch.tensor([2, 4, 7, 7, 16])
+    flat = global_cosine_top1(query, torch.cat((base, prototypes)))
+    expected_owners = flat.anchor_indices.clone()
+    prototype = expected_owners >= base.shape[0]
+    expected_owners[prototype] = owners[expected_owners[prototype] - base.shape[0]]
+    actual = global_owner_prototype_top1(query, base, prototypes, owners)
+    assert torch.equal(actual.anchor_indices, expected_owners)
+    assert torch.equal(actual.scores, flat.scores)
+
+
 def test_single_prototype_rows_are_exact_cosine_compatibility():
     query = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     anchors = torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.7, 0.7]])

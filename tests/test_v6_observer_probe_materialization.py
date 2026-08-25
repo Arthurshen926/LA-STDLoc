@@ -15,6 +15,11 @@ def test_sensor_variants_are_deterministic_bounded_observer_inputs() -> None:
         "sensor_noise_mild",
         "resize_compression_mild",
         "local_occlusion_mild",
+        "white_balance_warm",
+        "white_balance_cool",
+        "contrast_low",
+        "motion_blur_vertical_mild",
+        "defocus_blur_mild",
     )
     outputs = {
         name: _sensor_variant(image, name, seed=2026) for name in variants
