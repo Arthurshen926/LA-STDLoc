@@ -26,6 +26,7 @@ FORMAL_FEEDBACK_CANDIDATE_ARMS = (
     "descriptor_loss",
     "selection",
     "reconstruction",
+    "probe_sparse_prototype",
 )
 
 

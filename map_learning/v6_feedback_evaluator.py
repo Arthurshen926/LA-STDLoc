@@ -876,6 +876,28 @@ def evaluate_query_local_feedback(
     )
     base_xyz = torch.as_tensor(state["anchor_xyz"]).float()
     base_bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
+    extra_prototypes = torch.as_tensor(
+        state.get(
+            "anchor_extra_prototype_features",
+            torch.empty((0, base_bank.shape[1])),
+        )
+    ).float()
+    extra_prototype_owners = torch.as_tensor(
+        state.get("anchor_extra_prototype_owner_rows", torch.empty(0))
+    ).long().reshape(-1)
+    if extra_prototypes.shape != (
+        extra_prototype_owners.numel(),
+        base_bank.shape[1],
+    ) or (
+        extra_prototype_owners.numel()
+        and (
+            int(extra_prototype_owners.min()) < 0
+            or int(extra_prototype_owners.max()) >= base_bank.shape[0]
+        )
+    ):
+        raise ValueError("V6 feedback sparse prototype extension is invalid")
+    if extra_prototypes.numel():
+        extra_prototypes = F.normalize(extra_prototypes, dim=1)
     query_rows = []
     feedback_records = []
     descriptor_masks = _descriptor_training_query_masks(state, len(observations))
@@ -1007,6 +1029,16 @@ def evaluate_query_local_feedback(
             anchor_descriptors_normalized=True,
         )
         winners = active_rows[matches.anchor_indices[:, 0].cpu()]
+        winner_scores = matches.scores[:, 0].cpu()
+        if extra_prototypes.numel():
+            prototype_scores = query_descriptor @ extra_prototypes.to(device).T
+            prototype_scores[:, ~active[extra_prototype_owners].to(device)] = -torch.inf
+            best_prototype_score, best_prototype_row = prototype_scores.max(dim=1)
+            use_prototype = best_prototype_score.cpu() > winner_scores
+            winners[use_prototype] = extra_prototype_owners[
+                best_prototype_row[use_prototype.to(device)].cpu()
+            ]
+            winner_scores[use_prototype] = best_prototype_score.cpu()[use_prototype]
         correct = torch.tensor(
             [int(winner) in positive_edges[row] for row, winner in enumerate(winners)],
             dtype=torch.bool,
@@ -1066,7 +1098,6 @@ def evaluate_query_local_feedback(
             if inliers.numel()
             else torch.empty(0, dtype=torch.long)
         )
-        winner_scores = matches.scores[:, 0].cpu()
         pose_clean_rows, pose_reprojection_errors = _anchor_unique_pose_rows(
             clean_rows,
             clean_ids,
@@ -1077,6 +1108,17 @@ def evaluate_query_local_feedback(
         pose_clean_ids = winners[pose_clean_rows]
         dense_scores = query_descriptor @ bank.to(device).T
         dense_scores[:, ~active.to(device)] = -torch.inf
+        if extra_prototypes.numel():
+            prototype_scores = query_descriptor @ extra_prototypes.to(device).T
+            for owner in torch.unique(extra_prototype_owners, sorted=True).tolist():
+                rows = torch.nonzero(
+                    extra_prototype_owners == int(owner), as_tuple=False
+                ).reshape(-1).to(device)
+                if bool(active[int(owner)]):
+                    dense_scores[:, int(owner)] = torch.maximum(
+                        dense_scores[:, int(owner)],
+                        prototype_scores[:, rows].max(dim=1).values,
+                    )
         best_positive = []
         best_wrong = []
         correct_anchor_ranks = []

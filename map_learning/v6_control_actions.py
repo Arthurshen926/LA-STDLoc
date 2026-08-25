@@ -1255,10 +1255,21 @@ def probe_conditioned_sparse_prototype_proposal(
         "anchor_identity_changed": False,
         "validation_used_by_controller": False,
     }
+    parent_provenance = dict(state.get("provenance", {}))
+    history = list(parent_provenance.get("v6_proposal_history", ()))
+    history.append(
+        {
+            "arm": "probe_sparse_prototype",
+            "parent_map_sha256": str(source_map_sha256).lower(),
+            "probe_cache_sha256": str(probe_cache_sha256).lower(),
+            "probe_feedback_sha256": str(probe_feedback_sha256).lower(),
+        }
+    )
     proposal["provenance"] = {
-        **dict(state.get("provenance", {})),
+        **parent_provenance,
         "v6_parent_map_sha256": str(source_map_sha256).lower(),
         "v6_latest_proposal_arm": "probe_sparse_prototype",
+        "v6_proposal_history": history,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
     }
