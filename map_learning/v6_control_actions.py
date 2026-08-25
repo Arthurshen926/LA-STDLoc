@@ -40,6 +40,66 @@ def _pose_risk(te_cm: float, ae_deg: float) -> float:
     return float(te_cm) / 5.0 + float(ae_deg) / 5.0
 
 
+def nearest_mapping_observation_prototypes(
+    state: dict,
+    observations: ObservationProvider,
+    *,
+    owner_rows: torch.Tensor,
+    target_descriptors: torch.Tensor,
+    eligible_query_indices: torch.Tensor,
+) -> torch.Tensor:
+    """Select a real mapping-render observation nearest each probe target.
+
+    Virtual probes choose an appearance mode but are never themselves written
+    into the deployment map.  The deployed prototype remains one of the
+    frozen Gaussian-render mapping observations of the same exact Anchor.
+    """
+
+    owners = torch.as_tensor(owner_rows).long().reshape(-1)
+    targets = F.normalize(torch.as_tensor(target_descriptors).float(), dim=1)
+    eligible = torch.zeros(len(observations), dtype=torch.bool)
+    eligible_rows = torch.as_tensor(eligible_query_indices).long().reshape(-1)
+    if eligible_rows.numel() and (
+        int(eligible_rows.min()) < 0 or int(eligible_rows.max()) >= len(observations)
+    ):
+        raise ValueError("mapping prototype query registry is invalid")
+    eligible[eligible_rows] = True
+    csr = state.get("projective_anchor_observations")
+    if not isinstance(csr, dict):
+        raise ValueError("mapping observation prototype selection requires Anchor CSR")
+    offsets = torch.as_tensor(csr.get("observation_offsets", ())).long()
+    query_indices = torch.as_tensor(csr.get("query_indices", ())).long()
+    keypoint_indices = torch.as_tensor(csr.get("keypoint_indices", ())).long()
+    if (
+        offsets.numel() != int(torch.as_tensor(state["anchor_xyz"]).shape[0]) + 1
+        or query_indices.shape != keypoint_indices.shape
+        or int(offsets[-1]) != query_indices.numel()
+    ):
+        raise ValueError("mapping observation CSR is invalid")
+    selected = []
+    cache: dict[int, torch.Tensor] = {}
+    for owner, target in zip(owners.tolist(), targets):
+        if owner not in cache:
+            start, stop = int(offsets[owner]), int(offsets[owner + 1])
+            queries = query_indices[start:stop]
+            keypoints = keypoint_indices[start:stop]
+            keep = eligible[queries]
+            queries, keypoints = queries[keep], keypoints[keep]
+            values = []
+            for query_index in torch.unique(queries, sorted=True).tolist():
+                rows = keypoints[queries == int(query_index)]
+                descriptors = observations.build_view(int(query_index)).descriptors
+                if rows.numel() and int(rows.max()) >= descriptors.shape[0]:
+                    raise ValueError("mapping observation keypoint row is invalid")
+                values.append(descriptors[rows].float())
+            if not values:
+                raise ValueError("Anchor has no eligible mapping observation prototype")
+            cache[owner] = F.normalize(torch.cat(values), dim=1)
+        candidates = cache[owner]
+        selected.append(candidates[int(torch.argmax(candidates @ target))])
+    return torch.stack(selected) if selected else targets.new_empty((0, targets.shape[1]))
+
+
 def minimal_pose_correction_set(
     *,
     keypoints: torch.Tensor,
@@ -995,6 +1055,11 @@ def probe_conditioned_sparse_prototype_proposal(
     maximum_extra_prototypes: int = 128,
     maximum_prototypes_per_anchor: int = 1,
     duplicate_cosine: float = 0.995,
+    prototype_feature_source: str = "probe_descriptor",
+    source_observations: ObservationProvider | None = None,
+    source_observation_cache_sha256: str | None = None,
+    mapping_training_query_indices: torch.Tensor | None = None,
+    mapping_query_split_sha256: str | None = None,
     seed: int = 2026,
     solver: Callable = solve_absolute_pose,
 ) -> dict:
@@ -1046,6 +1111,21 @@ def probe_conditioned_sparse_prototype_proposal(
         raise ValueError("prototype control budgets must be positive")
     if not 0.0 <= float(duplicate_cosine) <= 1.0:
         raise ValueError("prototype duplicate cosine is invalid")
+    if prototype_feature_source not in {
+        "probe_descriptor",
+        "nearest_mapping_observation",
+    }:
+        raise ValueError("prototype feature source is invalid")
+    if prototype_feature_source == "nearest_mapping_observation":
+        if (
+            source_observations is None
+            or source_observation_cache_sha256 is None
+            or mapping_training_query_indices is None
+            or mapping_query_split_sha256 is None
+        ):
+            raise ValueError("mapping observation prototype inputs are incomplete")
+        if list(source_observations.names) != list(state.get("v6_mapping_query_names", ())):
+            raise ValueError("mapping observation prototype registry differs from map")
 
     features = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
@@ -1136,7 +1216,18 @@ def probe_conditioned_sparse_prototype_proposal(
             continue
         rows = search["selected_rows"]
         owners = search["selected_positive_anchors"]
-        descriptors = F.normalize(view.descriptors[rows].float(), dim=1)
+        target_descriptors = F.normalize(view.descriptors[rows].float(), dim=1)
+        descriptors = (
+            nearest_mapping_observation_prototypes(
+                state,
+                source_observations,
+                owner_rows=owners,
+                target_descriptors=target_descriptors,
+                eligible_query_indices=mapping_training_query_indices,
+            )
+            if prototype_feature_source == "nearest_mapping_observation"
+            else target_descriptors
+        )
         keep = torch.ones(rows.numel(), dtype=torch.bool)
         for index, owner in enumerate(owners.tolist()):
             same_owner = existing_features[existing_owners == int(owner)]
@@ -1272,6 +1363,11 @@ def probe_conditioned_sparse_prototype_proposal(
         "maximum_extra_prototypes": int(maximum_extra_prototypes),
         "maximum_prototypes_per_anchor": int(maximum_prototypes_per_anchor),
         "duplicate_cosine": float(duplicate_cosine),
+        "prototype_feature_source": str(prototype_feature_source),
+        "source_observation_cache_sha256": source_observation_cache_sha256,
+        "mapping_query_split_sha256": mapping_query_split_sha256,
+        "virtual_probe_descriptors_deployed": prototype_feature_source
+        == "probe_descriptor",
         "training_replay": current,
         "failed_query_audits": audits,
         "online_protocol": "global_prototype_top1_owner_collapse_one_standard_poselib",

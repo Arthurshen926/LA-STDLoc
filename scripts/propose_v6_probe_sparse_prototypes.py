@@ -12,6 +12,7 @@ import subprocess
 import torch
 
 from common.hashing import sha256_file
+from common.v6_contracts import ordered_query_registry_sha256
 from evidence.observation_provider import GaussianRenderObservationProvider
 from map_learning.v6_control_actions import probe_conditioned_sparse_prototype_proposal
 from topology.v6_anchor_map import compact_projective_deployment_map, identity_metric_state
@@ -88,6 +89,15 @@ def main() -> None:
     parser.add_argument("--maximum-extra-prototypes", type=int, default=128)
     parser.add_argument("--maximum-prototypes-per-anchor", type=int, default=1)
     parser.add_argument("--duplicate-cosine", type=float, default=0.995)
+    parser.add_argument(
+        "--prototype-feature-source",
+        choices=("probe_descriptor", "nearest_mapping_observation"),
+        default="probe_descriptor",
+    )
+    parser.add_argument("--source-observation-cache", type=Path)
+    parser.add_argument("--expected-source-observation-cache-sha256")
+    parser.add_argument("--mapping-query-split", type=Path)
+    parser.add_argument("--expected-mapping-query-split-sha256")
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
 
@@ -107,6 +117,44 @@ def main() -> None:
     provider = GaussianRenderObservationProvider(
         cache, query_names=list(cache["query_names"])
     )
+    source_provider = None
+    source_cache_sha = None
+    mapping_training = None
+    split_sha = None
+    if args.prototype_feature_source == "nearest_mapping_observation":
+        required = (
+            args.source_observation_cache,
+            args.expected_source_observation_cache_sha256,
+            args.mapping_query_split,
+            args.expected_mapping_query_split_sha256,
+        )
+        if any(value is None for value in required):
+            raise ValueError("nearest mapping observation inputs are required")
+        source_cache, source_cache_sha = _sha_load_pt(
+            args.source_observation_cache,
+            args.expected_source_observation_cache_sha256,
+            "source observation cache",
+        )
+        if cache.get("inputs", {}).get("source_observation_cache_sha256") != source_cache_sha:
+            raise ValueError("probe and mapping observation cache lineage differs")
+        names = list(state.get("v6_mapping_query_names", ()))
+        source_provider = GaussianRenderObservationProvider(
+            source_cache,
+            query_names=names,
+            query_bins=state.get("v6_mapping_query_bins"),
+        )
+        split, split_sha = _sha_load_json(
+            args.mapping_query_split,
+            args.expected_mapping_query_split_sha256,
+            "mapping query split",
+        )
+        if (
+            split.get("schema") != "lafgs_v6_sequence_block_descriptor_split"
+            or int(split.get("version", -1)) != 1
+            or split.get("query_names_sha256") != ordered_query_registry_sha256(names)
+        ):
+            raise ValueError("mapping query split contract differs")
+        mapping_training = torch.as_tensor(split["training_query_indices"]).long()
     proposal = probe_conditioned_sparse_prototype_proposal(
         state,
         provider,
@@ -121,6 +169,11 @@ def main() -> None:
         maximum_extra_prototypes=args.maximum_extra_prototypes,
         maximum_prototypes_per_anchor=args.maximum_prototypes_per_anchor,
         duplicate_cosine=args.duplicate_cosine,
+        prototype_feature_source=args.prototype_feature_source,
+        source_observations=source_provider,
+        source_observation_cache_sha256=source_cache_sha,
+        mapping_training_query_indices=mapping_training,
+        mapping_query_split_sha256=split_sha,
         seed=args.seed,
     )
     proposal["provenance"]["v6_producer_git_commit"] = producer_commit
@@ -146,6 +199,8 @@ def main() -> None:
             "map": map_sha,
             "probe_cache": cache_sha,
             "probe_feedback": feedback_sha,
+            "source_observation_cache": source_cache_sha,
+            "mapping_query_split": split_sha,
         },
         "output": {
             "training_checkpoint": str(checkpoint_path),

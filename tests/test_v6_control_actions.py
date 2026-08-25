@@ -12,6 +12,7 @@ from map_learning.v6_control_actions import (
     control_oriented_descriptor_proposal,
     minimal_pose_correction_set,
     minimum_norm_score_boundary_action,
+    nearest_mapping_observation_prototypes,
     pose_priority_prefix_correction_set,
     probe_conditioned_sparse_prototype_proposal,
 )
@@ -317,3 +318,38 @@ def test_probe_sparse_prototype_uses_training_only_and_collapses_to_owner() -> N
     assert report["training_replay"]["recovered_query_indices"] == [0]
     assert report["validation_query_indices_used_by_controller"].numel() == 0
     assert proposal["anchor_extra_prototype_owner_rows"].tolist() == [1]
+
+
+class _MappingObservations:
+    names = ("seq1/q0", "seq2/q1")
+
+    def __len__(self):
+        return 2
+
+    @staticmethod
+    def build_view(index):
+        descriptors = (
+            torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+            if index == 0
+            else torch.tensor([[1.0, 1.0], [-1.0, 0.0]])
+        )
+        return SimpleNamespace(descriptors=descriptors)
+
+
+def test_probe_selects_nearest_eligible_real_mapping_observation() -> None:
+    state = {
+        "anchor_xyz": torch.zeros((1, 3)),
+        "projective_anchor_observations": {
+            "observation_offsets": torch.tensor([0, 3]),
+            "query_indices": torch.tensor([0, 0, 1]),
+            "keypoint_indices": torch.tensor([0, 1, 0]),
+        },
+    }
+    selected = nearest_mapping_observation_prototypes(
+        state,
+        _MappingObservations(),
+        owner_rows=torch.tensor([0]),
+        target_descriptors=torch.tensor([[0.9, 0.1]]),
+        eligible_query_indices=torch.tensor([0]),
+    )
+    assert torch.equal(selected, torch.tensor([[1.0, 0.0]]))
