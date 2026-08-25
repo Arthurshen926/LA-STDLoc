@@ -12,6 +12,7 @@ from map_learning.v6_control_actions import (
     control_oriented_descriptor_proposal,
     minimal_pose_correction_set,
     minimum_norm_score_boundary_action,
+    pose_priority_prefix_correction_set,
     probe_conditioned_sparse_prototype_proposal,
 )
 
@@ -44,6 +45,25 @@ def test_minimal_pose_correction_set_replays_discrete_solver_boundary() -> None:
     assert result["baseline"]["success"] is False
     assert result["best"]["success"] is True
     assert result["evaluated_action_set_count"] < result["enumerated_action_set_count"]
+
+
+def test_pose_priority_prefix_crosses_large_discrete_basin() -> None:
+    result = pose_priority_prefix_correction_set(
+        keypoints=torch.zeros((16, 2)),
+        xyz=torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+        winners=torch.zeros(16, dtype=torch.long),
+        candidate_rows=torch.arange(16),
+        candidate_positive_anchors=torch.ones(16, dtype=torch.long),
+        candidate_priority=torch.arange(16).float(),
+        intrinsics=torch.eye(3),
+        ground_truth_pose_w2c=torch.eye(4),
+        reprojection_error_px=4.0,
+        initial_set_size=1,
+        solver=_counting_solver,
+    )
+    assert result["correction_found"] is True
+    assert result["selected_rows"].numel() == 2
+    assert [row["prefix_size"] for row in result["prefix_evaluations"]] == [0, 1, 2]
 
 
 def test_minimum_norm_action_crosses_requested_cosine_boundary() -> None:

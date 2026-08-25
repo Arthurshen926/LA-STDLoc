@@ -232,6 +232,134 @@ def minimal_pose_correction_set(
     }
 
 
+def pose_priority_prefix_correction_set(
+    *,
+    keypoints: torch.Tensor,
+    xyz: torch.Tensor,
+    winners: torch.Tensor,
+    candidate_rows: torch.Tensor,
+    candidate_positive_anchors: torch.Tensor,
+    candidate_priority: torch.Tensor,
+    intrinsics: torch.Tensor,
+    ground_truth_pose_w2c: torch.Tensor,
+    reprojection_error_px: float,
+    maximum_candidates: int = 256,
+    initial_set_size: int = 4,
+    seed: int = 2026,
+    solver: Callable = solve_absolute_pose,
+) -> dict:
+    """Find the first successful power-of-two pose-priority prefix.
+
+    This controller is intended for catastrophic probe failures whose correct
+    basin requires dozens of simultaneous correspondence changes.  It remains
+    finite and auditable: priority only orders candidates and every prefix is
+    accepted by replaying the unchanged PoseLib plant.
+    """
+
+    keypoints = torch.as_tensor(keypoints).float()
+    xyz = torch.as_tensor(xyz).float()
+    winners = torch.as_tensor(winners).long().reshape(-1)
+    rows = torch.as_tensor(candidate_rows).long().reshape(-1)
+    positives = torch.as_tensor(candidate_positive_anchors).long().reshape(-1)
+    priority = torch.as_tensor(candidate_priority).float().reshape(-1)
+    if not (
+        rows.shape == positives.shape == priority.shape
+        and keypoints.shape == (winners.numel(), 2)
+    ):
+        raise ValueError("pose-priority prefix inputs are not aligned")
+    if rows.numel() and (
+        int(rows.min()) < 0
+        or int(rows.max()) >= winners.numel()
+        or int(positives.min()) < 0
+        or int(positives.max()) >= xyz.shape[0]
+    ):
+        raise ValueError("pose-priority prefix references an invalid row or Anchor")
+    if not bool(torch.isfinite(priority).all()) or bool((priority < 0).any()):
+        raise ValueError("pose-priority prefix weights must be finite and non-negative")
+    if int(maximum_candidates) < 1 or int(initial_set_size) < 1:
+        raise ValueError("pose-priority prefix budgets must be positive")
+    order = sorted(
+        range(rows.numel()),
+        key=lambda index: (-float(priority[index]), int(rows[index]), int(positives[index])),
+    )
+    kept = []
+    seen_rows = set()
+    for index in order:
+        row = int(rows[index])
+        if row in seen_rows or int(positives[index]) == int(winners[row]):
+            continue
+        kept.append(index)
+        seen_rows.add(row)
+        if len(kept) == int(maximum_candidates):
+            break
+    rows, positives, priority = rows[kept], positives[kept], priority[kept]
+
+    def evaluate(count: int) -> dict:
+        patched = winners.clone()
+        if count:
+            patched[rows[:count]] = positives[:count]
+        estimate = solver(
+            keypoints.numpy(),
+            xyz[patched].numpy(),
+            torch.as_tensor(intrinsics).float().numpy(),
+            reprojection_error_px=float(reprojection_error_px),
+            confidence=0.99999,
+            max_iterations=100000,
+            min_iterations=1000,
+            seed=int(seed),
+        )
+        te_cm, ae_deg = _pose_error_cm_deg(
+            torch.as_tensor(estimate.pose_w2c), ground_truth_pose_w2c
+        )
+        return {
+            "prefix_size": int(count),
+            "te_cm": te_cm,
+            "ae_deg": ae_deg,
+            "risk": _pose_risk(te_cm, ae_deg),
+            "success": bool(te_cm < 5.0 and ae_deg < 5.0),
+            "inlier_count": len(estimate.inliers),
+        }
+
+    baseline = evaluate(0)
+    evaluations = [baseline]
+    if baseline["success"] or rows.numel() == 0:
+        selected_count = 0
+    else:
+        sizes = []
+        size = min(int(initial_set_size), int(rows.numel()))
+        while size < int(rows.numel()):
+            sizes.append(size)
+            size = min(size * 2, int(rows.numel()))
+        sizes.append(int(rows.numel()))
+        selected_count = 0
+        for size in sizes:
+            outcome = evaluate(size)
+            evaluations.append(outcome)
+            if outcome["success"]:
+                selected_count = size
+                break
+    best = min(evaluations, key=lambda value: (value["risk"], value["prefix_size"]))
+    correction_found = selected_count > 0
+    chosen = next(
+        (value for value in evaluations if value["prefix_size"] == selected_count),
+        best,
+    )
+    return {
+        "baseline": baseline,
+        "best": chosen,
+        "correction_found": correction_found,
+        "selected_rows": rows[:selected_count],
+        "selected_positive_anchors": positives[:selected_count],
+        "candidate_count": int(rows.numel()),
+        "evaluated_action_set_count": len(evaluations),
+        "enumerated_action_set_count": len(evaluations),
+        "prefix_evaluations": evaluations,
+        "candidate_rows": rows,
+        "candidate_positive_anchors": positives,
+        "candidate_priority": priority,
+    }
+
+
 def minimum_norm_score_boundary_action(
     *,
     anchor_features: torch.Tensor,
@@ -861,7 +989,7 @@ def probe_conditioned_sparse_prototype_proposal(
     probe_cache_sha256: str,
     probe_feedback_sha256: str,
     reprojection_error_px: float,
-    maximum_candidates_per_query: int = 24,
+    maximum_candidates_per_query: int = 256,
     maximum_correction_set_size: int = 8,
     beam_width: int = 4,
     maximum_extra_prototypes: int = 128,
@@ -953,7 +1081,7 @@ def probe_conditioned_sparse_prototype_proposal(
         ).float().reshape(-1)
         if winners.numel() != view.descriptors.shape[0] or weights.numel() != triplets.shape[0]:
             raise ValueError("probe control rows are not aligned")
-        search = minimal_pose_correction_set(
+        search = pose_priority_prefix_correction_set(
             keypoints=view.physical_keypoints,
             xyz=xyz,
             winners=winners,
@@ -964,8 +1092,7 @@ def probe_conditioned_sparse_prototype_proposal(
             ground_truth_pose_w2c=view.pose_w2c,
             reprojection_error_px=float(reprojection_error_px),
             maximum_candidates=int(maximum_candidates_per_query),
-            maximum_set_size=int(maximum_correction_set_size),
-            beam_width=int(beam_width),
+            initial_set_size=int(maximum_correction_set_size),
             seed=int(seed),
             solver=solver,
         )

@@ -82,7 +82,7 @@ def main() -> None:
     parser.add_argument("--expected-probe-feedback-sha256", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ransac-reprojection-px", type=float, required=True)
-    parser.add_argument("--maximum-candidates-per-query", type=int, default=24)
+    parser.add_argument("--maximum-candidates-per-query", type=int, default=256)
     parser.add_argument("--maximum-correction-set-size", type=int, default=8)
     parser.add_argument("--beam-width", type=int, default=4)
     parser.add_argument("--maximum-extra-prototypes", type=int, default=128)
