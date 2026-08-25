@@ -106,6 +106,28 @@ def _atomic_save(payload: dict, output: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _probe_render_accepted(
+    audits: list[dict], *, minimum_valid_keypoint_fraction: float
+) -> bool:
+    if not 0.0 < float(minimum_valid_keypoint_fraction) <= 1.0:
+        raise ValueError("minimum valid keypoint fraction must be in (0,1]")
+    if not audits:
+        return False
+    return all(
+        int(row["render_valid_row_count"])
+        >= max(
+            4,
+            int(
+                math.ceil(
+                    float(minimum_valid_keypoint_fraction)
+                    * int(row["detector_row_count"])
+                )
+            ),
+        )
+        for row in audits
+    )
+
+
 @torch.inference_mode()
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -120,6 +142,7 @@ def main() -> None:
     parser.add_argument("--nms-radius", type=int, default=4)
     parser.add_argument("--detection-threshold", type=float, default=0.0)
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
+    parser.add_argument("--minimum-valid-keypoint-fraction", type=float, default=0.25)
     parser.add_argument("--maximum-probes", type=int)
     parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
@@ -149,6 +172,7 @@ def main() -> None:
     extractor.requires_grad_(False)
     records = {}
     render_audits = []
+    rejected_probes = []
     for probe_order, probe in enumerate(selected):
         pose = torch.as_tensor(probe["pose_w2c"]).float()
         intrinsics = torch.as_tensor(probe["native_K"]).float()
@@ -172,6 +196,8 @@ def main() -> None:
             package.get("alphas", package.get("rend_alpha")), "alpha"
         ).cpu()
         depth = _plane(package["depth"], "expected depth").cpu()
+        probe_names = []
+        probe_audits = []
         for variant_index, variant in enumerate(probe["sensor_variants"]):
             variant_rgb = _sensor_variant(
                 rgb, str(variant), seed=int(args.seed) + probe_order * 17 + variant_index
@@ -217,21 +243,44 @@ def main() -> None:
                 "clean_pose_probe": str(variant) == "clean",
                 "pixel_center_offset": 0.5,
             }
-            render_audits.append(
-                {
-                    "image_name": name,
-                    "detector_row_count": int(keypoints.shape[0]),
-                    "render_valid_row_count": int(valid.sum()),
-                    "alpha_supported_image_fraction": float(
-                        (alpha >= float(args.alpha_minimum)).float().mean()
-                    ),
-                }
-            )
+            probe_names.append(name)
+            audit = {
+                "image_name": name,
+                "detector_row_count": int(keypoints.shape[0]),
+                "render_valid_row_count": int(valid.sum()),
+                "alpha_supported_image_fraction": float(
+                    (alpha >= float(args.alpha_minimum)).float().mean()
+                ),
+            }
+            probe_audits.append(audit)
             print(
-                f"[v6-probe] {len(render_audits)} views: {name}, "
+                f"[v6-probe] {len(render_audits) + len(probe_audits)} views: {name}, "
                 f"valid={int(valid.sum())}/{int(keypoints.shape[0])}",
                 flush=True,
             )
+        if _probe_render_accepted(
+            probe_audits,
+            minimum_valid_keypoint_fraction=args.minimum_valid_keypoint_fraction,
+        ):
+            render_audits.extend(probe_audits)
+        else:
+            for name in probe_names:
+                del records[name]
+            rejected_probes.append(
+                {
+                    "probe_index": probe_order,
+                    "candidate_index": int(probe["candidate_index"]),
+                    "probe_kind": str(probe["kind"]),
+                    "reason": "insufficient_render_valid_keypoint_support",
+                    "variant_audits": probe_audits,
+                }
+            )
+            print(f"[v6-probe] rejected pose group {probe_order}", flush=True)
+    accepted_probe_indices = sorted(
+        {int(record["probe_index"]) for record in records.values()}
+    )
+    if len(accepted_probe_indices) < 2:
+        raise ValueError("fewer than two virtual probe poses passed render acceptance")
     payload = {
         "schema": CACHE_SCHEMA,
         "version": CACHE_VERSION,
@@ -250,7 +299,10 @@ def main() -> None:
         "query_names": list(records),
         "queries": records,
         "render_audits": render_audits,
-        "probe_count": len(selected),
+        "planned_probe_count": len(selected),
+        "probe_count": len(accepted_probe_indices),
+        "accepted_probe_indices": accepted_probe_indices,
+        "rejected_probes": rejected_probes,
         "rendered_variant_count": len(records),
         "sensor_variant_registry": list(plan["sensor_variant_registry"]),
         "sensor_variants_per_pose": int(plan["sensor_variants_per_pose"]),
@@ -269,6 +321,9 @@ def main() -> None:
             "nms_radius": int(args.nms_radius),
             "detection_threshold": float(args.detection_threshold),
             "alpha_minimum": float(args.alpha_minimum),
+            "minimum_valid_keypoint_fraction": float(
+                args.minimum_valid_keypoint_fraction
+            ),
             "seed": int(args.seed),
         },
     }

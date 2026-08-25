@@ -1,6 +1,9 @@
 import torch
 
-from scripts.materialize_v6_fixed_map_observer_probes import _sensor_variant
+from scripts.materialize_v6_fixed_map_observer_probes import (
+    _probe_render_accepted,
+    _sensor_variant,
+)
 
 
 def test_sensor_variants_are_deterministic_bounded_observer_inputs() -> None:
@@ -35,3 +38,15 @@ def test_sensor_variants_are_deterministic_bounded_observer_inputs() -> None:
         for value in outputs.values()
     )
     assert not torch.equal(outputs["local_occlusion_mild"], image)
+
+
+def test_probe_render_acceptance_rejects_an_unsupported_pose_group() -> None:
+    audits = [
+        {"detector_row_count": 100, "render_valid_row_count": 90},
+        {"detector_row_count": 100, "render_valid_row_count": 0},
+    ]
+    assert not _probe_render_accepted(
+        audits, minimum_valid_keypoint_fraction=0.25
+    )
+    audits[1]["render_valid_row_count"] = 25
+    assert _probe_render_accepted(audits, minimum_valid_keypoint_fraction=0.25)
