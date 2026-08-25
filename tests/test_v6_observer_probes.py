@@ -101,3 +101,17 @@ def test_probe_selection_covers_excitation_kinds_before_utility_fill() -> None:
         ["interpolation", "interpolation", "rotation", "boundary", "reverse"][index]
         for index in selected
     }
+
+
+def test_probe_selection_repeats_rare_excitation_kinds_before_greedy_fill() -> None:
+    kinds = ["interpolation"] * 6 + ["deficit"] * 3 + ["reverse"] * 3
+    selected = _select_diverse_candidates(
+        utility=[1.0 - 0.01 * index for index in range(len(kinds))],
+        kinds=kinds,
+        pose_families=torch.arange(len(kinds)),
+        budget=9,
+    )
+    selected_kinds = [kinds[index] for index in selected]
+    assert selected_kinds.count("deficit") == 3
+    assert selected_kinds.count("reverse") == 3
+    assert selected_kinds.count("interpolation") == 3

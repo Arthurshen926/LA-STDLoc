@@ -60,15 +60,28 @@ def _select_diverse_candidates(
             kind,
         )
     )
-    for kind in available_kinds:
-        for candidate_index in ordered:
-            family = int(pose_families[candidate_index])
-            if kinds[candidate_index] == kind and family not in used_family:
-                selected.append(candidate_index)
-                used_family.add(family)
-                break
-        if len(selected) == int(budget):
-            return selected
+    # Continue round-robin coverage instead of taking one example per kind and
+    # then letting the dominant interpolation family consume the remainder.
+    # Observer excitation needs repeated, independent samples of rare failure
+    # mechanisms in both controller training and held-out validation.
+    while len(selected) < int(budget):
+        added = False
+        for kind in available_kinds:
+            for candidate_index in ordered:
+                family = int(pose_families[candidate_index])
+                if (
+                    kinds[candidate_index] == kind
+                    and candidate_index not in selected
+                    and family not in used_family
+                ):
+                    selected.append(candidate_index)
+                    used_family.add(family)
+                    added = True
+                    break
+            if len(selected) == int(budget):
+                return selected
+        if not added:
+            break
     for candidate_index in ordered:
         family = int(pose_families[candidate_index])
         if candidate_index in selected or family in used_family:
