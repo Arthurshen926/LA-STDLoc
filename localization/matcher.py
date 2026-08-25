@@ -43,6 +43,62 @@ class AnchorAssignment:
 
 
 @torch.inference_mode()
+def global_owner_prototype_top1(
+    query_descriptors: torch.Tensor,
+    anchor_descriptors: torch.Tensor,
+    extra_prototypes: torch.Tensor,
+    prototype_owner_rows: torch.Tensor,
+    *,
+    chunk_size: int = 8192,
+    anchor_descriptors_normalized: bool = False,
+) -> Top1Matches:
+    """Match a sparse prototype extension while emitting base Anchor rows.
+
+    Base descriptors remain first in the flat bank, so an empty extension is
+    bit-for-bit the historical matcher and an exact score tie keeps the base
+    Anchor.  Extra prototypes change appearance capacity only: every winning
+    prototype is collapsed to its owning Anchor before PnP.
+    """
+
+    anchors = torch.as_tensor(anchor_descriptors)
+    prototypes = torch.as_tensor(extra_prototypes)
+    owners = torch.as_tensor(prototype_owner_rows).long().reshape(-1)
+    if anchors.ndim != 2 or prototypes.ndim != 2:
+        raise ValueError("base Anchors and extra prototypes must be matrices")
+    if prototypes.shape[0] != owners.numel():
+        raise ValueError("prototype owners do not align with prototype rows")
+    if prototypes.shape[1] != anchors.shape[1]:
+        raise ValueError("prototype and base descriptor dimensions differ")
+    if owners.numel() and (
+        int(owners.min()) < 0 or int(owners.max()) >= anchors.shape[0]
+    ):
+        raise ValueError("prototype owner is outside the base Anchor registry")
+    if prototypes.shape[0] == 0:
+        return global_cosine_top1(
+            query_descriptors,
+            anchors,
+            chunk_size=chunk_size,
+            anchor_descriptors_normalized=anchor_descriptors_normalized,
+        )
+    bank = torch.cat((anchors, prototypes), dim=0)
+    flat = global_cosine_top1(
+        query_descriptors,
+        bank,
+        chunk_size=chunk_size,
+        anchor_descriptors_normalized=anchor_descriptors_normalized,
+    )
+    base_count = int(anchors.shape[0])
+    is_prototype = flat.anchor_indices >= base_count
+    owner_rows = flat.anchor_indices.clone()
+    owner_rows[is_prototype] = owners[flat.anchor_indices[is_prototype] - base_count]
+    return Top1Matches(
+        keypoint_indices=flat.keypoint_indices,
+        anchor_indices=owner_rows,
+        scores=flat.scores,
+    )
+
+
+@torch.inference_mode()
 def global_view_mixture_topk(
     query_descriptors: torch.Tensor,
     anchor_prototypes: torch.Tensor,

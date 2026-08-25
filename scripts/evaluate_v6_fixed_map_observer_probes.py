@@ -46,6 +46,17 @@ def main() -> None:
     parser.add_argument("--alpha-minimum", type=float, default=0.05)
     parser.add_argument("--ransac-reprojection-px", type=float, required=True)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--source-map-sha256",
+        help="immutable baseline map that rendered the probes; defaults to --map",
+    )
+    parser.add_argument(
+        "--validation-probe-index",
+        type=int,
+        action="append",
+        dest="validation_probe_indices",
+        help="pose-grouped control holdout; repeat for multiple probe indices",
+    )
     args = parser.parse_args()
     state, map_sha = _load(args.map, args.expected_map_sha256, "map")
     cache, cache_sha = _load(
@@ -56,6 +67,8 @@ def main() -> None:
         cache,
         map_sha256=map_sha,
         probe_cache_sha256=cache_sha,
+        source_map_sha256=args.source_map_sha256,
+        validation_probe_indices=args.validation_probe_indices,
         positive_radius_px=args.positive_radius_px,
         alpha_minimum=args.alpha_minimum,
         ransac_reprojection_px=args.ransac_reprojection_px,

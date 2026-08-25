@@ -850,3 +850,289 @@ def control_oriented_descriptor_proposal(
         "selection_changed": False,
     }
     return proposal
+
+
+def probe_conditioned_sparse_prototype_proposal(
+    state: dict,
+    observations: ObservationProvider,
+    probe_feedback: dict,
+    *,
+    source_map_sha256: str,
+    probe_cache_sha256: str,
+    probe_feedback_sha256: str,
+    reprojection_error_px: float,
+    maximum_candidates_per_query: int = 24,
+    maximum_correction_set_size: int = 8,
+    beam_width: int = 4,
+    maximum_extra_prototypes: int = 128,
+    maximum_prototypes_per_anchor: int = 1,
+    duplicate_cosine: float = 0.995,
+    seed: int = 2026,
+    solver: Callable = solve_absolute_pose,
+) -> dict:
+    """Add only probe-authorized appearance modes that improve the real plant.
+
+    The controller can read only the pose-grouped training partition serialized
+    by the virtual-probe observer.  Candidate modes are detector descriptors
+    attached to depth-certified positive Anchors.  They are greedily admitted
+    only when actual Top1+PoseLib replay recovers a failed training probe and
+    preserves every previously successful training probe.  Validation probes
+    are deliberately absent from this function.
+    """
+
+    if (
+        probe_feedback.get("schema")
+        != "lafgs_v6_fixed_map_virtual_probe_evaluation"
+        or int(probe_feedback.get("version", -1)) != 2
+        or probe_feedback.get("uses_source_mapping_rgb") is not False
+        or probe_feedback.get("uses_test_queries") is not False
+    ):
+        raise ValueError("probe control feedback contract differs")
+    inputs = probe_feedback.get("inputs", {})
+    if inputs.get("source_map_sha256") != str(source_map_sha256).lower():
+        raise ValueError("probe feedback source map SHA differs")
+    if inputs.get("probe_cache_sha256") != str(probe_cache_sha256).lower():
+        raise ValueError("probe feedback cache SHA differs")
+    if list(probe_feedback.get("records", ())) == []:
+        raise ValueError("probe control feedback is empty")
+    if [record.get("image_name") for record in probe_feedback["records"]] != list(
+        observations.names
+    ):
+        raise ValueError("probe feedback and observation registries differ")
+    split = probe_feedback.get("control_split", {})
+    if split.get("validation_used_by_controller") is not False or split.get(
+        "sensor_variants_share_their_pose_partition"
+    ) is not True:
+        raise ValueError("probe control split is not independently grouped")
+    training = torch.as_tensor(split.get("training_query_indices", ())).long()
+    validation = torch.as_tensor(split.get("validation_query_indices", ())).long()
+    if (
+        training.numel() == 0
+        or validation.numel() == 0
+        or torch.isin(training, validation).any()
+        or sorted(torch.cat((training, validation)).tolist())
+        != list(range(len(observations)))
+    ):
+        raise ValueError("probe control query split is not an exact partition")
+    if int(maximum_extra_prototypes) < 1 or int(maximum_prototypes_per_anchor) < 1:
+        raise ValueError("prototype control budgets must be positive")
+    if not 0.0 <= float(duplicate_cosine) <= 1.0:
+        raise ValueError("prototype duplicate cosine is invalid")
+
+    features = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
+    xyz = torch.as_tensor(state["anchor_xyz"]).float()
+    existing_features = torch.as_tensor(
+        state.get(
+            "anchor_extra_prototype_features",
+            torch.empty((0, features.shape[1])),
+        )
+    ).float()
+    existing_owners = torch.as_tensor(
+        state.get("anchor_extra_prototype_owner_rows", torch.empty(0))
+    ).long().reshape(-1)
+    if existing_features.shape != (existing_owners.numel(), features.shape[1]):
+        raise ValueError("existing sparse prototype extension is invalid")
+    existing_features = (
+        F.normalize(existing_features, dim=1)
+        if existing_features.numel()
+        else existing_features
+    )
+    audits = []
+    bundles = []
+    for query_index in training.tolist():
+        record = probe_feedback["records"][query_index]
+        if record.get("control_split") != "training":
+            raise ValueError("controller received a non-training probe record")
+        if bool(record.get("pose_success", False)):
+            continue
+        view = observations.build_view(query_index)
+        winners = torch.as_tensor(record.get("winner_anchor_ids", ())).long()
+        triplets = torch.as_tensor(record.get("descriptor_triplets", ())).long().reshape(-1, 4)
+        weights = torch.as_tensor(
+            record.get("descriptor_triplet_pose_weights", ())
+        ).float().reshape(-1)
+        if winners.numel() != view.descriptors.shape[0] or weights.numel() != triplets.shape[0]:
+            raise ValueError("probe control rows are not aligned")
+        search = minimal_pose_correction_set(
+            keypoints=view.physical_keypoints,
+            xyz=xyz,
+            winners=winners,
+            candidate_rows=triplets[:, 0],
+            candidate_positive_anchors=triplets[:, 1],
+            candidate_priority=weights,
+            intrinsics=view.intrinsics,
+            ground_truth_pose_w2c=view.pose_w2c,
+            reprojection_error_px=float(reprojection_error_px),
+            maximum_candidates=int(maximum_candidates_per_query),
+            maximum_set_size=int(maximum_correction_set_size),
+            beam_width=int(beam_width),
+            seed=int(seed),
+            solver=solver,
+        )
+        audit = {
+            "query_index": int(query_index),
+            "image_name": view.image_name,
+            "candidate_action_count": int(search["candidate_count"]),
+            "pose_correction_found": bool(search["correction_found"]),
+            "baseline_te_cm": float(search["baseline"]["te_cm"]),
+            "baseline_ae_deg": float(search["baseline"]["ae_deg"]),
+            "best_te_cm": float(search["best"]["te_cm"]),
+            "best_ae_deg": float(search["best"]["ae_deg"]),
+            "minimal_correction_set_size": int(search["selected_rows"].numel()),
+        }
+        audits.append(audit)
+        if not search["correction_found"] or search["selected_rows"].numel() == 0:
+            continue
+        rows = search["selected_rows"]
+        owners = search["selected_positive_anchors"]
+        descriptors = F.normalize(view.descriptors[rows].float(), dim=1)
+        keep = torch.ones(rows.numel(), dtype=torch.bool)
+        for index, owner in enumerate(owners.tolist()):
+            same_owner = existing_features[existing_owners == int(owner)]
+            reference = torch.cat((features[int(owner)][None], same_owner), dim=0)
+            if float((reference @ descriptors[index]).max()) >= float(duplicate_cosine):
+                keep[index] = False
+        rows, owners, descriptors = rows[keep], owners[keep], descriptors[keep]
+        if rows.numel():
+            bundles.append(
+                {
+                    "query_index": int(query_index),
+                    "rows": rows,
+                    "owners": owners,
+                    "features": descriptors,
+                    "risk_gain": float(search["baseline"]["risk"] - search["best"]["risk"]),
+                }
+            )
+    if not bundles:
+        raise ControlActionUnavailable(
+            "probe feedback contains no pose-correcting sparse prototype action",
+            audits=audits,
+        )
+
+    baseline_success = {
+        int(index): bool(probe_feedback["records"][int(index)]["pose_success"])
+        for index in training.tolist()
+    }
+
+    def replay(prototypes: torch.Tensor, owners: torch.Tensor) -> dict:
+        recovered = []
+        lost = []
+        risk = 0.0
+        for query_index in training.tolist():
+            record = probe_feedback["records"][query_index]
+            view = observations.build_view(query_index)
+            winners = torch.as_tensor(record["winner_anchor_ids"]).long().clone()
+            winner_scores = torch.as_tensor(record["winner_scores"]).float().clone()
+            if prototypes.numel():
+                scores = F.normalize(view.descriptors.float(), dim=1) @ prototypes.T
+                best_scores, best_rows = scores.max(dim=1)
+                changed = best_scores > winner_scores
+                winners[changed] = owners[best_rows[changed]]
+            estimate = solver(
+                view.physical_keypoints.numpy(),
+                xyz[winners].numpy(),
+                view.intrinsics.float().numpy(),
+                reprojection_error_px=float(reprojection_error_px),
+                confidence=0.99999,
+                max_iterations=100000,
+                min_iterations=1000,
+                seed=int(seed),
+            )
+            te_cm, ae_deg = _pose_error_cm_deg(estimate.pose_w2c, view.pose_w2c)
+            success = bool(te_cm < 5.0 and ae_deg < 5.0)
+            risk += _pose_risk(te_cm, ae_deg)
+            if success and not baseline_success[query_index]:
+                recovered.append(query_index)
+            if not success and baseline_success[query_index]:
+                lost.append(query_index)
+        return {
+            "recovered_query_indices": recovered,
+            "lost_query_indices": lost,
+            "recovered_query_count": len(recovered),
+            "lost_query_count": len(lost),
+            "total_pose_risk": float(risk),
+        }
+
+    accepted = []
+    current_features = existing_features
+    current_owners = existing_owners
+    current = replay(current_features, current_owners)
+    for bundle in sorted(
+        bundles, key=lambda value: (-value["risk_gain"], value["query_index"])
+    ):
+        owner_counts = torch.bincount(
+            current_owners, minlength=features.shape[0]
+        ) if current_owners.numel() else torch.zeros(features.shape[0], dtype=torch.long)
+        keep_values = []
+        prospective_counts = owner_counts.clone()
+        for owner in bundle["owners"].tolist():
+            allowed = int(prospective_counts[int(owner)]) < int(
+                maximum_prototypes_per_anchor
+            )
+            keep_values.append(allowed)
+            if allowed:
+                prospective_counts[int(owner)] += 1
+        keep = torch.tensor(keep_values, dtype=torch.bool)
+        candidate_features = bundle["features"][keep]
+        candidate_owners = bundle["owners"][keep]
+        remaining = int(maximum_extra_prototypes) - int(current_owners.numel())
+        candidate_features = candidate_features[: max(remaining, 0)]
+        candidate_owners = candidate_owners[: max(remaining, 0)]
+        if candidate_owners.numel() == 0:
+            continue
+        trial_features = torch.cat((current_features, candidate_features), dim=0)
+        trial_owners = torch.cat((current_owners, candidate_owners), dim=0)
+        outcome = replay(trial_features, trial_owners)
+        improves = (
+            outcome["recovered_query_count"] > current["recovered_query_count"]
+            or (
+                outcome["recovered_query_count"] == current["recovered_query_count"]
+                and outcome["total_pose_risk"] < current["total_pose_risk"] - 1e-6
+            )
+        )
+        if outcome["lost_query_count"] == 0 and improves:
+            current_features, current_owners, current = (
+                trial_features,
+                trial_owners,
+                outcome,
+            )
+            accepted.append(bundle)
+    if current["recovered_query_count"] == 0:
+        raise ControlActionUnavailable(
+            "sparse prototypes do not recover a training probe under clean protection",
+            audits=audits,
+        )
+    proposal = dict(state)
+    proposal["anchor_extra_prototype_features"] = current_features
+    proposal["anchor_extra_prototype_owner_rows"] = current_owners
+    proposal["v6_probe_prototype_control"] = {
+        "schema": "lafgs_v6_probe_conditioned_sparse_prototype_control",
+        "version": 1,
+        "source_map_sha256": str(source_map_sha256).lower(),
+        "probe_cache_sha256": str(probe_cache_sha256).lower(),
+        "probe_feedback_sha256": str(probe_feedback_sha256).lower(),
+        "training_query_indices": training,
+        "validation_query_indices_used_by_controller": torch.empty(0, dtype=torch.long),
+        "validation_query_count": int(validation.numel()),
+        "accepted_source_query_indices": torch.tensor(
+            [bundle["query_index"] for bundle in accepted], dtype=torch.long
+        ),
+        "extra_prototype_count": int(current_owners.numel()),
+        "maximum_extra_prototypes": int(maximum_extra_prototypes),
+        "maximum_prototypes_per_anchor": int(maximum_prototypes_per_anchor),
+        "duplicate_cosine": float(duplicate_cosine),
+        "training_replay": current,
+        "failed_query_audits": audits,
+        "online_protocol": "global_prototype_top1_owner_collapse_one_standard_poselib",
+        "geometry_changed": False,
+        "anchor_identity_changed": False,
+        "validation_used_by_controller": False,
+    }
+    proposal["provenance"] = {
+        **dict(state.get("provenance", {})),
+        "v6_parent_map_sha256": str(source_map_sha256).lower(),
+        "v6_latest_proposal_arm": "probe_sparse_prototype",
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+    }
+    return proposal

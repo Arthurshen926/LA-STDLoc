@@ -1,6 +1,35 @@
 import torch
 
-from localization.matcher import global_cosine_top1, global_view_mixture_topk
+from localization.matcher import (
+    global_cosine_top1,
+    global_owner_prototype_top1,
+    global_view_mixture_topk,
+)
+
+
+def test_sparse_owner_prototype_changes_appearance_not_anchor_identity() -> None:
+    query = torch.tensor([[1.0, 0.0]])
+    base = torch.tensor([[0.9, 0.1], [0.0, 1.0]])
+    result = global_owner_prototype_top1(
+        query,
+        base,
+        torch.tensor([[1.0, 0.0]]),
+        torch.tensor([1]),
+        anchor_descriptors_normalized=False,
+    )
+    assert result.anchor_indices.tolist() == [1]
+    assert torch.allclose(result.scores, torch.ones(1))
+
+
+def test_empty_sparse_owner_prototype_is_exact_baseline() -> None:
+    query = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    base = torch.tensor([[0.9, 0.1], [0.0, 1.0]])
+    expected = global_cosine_top1(query, base)
+    actual = global_owner_prototype_top1(
+        query, base, torch.empty((0, 2)), torch.empty(0, dtype=torch.long)
+    )
+    assert torch.equal(actual.anchor_indices, expected.anchor_indices)
+    assert torch.equal(actual.scores, expected.scores)
 
 
 def test_single_prototype_rows_are_exact_cosine_compatibility():

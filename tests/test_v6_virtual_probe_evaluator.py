@@ -35,14 +35,14 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
         "uses_test_queries": False,
         "virtual_probes_added_to_map": False,
         "virtual_probes_added_to_anchor_observations": False,
-        "query_names": ["virtual/0000/clean"],
+        "query_names": ["virtual/0000/clean", "virtual/0001/clean"],
         "inputs": {
             "source_map_sha256": "a" * 64,
             "probe_plan_sha256": "b" * 64,
             "gaussian_ply_sha256": "c" * 64,
         },
         "queries": {
-            "virtual/0000/clean": {
+            name: {
                 "native_keypoints": projected - 0.5,
                 "native_descriptors": torch.eye(4),
                 "native_scores": torch.ones(4),
@@ -53,9 +53,12 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
                 "native_depth": torch.full((20, 20), 2.0),
                 "native_valid_keypoint_mask": torch.ones(4, dtype=torch.bool),
                 "pixel_center_offset": 0.5,
-                "probe_index": 0,
+                "probe_index": index,
                 "sensor_variant": "clean",
             }
+            for index, name in enumerate(
+                ("virtual/0000/clean", "virtual/0001/clean")
+            )
         },
     }
     result = evaluate_fixed_map_virtual_probes(
@@ -75,3 +78,7 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
     assert record["pose_valid_unique_anchor_count"] == 4
     assert record["oracle_available"] is True
     assert result["summary"]["recall_5cm_5deg_percent"] == 100.0
+    assert result["control_split"]["training_probe_indices"] == [0]
+    assert result["control_split"]["validation_probe_indices"] == [1]
+    assert result["control_split"]["validation_used_by_controller"] is False
+    assert len(record["winner_anchor_ids"]) == 4

@@ -12,6 +12,7 @@ from map_learning.v6_control_actions import (
     control_oriented_descriptor_proposal,
     minimal_pose_correction_set,
     minimum_norm_score_boundary_action,
+    probe_conditioned_sparse_prototype_proposal,
 )
 
 
@@ -216,3 +217,80 @@ def test_control_proposal_falls_back_to_verified_anchor_suppression() -> None:
     assert report["suppressed_source_anchor_rows"].tolist() == [0, 2]
     assert report["selected_query_indices"].tolist() == [0]
     assert proposal["anchor_ids"].numel() == 1
+
+
+class _ProbeObservations:
+    names = ("probe-train", "probe-validation")
+
+    def __len__(self):
+        return 2
+
+    @staticmethod
+    def build_view(index):
+        return SimpleNamespace(
+            image_name=_ProbeObservations.names[index],
+            physical_keypoints=torch.zeros((4, 2)),
+            descriptors=torch.tensor([[1.0, 0.0]]).repeat(4, 1),
+            intrinsics=torch.eye(3),
+            pose_w2c=torch.eye(4),
+        )
+
+
+def test_probe_sparse_prototype_uses_training_only_and_collapses_to_owner() -> None:
+    state = {
+        "anchor_ids": torch.arange(2),
+        "anchor_features": torch.tensor([[0.99, 0.14], [0.0, 1.0]]),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]),
+        "provenance": {
+            "uses_source_mapping_rgb": False,
+            "uses_test_queries": False,
+        },
+    }
+    records = []
+    for index, split in enumerate(("training", "validation")):
+        records.append(
+            {
+                "query_index": index,
+                "image_name": _ProbeObservations.names[index],
+                "control_split": split,
+                "pose_success": False,
+                "winner_anchor_ids": [0, 0, 0, 0],
+                "winner_scores": [0.99, 0.99, 0.99, 0.99],
+                "descriptor_triplets": [
+                    [row, 1, 0, 0] for row in range(4)
+                ],
+                "descriptor_triplet_pose_weights": [1.0] * 4,
+            }
+        )
+    feedback = {
+        "schema": "lafgs_v6_fixed_map_virtual_probe_evaluation",
+        "version": 2,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "inputs": {
+            "source_map_sha256": "a" * 64,
+            "probe_cache_sha256": "b" * 64,
+        },
+        "control_split": {
+            "training_query_indices": [0],
+            "validation_query_indices": [1],
+            "validation_used_by_controller": False,
+            "sensor_variants_share_their_pose_partition": True,
+        },
+        "records": records,
+    }
+    proposal = probe_conditioned_sparse_prototype_proposal(
+        state,
+        _ProbeObservations(),
+        feedback,
+        source_map_sha256="a" * 64,
+        probe_cache_sha256="b" * 64,
+        probe_feedback_sha256="c" * 64,
+        reprojection_error_px=4.0,
+        maximum_correction_set_size=3,
+        solver=_counting_solver,
+    )
+    report = proposal["v6_probe_prototype_control"]
+    assert report["training_replay"]["recovered_query_indices"] == [0]
+    assert report["validation_query_indices_used_by_controller"].numel() == 0
+    assert proposal["anchor_extra_prototype_owner_rows"].tolist() == [1]

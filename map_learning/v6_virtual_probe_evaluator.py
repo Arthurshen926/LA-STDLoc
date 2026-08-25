@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from evidence.observation_provider import GaussianRenderObservationProvider
-from localization.matcher import global_cosine_topk
+from localization.matcher import global_owner_prototype_top1
 from localization.pose_solver import solve_absolute_pose
 from map_learning.v6_feedback_evaluator import (
     _aligned_keypoint_surface_depth,
@@ -23,7 +23,7 @@ from topology.layered_sufficiency import visibility_image_cells
 
 
 SCHEMA = "lafgs_v6_fixed_map_virtual_probe_evaluation"
-VERSION = 1
+VERSION = 2
 
 
 def _pose_errors(estimated: torch.Tensor, truth: torch.Tensor) -> tuple[float, float]:
@@ -61,6 +61,8 @@ def evaluate_fixed_map_virtual_probes(
     *,
     map_sha256: str,
     probe_cache_sha256: str,
+    source_map_sha256: str | None = None,
+    validation_probe_indices: list[int] | tuple[int, ...] | torch.Tensor | None = None,
     positive_radius_px: float = 2.0,
     alpha_minimum: float = 0.05,
     ransac_reprojection_px: float,
@@ -77,7 +79,12 @@ def evaluate_fixed_map_virtual_probes(
     ):
         raise ValueError("virtual probe cache contract differs")
     inputs = probe_cache.get("inputs", {})
-    if inputs.get("source_map_sha256") != str(map_sha256).lower():
+    source_map_sha256 = (
+        str(map_sha256).lower()
+        if source_map_sha256 is None
+        else str(source_map_sha256).lower()
+    )
+    if inputs.get("source_map_sha256") != source_map_sha256:
         raise ValueError("virtual probe cache source map SHA differs")
     if probe_cache.get("virtual_probes_added_to_map") is not False or probe_cache.get(
         "virtual_probes_added_to_anchor_observations"
@@ -88,6 +95,39 @@ def evaluate_fixed_map_virtual_probes(
     )
     xyz = torch.as_tensor(state["anchor_xyz"]).float()
     bank = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
+    extra_features = torch.as_tensor(
+        state.get(
+            "anchor_extra_prototype_features",
+            torch.empty((0, bank.shape[1])),
+        )
+    ).float()
+    extra_owners = torch.as_tensor(
+        state.get("anchor_extra_prototype_owner_rows", torch.empty(0))
+    ).long().reshape(-1)
+    if (extra_features.shape[0] != extra_owners.numel()) or (
+        extra_features.ndim != 2 or extra_features.shape[1] != bank.shape[1]
+    ):
+        raise ValueError("virtual probe map prototype extension is invalid")
+    if extra_features.numel():
+        extra_features = F.normalize(extra_features, dim=1)
+    probe_indices = sorted(
+        {
+            int(probe_cache["queries"][name]["probe_index"])
+            for name in probe_cache["query_names"]
+        }
+    )
+    if len(probe_indices) < 2:
+        raise ValueError("virtual-probe control validation needs at least two poses")
+    if validation_probe_indices is None:
+        held_out_count = max(1, int(math.ceil(0.25 * len(probe_indices))))
+        validation_probes = probe_indices[-held_out_count:]
+    else:
+        validation_probes = sorted(
+            set(torch.as_tensor(validation_probe_indices).long().reshape(-1).tolist())
+        )
+    if not validation_probes or not set(validation_probes) < set(probe_indices):
+        raise ValueError("virtual-probe validation is not a proper pose partition")
+    training_probes = sorted(set(probe_indices) - set(validation_probes))
     active = torch.ones(xyz.shape[0], dtype=torch.bool)
     records = []
     for query_index in range(len(provider)):
@@ -127,13 +167,15 @@ def evaluate_fixed_map_virtual_probes(
             keypoint_depth=keypoint_depth,
         )
         query_descriptor = F.normalize(view.descriptors.float(), dim=1).to(device)
-        matches = global_cosine_topk(
+        matches = global_owner_prototype_top1(
             query_descriptor,
             bank.to(device),
-            topk=1,
+            extra_features.to(device),
+            extra_owners.to(device),
             anchor_descriptors_normalized=True,
         )
-        winners = matches.anchor_indices[:, 0].cpu()
+        winners = matches.anchor_indices.cpu()
+        winner_scores = matches.scores.cpu()
         winner_valid = torch.tensor(
             [int(winner) in certified_edges[row] for row, winner in enumerate(winners)],
             dtype=torch.bool,
@@ -151,6 +193,9 @@ def evaluate_fixed_map_virtual_probes(
         te_cm, ae_deg = _pose_errors(estimate.pose_w2c, view.pose_w2c)
         valid_rows = []
         oracle_anchors = []
+        certified_pairs = []
+        descriptor_triplets = []
+        top1_negative = torch.zeros(winners.numel(), dtype=torch.bool)
         for row, candidates in enumerate(certified_edges):
             if not candidates:
                 continue
@@ -159,6 +204,11 @@ def evaluate_fixed_map_virtual_probes(
             best = int(candidate_tensor[int(torch.argmax(scores))])
             valid_rows.append(row)
             oracle_anchors.append(best)
+            certified_pairs.extend((row, int(anchor)) for anchor in candidates)
+            geometry = set(geometry_edges[row])
+            top1_negative[row] = int(winners[row]) not in geometry
+            if bool(top1_negative[row]):
+                descriptor_triplets.append((row, best, int(winners[row]), 0))
         if len(valid_rows) >= 4:
             oracle_rows = torch.tensor(valid_rows, dtype=torch.long)
             oracle_anchor_tensor = torch.tensor(oracle_anchors, dtype=torch.long)
@@ -195,6 +245,12 @@ def evaluate_fixed_map_virtual_probes(
                 "sensor_variant": str(
                     probe_cache["queries"][view.image_name]["sensor_variant"]
                 ),
+                "control_split": (
+                    "validation"
+                    if int(probe_cache["queries"][view.image_name]["probe_index"])
+                    in validation_probes
+                    else "training"
+                ),
                 "te_cm": te_cm,
                 "ae_deg": ae_deg,
                 "pose_success": bool(te_cm < 5.0 and ae_deg < 5.0),
@@ -216,12 +272,26 @@ def evaluate_fixed_map_virtual_probes(
                 "oracle_pose_success": bool(
                     oracle_available and oracle_te_cm < 5.0 and oracle_ae_deg < 5.0
                 ),
+                "winner_anchor_ids": winners.tolist(),
+                "winner_scores": winner_scores.tolist(),
+                "top1_negative_mask": top1_negative.tolist(),
+                "certified_pose_valid_alternative_pairs": certified_pairs,
+                "descriptor_triplets": descriptor_triplets,
+                "descriptor_triplet_pose_weights": [
+                    1.0 for _ in descriptor_triplets
+                ],
                 "latency_ms": (time.perf_counter() - started) * 1000.0,
             }
         )
     clean = [record for record in records if record["sensor_variant"] == "clean"]
     stressed = [record for record in records if record["sensor_variant"] != "clean"]
     oracle_records = [record for record in records if record["oracle_available"]]
+    training_records = [
+        record for record in records if record["control_split"] == "training"
+    ]
+    validation_records = [
+        record for record in records if record["control_split"] == "validation"
+    ]
     return {
         "schema": SCHEMA,
         "version": VERSION,
@@ -229,6 +299,7 @@ def evaluate_fixed_map_virtual_probes(
         "uses_test_queries": False,
         "inputs": {
             "map_sha256": str(map_sha256).lower(),
+            "source_map_sha256": source_map_sha256,
             "probe_cache_sha256": str(probe_cache_sha256).lower(),
             "probe_plan_sha256": inputs["probe_plan_sha256"],
             "gaussian_ply_sha256": inputs["gaussian_ply_sha256"],
@@ -242,7 +313,24 @@ def evaluate_fixed_map_virtual_probes(
             "ransac_reprojection_px": float(ransac_reprojection_px),
             "seed": int(seed),
         },
+        "control_split": {
+            "policy": "pose_grouped_last_quarter_holdout"
+            if validation_probe_indices is None
+            else "explicit_pose_group_holdout",
+            "training_probe_indices": training_probes,
+            "validation_probe_indices": validation_probes,
+            "training_query_indices": [
+                int(record["query_index"]) for record in training_records
+            ],
+            "validation_query_indices": [
+                int(record["query_index"]) for record in validation_records
+            ],
+            "sensor_variants_share_their_pose_partition": True,
+            "validation_used_by_controller": False,
+        },
         "summary": _summary(records),
+        "control_training_summary": _summary(training_records),
+        "independent_probe_validation_summary": _summary(validation_records),
         "clean_pose_probe_summary": _summary(clean) if clean else None,
         "sensor_stress_probe_summary": _summary(stressed) if stressed else None,
         "pose_valid_oracle_summary": _summary(oracle_records, "oracle_")

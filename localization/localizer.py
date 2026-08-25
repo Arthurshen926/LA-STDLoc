@@ -13,9 +13,9 @@ import torch.nn.functional as F
 from localization.frontend import NativeSuperPointFrontend, SparseFeatures
 from localization.matcher import (
     Top1Matches,
-    global_cosine_top1,
     global_cosine_top2,
     global_cosine_topk,
+    global_owner_prototype_top1,
     maximum_weight_anchor_assignment,
     suppress_duplicate_anchor_matches,
 )
@@ -181,6 +181,40 @@ class SparseLocalizer:
             == self.anchor_features.shape[0]
         ):
             raise ValueError("compact map rows do not align")
+        prototype_features = state.get("anchor_extra_prototype_features")
+        prototype_owners = state.get("anchor_extra_prototype_owner_rows")
+        if (prototype_features is None) != (prototype_owners is None):
+            raise ValueError("sparse prototype features and owners must be paired")
+        if prototype_features is None:
+            self.anchor_extra_prototype_features = self.anchor_features.new_empty(
+                (0, self.anchor_features.shape[1])
+            )
+            self.anchor_extra_prototype_owner_rows = torch.empty(
+                0, dtype=torch.long, device=self.device
+            )
+        else:
+            self.anchor_extra_prototype_features = F.normalize(
+                torch.as_tensor(prototype_features, device=self.device).float(), dim=1
+            )
+            self.anchor_extra_prototype_owner_rows = torch.as_tensor(
+                prototype_owners, device=self.device
+            ).long().reshape(-1)
+            if (
+                self.anchor_extra_prototype_features.ndim != 2
+                or self.anchor_extra_prototype_features.shape[0]
+                != self.anchor_extra_prototype_owner_rows.numel()
+                or self.anchor_extra_prototype_features.shape[1]
+                != self.anchor_features.shape[1]
+                or (
+                    self.anchor_extra_prototype_owner_rows.numel()
+                    and (
+                        int(self.anchor_extra_prototype_owner_rows.min()) < 0
+                        or int(self.anchor_extra_prototype_owner_rows.max())
+                        >= self.anchor_features.shape[0]
+                    )
+                )
+            ):
+                raise ValueError("sparse prototype extension is invalid")
         self.frontend = NativeSuperPointFrontend(
             device=self.device,
             keypoint_count=keypoint_count,
@@ -230,6 +264,13 @@ class SparseLocalizer:
             raise ValueError(
                 "capacity assignment, duplicate suppression, and guided sampling "
                 "are separate deployment ablations"
+            )
+        if self.anchor_extra_prototype_owner_rows.numel() and (
+            self.assignment_topk or self.guided_sampling or context_state_path is not None
+        ):
+            raise ValueError(
+                "sparse prototypes are currently authorized only for the minimal "
+                "global-Top1 shared-metric deployment"
             )
         self.group_aware_pose = bool(group_aware_pose)
         self.group_hypothesis_samples = int(group_hypothesis_samples)
@@ -347,9 +388,11 @@ class SparseLocalizer:
             certainty = (1.0 + self.anchor_uncertainty[winner]).reciprocal()
             guidance_quality = margin * reliability.sqrt() * certainty
         else:
-            raw_matches = global_cosine_top1(
+            raw_matches = global_owner_prototype_top1(
                 sparse.descriptors,
                 self.anchor_features,
+                self.anchor_extra_prototype_features,
+                self.anchor_extra_prototype_owner_rows,
                 anchor_descriptors_normalized=True,
             )
             matches = raw_matches
