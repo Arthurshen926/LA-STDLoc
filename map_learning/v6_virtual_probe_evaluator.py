@@ -195,6 +195,7 @@ def evaluate_fixed_map_virtual_probes(
         oracle_anchors = []
         certified_pairs = []
         descriptor_triplets = []
+        descriptor_triplet_pose_weights = []
         top1_negative = torch.zeros(winners.numel(), dtype=torch.bool)
         for row, candidates in enumerate(certified_edges):
             if not candidates:
@@ -209,6 +210,15 @@ def evaluate_fixed_map_virtual_probes(
             top1_negative[row] = int(winners[row]) not in geometry
             if bool(top1_negative[row]):
                 descriptor_triplets.append((row, best, int(winners[row]), 0))
+                positive_error = torch.linalg.norm(
+                    projected[best] - keypoints[row]
+                )
+                winner_error = torch.linalg.norm(
+                    projected[int(winners[row])] - keypoints[row]
+                )
+                descriptor_triplet_pose_weights.append(
+                    float((winner_error - positive_error).clamp_min(0.0))
+                )
         if len(valid_rows) >= 4:
             oracle_rows = torch.tensor(valid_rows, dtype=torch.long)
             oracle_anchor_tensor = torch.tensor(oracle_anchors, dtype=torch.long)
@@ -277,9 +287,7 @@ def evaluate_fixed_map_virtual_probes(
                 "top1_negative_mask": top1_negative.tolist(),
                 "certified_pose_valid_alternative_pairs": certified_pairs,
                 "descriptor_triplets": descriptor_triplets,
-                "descriptor_triplet_pose_weights": [
-                    1.0 for _ in descriptor_triplets
-                ],
+                "descriptor_triplet_pose_weights": descriptor_triplet_pose_weights,
                 "latency_ms": (time.perf_counter() - started) * 1000.0,
             }
         )

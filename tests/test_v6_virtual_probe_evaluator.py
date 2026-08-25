@@ -82,3 +82,6 @@ def test_virtual_probe_evaluator_keeps_map_fixed_and_reports_oracle() -> None:
     assert result["control_split"]["validation_probe_indices"] == [1]
     assert result["control_split"]["validation_used_by_controller"] is False
     assert len(record["winner_anchor_ids"]) == 4
+    assert len(record["descriptor_triplet_pose_weights"]) == len(
+        record["descriptor_triplets"]
+    )
