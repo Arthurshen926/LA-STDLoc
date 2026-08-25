@@ -108,6 +108,109 @@ def nearest_mapping_observation_prototypes(
     return torch.stack(selected) if selected else targets.new_empty((0, targets.shape[1]))
 
 
+def expand_probe_prototype_support(
+    state: dict,
+    observations: ObservationProvider,
+    probe_feedback: dict,
+    *,
+    maximum_total_prototypes: int = 8192,
+    maximum_prototypes_per_anchor: int = 2,
+    duplicate_cosine: float = 0.995,
+) -> dict:
+    """Expand sparse actions over all training-side controllable support.
+
+    The minimal controller only changes rows needed to cross a PoseLib basin.
+    This expansion remains test/validation blind but covers every exact positive
+    Anchor exposed by oracle-recoverable training probes, ordered by pose harm.
+    """
+
+    output = dict(state)
+    base = F.normalize(torch.as_tensor(state["anchor_features"]).float(), dim=1)
+    existing = torch.as_tensor(
+        state.get("anchor_extra_prototype_features", torch.empty((0, base.shape[1])))
+    ).float()
+    owners = torch.as_tensor(
+        state.get("anchor_extra_prototype_owner_rows", torch.empty(0))
+    ).long().reshape(-1)
+    existing = F.normalize(existing, dim=1) if existing.numel() else existing
+    if existing.shape != (owners.numel(), base.shape[1]):
+        raise ValueError("existing probe prototype extension is invalid")
+    split = probe_feedback.get("control_split", {})
+    if split.get("validation_used_by_controller") is not False:
+        raise ValueError("probe coverage expansion cannot consume validation")
+    training = torch.as_tensor(split.get("training_query_indices", ())).long()
+    candidates = []
+    for query_index in training.tolist():
+        record = probe_feedback["records"][query_index]
+        if record.get("control_split") != "training":
+            raise ValueError("probe coverage record is outside training")
+        if record.get("controller_route") != "descriptor_controllable":
+            continue
+        triplets = torch.as_tensor(record.get("descriptor_triplets", ())).long().reshape(-1, 4)
+        weights = torch.as_tensor(
+            record.get("descriptor_triplet_pose_weights", ())
+        ).float().reshape(-1)
+        if triplets.shape[0] != weights.numel():
+            raise ValueError("probe coverage triplets and priorities differ")
+        view = observations.build_view(query_index)
+        for index in range(triplets.shape[0]):
+            row, owner = int(triplets[index, 0]), int(triplets[index, 1])
+            candidates.append(
+                (
+                    -float(weights[index]),
+                    int(query_index),
+                    row,
+                    owner,
+                    F.normalize(view.descriptors[row].float(), dim=0),
+                )
+            )
+    counts = torch.bincount(owners, minlength=base.shape[0]) if owners.numel() else torch.zeros(base.shape[0], dtype=torch.long)
+    added_features = []
+    added_owners = []
+    for _, query_index, row, owner, descriptor in sorted(
+        candidates, key=lambda value: value[:4]
+    ):
+        if owners.numel() + len(added_owners) >= int(maximum_total_prototypes):
+            break
+        if int(counts[owner]) >= int(maximum_prototypes_per_anchor):
+            continue
+        references = [base[owner][None], existing[owners == owner]]
+        if added_owners:
+            local_rows = [i for i, value in enumerate(added_owners) if value == owner]
+            if local_rows:
+                references.append(torch.stack([added_features[i] for i in local_rows]))
+        if float((torch.cat(references) @ descriptor).max()) >= float(duplicate_cosine):
+            continue
+        added_features.append(descriptor)
+        added_owners.append(owner)
+        counts[owner] += 1
+    if not added_features:
+        raise ControlActionUnavailable(
+            "probe coverage expansion contains no non-duplicate action", audits=[]
+        )
+    output["anchor_extra_prototype_features"] = torch.cat(
+        (existing, torch.stack(added_features)), dim=0
+    )
+    output["anchor_extra_prototype_owner_rows"] = torch.cat(
+        (owners, torch.tensor(added_owners, dtype=torch.long)), dim=0
+    )
+    output["v6_probe_prototype_coverage"] = {
+        "schema": "lafgs_v6_probe_prototype_coverage",
+        "version": 1,
+        "training_query_indices": training,
+        "validation_query_indices_used_by_controller": torch.empty(0, dtype=torch.long),
+        "source_candidate_count": len(candidates),
+        "previous_prototype_count": int(owners.numel()),
+        "added_prototype_count": len(added_owners),
+        "total_prototype_count": int(owners.numel()) + len(added_owners),
+        "maximum_total_prototypes": int(maximum_total_prototypes),
+        "maximum_prototypes_per_anchor": int(maximum_prototypes_per_anchor),
+        "duplicate_cosine": float(duplicate_cosine),
+        "validation_used_by_controller": False,
+    }
+    return output
+
+
 def minimal_pose_correction_set(
     *,
     keypoints: torch.Tensor,

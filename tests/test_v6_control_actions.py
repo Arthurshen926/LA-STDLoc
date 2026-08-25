@@ -10,6 +10,7 @@ from common.v6_contracts import (
 from map_learning.v6_control_actions import (
     ControlActionUnavailable,
     control_oriented_descriptor_proposal,
+    expand_probe_prototype_support,
     minimal_pose_correction_set,
     minimum_norm_score_boundary_action,
     nearest_mapping_observation_prototypes,
@@ -354,3 +355,37 @@ def test_probe_selects_nearest_eligible_real_mapping_observation() -> None:
         eligible_query_indices=torch.tensor([0]),
     )
     assert torch.equal(selected, torch.tensor([[1.0, 0.0]]))
+
+
+def test_probe_coverage_expands_training_support_without_validation() -> None:
+    state = {
+        "anchor_features": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        "anchor_xyz": torch.zeros((2, 3)),
+    }
+    feedback = {
+        "control_split": {
+            "training_query_indices": [0],
+            "validation_query_indices": [1],
+            "validation_used_by_controller": False,
+        },
+        "records": [
+            {
+                "control_split": "training",
+                "controller_route": "descriptor_controllable",
+                "descriptor_triplets": [[0, 1, 0, 0]],
+                "descriptor_triplet_pose_weights": [1.0],
+            },
+            {"control_split": "validation"},
+        ],
+    }
+    result = expand_probe_prototype_support(
+        state,
+        _ProbeObservations(),
+        feedback,
+        maximum_total_prototypes=2,
+        maximum_prototypes_per_anchor=1,
+    )
+    assert result["anchor_extra_prototype_owner_rows"].tolist() == [1]
+    report = result["v6_probe_prototype_coverage"]
+    assert report["added_prototype_count"] == 1
+    assert report["validation_query_indices_used_by_controller"].numel() == 0
