@@ -93,8 +93,16 @@ def nearest_mapping_observation_prototypes(
                     raise ValueError("mapping observation keypoint row is invalid")
                 values.append(descriptors[rows].float())
             if not values:
-                raise ValueError("Anchor has no eligible mapping observation prototype")
-            cache[owner] = F.normalize(torch.cat(values), dim=1)
+                # This Anchor is supported only by the held-out mapping split.
+                # Reusing its immutable base feature creates no new mode and is
+                # removed later by the exact duplicate guard; validation data
+                # therefore never enters the feedback action.
+                cache[owner] = F.normalize(
+                    torch.as_tensor(state["anchor_features"])[owner].float()[None],
+                    dim=1,
+                )
+            else:
+                cache[owner] = F.normalize(torch.cat(values), dim=1)
         candidates = cache[owner]
         selected.append(candidates[int(torch.argmax(candidates @ target))])
     return torch.stack(selected) if selected else targets.new_empty((0, targets.shape[1]))

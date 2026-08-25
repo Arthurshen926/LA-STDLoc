@@ -339,6 +339,7 @@ class _MappingObservations:
 def test_probe_selects_nearest_eligible_real_mapping_observation() -> None:
     state = {
         "anchor_xyz": torch.zeros((1, 3)),
+        "anchor_features": torch.tensor([[0.0, 1.0]]),
         "projective_anchor_observations": {
             "observation_offsets": torch.tensor([0, 3]),
             "query_indices": torch.tensor([0, 0, 1]),
