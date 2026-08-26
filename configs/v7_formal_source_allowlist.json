@@ -3,7 +3,14 @@
   "version": 1,
   "allowed_source_files": [
     "common/v7_contracts.py",
+    "data/colmap.py",
+    "data/datasets.py",
     "evidence/v7_query_planner.py",
+    "evidence/v7_render_certificate.py",
+    "features/extractor.py",
+    "features/superpoint.py",
+    "priors/models.py",
+    "priors/rendering.py",
     "scripts/run_v7_closed_loop.py"
   ]
 }

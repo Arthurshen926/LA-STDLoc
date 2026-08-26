@@ -38,6 +38,21 @@ p0:
   required_online_contract_parity: true
   expected_stmarys_test_queries: 530
 
+p2_render_certificate:
+  detector_input: complete_unmasked_rgb
+  quality_mask_stage: post_detector_row_sampling
+  decisions: [ACCEPT, UNCERTAIN, REJECT]
+  reject_or_uncertain_can_update_map: false
+  alpha_minimum: 0.05
+  minimum_alpha_supported_fraction: 0.70
+  reject_alpha_supported_fraction: 0.20
+  minimum_positive_depth_fraction: 0.70
+  reject_positive_depth_fraction: 0.20
+  minimum_valid_keypoint_fraction: 0.65
+  reject_valid_keypoint_fraction: 0.15
+  maximum_black_or_hole_fraction: 0.30
+  reject_black_or_hole_fraction: 0.80
+
 future_phases:
   p1_view_roles_and_novel_view_planner: disabled_until_p0_passes
   p2_render_certificate: disabled_until_p1_passes

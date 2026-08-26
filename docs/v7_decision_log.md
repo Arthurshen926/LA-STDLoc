@@ -36,3 +36,30 @@ not update, tune, or select a map.
 - Feedback and confirmation artifacts explicitly prohibit Track, Anchor CSR,
   and descriptor-bank membership.
 - P2 remains disabled until these plans are rendered and certified.
+
+## 2026-08-26 — P2 clean-render certificate passed
+
+- Rendered the two preregistered, mutually disjoint P1 batches from the frozen
+  StMarysChurch 2DGS prior: 64 feedback poses on GPU 1 and 64 confirmation poses
+  on GPU 2. Mapping RGB was never loaded and the map was not an input.
+- Applied native frozen SuperPoint to each complete, unmasked rendered RGB.
+  Alpha, depth, black-hole, and distortion evidence was sampled only after
+  detection at keypoint rows; distortion remained a local row mask and was not
+  converted into a global render-reliability score.
+- Feedback decisions were 60 ACCEPT, 2 UNCERTAIN, and 2 REJECT. Confirmation
+  decisions were 63 ACCEPT, 1 UNCERTAIN, and 0 REJECT. Every non-ACCEPT record
+  is excluded from map updates by schema and contract.
+- Visual audit confirmed that the three marginal-keypoint cases contain large
+  near-foreground curtain artifacts. The two depth-curtain rejections look
+  plausible in RGB but disagree strongly with camera-support expected depth,
+  so they remain conservatively rejected.
+- Thresholds were not adjusted after observing these outcomes. An earlier
+  renderer-environment failure and a development render lacking all supported
+  diagnostic channels are retained as non-formal attempts; only the complete
+  v3 manifests are formal evidence.
+- All 128 record hashes were verified. The frozen Anchor map hash remained
+  unchanged, and a complete P0 rerun again matched all 530 test-query records
+  with zero non-timing mismatches and zero forbidden imports.
+
+This pass unlocks P3 only. It does not authorize feedback learning or any use of
+UNCERTAIN/REJECT observations.
