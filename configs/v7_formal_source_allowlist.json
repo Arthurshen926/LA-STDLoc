@@ -3,6 +3,7 @@
   "version": 1,
   "allowed_source_files": [
     "common/v7_contracts.py",
+    "evidence/v7_query_planner.py",
     "scripts/run_v7_closed_loop.py"
   ]
 }

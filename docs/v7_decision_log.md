@@ -24,3 +24,15 @@ must not be copied here as V7 defaults.
 
 This pass unlocks P1 only. Test results were used solely for P0 parity and did
 not update, tune, or select a map.
+
+## 2026-08-26 — P1 role and planning contract passed
+
+- Registered five disjoint roles with exact allowed and forbidden operations.
+- Added a deterministic planner driven by within-sequence baseline and rotation
+  statistics, not fixed cross-scene metre thresholds.
+- StMarysChurch validation used 1,487 mapping cameras and generated 64 clean
+  feedback plus 64 clean confirmation poses. Neither batch duplicated a mapping
+  pose, and the two batches were disjoint.
+- Feedback and confirmation artifacts explicitly prohibit Track, Anchor CSR,
+  and descriptor-bank membership.
+- P2 remains disabled until these plans are rendered and certified.

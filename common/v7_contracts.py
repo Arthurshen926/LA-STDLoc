@@ -86,6 +86,14 @@ DEPLOYMENT_CONTRACT_FIELDS = (
     "context_state",
 )
 
+VIEW_ROLE_PERMISSIONS = {
+    "mapping_view": frozenset({"candidate_construction", "observation_bank"}),
+    "feedback_query": frozenset({"localize", "diagnose", "control_evidence"}),
+    "confirmation_query": frozenset({"localize", "diagnose", "paired_confirmation"}),
+    "acquisition_view": frozenset({"candidate_construction", "observation_bank"}),
+    "test_query": frozenset({"localize", "report_only"}),
+}
+
 
 
 def sha256_file(path: str | Path, *, chunk_size: int = 8 << 20) -> str:
@@ -117,6 +125,32 @@ def load_v7_config(path: str | Path) -> dict[str, Any]:
     if payload.get("method", {}).get("maximum_rounds") != 2:
         raise ValueError("V7 first version permits at most two rounds")
     return payload
+
+
+def require_view_role(payload: Mapping[str, Any], role: str) -> None:
+    if role not in VIEW_ROLE_PERMISSIONS:
+        raise ValueError(f"unknown V7 view role: {role}")
+    if payload.get("view_role") != role:
+        raise ValueError(f"artifact role differs: {payload.get('view_role')} != {role}")
+    permissions = frozenset(payload.get("allowed_operations", ()))
+    if permissions != VIEW_ROLE_PERMISSIONS[role]:
+        raise ValueError(f"V7 {role} permissions differ from the immutable contract")
+    forbidden = frozenset(payload.get("forbidden_operations", ()))
+    all_operations = frozenset().union(*VIEW_ROLE_PERMISSIONS.values())
+    if forbidden != all_operations - permissions:
+        raise ValueError(f"V7 {role} forbidden-operation registry is incomplete")
+
+
+def view_role_contract(role: str) -> dict[str, Any]:
+    if role not in VIEW_ROLE_PERMISSIONS:
+        raise ValueError(f"unknown V7 view role: {role}")
+    allowed = VIEW_ROLE_PERMISSIONS[role]
+    all_operations = frozenset().union(*VIEW_ROLE_PERMISSIONS.values())
+    return {
+        "view_role": role,
+        "allowed_operations": sorted(allowed),
+        "forbidden_operations": sorted(all_operations - allowed),
+    }
 
 
 def _walk_keys(value: Any, prefix: str = "") -> list[str]:
