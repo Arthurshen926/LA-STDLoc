@@ -1,0 +1,48 @@
+schema: lafgs_v7_safe_closed_loop
+version: 1
+
+method:
+  name: Safeguarded Episodic Closed-Loop Map Distillation
+  online_protocol: frozen_superpoint_exact_global_top1_one_standard_poselib
+  maximum_rounds: 2
+  initial_phase: p0_identity_noop
+  invariants:
+    - no_source_mapping_rgb
+    - no_detector_training
+    - no_learned_match_scorer
+    - no_query_adapter_or_context_network
+    - no_multi_prototype
+    - one_anchor_one_id_xyz_descriptor
+    - no_gaussian_or_rendered_depth_pnp_coordinates
+    - feedback_queries_never_enter_tracks_or_observation_csr
+    - feedback_descriptors_never_copied_into_map
+    - same_selector_at_initialization_and_after_updates
+    - frozen_superpoint_exact_global_top1_one_poselib
+    - test_queries_never_update_or_select_the_map
+
+forbidden_formal_features:
+  detector_training: true
+  learned_match_scorer: true
+  query_adapter: true
+  multi_prototype: true
+  query_geometry_loo: true
+  query_descriptor_loo: true
+  fixed_probe_train_validation_split: true
+  multiple_sensor_variants_per_pose: true
+  retrieval: true
+  refinement: true
+
+p0:
+  required_exact_map_tensor_parity: true
+  required_exact_non_timing_query_parity: true
+  required_online_contract_parity: true
+  expected_stmarys_test_queries: 530
+
+future_phases:
+  p1_view_roles_and_novel_view_planner: disabled_until_p0_passes
+  p2_render_certificate: disabled_until_p1_passes
+  p3_unified_selector: disabled_until_p2_passes
+  p4_fixed_plant_feedback: disabled_until_p3_passes
+  p5_descriptor_controller: disabled_until_p4_passes
+  p6_fresh_batch_confirmation: disabled_until_p5_passes
+  p8_acquisition: disabled_until_repeated_coverage_deficit

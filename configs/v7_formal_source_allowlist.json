@@ -1,0 +1,8 @@
+{
+  "schema": "lafgs_v7_formal_source_allowlist",
+  "version": 1,
+  "allowed_source_files": [
+    "common/v7_contracts.py",
+    "scripts/run_v7_closed_loop.py"
+  ]
+}
