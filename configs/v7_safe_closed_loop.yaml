@@ -53,6 +53,24 @@ p2_render_certificate:
   maximum_black_or_hole_fraction: 0.30
   reject_black_or_hole_fraction: 0.80
 
+p3_selector:
+  evidence:
+    minimum_observation_count: 3
+    minimum_view_family_count: 1
+    minimum_geometry_reliability: 0.05
+    maximum_descriptor_dispersion_quantile: 0.995
+    maximum_reprojection_error_quantile: 0.995
+    maximum_covariance_trace_quantile: 0.995
+    minimum_ray_angular_dispersion_quantile: 0.005
+  image_grid: [4, 4]
+  pose_damping: 0.000001
+  active_set_change_fraction: 0.10
+  profiles:
+    large_sufficient: {precision_rank: 512, matching_rank: 1024, image_cells: 16, view_families: 1, depth_ranges: 4, pose_logdet: 0.0, pose_minimum_eigenvalue: 1000.0, maximum_anchors: 180000}
+    medium_sufficient: {precision_rank: 256, matching_rank: 512, image_cells: 14, view_families: 1, depth_ranges: 4, pose_logdet: 0.0, pose_minimum_eigenvalue: 500.0, maximum_anchors: 140000}
+    small_sufficient: {precision_rank: 128, matching_rank: 256, image_cells: 12, view_families: 1, depth_ranges: 3, pose_logdet: 0.0, pose_minimum_eigenvalue: 250.0, maximum_anchors: 100000}
+    aggressive_minimum: {precision_rank: 64, matching_rank: 128, image_cells: 10, view_families: 1, depth_ranges: 2, pose_logdet: 0.0, pose_minimum_eigenvalue: 100.0, maximum_anchors: 60000}
+
 future_phases:
   p1_view_roles_and_novel_view_planner: disabled_until_p0_passes
   p2_render_certificate: disabled_until_p1_passes

@@ -11,6 +11,7 @@
     "features/superpoint.py",
     "priors/models.py",
     "priors/rendering.py",
-    "scripts/run_v7_closed_loop.py"
+    "scripts/run_v7_closed_loop.py",
+    "topology/v7_sufficiency_selector.py"
   ]
 }

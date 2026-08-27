@@ -63,3 +63,51 @@ not update, tune, or select a map.
 
 This pass unlocks P3 only. It does not authorize feedback learning or any use of
 UNCERTAIN/REJECT observations.
+
+## 2026-08-27 — P3 mapping-evidence feasibility correction
+
+- Reconstructed descriptor dispersion, reprojection error, ray angular
+  dispersion, image-cell/depth lineage, and full-SE(3) Fisher contributions
+  from the frozen rendered-mapping SuperPoint rows and pure-ray Anchor xyz.
+- The first preregistration required two view families in Eligibility. Before
+  any localization evaluation, the mapping-only curve proved that this made
+  every profile infeasible: 100 mapping queries had zero eligible candidates.
+- Corrected the minimum to one, matching the frozen candidate-construction
+  contract. View-family diversity remains an explicit Matching Completion
+  target rather than a hard precondition that removes all support for a query.
+- The four infeasible v3 curve artifacts are retained. No test result, feedback
+  result, or localization metric was observed or used for this correction.
+
+## 2026-08-27 — P3 first feasible curve failed and was rescaled
+
+- The mapping-feasible v5 curve selected 11,376 / 8,480 / 5,892 / 3,117
+  Anchors. All four maps met their requested feasible layer and pose targets.
+- On the 60 P2-ACCEPT novel feedback RGBs, every compressed map worsened median
+  translation and R@2 versus the 200,255-Anchor full pool. Lower inlier ratios
+  also increased PoseLib iterations, so wall-clock latency became worse rather
+  than better. P4 remained locked.
+- The cause was a scale error in the curve definition: a 128-row target had
+  been labelled "large" despite the immutable 2,048-keypoint online contract.
+  The next and final P3 curve uses fixed capacity fractions: 1024, 512, 256,
+  and 128 rows for large through aggressive. It does not tune candidate scores
+  or thresholds to individual query outcomes.
+
+## 2026-08-27 — P3 unified Selector passed
+
+- The capacity-scaled curve produced 116,658 / 48,581 / 22,131 / 10,801
+  Anchors for large / medium / small / aggressive. Every profile met its
+  mapping-feasible matching, cell, depth, family, logdet, and minimum-eigenvalue
+  targets with zero unmet entries.
+- On all 60 P2-ACCEPT novel feedback RGBs, the 48,581-Anchor medium map improved
+  median translation from 0.410cm to 0.369cm, P90 from 0.939cm to 0.932cm, mean
+  from 41.16cm to 14.64cm, and average runtime from 96.54ms to 82.40ms. R@2 and
+  R@5 both remained 98.33%; there were no gained or lost queries at either gate.
+- The medium selection used no source mapping RGB, feedback update, or test
+  query. It is frozen as the initial map M0. Small and aggressive remain curve
+  evidence only and are not deployment candidates.
+- A complete post-P3 P0 rerun again preserved the 200,255-Anchor baseline hash,
+  matched all 530 test records with zero non-timing differences, and reported
+  zero forbidden imports. Those test records did not select M0.
+
+This pass unlocks P4 fixed-plant feedback only. It does not authorize a changed
+online matcher, use of non-ACCEPT render records, or test-driven map selection.
