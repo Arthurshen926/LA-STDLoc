@@ -97,6 +97,15 @@ p5_descriptor_controller:
   trim_fraction: 0.10
   maximum_descriptor_angle_deg: 5.0
 
+p6_confirmation:
+  minimum_median_task_improvement: 0.001
+  maximum_p90_task_regression: 0.20
+  minimum_r5_regression_percent: -0.01
+  translation_scale_cm: 5.0
+  rotation_scale_deg: 5.0
+  catastrophic_translation_cm: 100.0
+  catastrophic_rotation_deg: 30.0
+
 future_phases:
   p1_view_roles_and_novel_view_planner: disabled_until_p0_passes
   p2_render_certificate: disabled_until_p1_passes

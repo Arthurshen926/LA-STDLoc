@@ -167,3 +167,9 @@ online matcher, use of non-ACCEPT render records, or test-driven map selection.
   coverage deficit occurred, not repeated deficits across independent ACCEPT
   pose families. This is a successful safeguarded termination, not an
   incomplete training run.
+- The untriggered P6/P7 supervisor is nevertheless implemented and tested: it
+  requires disjoint control/confirmation IDs, identical RGB hashes for paired
+  baseline/proposal evaluations, median-primary soft-tail acceptance, exact
+  baseline-SHA rollback, and a hard maximum of two rounds. It rejects an
+  unchanged proposal, so it cannot be used to fabricate a confirmation round
+  for this no-op outcome.
