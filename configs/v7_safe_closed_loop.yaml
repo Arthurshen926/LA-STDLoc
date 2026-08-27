@@ -54,6 +54,13 @@ p2_render_certificate:
   reject_black_or_hole_fraction: 0.80
 
 p3_selector:
+  no_feedback_gate:
+    maximum_median_translation_increase_cm: 0.10
+    maximum_p90_translation_cm: 2.0
+    catastrophic_translation_cm: 100.0
+    catastrophic_rotation_deg: 30.0
+    require_r2_no_regression: true
+    require_r5_no_regression: true
   evidence:
     minimum_observation_count: 3
     minimum_view_family_count: 1
@@ -70,6 +77,25 @@ p3_selector:
     medium_sufficient: {precision_rank: 256, matching_rank: 512, image_cells: 14, view_families: 1, depth_ranges: 4, pose_logdet: 0.0, pose_minimum_eigenvalue: 500.0, maximum_anchors: 140000}
     small_sufficient: {precision_rank: 128, matching_rank: 256, image_cells: 12, view_families: 1, depth_ranges: 3, pose_logdet: 0.0, pose_minimum_eigenvalue: 250.0, maximum_anchors: 100000}
     aggressive_minimum: {precision_rank: 64, matching_rank: 128, image_cells: 10, view_families: 1, depth_ranges: 2, pose_logdet: 0.0, pose_minimum_eigenvalue: 100.0, maximum_anchors: 60000}
+
+p4_feedback:
+  success_translation_cm: 5.0
+  success_rotation_deg: 5.0
+  oracle_reprojection_px: 4.0
+  minimum_oracle_correspondences: 16
+  localizer_keypoints: 2048
+  localizer_nms_radius: 4
+  require_bitwise_keypoint_score_replay: true
+  maximum_descriptor_replay_abs_error: 0.000001
+
+p5_descriptor_controller:
+  minimum_pose_families: 2
+  learning_rate: 0.35
+  harmful_weight: 1.0
+  minimum_relative_weight: 0.25
+  maximum_relative_weight: 4.0
+  trim_fraction: 0.10
+  maximum_descriptor_angle_deg: 5.0
 
 future_phases:
   p1_view_roles_and_novel_view_planner: disabled_until_p0_passes

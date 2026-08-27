@@ -111,3 +111,59 @@ UNCERTAIN/REJECT observations.
 
 This pass unlocks P4 fixed-plant feedback only. It does not authorize a changed
 online matcher, use of non-ACCEPT render records, or test-driven map selection.
+
+## 2026-08-27 — P2 canonical RGB replay correction
+
+- The original certified records persisted only an 8-bit RGB visualization,
+  while certification had consumed the renderer's float tensor. That lineage
+  was insufficient for the P4 requirement that the same RGB enter the same
+  plant, so those records remain non-formal history.
+- P2 now persists float16 clean RGB and runs SuperPoint on its exact float32
+  replay. Feedback and confirmation were regenerated on GPUs 1 and 2. Their
+  decision counts remained 60/2/2 and 63/1/0 for
+  ACCEPT/UNCERTAIN/REJECT, respectively.
+- Replaying the RGB in a process that has already allocated the compact map
+  preserves keypoints and scores bitwise. CUDA convolution ordering moves
+  descriptor entries by at most 8.94e-08, so the formal contract records the
+  measured 1e-6 numerical bound instead of making a false bitwise claim. No
+  quantization or online-plant modification was introduced.
+
+## 2026-08-27 — P4 fixed plant passed
+
+- Added the sole RGB-only localization interface: frozen native SuperPoint,
+  exact global cosine Top-1, then one standard PoseLib call. Its signature
+  cannot receive GT, alpha, depth, or an oracle correspondence.
+- The first implementation was rejected by the import firewall because the
+  historical PoseLib wrapper could statically reach group-consensus code. V7
+  therefore carries isolated exact Top-1 and standard PoseLib kernels; the
+  forbidden formal import count is zero. Unit comparisons match the current
+  deployment Top-1 scores/indices and PoseLib pose/inliers exactly.
+- On the 48,581-Anchor M0, the feedback batch produced 59 nominal successes,
+  one coverage deficit, zero representation deficits, and four unreliable
+  renders. All 64 RGBs passed through the same plant; non-ACCEPT records were
+  excluded only after localization. Oracle geometry and depth visibility were
+  used solely for post-localization routing.
+- M0 averaged 78.48ms versus 101.24ms for the 200,255-Anchor full pool. On the
+  60 ACCEPT queries both retained 98.33% R@2 and R@5 with the same one
+  catastrophic query. M0 median TE/AE was 0.423cm/0.0079deg and P90 TE was
+  1.107cm; the full pool was 0.358cm/0.0109deg and 0.785cm. This is an
+  acceptable median-primary precision/speed tradeoff under the task-scaled
+  soft-tail gate, but the strict P90 non-regression diagnostic is explicitly
+  false and is not hidden.
+
+## 2026-08-27 — P5 evidence-only controller terminated the loop safely
+
+- Added bounded multiplicative observation weighting, view-family balancing,
+  trimmed reconstruction, angular trust limits, and one-Anchor/one-descriptor
+  output. Feedback descriptors only score original rendered-mapping
+  observations and can never be copied into the map.
+- The controller requires consistent evidence from at least two independent
+  pose families. P4 found zero representation-deficit queries, hence zero
+  potential Anchors and zero changed Anchors. The proposal SHA is exactly the
+  M0 SHA; no candidate pool proposal was materialized.
+- P6 fresh-batch confirmation and P7 second round are therefore not run: the
+  preregistered `no executable representation deficit` stop condition fires
+  before a proposal exists. P8 acquisition is also disabled because only one
+  coverage deficit occurred, not repeated deficits across independent ACCEPT
+  pose families. This is a successful safeguarded termination, not an
+  incomplete training run.

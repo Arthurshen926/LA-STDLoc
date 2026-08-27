@@ -9,6 +9,8 @@
     "evidence/v7_render_certificate.py",
     "features/extractor.py",
     "features/superpoint.py",
+    "map_learning/v7_feedback.py",
+    "map_learning/v7_descriptor_controller.py",
     "priors/models.py",
     "priors/rendering.py",
     "scripts/run_v7_closed_loop.py",

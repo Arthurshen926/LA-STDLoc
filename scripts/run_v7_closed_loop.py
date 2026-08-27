@@ -30,6 +30,13 @@ from evidence.v7_render_certificate import (
     extreme_distortion_row_mask,
 )
 from features.extractor import FeatureExtractor
+from map_learning.v7_feedback import (
+    DiagnosticRegistry,
+    diagnose_feedback_query,
+    load_v7_fixed_plant,
+    localize_rgb_query,
+)
+from map_learning.v7_descriptor_controller import reconstruct_v7_descriptors
 from priors.models import GaussianModel2D
 from priors.rendering import render_from_pose_gsplat
 from topology.v7_sufficiency_selector import (
@@ -166,6 +173,9 @@ def run_p0(args: argparse.Namespace) -> dict:
 @torch.inference_mode()
 def run_p2(args: argparse.Namespace) -> dict:
     root = Path(__file__).resolve().parents[1]
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(False)
     load_v7_config(args.config)
     import_audit = audit_formal_import_graph(
         root=root,
@@ -245,16 +255,23 @@ def run_p2(args: argparse.Namespace) -> dict:
             rgb_only=True,
             rasterize_mode="antialiased",
         )
-        rgb = package["render"].float().clamp(0.0, 1.0)
+        rendered_rgb = package["render"].float().clamp(0.0, 1.0)
+        # The detector and every later replay must consume the same persisted
+        # tensor. Float16 is the canonical clean-render sensor representation;
+        # converting it back to float32 is exact and replayable.
+        rgb_float16 = rendered_rgb.detach().cpu().to(torch.float16)
+        rgb = rgb_float16.float().to(device)
         alpha = package.get("alphas", package.get("rend_alpha"))
         depth = package.get("depth")
         if alpha is None or depth is None:
             raise ValueError("P2 renderer must return RGB, alpha, and depth")
+        torch.use_deterministic_algorithms(True)
         sparse = extractor.detectAndCompute(
             rgb[None],
             top_k=args.keypoints,
             detection_threshold=args.detection_threshold,
         )[0]
+        torch.use_deterministic_algorithms(False)
         keypoints = sparse["keypoints"].detach().cpu().float()
         median_depth_raster = package.get("rend_median")
         expected_median_depth = None
@@ -293,7 +310,8 @@ def run_p2(args: argparse.Namespace) -> dict:
             "pose_w2c": torch.as_tensor(plan["pose_w2c"][index]).float(),
             "intrinsics": intrinsic,
             "image_hw": torch.tensor([height, width], dtype=torch.long),
-            "rgb_uint8": (rgb.detach().cpu() * 255.0).round().to(torch.uint8),
+            "rgb_float16": rgb_float16,
+            "rgb_uint8_preview": (rgb_float16.float() * 255.0).round().to(torch.uint8),
             "alpha_float16": alpha.detach().cpu().to(torch.float16),
             "depth_float16": depth.detach().cpu().to(torch.float16),
             "surface_median_depth_float16": (
@@ -334,6 +352,7 @@ def run_p2(args: argparse.Namespace) -> dict:
         "uses_test_queries": False,
         "render_protocol": "clean_once_per_pose",
         "detector_input": "complete_unmasked_rgb",
+        "detector_rgb_storage": "float16_replayed_as_float32",
         "quality_mask_stage": "post_detector_row_sampling",
         "map_input": None,
         "map_mutation_count": 0,
@@ -504,6 +523,58 @@ def _materialize_selected_map(source: dict, selected_rows: torch.Tensor) -> dict
         "v7_selector_uses_feedback_queries": False,
     }
     return output
+
+
+def _v7_candidate_eligibility(
+    candidates: dict, evidence: dict, p3: dict
+) -> tuple[torch.Tensor, dict[str, int], EligibilityThresholds]:
+    quality = p3["evidence"]
+    covariance_trace = (
+        torch.as_tensor(candidates["anchor_position_covariance"])
+        .diagonal(dim1=1, dim2=2)
+        .sum(1)
+    )
+    thresholds = EligibilityThresholds(
+        minimum_geometry_reliability=float(quality["minimum_geometry_reliability"]),
+        minimum_observation_count=int(quality["minimum_observation_count"]),
+        minimum_view_family_count=int(quality["minimum_view_family_count"]),
+        maximum_descriptor_dispersion=float(
+            torch.quantile(
+                evidence["descriptor_dispersion"],
+                float(quality["maximum_descriptor_dispersion_quantile"]),
+            )
+        ),
+        maximum_reprojection_error=float(
+            torch.quantile(
+                evidence["reprojection_error_px_mean"],
+                float(quality["maximum_reprojection_error_quantile"]),
+            )
+        ),
+        maximum_covariance_trace=float(
+            torch.quantile(
+                covariance_trace, float(quality["maximum_covariance_trace_quantile"])
+            )
+        ),
+        minimum_parallax=float(
+            torch.quantile(
+                evidence["ray_angular_dispersion_deg"],
+                float(quality["minimum_ray_angular_dispersion_quantile"]),
+            )
+        ),
+    )
+    eligible, exclusions = eligibility_mask(
+        geometry_reliability=candidates["geometry_reliability"],
+        observation_count=evidence["observation_count"],
+        view_family_count=evidence["view_family_count"],
+        descriptor_dispersion=evidence["descriptor_dispersion"],
+        reprojection_error=evidence["reprojection_error_px_mean"],
+        covariance_trace=covariance_trace,
+        parallax=evidence["ray_angular_dispersion_deg"],
+        render_artifact_supported=evidence["invalid_projection_count"] > 0,
+        lineage_complete=torch.ones_like(candidates["anchor_ids"], dtype=torch.bool),
+        thresholds=thresholds,
+    )
+    return eligible, exclusions, thresholds
 
 
 @torch.inference_mode()
@@ -757,10 +828,404 @@ def run_p3_select(args: argparse.Namespace) -> dict:
     return manifest
 
 
+@torch.inference_mode()
+def run_p4(args: argparse.Namespace) -> dict:
+    """Replay a certified novel-view batch through the immutable RGB plant."""
+
+    root = Path(__file__).resolve().parents[1]
+    config = load_v7_config(args.config)
+    import_audit = audit_formal_import_graph(
+        root=root,
+        entrypoint=Path(__file__),
+        allowlist_path=args.formal_source_allowlist,
+    )
+    batch_path = args.certified_batch.resolve()
+    candidate_path = args.candidate_pool.resolve()
+    evidence_path = args.candidate_evidence.resolve()
+    map_path = args.baseline_map.resolve()
+    metric_path = args.baseline_metric.resolve()
+    input_shas = {
+        "certified_batch": _require_sha(
+            batch_path, args.expected_certified_batch_sha256, "certified batch"
+        ),
+        "candidate_pool": _require_sha(
+            candidate_path, args.expected_candidate_pool_sha256, "candidate pool"
+        ),
+        "candidate_evidence": _require_sha(
+            evidence_path,
+            args.expected_candidate_evidence_sha256,
+            "candidate evidence",
+        ),
+        "map": _require_sha(map_path, args.expected_baseline_map_sha256, "P4 map"),
+        "metric": _require_sha(
+            metric_path, args.expected_baseline_metric_sha256, "P4 metric"
+        ),
+    }
+    batch = json.loads(batch_path.read_text())
+    if (
+        batch.get("schema") != "lafgs_v7_certified_clean_render_batch"
+        or batch.get("view_role") not in {"feedback_query", "confirmation_query"}
+        or batch.get("uses_test_queries") is not False
+        or batch.get("map_mutation_count") != 0
+        or batch.get("detector_rgb_storage") != "float16_replayed_as_float32"
+    ):
+        raise ValueError("P4 requires a replayable non-test certified render batch")
+    candidates = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    evidence = torch.load(evidence_path, map_location="cpu", weights_only=False)
+    if evidence.get("candidate_pool_sha256") != input_shas["candidate_pool"]:
+        raise ValueError("P4 candidate evidence lineage differs")
+    eligible, exclusions, thresholds = _v7_candidate_eligibility(
+        candidates, evidence, config["p3_selector"]
+    )
+    registry = DiagnosticRegistry(
+        anchor_ids=torch.as_tensor(candidates["anchor_ids"]).long().cpu(),
+        anchor_xyz=torch.as_tensor(candidates["anchor_xyz"]).float().cpu(),
+        eligible=eligible.cpu(),
+    )
+    plant = load_v7_fixed_plant(
+        map_path, metric_path, device=args.device, diagnostic_registry=registry
+    )
+    if args.output_dir.exists():
+        raise FileExistsError(args.output_dir)
+    args.output_dir.mkdir(parents=True)
+    records_dir = args.output_dir / "records"
+    records_dir.mkdir()
+    p4 = config["p4_feedback"]
+    categories = {
+        "representation_deficit": 0,
+        "coverage_deficit": 0,
+        "unreliable_query": 0,
+        "nominal_success": 0,
+    }
+    replay_mismatch_count = 0
+    output_records = []
+    runtime_totals: dict[str, float] = {}
+    for item in batch["records"]:
+        record_path = Path(item["path"]).resolve()
+        record_sha = _require_sha(record_path, item["sha256"], "P2 query record")
+        record = torch.load(record_path, map_location="cpu", weights_only=False)
+        if (
+            record.get("view_role") != batch["view_role"]
+            or record.get("enters_track_registry") is not False
+            or record.get("enters_anchor_observation_csr") is not False
+            or record.get("enters_descriptor_bank") is not False
+        ):
+            raise ValueError("P4 query record violates its frozen view role")
+        localization = localize_rgb_query(
+            record["rgb_float16"].float(), record["intrinsics"], plant
+        )
+        keypoint_score_replay_exact = torch.equal(
+            localization.keypoints, record["keypoints"]
+        ) and torch.equal(localization.scores, record["scores"])
+        descriptor_replay_max_abs_error = float(
+            (localization.descriptors - record["descriptors"]).abs().max()
+        )
+        replay_within_contract = keypoint_score_replay_exact and (
+            descriptor_replay_max_abs_error
+            <= float(p4["maximum_descriptor_replay_abs_error"])
+        )
+        replay_mismatch_count += int(not replay_within_contract)
+        if (
+            p4["require_bitwise_keypoint_score_replay"]
+            and not keypoint_score_replay_exact
+        ):
+            raise RuntimeError("P4 keypoints/scores do not bitwise replay P2 RGB")
+        if not replay_within_contract:
+            raise RuntimeError("P4 descriptor replay exceeds its numeric contract")
+        diagnosis = diagnose_feedback_query(
+            localization,
+            record["pose_w2c"],
+            record["alpha_float16"],
+            record["depth_float16"],
+            record["certificate"],
+            success_translation_cm=float(p4["success_translation_cm"]),
+            success_rotation_deg=float(p4["success_rotation_deg"]),
+            oracle_reprojection_px=float(p4["oracle_reprojection_px"]),
+            minimum_oracle_correspondences=int(p4["minimum_oracle_correspondences"]),
+        )
+        categories[diagnosis["category"]] += 1
+        for key, value in localization.runtime_ms.items():
+            runtime_totals[key] = runtime_totals.get(key, 0.0) + float(value)
+        output = {
+            "schema": "lafgs_v7_fixed_plant_feedback_record",
+            "version": 1,
+            "view_role": batch["view_role"],
+            "query_index": int(record["query_index"]),
+            "pose_family_id": int(record["pose_family_id"]),
+            "p2_record": str(record_path),
+            "p2_record_sha256": record_sha,
+            "keypoint_score_replay_exact": keypoint_score_replay_exact,
+            "descriptor_replay_max_abs_error": descriptor_replay_max_abs_error,
+            "frontend_replay_within_contract": replay_within_contract,
+            "estimated_pose_w2c": torch.from_numpy(localization.pose.pose_w2c),
+            "pose_inliers": torch.from_numpy(localization.pose.inliers),
+            "matches": {
+                "keypoint_indices": localization.matches.keypoint_indices,
+                "anchor_indices": localization.matches.anchor_indices,
+                "scores": localization.matches.scores,
+            },
+            "runtime_ms": localization.runtime_ms,
+            "diagnosis": diagnosis,
+            "oracle_used_online": False,
+            "map_mutation_count": 0,
+        }
+        output_path = records_dir / f"query_{int(record['query_index']):04d}.pt"
+        _atomic_torch_save(output, output_path)
+        output_records.append(
+            {
+                "query_index": int(record["query_index"]),
+                "path": str(output_path.resolve()),
+                "sha256": sha256_file(output_path),
+                "category": diagnosis["category"],
+                "can_drive_map_update": bool(diagnosis["can_drive_map_update"]),
+            }
+        )
+    count = int(batch["query_count"])
+    manifest = {
+        "schema": "lafgs_v7_fixed_plant_feedback_batch",
+        "version": 1,
+        "phase": "P4",
+        "status": "PASS",
+        "view_role": batch["view_role"],
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "oracle_used_online": False,
+        "map_mutation_count": 0,
+        "query_count": count,
+        "category_counts": categories,
+        "update_authorized_count": sum(
+            int(item["can_drive_map_update"]) for item in output_records
+        ),
+        "frontend_replay_mismatch_count": replay_mismatch_count,
+        "runtime_ms_mean": {
+            key: value / max(count, 1) for key, value in runtime_totals.items()
+        },
+        "eligibility": {
+            "eligible_count": int(eligible.sum()),
+            "exclusions": exclusions,
+            "thresholds": thresholds.__dict__,
+        },
+        "input": {
+            "certified_batch": str(batch_path),
+            "candidate_pool": str(candidate_path),
+            "candidate_evidence": str(evidence_path),
+            "map": str(map_path),
+            "metric": str(metric_path),
+            **{f"{key}_sha256": value for key, value in input_shas.items()},
+        },
+        "records": output_records,
+        "formal_import_graph": import_audit,
+    }
+    manifest_path = args.output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
+@torch.inference_mode()
+def run_p5(args: argparse.Namespace) -> dict:
+    """Build bounded descriptor evidence; stop exactly when it is not actionable."""
+
+    root = Path(__file__).resolve().parents[1]
+    config = load_v7_config(args.config)
+    import_audit = audit_formal_import_graph(
+        root=root,
+        entrypoint=Path(__file__),
+        allowlist_path=args.formal_source_allowlist,
+    )
+    feedback_path = args.feedback_batch.resolve()
+    candidate_path = args.candidate_pool.resolve()
+    cache_path = args.mapping_feature_cache.resolve()
+    map_path = args.baseline_map.resolve()
+    metric_path = args.baseline_metric.resolve()
+    input_shas = {
+        "feedback_batch": _require_sha(
+            feedback_path, args.expected_feedback_batch_sha256, "P4 feedback batch"
+        ),
+        "candidate_pool": _require_sha(
+            candidate_path, args.expected_candidate_pool_sha256, "candidate pool"
+        ),
+        "mapping_feature_cache": _require_sha(
+            cache_path,
+            args.expected_mapping_feature_cache_sha256,
+            "mapping feature cache",
+        ),
+        "map": _require_sha(map_path, args.expected_baseline_map_sha256, "P5 map"),
+        "metric": _require_sha(
+            metric_path, args.expected_baseline_metric_sha256, "P5 metric"
+        ),
+    }
+    feedback = json.loads(feedback_path.read_text())
+    if (
+        feedback.get("schema") != "lafgs_v7_fixed_plant_feedback_batch"
+        or feedback.get("view_role") != "feedback_query"
+        or feedback.get("uses_test_queries") is not False
+        or feedback.get("map_mutation_count") != 0
+        or feedback.get("input", {}).get("map_sha256") != input_shas["map"]
+    ):
+        raise ValueError("P5 accepts only immutable non-test feedback on its M0")
+    candidates = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    evidence_rows = []
+    signs_by_anchor: dict[int, dict[str, set[int]]] = {}
+    for item in feedback["records"]:
+        record_path = Path(item["path"]).resolve()
+        _require_sha(record_path, item["sha256"], "P4 feedback record")
+        record = torch.load(record_path, map_location="cpu", weights_only=False)
+        diagnosis = record["diagnosis"]
+        if not bool(diagnosis["can_drive_map_update"]):
+            continue
+        control = diagnosis["descriptor_control_evidence"]
+        row = {
+            "pose_family_id": int(record["pose_family_id"]),
+            "query_descriptors": control["query_descriptors"],
+            "positive_anchor_ids": control["positive_anchor_ids"],
+            "false_attractor_anchor_ids": control["false_attractor_anchor_ids"],
+        }
+        evidence_rows.append(row)
+        family = row["pose_family_id"]
+        for anchor_id in torch.as_tensor(row["positive_anchor_ids"]).tolist():
+            signs_by_anchor.setdefault(
+                int(anchor_id), {"positive": set(), "harm": set()}
+            )["positive"].add(family)
+        for anchor_id in torch.as_tensor(row["false_attractor_anchor_ids"]).tolist():
+            signs_by_anchor.setdefault(
+                int(anchor_id), {"positive": set(), "harm": set()}
+            )["harm"].add(family)
+    p5 = config["p5_descriptor_controller"]
+    minimum_families = int(p5["minimum_pose_families"])
+    potential_ids = {
+        anchor_id
+        for anchor_id, signs in signs_by_anchor.items()
+        if len(signs["positive"] | signs["harm"]) >= minimum_families
+        and not bool(signs["positive"] & signs["harm"])
+    }
+    observation_banks = {}
+    if potential_ids:
+        cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+        if (
+            cache.get("schema") != "render_observation_cache_v2"
+            or cache.get("uses_source_mapping_rgb") is not False
+            or cache.get("uses_test_queries") is not False
+        ):
+            raise ValueError("P5 observation bank is not frozen rendered mapping data")
+        id_to_row = {
+            int(anchor_id): row
+            for row, anchor_id in enumerate(candidates["anchor_ids"].tolist())
+        }
+        observations = candidates["projective_anchor_observations"]
+        offsets = torch.as_tensor(observations["observation_offsets"]).long()
+        query_indices = torch.as_tensor(observations["query_indices"]).long()
+        keypoint_indices = torch.as_tensor(observations["keypoint_indices"]).long()
+        names = candidates["query_names"]
+        bins = torch.as_tensor(candidates["query_bins"]).long()
+        for anchor_id in potential_ids:
+            if anchor_id not in id_to_row:
+                continue
+            anchor_row = id_to_row[anchor_id]
+            start, end = int(offsets[anchor_row]), int(offsets[anchor_row + 1])
+            descriptors = []
+            families = []
+            for query, keypoint in zip(
+                query_indices[start:end].tolist(), keypoint_indices[start:end].tolist()
+            ):
+                descriptors.append(
+                    torch.as_tensor(
+                        cache["queries"][names[query]]["native_descriptors"][keypoint]
+                    ).float()
+                )
+                families.append(int(bins[query]))
+            observation_banks[anchor_id] = {
+                "descriptors": torch.stack(descriptors),
+                "view_families": torch.tensor(families, dtype=torch.long),
+            }
+    reconstruction = reconstruct_v7_descriptors(
+        anchor_ids=candidates["anchor_ids"],
+        current_descriptors=candidates["anchor_features"],
+        feedback_evidence=evidence_rows,
+        observation_banks=observation_banks,
+        minimum_pose_families=minimum_families,
+        learning_rate=float(p5["learning_rate"]),
+        harmful_weight=float(p5["harmful_weight"]),
+        minimum_relative_weight=float(p5["minimum_relative_weight"]),
+        maximum_relative_weight=float(p5["maximum_relative_weight"]),
+        trim_fraction=float(p5["trim_fraction"]),
+        maximum_descriptor_angle_deg=float(p5["maximum_descriptor_angle_deg"]),
+    )
+    if args.output_dir.exists():
+        raise FileExistsError(args.output_dir)
+    args.output_dir.mkdir(parents=True)
+    reconstruction_path = args.output_dir / "descriptor_reconstruction.pt"
+    _atomic_torch_save(reconstruction, reconstruction_path)
+    changed = int(reconstruction["changed_anchor_count"])
+    proposal_path = None
+    proposal_sha = input_shas["map"]
+    stop_reason = "no_executable_representation_deficit" if changed == 0 else None
+    if changed:
+        proposal = dict(candidates)
+        proposal["anchor_features"] = reconstruction["anchor_features"]
+        proposal["provenance"] = {
+            **dict(candidates["provenance"]),
+            "v7_descriptor_reconstruction": True,
+            "feedback_descriptors_copied_into_map": False,
+        }
+        proposal_path = args.output_dir / "candidate_pool_proposal.pt"
+        _atomic_torch_save(proposal, proposal_path)
+        proposal_sha = sha256_file(proposal_path)
+    manifest = {
+        "schema": "lafgs_v7_p5_descriptor_control",
+        "version": 1,
+        "phase": "P5",
+        "status": "PASS",
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
+        "feedback_descriptors_copied_into_map": False,
+        "feedback_query_count": int(feedback["query_count"]),
+        "representation_deficit_query_count": int(
+            feedback["category_counts"]["representation_deficit"]
+        ),
+        "update_authorized_query_count": int(feedback["update_authorized_count"]),
+        "potential_anchor_count": len(potential_ids),
+        "changed_anchor_count": changed,
+        "stop_reason": stop_reason,
+        "baseline_map_sha256": input_shas["map"],
+        "proposal_map_sha256": proposal_sha,
+        "input": {
+            "feedback_batch": str(feedback_path),
+            "candidate_pool": str(candidate_path),
+            "mapping_feature_cache": str(cache_path),
+            "map": str(map_path),
+            "metric": str(metric_path),
+            **{f"{key}_sha256": value for key, value in input_shas.items()},
+        },
+        "output": {
+            "descriptor_reconstruction": str(reconstruction_path.resolve()),
+            "descriptor_reconstruction_sha256": sha256_file(reconstruction_path),
+            "candidate_pool_proposal": (
+                None if proposal_path is None else str(proposal_path.resolve())
+            ),
+            "candidate_pool_proposal_sha256": (
+                None if proposal_path is None else proposal_sha
+            ),
+        },
+        "formal_import_graph": import_audit,
+    }
+    manifest_path = args.output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--phase", choices=("p0", "p2", "p3-prepare", "p3-select"), default="p0"
+        "--phase",
+        choices=(
+            "p0",
+            "p2",
+            "p3-prepare",
+            "p3-select",
+            "p4-feedback",
+            "p5-control",
+        ),
+        default="p0",
     )
     parser.add_argument(
         "--config", type=Path, default=Path("configs/v7_safe_closed_loop.yaml")
@@ -798,6 +1263,10 @@ def main() -> None:
     parser.add_argument("--expected-mapping-feature-cache-sha256")
     parser.add_argument("--candidate-evidence", type=Path)
     parser.add_argument("--expected-candidate-evidence-sha256")
+    parser.add_argument("--certified-batch", type=Path)
+    parser.add_argument("--expected-certified-batch-sha256")
+    parser.add_argument("--feedback-batch", type=Path)
+    parser.add_argument("--expected-feedback-batch-sha256")
     parser.add_argument(
         "--selector-profile",
         choices=(
@@ -840,6 +1309,30 @@ def main() -> None:
             "expected_baseline_metric_sha256",
             "selector_profile",
         ),
+        "p4-feedback": (
+            "certified_batch",
+            "expected_certified_batch_sha256",
+            "candidate_pool",
+            "expected_candidate_pool_sha256",
+            "candidate_evidence",
+            "expected_candidate_evidence_sha256",
+            "baseline_map",
+            "expected_baseline_map_sha256",
+            "baseline_metric",
+            "expected_baseline_metric_sha256",
+        ),
+        "p5-control": (
+            "feedback_batch",
+            "expected_feedback_batch_sha256",
+            "candidate_pool",
+            "expected_candidate_pool_sha256",
+            "mapping_feature_cache",
+            "expected_mapping_feature_cache_sha256",
+            "baseline_map",
+            "expected_baseline_map_sha256",
+            "baseline_metric",
+            "expected_baseline_metric_sha256",
+        ),
     }
     required = required_by_phase[args.phase]
     missing = [name for name in required if getattr(args, name) is None]
@@ -852,6 +1345,8 @@ def main() -> None:
         "p2": run_p2,
         "p3-prepare": run_p3_prepare,
         "p3-select": run_p3_select,
+        "p4-feedback": run_p4,
+        "p5-control": run_p5,
     }
     report = runners[args.phase](args)
     print(json.dumps(report, indent=2, sort_keys=True))
