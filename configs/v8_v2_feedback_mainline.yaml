@@ -1,0 +1,53 @@
+schema: lafgs_v8_v2_feedback_mainline
+version: 1
+
+initialization:
+  map: v2_preassociation_full_rebuild
+  status: ACCEPT
+  anchor_count: 164871
+  map_sha256: 711855ea46fdaede2e49a306cb56d59ae432a1568a881798c3223b2d36f108f3
+  test_queries_used: false
+
+online_plant:
+  detector: frozen_native_superpoint
+  keypoint_count: 2048
+  matcher: exact_global_top1
+  pose_solver: one_standard_poselib
+  query_detector: false
+  descriptor_adapter: false
+
+feedback_observer:
+  source: certified_v2_render_feedback_queries
+  queries: 64
+  accepted_queries: 62
+  precision_deficit_queries: 13
+  feedback_queries_enter_mapping_csr: false
+  feedback_descriptors_copied_into_map: false
+
+actions:
+  anchor_quarantine:
+    proposed_anchor_count: 251
+    active_set_change_fraction: 0.0015224024
+    evidence_minimum_pose_families: 2
+    positive_anchor_conflict_protection: true
+    reversible: true
+    decision: ROLLBACK
+    reason: fresh_confirmation_median_task_improvement_gate_failed
+  descriptor_reconstruction:
+    changed_anchor_count: 952
+    source_descriptors: original_v2_valid_mapping_observations_only
+    maximum_descriptor_angle_deg: 5.0
+    feedback_descriptors_copied: false
+    decision: ROLLBACK
+    reason: fresh_confirmation_median_task_improvement_gate_failed
+
+chosen_state:
+  map: v2_preassociation_full_rebuild
+  map_sha256: 711855ea46fdaede2e49a306cb56d59ae432a1568a881798c3223b2d36f108f3
+  feedback_round_result: converged_without_accepted_mutation
+  real_test_remains_sealed: true
+
+next_feedback_action:
+  name: per_anchor_poselib_removal_counterfactual
+  requirement: actual_pose_gain_before_group_quarantine
+  false_winner_label_alone_is_insufficient: true

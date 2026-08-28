@@ -75,16 +75,16 @@ def test_p7_stop_order_and_two_round_limit() -> None:
         next_v7_round_action(
             completed_rounds=0,
             previous_proposal_accepted=True,
-            executable_representation_deficit_count=0,
+            executable_descriptor_deficit_count=0,
             median_task_improvement=1.0,
         )
-        == "no_executable_representation_deficit"
+        == "no_executable_descriptor_deficit"
     )
     assert (
         next_v7_round_action(
             completed_rounds=2,
             previous_proposal_accepted=True,
-            executable_representation_deficit_count=3,
+            executable_descriptor_deficit_count=3,
             median_task_improvement=1.0,
         )
         == "maximum_two_rounds_reached"

@@ -152,7 +152,7 @@ def next_v7_round_action(
     *,
     completed_rounds: int,
     previous_proposal_accepted: bool,
-    executable_representation_deficit_count: int,
+    executable_descriptor_deficit_count: int,
     median_task_improvement: float,
     minimum_median_task_improvement: float = 0.001,
 ) -> str:
@@ -162,8 +162,8 @@ def next_v7_round_action(
         return "maximum_two_rounds_reached"
     if not previous_proposal_accepted:
         return "proposal_not_accepted"
-    if int(executable_representation_deficit_count) <= 0:
-        return "no_executable_representation_deficit"
+    if int(executable_descriptor_deficit_count) <= 0:
+        return "no_executable_descriptor_deficit"
     if not math.isfinite(float(median_task_improvement)) or float(
         median_task_improvement
     ) < float(minimum_median_task_improvement):

@@ -1,0 +1,93 @@
+schema: lafgs_v10_actionable_anchor_feedback
+version: 1
+
+initial_state:
+  map: v2_preassociation_full_rebuild
+  map_sha256: 711855ea46fdaede2e49a306cb56d59ae432a1568a881798c3223b2d36f108f3
+  anchor_count: 164871
+  geometry_frozen: true
+  track_registry_frozen: true
+  triangulation_frozen: true
+  anchor_addition: false
+  multi_prototype: false
+  loo_anywhere: false
+  test_queries_used: false
+
+planner:
+  source: current_causal_confusion_graph
+  trajectory_interpolation: false
+  minimum_novel_baselines: 0.9
+  maximum_novel_baselines: 2.0
+  maximum_rotation_from_parent_deg: 40.0
+  action_updates_from_over_2_baselines: false
+  ambiguity_full_look_at: false
+  safety_feedback_queries: 48
+  fresh_confirmation_queries: 40
+  safety_seed: 1020260828
+  confirmation_seed: 1020260829
+  pose_families_disjoint: true
+
+actionability:
+  maximum_positive_rank: 8
+  minimum_pose_families: 3
+  maximum_family_descriptor_median_dispersion_deg: 8.0
+  maximum_family_descriptor_p90_dispersion_deg: 12.0
+  minimum_predicted_flip_families: 2
+  minimum_predicted_flip_rows: 2
+
+anchor_descriptor_action:
+  descriptor_count_per_anchor: 1
+  family_balanced_robust_spherical_mean: true
+  maximum_update_angle_deg: 5.0
+  feedback_descriptor_exact_copy: false
+  feedback_descriptor_robust_aggregate: true
+  online_matcher: exact_global_top1
+  pose_solver: one_standard_poselib
+
+single_action_counterfactual:
+  exact_updated_top1: true
+  minimum_affected_pose_families: 2
+  minimum_improving_queries: 2
+  minimum_median_actual_task_gain: 0.001
+  positive_cumulative_actual_task_gain: true
+  maximum_worsening_fraction: 0.20
+
+confusion_group_counterfactual:
+  rationale: pose_requires_joint_correspondence_changes
+  groups_disjoint: true
+  maximum_group_size: 8
+  exact_updated_top1: true
+  same_gate_as_single_action: true
+
+feedback_query_detector:
+  enabled_after_map_action_freeze: true
+  input: frozen_superpoint_dense_features
+  target_positive: deployed_top1_reprojection_error_at_most_4px
+  target_negative: v2_invalid_or_deployed_top1_reprojection_error_at_least_12px
+  ambiguous_margin_ignored: true
+  map_conditioned_second_pass: false
+  descriptor_adapter: false
+  changes_descriptors: false
+  changes_only_native_score_allocation: true
+  train_queries: 182
+  validation_queries: 47
+  selected_seed: 2027
+  selection_uses_validation_only: true
+  safety_queries: 48
+  fresh_confirmation_queries_accepted: 39
+
+combined_safety_gate:
+  batch: independent_feedback_safety
+  minimum_changed_queries: 8
+  minimum_changed_pose_families: 8
+  minimum_conditional_median_task_gain: 0.001
+  positive_conditional_cumulative_task_gain: true
+  maximum_conditional_worsening_fraction: 0.20
+  global_median_task_non_regression: true
+  no_catastrophic_increase: true
+
+confirmation_gate:
+  batch: fresh_confirmation
+  cannot_train_or_select: true
+  same_as_combined_safety_gate: true
+  test_queries_used: false

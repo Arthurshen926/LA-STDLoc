@@ -1,0 +1,53 @@
+schema: lafgs_v7_operating_point_confirmation
+version: 1
+scene: StMarysChurch
+selector_parameters_locked: true
+test_access_before_operating_point_freeze: forbidden
+
+confirmation:
+  policy: intersection_of_v1_and_v2_accept_ids
+  expected_query_count: 63
+  certificate_version: 2
+  detector_input: complete_unmasked_rgb
+
+candidates:
+  full:
+    anchor_count: 200255
+    map_sha256: 78e408cce366af8efea724ade5c35bebbf8f6edb02d62ecf40c2a4531364baed
+    metric_sha256: 91e226e87a3c9917bc17f1e02b44d13e9fb4837757fca9ec9d0fd455ac68b607
+  large:
+    anchor_count: 116658
+    map_sha256: 0da90184e1438226e507688abd610d51f45a6f8232d457bcb62b4d41fc97dbcc
+    metric_sha256: 423fdcde20d14210b51594b962b58ced435aef371286adf8757cf68eabc513e6
+  medium:
+    anchor_count: 48581
+    map_sha256: b9934eaf49dbcaab35086a0141e300aa44ca565f09337ed081fedb28eb9a3d37
+    metric_sha256: f43a7bce3a646061a6cccda004a625aba9929986fc28459e99c525ccd7f7218c
+
+tail_eligibility_relative_to_full:
+  maximum_additional_catastrophic_queries: 0
+  maximum_r5_loss_queries: 1
+  maximum_p90_translation_regression_cm: 0.20
+  catastrophic_translation_cm: 100.0
+  catastrophic_rotation_deg: 30.0
+  r5_translation_cm: 5.0
+  r5_rotation_deg: 5.0
+
+selection_lexicographic_after_tail_eligibility:
+  - minimum_median_translation_cm
+  - minimum_median_rotation_deg
+  - minimum_p90_translation_cm
+  - minimum_mean_total_runtime_ms
+
+precision_deficit_preregistration:
+  current_pose_must_succeed: true
+  minimum_alternative_correspondences: 16
+  minimum_spatial_cells: 6
+  image_grid: [4, 4]
+  anchor_unique: true
+  replay_solver: one_standard_poselib
+  minimum_translation_improvement_cm: 0.05
+  minimum_relative_translation_improvement: 0.10
+  minimum_rotation_improvement_deg: 0.005
+  minimum_supporting_query_rows: 8
+  minimum_pose_families_for_map_update: 2

@@ -1,0 +1,68 @@
+schema: lafgs_v7_full_continuous_feedback_mainline
+version: 1
+scene: StMarysChurch
+
+initial_state:
+  map: full_projective_anchor_map
+  anchor_count: 200255
+  map_sha256: 78e408cce366af8efea724ade5c35bebbf8f6edb02d62ecf40c2a4531364baed
+  initialization_selector: disabled
+  teacher_student: disabled
+
+p0_test_pose_render_diagnostic:
+  formal_protocol_eligible: false
+  transductive_pose_distribution_oracle: true
+  uses_test_pose_metadata: true
+  uses_test_rgb: false
+  may_update_or_select_map: false
+  render_certificate: v2
+  minimum_accept_queries: 256
+  situation_a_viewpoint_gap:
+    minimum_median_translation_cm: 2.0
+    maximum_recall_5cm_5deg_percent: 85.0
+    action: unlock_aggressive_planner
+  situation_b_render_real_gap:
+    maximum_median_translation_cm: 1.0
+    minimum_recall_5cm_5deg_percent: 95.0
+    action: stop_rendered_feedback_for_real_test_improvement
+  otherwise: indeterminate_stop_and_report
+
+conditional_p1_planner_v3:
+  enabled_only_if: p0_situation_a_viewpoint_gap
+  fractions:
+    test_distribution_matched: 0.60
+    high_offset_tail: 0.25
+    ambiguity_directed: 0.15
+  minimum_accept_feedback: 256
+  minimum_accept_confirmation: 128
+  adaptive_increment: 64
+  lower_certificate_thresholds_to_fill_quota: false
+
+conditional_p2_continuous_observer:
+  task_translation_scale_cm: 5.0
+  task_rotation_scale_deg: 5.0
+  outputs:
+    - task_error
+    - oracle_task_error
+    - headroom
+    - minimal_correction_set
+    - row_pose_gain
+    - positive_anchor_ids
+    - false_winner_anchor_ids
+    - coverage_score
+    - pose_conditioning
+
+conditional_control:
+  minimum_pose_families: 2
+  feedback_descriptors_copied_into_map: false
+  prototypes: forbidden
+  descriptor_angular_trust_deg: 5.0
+  active_set_initialization: full
+  maximum_active_set_symmetric_difference_fraction: 0.01
+  acquisition: disabled_until_repeated_coverage_limit
+  maximum_rounds: 2
+
+fresh_confirmation:
+  baseline_and_proposal_same_rgb: true
+  minimum_accept_queries: 128
+  exact_rollback: true

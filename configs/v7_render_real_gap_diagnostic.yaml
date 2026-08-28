@@ -1,0 +1,61 @@
+schema: lafgs_v7_render_real_gap_causal_diagnostic
+version: 1
+scene: StMarysChurch
+
+protocol:
+  formal_protocol_eligible: false
+  posthoc_test_rgb_diagnostic: true
+  transductive_test_pose_oracle: true
+  may_update_or_select_map: false
+  threshold_tuning_from_results: false
+  map_mutation_count: 0
+  full_map_sha256: 78e408cce366af8efea724ade5c35bebbf8f6edb02d62ecf40c2a4531364baed
+  identity_metric_sha256: 91e226e87a3c9917bc17f1e02b44d13e9fb4837757fca9ec9d0fd455ac68b607
+
+frontend:
+  keypoints: 2048
+  nms_radius: 4
+  reprojection_error_px: 11.954343111400277
+  confidence: 0.99999
+  maximum_iterations: 100000
+  minimum_iterations: 1000
+  seed: 2026
+
+shared_support:
+  alpha_minimum: 0.05
+  depth_discontinuity_relative: 0.08
+  border_fraction: 0.02
+  rgb_structure_support_threshold: 0.20
+  rgb_structure_window_reference_px: 9
+  rgb_structure_dilate_reference_px: 5
+  rgb_structure_reference_short_side: 1080
+  feather_reference_px: 15
+  descriptor_pair_maximum_distance_px: 2.0
+  gt_correct_reprojection_px: 4.0
+  oracle_maximum_reprojection_px: 4.0
+  oracle_depth_absolute_tolerance_m: 0.50
+  oracle_depth_relative_tolerance: 0.10
+  oracle_search_neighbors: 16
+
+conditions:
+  full_query_stride: 1
+  hybrid_query_stride: 4
+  render_unmasked: true
+  render_dataset_masked: true
+  real_unmasked: true
+  real_dataset_masked: true
+  real_dataset_masked_support_rows: true
+  real_shared_render_else_dataset_masked: true
+  render_shared_real_else_dataset_masked: true
+  oracle_geometry_real_dataset_masked: true
+
+decision_rules:
+  geometry_ceiling_maximum_median_translation_cm: 1.0
+  geometry_ceiling_minimum_recall_5cm_5deg_percent: 95.0
+  fixed_bias_minimum_direction_resultant: 0.50
+  content_contamination_minimum_precision_ratio: 3.0
+  content_contamination_maximum_outside_precision_percent: 5.0
+  material_pose_delta_minimum_r5_points: 5.0
+  material_pose_delta_minimum_median_relative: 0.10
+  shared_descriptor_minimum_correctness_gap_points: 20.0
+

@@ -1,0 +1,85 @@
+schema: lafgs_v11_pose_contribution_detector
+version: 1
+
+frozen_state:
+  map_sha256: 711855ea46fdaede2e49a306cb56d59ae432a1568a881798c3223b2d36f108f3
+  anchor_count: 164871
+  native_superpoint_frozen: true
+  descriptor_count_per_anchor: 1
+  map_mutation: false
+  geometry_mutation: false
+  loo_anywhere: false
+  test_queries_used: false
+
+supervision:
+  source: v9_accept_feedback_on_v2_m0
+  positive_top1_reprojection_px: 4.0
+  negative_top1_reprojection_px: 12.0
+  ambiguous_margin_ignored: true
+  v2_uncertain_ignored: true
+  positive_pose_weight:
+    spatial_cell_rarity: true
+    off_axis_leverage: true
+    inverse_depth_parallax: true
+  negative_pose_weight:
+    top1_top2_confidence_margin: true
+    gross_reprojection_harm: true
+  point_removal_counterfactual: false
+  loo_used: false
+
+detector:
+  architecture: frozen_superpoint_plus_small_residual_heatmap
+  initialization: synthetic_v2_clean_support_detector
+  changes_descriptors: false
+  changes_map: false
+  map_conditioned_second_pass: false
+  score_fusion: native_times_bounded_reliability
+  strength_range: [0.0, 1.0]
+  strength_selection: render_validation_only
+  online_passes:
+    superpoint: 1
+    global_top1: 1
+    poselib: 1
+
+selection:
+  seeds: [2028, 2029]
+  seed_selection: validation_loss_only
+  strength_grid_coarse: [0.25, 0.5, 0.75, 1.0]
+  strength_grid_refinement_after_coarse_boundary: [0.30, 0.35, 0.40, 0.45, 0.55, 0.60, 0.65, 0.70]
+  strength_primary: validation_median_task_gain
+  validation_r5_non_regression: true
+  validation_catastrophic_non_regression: true
+  protected_native_core_followup:
+    candidate_pool: 4096
+    output_keypoints: 2048
+    protected_core_grid: [1024, 1536, 1792]
+    second_nms: false
+    maximum_learned_replacements: [1024, 512, 256]
+  additive_native_guard_final:
+    baseline_core: 2048
+    learned_tail: 256
+    output_keypoints: 2304
+    matcher_row_increase_percent: 12.5
+    native_correspondence_deletion_count: 0
+    single_candidate_nms: true
+  query_level_abstention_candidate:
+    statistic: mean_reliability_on_native_top2048
+    activation_threshold: 0.5
+    threshold_semantics: natural_probability_boundary
+    validation_activated_queries: 23
+    map_conditioned: false
+    encoder_passes: 1
+    matcher_passes: 1
+    poselib_passes: 1
+    inactive_path_exact_native: true
+
+formal_evaluation:
+  safety_and_confirmation_new_after_v10: true
+  safety_confirmation_pose_families_disjoint: true
+  old_confirmation_can_train_or_select: false
+  safety_gate:
+    minimum_median_task_gain: 0.001
+    maximum_p90_task_regression: 0.20
+    minimum_r5_delta_percent: -0.01
+    no_catastrophic_increase: true
+  confirmation_once_after_safety: true

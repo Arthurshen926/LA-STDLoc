@@ -13,6 +13,7 @@ import math
 
 import torch
 import torch.nn.functional as F
+import gsplat
 from gsplat import rasterization, rasterization_2dgs
 
 from priors.models import FrozenGaussianModel
@@ -44,6 +45,13 @@ def _render_mode_channel_count(render_mode):
     if mode == "ED":
         return 1
     if mode in {"RGB+D", "RGB+ED"}:
+        # gsplat <=1.4 expects one background value for the appended depth
+        # channel; >=1.5 appends its own zero depth background internally.
+        version = tuple(
+            int(part) for part in str(gsplat.__version__).split("+")[0].split(".")[:2]
+        )
+        if version <= (1, 4):
+            return 4
         # gsplat appends both the rendered depth channel and its zero
         # background internally.  Supplying RGBD here would therefore append
         # depth twice and fail the rasterizer channel contract.

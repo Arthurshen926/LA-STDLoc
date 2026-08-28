@@ -1,0 +1,64 @@
+schema: lafgs_v8_clean_anchor_scene_detector
+version: 1
+
+method:
+  name: Clean-Anchor Single-Pass Scene Detector
+  online_protocol: one_frozen_superpoint_encoder_scene_detector_global_top1_one_poselib
+  map_conditioned_second_pass: false
+  descriptor_adapter: false
+  dense_refinement: false
+  retrieval: false
+  irreversible_gaussian_deletion: false
+
+data_contract:
+  source_mapping_rgb: false
+  real_training_rgb: false
+  test_rgb: false
+  detector_input: raw_gaussian_render_with_artifacts
+  positive_target: v2_valid_depth_consistent_clean_anchor_projection
+  negative_target: v2_explicit_invalid_renderer_pixel
+  uncertain_and_uncovered_target: ignore
+  split_unit: camera_sequence_pose_family
+  test_may_select_or_train: false
+
+clean_anchor_map:
+  minimum_valid_observations: 3
+  minimum_valid_view_families: 2
+  descriptor_source: original_rgb_render_observations_passing_v2
+  rebuild_descriptor_without_angular_cap: true
+
+detector:
+  frozen_encoder: native_superpoint
+  feature_dim: 256
+  hidden_dim: 64
+  output_stride: 8
+  positive_radius_px: 6.0
+  projection_relative_depth_tolerance: 0.05
+  grid_hw: [24, 32]
+  positives_per_cell: 1
+  keypoint_count: 2048
+  nms_radius: 4
+  loss: balanced_bce_three_state
+  online_pass_count: 1
+
+training:
+  epochs: 6
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  appearance_augmentation:
+    exposure: true
+    gamma: true
+    white_balance: true
+    sensor_noise: true
+    blur: true
+  detector_frozen_during_map_confirmation: true
+  accepted_map_required_before_detector_refresh: true
+
+promotion_gate:
+  compare_same_map_descriptor_topk_matcher_and_poselib: true
+  require_positive_negative_score_separation: true
+  require_clean_anchor_hit_rate_improvement: true
+  require_gt4px_non_regression: true
+  require_spatial_cell_non_regression: true
+  require_confirmation_pose_non_regression: true
+  final_real_test_runs_after_freeze: 1

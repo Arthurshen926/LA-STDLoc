@@ -92,6 +92,9 @@ VIEW_ROLE_PERMISSIONS = {
     "confirmation_query": frozenset({"localize", "diagnose", "paired_confirmation"}),
     "acquisition_view": frozenset({"candidate_construction", "observation_bank"}),
     "test_query": frozenset({"localize", "report_only"}),
+    "test_pose_render_diagnostic": frozenset(
+        {"localize", "diagnose", "report_only"}
+    ),
 }
 
 

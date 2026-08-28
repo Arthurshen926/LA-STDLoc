@@ -1,0 +1,46 @@
+schema: lafgs_v8_v2_full_rebuild
+version: 1
+
+scope:
+  scene: StMarysChurch
+  source_mapping_rgb: false
+  test_queries: false
+  query_detector: false
+  closed_loop_feedback: false
+
+observation_contract:
+  detector: native_superpoint
+  detector_input: complete_unmasked_gaussian_render_rgb
+  v2_stage: after_detection_before_pair_association
+  v2_invalid_rows_may_enter_association: false
+  final_csr_keypoint_semantics: original_unfiltered_observation_cache_row
+
+projective_map:
+  pair_neighbors: 6
+  minimum_similarity: 0.65
+  minimum_margin: 0.01
+  maximum_epipolar_error_px: 2.0
+  minimum_track_views: 3
+  minimum_parallax_deg: 1.0
+  maximum_reprojection_px: 2.0
+  completion_enabled: true
+  rebuild_pair_association: true
+  rebuild_tracks: true
+  retriangulate_geometry: true
+  re_fuse_descriptors: true
+
+evaluation:
+  render_confirmation_queries: 63
+  real_mapping_rgb_panel_queries: 128
+  real_panel_use: evaluation_only
+  threshold_tuning_from_evaluation: false
+  final_test_remains_sealed: true
+
+promotion:
+  role: accepted_mainline_m0
+  decision: ACCEPT
+  replaces_posthoc_strict_map: true
+  replaces_unfiltered_full_as_initial_state: true
+  query_detector_training_allowed_before_feedback_freeze: false
+  require_followup_feedback_ablation: false
+  require_tail_non_regression_before_final_freeze: true

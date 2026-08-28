@@ -135,6 +135,72 @@ def test_accept_success_is_nominal() -> None:
     assert diagnosis["oracle_used_online"] is False
 
 
+def test_success_with_materially_better_active_map_replay_is_precision_deficit(
+    monkeypatch,
+) -> None:
+    target_pixels = torch.tensor(
+        [[x, y] for y in (15.0, 35.0, 65.0, 85.0) for x in (15.0, 35.0, 65.0, 85.0)]
+    )
+    intrinsic = np.array(
+        [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]],
+        dtype=np.float32,
+    )
+    xyz = torch.column_stack(
+        (
+            (target_pixels[:, 0] - 50.0) * 0.02,
+            (target_pixels[:, 1] - 50.0) * 0.02,
+            torch.full((16,), 2.0),
+        )
+    )
+    predicted = np.eye(4, dtype=np.float32)
+    angle = np.deg2rad(0.5)
+    predicted[:2, :2] = [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    predicted[0, 3] = 0.01
+    result = V7LocalizationResult(
+        keypoints=target_pixels - 0.5,
+        descriptors=torch.eye(16),
+        scores=torch.ones(16),
+        matches=V7Top1Matches(
+            torch.arange(16), torch.roll(torch.arange(16), 1), torch.ones(16)
+        ),
+        pose=V7PoseEstimate(predicted, np.arange(16), {}),
+        intrinsic=intrinsic,
+        runtime_ms={},
+        active_anchor_ids=torch.arange(16),
+        active_anchor_xyz=xyz,
+        diagnostic_registry=DiagnosticRegistry(
+            torch.arange(16), xyz, torch.ones(16, dtype=torch.bool)
+        ),
+    )
+
+    def exact_replay(*args, **kwargs):
+        return V7PoseEstimate(np.eye(4, dtype=np.float32), np.arange(16), {})
+
+    monkeypatch.setattr("map_learning.v7_feedback._solve_standard_poselib", exact_replay)
+    certificate = {
+        "decision": "ACCEPT",
+        "can_drive_map_update": True,
+        "row_valid": torch.ones(16, dtype=torch.bool),
+    }
+    diagnosis = diagnose_feedback_query(
+        result,
+        torch.eye(4),
+        torch.ones(1, 100, 100),
+        torch.full((1, 100, 100), 2.0),
+        certificate,
+    )
+    assert diagnosis["category"] == "precision_deficit"
+    assert diagnosis["can_drive_map_update"] is True
+    assert diagnosis["precision_diagnostic"]["spatial_cell_count"] == 16
+    assert diagnosis["precision_diagnostic"]["supporting_row_count"] == 16
+    control = diagnosis["descriptor_control_evidence"]
+    assert torch.equal(control["positive_anchor_ids"], control["query_rows"])
+    assert torch.equal(
+        control["false_attractor_anchor_ids"],
+        torch.roll(torch.arange(16), 1)[control["query_rows"]],
+    )
+
+
 def test_missing_candidate_support_is_coverage_deficit() -> None:
     bad = np.eye(4, dtype=np.float32)
     bad[0, 3] = 1.0

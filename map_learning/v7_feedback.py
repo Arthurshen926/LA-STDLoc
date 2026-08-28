@@ -19,6 +19,7 @@ from features.extractor import FeatureExtractor
 
 ROUTES = (
     "representation_deficit",
+    "precision_deficit",
     "coverage_deficit",
     "unreliable_query",
     "nominal_success",
@@ -73,6 +74,7 @@ class V7LocalizationResult:
     active_anchor_ids: torch.Tensor
     active_anchor_xyz: torch.Tensor
     diagnostic_registry: DiagnosticRegistry | None
+    solver_contract: Mapping[str, float | int] | None = None
 
 
 @torch.inference_mode()
@@ -300,6 +302,13 @@ def localize_rgb_query(
         active_anchor_ids=map_state.anchor_ids,
         active_anchor_xyz=map_state.anchor_xyz.detach().cpu(),
         diagnostic_registry=map_state.diagnostic_registry,
+        solver_contract={
+            "reprojection_error_px": map_state.reprojection_error_px,
+            "confidence": map_state.confidence,
+            "maximum_iterations": map_state.maximum_iterations,
+            "minimum_iterations": map_state.minimum_iterations,
+            "seed": map_state.seed,
+        },
     )
 
 
@@ -313,6 +322,12 @@ def _pose_error(predicted: np.ndarray, ground_truth: np.ndarray) -> tuple[float,
     ground_truth_center = -ground_truth[:3, :3].T @ ground_truth[:3, 3]
     translation = float(np.linalg.norm(predicted_center - ground_truth_center) * 100.0)
     return rotation, translation
+
+
+def pose_error(predicted: np.ndarray, ground_truth: np.ndarray) -> tuple[float, float]:
+    """Public read-only pose metric used by non-controlling diagnostics."""
+
+    return _pose_error(predicted, ground_truth)
 
 
 def _project(
@@ -351,6 +366,12 @@ def diagnose_feedback_query(
     success_rotation_deg: float = 5.0,
     oracle_reprojection_px: float = 4.0,
     minimum_oracle_correspondences: int = 16,
+    precision_spatial_grid: tuple[int, int] = (4, 4),
+    minimum_precision_spatial_cells: int = 6,
+    minimum_precision_supporting_rows: int = 8,
+    minimum_precision_translation_improvement_cm: float = 0.05,
+    minimum_precision_translation_relative_improvement: float = 0.10,
+    minimum_precision_rotation_improvement_deg: float = 0.005,
 ) -> dict[str, Any]:
     """Route a query only after the fixed plant has returned its pose."""
 
@@ -448,27 +469,162 @@ def diagnose_feedback_query(
         and oracle_count >= int(minimum_oracle_correspondences)
         and correct_top1_count >= int(minimum_oracle_correspondences)
     )
-    if pose_success:
+    # Precision evidence is deliberately restricted to the currently deployed
+    # map.  It cannot add coverage: it asks whether a unique, spatially spread
+    # set of already available Anchors would make the same standard PoseLib
+    # solve materially more accurate.
+    active_rows = np.flatnonzero(active_positive & np.isfinite(active_projected).all(1))
+    active_search_k = min(32, max(int(active_rows.size), 1))
+    alternative_candidates: list[tuple[float, int, int]] = []
+    if active_rows.size:
+        active_tree = cKDTree(active_projected[active_rows])
+        active_distances, active_nearest = active_tree.query(
+            keypoints[row_valid].numpy(), k=active_search_k
+        )
+        active_distances = np.asarray(active_distances).reshape(-1, active_search_k)
+        active_nearest = np.asarray(active_nearest).reshape(-1, active_search_k)
+        active_candidate_rows = active_rows[active_nearest]
+        for local_query_row, query_row in enumerate(valid_query_rows):
+            for neighbor in range(active_search_k):
+                anchor_row = int(active_candidate_rows[local_query_row, neighbor])
+                distance = float(active_distances[local_query_row, neighbor])
+                if distance > float(oracle_reprojection_px):
+                    break
+                if (
+                    np.isfinite(sampled_depth[query_row])
+                    and sampled_depth[query_row] > 0
+                    and sampled_alpha[query_row] >= 0.05
+                    and abs(active_depth[anchor_row] - sampled_depth[query_row])
+                    <= depth_tolerance[query_row]
+                ):
+                    alternative_candidates.append((distance, int(query_row), anchor_row))
+    alternative_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    used_query_rows: set[int] = set()
+    used_anchor_rows: set[int] = set()
+    selected_alternatives: list[tuple[int, int]] = []
+    for _, query_row, anchor_row in alternative_candidates:
+        if query_row in used_query_rows or anchor_row in used_anchor_rows:
+            continue
+        used_query_rows.add(query_row)
+        used_anchor_rows.add(anchor_row)
+        selected_alternatives.append((query_row, anchor_row))
+    alternative_query_rows = np.asarray(
+        [item[0] for item in selected_alternatives], dtype=np.int64
+    )
+    alternative_anchor_rows = np.asarray(
+        [item[1] for item in selected_alternatives], dtype=np.int64
+    )
+    grid_width, grid_height = map(int, precision_spatial_grid)
+    if grid_width <= 0 or grid_height <= 0:
+        raise ValueError("precision spatial grid must be positive")
+    image_height, image_width = map(int, depth_tensor.squeeze().shape)
+    if alternative_query_rows.size:
+        alternative_xy = keypoints[alternative_query_rows].numpy()
+        cell_x = np.clip(
+            (alternative_xy[:, 0] * grid_width / max(image_width, 1)).astype(int),
+            0,
+            grid_width - 1,
+        )
+        cell_y = np.clip(
+            (alternative_xy[:, 1] * grid_height / max(image_height, 1)).astype(int),
+            0,
+            grid_height - 1,
+        )
+        alternative_spatial_cells = int(
+            np.unique(cell_y * grid_width + cell_x).size
+        )
+    else:
+        alternative_spatial_cells = 0
+    changed_alternative = (
+        alternative_anchor_rows != winner[alternative_query_rows]
+        if alternative_query_rows.size
+        else np.empty(0, dtype=bool)
+    )
+    precision_supporting_rows = int(np.count_nonzero(changed_alternative))
+    alternative_pose = None
+    alternative_rotation = math.nan
+    alternative_translation = math.nan
+    translation_improvement = math.nan
+    rotation_improvement = math.nan
+    precision_replay_eligible = bool(
+        pose_success
+        and alternative_query_rows.size >= int(minimum_oracle_correspondences)
+        and alternative_spatial_cells >= int(minimum_precision_spatial_cells)
+        and precision_supporting_rows >= int(minimum_precision_supporting_rows)
+    )
+    if precision_replay_eligible:
+        solver_contract = localization_result.solver_contract or {
+            "reprojection_error_px": 11.954343111400277,
+            "confidence": 0.99999,
+            "maximum_iterations": 100000,
+            "minimum_iterations": 1000,
+            "seed": 2026,
+        }
+        alternative_pose = _solve_standard_poselib(
+            keypoints[alternative_query_rows].numpy(),
+            localization_result.active_anchor_xyz[alternative_anchor_rows].numpy(),
+            localization_result.intrinsic,
+            reprojection_error_px=float(solver_contract["reprojection_error_px"]),
+            confidence=float(solver_contract["confidence"]),
+            maximum_iterations=int(solver_contract["maximum_iterations"]),
+            minimum_iterations=int(solver_contract["minimum_iterations"]),
+            seed=int(solver_contract["seed"]),
+        )
+        alternative_rotation, alternative_translation = _pose_error(
+            alternative_pose.pose_w2c, gt.numpy()
+        )
+        translation_improvement = translation - alternative_translation
+        rotation_improvement = rotation - alternative_rotation
+    precision_deficit = bool(
+        precision_replay_eligible
+        and alternative_pose is not None
+        and alternative_pose.inliers.size > 0
+        and translation_improvement
+        >= max(
+            float(minimum_precision_translation_improvement_cm),
+            float(minimum_precision_translation_relative_improvement) * translation,
+        )
+        and rotation_improvement
+        >= float(minimum_precision_rotation_improvement_deg)
+    )
+    if precision_deficit:
+        category = "precision_deficit"
+    elif pose_success:
         category = "nominal_success"
     elif oracle_count < int(minimum_oracle_correspondences):
         category = "coverage_deficit"
     else:
         category = "representation_deficit"
     wrong_supported = oracle_supported & ~winner_correct[valid_query_rows]
-    evidence_query_rows = valid_query_rows[wrong_supported]
-    if eligible_candidate_rows.size:
+    if precision_deficit:
+        evidence_query_rows = alternative_query_rows[changed_alternative]
+        positive_anchor_ids = localization_result.active_anchor_ids[
+            alternative_anchor_rows[changed_alternative]
+        ].clone().long()
+        false_anchor_ids = localization_result.active_anchor_ids[
+            winner[evidence_query_rows]
+        ].clone().long()
+    elif eligible_candidate_rows.size:
+        evidence_query_rows = valid_query_rows[wrong_supported]
         first_supported = oracle_pairs.argmax(1)
         positive_rows = candidate_rows[
             np.arange(candidate_rows.shape[0]), first_supported
         ][wrong_supported]
+        positive_anchor_ids = registry.anchor_ids[positive_rows].clone().long()
+        false_anchor_ids = localization_result.active_anchor_ids[
+            winner[evidence_query_rows]
+        ].clone().long()
     else:
-        positive_rows = np.empty(0, dtype=np.int64)
-    false_rows = winner[valid_query_rows[wrong_supported]]
+        evidence_query_rows = np.empty(0, dtype=np.int64)
+        positive_anchor_ids = torch.empty(0, dtype=torch.long)
+        false_anchor_ids = torch.empty(0, dtype=torch.long)
     return {
         "category": category,
         "certificate_decision": decision,
-        "can_drive_map_update": category == "representation_deficit"
-        and not solver_geometry,
+        "can_drive_map_update": (
+            category == "precision_deficit"
+            or (category == "representation_deficit" and not solver_geometry)
+        ),
         "included_in_feedback_statistics": True,
         "translation_error_cm": translation,
         "rotation_error_deg": rotation,
@@ -477,6 +633,18 @@ def diagnose_feedback_query(
         "correct_top1_count": correct_top1_count,
         "valid_keypoint_count": int(row_valid.sum()),
         "solver_geometry_diagnostic": solver_geometry,
+        "precision_diagnostic": {
+            "replay_eligible": precision_replay_eligible,
+            "deficit": precision_deficit,
+            "alternative_correspondence_count": int(alternative_query_rows.size),
+            "unique_anchor_count": int(np.unique(alternative_anchor_rows).size),
+            "spatial_cell_count": alternative_spatial_cells,
+            "supporting_row_count": precision_supporting_rows,
+            "alternative_translation_error_cm": alternative_translation,
+            "alternative_rotation_error_deg": alternative_rotation,
+            "translation_improvement_cm": translation_improvement,
+            "rotation_improvement_deg": rotation_improvement,
+        },
         "oracle_used_online": False,
         "raster_diagnostics": raster_diagnostics,
         "descriptor_control_evidence": {
@@ -484,11 +652,7 @@ def diagnose_feedback_query(
             "query_descriptors": localization_result.descriptors[evidence_query_rows]
             .clone()
             .float(),
-            "positive_anchor_ids": registry.anchor_ids[positive_rows].clone().long(),
-            "false_attractor_anchor_ids": localization_result.active_anchor_ids[
-                false_rows
-            ]
-            .clone()
-            .long(),
+            "positive_anchor_ids": positive_anchor_ids,
+            "false_attractor_anchor_ids": false_anchor_ids,
         },
     }

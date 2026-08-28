@@ -1,0 +1,91 @@
+schema: lafgs_v9_no_loo_closed_loop
+version: 1
+
+method:
+  name: No-LOO Causal Ranking and Active-Set Feedback
+  initial_map: v2_preassociation_full_rebuild
+  geometry_frozen: true
+  track_registry_frozen: true
+  triangulation_frozen: true
+  anchor_addition: false
+  anchor_retriangulation: false
+  loo_geometry: false
+  loo_descriptor: false
+  loo_anywhere: false
+
+planner:
+  trajectory_interpolation: false
+  feedback_queries: 256
+  confirmation_queries: 128
+  feedback_seed: 920260828
+  confirmation_seed: 920260829
+  minimum_nearest_mapping_distance_baselines: 0.65
+  minimum_nearest_mapping_view_angle_deg: 8.0
+  candidate_families: [novel_se3, ambiguity_directed]
+
+render_certificate:
+  whole_query_decisions: [ACCEPT, UNCERTAIN, REJECT]
+  non_accept_can_update: false
+  accepted_query_uses_local_row_mask: true
+  implementation: v2_rgb_structure_alpha_depth_border_distortion
+
+observer:
+  retrieval_topk: 64
+  correctness_reprojection_px: 4.0
+  correctness_minimum_alpha: 0.05
+  correctness_depth_absolute_m: 0.5
+  correctness_depth_relative: 0.10
+  minimum_pose_families: 2
+  pose_solver: one_standard_poselib
+  requires_actual_query_pose_gain: true
+
+actions:
+  shared_metric:
+    enabled: true
+    rank: 16
+    maximum_residual_norm: 0.05
+    steps: 400
+    learning_rate: 0.0002
+    ranking_margin: 0.02
+    temperature: 0.05
+    clean_protection_weight: 1.0
+    feedback_descriptors_used_as_training_evidence: true
+    feedback_descriptors_stored_as_map_prototypes: false
+    clean_row_protection: true
+  active_set:
+    enabled: true
+    mutation: delete_only
+    requires_actual_removal_pose_gain: true
+    minimum_median_actual_task_gain: 0.001
+    positive_cumulative_actual_task_gain_required: true
+    maximum_removal_fraction: 0.01
+    maximum_ranked_candidate_audit: 1000
+    candidate_order: cumulative_causal_query_gain_then_pose_family_support
+  descriptor_prototype_copy: false
+
+acceptance:
+  evaluation: fresh_paired_confirmation_only
+  feedback_queries_may_select_action: true
+  confirmation_queries_may_train_or_select: false
+  test_queries_may_train_or_select: false
+  rollback_on_failed_gate: true
+  shared_metric_gate:
+    minimum_global_paired_median_task_gain: 0.001
+    maximum_p90_task_regression: 0.20
+    minimum_r5_delta_percent: -0.01
+    no_catastrophic_increase: true
+  sparse_active_set_gate:
+    minimum_changed_queries: 8
+    minimum_changed_pose_families: 8
+    minimum_conditional_median_task_gain: 0.001
+    positive_conditional_cumulative_task_gain: true
+    maximum_conditional_worsening_fraction: 0.25
+    global_median_task_non_regression: true
+    maximum_p90_task_regression: 0.20
+    minimum_r5_delta_percent: -0.01
+    no_catastrophic_increase: true
+
+deferred_until_map_freeze:
+  query_scene_specific_detector: true
+  gaussian_counterfactual: true
+  query_descriptor_domain_adapter: true

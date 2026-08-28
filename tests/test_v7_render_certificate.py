@@ -5,13 +5,18 @@ import torch
 
 from common.v7_contracts import tensor_tree_equal
 from evidence.v7_render_certificate import (
+    CertificateThresholds,
     certify_v7_render,
     extreme_distortion_row_mask,
+    rgb_structure_support_mask,
+    render_quality_pixel_masks,
 )
 
 
 def _normal(size: int = 40):
-    rgb = torch.full((3, size, size), 0.5)
+    yy, xx = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+    texture = 0.3 + 0.4 * (((xx // 2 + yy // 2) % 2).float())
+    rgb = texture[None].repeat(3, 1, 1)
     alpha = torch.ones(size, size)
     depth = torch.full((size, size), 4.0)
     keypoints = torch.tensor([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]])
@@ -82,3 +87,53 @@ def test_distortion_audit_only_flags_extreme_post_detector_rows() -> None:
         True,
         False,
     ]
+
+
+def test_distortion_audit_does_not_call_a_broad_secondary_mode_extreme() -> None:
+    distortion = torch.ones(40, 40)
+    distortion[20:, :] = 2.0
+    distortion[20, 20] = 100.0
+    keypoints = torch.tensor([[10.0, 10.0], [30.0, 30.0], [20.0, 20.0]])
+    assert extreme_distortion_row_mask(distortion, keypoints).tolist() == [
+        False,
+        False,
+        True,
+    ]
+
+
+def test_rgb_structure_support_is_post_detector_and_local() -> None:
+    size = 80
+    yy, xx = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+    textured = 0.3 + 0.4 * (((xx // 2 + yy // 2) % 2).float())
+    textured[:, size // 2 :] = 0.5
+    rgb = textured[None].repeat(3, 1, 1)
+    support, score = rgb_structure_support_mask(rgb)
+    assert support.shape == (size, size)
+    assert score.shape == (size, size)
+    assert bool(support[20, 20])
+    assert not bool(support[20, 70])
+
+    values = _normal(size)
+    values["rgb"] = rgb
+    values["keypoints"] = torch.tensor([[20.0, 20.0], [70.0, 20.0]])
+    values["thresholds"] = CertificateThresholds(
+        minimum_valid_keypoint_fraction=0.40,
+    )
+    result = certify_v7_render(**values)
+    assert result["row_valid"].tolist() == [True, False]
+    assert result["row_reasons"]["low_rgb_structure_support"].tolist() == [
+        False,
+        True,
+    ]
+
+
+def test_pixel_quality_export_separates_invalid_from_uncertain() -> None:
+    values = _normal(80)
+    values["rgb"][:, 30:50, 30:50] = 0.5
+    masks = render_quality_pixel_masks(
+        rgb=values["rgb"], alpha=values["alpha"], depth=values["depth"]
+    )
+    assert bool(masks["invalid"][40, 40])
+    assert bool(masks["uncertain"][0, 0])
+    assert not bool(masks["invalid"][0, 0])
+    assert not bool((masks["valid"] & masks["invalid"]).any())

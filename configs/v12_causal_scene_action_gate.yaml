@@ -1,0 +1,42 @@
+schema: lafgs_v12_causal_scene_action_gate
+version: 1
+
+frozen_online_pipeline:
+  superpoint_encoder_passes: 1
+  detector_heads: 1
+  global_top1_matcher_passes: 1
+  poselib_passes: 1
+  map_mutation: false
+  descriptor_mutation: false
+  loo_anywhere: false
+  test_queries_used: false
+
+action_gate:
+  model: standardized_linear_logistic
+  feature_names:
+    - mean_native_reliability
+    - p10_native_reliability
+    - std_native_reliability
+    - fraction_native_reliability_ge_05
+    - mean_native_keypoint_score
+    - std_native_keypoint_score
+    - detector_native_overlap
+  all_features_query_side_before_matching: true
+  training_target: paired_task_gain_ge_0.001_without_success_to_failure_flip
+  paired_pose_solver_runs_are_offline_training_evidence_only: true
+  training_queries: 182
+  validation_queries: 47
+  safety_can_train_or_select: false
+
+validation_gate:
+  minimum_activated_queries: 8
+  minimum_conditional_median_task_gain: 0.001
+  maximum_conditional_worsening_fraction: 0.25
+  r5_non_regression: true
+  catastrophic_non_regression: true
+
+decision:
+  status: ROLLBACK
+  reason: validation_actionability_failed
+  safety_not_run: true
+  confirmation_not_run: true

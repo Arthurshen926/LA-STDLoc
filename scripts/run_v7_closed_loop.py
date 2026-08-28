@@ -26,6 +26,7 @@ from common.v7_contracts import (
 from data.datasets import ColmapDataset
 from evidence.v7_query_planner import camera_centers
 from evidence.v7_render_certificate import (
+    CertificateThresholds,
     certify_v7_render,
     extreme_distortion_row_mask,
 )
@@ -35,6 +36,7 @@ from map_learning.v7_feedback import (
     diagnose_feedback_query,
     load_v7_fixed_plant,
     localize_rgb_query,
+    pose_error,
 )
 from map_learning.v7_descriptor_controller import reconstruct_v7_descriptors
 from priors.models import GaussianModel2D
@@ -176,7 +178,20 @@ def run_p2(args: argparse.Namespace) -> dict:
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms(False)
-    load_v7_config(args.config)
+    config = load_v7_config(args.config)
+    certificate_config = config.get("p2_render_certificate", {})
+    expected_fusion_policy = (
+        "basic_geometry_and_rank_extreme_distortion_and_rgb_structure_v2"
+    )
+    if certificate_config.get("quality_fusion_policy") != expected_fusion_policy:
+        raise ValueError("P2 render-quality fusion policy differs from V7 v2")
+    certificate_thresholds = CertificateThresholds(
+        **{
+            name: certificate_config[name]
+            for name in CertificateThresholds.__dataclass_fields__
+            if name in certificate_config
+        }
+    )
     import_audit = audit_formal_import_graph(
         root=root,
         entrypoint=Path(__file__),
@@ -190,8 +205,12 @@ def run_p2(args: argparse.Namespace) -> dict:
     )
     plan = torch.load(plan_path, map_location="cpu", weights_only=False)
     role = str(plan.get("view_role"))
-    if role not in {"feedback_query", "confirmation_query"}:
-        raise ValueError("P2 accepts only feedback or confirmation query plans")
+    if role not in {
+        "feedback_query",
+        "confirmation_query",
+        "test_pose_render_diagnostic",
+    }:
+        raise ValueError("P2 received an unsupported query plan role")
     require_view_role(plan, role)
     if plan.get("render_protocol") != "clean_once_per_pose":
         raise ValueError("P2 formal path permits one clean render per pose only")
@@ -232,6 +251,7 @@ def run_p2(args: argparse.Namespace) -> dict:
     decisions = {"ACCEPT": 0, "UNCERTAIN": 0, "REJECT": 0}
     record_registry = []
     for index in range(int(plan["query_count"])):
+        query_index = int(plan.get("query_indices", torch.arange(plan["query_count"]))[index])
         pose = torch.as_tensor(plan["pose_w2c"][index], device=device).float()
         intrinsic = torch.as_tensor(plan["intrinsics"][index]).float()
         height, width = map(int, torch.as_tensor(plan["image_hw"][index]).tolist())
@@ -272,7 +292,8 @@ def run_p2(args: argparse.Namespace) -> dict:
             detection_threshold=args.detection_threshold,
         )[0]
         torch.use_deterministic_algorithms(False)
-        keypoints = sparse["keypoints"].detach().cpu().float()
+        keypoints_device = sparse["keypoints"].detach().float()
+        keypoints = keypoints_device.cpu()
         median_depth_raster = package.get("rend_median")
         expected_median_depth = None
         if median_depth_raster is not None:
@@ -284,13 +305,18 @@ def run_p2(args: argparse.Namespace) -> dict:
         artifact_row_mask = (
             None
             if distortion is None
-            else extreme_distortion_row_mask(distortion.detach().cpu(), keypoints)
+            else extreme_distortion_row_mask(
+                distortion.detach(),
+                keypoints_device,
+                mad_multiplier=certificate_thresholds.distortion_mad_multiplier,
+                tail_quantile=certificate_thresholds.distortion_tail_quantile,
+            )
         )
         certificate = certify_v7_render(
-            rgb=rgb.detach().cpu(),
-            alpha=alpha.detach().cpu(),
-            depth=depth.detach().cpu(),
-            keypoints=keypoints,
+            rgb=rgb,
+            alpha=alpha.detach(),
+            depth=depth.detach(),
+            keypoints=keypoints_device,
             nearest_mapping_distance_m=float(nearest_distances[index]),
             median_adjacent_baseline_m=float(
                 plan["trajectory_statistics"]["median_adjacent_baseline_m"]
@@ -298,14 +324,21 @@ def run_p2(args: argparse.Namespace) -> dict:
             source_family_support=len(set(plan["source_mapping_indices"][index])),
             expected_median_depth_m=expected_median_depth,
             artifact_row_mask=artifact_row_mask,
+            thresholds=certificate_thresholds,
         )
+        certificate["row_valid"] = certificate["row_valid"].cpu()
+        certificate["row_uncertain"] = certificate["row_uncertain"].cpu()
+        certificate["row_reasons"] = {
+            name: rows.cpu()
+            for name, rows in certificate["row_reasons"].items()
+        }
         decision = certificate["decision"]
         decisions[decision] += 1
         record = {
             "schema": "lafgs_v7_certified_clean_render",
             "version": 1,
             "view_role": role,
-            "query_index": index,
+            "query_index": query_index,
             "pose_family_id": int(plan["pose_family_ids"][index]),
             "pose_w2c": torch.as_tensor(plan["pose_w2c"][index]).float(),
             "intrinsics": intrinsic,
@@ -329,7 +362,16 @@ def run_p2(args: argparse.Namespace) -> dict:
             "enters_anchor_observation_csr": False,
             "enters_descriptor_bank": False,
         }
-        record_path = records_dir / f"query_{index:04d}.pt"
+        if role == "test_pose_render_diagnostic":
+            record.update(
+                {
+                    "formal_protocol_eligible": False,
+                    "uses_test_pose_metadata": True,
+                    "uses_test_rgb": False,
+                    "transductive_pose_distribution_oracle": True,
+                }
+            )
+        record_path = records_dir / f"query_{query_index:04d}.pt"
         temporary = record_path.with_name(f".{record_path.name}.{os.getpid()}.tmp")
         try:
             torch.save(record, temporary)
@@ -338,7 +380,7 @@ def run_p2(args: argparse.Namespace) -> dict:
             temporary.unlink(missing_ok=True)
         record_registry.append(
             {
-                "query_index": index,
+                "query_index": query_index,
                 "path": str(record_path.resolve()),
                 "sha256": sha256_file(record_path),
                 "decision": decision,
@@ -349,7 +391,10 @@ def run_p2(args: argparse.Namespace) -> dict:
         "version": 1,
         "view_role": role,
         "uses_source_mapping_rgb": False,
-        "uses_test_queries": False,
+        "uses_test_queries": bool(plan.get("uses_test_queries", False)),
+        "uses_test_pose_metadata": bool(plan.get("uses_test_pose_metadata", False)),
+        "uses_test_rgb": bool(plan.get("uses_test_rgb", False)),
+        "formal_protocol_eligible": bool(plan.get("formal_protocol_eligible", True)),
         "render_protocol": "clean_once_per_pose",
         "detector_input": "complete_unmasked_rgb",
         "detector_rgb_storage": "float16_replayed_as_float32",
@@ -864,8 +909,24 @@ def run_p4(args: argparse.Namespace) -> dict:
     batch = json.loads(batch_path.read_text())
     if (
         batch.get("schema") != "lafgs_v7_certified_clean_render_batch"
-        or batch.get("view_role") not in {"feedback_query", "confirmation_query"}
-        or batch.get("uses_test_queries") is not False
+        or batch.get("view_role") not in {
+            "feedback_query",
+            "confirmation_query",
+            "test_pose_render_diagnostic",
+        }
+        or (
+            batch.get("view_role") != "test_pose_render_diagnostic"
+            and batch.get("uses_test_queries") is not False
+        )
+        or (
+            batch.get("view_role") == "test_pose_render_diagnostic"
+            and not (
+                batch.get("uses_test_queries") is True
+                and batch.get("uses_test_pose_metadata") is True
+                and batch.get("uses_test_rgb") is False
+                and batch.get("formal_protocol_eligible") is False
+            )
+        )
         or batch.get("map_mutation_count") != 0
         or batch.get("detector_rgb_storage") != "float16_replayed_as_float32"
     ):
@@ -893,10 +954,13 @@ def run_p4(args: argparse.Namespace) -> dict:
     p4 = config["p4_feedback"]
     categories = {
         "representation_deficit": 0,
+        "precision_deficit": 0,
         "coverage_deficit": 0,
         "unreliable_query": 0,
         "nominal_success": 0,
     }
+    if batch["view_role"] == "test_pose_render_diagnostic":
+        categories["pose_failure_diagnostic"] = 0
     replay_mismatch_count = 0
     output_records = []
     runtime_totals: dict[str, float] = {}
@@ -932,17 +996,76 @@ def run_p4(args: argparse.Namespace) -> dict:
             raise RuntimeError("P4 keypoints/scores do not bitwise replay P2 RGB")
         if not replay_within_contract:
             raise RuntimeError("P4 descriptor replay exceeds its numeric contract")
-        diagnosis = diagnose_feedback_query(
-            localization,
-            record["pose_w2c"],
-            record["alpha_float16"],
-            record["depth_float16"],
-            record["certificate"],
-            success_translation_cm=float(p4["success_translation_cm"]),
-            success_rotation_deg=float(p4["success_rotation_deg"]),
-            oracle_reprojection_px=float(p4["oracle_reprojection_px"]),
-            minimum_oracle_correspondences=int(p4["minimum_oracle_correspondences"]),
-        )
+        if batch["view_role"] == "test_pose_render_diagnostic":
+            rotation, translation = pose_error(
+                localization.pose.pose_w2c,
+                torch.as_tensor(record["pose_w2c"]).numpy(),
+            )
+            decision = record["certificate"]["decision"]
+            pose_success = bool(
+                translation < float(p4["success_translation_cm"])
+                and rotation < float(p4["success_rotation_deg"])
+            )
+            category = (
+                "unreliable_query"
+                if decision != "ACCEPT"
+                else "nominal_success" if pose_success else "pose_failure_diagnostic"
+            )
+            diagnosis = {
+                "category": category,
+                "certificate_decision": decision,
+                "can_drive_map_update": False,
+                "included_in_feedback_statistics": decision == "ACCEPT",
+                "translation_error_cm": translation,
+                "rotation_error_deg": rotation,
+                "task_error": float(
+                    (
+                        (translation / float(p4["success_translation_cm"])) ** 2
+                        + (rotation / float(p4["success_rotation_deg"])) ** 2
+                    )
+                    ** 0.5
+                ),
+                "pose_success": pose_success,
+                "transductive_pose_distribution_oracle": True,
+                "uses_test_rgb": False,
+                "oracle_correspondence_search_run": False,
+                "oracle_used_online": False,
+            }
+        else:
+            diagnosis = diagnose_feedback_query(
+                localization,
+                record["pose_w2c"],
+                record["alpha_float16"],
+                record["depth_float16"],
+                record["certificate"],
+                success_translation_cm=float(p4["success_translation_cm"]),
+                success_rotation_deg=float(p4["success_rotation_deg"]),
+                oracle_reprojection_px=float(p4["oracle_reprojection_px"]),
+                minimum_oracle_correspondences=int(
+                    p4["minimum_oracle_correspondences"]
+                ),
+                precision_spatial_grid=tuple(p4["precision_spatial_grid"]),
+                minimum_precision_spatial_cells=int(
+                    p4["minimum_precision_spatial_cells"]
+                ),
+                minimum_precision_supporting_rows=int(
+                    p4["minimum_precision_supporting_rows"]
+                ),
+                minimum_precision_translation_improvement_cm=float(
+                    p4["minimum_precision_translation_improvement_cm"]
+                ),
+                minimum_precision_translation_relative_improvement=float(
+                    p4["minimum_precision_translation_relative_improvement"]
+                ),
+                minimum_precision_rotation_improvement_deg=float(
+                    p4["minimum_precision_rotation_improvement_deg"]
+                ),
+            )
+        if batch["view_role"] != "feedback_query":
+            diagnosis["confirmation_only_would_drive_update"] = bool(
+                diagnosis["can_drive_map_update"]
+            )
+            diagnosis["can_drive_map_update"] = False
         categories[diagnosis["category"]] += 1
         for key, value in localization.runtime_ms.items():
             runtime_totals[key] = runtime_totals.get(key, 0.0) + float(value)
@@ -988,7 +1111,14 @@ def run_p4(args: argparse.Namespace) -> dict:
         "status": "PASS",
         "view_role": batch["view_role"],
         "uses_source_mapping_rgb": False,
-        "uses_test_queries": False,
+        "uses_test_queries": bool(batch.get("uses_test_queries", False)),
+        "uses_test_pose_metadata": bool(
+            batch.get("uses_test_pose_metadata", False)
+        ),
+        "uses_test_rgb": bool(batch.get("uses_test_rgb", False)),
+        "formal_protocol_eligible": bool(
+            batch.get("formal_protocol_eligible", True)
+        ),
         "oracle_used_online": False,
         "map_mutation_count": 0,
         "query_count": count,
@@ -1064,6 +1194,9 @@ def run_p5(args: argparse.Namespace) -> dict:
     ):
         raise ValueError("P5 accepts only immutable non-test feedback on its M0")
     candidates = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    deployed_map = torch.load(map_path, map_location="cpu", weights_only=False)
+    if deployed_map.get("schema") != "lafgs_materialized_anchor_map":
+        raise ValueError("P5 baseline is not a materialized deployed map")
     evidence_rows = []
     signs_by_anchor: dict[int, dict[str, set[int]]] = {}
     for item in feedback["records"]:
@@ -1138,8 +1271,8 @@ def run_p5(args: argparse.Namespace) -> dict:
                 "view_families": torch.tensor(families, dtype=torch.long),
             }
     reconstruction = reconstruct_v7_descriptors(
-        anchor_ids=candidates["anchor_ids"],
-        current_descriptors=candidates["anchor_features"],
+        anchor_ids=deployed_map["anchor_ids"],
+        current_descriptors=deployed_map["anchor_features"],
         feedback_evidence=evidence_rows,
         observation_banks=observation_banks,
         minimum_pose_families=minimum_families,
@@ -1158,16 +1291,16 @@ def run_p5(args: argparse.Namespace) -> dict:
     changed = int(reconstruction["changed_anchor_count"])
     proposal_path = None
     proposal_sha = input_shas["map"]
-    stop_reason = "no_executable_representation_deficit" if changed == 0 else None
+    stop_reason = "no_executable_descriptor_deficit" if changed == 0 else None
     if changed:
-        proposal = dict(candidates)
+        proposal = dict(deployed_map)
         proposal["anchor_features"] = reconstruction["anchor_features"]
         proposal["provenance"] = {
-            **dict(candidates["provenance"]),
+            **dict(deployed_map.get("provenance", {})),
             "v7_descriptor_reconstruction": True,
             "feedback_descriptors_copied_into_map": False,
         }
-        proposal_path = args.output_dir / "candidate_pool_proposal.pt"
+        proposal_path = args.output_dir / "deployed_map_proposal.pt"
         _atomic_torch_save(proposal, proposal_path)
         proposal_sha = sha256_file(proposal_path)
     manifest = {
@@ -1181,6 +1314,9 @@ def run_p5(args: argparse.Namespace) -> dict:
         "feedback_query_count": int(feedback["query_count"]),
         "representation_deficit_query_count": int(
             feedback["category_counts"]["representation_deficit"]
+        ),
+        "precision_deficit_query_count": int(
+            feedback["category_counts"].get("precision_deficit", 0)
         ),
         "update_authorized_query_count": int(feedback["update_authorized_count"]),
         "potential_anchor_count": len(potential_ids),
@@ -1199,10 +1335,10 @@ def run_p5(args: argparse.Namespace) -> dict:
         "output": {
             "descriptor_reconstruction": str(reconstruction_path.resolve()),
             "descriptor_reconstruction_sha256": sha256_file(reconstruction_path),
-            "candidate_pool_proposal": (
+            "deployed_map_proposal": (
                 None if proposal_path is None else str(proposal_path.resolve())
             ),
-            "candidate_pool_proposal_sha256": (
+            "deployed_map_proposal_sha256": (
                 None if proposal_path is None else proposal_sha
             ),
         },

@@ -173,3 +173,118 @@ online matcher, use of non-ACCEPT render records, or test-driven map selection.
   baseline-SHA rollback, and a hard maximum of two rounds. It rejects an
   unchanged proposal, so it cannot be used to fabricate a confirmation round
   for this no-op outcome.
+
+## 2026-08-27 — P2 render-quality certificate v2 correction
+
+- A visual row-level audit found two complementary P2 v1 failures. Confirmation
+  query 0015 retained keypoints in broad low-structure smears, while query 0026
+  marked most visible architectural structure invalid.
+- Re-rendering the raw 2DGS diagnostics showed that query 0026 had a bimodal
+  distortion distribution: the old robust threshold labeled 29.1% of all
+  pixels and 73.3% of detected rows as *extreme*. V2 requires distortion to
+  exceed both the robust threshold and the 99.5th-percentile tail. It adds the
+  attached no-reference gradient/variance idea as a separate post-detector RGB
+  structure gate; detector input remains unchanged.
+- V2 persists five non-exclusive row reason masks. On query 0015 it retained
+  1,645/2,048 rows and newly blocked 271 low-structure rows. On query 0026 it
+  retained 1,464/2,048 rows, restored 1,120 previously over-rejected rows, and
+  continued to block the low-structure lower smear.
+- Full disjoint P1 replay produced 64/0/0 ACCEPT/UNCERTAIN/REJECT confirmation
+  decisions and 62/0/2 feedback decisions. The two feedback rejections remain
+  the pre-existing expected-depth curtain mismatches. Both manifests report
+  zero forbidden imports and zero map mutations.
+- These v2 P2 artifacts do not silently replace the previously frozen final
+  experiment contract. Downstream P4/P5 evidence carrying v1 certificate hashes
+  remains historical until explicitly replayed against the v2 manifests.
+
+## 2026-08-27 — V2 operating point, precision feedback, and final rollback
+
+- The operating-point contract was frozen before comparison and used the same
+  63 v1/v2-common ACCEPT confirmation queries. Full / Large / Medium contained
+  200,255 / 116,658 / 48,581 Anchors; no Selector parameter was changed.
+- Full, Large, and Medium achieved median TE of 0.328 / 0.359 / 0.413cm and P90
+  TE of 0.892 / 0.783 / 1.093cm. Their mean online runtimes were 101.04 / 89.84
+  / 77.38ms, with identical 62/63 R5 and one catastrophic query. Medium's P90
+  regression was 0.20139cm, narrowly exceeding the pre-registered 0.20cm limit;
+  the limit was not relaxed after seeing the result. Full and Large remained
+  eligible, and the frozen median-first lexicographic rule selected Full.
+- P4 added a post-localization `precision_deficit` diagnostic. It requires an
+  Anchor-unique, spatially dispersed active-map alternative correspondence set,
+  replay through the unchanged standard PoseLib solver, material TE and AE
+  improvement, at least eight changed rows, and two pose families per Anchor at
+  P5. Confirmation queries are read-only even when this diagnostic fires.
+- On the v2 feedback batch, Full produced 15 precision deficits, 46 nominal
+  successes, one coverage deficit, and two certificate-isolated queries. P5
+  found 1,167 Anchors with consistent two-family evidence and reconstructed only
+  their descriptors from original mapping observations; no feedback descriptor
+  entered the map and cardinality stayed 200,255.
+- Fresh P6 confirmation improved normalized median task error by 0.000657, below
+  the frozen 0.001 requirement. P90 improved by 0.00350, R5 and catastrophic
+  counts were unchanged, but all gates are conjunctive. The proposal was
+  therefore atomically rolled back to Full SHA `78e408cce366af8e...`.
+- After this rollback and final freeze, the test split was evaluated exactly
+  once. All 530 non-timing records exactly matched the frozen reference. Median
+  TE was 4.021cm, P90 TE 12.620cm, median AE 0.1307deg, R5 61.887%, and the
+  100cm catastrophic count was 11. Test data selected no map or threshold and
+  authorized no update.
+
+## 2026-08-27 — Full-map P0 identifies a render/real gap and stops the branch
+
+- The new mainline starts directly from the frozen 200,255-Anchor Full map. It
+  disables initialization selection and Full-to-Large teacher/student
+  distillation. Its P0 gate was preregistered before this diagnostic was read.
+- P0 used all 530 real-test camera poses and intrinsics but never opened real
+  test RGB. The same Gaussian renderer and render-certificate v2 produced 464
+  ACCEPT, 64 UNCERTAIN, and 2 REJECT records. The diagnostic is explicitly a
+  non-formal transductive pose-distribution oracle and authorized zero updates.
+- On 464 ACCEPT renders, the frozen Full plant achieved 0.465cm median TE,
+  1.133cm P90 TE, 0.000deg median AE, and 96.767% R5. The already frozen,
+  once-only real evaluation on the identical pose subset achieved 4.179cm,
+  13.278cm, 0.1311deg, and 60.345%, respectively.
+- This passes the preregistered Situation-B gate (at least 256 ACCEPT, median TE
+  at most 1cm, and R5 at least 95%). The exact-pose median real/render ratio is
+  8.98 and the R5 gap is 36.42 percentage points. Camera-pose distribution does
+  cause a small render-domain tail, but it cannot explain the dominant median
+  and recall loss on real RGB.
+- Therefore conditional Planner v3, continuous observation, descriptor control,
+  1--3% reverse pruning, fresh confirmation, and a second round remain locked.
+  Running them would violate the attachment's hard stop condition. Any next
+  attempt to improve real-test localization must be registered as a separate
+  render-to-real/domain-gap method rather than another rendered-pose feedback
+  iteration.
+
+## 2026-08-27 — P0.5 separates content, descriptor, and geometry mechanisms
+
+- The prior Situation-B label was observational, not a claim of a fixed
+  photometric offset. P0.5 preregistered a post-hoc, non-formal diagnostic and
+  reproduced all 530 frozen real-test records exactly before comparisons.
+- A real/render by dataset-mask 2x2 showed that the existing object/sky/
+  distortion mask changes R5 by -0.57 points on real and -0.75 points on
+  render. It does not explain the 35-point render advantage.
+- GT-projection/depth-visible oracle correspondences with the unchanged Full
+  map and PoseLib achieved 0.755cm median TE and 96.79% R5. Real successful
+  error directions were incoherent. Fixed map geometry or solver bias is not
+  the primary cause.
+- Real Top-1 precision is 23.94% inside render-derived shared support and only
+  3.69% outside. Symmetric 133-query hybrids improve real R5 by 8.27 points when
+  outside content is replaced by render, and reduce render R5 by 2.26 points
+  when real outside content is added. Content contamination is causal.
+- Hard correspondence filtering leaves full-set R5 unchanged and worsens the
+  tail, so the V2 proxy is not promoted to deployment. On 98,239 mutually
+  repeatable shared-content pairs, only 53.44% retain the same Top-1 Anchor and
+  real GT@4px trails render by 16.39 points. A shared-content detector/
+  descriptor ranking gap remains alongside content contamination.
+# V8 mainline update (2026-08-28)
+
+- ACCEPT: V2 observation filtering after native SuperPoint and before pair
+  association, followed by a complete pair/Track/triangulation/completion and
+  descriptor-fusion rebuild.  This 164,871-Anchor artifact is the sole M0.
+- ROLLBACK: feedback-driven quarantine of 251 repeated false-attractor Anchors;
+  fresh confirmation improved P90 but not the frozen median-primary objective.
+- ROLLBACK: bounded reconstruction of 952 descriptors from original V2-valid
+  mapping observations; fresh median was unchanged and the real mapping panel
+  lost one R5 success.
+- The chosen map remains SHA256
+  `711855ea46fdaede2e49a306cb56d59ae432a1568a881798c3223b2d36f108f3`.
+- A future quarantine action must demonstrate per-Anchor standard-PoseLib
+  removal gain; a false-winner label is diagnostic-only.

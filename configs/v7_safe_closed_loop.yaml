@@ -52,6 +52,13 @@ p2_render_certificate:
   reject_valid_keypoint_fraction: 0.15
   maximum_black_or_hole_fraction: 0.30
   reject_black_or_hole_fraction: 0.80
+  quality_fusion_policy: basic_geometry_and_rank_extreme_distortion_and_rgb_structure_v2
+  rgb_structure_window_reference_px: 9
+  rgb_structure_support_threshold: 0.20
+  rgb_structure_dilate_reference_px: 5
+  rgb_structure_reference_short_side: 1080
+  distortion_mad_multiplier: 20.0
+  distortion_tail_quantile: 0.995
 
 p3_selector:
   no_feedback_gate:
@@ -83,6 +90,12 @@ p4_feedback:
   success_rotation_deg: 5.0
   oracle_reprojection_px: 4.0
   minimum_oracle_correspondences: 16
+  precision_spatial_grid: [4, 4]
+  minimum_precision_spatial_cells: 6
+  minimum_precision_supporting_rows: 8
+  minimum_precision_translation_improvement_cm: 0.05
+  minimum_precision_translation_relative_improvement: 0.10
+  minimum_precision_rotation_improvement_deg: 0.005
   localizer_keypoints: 2048
   localizer_nms_radius: 4
   require_bitwise_keypoint_score_replay: true

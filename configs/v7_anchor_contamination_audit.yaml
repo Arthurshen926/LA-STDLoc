@@ -1,0 +1,49 @@
+schema: lafgs_v7_anchor_contamination_audit_contract
+version: 1
+scene: StMarysChurch
+
+protocol:
+  formal_method_selection: false
+  mapping_render_evidence_only: true
+  uses_source_mapping_rgb_for_map_updates: false
+  real_mapping_rgb_evaluation_only: true
+  posthoc_test_rgb_diagnostic_only: true
+  threshold_tuning_from_test: false
+
+v2_row_certificate:
+  alpha_minimum: 0.05
+  depth_discontinuity_relative: 0.08
+  border_fraction: 0.02
+  rgb_structure_support_threshold: 0.20
+  rgb_structure_window_reference_px: 9
+  rgb_structure_dilate_reference_px: 5
+  rgb_structure_reference_short_side: 1080
+  distortion_mad_multiplier: 20.0
+  distortion_tail_quantile: 0.995
+
+strict_anchor_rules:
+  pure_contamination:
+    valid_observation_count: 0
+    minimum_original_view_families: 2
+  descriptor_reconstructable:
+    minimum_valid_observations: 3
+    minimum_valid_view_families: 2
+  maximum_descriptor_angle_deg: 5.0
+
+ablation_arms:
+  - baseline
+  - strict_retire
+  - bounded_reaggregate
+  - strict_retire_bounded_reaggregate
+
+evaluation:
+  real_mapping_panel:
+    query_count: 128
+    selection: uniform_dataset_order
+    detector_input_mask: none
+  independent_render_confirmation:
+    query_count: 63
+    policy: frozen_v2_accept_intersection
+  posthoc_named_test_cases:
+    query_indices: [135, 136, 139, 140]
+    may_select_method: false

@@ -8,6 +8,11 @@ import torch
 import torch.nn.functional as F
 
 from features.superpoint import SuperPoint
+from features.scene_specific_detector import (
+    SceneSpecificDetector,
+    fuse_scene_reliability,
+    mean_candidate_reliability,
+)
 from features.photometric import canonicalize_image, validate_photometric_contract
 from map_learning.context_metric import (
     MapConsistentContextAdapter,
@@ -50,6 +55,9 @@ class NativeSuperPointFrontend:
         metric: SharedLowRankMetric | None = None,
         context_adapter: MapConsistentContextAdapter | None = None,
         photometric_contract: dict | None = None,
+        scene_detector: SceneSpecificDetector | None = None,
+        scene_detector_strength: float = 1.0,
+        scene_detector_abstain_threshold: float | None = None,
     ) -> None:
         self.device = torch.device(device)
         self.keypoint_count = int(keypoint_count)
@@ -68,6 +76,20 @@ class NativeSuperPointFrontend:
             validate_photometric_contract(photometric_contract)
             if photometric_contract is not None
             else None
+        )
+        self.scene_detector = (
+            scene_detector.to(self.device).eval()
+            if scene_detector is not None
+            else None
+        )
+        if not 0.0 <= float(scene_detector_strength) <= 1.0:
+            raise ValueError("scene detector strength must be in [0,1]")
+        self.scene_detector_strength = float(scene_detector_strength)
+        if scene_detector_abstain_threshold is not None and not 0.0 <= float(scene_detector_abstain_threshold) <= 1.0:
+            raise ValueError("scene detector abstain threshold must be in [0,1]")
+        self.scene_detector_abstain_threshold = (
+            None if scene_detector_abstain_threshold is None
+            else float(scene_detector_abstain_threshold)
         )
         if self.metric is not None and self.context_adapter is not None:
             raise ValueError(
@@ -103,7 +125,35 @@ class NativeSuperPointFrontend:
             image = image * resized_mask[None, None].to(image.dtype)
 
         dense_descriptors = None
-        if self.context_adapter is None:
+        if self.scene_detector is not None:
+            dense_descriptors, native_scores = self.model._dense_outputs(image)
+            detector_logits = self.scene_detector(
+                dense_descriptors, output_hw=(height, width)
+            )
+            native_sparse = None
+            activate = True
+            if self.scene_detector_abstain_threshold is not None:
+                native_sparse = self.model._sparse_from_dense(
+                    dense_descriptors, native_scores, top_k=self.keypoint_count,
+                    detection_threshold=0.0,
+                )[0]
+                activate = bool(
+                    mean_candidate_reliability(
+                        native_sparse["keypoints"], detector_logits[0]
+                    ) >= self.scene_detector_abstain_threshold
+                )
+            if activate:
+                detector_scores = fuse_scene_reliability(
+                    native_scores, detector_logits,
+                    strength=self.scene_detector_strength,
+                )
+                sparse = self.model._sparse_from_dense(
+                    dense_descriptors, detector_scores,
+                    top_k=self.keypoint_count, detection_threshold=0.0,
+                )[0]
+            else:
+                sparse = native_sparse
+        elif self.context_adapter is None:
             sparse = self.model.detectAndCompute(
                 image, top_k=self.keypoint_count
             )[0]

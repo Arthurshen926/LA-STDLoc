@@ -197,3 +197,78 @@ def plan_v7_novel_queries(
     payload["plan_sha256"] = _stable_digest(payload)
     require_view_role(payload, role)
     return payload
+
+
+def plan_v7_test_pose_render_diagnostic(
+    *,
+    mapping_pose_w2c: torch.Tensor,
+    mapping_names: Sequence[str],
+    test_pose_w2c: torch.Tensor,
+    test_intrinsics: torch.Tensor,
+    test_image_hw: torch.Tensor,
+    test_names: Sequence[str],
+    query_indices: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Materialize an explicitly non-formal test-pose/render diagnostic plan.
+
+    Only camera metadata enters this artifact. Test RGB paths and pixels are not
+    accepted by the interface, and the resulting queries can never control a map.
+    """
+
+    mapping_poses = torch.as_tensor(mapping_pose_w2c, dtype=torch.float64)
+    test_poses = torch.as_tensor(test_pose_w2c, dtype=torch.float64)
+    intrinsics = torch.as_tensor(test_intrinsics, dtype=torch.float64)
+    image_hw = torch.as_tensor(test_image_hw, dtype=torch.long)
+    if mapping_poses.ndim != 3 or mapping_poses.shape[1:] != (4, 4):
+        raise ValueError("diagnostic mapping poses must have shape [N,4,4]")
+    if test_poses.ndim != 3 or test_poses.shape[1:] != (4, 4):
+        raise ValueError("diagnostic test poses must have shape [Q,4,4]")
+    count = int(test_poses.shape[0])
+    if (
+        len(mapping_names) != mapping_poses.shape[0]
+        or len(test_names) != count
+        or intrinsics.shape != (count, 3, 3)
+        or image_hw.shape != (count, 2)
+    ):
+        raise ValueError("diagnostic camera metadata does not align")
+    if query_indices is None:
+        query_indices = torch.arange(count, dtype=torch.long)
+    query_indices = torch.as_tensor(query_indices).long()
+    if query_indices.shape != (count,) or torch.unique(query_indices).numel() != count:
+        raise ValueError("diagnostic query indices must be unique")
+    mapping_sequences = [str(name).split("/", 1)[0] for name in mapping_names]
+    statistics = trajectory_statistics(mapping_poses, mapping_sequences)
+    distances = torch.cdist(camera_centers(test_poses), camera_centers(mapping_poses))
+    nearest = distances.topk(k=min(2, mapping_poses.shape[0]), largest=False).indices
+    contract = view_role_contract("test_pose_render_diagnostic")
+    payload: dict[str, Any] = {
+        "schema": "lafgs_v7_test_pose_render_diagnostic_plan",
+        "version": 1,
+        **contract,
+        "formal_protocol_eligible": False,
+        "transductive_pose_distribution_oracle": True,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": True,
+        "uses_test_pose_metadata": True,
+        "uses_test_rgb": False,
+        "enters_track_registry": False,
+        "enters_anchor_observation_csr": False,
+        "enters_descriptor_bank": False,
+        "render_protocol": "clean_once_per_pose",
+        "mapping_camera_count": int(mapping_poses.shape[0]),
+        "query_count": count,
+        "query_indices": query_indices,
+        "trajectory_statistics": statistics,
+        "pose_w2c": test_poses,
+        "intrinsics": intrinsics,
+        "image_hw": image_hw,
+        "source_mapping_indices": nearest.tolist(),
+        "pose_family_ids": query_indices.clone(),
+        "query_kinds": ["exact_test_pose_render_no_test_rgb"] * count,
+        "test_camera_names_sha256": hashlib.sha256(
+            "\n".join(map(str, test_names)).encode()
+        ).hexdigest(),
+    }
+    payload["plan_sha256"] = _stable_digest(payload)
+    require_view_role(payload, "test_pose_render_diagnostic")
+    return payload
