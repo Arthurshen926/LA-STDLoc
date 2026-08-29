@@ -27,14 +27,16 @@ def _atomic_save(value: dict, path: Path) -> None:
     os.replace(temporary, path)
 
 
-def _project_top1_error(source: dict, top1_xyz: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def _project_top1_error(
+    source: dict, top1_xyz: torch.Tensor, keypoints: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     xyz = torch.as_tensor(top1_xyz).float()
     pose = torch.as_tensor(source["pose_w2c"]).float()
     intrinsic = torch.as_tensor(source["intrinsics"]).float()
     camera = xyz @ pose[:3, :3].T + pose[:3, 3]
     projected = camera @ intrinsic.T
     uv = projected[:, :2] / projected[:, 2:].clamp_min(1e-8)
-    error = torch.linalg.norm(uv - (torch.as_tensor(source["keypoints"]).float() + 0.5), dim=1)
+    error = torch.linalg.norm(uv - (torch.as_tensor(keypoints).float() + 0.5), dim=1)
     error[camera[:, 2] <= 1e-6] = torch.inf
     return error, camera[:, 2]
 
@@ -83,21 +85,23 @@ def main() -> None:
                 raise ValueError("feedback queries overlap")
             seen_queries.add(query_index)
             top1 = torch.as_tensor(observer["topk_anchor_rows"]).long()[:, 0]
+            source_query_rows = torch.as_tensor(observer["source_query_rows"]).long()
+            keypoints = torch.as_tensor(source["keypoints"])[source_query_rows]
             if bool(((top1 < 0) | (top1 >= xyz.shape[0])).any()):
                 raise ValueError("feedback Top-1 row is outside M0")
-            error, camera_depth = _project_top1_error(source, xyz[top1])
+            error, camera_depth = _project_top1_error(source, xyz[top1], keypoints)
             labels = build_feedback_match_heatmap(
                 image_hw=tuple(torch.as_tensor(source["image_hw"]).long().tolist()),
-                keypoints=source["keypoints"],
+                keypoints=keypoints,
                 reprojection_error_px=error,
-                row_valid=source["certificate"]["row_valid"],
-                row_uncertain=source["certificate"]["row_uncertain"],
+                row_valid=torch.ones(keypoints.shape[0], dtype=torch.bool),
+                row_uncertain=torch.zeros(keypoints.shape[0], dtype=torch.bool),
             ).cpu()
             topk_scores = torch.as_tensor(observer["topk_scores"]).float()
             margin = topk_scores[:, 0] - topk_scores[:, 1]
             contribution_weights = build_pose_contribution_weights(
                 labels=labels,
-                keypoints=source["keypoints"],
+                keypoints=keypoints,
                 image_hw=tuple(torch.as_tensor(source["image_hw"]).long().tolist()),
                 reprojection_error_px=error,
                 camera_depth=camera_depth,

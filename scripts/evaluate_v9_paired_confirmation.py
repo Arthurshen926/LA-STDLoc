@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from common.hashing import sha256_file
 from localization.matcher import global_cosine_top1
 from map_learning.metric import SharedLowRankMetric
+from map_learning.v8_safety_actions import certified_feedback_row_mask
 from map_learning.v9_causal_feedback import standard_pose_replay
 
 
@@ -97,8 +98,13 @@ def main() -> None:
         source = torch.load(source_path, map_location="cpu", weights_only=False)
         if source["certificate"]["decision"] != "ACCEPT":
             continue
+        valid = certified_feedback_row_mask(source["certificate"])
+        source_query_rows = torch.nonzero(valid, as_tuple=False).reshape(-1)
         query = F.normalize(
-            torch.as_tensor(source["descriptors"], device=device).float(), dim=1
+            torch.as_tensor(source["descriptors"])[source_query_rows]
+            .to(device=device)
+            .float(),
+            dim=1,
         )
         baseline_matches = global_cosine_top1(
             query,
@@ -115,7 +121,7 @@ def main() -> None:
             proposal_features,
             anchor_descriptors_normalized=True,
         )
-        keypoints = torch.as_tensor(source["keypoints"]).float() + 0.5
+        keypoints = torch.as_tensor(source["keypoints"])[source_query_rows].float() + 0.5
         baseline_pose = standard_pose_replay(
             keypoints=keypoints,
             anchor_rows=baseline_matches.anchor_indices.cpu(),

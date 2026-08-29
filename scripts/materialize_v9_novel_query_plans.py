@@ -52,6 +52,7 @@ def main() -> None:
     parser.add_argument("--images", default="processed")
     parser.add_argument("--map", type=Path, required=True)
     parser.add_argument("--ambiguity-proposal", type=Path)
+    parser.add_argument("--prior-plans", type=Path, nargs="*", default=[])
     parser.add_argument("--feedback-count", type=int, default=256)
     parser.add_argument("--confirmation-count", type=int, default=128)
     parser.add_argument("--feedback-seed", type=int, default=920260828)
@@ -93,17 +94,26 @@ def main() -> None:
         "anchor_xyz": anchor_xyz,
         "ambiguity_xyz": ambiguity_xyz,
     }
+    forbidden = set()
+    prior_inputs = []
+    for prior_path_arg in args.prior_plans:
+        prior_path = prior_path_arg.resolve()
+        prior = torch.load(prior_path, map_location="cpu", weights_only=False)
+        forbidden.update(torch.as_tensor(prior["pose_family_ids"]).long().tolist())
+        prior_inputs.append({"path": str(prior_path), "sha256": sha256_file(prior_path)})
     feedback = plan_v9_novel_queries(
         role="feedback_query",
         seed=args.feedback_seed,
         maximum_queries=args.feedback_count,
+        forbidden_pose_family_ids=sorted(forbidden),
         **common,
     )
+    forbidden.update(feedback["pose_family_ids"].tolist())
     confirmation = plan_v9_novel_queries(
         role="confirmation_query",
         seed=args.confirmation_seed,
         maximum_queries=args.confirmation_count,
-        forbidden_pose_family_ids=feedback["pose_family_ids"].tolist(),
+        forbidden_pose_family_ids=sorted(forbidden),
         **common,
     )
     overlap = _pose_digests(feedback) & _pose_digests(confirmation)
@@ -133,6 +143,8 @@ def main() -> None:
             else str(args.ambiguity_proposal.resolve())
         ),
         "ambiguity_proposal_sha256": ambiguity_sha,
+        "prior_plan_inputs": prior_inputs,
+        "prior_pose_family_count": len(forbidden) - int(feedback["query_count"]),
         "feedback": {
             "path": str(feedback_path.resolve()),
             "sha256": sha256_file(feedback_path),

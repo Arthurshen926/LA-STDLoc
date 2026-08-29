@@ -1,0 +1,88 @@
+schema: lafgs_v15_global_sufficiency_closed_loop
+version: 1
+
+contracts:
+  geometry_frozen: true
+  anchor_addition: false
+  anchor_retriangulation: false
+  loo_anywhere: false
+  test_queries_used: false
+  mapping_constraints_are_hard: true
+  feedback_only_changes_selection_priority: true
+
+evidence:
+  minimum_observation_count: 3
+  minimum_view_family_count: 1
+  minimum_geometry_reliability: 0.05
+  maximum_descriptor_dispersion_quantile: 0.995
+  maximum_reprojection_error_quantile: 0.995
+  maximum_covariance_trace_quantile: 0.995
+  minimum_ray_angular_dispersion_quantile: 0.005
+
+image_grid: [4, 4]
+pose_damping: 0.000001
+
+# These are fixed controller operating points, not values tuned on control.
+# An arm is infeasible when its hard cap is reached with any unmet constraint.
+profiles:
+  b64k:
+    maximum_anchors: 64000
+    precision_rank: 384
+    matching_rank: 768
+    image_cells: 16
+    view_families: 1
+    depth_ranges: 4
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 750.0
+  b48k:
+    maximum_anchors: 48000
+    precision_rank: 256
+    matching_rank: 512
+    image_cells: 14
+    view_families: 1
+    depth_ranges: 4
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 500.0
+  b32k:
+    maximum_anchors: 32000
+    precision_rank: 192
+    matching_rank: 384
+    image_cells: 14
+    view_families: 1
+    depth_ranges: 3
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 375.0
+  b20k:
+    maximum_anchors: 20000
+    precision_rank: 128
+    matching_rank: 256
+    image_cells: 12
+    view_families: 1
+    depth_ranges: 3
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 250.0
+  b12k:
+    maximum_anchors: 12000
+    precision_rank: 64
+    matching_rank: 128
+    image_cells: 10
+    view_families: 1
+    depth_ranges: 2
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 100.0
+  b8k:
+    maximum_anchors: 8000
+    precision_rank: 48
+    matching_rank: 96
+    image_cells: 8
+    view_families: 1
+    depth_ranges: 2
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 75.0
+
+validation:
+  construction_split: design_pose_families_only
+  selection_split: independent_control_pose_families
+  confirmation_split: fresh_pose_families_only
+  plant: one_global_top1_then_one_standard_poselib
+

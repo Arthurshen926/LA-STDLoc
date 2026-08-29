@@ -65,13 +65,17 @@ def main() -> None:
         evidence = record["training_evidence"]
         family = int(record["pose_family_id"])
         query = int(record["query_index"])
-        gain = float(evidence["actual_query_task_gain"])
-        for anchor in torch.unique(
-            torch.as_tensor(evidence["negative_anchor_rows"]).long()
-        ).tolist():
+        negative = torch.as_tensor(evidence["negative_anchor_rows"]).long()
+        anchors, counts = torch.unique(negative, return_counts=True)
+        # Observer gain belongs to the query, not independently to every negative
+        # Anchor it exposed.  Allocate a bounded amount by changed-row support;
+        # exact delete-one replay below remains the only authorization evidence.
+        bounded_gain = max(0.0, min(float(evidence["actual_query_task_gain"]), 4.0))
+        total = max(int(counts.sum()), 1)
+        for anchor, count in zip(anchors.tolist(), counts.tolist()):
             candidate_families[int(anchor)].add(family)
             candidate_queries[int(anchor)].add(query)
-            candidate_gain[int(anchor)] += gain
+            candidate_gain[int(anchor)] += bounded_gain * int(count) / total
     candidates = [
         anchor
         for anchor, families in candidate_families.items()
@@ -104,7 +108,12 @@ def main() -> None:
         source = torch.load(
             record["source_record"], map_location="cpu", weights_only=False
         )
-        keypoints = torch.as_tensor(source["keypoints"]).float() + 0.5
+        source_query_rows = torch.as_tensor(record["source_query_rows"]).long()
+        keypoints = (
+            torch.as_tensor(source["keypoints"])[source_query_rows].float() + 0.5
+        )
+        if keypoints.shape[0] != topk.shape[0]:
+            raise ValueError("filtered observer rows do not align with Top-K")
         for anchor in affected:
             replacement = topk[:, 0].clone()
             rows = torch.nonzero(replacement == anchor, as_tuple=False).reshape(-1)
@@ -127,6 +136,12 @@ def main() -> None:
                     "pose_family_id": int(record["pose_family_id"]),
                     "replaced_correspondence_count": int(rows.numel()),
                     "baseline_task_error": float(record["baseline"]["task_error"]),
+                    "baseline_translation_error_cm": float(
+                        record["baseline"]["translation_error_cm"]
+                    ),
+                    "baseline_rotation_error_deg": float(
+                        record["baseline"]["rotation_error_deg"]
+                    ),
                     "removed_task_error": float(removed["task_error"]),
                     "removed_translation_error_cm": float(
                         removed["translation_error_cm"]
@@ -147,6 +162,7 @@ def main() -> None:
         "loo_used": False,
         "uses_test_queries": False,
         "map_mutation_count": 0,
+        "accepted_query_row_policy": "v2_row_valid_only",
         "shard_index": args.shard_index,
         "shard_count": args.shard_count,
         "source_candidate_count_before_cap": len(candidate_families),

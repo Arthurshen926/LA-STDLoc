@@ -1,0 +1,62 @@
+schema: lafgs_v15_global_sufficiency_closed_loop
+version: 2
+
+contracts:
+  geometry_frozen: true
+  anchor_addition: false
+  anchor_retriangulation: false
+  loo_anywhere: false
+  test_queries_used: false
+  mapping_constraints_are_hard: true
+  feedback_only_changes_selection_priority: true
+  one_constant_safety_floor_across_all_budgets: true
+  budget_sets_are_nested_per_policy: true
+
+evidence:
+  minimum_observation_count: 3
+  minimum_view_family_count: 1
+  minimum_geometry_reliability: 0.05
+  maximum_descriptor_dispersion_quantile: 0.995
+  maximum_reprojection_error_quantile: 0.995
+  maximum_covariance_trace_quantile: 0.995
+  minimum_ray_angular_dispersion_quantile: 0.005
+
+image_grid: [4, 4]
+pose_damping: 0.000001
+fill_to_budget: true
+
+# Every operating point has the same preregistered aggressive-minimum safety
+# floor.  Budget is the only state constraint that changes across profiles.
+profiles:
+  b64k: &floor
+    maximum_anchors: 64000
+    precision_rank: 64
+    matching_rank: 128
+    image_cells: 10
+    view_families: 1
+    depth_ranges: 2
+    pose_logdet: 0.0
+    pose_minimum_eigenvalue: 100.0
+  b48k:
+    <<: *floor
+    maximum_anchors: 48000
+  b32k:
+    <<: *floor
+    maximum_anchors: 32000
+  b20k:
+    <<: *floor
+    maximum_anchors: 20000
+  b12k:
+    <<: *floor
+    maximum_anchors: 12000
+  b8k:
+    <<: *floor
+    maximum_anchors: 8000
+
+validation:
+  round1_control_reused: false
+  construction_split: existing_design_pose_families_only
+  selection_split: new_disjoint_pose_families
+  confirmation_split: second_new_disjoint_pose_families
+  plant: one_global_top1_then_one_standard_poselib
+

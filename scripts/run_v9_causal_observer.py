@@ -21,6 +21,7 @@ from map_learning.v9_causal_feedback import (
     standard_pose_replay,
     topk_geometric_correctness,
 )
+from map_learning.v8_safety_actions import certified_feedback_row_mask
 
 
 def _require_sha(path: Path, expected: str | None, label: str) -> str:
@@ -110,8 +111,21 @@ def main() -> None:
         source_sha = _require_sha(source_path, item["sha256"], "render record")
         source = torch.load(source_path, map_location="cpu", weights_only=False)
         require_no_loo_feedback_contract(source)
+        accepted = source["certificate"]["decision"] == "ACCEPT"
+        if accepted:
+            local_valid = certified_feedback_row_mask(source["certificate"])
+            if local_valid.numel() != torch.as_tensor(source["descriptors"]).shape[0]:
+                raise ValueError("V2 row-valid mask does not align with descriptors")
+            source_query_rows = torch.nonzero(local_valid, as_tuple=False).reshape(-1)
+            if source_query_rows.numel() < args.minimum_correspondences:
+                raise ValueError("ACCEPT query exposes too few V2-valid rows")
+        else:
+            source_query_rows = torch.arange(
+                torch.as_tensor(source["descriptors"]).shape[0]
+            )
+        source_descriptors = torch.as_tensor(source["descriptors"])[source_query_rows]
         descriptors = F.normalize(
-            torch.as_tensor(source["descriptors"], device=device).float(), dim=1
+            source_descriptors.to(device=device).float(), dim=1
         )
         topk = global_cosine_topk(
             descriptors,
@@ -122,7 +136,7 @@ def main() -> None:
         )
         candidate_rows = topk.anchor_indices.cpu()
         candidate_scores = topk.scores.cpu()
-        keypoints = torch.as_tensor(source["keypoints"]).float().cpu()
+        keypoints = torch.as_tensor(source["keypoints"])[source_query_rows].float().cpu()
         baseline = standard_pose_replay(
             keypoints=keypoints + 0.5,
             anchor_rows=candidate_rows[:, 0],
@@ -134,7 +148,6 @@ def main() -> None:
             baseline["translation_error_cm"] < 5.0
             and baseline["rotation_error_deg"] < 5.0
         )
-        accepted = source["certificate"]["decision"] == "ACCEPT"
         clean_rows = torch.empty(0, dtype=torch.long)
         evidence = {
             "supported_query_rows": torch.empty(0, dtype=torch.long),
@@ -156,7 +169,7 @@ def main() -> None:
                 intrinsic=source["intrinsics"],
                 alpha=source["alpha_float16"],
                 depth=source["depth_float16"],
-                row_valid=source["certificate"]["row_valid"],
+                row_valid=torch.ones(keypoints.shape[0], dtype=torch.bool),
             )
             evidence = first_correct_topk_replacement(
                 candidate_rows, candidate_scores, correct
@@ -197,17 +210,32 @@ def main() -> None:
             if alternative is None
             else baseline["task_error"] - alternative["task_error"]
         )
-        authorized = bool(
+        alternative_success = bool(
+            alternative is not None
+            and alternative["inlier_count"] > 0
+            and alternative["translation_error_cm"] < 5.0
+            and alternative["rotation_error_deg"] < 5.0
+        )
+        precision_authorized = bool(
             accepted
             and baseline_success
             and alternative is not None
             and alternative["inlier_count"] > 0
             and task_gain >= args.minimum_task_gain
         )
+        recovery_authorized = bool(
+            accepted
+            and not baseline_success
+            and alternative_success
+            and task_gain >= args.minimum_task_gain
+        )
+        authorized = precision_authorized or recovery_authorized
         if not accepted:
             category = "unreliable_query"
-        elif authorized:
+        elif precision_authorized:
             category = "causal_precision_deficit"
+        elif recovery_authorized:
+            category = "causal_recoverable_failure"
         elif baseline_success:
             category = "nominal_success"
         else:
@@ -225,8 +253,15 @@ def main() -> None:
             "source_record": str(source_path),
             "source_record_sha256": source_sha,
             "certificate_decision": source["certificate"]["decision"],
+            "source_query_rows": source_query_rows.clone(),
+            "invalid_source_row_count": int(
+                torch.as_tensor(source["descriptors"]).shape[0]
+                - source_query_rows.numel()
+            ),
             "baseline": baseline,
             "alternative": alternative,
+            "baseline_success": baseline_success,
+            "alternative_success": alternative_success,
             "actual_task_gain": task_gain,
             "category": category,
             "can_train_metric": authorized,
@@ -235,7 +270,7 @@ def main() -> None:
             "training_evidence": {
                 "query_rows": changed,
                 "query_descriptors": (
-                    torch.as_tensor(source["descriptors"])[changed].clone()
+                    source_descriptors[changed].clone()
                     if authorized
                     else torch.empty(0, 256)
                 ),
@@ -247,9 +282,7 @@ def main() -> None:
                 "actual_query_task_gain": task_gain,
             },
             "clean_protection_evidence": {
-                "query_descriptors": torch.as_tensor(source["descriptors"])[
-                    clean_rows
-                ].clone(),
+                "query_descriptors": source_descriptors[clean_rows].clone(),
                 "positive_anchor_rows": candidate_rows[clean_rows, 0],
                 "negative_anchor_rows": candidate_rows[clean_rows, 1],
                 "initial_margin": (
@@ -292,6 +325,7 @@ def main() -> None:
         "uses_test_queries": False,
         "map_mutation_count": 0,
         "topk": args.topk,
+        "accepted_query_row_policy": "v2_row_valid_only",
         "query_count": len(registry),
         "source_query_count": len(batch["records"]),
         "shard_index": args.shard_index,

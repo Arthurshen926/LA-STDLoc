@@ -120,8 +120,14 @@ def main() -> None:
         query_parts.append(torch.as_tensor(evidence["query_descriptors"]).float()[keep])
         positive_parts.append(torch.as_tensor(evidence["positive_anchor_rows"]).long()[keep])
         negative_parts.append(negatives[keep])
-        gain = max(float(evidence["actual_query_task_gain"]), 0.01)
-        weight_parts.append(torch.full((int(keep.sum()),), gain))
+        # One pose family contributes one bounded amount of task credit.  The
+        # historical implementation repeated the complete (unbounded) query
+        # gain for every changed row, letting catastrophic outliers and dense
+        # queries dominate the shared transform.
+        gain = min(max(float(evidence["actual_query_task_gain"]), 0.01), 4.0)
+        weight_parts.append(
+            torch.full((int(keep.sum()),), gain / max(int(keep.sum()), 1))
+        )
     if not query_parts:
         raise RuntimeError("no causal ranking pair survived the two-family gate")
     query = torch.cat(query_parts)
@@ -158,6 +164,7 @@ def main() -> None:
         "v9_feedback_batches": batch_inputs,
         "v9_metric_training_pose_family_count": len(contributing_families),
         "feedback_descriptors_copied_into_map": False,
+        "task_credit_policy": "per_query_bounded_and_row_normalized",
         "feedback_queries_enter_mapping_csr": False,
         "loo_used": False,
         "uses_test_queries": False,

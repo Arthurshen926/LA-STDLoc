@@ -210,6 +210,7 @@ def aggregate_actual_removal_gain(
     minimum_improving_queries: int = 2,
     minimum_median_gain: float = 0.0,
     maximum_worsening_fraction: float = 0.25,
+    task_gain_clip: float = 4.0,
 ) -> dict:
     """Authorize deletion only from paired standard-PoseLib removal replays."""
 
@@ -220,18 +221,38 @@ def aggregate_actual_removal_gain(
         grouped.setdefault(int(record["anchor_row"]), []).append(record)
     audit = []
     for anchor, rows in grouped.items():
-        gains = torch.tensor(
+        raw_gains = torch.tensor(
             [float(row["baseline_task_error"]) - float(row["removed_task_error"]) for row in rows]
         )
+        gains = raw_gains.clamp(min=-float(task_gain_clip), max=float(task_gain_clip))
         families = {int(row["pose_family_id"]) for row in rows}
         improving = gains > 0
         worsening_fraction = float((gains < 0).float().mean())
+        transition_rows = [
+            row
+            for row in rows
+            if "baseline_translation_error_cm" in row
+            and "baseline_rotation_error_deg" in row
+        ]
+        recovered = lost = 0
+        for row in transition_rows:
+            before = bool(
+                float(row["baseline_translation_error_cm"]) < 5.0
+                and float(row["baseline_rotation_error_deg"]) < 5.0
+            )
+            after = bool(
+                float(row["removed_translation_error_cm"]) < 5.0
+                and float(row["removed_rotation_error_deg"]) < 5.0
+            )
+            recovered += int(not before and after)
+            lost += int(before and not after)
         accepted = (
             len(families) >= int(minimum_pose_families)
             and int(improving.sum()) >= int(minimum_improving_queries)
             and float(gains.median()) > float(minimum_median_gain)
             and float(gains.sum()) > 0.0
             and worsening_fraction <= float(maximum_worsening_fraction)
+            and lost == 0
         )
         audit.append(
             {
@@ -240,7 +261,10 @@ def aggregate_actual_removal_gain(
                 "pose_family_count": len(families),
                 "median_actual_task_gain": float(gains.median()),
                 "cumulative_actual_task_gain": float(gains.sum()),
+                "raw_cumulative_actual_task_gain": float(raw_gains.sum()),
                 "worsening_fraction": worsening_fraction,
+                "recovered_success_count": recovered,
+                "lost_success_count": lost,
                 "authorized": accepted,
             }
         )
@@ -253,6 +277,7 @@ def aggregate_actual_removal_gain(
         "schema": "lafgs_v9_actual_removal_gain_audit",
         "version": 1,
         "loo_used": False,
+        "task_gain_clip": float(task_gain_clip),
         "authorized_anchor_rows": authorized,
         "authorized_anchor_count": int(authorized.numel()),
         "candidate_audit": audit,

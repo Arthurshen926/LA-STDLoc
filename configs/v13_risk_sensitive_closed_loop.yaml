@@ -1,0 +1,66 @@
+schema: lafgs_v13_risk_sensitive_closed_loop
+version: 1
+status: superseded_invalid_row_contract
+superseded_by: v14_valid_row_closed_loop
+
+frozen_scope:
+  source_map: v2_preassociation_full_rebuild
+  geometry_frozen: true
+  track_registry_frozen: true
+  anchor_addition: false
+  anchor_retriangulation: false
+  loo_anywhere: false
+  test_queries_used: false
+
+controller:
+  primary_continuous_action: existing_v9_shared_low_rank_metric
+  retrain_for_gain_curve: false
+  gains: [0.0, 0.25, 0.5, 0.75, 1.0, 1.25]
+  secondary_discrete_action: feedback_aware_small_active_set
+  maximum_active_set_change_fraction: 0.01
+  query_detector: disabled
+  query_action_gate: disabled
+  multi_prototype: disabled
+
+risk_supervisor:
+  task_error: sqrt((translation_cm / 5)^2 + (rotation_deg / 5)^2)
+  weights:
+    q50: 0.35
+    q75: 0.20
+    q90: 0.25
+    cvar95: 0.20
+    r5_failure: 2.0
+    catastrophic: 5.0
+    latency_ratio: 0.02
+  hard_safety:
+    maximum_catastrophic_increase: 1
+    maximum_r5_drop_percent: 1.0
+    maximum_p90_task_increase: 0.20
+    maximum_single_query_task_regression: 2.0
+  research_probability_lower_risk: 0.80
+  default_probability_lower_risk: 0.95
+  bootstrap:
+    unit: pose_family
+    samples: 2000
+    seed: 1320260828
+
+protocol:
+  gain_selected_on: feedback_control_only
+  safety_smoke_queries_may_select: false
+  fresh_confirmation_minimum_accept: 128
+  confirmation_may_train_or_select: false
+  confirmation_runs_once: true
+  exact_plant: shared_metric_top1_then_one_standard_poselib
+  second_round_only_after_accepted_first_round: true
+
+result:
+  selected_action: alpha_0p05_plus_strict_87_anchor_active_set
+  control_accept_queries: 229
+  control_probability_lower_risk: 0.996
+  fresh_confirmation_accept_queries: 153
+  fresh_confirmation_probability_lower_risk: 0.842
+  hard_safety_passed: true
+  classification: pareto_candidate
+  default_replaced: false
+  second_round_run: false
+  test_run: false

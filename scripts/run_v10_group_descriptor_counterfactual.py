@@ -76,13 +76,19 @@ def main() -> None:
         source = torch.load(
             record["source_record"], map_location="cpu", weights_only=False
         )
+        source_query_rows = torch.as_tensor(record["source_query_rows"]).long()
         query = F.normalize(
-            torch.as_tensor(source["descriptors"], device=device).float(), dim=1
+            torch.as_tensor(source["descriptors"])[source_query_rows]
+            .to(device=device)
+            .float(),
+            dim=1,
         )
         query_cpu = query.cpu()
         topk = torch.as_tensor(record["topk_anchor_rows"]).long()
         current = topk[:, 0]
-        keypoints = torch.as_tensor(source["keypoints"]).float() + 0.5
+        keypoints = torch.as_tensor(source["keypoints"])[source_query_rows].float() + 0.5
+        if query.shape[0] != topk.shape[0]:
+            raise ValueError("filtered Observer rows do not align with Top-K")
         for group_index, group in selected_groups:
             group_rows = torch.tensor(sorted(group), dtype=torch.long)
             membership = torch.isin(topk, group_rows)
