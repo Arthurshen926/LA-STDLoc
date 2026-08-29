@@ -21,6 +21,7 @@ def train_v9_shared_metric(
     clean_positive_anchor_rows: torch.Tensor,
     clean_negative_anchor_rows: torch.Tensor,
     clean_initial_margin: torch.Tensor,
+    clean_sample_weights: torch.Tensor | None = None,
     rank: int = 16,
     maximum_residual_norm: float = 0.05,
     steps: int = 400,
@@ -43,6 +44,11 @@ def train_v9_shared_metric(
     clean_positive = torch.as_tensor(clean_positive_anchor_rows).long().reshape(-1)
     clean_negative = torch.as_tensor(clean_negative_anchor_rows).long().reshape(-1)
     initial_margin = torch.as_tensor(clean_initial_margin).float().reshape(-1)
+    clean_weights = (
+        torch.ones_like(initial_margin)
+        if clean_sample_weights is None
+        else torch.as_tensor(clean_sample_weights).float().reshape(-1)
+    )
     if not (query.shape[0] == positive.numel() == negative.numel() == weights.numel()):
         raise ValueError("causal ranking evidence rows do not align")
     if not (
@@ -50,6 +56,7 @@ def train_v9_shared_metric(
         == clean_positive.numel()
         == clean_negative.numel()
         == initial_margin.numel()
+        == clean_weights.numel()
     ):
         raise ValueError("clean-row protection evidence does not align")
     all_rows = torch.cat((positive, negative, clean_positive, clean_negative))
@@ -72,11 +79,12 @@ def train_v9_shared_metric(
     query = query.to(target)
     positive = positive.to(target)
     negative = negative.to(target)
-    weights = weights.to(target).clamp_min(1e-3)
+    weights = weights.to(target).clamp_min(1e-8)
     clean_query = clean_query.to(target)
     clean_positive = clean_positive.to(target)
     clean_negative = clean_negative.to(target)
     initial_margin = initial_margin.to(target)
+    clean_weights = clean_weights.to(target).clamp_min(1e-8)
     history = []
     for step in range(int(steps)):
         rows = torch.randint(
@@ -105,7 +113,11 @@ def train_v9_shared_metric(
             clean_p, _ = metric(anchors[clean_positive[clean_rows]])
             clean_n, _ = metric(anchors[clean_negative[clean_rows]])
             new_margin = (clean_q * clean_p).sum(1) - (clean_q * clean_n).sum(1)
-            protection_loss = F.relu(initial_margin[clean_rows] - new_margin).mean()
+            protection = F.relu(initial_margin[clean_rows] - new_margin)
+            sampled_clean_weights = clean_weights[clean_rows]
+            protection_loss = (
+                protection * sampled_clean_weights
+            ).sum() / sampled_clean_weights.sum()
         loss = ranking_loss + float(clean_protection_weight) * protection_loss
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
