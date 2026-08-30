@@ -35,6 +35,15 @@ def main() -> None:
     parser.add_argument("--certified-batch", type=Path, required=True)
     parser.add_argument("--expected-role", choices=("feedback_query", "confirmation_query"), required=True)
     parser.add_argument("--baseline-map", type=Path, required=True)
+    parser.add_argument(
+        "--frozen-m0",
+        type=Path,
+        help=(
+            "Optional immutable parent map. When supplied, both the baseline and every "
+            "candidate must be subsets of M0, while a candidate may reactivate M0 Anchors "
+            "that are absent from the current baseline."
+        ),
+    )
     parser.add_argument("--candidate", type=_parse_candidate, action="append", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--shard-index", type=int, default=0)
@@ -55,7 +64,11 @@ def main() -> None:
         and batch.get("uses_test_queries") is False
         and batch.get("map_mutation_count") == 0
         and batch.get("schema")
-        in {"lafgs_v7_certified_clean_render_batch", "lafgs_v13_merged_certified_render_batch"}
+        in {
+            "lafgs_v7_certified_clean_render_batch",
+            "lafgs_v13_merged_certified_render_batch",
+            "lafgs_v14_observer_split_certified_view",
+        }
     ):
         raise ValueError("V15 evaluation requires a sealed V2-certified batch")
     target = torch.device(args.device)
@@ -76,8 +89,20 @@ def main() -> None:
 
     baseline = load_map(args.baseline_map)
     candidates = {name: load_map(path) for name, path in args.candidate}
-    baseline_ids = set(baseline["ids"].tolist())
-    if any(not set(item["ids"].tolist()).issubset(baseline_ids) for item in candidates.values()):
+    if args.frozen_m0 is None:
+        frozen_m0 = baseline
+    else:
+        frozen_path = args.frozen_m0.resolve()
+        frozen_payload = torch.load(frozen_path, map_location="cpu", weights_only=False)
+        frozen_m0 = {
+            "path": frozen_path,
+            "sha256": sha256_file(frozen_path),
+            "ids": torch.as_tensor(frozen_payload["anchor_ids"]).long(),
+        }
+    frozen_ids = set(frozen_m0["ids"].tolist())
+    if not set(baseline["ids"].tolist()).issubset(frozen_ids):
+        raise ValueError("V15 baseline is not an active subset of the frozen M0")
+    if any(not set(item["ids"].tolist()).issubset(frozen_ids) for item in candidates.values()):
         raise ValueError("V15 candidate is not an active subset of the frozen M0")
 
     selected = [
@@ -149,6 +174,8 @@ def main() -> None:
             "certified_batch_sha256": sha256_file(batch_path),
             "baseline_map": str(baseline["path"]),
             "baseline_map_sha256": baseline["sha256"],
+            "frozen_m0": str(frozen_m0["path"]),
+            "frozen_m0_sha256": frozen_m0["sha256"],
             "candidates": {
                 name: {"path": str(item["path"]), "sha256": item["sha256"]}
                 for name, item in candidates.items()
@@ -162,4 +189,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

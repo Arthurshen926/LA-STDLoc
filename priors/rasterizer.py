@@ -141,6 +141,9 @@ def bank_splat_provenance_2dgs(
     depth_abs_tolerance=0.05,
     depth_rel_tolerance=0.02,
     chunk_size=128,
+    prefilter_topk=None,
+    return_diagnostics=False,
+    minimum_composition_mass=None,
 ):
     """Compute bank-conditioned 2DGS composition weights at query keypoints.
 
@@ -170,12 +173,38 @@ def bank_splat_provenance_2dgs(
 
     count = int(keypoint_xy.shape[0])
     k = min(max(int(topk), 1), max(int(global_idx.numel()), 1))
-    candidate_k = min(max(int(candidate_topk), k), max(int(global_idx.numel()), 1))
+    full_composition = candidate_topk is None or int(candidate_topk) <= 0
+    candidate_k = (
+        int(global_idx.numel())
+        if full_composition
+        else min(max(int(candidate_topk), k), max(int(global_idx.numel()), 1))
+    )
+    prefilter_k = (
+        None
+        if prefilter_topk is None
+        else min(
+            max(int(prefilter_topk), candidate_k),
+            max(int(global_idx.numel()), 1),
+        )
+    )
     out_idx = torch.zeros((count, k), device=device, dtype=torch.long)
     out_weight = torch.zeros((count, k), device=device, dtype=dtype)
     out_valid = torch.zeros(count, device=device, dtype=torch.bool)
+    out_retained_mass = torch.zeros(count, device=device, dtype=dtype)
     if count == 0 or global_idx.numel() == 0:
-        return out_idx, out_weight, out_valid
+        result = (out_idx, out_weight, out_valid)
+        return (
+            (*result, {"retained_composition_fraction": out_retained_mass})
+            if return_diagnostics
+            else result
+        )
+    if full_composition and prefilter_k is not None:
+        raise ValueError("full 2DGS composition cannot use a footprint prefilter")
+    if minimum_composition_mass is not None and not 0.0 < float(
+        minimum_composition_mass
+    ) <= 1.0:
+        raise ValueError("minimum composition mass must lie in (0, 1]")
+    global_depth_order = depths.argsort() if full_composition else None
 
     depth_image = None
     if rendered_depth is not None:
@@ -184,9 +213,43 @@ def bank_splat_provenance_2dgs(
     for start in range(0, count, max(int(chunk_size), 1)):
         end = min(start + max(int(chunk_size), 1), count)
         xy = keypoint_xy[start:end] + 0.5
+        if prefilter_k is not None and prefilter_k < global_idx.numel():
+            # A conservative raster-footprint screen avoids evaluating the
+            # full 2DGS plane equation for every primitive. The screen uses
+            # radius-normalized image distance only; exact alpha, depth order,
+            # transmittance, and composition are still evaluated below.
+            all_delta = xy[:, None, :] - means2d[None]
+            footprint_distance = all_delta.square().sum(dim=-1) / (
+                radii.to(device=device, dtype=dtype)[global_idx][None]
+                .clamp_min(1.0)
+                .square()
+            )
+            footprint_distance = footprint_distance.masked_fill(
+                ~visible[None], float("inf")
+            )
+            prefilter_idx = torch.topk(
+                footprint_distance,
+                prefilter_k,
+                dim=1,
+                largest=False,
+            ).indices
+            local_transforms = transforms[prefilter_idx]
+            local_means2d = means2d[prefilter_idx]
+            local_depths = depths[prefilter_idx]
+            local_opacities = opacities[prefilter_idx]
+            local_visible = visible[prefilter_idx]
+        else:
+            prefilter_idx = torch.arange(
+                global_idx.numel(), device=device, dtype=torch.long
+            )[None].expand(xy.shape[0], -1)
+            local_transforms = transforms[None].expand(xy.shape[0], -1, -1, -1)
+            local_means2d = means2d[None].expand(xy.shape[0], -1, -1)
+            local_depths = depths[None].expand(xy.shape[0], -1)
+            local_opacities = opacities[None].expand(xy.shape[0], -1)
+            local_visible = visible[None].expand(xy.shape[0], -1)
         x = xy[:, 0, None, None]
         y = xy[:, 1, None, None]
-        matrix = transforms[None]
+        matrix = local_transforms
         h_u = -matrix[:, :, 0, :] + matrix[:, :, 2, :] * x
         h_v = -matrix[:, :, 1, :] + matrix[:, :, 2, :] * y
         cross = torch.cross(h_u, h_v, dim=-1)
@@ -198,27 +261,33 @@ def bank_splat_provenance_2dgs(
         v = cross[..., 1] / denominator.clamp(min=-1e30, max=1e30).where(
             finite_plane, torch.ones_like(denominator)
         )
-        delta = xy[:, None, :] - means2d[None]
+        delta = xy[:, None, :] - local_means2d
         sigma_3d = u.square() + v.square()
         sigma_2d = 2.0 * delta.square().sum(dim=-1)
         sigma = 0.5 * torch.minimum(sigma_3d, sigma_2d)
-        alpha = (opacities[None] * torch.exp(-sigma)).clamp(max=0.999)
-        alpha = alpha.masked_fill(~visible[None] | ~finite_plane, 0.0)
+        alpha = (local_opacities * torch.exp(-sigma)).clamp(max=0.999)
+        alpha = alpha.masked_fill(~local_visible | ~finite_plane, 0.0)
 
         if depth_image is not None and depth_image.dim() == 2:
             px = keypoint_xy[start:end, 0].long().clamp(0, depth_image.shape[1] - 1)
             py = keypoint_xy[start:end, 1].long().clamp(0, depth_image.shape[0] - 1)
             surface_depth = depth_image[py, px]
             tolerance = float(depth_abs_tolerance) + float(depth_rel_tolerance) * surface_depth.abs()
-            depth_ok = (depths[None] - surface_depth[:, None]).abs() <= tolerance[:, None]
+            depth_ok = (local_depths - surface_depth[:, None]).abs() <= tolerance[:, None]
             depth_ok = depth_ok | ~(surface_depth[:, None] > 0)
             alpha = alpha.masked_fill(~depth_ok, 0.0)
 
-        candidate_alpha, candidate_idx = torch.topk(alpha, candidate_k, dim=1)
-        candidate_depth = depths[candidate_idx]
-        depth_order = candidate_depth.argsort(dim=1)
-        sorted_alpha = candidate_alpha.gather(1, depth_order)
-        sorted_idx = candidate_idx.gather(1, depth_order)
+        if full_composition:
+            depth_order = global_depth_order
+            sorted_alpha = alpha[:, depth_order]
+            sorted_idx = prefilter_idx[:, depth_order]
+        else:
+            candidate_alpha, candidate_idx = torch.topk(alpha, candidate_k, dim=1)
+            candidate_depth = local_depths.gather(1, candidate_idx)
+            candidate_bank_idx = prefilter_idx.gather(1, candidate_idx)
+            depth_order = candidate_depth.argsort(dim=1)
+            sorted_alpha = candidate_alpha.gather(1, depth_order)
+            sorted_idx = candidate_bank_idx.gather(1, depth_order)
         transmittance = torch.cumprod(
             torch.cat(
                 [torch.ones_like(sorted_alpha[:, :1]), 1.0 - sorted_alpha[:, :-1]],
@@ -229,7 +298,16 @@ def bank_splat_provenance_2dgs(
         composition = sorted_alpha * transmittance
         selected_weight, selected_order = torch.topk(composition, k, dim=1)
         selected_idx = sorted_idx.gather(1, selected_order)
+        composition_sum = composition.sum(dim=1, keepdim=True)
+        if minimum_composition_mass is not None:
+            cumulative_before = (
+                selected_weight.cumsum(1) - selected_weight
+            ) / composition_sum.clamp_min(1e-8)
+            selected_weight = selected_weight.masked_fill(
+                cumulative_before >= float(minimum_composition_mass), 0.0
+            )
         weight_sum = selected_weight.sum(dim=1, keepdim=True)
+        retained_mass = weight_sum / composition_sum.clamp_min(1e-8)
         valid = weight_sum[:, 0] > 1e-8
         selected_weight = torch.where(
             valid[:, None],
@@ -239,7 +317,15 @@ def bank_splat_provenance_2dgs(
         out_idx[start:end] = selected_idx
         out_weight[start:end] = selected_weight
         out_valid[start:end] = valid
-    return out_idx, out_weight, out_valid
+        out_retained_mass[start:end] = torch.where(
+            valid, retained_mass[:, 0].clamp(0.0, 1.0), torch.zeros_like(valid, dtype=dtype)
+        )
+    result = (out_idx, out_weight, out_valid)
+    return (
+        (*result, {"retained_composition_fraction": out_retained_mass})
+        if return_diagnostics
+        else result
+    )
 
 
 @torch.no_grad()

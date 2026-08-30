@@ -61,6 +61,7 @@ def _serializable_state(state: dict) -> dict:
         "spatial_cell_count",
         "pose_logdet",
         "pose_minimum_eigenvalue",
+        "pose_effective_correspondence_count",
         "margin_delta",
     )
     return {name: state[name] for name in keep}
@@ -79,11 +80,28 @@ def main() -> None:
     parser.add_argument("--maximum-rounds", type=int, default=3)
     parser.add_argument("--maximum-single-regression", type=float, default=0.25)
     parser.add_argument("--minimum-improving-families", type=int, default=2)
+    parser.add_argument("--minimum-safe-correspondences", type=int)
+    parser.add_argument("--minimum-spatial-cells", type=int)
+    parser.add_argument("--maximum-pose-logdet-drop", type=float)
+    parser.add_argument("--minimum-pose-eigenvalue-retention", type=float)
+    parser.add_argument("--minimum-effective-correspondences", type=float)
     args = parser.parse_args()
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
     if args.margin_delta < 0 or args.maximum_actions < 1 or args.maximum_rounds < 1:
         parser.error("invalid competition controller bounds")
+    if args.minimum_safe_correspondences is not None and args.minimum_safe_correspondences < 0:
+        parser.error("minimum safe correspondences must be non-negative")
+    if args.minimum_spatial_cells is not None and args.minimum_spatial_cells < 0:
+        parser.error("minimum spatial cells must be non-negative")
+    if args.maximum_pose_logdet_drop is not None and args.maximum_pose_logdet_drop < 0:
+        parser.error("maximum pose logdet drop must be non-negative")
+    if args.minimum_pose_eigenvalue_retention is not None and not (
+        0.0 <= args.minimum_pose_eigenvalue_retention <= 1.0
+    ):
+        parser.error("minimum pose eigenvalue retention must lie in [0, 1]")
+    if args.minimum_effective_correspondences is not None and args.minimum_effective_correspondences < 0:
+        parser.error("minimum effective correspondences must be non-negative")
 
     design_path = args.design_batch.resolve()
     map_path = args.baseline_map.resolve()
@@ -154,6 +172,10 @@ def main() -> None:
             "candidate_scores": scores,
             "certified_positive": relations["positive"],
             "ambiguous": relations["ambiguous"],
+            "certification_confidence": relations["certification_confidence"],
+            "measurement_covariance_px2": relations[
+                "measurement_covariance_px2"
+            ],
             "intrinsic": torch.as_tensor(source["intrinsics"]).float(),
             "pose_w2c": torch.as_tensor(source["pose_w2c"]).float(),
             "image_hw": torch.as_tensor(source["image_hw"]).long(),
@@ -169,6 +191,8 @@ def main() -> None:
             pose_w2c=query["pose_w2c"],
             image_hw=query["image_hw"],
             margin_delta=args.margin_delta,
+            certification_confidence=relations["certification_confidence"],
+            measurement_covariance_px2=relations["measurement_covariance_px2"],
         )
         query["pose"] = _pose_for_state(query, query["state"], xyz)
         observer_pose = observed["baseline"]
@@ -252,8 +276,22 @@ def main() -> None:
                     pose_w2c=query["pose_w2c"],
                     image_hw=query["image_hw"],
                     margin_delta=args.margin_delta,
+                    certification_confidence=query["certification_confidence"],
+                    measurement_covariance_px2=query["measurement_covariance_px2"],
                 )
-                safe, reasons = reserve_transition_is_safe(query["state"], trial)
+                safe, reasons = reserve_transition_is_safe(
+                    query["state"],
+                    trial,
+                    minimum_anchor_unique_safe_count=args.minimum_safe_correspondences,
+                    minimum_spatial_cell_count=args.minimum_spatial_cells,
+                    maximum_pose_logdet_drop=args.maximum_pose_logdet_drop,
+                    minimum_pose_eigenvalue_retention=(
+                        args.minimum_pose_eigenvalue_retention
+                    ),
+                    minimum_effective_correspondence_count=(
+                        args.minimum_effective_correspondences
+                    ),
+                )
                 trial_states[query_index] = trial
                 if not safe:
                     unsafe.append(
@@ -347,6 +385,17 @@ def main() -> None:
         "v16_design_only": True,
         "v16_topl": 64,
         "v16_margin_delta": float(args.margin_delta),
+        "v16_reserve_safety_floors": {
+            "minimum_safe_correspondences": args.minimum_safe_correspondences,
+            "minimum_spatial_cells": args.minimum_spatial_cells,
+            "maximum_pose_logdet_drop": args.maximum_pose_logdet_drop,
+            "minimum_pose_eigenvalue_retention": (
+                args.minimum_pose_eigenvalue_retention
+            ),
+            "minimum_effective_correspondences": (
+                args.minimum_effective_correspondences
+            ),
+        },
         "uses_test_queries": False,
     }
     map_output = args.output_dir / "projective_anchor_map.pt"

@@ -49,3 +49,93 @@ def test_deleting_wrong_competitor_can_increase_positive_reserve() -> None:
     safe, reasons = reserve_transition_is_safe(before, after)
     assert safe is True
     assert reasons == []
+
+
+def test_registered_safety_floor_can_consume_redundant_reserve() -> None:
+    before = {
+        "topl_exhausted": torch.tensor([False]),
+        "winner_certified_positive": torch.tensor([True]),
+        "anchor_unique_safe_count": 20,
+        "spatial_cell_count": 10,
+        "pose_logdet": 12.0,
+        "pose_minimum_eigenvalue": 4.0,
+        "pose_effective_correspondence_count": 18.0,
+    }
+    after = {
+        **before,
+        "anchor_unique_safe_count": 16,
+        "spatial_cell_count": 8,
+        "pose_logdet": 11.7,
+        "pose_minimum_eigenvalue": 3.5,
+        "pose_effective_correspondence_count": 15.0,
+    }
+    strict, _ = reserve_transition_is_safe(before, after)
+    assert strict is False
+    safe, reasons = reserve_transition_is_safe(
+        before,
+        after,
+        minimum_anchor_unique_safe_count=12,
+        minimum_spatial_cell_count=6,
+        maximum_pose_logdet_drop=0.5,
+        minimum_pose_eigenvalue_retention=0.8,
+        minimum_effective_correspondence_count=12.0,
+    )
+    assert safe is True
+    assert reasons == []
+
+
+def test_compressed_start_can_reduce_but_not_add_topl_exhaustion() -> None:
+    common = {
+        "winner_certified_positive": torch.tensor([False, True]),
+        "anchor_unique_safe_count": 4,
+        "spatial_cell_count": 3,
+        "pose_logdet": 2.0,
+        "pose_minimum_eigenvalue": 0.1,
+        "pose_effective_correspondence_count": 4.0,
+    }
+    before = {**common, "topl_exhausted": torch.tensor([True, False])}
+    repairing = {**common, "topl_exhausted": torch.tensor([True, False])}
+    safe, reasons = reserve_transition_is_safe(
+        before,
+        repairing,
+        minimum_anchor_unique_safe_count=12,
+        minimum_spatial_cell_count=6,
+        maximum_pose_logdet_drop=0.5,
+        minimum_pose_eigenvalue_retention=0.8,
+        minimum_effective_correspondence_count=12.0,
+    )
+    assert safe is True
+    assert reasons == []
+    regressing = {**common, "topl_exhausted": torch.tensor([True, True])}
+    safe, reasons = reserve_transition_is_safe(before, regressing)
+    assert safe is False
+    assert "new_topl_exhaustion" in reasons
+
+
+def test_pose_reserve_propagates_certification_confidence() -> None:
+    common = {
+        "candidate_anchor_rows": torch.tensor([[0], [1]]),
+        "candidate_scores": torch.tensor([[0.9], [0.9]]),
+        "certified_positive": torch.tensor([[True], [True]]),
+        "active_anchor_mask": torch.ones(2, dtype=torch.bool),
+        "keypoints": torch.tensor([[10.0, 10.0], [30.0, 20.0]]),
+        "anchor_xyz": torch.tensor([[0.0, 0.0, 5.0], [1.0, 0.5, 5.0]]),
+        "intrinsic": torch.tensor(
+            [[100.0, 0.0, 10.0], [0.0, 100.0, 10.0], [0.0, 0.0, 1.0]]
+        ),
+        "pose_w2c": torch.eye(4),
+        "image_hw": torch.tensor([40, 40]),
+    }
+    full = competitive_reserve_state(
+        **common,
+        certification_confidence=torch.ones(2, 1),
+        measurement_covariance_px2=torch.eye(2).repeat(2, 1, 1, 1),
+    )
+    uncertain = competitive_reserve_state(
+        **common,
+        certification_confidence=torch.tensor([[1.0], [0.1]]),
+        measurement_covariance_px2=torch.eye(2).repeat(2, 1, 1, 1),
+    )
+    assert full["pose_effective_correspondence_count"] == 2.0
+    assert uncertain["pose_effective_correspondence_count"] < 2.0
+    assert uncertain["pose_logdet"] < full["pose_logdet"]
