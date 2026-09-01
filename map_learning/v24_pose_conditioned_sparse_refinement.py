@@ -269,6 +269,11 @@ def build_pose_visible_topk(
     view_direction_slack_deg: float = 15.0,
     minimum_mapping_distance_ratio: float = 0.25,
     maximum_mapping_distance_ratio: float = 4.0,
+    view_conditioned_descriptor_state: Mapping | None = None,
+    view_conditioned_minimum_concentration: float = 0.0,
+    view_conditioned_residual_scale: float = 1.0,
+    view_conditioned_require_two_valid_modes: bool = False,
+    view_conditioned_score_fusion: str = "replace",
 ) -> dict:
     """Retrieve exact Top-K inside the first-pose sparse 3D view frustum.
 
@@ -321,6 +326,13 @@ def build_pose_visible_topk(
             not bool(prefilter_mapping_view_support)
             or anchor_view_support is not None
         )
+        and (
+            view_conditioned_descriptor_state is None
+            or anchor_view_support is not None
+        )
+        and 0.0 <= float(view_conditioned_minimum_concentration) <= 1.0
+        and 0.0 < float(view_conditioned_residual_scale) <= 1.0
+        and view_conditioned_score_fusion in {"replace", "max_with_base"}
     ):
         raise ValueError("V24 pose-visible Top-K inputs are invalid")
 
@@ -362,15 +374,63 @@ def build_pose_visible_topk(
         if prefilter_fallback or not bool(prefilter_mapping_view_support)
         else supported_visible_rows
     )
+    base_retrieval_features = features[pool_rows]
+    retrieval_features = base_retrieval_features
+    selected_mode_count = 0
+    base_fallback_count = int(pool_rows.numel())
+    if view_conditioned_descriptor_state is not None:
+        from map_learning.v27_view_conditioned_anchor_descriptor import (
+            select_view_conditioned_anchor_features,
+        )
+
+        retrieval_features, mode_report = select_view_conditioned_anchor_features(
+            base_anchor_features=features,
+            anchor_xyz=xyz,
+            direction_modes=anchor_view_support["direction_modes"],
+            baseline_pose_w2c=pose,
+            mode_features=view_conditioned_descriptor_state["mode_features"],
+            mode_valid=view_conditioned_descriptor_state["mode_valid"],
+            mode_concentration=view_conditioned_descriptor_state[
+                "mode_concentration"
+            ],
+            minimum_concentration=float(view_conditioned_minimum_concentration),
+            anchor_rows=pool_rows,
+            residual_scale=float(view_conditioned_residual_scale),
+            require_two_valid_modes=bool(
+                view_conditioned_require_two_valid_modes
+            ),
+        )
+        selected_mode_count = int(mode_report["selected_mode_anchor_count"])
+        base_fallback_count = int(mode_report["base_fallback_anchor_count"])
     output_rows = baseline[:, None].expand(-1, requested).clone()
     output_scores = scores[:, None].expand(-1, requested).clone()
     if retrieval.numel():
-        local = global_cosine_topk(
-            query[retrieval],
-            features[pool_rows],
-            topk=requested,
-            anchor_descriptors_normalized=True,
-        )
+        if (
+            view_conditioned_descriptor_state is not None
+            and view_conditioned_score_fusion == "max_with_base"
+        ):
+            normalized_query = torch.nn.functional.normalize(
+                query[retrieval], dim=1
+            )
+            local_scores = torch.maximum(
+                normalized_query @ base_retrieval_features.T,
+                normalized_query @ retrieval_features.T,
+            )
+            best_scores, best_rows = torch.topk(
+                local_scores, k=requested, dim=1
+            )
+            local = TopKMatches(
+                keypoint_indices=retrieval,
+                anchor_indices=best_rows,
+                scores=best_scores,
+            )
+        else:
+            local = global_cosine_topk(
+                query[retrieval],
+                retrieval_features,
+                topk=requested,
+                anchor_descriptors_normalized=True,
+            )
         mapped_rows = pool_rows[local.anchor_indices]
         alternative_scores = local.scores.masked_fill(
             mapped_rows == baseline[retrieval, None], -torch.inf
@@ -396,6 +456,9 @@ def build_pose_visible_topk(
         "global_fallback": fallback,
         "view_support_prefilter_fallback": prefilter_fallback,
         "retrieval_query_count": int(retrieval.numel()),
+        "view_conditioned_selected_mode_anchor_count": selected_mode_count,
+        "view_conditioned_base_fallback_anchor_count": base_fallback_count,
+        "view_conditioned_score_fusion": view_conditioned_score_fusion,
     }
 
 

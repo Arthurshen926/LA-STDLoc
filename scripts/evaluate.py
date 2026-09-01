@@ -50,6 +50,28 @@ def main() -> None:
         help="Mapping-only MCCD artifact; mutually exclusive with --metric-state.",
     )
     parser.add_argument(
+        "--view-conditioned-anchor-state",
+        type=Path,
+        help=(
+            "Mapping-only V27 descriptor modes, selected by the first pose "
+            "inside pose-conditioned sparse refinement."
+        ),
+    )
+    parser.add_argument(
+        "--view-conditioned-minimum-concentration", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--view-conditioned-residual-scale", type=float, default=1.0
+    )
+    parser.add_argument(
+        "--view-conditioned-require-two-valid-modes", action="store_true"
+    )
+    parser.add_argument(
+        "--view-conditioned-score-fusion",
+        choices=("replace", "max_with_base"),
+        default="replace",
+    )
+    parser.add_argument(
         "--scene-calibration",
         type=Path,
         help=(
@@ -409,6 +431,15 @@ def main() -> None:
         parser.error(
             "online sparse refinement is a separate shared-metric ablation"
         )
+    if args.view_conditioned_anchor_state is not None and not (
+        args.pose_conditioned_sparse_refinement
+        and args.metric_state is not None
+        and args.context_state is None
+    ):
+        parser.error(
+            "--view-conditioned-anchor-state requires the shared identity metric "
+            "and --pose-conditioned-sparse-refinement"
+        )
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
             parser.error("--stage-state cannot be combined with descriptor map options")
@@ -459,10 +490,35 @@ def main() -> None:
             "context_state" if args.context_state is not None else "metric_state"
         ),
     )
+    view_conditioned_contract = (
+        {
+            "path": str(args.view_conditioned_anchor_state.resolve()),
+            "sha256": sha256_file(args.view_conditioned_anchor_state),
+            "minimum_concentration": float(
+                args.view_conditioned_minimum_concentration
+            ),
+            "residual_scale": float(args.view_conditioned_residual_scale),
+            "require_two_valid_modes": bool(
+                args.view_conditioned_require_two_valid_modes
+            ),
+            "score_fusion": args.view_conditioned_score_fusion,
+        }
+        if args.view_conditioned_anchor_state is not None
+        else None
+    )
     localizer = SparseLocalizer(
         map_path,
         metric_path,
         context_state_path=args.context_state,
+        view_conditioned_anchor_state_path=args.view_conditioned_anchor_state,
+        view_conditioned_minimum_concentration=(
+            args.view_conditioned_minimum_concentration
+        ),
+        view_conditioned_residual_scale=args.view_conditioned_residual_scale,
+        view_conditioned_require_two_valid_modes=(
+            args.view_conditioned_require_two_valid_modes
+        ),
+        view_conditioned_score_fusion=args.view_conditioned_score_fusion,
         device=args.device,
         keypoint_count=keypoint_count,
         nms_radius=int(deployment["nms"]),
@@ -611,6 +667,11 @@ def main() -> None:
         sha256_file(map_path) != artifact_contract["map"]["sha256"]
         or sha256_file(descriptor_state_path)
         != artifact_contract["descriptor_state"]["sha256"]
+        or (
+            view_conditioned_contract is not None
+            and sha256_file(view_conditioned_contract["path"])
+            != view_conditioned_contract["sha256"]
+        )
     ):
         raise RuntimeError("evaluation input artifact changed while localization ran")
     result["summary"].update(
@@ -628,6 +689,7 @@ def main() -> None:
             "input_descriptor_state_sha256": artifact_contract[
                 "descriptor_state"
             ]["sha256"],
+            "view_conditioned_anchor_state": view_conditioned_contract,
         }
     )
     # ``evaluate_dataset`` writes its generic summary before the CLI-specific
@@ -683,6 +745,27 @@ def main() -> None:
                 ),
                 "pose_conditioned_sparse_refinement": bool(
                     args.pose_conditioned_sparse_refinement
+                ),
+                "mapping_view_conditioned_anchor_descriptors": bool(
+                    args.view_conditioned_anchor_state is not None
+                ),
+                "view_conditioned_minimum_concentration": (
+                    float(args.view_conditioned_minimum_concentration)
+                    if args.view_conditioned_anchor_state is not None
+                    else None
+                ),
+                "view_conditioned_residual_scale": (
+                    float(args.view_conditioned_residual_scale)
+                    if args.view_conditioned_anchor_state is not None
+                    else None
+                ),
+                "view_conditioned_require_two_valid_modes": bool(
+                    args.view_conditioned_require_two_valid_modes
+                ),
+                "view_conditioned_score_fusion": (
+                    args.view_conditioned_score_fusion
+                    if args.view_conditioned_anchor_state is not None
+                    else None
                 ),
                 "refinement_pose_backend": args.refinement_pose_backend,
                 "refinement_candidate_pool": (

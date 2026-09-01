@@ -513,6 +513,64 @@ def test_pose_visible_topk_prefilters_mapping_unsupported_anchors() -> None:
     assert not result["view_support_prefilter_fallback"]
 
 
+def test_view_conditioned_max_fusion_adds_evidence_without_new_owner() -> None:
+    generator = torch.Generator().manual_seed(29)
+    count = 80
+    anchors = torch.nn.functional.normalize(
+        torch.randn(count, 8, generator=generator), dim=1
+    )
+    query = torch.nn.functional.normalize(
+        torch.randn(1, 8, generator=generator), dim=1
+    )
+    baseline = global_cosine_top1(
+        query, anchors, anchor_descriptors_normalized=True
+    )
+    target = (int(baseline.anchor_indices[0]) + 1) % count
+    xyz = torch.stack(
+        (torch.linspace(-0.5, 0.5, count), torch.zeros(count), torch.ones(count) * 4),
+        dim=1,
+    )
+    directions = torch.nn.functional.normalize(-xyz, dim=1)
+    modes = directions[:, None].repeat(1, 2, 1)
+    support = {
+        "schema": "lafgs_v24_anchor_view_support",
+        "uses_test_queries": False,
+        "direction_modes": modes,
+        "direction_radius_deg": torch.ones(count, 2) * 10,
+        "mode_count": torch.ones(count, dtype=torch.long) * 2,
+        "minimum_distance_m": torch.ones(count),
+        "maximum_distance_m": torch.ones(count) * 8,
+    }
+    mode_features = anchors[:, None].repeat(1, 2, 1)
+    mode_features[target] = query[0]
+    result = build_pose_visible_topk(
+        query_descriptors=query,
+        normalized_anchor_features=anchors,
+        baseline_anchor_rows=baseline.anchor_indices,
+        baseline_scores=baseline.scores,
+        anchor_xyz=xyz,
+        intrinsic=torch.tensor(
+            [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
+        ),
+        baseline_pose_w2c=torch.eye(4),
+        image_hw=(100, 100),
+        anchor_view_support=support,
+        view_conditioned_descriptor_state={
+            "mode_features": mode_features,
+            "mode_valid": torch.ones(count, 2, dtype=torch.bool),
+            "mode_concentration": torch.ones(count, 2),
+        },
+        view_conditioned_require_two_valid_modes=True,
+        view_conditioned_score_fusion="max_with_base",
+    )
+    matches = result["matches"]
+    target_column = torch.nonzero(
+        matches.anchor_indices[0] == target, as_tuple=False
+    ).item()
+    assert torch.isclose(matches.scores[0, target_column], torch.tensor(1.0))
+    assert matches.anchor_indices[0].unique().numel() == 64
+
+
 def test_local_pose_refinement_scores_the_complete_correspondence_set(
     monkeypatch,
 ) -> None:

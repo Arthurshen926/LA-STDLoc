@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from common.hashing import sha256_file
 from localization.frontend import NativeSuperPointFrontend, SparseFeatures
 from localization.matcher import (
     Top1Matches,
@@ -164,6 +165,11 @@ class SparseLocalizer:
         metric_state_path: str | Path | None = None,
         *,
         context_state_path: str | Path | None = None,
+        view_conditioned_anchor_state_path: str | Path | None = None,
+        view_conditioned_minimum_concentration: float = 0.0,
+        view_conditioned_residual_scale: float = 1.0,
+        view_conditioned_require_two_valid_modes: bool = False,
+        view_conditioned_score_fusion: str = "replace",
         device: torch.device | str = "cuda",
         keypoint_count: int = 2048,
         nms_radius: int = 4,
@@ -237,6 +243,8 @@ class SparseLocalizer:
             raise ValueError(
                 "select exactly one descriptor protocol: shared metric or context"
             )
+        if view_conditioned_anchor_state_path is not None and context_state_path is not None:
+            raise ValueError("V27 view-conditioned descriptors require the identity metric path")
         base_anchor_ids = torch.as_tensor(state["anchor_ids"]).long()
         if context_state_path is not None:
             (
@@ -272,6 +280,11 @@ class SparseLocalizer:
                 ),
             )
             context_adapter = None
+            if view_conditioned_anchor_state_path is not None and (
+                metric.max_residual_norm != 0.0
+                or any(bool(torch.count_nonzero(value)) for value in metric.parameters())
+            ):
+                raise ValueError("V27 view-conditioned descriptors require an exact identity metric")
         # This is the exact normalization that the historical matcher applied
         # to every map chunk for every query.  Materialize it once instead.
         self.anchor_features = F.normalize(self.anchor_features.float(), dim=1)
@@ -334,6 +347,50 @@ class SparseLocalizer:
                 "maximum_distance_m": support_maximum[support_rows]
                 .float()
                 .to(self.device),
+            }
+        self.view_conditioned_anchor_state = None
+        self.view_conditioned_minimum_concentration = float(
+            view_conditioned_minimum_concentration
+        )
+        self.view_conditioned_residual_scale = float(
+            view_conditioned_residual_scale
+        )
+        self.view_conditioned_require_two_valid_modes = bool(
+            view_conditioned_require_two_valid_modes
+        )
+        self.view_conditioned_score_fusion = str(view_conditioned_score_fusion)
+        if not 0.0 <= self.view_conditioned_minimum_concentration <= 1.0:
+            raise ValueError("V27 minimum descriptor concentration is invalid")
+        if not 0.0 < self.view_conditioned_residual_scale <= 1.0:
+            raise ValueError("V27 descriptor residual scale is invalid")
+        if self.view_conditioned_score_fusion not in {"replace", "max_with_base"}:
+            raise ValueError("V27 descriptor score fusion is invalid")
+        if view_conditioned_anchor_state_path is not None:
+            from map_learning.v27_view_conditioned_anchor_descriptor import (
+                validate_artifact,
+            )
+
+            if self.anchor_view_support is None:
+                raise ValueError("V27 view-conditioned descriptors require F0 view support")
+            artifact = torch.load(
+                view_conditioned_anchor_state_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            validate_artifact(artifact, map_state=state)
+            stable_input = artifact["inputs"]["stable_map"]
+            if stable_input.get("sha256") != sha256_file(map_path):
+                raise ValueError("V27 descriptor state is bound to a different F0 map")
+            self.view_conditioned_anchor_state = {
+                "mode_features": torch.as_tensor(
+                    artifact["mode_features"], device=self.device
+                ).float(),
+                "mode_valid": torch.as_tensor(
+                    artifact["mode_valid"], device=self.device
+                ).bool(),
+                "mode_concentration": torch.as_tensor(
+                    artifact["mode_concentration"], device=self.device
+                ).float(),
             }
         prototype_features = state.get("anchor_extra_prototype_features")
         prototype_owners = state.get("anchor_extra_prototype_owner_rows")
@@ -1143,6 +1200,8 @@ class SparseLocalizer:
         feedback_view_support_prefilter_fallback = False
         feedback_retrieval_query_count = 0
         feedback_view_supported_anchor_count = 0
+        feedback_view_conditioned_selected_mode_anchor_count = 0
+        feedback_view_conditioned_base_fallback_anchor_count = 0
         feedback_soft_inlier_candidate_rows = 0
         feedback_soft_inlier_changed_rows = 0
         feedback_soft_inlier_capacity_rejections = 0
@@ -1293,6 +1352,21 @@ class SparseLocalizer:
                                 "maximum_mapping_distance_ratio"
                             ]
                         ),
+                        view_conditioned_descriptor_state=(
+                            self.view_conditioned_anchor_state
+                        ),
+                        view_conditioned_minimum_concentration=(
+                            self.view_conditioned_minimum_concentration
+                        ),
+                        view_conditioned_residual_scale=(
+                            self.view_conditioned_residual_scale
+                        ),
+                        view_conditioned_require_two_valid_modes=(
+                            self.view_conditioned_require_two_valid_modes
+                        ),
+                        view_conditioned_score_fusion=(
+                            self.view_conditioned_score_fusion
+                        ),
                     )
                     feedback_topk = visible_topk["matches"]
                     feedback_visible_anchor_count = int(
@@ -1312,6 +1386,16 @@ class SparseLocalizer:
                     )
                     feedback_view_supported_anchor_count = int(
                         visible_topk["view_supported_anchor_count"]
+                    )
+                    feedback_view_conditioned_selected_mode_anchor_count = int(
+                        visible_topk[
+                            "view_conditioned_selected_mode_anchor_count"
+                        ]
+                    )
+                    feedback_view_conditioned_base_fallback_anchor_count = int(
+                        visible_topk[
+                            "view_conditioned_base_fallback_anchor_count"
+                        ]
                     )
                 baseline_rows_cpu = feedback_topk.anchor_indices[:, 0].cpu()
                 if self.pose_conditioned_sparse_refinement:
@@ -2196,6 +2280,12 @@ class SparseLocalizer:
                 ),
                 "sparse_feedback_view_supported_anchor_count": int(
                     feedback_view_supported_anchor_count
+                ),
+                "sparse_feedback_view_conditioned_selected_mode_anchor_count": int(
+                    feedback_view_conditioned_selected_mode_anchor_count
+                ),
+                "sparse_feedback_view_conditioned_base_fallback_anchor_count": int(
+                    feedback_view_conditioned_base_fallback_anchor_count
                 ),
                 "sparse_feedback_active_row_retrieval": int(
                     self.refinement_active_row_retrieval
