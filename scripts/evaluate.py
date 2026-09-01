@@ -109,6 +109,129 @@ def main() -> None:
         help="Strict minimum cosine score for an assigned real Anchor edge.",
     )
     parser.add_argument(
+        "--topk-geometric-feedback",
+        action="store_true",
+        help=(
+            "Enable the V21 query-specific exact Top-64 geometric bundle and "
+            "at most one additional PoseLib solve, without sparse LGCV."
+        ),
+    )
+    parser.add_argument(
+        "--sparse-lgcv-topk-feedback",
+        action="store_true",
+        help=(
+            "Enable the V22 query-specific exact Top-64 plus sparse LGCV "
+            "bundle gate and at most one additional PoseLib solve."
+        ),
+    )
+    parser.add_argument(
+        "--pose-conditioned-sparse-refinement",
+        action="store_true",
+        help=(
+            "Enable the V24 GPU pose-conditioned Top-64 joint assignment, "
+            "protected first-pass inliers, and at most one additional PoseLib solve."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-pose-backend",
+        choices=("local", "robust"),
+        default="local",
+        help=(
+            "Pose-conditioned second-stage solver: local keeps the first pose "
+            "basin; robust runs one bounded PoseLib re-estimate."
+        ),
+    )
+    parser.add_argument(
+        "--feedback-minimum-baseline-inliers",
+        type=int,
+        default=128,
+        help="Inclusive first-pass inlier trigger for either online feedback arm.",
+    )
+    parser.add_argument(
+        "--feedback-maximum-baseline-inliers",
+        type=int,
+        default=256,
+        help=(
+            "Exclusive first-pass inlier trigger for either feedback arm; zero "
+            "removes the upper bound."
+        ),
+    )
+    parser.add_argument(
+        "--feedback-minimum-candidate-inlier-gain",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--feedback-minimum-candidate-relative-inlier-gain",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--feedback-maximum-candidate-ransac-iterations",
+        type=int,
+        default=0,
+        help="Zero disables the candidate PoseLib iteration upper bound.",
+    )
+    parser.add_argument(
+        "--feedback-minimum-baseline-inlier-retention",
+        type=float,
+        default=0.0,
+    )
+    parser.add_argument(
+        "--feedback-maximum-protected-median-residual-increase-px",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--feedback-maximum-protected-p90-residual-increase-px",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--feedback-maximum-pose-update-translation-cm",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--feedback-maximum-pose-update-rotation-deg",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--refinement-minimum-changed-inliers", type=int, default=8
+    )
+    parser.add_argument(
+        "--refinement-maximum-score-drop-from-top1", type=float, default=0.03
+    )
+    parser.add_argument(
+        "--refinement-view-direction-slack-deg", type=float, default=15.0
+    )
+    parser.add_argument(
+        "--refinement-maximum-changed-rows", type=int, default=128
+    )
+    parser.add_argument(
+        "--refinement-maximum-changed-to-baseline-inlier-ratio",
+        type=float,
+        default=0.50,
+    )
+    parser.add_argument(
+        "--refinement-minimum-proposal-count", type=int, default=60
+    )
+    parser.add_argument(
+        "--refinement-minimum-proposal-relative-gain", type=float, default=0.075
+    )
+    parser.add_argument(
+        "--refinement-minimum-changed-inlier-fraction", type=float, default=0.10
+    )
+    parser.add_argument(
+        "--refinement-minimum-changed-inlier-spatial-cells", type=int, default=3
+    )
+    parser.add_argument(
+        "--refinement-maximum-changed-inlier-median-residual-px",
+        type=float,
+        default=6.0,
+    )
+    parser.add_argument(
         "--deployment-mode",
         action="store_true",
         help=(
@@ -127,6 +250,30 @@ def main() -> None:
         parser.error(
             "--assignment-topk cannot be combined with duplicate suppression "
             "guided sampling, or group-aware pose"
+        )
+    if sum(
+        (
+            args.topk_geometric_feedback,
+            args.sparse_lgcv_topk_feedback,
+            args.pose_conditioned_sparse_refinement,
+        )
+    ) > 1:
+        parser.error(
+            "online sparse-refinement modes are separate ablations"
+        )
+    if (
+        args.topk_geometric_feedback
+        or args.sparse_lgcv_topk_feedback
+        or args.pose_conditioned_sparse_refinement
+    ) and (
+        args.assignment_topk
+        or args.suppress_duplicate_anchors
+        or args.guided_sampling
+        or args.group_aware_pose
+        or args.context_state is not None
+    ):
+        parser.error(
+            "online sparse refinement is a separate shared-metric ablation"
         )
     if args.stage_state:
         if args.map or args.metric_state or args.context_state:
@@ -197,6 +344,72 @@ def main() -> None:
         group_hypothesis_samples=args.group_hypothesis_samples,
         assignment_topk=args.assignment_topk,
         assignment_dustbin_score=args.assignment_dustbin_score,
+        topk_geometric_feedback=args.topk_geometric_feedback,
+        sparse_lgcv_topk_feedback=args.sparse_lgcv_topk_feedback,
+        pose_conditioned_sparse_refinement=(
+            args.pose_conditioned_sparse_refinement
+        ),
+        refinement_pose_backend=args.refinement_pose_backend,
+        feedback_minimum_baseline_inliers=(
+            args.feedback_minimum_baseline_inliers
+        ),
+        feedback_maximum_baseline_inliers=(
+            args.feedback_maximum_baseline_inliers
+        ),
+        feedback_minimum_candidate_inlier_gain=(
+            args.feedback_minimum_candidate_inlier_gain
+        ),
+        feedback_minimum_candidate_relative_inlier_gain=(
+            args.feedback_minimum_candidate_relative_inlier_gain
+        ),
+        feedback_maximum_candidate_ransac_iterations=(
+            args.feedback_maximum_candidate_ransac_iterations
+        ),
+        feedback_minimum_baseline_inlier_retention=(
+            args.feedback_minimum_baseline_inlier_retention
+        ),
+        feedback_maximum_protected_median_residual_increase_px=(
+            args.feedback_maximum_protected_median_residual_increase_px
+        ),
+        feedback_maximum_protected_p90_residual_increase_px=(
+            args.feedback_maximum_protected_p90_residual_increase_px
+        ),
+        feedback_maximum_pose_update_translation_cm=(
+            args.feedback_maximum_pose_update_translation_cm
+        ),
+        feedback_maximum_pose_update_rotation_deg=(
+            args.feedback_maximum_pose_update_rotation_deg
+        ),
+        refinement_maximum_score_drop_from_top1=(
+            args.refinement_maximum_score_drop_from_top1
+        ),
+        refinement_view_direction_slack_deg=(
+            args.refinement_view_direction_slack_deg
+        ),
+        refinement_maximum_changed_rows=(
+            args.refinement_maximum_changed_rows
+        ),
+        refinement_maximum_changed_to_baseline_inlier_ratio=(
+            args.refinement_maximum_changed_to_baseline_inlier_ratio
+        ),
+        refinement_minimum_proposal_count=(
+            args.refinement_minimum_proposal_count
+        ),
+        refinement_minimum_proposal_relative_gain=(
+            args.refinement_minimum_proposal_relative_gain
+        ),
+        refinement_minimum_changed_inliers=(
+            args.refinement_minimum_changed_inliers
+        ),
+        refinement_minimum_changed_inlier_fraction=(
+            args.refinement_minimum_changed_inlier_fraction
+        ),
+        refinement_minimum_changed_inlier_spatial_cells=(
+            args.refinement_minimum_changed_inlier_spatial_cells
+        ),
+        refinement_maximum_changed_inlier_median_residual_px=(
+            args.refinement_maximum_changed_inlier_median_residual_px
+        ),
         profile_mode=not args.deployment_mode,
     )
     result = evaluate_dataset(
@@ -249,7 +462,19 @@ def main() -> None:
                 ),
                 "calibration_split": "mapping",
                 "evaluated_split": args.split,
-                "pose_solves": 1,
+                "pose_solves": (
+                    "one PoseLib RANSAC plus one local nonlinear refinement"
+                    if args.pose_conditioned_sparse_refinement
+                    and args.refinement_pose_backend == "local"
+                    else "one plus at most one bounded PoseLib RANSAC"
+                    if args.pose_conditioned_sparse_refinement
+                    else
+                    "one plus at most one feedback solve"
+                    if args.topk_geometric_feedback
+                    or args.sparse_lgcv_topk_feedback
+                    or args.pose_conditioned_sparse_refinement
+                    else 1
+                ),
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
                 "group_aware_pose": bool(args.group_aware_pose),
@@ -260,6 +485,82 @@ def main() -> None:
                     else 0
                 ),
                 "capacity_assignment": bool(args.assignment_topk > 0),
+                "topk_geometric_feedback": bool(args.topk_geometric_feedback),
+                "sparse_lgcv_topk_feedback": bool(
+                    args.sparse_lgcv_topk_feedback
+                ),
+                "pose_conditioned_sparse_refinement": bool(
+                    args.pose_conditioned_sparse_refinement
+                ),
+                "refinement_pose_backend": args.refinement_pose_backend,
+                "refinement_candidate_pool": (
+                    "first_pose_point_projection_frustum"
+                    if args.pose_conditioned_sparse_refinement
+                    and args.refinement_pose_backend == "robust"
+                    else "global_top64"
+                    if args.pose_conditioned_sparse_refinement
+                    else "disabled"
+                ),
+                "feedback_minimum_baseline_inliers": int(
+                    args.feedback_minimum_baseline_inliers
+                ),
+                "feedback_maximum_baseline_inliers": int(
+                    args.feedback_maximum_baseline_inliers
+                ),
+                "feedback_minimum_candidate_inlier_gain": int(
+                    args.feedback_minimum_candidate_inlier_gain
+                ),
+                "feedback_minimum_candidate_relative_inlier_gain": float(
+                    args.feedback_minimum_candidate_relative_inlier_gain
+                ),
+                "feedback_maximum_candidate_ransac_iterations": int(
+                    args.feedback_maximum_candidate_ransac_iterations
+                ),
+                "feedback_minimum_baseline_inlier_retention": float(
+                    args.feedback_minimum_baseline_inlier_retention
+                ),
+                "feedback_maximum_protected_median_residual_increase_px": float(
+                    args.feedback_maximum_protected_median_residual_increase_px
+                ),
+                "feedback_maximum_protected_p90_residual_increase_px": float(
+                    args.feedback_maximum_protected_p90_residual_increase_px
+                ),
+                "feedback_maximum_pose_update_translation_cm": float(
+                    args.feedback_maximum_pose_update_translation_cm
+                ),
+                "feedback_maximum_pose_update_rotation_deg": float(
+                    args.feedback_maximum_pose_update_rotation_deg
+                ),
+                "refinement_minimum_changed_inliers": int(
+                    args.refinement_minimum_changed_inliers
+                ),
+                "refinement_maximum_score_drop_from_top1": float(
+                    args.refinement_maximum_score_drop_from_top1
+                ),
+                "refinement_view_direction_slack_deg": float(
+                    args.refinement_view_direction_slack_deg
+                ),
+                "refinement_maximum_changed_rows": int(
+                    args.refinement_maximum_changed_rows
+                ),
+                "refinement_maximum_changed_to_baseline_inlier_ratio": float(
+                    args.refinement_maximum_changed_to_baseline_inlier_ratio
+                ),
+                "refinement_minimum_proposal_count": int(
+                    args.refinement_minimum_proposal_count
+                ),
+                "refinement_minimum_proposal_relative_gain": float(
+                    args.refinement_minimum_proposal_relative_gain
+                ),
+                "refinement_minimum_changed_inlier_fraction": float(
+                    args.refinement_minimum_changed_inlier_fraction
+                ),
+                "refinement_minimum_changed_inlier_spatial_cells": int(
+                    args.refinement_minimum_changed_inlier_spatial_cells
+                ),
+                "refinement_maximum_changed_inlier_median_residual_px": float(
+                    args.refinement_maximum_changed_inlier_median_residual_px
+                ),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),
                 "timing_mode": "deployment" if args.deployment_mode else "profile",

@@ -1,0 +1,115 @@
+# Documentary protocol defaults for the V20 sparse Anchor descriptor loop.
+# No V20 CLI loads this file. Pass the corresponding values explicitly; this
+# file is a reviewable protocol declaration, not a --config interface.
+
+schema: lafgs_v20_sparse_anchor_closed_loop_protocol_defaults
+version: 1
+consumed_by_cli: false
+
+scope:
+  stable_map: v2_preassociation_full_rebuild_m0
+  map_action: sparse_anchor_descriptor_only
+  query_descriptor_action: native_unchanged
+  geometry_frozen: true
+  anchor_ids_frozen: true
+  anchor_xyz_frozen: true
+  track_registry_frozen: true
+  test_queries_used: false
+  loo_used: false
+
+split:
+  unit: pose_family
+  policy: sha256_ranked_pose_family
+  seed: 1420260828
+  design_fraction: 0.60
+  control_fraction: 0.40
+  confirmation_source: fresh_independent_pose_families
+  confirmation_can_train_or_select: false
+  query_indices_are_batch_scoped: true
+  require_pairwise_disjoint_source_record_sha256s: true
+  require_pairwise_disjoint_pose_families: true
+
+evidence:
+  teacher_tier: tier_b
+  minimum_wrong_winner_pose_families: 2
+  minimum_negative_action_clean_pose_families: 2
+  maximum_repair_rows_per_query: 256
+  maximum_protection_rows_per_query: 256
+  repair_row_policy: v2_valid_and_decisive_only
+  plant_row_policy: all_detected_rows
+  require_strong_feedback_authorized: true
+
+training:
+  mode: positive_only
+  analysis_only_ablation_mode: positive_and_repeated_negative
+  formal_deployment_modes:
+    - positive_only
+  maximum_angle_deg: 5.0
+  steps: 400
+  batch_size: 512
+  learning_rate: 0.05
+  temperature: 0.05
+  clean_margin_slack: 0.002
+  clean_protection_weight: 4.0
+  angular_regularization_weight: 0.01
+  minimum_repair_margin_gain: 0.001
+  minimum_coordinate_ranking_gain: 0.00001
+  action_scale_policy: smallest_hard_safe_scale_meeting_minimum_repair_gain
+  coordinate_expansion_policy: clean_safe_per_positive_ranking_improvement_only
+  maximum_selected_anchor_count: 4096
+  seed: 20260831
+  device: cuda
+  require_clean_protection_passed: true
+  require_positive_post_training_action_scale: true
+  required_status_before_exact_replay: REQUIRES_EXACT_POSE_CONTROL
+  coordinate_expansion_report:
+    - global_seed_action_scale
+    - post_training_action_scale
+    - per_anchor_action_scales
+    - per_anchor_observed_angle_deg
+    - maximum_applied_anchor_scale
+    - mean_applied_anchor_scale
+    - coordinate_expanded_anchor_count
+    - materialized_action_audit
+
+exact_replay:
+  matcher: global_cosine_top1
+  solver: one_standard_poselib
+  paired_with_baseline: true
+  default_shard_count: 1
+  control_selects_arm: true
+  confirmation_replays_control_selected_arm_only: true
+
+analysis_only_diagnostic:
+  evaluator_flag: allow_analysis_only
+  accepted_training_status: ANALYSIS_ONLY_TEACHER_NOT_AUTHORIZED
+  requires_clean_nonzero_positive_only_proposal: true
+  consumes_heldout_control: true
+  may_select_arm: false
+  may_enter_confirmation: false
+  may_deploy: false
+  later_formal_run_requires_fresh_disjoint_control: true
+
+risk_supervisor:
+  implementation: map_learning.v13_risk_supervisor
+  bootstrap_unit: pose_family
+  bootstrap_samples: 2000
+  seed: 20260831
+  control_advance_classifications:
+    - DEFAULT_CANDIDATE
+    - PARETO_CANDIDATE
+
+final_deployment_gate:
+  require_tier_b_strong_feedback: true
+  require_clean_protection: true
+  require_nonzero_action_scale: true
+  require_analysis_only_false: true
+  require_control_advance: true
+  require_same_frozen_arm_in_confirmation: true
+  require_design_control_confirmation_batch_sha_distinct: true
+  require_design_control_confirmation_pose_families_disjoint: true
+  formal_deployment_mode: positive_only
+  require_confirmation_hard_safety: true
+  require_confirmation_net_gain_gt: 0.0
+  require_confirmation_probability_lower_risk_gte: 0.95
+  failure_action: retain_stable_map_and_metric

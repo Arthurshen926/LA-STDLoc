@@ -40,10 +40,101 @@ def _save(payload: dict, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _pose_entered_training_evidence(
+    *,
+    evidence: dict,
+    source_descriptors: torch.Tensor,
+    selected_query_rows: torch.Tensor,
+    authorized: bool,
+    task_gain: float,
+) -> dict:
+    """Keep only wrong→right rows that actually entered the alternative pose."""
+
+    changed = torch.as_tensor(evidence["changed_query_rows"]).long().reshape(-1)
+    selected = torch.as_tensor(selected_query_rows).long().reshape(-1)
+    columns = {
+        name: torch.as_tensor(evidence[name]).reshape(-1)
+        for name in (
+            "positive_anchor_rows",
+            "negative_anchor_rows",
+            "positive_rank",
+            "positive_scores",
+            "negative_scores",
+        )
+    }
+    if any(value.numel() != changed.numel() for value in columns.values()):
+        raise ValueError("V9 changed-row evidence columns do not align")
+    if changed.numel() and torch.unique(changed).numel() != changed.numel():
+        raise ValueError("V9 changed Query rows are duplicated")
+    entered = torch.isin(changed, selected)
+    keep = entered if authorized else torch.zeros_like(entered)
+    rows = changed[keep]
+    descriptors = torch.as_tensor(source_descriptors)
+    if rows.numel() and (
+        int(rows.min()) < 0 or int(rows.max()) >= descriptors.shape[0]
+    ):
+        raise ValueError("V9 pose-entered Query row is outside descriptors")
+    return {
+        "query_rows": rows,
+        "query_descriptors": descriptors[rows].clone(),
+        "positive_anchor_rows": columns["positive_anchor_rows"][keep],
+        "negative_anchor_rows": columns["negative_anchor_rows"][keep],
+        "positive_rank": columns["positive_rank"][keep],
+        "positive_scores": columns["positive_scores"][keep],
+        "negative_scores": columns["negative_scores"][keep],
+        "alternative_pose_entered_mask": torch.ones(
+            rows.numel(), dtype=torch.bool
+        ),
+        "candidate_changed_query_rows": changed,
+        "candidate_changed_alternative_pose_entered_mask": entered,
+        "actual_query_task_gain": task_gain,
+    }
+
+
+def _clean_protection_evidence(
+    *,
+    clean_rows: torch.Tensor,
+    source_descriptors: torch.Tensor,
+    candidate_rows: torch.Tensor,
+    candidate_scores: torch.Tensor,
+) -> dict:
+    """Serialize clean row IDs and descriptor/top1/top2 in identical order."""
+
+    rows = torch.as_tensor(clean_rows).long().reshape(-1)
+    descriptors = torch.as_tensor(source_descriptors)
+    candidates = torch.as_tensor(candidate_rows).long()
+    scores = torch.as_tensor(candidate_scores).float()
+    if (
+        candidates.ndim != 2
+        or candidates.shape != scores.shape
+        or candidates.shape[1] < 2
+        or descriptors.shape[0] != candidates.shape[0]
+    ):
+        raise ValueError("V9 clean protection source rows do not align")
+    if rows.numel() and (
+        int(rows.min()) < 0
+        or int(rows.max()) >= descriptors.shape[0]
+        or torch.unique(rows).numel() != rows.numel()
+    ):
+        raise ValueError("V9 clean protection rows are invalid or duplicated")
+    return {
+        "query_rows": rows.clone(),
+        "query_descriptors": descriptors[rows].clone(),
+        "positive_anchor_rows": candidates[rows, 0].clone(),
+        "negative_anchor_rows": candidates[rows, 1].clone(),
+        "initial_margin": (scores[rows, 0] - scores[rows, 1]).clone(),
+    }
+
+
 @torch.inference_mode()
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--certified-batch", type=Path, required=True)
+    parser.add_argument(
+        "--expected-view-role",
+        choices=("feedback_query", "confirmation_query"),
+        default="feedback_query",
+    )
     parser.add_argument("--expected-certified-batch-sha256")
     parser.add_argument("--map", type=Path, required=True)
     parser.add_argument("--expected-map-sha256")
@@ -70,7 +161,7 @@ def main() -> None:
     map_sha = _require_sha(map_path, args.expected_map_sha256, "fixed V2 map")
     batch = json.loads(batch_path.read_text())
     if not (
-        batch.get("view_role") == "feedback_query"
+        batch.get("view_role") == args.expected_view_role
         and batch.get("uses_test_queries") is False
         and batch.get("map_mutation_count") == 0
     ):
@@ -159,6 +250,7 @@ def main() -> None:
             "negative_scores": torch.empty(0),
         }
         alternative = None
+        selected_query_rows = torch.empty(0, dtype=torch.long)
         spatial_cells = 0
         if accepted:
             correct = topk_geometric_correctness(
@@ -229,7 +321,10 @@ def main() -> None:
             and alternative_success
             and task_gain >= args.minimum_task_gain
         )
-        authorized = precision_authorized or recovery_authorized
+        authorized = bool(
+            args.expected_view_role == "feedback_query"
+            and (precision_authorized or recovery_authorized)
+        )
         if not accepted:
             category = "unreliable_query"
         elif precision_authorized:
@@ -243,11 +338,23 @@ def main() -> None:
         category_counts[category] += 1
         if authorized:
             authorized_query_count += 1
-            training_row_count += int(evidence["changed_query_rows"].numel())
-        changed = evidence["changed_query_rows"]
+        training_evidence = _pose_entered_training_evidence(
+            evidence=evidence,
+            source_descriptors=source_descriptors,
+            selected_query_rows=selected_query_rows,
+            authorized=authorized,
+            task_gain=task_gain,
+        )
+        training_row_count += int(training_evidence["query_rows"].numel())
+        clean_protection = _clean_protection_evidence(
+            clean_rows=clean_rows,
+            source_descriptors=source_descriptors,
+            candidate_rows=candidate_rows,
+            candidate_scores=candidate_scores,
+        )
         record = {
             "schema": "lafgs_v9_no_loo_causal_feedback_record",
-            "version": 1,
+            "version": 2,
             "query_index": int(source["query_index"]),
             "pose_family_id": int(source["pose_family_id"]),
             "source_record": str(source_path),
@@ -267,29 +374,8 @@ def main() -> None:
             "can_train_metric": authorized,
             "topk_anchor_rows": candidate_rows,
             "topk_scores": candidate_scores.to(torch.float16),
-            "training_evidence": {
-                "query_rows": changed,
-                "query_descriptors": (
-                    source_descriptors[changed].clone()
-                    if authorized
-                    else torch.empty(0, 256)
-                ),
-                "positive_anchor_rows": evidence["positive_anchor_rows"],
-                "negative_anchor_rows": evidence["negative_anchor_rows"],
-                "positive_rank": evidence["positive_rank"],
-                "positive_scores": evidence["positive_scores"],
-                "negative_scores": evidence["negative_scores"],
-                "actual_query_task_gain": task_gain,
-            },
-            "clean_protection_evidence": {
-                "query_descriptors": source_descriptors[clean_rows].clone(),
-                "positive_anchor_rows": candidate_rows[clean_rows, 0],
-                "negative_anchor_rows": candidate_rows[clean_rows, 1],
-                "initial_margin": (
-                    candidate_scores[clean_rows, 0]
-                    - candidate_scores[clean_rows, 1]
-                ),
-            },
+            "training_evidence": training_evidence,
+            "clean_protection_evidence": clean_protection,
             "spatial_cell_count": spatial_cells,
             "loo_used": False,
             "enters_track_registry": False,
@@ -317,8 +403,15 @@ def main() -> None:
             )
     manifest = {
         "schema": "lafgs_v9_no_loo_causal_feedback_batch",
-        "version": 1,
+        "version": 2,
         "status": "PASS",
+        "role": (
+            "observer_pool"
+            if args.expected_view_role == "feedback_query"
+            else "confirmation_observer"
+        ),
+        "source_view_role": args.expected_view_role,
+        "confirmation_can_train_or_select": False,
         "loo_used": False,
         "trajectory_interpolation_used": False,
         "feedback_descriptors_copied_into_map": False,
@@ -326,6 +419,8 @@ def main() -> None:
         "map_mutation_count": 0,
         "topk": args.topk,
         "accepted_query_row_policy": "v2_row_valid_only",
+        "training_rows_are_alternative_pose_entered_only": True,
+        "clean_protection_has_explicit_query_rows": True,
         "query_count": len(registry),
         "source_query_count": len(batch["records"]),
         "shard_index": args.shard_index,

@@ -51,6 +51,7 @@ def global_owner_prototype_top1(
     *,
     chunk_size: int = 8192,
     anchor_descriptors_normalized: bool = False,
+    prototype_activation_threshold: float | None = None,
 ) -> Top1Matches:
     """Match a sparse prototype extension while emitting base Anchor rows.
 
@@ -73,6 +74,10 @@ def global_owner_prototype_top1(
         int(owners.min()) < 0 or int(owners.max()) >= anchors.shape[0]
     ):
         raise ValueError("prototype owner is outside the base Anchor registry")
+    if prototype_activation_threshold is not None and not (
+        -1.0 <= float(prototype_activation_threshold) <= 1.0
+    ):
+        raise ValueError("prototype activation threshold must be in [-1, 1]")
     if prototypes.shape[0] == 0:
         return global_cosine_top1(
             query_descriptors,
@@ -94,6 +99,10 @@ def global_owner_prototype_top1(
     best_prototype_scores, best_prototype_rows = prototype_scores.max(dim=1)
     # Strict improvement preserves the historical base winner on exact ties.
     use_prototype = best_prototype_scores > base.scores
+    if prototype_activation_threshold is not None:
+        use_prototype &= best_prototype_scores >= float(
+            prototype_activation_threshold
+        )
     owner_rows = base.anchor_indices.clone()
     owner_rows[use_prototype] = owners[best_prototype_rows[use_prototype]]
     scores = base.scores.clone()
@@ -369,14 +378,80 @@ def global_cosine_topk(
         if not anchor_descriptors_normalized:
             anchors = F.normalize(anchors, dim=1)
         scores = query @ anchors.T
-        indices = torch.arange(start, stop, device=query.device)[None].expand(
-            query.shape[0], -1
+        local_k = min(topk, stop - start)
+        local_scores, local_positions = torch.topk(
+            scores, local_k, dim=1, largest=True, sorted=True
         )
-        merged_scores = torch.cat((best_scores, scores), dim=1)
-        merged_indices = torch.cat((best_indices, indices), dim=1)
-        # Canonicalize exact ties by Anchor row.  ``torch.topk`` does not
-        # provide a stable tie contract across devices or chunk sizes, and a
-        # tie at the K boundary can otherwise even change the candidate set.
+
+        # ``torch.topk`` is fast but may choose arbitrary members of an exact
+        # tie at its K boundary.  The common path has no boundary tie and only
+        # sorts K candidates below.  On the rare tied rows, explicitly add the
+        # lowest-row boundary members before the same lexicographic reduction.
+        boundary = local_scores[:, -1]
+        boundary_tie_count = (scores == boundary[:, None]).sum(dim=1)
+        selected_boundary_count = (local_scores == boundary[:, None]).sum(dim=1)
+        if bool((boundary_tie_count != selected_boundary_count).any()):
+            relative_rows = torch.arange(
+                stop - start, device=query.device, dtype=torch.long
+            )[None].expand(query.shape[0], -1)
+            sentinel = stop - start
+            boundary_rows = torch.where(
+                scores == boundary[:, None],
+                relative_rows,
+                torch.full_like(relative_rows, sentinel),
+            )
+            lowest_boundary_rows = torch.topk(
+                boundary_rows,
+                local_k,
+                dim=1,
+                largest=False,
+                sorted=True,
+            ).values
+            valid_boundary = lowest_boundary_rows < sentinel
+            safe_boundary_rows = lowest_boundary_rows.clamp_max(sentinel - 1)
+            lowest_boundary_scores = torch.gather(
+                scores, 1, safe_boundary_rows
+            )
+            lowest_boundary_scores = torch.where(
+                valid_boundary,
+                lowest_boundary_scores,
+                torch.full_like(lowest_boundary_scores, -torch.inf),
+            )
+            local_positions = torch.cat(
+                (local_positions, safe_boundary_rows), dim=1
+            )
+            local_scores = torch.cat(
+                (local_scores, lowest_boundary_scores), dim=1
+            )
+            # The arbitrary Top-K boundary members and the explicit lowest
+            # boundary rows may overlap.  Keep one occurrence per local row.
+            local_index_order = torch.argsort(
+                local_positions, dim=1, stable=True
+            )
+            local_positions = torch.gather(
+                local_positions, 1, local_index_order
+            )
+            local_scores = torch.gather(local_scores, 1, local_index_order)
+            duplicate = torch.zeros_like(local_positions, dtype=torch.bool)
+            duplicate[:, 1:] = local_positions[:, 1:] == local_positions[:, :-1]
+            local_scores = local_scores.masked_fill(duplicate, -torch.inf)
+
+        local_indices = local_positions + start
+        # Canonicalize all retained exact ties by global Anchor row.  Only K
+        # (or 2K on the rare boundary-tie fallback) values are sorted here;
+        # the previous kernel stably sorted every full map chunk for every
+        # query, which dominated exact Top-K runtime.
+        local_index_order = torch.argsort(local_indices, dim=1, stable=True)
+        local_scores = torch.gather(local_scores, 1, local_index_order)
+        local_indices = torch.gather(local_indices, 1, local_index_order)
+        local_score_order = torch.argsort(
+            local_scores, dim=1, descending=True, stable=True
+        )[:, :local_k]
+        local_scores = torch.gather(local_scores, 1, local_score_order)
+        local_indices = torch.gather(local_indices, 1, local_score_order)
+
+        merged_scores = torch.cat((best_scores, local_scores), dim=1)
+        merged_indices = torch.cat((best_indices, local_indices), dim=1)
         index_order = torch.argsort(merged_indices, dim=1, stable=True)
         merged_scores = torch.gather(merged_scores, 1, index_order)
         merged_indices = torch.gather(merged_indices, 1, index_order)

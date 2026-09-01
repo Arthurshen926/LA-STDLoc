@@ -29,6 +29,20 @@ def main() -> None:
         and source.get("accepted_query_row_policy") == "v2_row_valid_only"
     ):
         raise ValueError("view requires corrected no-LOO Observer records")
+    certified_path = Path(source["input"]["certified_batch"]).resolve()
+    if sha256_file(certified_path) != source["input"]["certified_batch_sha256"]:
+        raise ValueError("Observer source certified-batch SHA256 differs")
+    certified = json.loads(certified_path.read_text())
+    required_observer_role = (
+        "heldout_control"
+        if args.view_role == "feedback_query"
+        else "confirmation_observer"
+    )
+    if (
+        certified.get("view_role") != args.view_role
+        or source.get("role") != required_observer_role
+    ):
+        raise ValueError("Observer role cannot materialize the requested view")
     records = []
     decisions = {"ACCEPT": 0, "UNCERTAIN": 0, "REJECT": 0}
     families = set()
@@ -55,6 +69,8 @@ def main() -> None:
         "schema": "lafgs_v14_observer_split_certified_view",
         "version": 1,
         "view_role": args.view_role,
+        "observer_role": source["role"],
+        "source_view_role": certified["view_role"],
         "uses_test_queries": False,
         "map_mutation_count": 0,
         "accepted_query_row_policy": "v2_row_valid_only",

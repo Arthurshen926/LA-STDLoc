@@ -16,15 +16,24 @@ def split_batches(payloads: list[dict], *, design_fraction: float, seed: int) ->
     if not 0.0 < design_fraction < 1.0:
         raise ValueError("design fraction must be in (0, 1)")
     identity = payloads[0]["input"]
+    certified_path = Path(identity["certified_batch"]).resolve()
+    if sha256_file(certified_path) != identity["certified_batch_sha256"]:
+        raise ValueError("Observer certified-batch SHA256 differs")
+    certified = json.loads(certified_path.read_text())
     if any(
         item.get("schema") != "lafgs_v9_no_loo_causal_feedback_batch"
+        or item.get("version") != 2
         or item.get("uses_test_queries") is not False
         or item.get("loo_used") is not False
         or item.get("accepted_query_row_policy") != "v2_row_valid_only"
+        or item.get("training_rows_are_alternative_pose_entered_only") is not True
+        or item.get("clean_protection_has_explicit_query_rows") is not True
         or item.get("input") != identity
         for item in payloads
     ):
         raise ValueError("Observer inputs do not share the corrected no-LOO contract")
+    if certified.get("view_role") != "feedback_query":
+        raise ValueError("design/control split requires feedback-query observers")
     records = [row for item in payloads for row in item["records"]]
     if len({int(row["query_index"]) for row in records}) != len(records):
         raise ValueError("Observer batches overlap")
@@ -60,17 +69,21 @@ def split_batches(payloads: list[dict], *, design_fraction: float, seed: int) ->
                 authorized_rows += int(record["training_evidence"]["query_rows"].numel())
         return {
             "schema": "lafgs_v9_no_loo_causal_feedback_batch",
-            "version": 1,
+            "version": 2,
             "status": "PASS",
             "role": role,
+            "source_view_role": "feedback_query",
             "loo_used": False,
             "uses_test_queries": False,
             "map_mutation_count": 0,
             "accepted_query_row_policy": "v2_row_valid_only",
+            "training_rows_are_alternative_pose_entered_only": True,
+            "clean_protection_has_explicit_query_rows": True,
             "split_policy": "sha256_ranked_pose_family",
             "split_seed": int(seed),
             "design_fraction": float(design_fraction),
             "pose_family_count": len(selected_families),
+            "pose_family_ids": sorted(selected_families),
             "query_count": len(selected),
             "category_counts": categories,
             "authorized_metric_query_count": authorized_queries,

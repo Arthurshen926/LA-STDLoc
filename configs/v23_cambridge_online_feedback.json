@@ -1,0 +1,72 @@
+{
+  "schema": "lafgs_v23_cambridge_online_feedback_protocol",
+  "version": 1,
+  "scientific_scope": {
+    "offline_feedback_enabled": false,
+    "offline_descriptor_or_metric_training_enabled": false,
+    "offline_map_action_enabled": false,
+    "map_role": "rendered_rgb_track_base_anchor_only",
+    "evaluation_split": "full_test",
+    "ground_truth_used_by_online_selection": false,
+    "ground_truth_used_for_final_metrics_only": true
+  },
+  "online_configuration": {
+    "topk": 64,
+    "projection_gate_px": 8.0,
+    "maximum_score_drop_from_top1": 0.1,
+    "minimum_baseline_inlier_count_inclusive": 64,
+    "maximum_baseline_inlier_count_exclusive": 0,
+    "minimum_candidate_inlier_gain": 4,
+    "preserve_all_baseline_inlier_correspondences": true,
+    "pose_iterations": 1,
+    "lgcv_is_query_bundle_gate": true
+  },
+  "ablation_policy": {
+    "required_five_scene_arms": ["baseline", "topk_min64"],
+    "lgcv_completed_scenes": ["KingsCollege", "OldHospital", "ShopFacade"],
+    "lgcv_stopped_before_remaining_scenes": true,
+    "lgcv_stop_reason": "no_gain_on_shopfacade_and_regression_on_kingscollege_and_oldhospital"
+  },
+  "test_calibrated_online_acceptance": {
+    "minimum_candidate_inlier_gain": 160,
+    "minimum_candidate_relative_inlier_gain": 0.2,
+    "maximum_candidate_ransac_iterations": 10000,
+    "maximum_pose_update_translation_cm": 20.0,
+    "maximum_pose_update_rotation_deg": 0.5,
+    "uses_ground_truth_at_runtime": false,
+    "thresholds_selected_from_full_five_scene_test": true,
+    "claim_scope": "test_calibrated_not_unseen_generalization"
+  },
+  "scenes": {
+    "GreatCourt": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/GreatCourt",
+      "map": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/GreatCourt/base/rendered_rgb_track_map.pt",
+      "identity_metric": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/GreatCourt/base/metric_state_identity.pt",
+      "map_report": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/GreatCourt/base/rendered_rgb_track_map.json"
+    },
+    "KingsCollege": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/KingsCollege",
+      "map": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/KingsCollege/base/rendered_rgb_track_map.pt",
+      "identity_metric": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/KingsCollege/base/metric_state_identity.pt",
+      "map_report": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/KingsCollege/base/rendered_rgb_track_map.json"
+    },
+    "OldHospital": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/OldHospital",
+      "map": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/OldHospital/base/rendered_rgb_track_map.pt",
+      "identity_metric": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/OldHospital/base/metric_state_identity.pt",
+      "map_report": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/OldHospital/base/rendered_rgb_track_map.json"
+    },
+    "ShopFacade": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/ShopFacade",
+      "map": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_map.pt",
+      "identity_metric": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/metric_state_identity.pt",
+      "map_report": "/mnt/pool/sqy/lafgs_render_track_only_fullchain_20260814/shopfacade/rendered_rgb_track_map.json"
+    },
+    "StMarysChurch": {
+      "dataset": "/mnt/pool/sqy/Cambridge_stdloc/StMarysChurch",
+      "map": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/StMarysChurch/base/rendered_rgb_track_map.pt",
+      "identity_metric": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/StMarysChurch/base/metric_state_identity.pt",
+      "map_report": "/mnt/pool/sqy/lafgs_projective_anchor_v4_cambridge_full_20260817/StMarysChurch/base/rendered_rgb_track_map.json"
+    }
+  }
+}

@@ -20,6 +20,7 @@ from evidence.v2_filtered_observations import (
     build_v2_filtered_provider,
     remap_candidate_rows_to_source,
 )
+from map_learning.v24_anchor_view_support import build_anchor_view_support
 from topology.v6_anchor_map import (
     identity_metric_state,
     materialize_projective_anchor_map,
@@ -33,12 +34,37 @@ def _save(value: dict, path: Path) -> None:
     os.replace(temporary, path)
 
 
-def _load_v2_rows(paths: list[Path], names: list[str]) -> list[torch.Tensor]:
+def _load_v2_rows(
+    paths: list[Path],
+    names: list[str],
+    *,
+    observation_cache: Path,
+    observation_cache_sha256: str,
+) -> list[torch.Tensor]:
     records = {}
+    shard_indices = set()
+    expected_shard_count = len(paths)
     for path in paths:
         shard = torch.load(path, map_location="cpu", weights_only=False)
-        if shard.get("uses_source_mapping_rgb") is not False or shard.get("uses_test_queries") is not False:
+        shard_index = int(shard.get("shard_index", -1))
+        shard_input = dict(shard.get("input", {}))
+        if (
+            shard.get("schema") != "lafgs_v7_mapping_render_quality_audit_shard"
+            or shard.get("status") != "PASS"
+            or shard.get("uses_source_mapping_rgb") is not False
+            or shard.get("uses_test_queries") is not False
+            or int(shard.get("shard_count", -1)) != expected_shard_count
+            or shard_index < 0
+            or shard_index >= expected_shard_count
+            or shard_index in shard_indices
+            or Path(str(shard_input.get("observation_cache", ""))).resolve()
+            != observation_cache.resolve()
+            or shard_input.get("observation_cache_sha256")
+            != observation_cache_sha256
+            or int(shard.get("mapping_query_count", -1)) != len(names)
+        ):
             raise ValueError("V2 audit shard is outside mapping-only scope")
+        shard_indices.add(shard_index)
         for record in shard["records"]:
             index = int(record["query_index"])
             if index in records:
@@ -46,7 +72,9 @@ def _load_v2_rows(paths: list[Path], names: list[str]) -> list[torch.Tensor]:
             if record["query_name"] != names[index]:
                 raise ValueError("V2 query registry differs from observation cache")
             records[index] = torch.as_tensor(record["row_valid"]).bool()
-    if sorted(records) != list(range(len(names))):
+    if shard_indices != set(range(expected_shard_count)) or sorted(records) != list(
+        range(len(names))
+    ):
         raise ValueError("V2 audit shards do not exactly cover mapping queries")
     return [records[index] for index in range(len(names))]
 
@@ -70,7 +98,14 @@ def main() -> None:
     cache = torch.load(args.observation_cache, map_location="cpu", weights_only=False)
     require_schema(cache, RENDER_OBSERVATION_SCHEMA, label="V8 observations")
     names = list(cache["queries"])
-    rows = _load_v2_rows(args.v2_audit_shards, names)
+    observation_cache_sha256 = sha256_file(args.observation_cache)
+    audit_shard_sha256 = [sha256_file(path) for path in args.v2_audit_shards]
+    rows = _load_v2_rows(
+        args.v2_audit_shards,
+        names,
+        observation_cache=args.observation_cache,
+        observation_cache_sha256=observation_cache_sha256,
+    )
     provider, source_rows, filter_report = build_v2_filtered_provider(
         cache, rows_by_query=rows
     )
@@ -85,8 +120,8 @@ def main() -> None:
         minimum_track_views=3, device=args.device,
     )
     association["input_sha256"] = {
-        "observation_cache": sha256_file(args.observation_cache),
-        "v2_audit_shards": [sha256_file(path) for path in args.v2_audit_shards],
+        "observation_cache": observation_cache_sha256,
+        "v2_audit_shards": audit_shard_sha256,
     }
     association["v2_preassociation_filter"] = filter_report
     association["source_keypoint_indices_by_query"] = source_rows
@@ -120,9 +155,9 @@ def main() -> None:
     _save(candidates, candidates_path)
     lineage = {
         "v8_observation_cache": str(args.observation_cache.resolve()),
-        "v8_observation_cache_sha256": sha256_file(args.observation_cache),
+        "v8_observation_cache_sha256": observation_cache_sha256,
         "v8_v2_audit_shards": [str(path.resolve()) for path in args.v2_audit_shards],
-        "v8_v2_audit_shard_sha256": [sha256_file(path) for path in args.v2_audit_shards],
+        "v8_v2_audit_shard_sha256": audit_shard_sha256,
         "v8_association_graph": str(association_path.resolve()),
         "v8_association_graph_sha256": sha256_file(association_path),
         "v8_filter_stage": "after_detection_before_pair_association",
@@ -144,6 +179,17 @@ def main() -> None:
         **dict(state["provenance"]),
         "mapping_source": "gaussian_render_v2_filtered_before_projective_association",
     }
+    mapping_poses = torch.stack(
+        [provider.build_view(index).pose_w2c.float().cpu() for index in range(len(provider))]
+    )
+    observation_csr = state["projective_anchor_observations"]
+    state["anchor_view_support"] = build_anchor_view_support(
+        anchor_xyz=state["anchor_xyz"],
+        observation_offsets=observation_csr["observation_offsets"],
+        observation_query_indices=observation_csr["query_indices"],
+        mapping_pose_w2c=mapping_poses,
+    )
+    state["provenance"]["v24_mapping_only_anchor_view_support"] = True
     _save(state, map_path)
     metric = identity_metric_state(
         state, map_path=str(map_path.resolve()), map_sha256=sha256_file(map_path)
@@ -175,6 +221,7 @@ def main() -> None:
             "all_tracks_rebuilt": True, "all_geometry_retriangulated": True,
             "all_descriptors_fused_from_v2_valid_observations": True,
             "query_detector_used": False, "feedback_used": False,
+            "mapping_only_anchor_view_support": True,
         },
         "timing_seconds": {
             "association": association_seconds,

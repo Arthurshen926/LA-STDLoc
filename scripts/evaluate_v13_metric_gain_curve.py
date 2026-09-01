@@ -24,11 +24,15 @@ def _arm(alpha: float) -> str:
 def _load_metric(path: Path, anchor_ids: torch.Tensor, device: torch.device):
     state = torch.load(path, map_location="cpu", weights_only=False)
     if not (
-        state.get("protocol") == "v9_no_loo_causal_shared_metric"
+        state.get("protocol")
+        in {
+            "v9_no_loo_causal_shared_metric",
+            "v19_mapping_track_identity_pretraining",
+        }
         and state.get("loo_used", False) is False
         and torch.equal(torch.as_tensor(state["landmark_indices"]).long(), anchor_ids)
     ):
-        raise ValueError("gain curve requires the frozen V9 no-LOO metric")
+        raise ValueError("gain curve requires a frozen no-LOO shared metric")
     metric = SharedLowRankMetric(**state["metric_config"]).to(device)
     metric.load_state_dict(state["metric_state_dict"], strict=True)
     return metric.eval()

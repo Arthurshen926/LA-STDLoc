@@ -43,7 +43,14 @@ def main() -> None:
     parser.add_argument("--images", default="processed")
     parser.add_argument("--gaussian-ply", type=Path, required=True)
     parser.add_argument("--observation-cache", type=Path, required=True)
-    parser.add_argument("--anchor-map", type=Path, required=True)
+    parser.add_argument(
+        "--anchor-map",
+        type=Path,
+        help=(
+            "Optional prior full-map registry cross-check. Fresh high-capacity "
+            "scenes instead bind the cache registry directly to the dataset."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shard-index", type=int, required=True)
     parser.add_argument("--shard-count", type=int, required=True)
@@ -56,19 +63,21 @@ def main() -> None:
         raise FileExistsError(args.output)
 
     cache_path = args.observation_cache.resolve()
-    map_path = args.anchor_map.resolve()
+    map_path = args.anchor_map.resolve() if args.anchor_map is not None else None
     prior_path = args.gaussian_ply.resolve()
     cache = torch.load(cache_path, map_location="cpu", weights_only=False)
-    anchor_map = torch.load(map_path, map_location="cpu", weights_only=False)
     if (
         cache.get("schema") != "render_observation_cache_v2"
         or cache.get("uses_source_mapping_rgb") is not False
         or cache.get("uses_test_queries") is not False
     ):
         raise ValueError("audit requires the frozen rendered mapping cache")
-    names = list(anchor_map["v6_mapping_query_names"])
-    if names != list(cache["queries"]):
-        raise ValueError("map and observation cache query registries differ")
+    names = list(cache["queries"])
+    if map_path is not None:
+        anchor_map = torch.load(map_path, map_location="cpu", weights_only=False)
+        if list(anchor_map["v6_mapping_query_names"]) != names:
+            raise ValueError("map and observation cache query registries differ")
+        del anchor_map
 
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
@@ -173,8 +182,15 @@ def main() -> None:
             "gaussian_ply_sha256": sha256_file(prior_path),
             "observation_cache": str(cache_path),
             "observation_cache_sha256": sha256_file(cache_path),
-            "anchor_map": str(map_path),
-            "anchor_map_sha256": sha256_file(map_path),
+            "anchor_map": str(map_path) if map_path is not None else None,
+            "anchor_map_sha256": (
+                sha256_file(map_path) if map_path is not None else None
+            ),
+            "query_registry_authority": (
+                "prior_full_map_plus_cache_plus_dataset"
+                if map_path is not None
+                else "observation_cache_plus_dataset_mapping_split"
+            ),
         },
         "timing_seconds": time.perf_counter() - started,
         "records": records,

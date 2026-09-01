@@ -96,6 +96,82 @@ def solve_absolute_pose(
     return PoseEstimate(pose_w2c, inliers, dict(info))
 
 
+def refine_absolute_pose_from_initial(
+    points_2d: np.ndarray,
+    points_3d: np.ndarray,
+    intrinsic: np.ndarray,
+    initial_pose_w2c: np.ndarray,
+    optimization_rows: np.ndarray,
+    *,
+    reprojection_error_px: float = 12.0,
+    camera: dict | None = None,
+) -> PoseEstimate:
+    """Run one local PoseLib non-linear refinement from a trusted first pose.
+
+    The caller chooses the sparse optimization rows.  Inliers are then scored
+    over the complete candidate correspondence registry so the return type is
+    compatible with the standard robust solver.
+    """
+
+    points_2d = np.asarray(points_2d, dtype=np.float64)
+    points_3d = np.asarray(points_3d, dtype=np.float64)
+    intrinsic = np.asarray(intrinsic, dtype=np.float64)
+    initial_pose = np.asarray(initial_pose_w2c, dtype=np.float64)
+    rows = np.asarray(optimization_rows, dtype=np.int64).reshape(-1)
+    if not (
+        points_2d.ndim == 2
+        and points_2d.shape[1] == 2
+        and points_3d.shape == (points_2d.shape[0], 3)
+        and intrinsic.shape == (3, 3)
+        and initial_pose.shape == (4, 4)
+        and rows.size >= 4
+        and int(rows.min()) >= 0
+        and int(rows.max()) < points_2d.shape[0]
+        and np.unique(rows).size == rows.size
+        and np.isfinite(points_2d).all()
+        and np.isfinite(points_3d).all()
+        and np.isfinite(intrinsic).all()
+        and np.isfinite(initial_pose).all()
+        and float(reprojection_error_px) > 0.0
+    ):
+        raise ValueError("local absolute-pose refinement inputs are invalid")
+    if camera is None:
+        camera = poselib_camera(intrinsic)
+    initial = poselib.CameraPose()
+    initial.R = initial_pose[:3, :3]
+    initial.t = initial_pose[:3, 3]
+    refined, info = poselib.refine_absolute_pose(
+        points_2d[rows],
+        points_3d[rows],
+        initial,
+        camera,
+        {"verbose": False},
+    )
+    pose_w2c = np.concatenate(
+        (refined.Rt, np.asarray([[0.0, 0.0, 0.0, 1.0]])), axis=0
+    ).astype(np.float32)
+    camera_points = (
+        pose_w2c[:3, :3] @ points_3d.T + pose_w2c[:3, 3:4]
+    ).T
+    depth = camera_points[:, 2]
+    projected = np.full_like(points_2d, np.inf)
+    valid = depth > 1e-12
+    homogeneous = (intrinsic @ camera_points[valid].T).T
+    projected[valid] = homogeneous[:, :2] / homogeneous[:, 2:3]
+    residual = np.linalg.norm(projected - points_2d, axis=1)
+    inliers = np.flatnonzero(residual <= float(reprojection_error_px))
+    diagnostics = dict(info)
+    diagnostics.update(
+        {
+            "iterations": int(info.get("iterations", 0)),
+            "num_inliers": int(inliers.size),
+            "local_refinement": True,
+            "optimization_correspondence_count": int(rows.size),
+        }
+    )
+    return PoseEstimate(pose_w2c, inliers, diagnostics)
+
+
 def solve_group_diverse_absolute_pose(
     points_2d: np.ndarray,
     points_3d: np.ndarray,

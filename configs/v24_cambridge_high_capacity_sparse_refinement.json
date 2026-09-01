@@ -1,0 +1,131 @@
+{
+  "schema": "lafgs_v24_cambridge_high_capacity_sparse_refinement_protocol",
+  "version": 1,
+  "scientific_scope": {
+    "offline_self_localization_feedback_enabled": false,
+    "offline_descriptor_or_metric_training_enabled": false,
+    "offline_prototype_extension_enabled": false,
+    "test_queries_used_for_map_construction": false,
+    "map_role": "mapping_only_high_capacity_f0",
+    "evaluation_split": "full_test",
+    "ground_truth_used_by_online_refinement": false,
+    "ground_truth_used_for_metrics_and_test_calibration": true,
+    "claim_scope": "five_scene_test_calibrated_not_unseen_generalization"
+  },
+  "f0_construction": {
+    "rendered_mapping_keypoints": 2048,
+    "nms_radius": 4,
+    "detection_threshold": 0.0,
+    "minimum_render_alpha": 0.05,
+    "render_valid_neighborhood_radius": 4,
+    "v2_filter_stage": "after_detection_before_pair_association",
+    "pair_neighbors": 6,
+    "minimum_pair_similarity": 0.65,
+    "minimum_pair_margin": 0.01,
+    "maximum_epipolar_error_px": 2.0,
+    "minimum_track_views": 3,
+    "minimum_triangulation_parallax_deg": 1.0,
+    "maximum_triangulation_reprojection_px": 2.0,
+    "capacity_policy": "all_valid_projective_tracks_no_anchor_cap",
+    "gaussian_depth_used_for_final_anchor_xyz": false,
+    "mapping_only_anchor_view_support_modes": 2
+  },
+  "online_refinement": {
+    "topk": 64,
+    "candidate_pool": "first_pose_point_projection_frustum",
+    "candidate_pool_image_margin_px": 64.0,
+    "projection_gate_px": 8.0,
+    "maximum_score_drop_from_top1": 0.03,
+    "minimum_reprojection_improvement_px": 1.0,
+    "joint_cost_weights": {
+      "descriptor": 0.5,
+      "initial_pose_geometry": 0.4,
+      "mapping_reliability": 0.1
+    },
+    "preserve_first_pass_inlier_rows": true,
+    "reserve_first_pass_inlier_anchors": true,
+    "unique_new_anchor_owner": true,
+    "mapping_view_direction_slack_deg": 15.0,
+    "mapping_distance_ratio_range": [0.25, 4.0],
+    "maximum_changed_rows": 128,
+    "maximum_changed_to_baseline_inlier_ratio": 0.5,
+    "minimum_proposal_count_before_second_solve": 60,
+    "minimum_proposal_relative_gain_before_second_solve": 0.075,
+    "candidate_pose_backends": ["local", "robust"],
+    "selected_development_backend": "robust",
+    "additional_poselib_ransac_solves": 1,
+    "maximum_local_nonlinear_pose_refinements": 0,
+    "dense_matching_or_query_rendering_used": false,
+    "map_mutation_used": false
+  },
+  "primary_metrics": [
+    "median_translation_error_cm",
+    "median_rotation_error_deg",
+    "p90_translation_error_cm",
+    "paired_query_translation_delta_cm"
+  ],
+  "secondary_metrics": [
+    "r5_gain_loss",
+    "catastrophic_100cm_count",
+    "latency_mean_p50_p90",
+    "second_solve_rate"
+  ],
+  "test_calibrated_scene_policy": {
+    "note": "The full test set is used as a calibration target by request. These gates are scene-specific deployment settings, not unseen-generalization evidence.",
+    "GreatCourt": {
+      "enabled": true,
+      "minimum_proposal_count_before_second_solve": 100,
+      "minimum_proposal_relative_gain_before_second_solve": 0.125,
+      "minimum_candidate_inlier_gain": 0,
+      "minimum_candidate_relative_inlier_gain": 0.0,
+      "minimum_baseline_inlier_retention": 0.9,
+      "maximum_protected_median_residual_increase_px": 0.5,
+      "maximum_protected_p90_residual_increase_px": 2.0,
+      "maximum_pose_update_translation_cm": 20.0,
+      "maximum_pose_update_rotation_deg": 0.1,
+      "maximum_candidate_ransac_iterations": 5000
+    },
+    "KingsCollege": {
+      "enabled": false,
+      "reason": "no jointly reliable median-TE/median-RE gain"
+    },
+    "OldHospital": {
+      "enabled": true,
+      "minimum_proposal_count_before_second_solve": 125,
+      "minimum_proposal_relative_gain_before_second_solve": 0.25,
+      "minimum_candidate_inlier_gain": 0,
+      "minimum_candidate_relative_inlier_gain": 0.0,
+      "minimum_baseline_inlier_retention": 0.9,
+      "maximum_protected_median_residual_increase_px": 0.5,
+      "maximum_protected_p90_residual_increase_px": 2.0,
+      "maximum_pose_update_translation_cm": 20.0,
+      "maximum_pose_update_rotation_deg": 0.25,
+      "maximum_candidate_ransac_iterations": 5000
+    },
+    "ShopFacade": {
+      "enabled": false,
+      "reason": "already-strong F0 baseline and no measurable median gain"
+    },
+    "StMarysChurch": {
+      "enabled": true,
+      "minimum_proposal_count_before_second_solve": 75,
+      "minimum_proposal_relative_gain_before_second_solve": 0.2,
+      "minimum_candidate_inlier_gain": 0,
+      "minimum_candidate_relative_inlier_gain": 0.0,
+      "minimum_baseline_inlier_retention": 0.9,
+      "maximum_protected_median_residual_increase_px": 0.5,
+      "maximum_protected_p90_residual_increase_px": 2.0,
+      "maximum_pose_update_translation_cm": 5.0,
+      "maximum_pose_update_rotation_deg": 0.05,
+      "maximum_candidate_ransac_iterations": 10000
+    }
+  },
+  "artifact_root": "/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901",
+  "scenes": [
+    "GreatCourt",
+    "KingsCollege",
+    "OldHospital",
+    "ShopFacade",
+    "StMarysChurch"
+  ]
+}
