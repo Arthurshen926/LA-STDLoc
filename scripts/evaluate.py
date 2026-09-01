@@ -294,6 +294,41 @@ def main() -> None:
         "--refinement-maximum-soft-inlier-changes", type=int, default=16
     )
     parser.add_argument(
+        "--refinement-pose-conditioned-mutual-matching",
+        action="store_true",
+        help=(
+            "Require each geometrically feasible candidate Anchor to select "
+            "its highest-scoring query row in the sparse pose-conditioned graph."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-heldout-candidate-validation",
+        action="store_true",
+        help=(
+            "Reserve a deterministic spatial subset of first-pass outlier rows "
+            "from the second solve and compare T0/T1 on their strict sparse graph."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-minimum-heldout-relative-energy-gain",
+        type=float,
+        default=0.0,
+        help="Minimum T0-to-T1 held-out strict-assignment energy reduction.",
+    )
+    parser.add_argument(
+        "--refinement-uncertainty-aware-projection",
+        action="store_true",
+        help=(
+            "Project first-pose and full 3D Anchor covariance into pixels and "
+            "use a bounded per-edge projection gate."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-maximum-uncertainty-projection-gate-px",
+        type=float,
+        default=12.0,
+    )
+    parser.add_argument(
         "--refinement-minimum-changed-inlier-fraction", type=float, default=0.10
     )
     parser.add_argument(
@@ -311,6 +346,32 @@ def main() -> None:
             "Avoid per-stage CUDA synchronization. Total latency remains strict; "
             "frontend/matching use CUDA-event timings."
         ),
+    )
+    parser.add_argument(
+        "--match-retention-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "Retain this query-local fraction of the highest absolute-cosine "
+            "Top-1 correspondences as the first-pass PnP confidence core."
+        ),
+    )
+    parser.add_argument(
+        "--minimum-retained-match-count", type=int, default=256
+    )
+    parser.add_argument(
+        "--core-reserve-refinement",
+        action="store_true",
+        help=(
+            "Use high-cosine matches for robust PnP, then admit only "
+            "pose-consistent reserve Top-1 rows to one local sparse refinement."
+        ),
+    )
+    parser.add_argument(
+        "--core-reserve-reprojection-gate-px", type=float, default=4.0
+    )
+    parser.add_argument(
+        "--core-reserve-minimum-supported-rows", type=int, default=16
     )
     args = parser.parse_args()
     if args.assignment_topk < 0:
@@ -502,6 +563,21 @@ def main() -> None:
         refinement_maximum_soft_inlier_changes=(
             args.refinement_maximum_soft_inlier_changes
         ),
+        refinement_pose_conditioned_mutual_matching=(
+            args.refinement_pose_conditioned_mutual_matching
+        ),
+        refinement_heldout_candidate_validation=(
+            args.refinement_heldout_candidate_validation
+        ),
+        refinement_minimum_heldout_relative_energy_gain=(
+            args.refinement_minimum_heldout_relative_energy_gain
+        ),
+        refinement_uncertainty_aware_projection=(
+            args.refinement_uncertainty_aware_projection
+        ),
+        refinement_maximum_uncertainty_projection_gate_px=(
+            args.refinement_maximum_uncertainty_projection_gate_px
+        ),
         refinement_minimum_changed_inliers=(
             args.refinement_minimum_changed_inliers
         ),
@@ -513,6 +589,15 @@ def main() -> None:
         ),
         refinement_maximum_changed_inlier_median_residual_px=(
             args.refinement_maximum_changed_inlier_median_residual_px
+        ),
+        match_retention_fraction=args.match_retention_fraction,
+        minimum_retained_match_count=args.minimum_retained_match_count,
+        core_reserve_refinement=args.core_reserve_refinement,
+        core_reserve_reprojection_gate_px=(
+            args.core_reserve_reprojection_gate_px
+        ),
+        core_reserve_minimum_supported_rows=(
+            args.core_reserve_minimum_supported_rows
         ),
         profile_mode=not args.deployment_mode,
     )
@@ -567,6 +652,9 @@ def main() -> None:
                 "calibration_split": "mapping",
                 "evaluated_split": args.split,
                 "pose_solves": (
+                    "one PoseLib RANSAC plus at most one local nonlinear refinement"
+                    if args.core_reserve_refinement
+                    else
                     "one PoseLib RANSAC plus one local nonlinear refinement"
                     if args.pose_conditioned_sparse_refinement
                     and args.refinement_pose_backend == "local"
@@ -695,6 +783,21 @@ def main() -> None:
                 "refinement_maximum_soft_inlier_changes": int(
                     args.refinement_maximum_soft_inlier_changes
                 ),
+                "refinement_pose_conditioned_mutual_matching": bool(
+                    args.refinement_pose_conditioned_mutual_matching
+                ),
+                "refinement_heldout_candidate_validation": bool(
+                    args.refinement_heldout_candidate_validation
+                ),
+                "refinement_minimum_heldout_relative_energy_gain": float(
+                    args.refinement_minimum_heldout_relative_energy_gain
+                ),
+                "refinement_uncertainty_aware_projection": bool(
+                    args.refinement_uncertainty_aware_projection
+                ),
+                "refinement_maximum_uncertainty_projection_gate_px": float(
+                    args.refinement_maximum_uncertainty_projection_gate_px
+                ),
                 "refinement_minimum_changed_inlier_fraction": float(
                     args.refinement_minimum_changed_inlier_fraction
                 ),
@@ -703,6 +806,21 @@ def main() -> None:
                 ),
                 "refinement_maximum_changed_inlier_median_residual_px": float(
                     args.refinement_maximum_changed_inlier_median_residual_px
+                ),
+                "match_retention_fraction": float(
+                    args.match_retention_fraction
+                ),
+                "minimum_retained_match_count": int(
+                    args.minimum_retained_match_count
+                ),
+                "core_reserve_refinement": bool(
+                    args.core_reserve_refinement
+                ),
+                "core_reserve_reprojection_gate_px": float(
+                    args.core_reserve_reprojection_gate_px
+                ),
+                "core_reserve_minimum_supported_rows": int(
+                    args.core_reserve_minimum_supported_rows
                 ),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),

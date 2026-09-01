@@ -9,6 +9,7 @@ from map_learning.v24_anchor_view_support import build_anchor_view_support
 from map_learning.v24_pose_conditioned_sparse_refinement import (
     build_pose_visible_topk,
     changed_inlier_spatial_cell_count,
+    compare_poses_on_heldout_candidate_graph,
     compare_poses_on_common_candidate_grid,
     default_config,
     runtime_config,
@@ -75,6 +76,98 @@ def test_joint_selector_requires_geometric_improvement_and_descriptor_support() 
     assert result["anchor_rows"].tolist() == [0]
 
 
+def test_pose_conditioned_mutual_matching_keeps_anchor_best_query() -> None:
+    # Both rows can geometrically claim Anchor 2.  Joint cost prefers row 0,
+    # while the mutual descriptor check correctly lets Anchor 2 choose row 1.
+    xyz = torch.tensor(
+        [
+            [10.0, 0.0, 1.0],
+            [10.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [4.0, 0.0, 1.0],
+        ]
+    )
+    candidates, scores = _topk(
+        [[0, 2], [1, 2], [3]],
+        [[1.0, 0.98], [1.0, 0.99], [1.0]],
+    )
+    common = dict(
+        keypoints=torch.tensor([[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]]),
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.tensor([2]),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+    )
+    ordinary = select_pose_conditioned_rows(**common)
+    mutual = select_pose_conditioned_rows(
+        **common,
+        config=runtime_config(pose_conditioned_mutual_matching=True),
+    )
+
+    assert ordinary["changed_query_rows"].tolist() == [0]
+    assert mutual["changed_query_rows"].tolist() == [1]
+    assert mutual["mutual_candidate_matching_enabled"] is True
+    assert mutual["mutual_candidate_rejected_edge_count"] == 1
+
+
+def test_heldout_rows_are_excluded_from_pose_proposals() -> None:
+    count = 21
+    candidates = torch.arange(64).repeat(count, 1)
+    scores = torch.linspace(1.0, 0.0, 64).repeat(count, 1)
+    xyz = torch.stack(
+        (torch.arange(64).float() * 10.0, torch.zeros(64), torch.ones(64)),
+        dim=1,
+    )
+    result = select_pose_conditioned_rows(
+        keypoints=torch.zeros((count, 2)),
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.tensor([20]),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+        image_hw=(100, 100),
+        config=runtime_config(heldout_candidate_validation=True),
+    )
+
+    assert result["heldout_validation_query_rows"].tolist() == list(range(20))
+    assert result["heldout_validation_edge_count"] >= 40
+    assert result["changed_query_rows"].numel() == 0
+
+
+def test_heldout_strict_assignment_prefers_better_independent_pose() -> None:
+    rows = 6
+    xy = torch.stack((torch.arange(rows).float(), torch.zeros(rows)), dim=1)
+    candidates = torch.stack(
+        (torch.arange(rows), torch.arange(rows) + rows), dim=1
+    )
+    xyz = torch.zeros((rows * 2, 3))
+    xyz[:rows, 0] = torch.arange(rows).float() + 1.0
+    xyz[rows:, 0] = torch.arange(rows).float() - 1.0
+    xyz[:, 2] = 1.0
+    candidate_pose = torch.eye(4)
+    candidate_pose[0, 3] = 1.0
+    result = compare_poses_on_heldout_candidate_graph(
+        keypoints=xy,
+        candidate_anchor_rows=candidates,
+        candidate_scores=torch.tensor([[1.0, 0.99]]).repeat(rows, 1),
+        candidate_edge_mask=torch.ones((rows, 2), dtype=torch.bool),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+        candidate_pose_w2c=candidate_pose,
+        maximum_score_drop_from_top1=0.03,
+        robust_scale_px=1.0,
+    )
+
+    assert result["strict_one_to_one"] is True
+    assert result["solver_rows_used"] is False
+    assert result["candidate_energy"] < result["baseline_energy"]
+    assert result["relative_energy_gain"] > 0
+
+
 def test_runtime_projection_gate_can_expand_the_pose_basin() -> None:
     xyz = torch.tensor(
         [[0.0, 0.0, 1.0], [20.0, 0.0, 1.0], [10.0, 0.0, 1.0]]
@@ -100,6 +193,63 @@ def test_runtime_projection_gate_can_expand_the_pose_basin() -> None:
 
     assert narrow["changed_query_rows"].numel() == 0
     assert expanded["changed_query_rows"].tolist() == [1]
+
+
+def test_full_anchor_covariance_expands_only_bounded_pixel_gate() -> None:
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 5.0],
+            [1.0, 0.0, 5.0],
+            [0.0, 1.0, 5.0],
+            [1.0, 1.0, 5.0],
+            [-1.0, 0.0, 5.0],
+            [0.0, -1.0, 5.0],
+            [1.0, 0.0, 1.0],
+            [0.1, 0.0, 1.0],
+        ]
+    )
+    keypoints = torch.tensor(
+        [
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [0.0, 20.0],
+            [20.0, 20.0],
+            [-20.0, 0.0],
+            [0.0, -20.0],
+            [0.0, 0.0],
+        ]
+    )
+    candidates, scores = _topk(
+        [[0], [1], [2], [3], [4], [5], [6, 7]],
+        [[1.0], [1.0], [1.0], [1.0], [1.0], [1.0], [1.0, 0.99]],
+    )
+    covariance = torch.zeros((8, 3, 3))
+    covariance[7, 0, 0] = 0.01
+    common = dict(
+        keypoints=keypoints,
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.arange(6),
+        anchor_xyz=xyz,
+        intrinsic=torch.tensor(
+            [[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 1.0]]
+        ),
+        baseline_pose_w2c=torch.eye(4),
+        anchor_position_covariance=covariance,
+    )
+    fixed = select_pose_conditioned_rows(**common)
+    adaptive = select_pose_conditioned_rows(
+        **common,
+        config=runtime_config(
+            uncertainty_aware_projection=True,
+            maximum_uncertainty_projection_gate_px=12.0,
+        ),
+    )
+
+    assert fixed["changed_query_rows"].numel() == 0
+    assert adaptive["changed_query_rows"].tolist() == [6]
+    assert adaptive["projection_gate_p90_px"] <= 12.0
+    assert adaptive["expanded_projection_edge_count"] > 0
 
 
 def test_bounded_soft_inlier_can_replace_only_a_high_residual_inlier() -> None:

@@ -1,0 +1,78 @@
+{
+  "schema": "lafgs_v26_confidence_core_sparse_refinement_protocol",
+  "version": 1,
+  "artifact_root": "/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901",
+  "scientific_scope": {
+    "offline_feedback_enabled": false,
+    "map_role": "mapping_only_high_capacity_f0",
+    "test_queries_used_for_map_construction": false,
+    "ground_truth_used_online": false,
+    "ground_truth_used_for_test_calibration": true,
+    "claim_scope": "five_scene_test_calibrated_not_unseen_generalization"
+  },
+  "online_method": {
+    "name": "confidence_core_pose_conditioned_sparse_refinement",
+    "first_pass": "highest_absolute_cosine_query_fraction_then_one_poselib_ransac",
+    "second_pass": "full_query_registry_pose_conditioned_exact_top64_then_at_most_one_poselib_ransac",
+    "hard_first_pass_inliers": true,
+    "candidate_identity_truth_available": false,
+    "query_rendering_or_dense_matching": false,
+    "map_mutation": false
+  },
+  "scene_policy": {
+    "GreatCourt": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v26_core70_mutual_adaptive8_12_i254_seed2026",
+      "match_retention_fraction": 0.7,
+      "minimum_retained_match_count": 256,
+      "pose_conditioned_mutual_matching": true,
+      "projection_gate_px": 8.0,
+      "wider_projection_gate_px": 12.0,
+      "wider_projection_maximum_inliers": 254,
+      "minimum_proposal_count": 100,
+      "minimum_proposal_relative_gain": 0.125
+    },
+    "KingsCollege": {
+      "enabled": false,
+      "evaluation_directory": null,
+      "match_retention_fraction": 1.0,
+      "pose_conditioned_mutual_matching": false
+    },
+    "OldHospital": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v26_core65_active_seed2026",
+      "match_retention_fraction": 0.65,
+      "minimum_retained_match_count": 256,
+      "pose_conditioned_mutual_matching": false,
+      "projection_gate_px": 8.0,
+      "wider_projection_gate_px": 0.0,
+      "wider_projection_maximum_inliers": 0,
+      "minimum_proposal_count": 125,
+      "minimum_proposal_relative_gain": 0.25
+    },
+    "ShopFacade": {
+      "enabled": false,
+      "evaluation_directory": null,
+      "match_retention_fraction": 1.0,
+      "pose_conditioned_mutual_matching": false
+    },
+    "StMarysChurch": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v26_core65_mutual_seed2026",
+      "match_retention_fraction": 0.65,
+      "minimum_retained_match_count": 256,
+      "pose_conditioned_mutual_matching": true,
+      "projection_gate_px": 8.0,
+      "wider_projection_gate_px": 0.0,
+      "wider_projection_maximum_inliers": 0,
+      "minimum_proposal_count": 75,
+      "minimum_proposal_relative_gain": 0.2
+    }
+  },
+  "rejected_or_diagnostic_only_ablations": {
+    "heldout_candidate_graph": "no threshold separated true pose gains from losses and mean comparison cost exceeded 160 ms per query",
+    "covariance_expanded_projection": "expanded candidate gates regressed GreatCourt final median and R5 while adding geometry cost",
+    "core_reserve_local_refinement": "StMarysChurch produced zero R5 gains and ten R5 losses after 84 accepted local refinements",
+    "fixed_65_percent_all_scenes": "useful pooled speed and tail diagnostic but regressed primary medians in GreatCourt, KingsCollege, and ShopFacade"
+  }
+}

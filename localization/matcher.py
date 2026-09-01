@@ -43,6 +43,44 @@ class AnchorAssignment:
 
 
 @torch.inference_mode()
+def retain_high_score_matches(
+    matches: Top1Matches,
+    *,
+    retention_fraction: float,
+    minimum_count: int = 256,
+) -> Top1Matches:
+    """Keep the strongest cosine matches but preserve native query order."""
+
+    keypoints = torch.as_tensor(matches.keypoint_indices)
+    anchors = torch.as_tensor(matches.anchor_indices)
+    scores = torch.as_tensor(matches.scores)
+    count = int(scores.numel())
+    fraction = float(retention_fraction)
+    minimum = int(minimum_count)
+    if not (
+        keypoints.shape == anchors.shape == scores.shape == (count,)
+        and bool(torch.isfinite(scores).all())
+        and 0.0 < fraction <= 1.0
+        and minimum >= 4
+    ):
+        raise ValueError("match retention inputs are invalid")
+    retained_count = min(count, max(minimum, int(np.ceil(fraction * count))))
+    if retained_count == count:
+        return matches
+    strongest = torch.topk(
+        scores, retained_count, largest=True, sorted=False
+    ).indices
+    # Filtering must not silently become a progressive-sampling ablation.
+    # Restore the native query registry order before the standard PoseLib call.
+    retained = torch.sort(strongest).values
+    return Top1Matches(
+        keypoint_indices=keypoints[retained],
+        anchor_indices=anchors[retained],
+        scores=scores[retained],
+    )
+
+
+@torch.inference_mode()
 def global_owner_prototype_top1(
     query_descriptors: torch.Tensor,
     anchor_descriptors: torch.Tensor,

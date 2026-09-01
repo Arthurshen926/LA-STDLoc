@@ -10,6 +10,7 @@ from localization.matcher import (
     global_cosine_top2,
     global_cosine_topk,
     maximum_weight_anchor_assignment,
+    retain_high_score_matches,
     suppress_duplicate_anchor_matches,
     suppress_duplicate_entity_matches,
 )
@@ -56,6 +57,19 @@ def test_global_matcher_has_no_landmark_cap():
     matches = global_cosine_top1(query, bank)
     assert matches.anchor_indices.tolist() == [0, 0, 1]
     assert matches.keypoint_indices.tolist() == [0, 1, 2]
+
+
+def test_high_score_retention_preserves_native_query_order() -> None:
+    matches = Top1Matches(
+        keypoint_indices=torch.arange(8),
+        anchor_indices=torch.arange(8) + 10,
+        scores=torch.tensor([0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.4, 0.6]),
+    )
+    retained = retain_high_score_matches(
+        matches, retention_fraction=0.5, minimum_count=4
+    )
+    assert retained.keypoint_indices.tolist() == [1, 3, 5, 7]
+    assert retained.anchor_indices.tolist() == [11, 13, 15, 17]
 
 
 def test_global_top2_returns_exact_margin_candidates():

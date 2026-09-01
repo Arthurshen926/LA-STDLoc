@@ -8,12 +8,24 @@ from features.multiview_fusion import (
     physical_to_grid_index,
     sample_dense_descriptors_at_image_uv,
 )
+from localization.localizer import _local_inliers_to_query_rows
+from localization.matcher import Top1Matches
 from localization.pose_solver import camera_intrinsics, solve_absolute_pose, solve_pose
 
 
 def test_pixel_center_round_trip():
     points = torch.tensor([[0.0, 0.0], [7.25, 9.5]])
     assert torch.equal(physical_to_grid_index(grid_index_to_physical(points)), points)
+
+
+def test_filtered_solver_inliers_map_back_to_full_query_rows() -> None:
+    matches = Top1Matches(
+        keypoint_indices=torch.tensor([1, 3, 6, 8]),
+        anchor_indices=torch.tensor([10, 11, 12, 13]),
+        scores=torch.ones(4),
+    )
+    rows = _local_inliers_to_query_rows(matches, np.array([0, 2]))
+    assert rows.tolist() == [1, 6]
 
 
 def test_dense_sampling_uses_native_stride_eight_centers():
