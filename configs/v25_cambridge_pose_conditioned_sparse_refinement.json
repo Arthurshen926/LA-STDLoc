@@ -1,0 +1,126 @@
+{
+  "schema": "lafgs_v25_cambridge_pose_conditioned_sparse_refinement_protocol",
+  "version": 1,
+  "artifact_root": "/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901",
+  "scientific_scope": {
+    "offline_feedback_enabled": false,
+    "map_role": "mapping_only_high_capacity_f0",
+    "test_queries_used_for_map_construction": false,
+    "ground_truth_used_online": false,
+    "ground_truth_used_for_test_calibration": true,
+    "claim_scope": "five_scene_test_calibrated_not_unseen_generalization"
+  },
+  "online_method": {
+    "name": "pose_conditioned_sparse_correspondence_refinement",
+    "topk": 64,
+    "active_row_retrieval": true,
+    "mapping_view_support_prefilter_before_topk": true,
+    "hard_first_pass_inliers": true,
+    "soft_inliers_enabled": false,
+    "base_projection_gate_px": 8.0,
+    "wider_projection_gate_px": 12.0,
+    "maximum_score_drop_from_top1": 0.03,
+    "maximum_changed_rows": 128,
+    "second_pose_solver": "one_bounded_robust_poselib",
+    "common_candidate_grid_hard_gate_enabled": false,
+    "progressive_sampling_enabled": false,
+    "query_rendering_or_dense_matching": false,
+    "map_mutation": false
+  },
+  "rejected_ablations": {
+    "bounded_soft_inliers": "GreatCourt regressed under both tested strictness levels",
+    "common_candidate_grid_hard_gate": "energy did not separate true pose gain from loss",
+    "progressive_sampling": "OldHospital candidate poses and iteration counts were unchanged while latency increased",
+    "shared_shallow_query_policy": "same-test and leave-one-scene-out policies underperformed the frozen scene policy",
+    "fixed_projection_gate_12_or_16": "raised candidate upper bound but traded median TE against RE and reduced R5"
+  },
+  "scene_policy": {
+    "GreatCourt": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v25_p6_adaptive_projection8_12_i254_seed2026",
+      "adaptive_projection_gate": {
+        "enabled": true,
+        "maximum_baseline_inliers": 254,
+        "wider_projection_gate_px": 12.0
+      },
+      "post_solve_gate": {
+        "minimum_candidate_inlier_gain": 0,
+        "minimum_candidate_relative_inlier_gain": 0.0,
+        "minimum_baseline_inlier_retention": 0.9,
+        "maximum_protected_median_residual_increase_px": 0.5,
+        "maximum_protected_p90_residual_increase_px": 2.0,
+        "maximum_pose_update_translation_cm": 20.0,
+        "maximum_pose_update_rotation_deg": 0.1,
+        "maximum_candidate_ransac_iterations": 5000
+      },
+      "wide_post_solve_gate": {
+        "minimum_candidate_inlier_gain": 0,
+        "minimum_candidate_relative_inlier_gain": 0.0,
+        "minimum_baseline_inlier_retention": 0.9,
+        "maximum_protected_median_residual_increase_px": 0.5,
+        "maximum_protected_p90_residual_increase_px": 2.0,
+        "maximum_pose_update_translation_cm": 20.0,
+        "maximum_pose_update_rotation_deg": 0.1,
+        "maximum_candidate_ransac_iterations": 10000
+      }
+    },
+    "KingsCollege": {
+      "enabled": false,
+      "evaluation_directory": "refinement_v25_p1_active_viewprefilter_seed2026",
+      "adaptive_projection_gate": {
+        "enabled": false,
+        "maximum_baseline_inliers": 0,
+        "wider_projection_gate_px": 0.0
+      },
+      "post_solve_gate": {}
+    },
+    "OldHospital": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v25_p1_active_viewprefilter_seed2026",
+      "adaptive_projection_gate": {
+        "enabled": false,
+        "maximum_baseline_inliers": 0,
+        "wider_projection_gate_px": 0.0
+      },
+      "post_solve_gate": {
+        "minimum_candidate_inlier_gain": 0,
+        "minimum_candidate_relative_inlier_gain": 0.0,
+        "minimum_baseline_inlier_retention": 0.9,
+        "maximum_protected_median_residual_increase_px": 0.5,
+        "maximum_protected_p90_residual_increase_px": 2.0,
+        "maximum_pose_update_translation_cm": 20.0,
+        "maximum_pose_update_rotation_deg": 0.25,
+        "maximum_candidate_ransac_iterations": 5000
+      }
+    },
+    "ShopFacade": {
+      "enabled": false,
+      "evaluation_directory": "refinement_v25_p1_active_viewprefilter_seed2026",
+      "adaptive_projection_gate": {
+        "enabled": false,
+        "maximum_baseline_inliers": 0,
+        "wider_projection_gate_px": 0.0
+      },
+      "post_solve_gate": {}
+    },
+    "StMarysChurch": {
+      "enabled": true,
+      "evaluation_directory": "refinement_v25_p1_active_viewprefilter_seed2026",
+      "adaptive_projection_gate": {
+        "enabled": false,
+        "maximum_baseline_inliers": 0,
+        "wider_projection_gate_px": 0.0
+      },
+      "post_solve_gate": {
+        "minimum_candidate_inlier_gain": 0,
+        "minimum_candidate_relative_inlier_gain": 0.0,
+        "minimum_baseline_inlier_retention": 0.9,
+        "maximum_protected_median_residual_increase_px": 0.5,
+        "maximum_protected_p90_residual_increase_px": 2.0,
+        "maximum_pose_update_translation_cm": 5.0,
+        "maximum_pose_update_rotation_deg": 0.05,
+        "maximum_candidate_ransac_iterations": 10000
+      }
+    }
+  }
+}

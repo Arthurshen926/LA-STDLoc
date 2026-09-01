@@ -201,6 +201,21 @@ def main() -> None:
         "--refinement-minimum-changed-inliers", type=int, default=8
     )
     parser.add_argument(
+        "--refinement-projection-gate-px", type=float, default=8.0
+    )
+    parser.add_argument(
+        "--refinement-uncertainty-projection-gate-px",
+        type=float,
+        default=0.0,
+        help="Zero disables the wider low-inlier projection gate.",
+    )
+    parser.add_argument(
+        "--refinement-uncertainty-maximum-baseline-inliers",
+        type=int,
+        default=0,
+        help="Use the wider projection gate at or below this first-pass count.",
+    )
+    parser.add_argument(
         "--refinement-maximum-score-drop-from-top1", type=float, default=0.03
     )
     parser.add_argument(
@@ -219,6 +234,64 @@ def main() -> None:
     )
     parser.add_argument(
         "--refinement-minimum-proposal-relative-gain", type=float, default=0.075
+    )
+    parser.add_argument(
+        "--refinement-active-row-retrieval",
+        action="store_true",
+        help="Run second-stage descriptor retrieval only for first-pass outliers.",
+    )
+    parser.add_argument(
+        "--refinement-pre-topk-view-filter",
+        action="store_true",
+        help=(
+            "Apply mapping-only viewing-direction and distance support before "
+            "the exact second-stage Top-K retrieval."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-common-candidate-grid-gate",
+        action="store_true",
+        help=(
+            "Compare the first and second poses on the same sparse Top-K "
+            "candidate grid before accepting the second pose."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-minimum-common-grid-relative-energy-gain",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum relative robust common-grid energy reduction; -1 records "
+            "diagnostics without rejecting a candidate."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-progressive-sampling",
+        action="store_true",
+        help=(
+            "Order hard-core and pose-supported correspondences by online "
+            "quality and enable PoseLib progressive sampling for the second solve."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-allow-soft-inliers",
+        action="store_true",
+        help=(
+            "Allow a bounded subset of high-residual first-pass inliers to "
+            "compete for a supported alternative Anchor."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-soft-inlier-minimum-residual-px", type=float, default=6.0
+    )
+    parser.add_argument(
+        "--refinement-soft-inlier-maximum-score-drop", type=float, default=0.02
+    )
+    parser.add_argument(
+        "--refinement-soft-inlier-minimum-improvement-px", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--refinement-maximum-soft-inlier-changes", type=int, default=16
     )
     parser.add_argument(
         "--refinement-minimum-changed-inlier-fraction", type=float, default=0.10
@@ -380,6 +453,13 @@ def main() -> None:
         feedback_maximum_pose_update_rotation_deg=(
             args.feedback_maximum_pose_update_rotation_deg
         ),
+        refinement_projection_gate_px=args.refinement_projection_gate_px,
+        refinement_uncertainty_projection_gate_px=(
+            args.refinement_uncertainty_projection_gate_px
+        ),
+        refinement_uncertainty_maximum_baseline_inliers=(
+            args.refinement_uncertainty_maximum_baseline_inliers
+        ),
         refinement_maximum_score_drop_from_top1=(
             args.refinement_maximum_score_drop_from_top1
         ),
@@ -397,6 +477,30 @@ def main() -> None:
         ),
         refinement_minimum_proposal_relative_gain=(
             args.refinement_minimum_proposal_relative_gain
+        ),
+        refinement_active_row_retrieval=args.refinement_active_row_retrieval,
+        refinement_pre_topk_view_filter=(
+            args.refinement_pre_topk_view_filter
+        ),
+        refinement_common_candidate_grid_gate=(
+            args.refinement_common_candidate_grid_gate
+        ),
+        refinement_minimum_common_grid_relative_energy_gain=(
+            args.refinement_minimum_common_grid_relative_energy_gain
+        ),
+        refinement_progressive_sampling=args.refinement_progressive_sampling,
+        refinement_allow_soft_inliers=args.refinement_allow_soft_inliers,
+        refinement_soft_inlier_minimum_residual_px=(
+            args.refinement_soft_inlier_minimum_residual_px
+        ),
+        refinement_soft_inlier_maximum_score_drop=(
+            args.refinement_soft_inlier_maximum_score_drop
+        ),
+        refinement_soft_inlier_minimum_improvement_px=(
+            args.refinement_soft_inlier_minimum_improvement_px
+        ),
+        refinement_maximum_soft_inlier_changes=(
+            args.refinement_maximum_soft_inlier_changes
         ),
         refinement_minimum_changed_inliers=(
             args.refinement_minimum_changed_inliers
@@ -534,6 +638,15 @@ def main() -> None:
                 "refinement_minimum_changed_inliers": int(
                     args.refinement_minimum_changed_inliers
                 ),
+                "refinement_projection_gate_px": float(
+                    args.refinement_projection_gate_px
+                ),
+                "refinement_uncertainty_projection_gate_px": float(
+                    args.refinement_uncertainty_projection_gate_px
+                ),
+                "refinement_uncertainty_maximum_baseline_inliers": int(
+                    args.refinement_uncertainty_maximum_baseline_inliers
+                ),
                 "refinement_maximum_score_drop_from_top1": float(
                     args.refinement_maximum_score_drop_from_top1
                 ),
@@ -551,6 +664,36 @@ def main() -> None:
                 ),
                 "refinement_minimum_proposal_relative_gain": float(
                     args.refinement_minimum_proposal_relative_gain
+                ),
+                "refinement_active_row_retrieval": bool(
+                    args.refinement_active_row_retrieval
+                ),
+                "refinement_pre_topk_view_filter": bool(
+                    args.refinement_pre_topk_view_filter
+                ),
+                "refinement_common_candidate_grid_gate": bool(
+                    args.refinement_common_candidate_grid_gate
+                ),
+                "refinement_minimum_common_grid_relative_energy_gain": float(
+                    args.refinement_minimum_common_grid_relative_energy_gain
+                ),
+                "refinement_progressive_sampling": bool(
+                    args.refinement_progressive_sampling
+                ),
+                "refinement_allow_soft_inliers": bool(
+                    args.refinement_allow_soft_inliers
+                ),
+                "refinement_soft_inlier_minimum_residual_px": float(
+                    args.refinement_soft_inlier_minimum_residual_px
+                ),
+                "refinement_soft_inlier_maximum_score_drop": float(
+                    args.refinement_soft_inlier_maximum_score_drop
+                ),
+                "refinement_soft_inlier_minimum_improvement_px": float(
+                    args.refinement_soft_inlier_minimum_improvement_px
+                ),
+                "refinement_maximum_soft_inlier_changes": int(
+                    args.refinement_maximum_soft_inlier_changes
                 ),
                 "refinement_minimum_changed_inlier_fraction": float(
                     args.refinement_minimum_changed_inlier_fraction

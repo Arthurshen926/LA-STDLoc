@@ -168,12 +168,25 @@ class SparseLocalizer:
         feedback_maximum_protected_p90_residual_increase_px: float = -1.0,
         feedback_maximum_pose_update_translation_cm: float = -1.0,
         feedback_maximum_pose_update_rotation_deg: float = -1.0,
+        refinement_projection_gate_px: float = 8.0,
+        refinement_uncertainty_projection_gate_px: float = 0.0,
+        refinement_uncertainty_maximum_baseline_inliers: int = 0,
         refinement_maximum_score_drop_from_top1: float = 0.03,
         refinement_view_direction_slack_deg: float = 15.0,
         refinement_maximum_changed_rows: int = 128,
         refinement_maximum_changed_to_baseline_inlier_ratio: float = 0.50,
         refinement_minimum_proposal_count: int = 60,
         refinement_minimum_proposal_relative_gain: float = 0.075,
+        refinement_active_row_retrieval: bool = False,
+        refinement_pre_topk_view_filter: bool = False,
+        refinement_common_candidate_grid_gate: bool = False,
+        refinement_minimum_common_grid_relative_energy_gain: float = 0.0,
+        refinement_progressive_sampling: bool = False,
+        refinement_allow_soft_inliers: bool = False,
+        refinement_soft_inlier_minimum_residual_px: float = 6.0,
+        refinement_soft_inlier_maximum_score_drop: float = 0.02,
+        refinement_soft_inlier_minimum_improvement_px: float = 2.0,
+        refinement_maximum_soft_inlier_changes: int = 16,
         refinement_minimum_changed_inliers: int = 8,
         refinement_minimum_changed_inlier_fraction: float = 0.10,
         refinement_minimum_changed_inlier_spatial_cells: int = 3,
@@ -390,6 +403,7 @@ class SparseLocalizer:
         )
 
         self.pose_conditioned_selection_config = pose_conditioned_runtime_config(
+            projection_gate_px=refinement_projection_gate_px,
             maximum_score_drop_from_top1=(
                 refinement_maximum_score_drop_from_top1
             ),
@@ -398,7 +412,37 @@ class SparseLocalizer:
             maximum_changed_to_baseline_inlier_ratio=(
                 refinement_maximum_changed_to_baseline_inlier_ratio
             ),
+            allow_soft_inliers=refinement_allow_soft_inliers,
+            soft_inlier_minimum_baseline_residual_px=(
+                refinement_soft_inlier_minimum_residual_px
+            ),
+            soft_inlier_maximum_score_drop=(
+                refinement_soft_inlier_maximum_score_drop
+            ),
+            soft_inlier_minimum_reprojection_improvement_px=(
+                refinement_soft_inlier_minimum_improvement_px
+            ),
+            maximum_soft_inlier_changes=(
+                refinement_maximum_soft_inlier_changes
+            ),
         )
+        self.refinement_uncertainty_projection_gate_px = float(
+            refinement_uncertainty_projection_gate_px
+        )
+        self.refinement_uncertainty_maximum_baseline_inliers = int(
+            refinement_uncertainty_maximum_baseline_inliers
+        )
+        uncertainty_gate_enabled = bool(
+            self.refinement_uncertainty_projection_gate_px > 0.0
+            or self.refinement_uncertainty_maximum_baseline_inliers > 0
+        )
+        if uncertainty_gate_enabled and not (
+            self.refinement_uncertainty_projection_gate_px
+            >= float(self.pose_conditioned_selection_config["projection_gate_px"])
+            and self.refinement_uncertainty_projection_gate_px <= 24.0
+            and self.refinement_uncertainty_maximum_baseline_inliers >= 4
+        ):
+            raise ValueError("V25 uncertainty-aware projection gate is invalid")
         self.refinement_minimum_changed_inliers = int(
             refinement_minimum_changed_inliers
         )
@@ -408,11 +452,44 @@ class SparseLocalizer:
         self.refinement_minimum_proposal_relative_gain = float(
             refinement_minimum_proposal_relative_gain
         )
+        self.refinement_active_row_retrieval = bool(
+            refinement_active_row_retrieval
+        )
+        self.refinement_pre_topk_view_filter = bool(
+            refinement_pre_topk_view_filter
+        )
+        self.refinement_common_candidate_grid_gate = bool(
+            refinement_common_candidate_grid_gate
+        )
+        self.refinement_minimum_common_grid_relative_energy_gain = float(
+            refinement_minimum_common_grid_relative_energy_gain
+        )
+        self.refinement_progressive_sampling = bool(
+            refinement_progressive_sampling
+        )
         if not (
             self.refinement_minimum_proposal_count >= 0
             and 0.0 <= self.refinement_minimum_proposal_relative_gain <= 1.0
         ):
             raise ValueError("V24 proposal pre-gate is invalid")
+        if (
+            self.refinement_active_row_retrieval
+            or self.refinement_pre_topk_view_filter
+            or self.refinement_common_candidate_grid_gate
+            or self.refinement_progressive_sampling
+            or uncertainty_gate_enabled
+            or bool(
+                self.pose_conditioned_selection_config["allow_soft_inliers"]
+            )
+        ) and not (
+            self.pose_conditioned_sparse_refinement
+            and self.refinement_pose_backend == "robust"
+        ):
+            raise ValueError(
+                "enhanced retrieval requires robust pose-conditioned refinement"
+            )
+        if not -1.0 <= self.refinement_minimum_common_grid_relative_energy_gain <= 1.0:
+            raise ValueError("V25 common candidate-grid gate is invalid")
         self.refinement_minimum_changed_inlier_fraction = float(
             refinement_minimum_changed_inlier_fraction
         )
@@ -762,6 +839,7 @@ class SparseLocalizer:
         baseline_pose_inlier_count = int(pose.inliers.size)
         feedback_geometry_ms = 0.0
         feedback_ransac_ms = 0.0
+        feedback_model_comparison_ms = 0.0
         feedback_eligible = False
         feedback_gate_passed = False
         feedback_accepted = False
@@ -789,6 +867,13 @@ class SparseLocalizer:
         feedback_visible_anchor_count = 0
         feedback_candidate_pool_anchor_count = 0
         feedback_candidate_pool_global_fallback = False
+        feedback_view_support_prefilter_fallback = False
+        feedback_retrieval_query_count = 0
+        feedback_view_supported_anchor_count = 0
+        feedback_soft_inlier_candidate_rows = 0
+        feedback_soft_inlier_changed_rows = 0
+        feedback_soft_inlier_capacity_rejections = 0
+        feedback_hard_core_inlier_rows = 0
         feedback_selected_rank_median = 0.0
         feedback_selected_rank_p90 = 0.0
         feedback_selected_score_drop_median = 0.0
@@ -796,6 +881,16 @@ class SparseLocalizer:
         feedback_selected_joint_cost_median = 0.0
         feedback_selected_reprojection_median_px = 0.0
         feedback_rejected_by_protection = False
+        feedback_common_grid_baseline_energy = 0.0
+        feedback_common_grid_candidate_energy = 0.0
+        feedback_common_grid_relative_energy_gain = 0.0
+        feedback_common_grid_baseline_duplicate_owners = 0
+        feedback_common_grid_candidate_duplicate_owners = 0
+        feedback_common_grid_passed = False
+        feedback_progressive_sampling = False
+        feedback_projection_gate_px = float(
+            self.pose_conditioned_selection_config["projection_gate_px"]
+        )
         if (
             self.topk_geometric_feedback
             or self.sparse_lgcv_topk_feedback
@@ -833,6 +928,49 @@ class SparseLocalizer:
                         build_pose_visible_topk,
                     )
 
+                    retrieval_query_rows = None
+                    if self.refinement_active_row_retrieval:
+                        retrieval_mask = torch.ones(
+                            sparse.descriptors.shape[0],
+                            dtype=torch.bool,
+                            device=self.device,
+                        )
+                        retrieval_mask[
+                            torch.as_tensor(
+                                pose.inliers.copy(), device=self.device
+                            ).long()
+                        ] = False
+                        if bool(
+                            self.pose_conditioned_selection_config[
+                                "allow_soft_inliers"
+                            ]
+                        ):
+                            baseline_residual_all = _reprojection_residuals(
+                                points_2d + 0.5,
+                                points_3d,
+                                pose.pose_w2c,
+                                intrinsic,
+                            )
+                            soft_rows = np.asarray(pose.inliers, dtype=np.int64)[
+                                baseline_residual_all[
+                                    np.asarray(pose.inliers, dtype=np.int64)
+                                ]
+                                >= float(
+                                    self.pose_conditioned_selection_config[
+                                        "soft_inlier_minimum_baseline_residual_px"
+                                    ]
+                                )
+                            ]
+                            if soft_rows.size:
+                                retrieval_mask[
+                                    torch.as_tensor(
+                                        soft_rows, device=self.device
+                                    ).long()
+                                ] = True
+                        retrieval_query_rows = torch.nonzero(
+                            retrieval_mask, as_tuple=False
+                        ).reshape(-1)
+
                     visible_topk = build_pose_visible_topk(
                         query_descriptors=sparse.descriptors,
                         normalized_anchor_features=self.anchor_features,
@@ -844,6 +982,30 @@ class SparseLocalizer:
                             pose.pose_w2c, device=self.device
                         ),
                         image_hw=sparse.image_hw,
+                        retrieval_query_rows=retrieval_query_rows,
+                        anchor_view_support=(
+                            self.anchor_view_support
+                            if self.refinement_pre_topk_view_filter
+                            else None
+                        ),
+                        prefilter_mapping_view_support=(
+                            self.refinement_pre_topk_view_filter
+                        ),
+                        view_direction_slack_deg=float(
+                            self.pose_conditioned_selection_config[
+                                "view_direction_slack_deg"
+                            ]
+                        ),
+                        minimum_mapping_distance_ratio=float(
+                            self.pose_conditioned_selection_config[
+                                "minimum_mapping_distance_ratio"
+                            ]
+                        ),
+                        maximum_mapping_distance_ratio=float(
+                            self.pose_conditioned_selection_config[
+                                "maximum_mapping_distance_ratio"
+                            ]
+                        ),
                     )
                     feedback_topk = visible_topk["matches"]
                     feedback_visible_anchor_count = int(
@@ -855,12 +1017,35 @@ class SparseLocalizer:
                     feedback_candidate_pool_global_fallback = bool(
                         visible_topk["global_fallback"]
                     )
+                    feedback_view_support_prefilter_fallback = bool(
+                        visible_topk["view_support_prefilter_fallback"]
+                    )
+                    feedback_retrieval_query_count = int(
+                        visible_topk["retrieval_query_count"]
+                    )
+                    feedback_view_supported_anchor_count = int(
+                        visible_topk["view_supported_anchor_count"]
+                    )
                 baseline_rows_cpu = feedback_topk.anchor_indices[:, 0].cpu()
                 if self.pose_conditioned_sparse_refinement:
                     from map_learning.v24_pose_conditioned_sparse_refinement import (
                         select_pose_conditioned_rows,
                     )
 
+                    query_selection_config = dict(
+                        self.pose_conditioned_selection_config
+                    )
+                    if (
+                        self.refinement_uncertainty_projection_gate_px > 0.0
+                        and int(pose.inliers.size)
+                        <= self.refinement_uncertainty_maximum_baseline_inliers
+                    ):
+                        query_selection_config["projection_gate_px"] = float(
+                            self.refinement_uncertainty_projection_gate_px
+                        )
+                    feedback_projection_gate_px = float(
+                        query_selection_config["projection_gate_px"]
+                    )
                     provisional_device = select_pose_conditioned_rows(
                         keypoints=sparse.keypoints.float() + 0.5,
                         topk_anchor_rows=feedback_topk.anchor_indices,
@@ -880,7 +1065,7 @@ class SparseLocalizer:
                         anchor_uncertainty=self.anchor_uncertainty,
                         mapping_reliability_validated=True,
                         map_geometry_validated=True,
-                        config=self.pose_conditioned_selection_config,
+                        config=query_selection_config,
                     )
                     # This is the only V24 device-to-host transfer before the
                     # second solve: one selected row per query plus compact
@@ -906,6 +1091,18 @@ class SparseLocalizer:
                     )
                     feedback_capacity_rejections = int(
                         provisional["capacity_rejection_count"]
+                    )
+                    feedback_soft_inlier_candidate_rows = int(
+                        provisional["soft_inlier_candidate_row_count"]
+                    )
+                    feedback_soft_inlier_changed_rows = int(
+                        provisional["soft_inlier_changed_row_count"]
+                    )
+                    feedback_soft_inlier_capacity_rejections = int(
+                        provisional["soft_inlier_capacity_rejection_count"]
+                    )
+                    feedback_hard_core_inlier_rows = int(
+                        provisional["hard_core_inlier_row_count"]
                     )
                 else:
                     topk_cfg = dict(feedback_cfg["topk_geometry"])
@@ -1037,13 +1234,56 @@ class SparseLocalizer:
                             camera=pose_camera,
                         )
                     else:
-                        candidate_pose = solve_absolute_pose(
-                            points_2d + 0.5,
-                            candidate_points_3d,
-                            intrinsic,
-                            camera=pose_camera,
-                            **solve_kwargs,
-                        )
+                        candidate_order = None
+                        if self.refinement_progressive_sampling:
+                            baseline_order_residual = _reprojection_residuals(
+                                points_2d + 0.5,
+                                points_3d,
+                                pose.pose_w2c,
+                                intrinsic,
+                            )
+                            quality = np.full(
+                                points_2d.shape[0], -1.0, dtype=np.float64
+                            )
+                            quality[baseline_inliers] = (
+                                1.0
+                                - baseline_order_residual[baseline_inliers]
+                                / max(float(self.reprojection_error_px), 1e-12)
+                            )
+                            changed_order_rows = provisional[
+                                "changed_query_rows"
+                            ].numpy()
+                            if changed_order_rows.size:
+                                quality[changed_order_rows] = np.maximum(
+                                    quality[changed_order_rows],
+                                    1.0
+                                    - provisional["selected_joint_cost"].numpy(),
+                                )
+                            candidate_order = np.argsort(
+                                -quality, kind="stable"
+                            )
+                            ordered_pose = solve_absolute_pose(
+                                points_2d[candidate_order] + 0.5,
+                                candidate_points_3d[candidate_order],
+                                intrinsic,
+                                camera=pose_camera,
+                                progressive_sampling=True,
+                                **solve_kwargs,
+                            )
+                            candidate_pose = PoseEstimate(
+                                ordered_pose.pose_w2c,
+                                candidate_order[ordered_pose.inliers],
+                                ordered_pose.diagnostics,
+                            )
+                            feedback_progressive_sampling = True
+                        else:
+                            candidate_pose = solve_absolute_pose(
+                                points_2d + 0.5,
+                                candidate_points_3d,
+                                intrinsic,
+                                camera=pose_camera,
+                                **solve_kwargs,
+                            )
                     feedback_ransac_ms = (
                         time.perf_counter() - feedback_pose_started
                     ) * 1000.0
@@ -1058,6 +1298,59 @@ class SparseLocalizer:
                     feedback_candidate_relative_inlier_gain = float(
                         feedback_candidate_inlier_gain / max(int(pose.inliers.size), 1)
                     )
+                    if self.refinement_common_candidate_grid_gate:
+                        from map_learning.v24_pose_conditioned_sparse_refinement import (
+                            compare_poses_on_common_candidate_grid,
+                        )
+
+                        comparison_started = time.perf_counter()
+                        comparison = compare_poses_on_common_candidate_grid(
+                            keypoints=sparse.keypoints.float() + 0.5,
+                            topk_anchor_rows=feedback_topk.anchor_indices,
+                            topk_scores=feedback_topk.scores,
+                            baseline_inlier_rows=torch.as_tensor(
+                                baseline_inliers.copy(), device=self.device
+                            ).long(),
+                            anchor_xyz=self.anchor_xyz,
+                            intrinsic=torch.as_tensor(
+                                intrinsic, device=self.device
+                            ).float(),
+                            baseline_pose_w2c=torch.as_tensor(
+                                pose.pose_w2c, device=self.device
+                            ).float(),
+                            candidate_pose_w2c=torch.as_tensor(
+                                candidate_pose.pose_w2c, device=self.device
+                            ).float(),
+                            maximum_score_drop_from_top1=float(
+                                self.pose_conditioned_selection_config[
+                                    "maximum_score_drop_from_top1"
+                                ]
+                            ),
+                            robust_scale_px=float(self.reprojection_error_px),
+                        )
+                        synchronize()
+                        feedback_model_comparison_ms = (
+                            time.perf_counter() - comparison_started
+                        ) * 1000.0
+                        feedback_common_grid_baseline_energy = float(
+                            comparison["baseline_energy"].item()
+                        )
+                        feedback_common_grid_candidate_energy = float(
+                            comparison["candidate_energy"].item()
+                        )
+                        feedback_common_grid_relative_energy_gain = float(
+                            comparison["relative_energy_gain"].item()
+                        )
+                        feedback_common_grid_baseline_duplicate_owners = int(
+                            comparison["baseline_duplicate_owner_count"]
+                        )
+                        feedback_common_grid_candidate_duplicate_owners = int(
+                            comparison["candidate_duplicate_owner_count"]
+                        )
+                        feedback_common_grid_passed = bool(
+                            feedback_common_grid_relative_energy_gain
+                            >= self.refinement_minimum_common_grid_relative_energy_gain
+                        )
                     candidate_inliers = np.asarray(
                         candidate_pose.inliers, dtype=np.int64
                     )
@@ -1200,6 +1493,10 @@ class SparseLocalizer:
                         )
                         and protection_passed
                         and feedback_support_passed
+                        and (
+                            not self.refinement_common_candidate_grid_gate
+                            or feedback_common_grid_passed
+                        )
                     )
                     if feedback_accepted:
                         changed = provisional["changed_query_rows"]
@@ -1229,6 +1526,7 @@ class SparseLocalizer:
                 "ransac_ms": ransac_ms,
                 "feedback_geometry_ms": feedback_geometry_ms,
                 "feedback_ransac_ms": feedback_ransac_ms,
+                "feedback_model_comparison_ms": feedback_model_comparison_ms,
                 "total_ms": (time.perf_counter() - total_started) * 1000.0,
             },
             {
@@ -1343,6 +1641,70 @@ class SparseLocalizer:
                 ),
                 "sparse_feedback_candidate_pool_global_fallback": int(
                     feedback_candidate_pool_global_fallback
+                ),
+                "sparse_feedback_view_support_prefilter_fallback": int(
+                    feedback_view_support_prefilter_fallback
+                ),
+                "sparse_feedback_retrieval_query_count": int(
+                    feedback_retrieval_query_count
+                ),
+                "sparse_feedback_view_supported_anchor_count": int(
+                    feedback_view_supported_anchor_count
+                ),
+                "sparse_feedback_active_row_retrieval": int(
+                    self.refinement_active_row_retrieval
+                ),
+                "sparse_feedback_pre_topk_view_filter": int(
+                    self.refinement_pre_topk_view_filter
+                ),
+                "sparse_feedback_common_candidate_grid_gate": int(
+                    self.refinement_common_candidate_grid_gate
+                ),
+                "sparse_feedback_common_grid_baseline_energy": float(
+                    feedback_common_grid_baseline_energy
+                ),
+                "sparse_feedback_common_grid_candidate_energy": float(
+                    feedback_common_grid_candidate_energy
+                ),
+                "sparse_feedback_common_grid_relative_energy_gain": float(
+                    feedback_common_grid_relative_energy_gain
+                ),
+                "sparse_feedback_common_grid_minimum_relative_energy_gain": float(
+                    self.refinement_minimum_common_grid_relative_energy_gain
+                ),
+                "sparse_feedback_common_grid_baseline_duplicate_owners": int(
+                    feedback_common_grid_baseline_duplicate_owners
+                ),
+                "sparse_feedback_common_grid_candidate_duplicate_owners": int(
+                    feedback_common_grid_candidate_duplicate_owners
+                ),
+                "sparse_feedback_common_grid_passed": int(
+                    feedback_common_grid_passed
+                ),
+                "sparse_feedback_progressive_sampling": int(
+                    feedback_progressive_sampling
+                ),
+                "sparse_feedback_projection_gate_px": float(
+                    feedback_projection_gate_px
+                ),
+                "sparse_feedback_soft_inliers_enabled": int(
+                    bool(
+                        self.pose_conditioned_selection_config[
+                            "allow_soft_inliers"
+                        ]
+                    )
+                ),
+                "sparse_feedback_soft_inlier_candidate_rows": int(
+                    feedback_soft_inlier_candidate_rows
+                ),
+                "sparse_feedback_soft_inlier_changed_rows": int(
+                    feedback_soft_inlier_changed_rows
+                ),
+                "sparse_feedback_soft_inlier_capacity_rejections": int(
+                    feedback_soft_inlier_capacity_rejections
+                ),
+                "sparse_feedback_hard_core_inlier_rows": int(
+                    feedback_hard_core_inlier_rows
                 ),
                 "sparse_feedback_selected_rank_median": (
                     feedback_selected_rank_median
