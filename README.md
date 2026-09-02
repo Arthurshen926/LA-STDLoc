@@ -76,6 +76,14 @@ python -m scripts.run_anygsloc_matrix \
   --max-workers 2
 ```
 
+After every cell in a group completes, create the hash-bound paper aggregate:
+
+```bash
+python -m scripts.aggregate_anygsloc_results \
+  --group primary_24_scene \
+  --output /mnt/pool/sqy/anygsloc_paper_experiments_20260902/primary_24_scene_seed2026.json
+```
+
 The complete experimental protocol and promotion rules are in [docs/anygsloc_experiment_protocol.md](docs/anygsloc_experiment_protocol.md).
 
 ## Evaluation policy
