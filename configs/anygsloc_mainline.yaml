@@ -30,6 +30,7 @@ mapping:
   detection_threshold: 0.0
   render_valid_alpha_minimum: 0.05
   render_valid_neighborhood_radius: 4
+  duplicate_camera_geometry: deduplicate_exact_keep_lexicographic_name
   v2_filter_stage: after_detection_before_pair_association
   pair_neighbors: 6
   minimum_pair_similarity: 0.65

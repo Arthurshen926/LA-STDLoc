@@ -56,6 +56,22 @@ def test_registry_tamper_and_duplicate_geometry_fail_closed():
         build_virtual_camera_registry(duplicate)
 
 
+def test_explicit_geometry_deduplication_is_deterministic_and_replayable():
+    source = [
+        _camera("z_duplicate", 0.0, 9),
+        _camera("a_keeper", 0.0, 1),
+        _camera("m_unique", 1.0, 5),
+    ]
+    selected, registry = build_virtual_camera_registry(
+        source, deduplicate_geometry=True
+    )
+    assert [camera.image_name for camera in selected] == ["a_keeper", "m_unique"]
+    assert registry["duplicate_geometry_count"] == 1
+    assert registry["duplicate_geometry_keeper"] == "lexicographically_first_image_name"
+    resolved = resolve_virtual_camera_registry(list(reversed(source)), registry)
+    assert [camera.image_name for camera in resolved] == ["a_keeper", "m_unique"]
+
+
 def test_filename_path_is_not_implicit_sequence_metadata():
     record = {
         "native_keypoints": torch.zeros(1, 2),

@@ -10,6 +10,7 @@ import torch
 
 
 POLICY = "geometry_pose_intrinsics_v1"
+DEDUPLICATED_POLICY = "geometry_pose_intrinsics_deduplicated_v1"
 SCHEMA = "lafgs_virtual_camera_registry"
 
 
@@ -37,13 +38,27 @@ def _digest(payload: dict) -> str:
     ).hexdigest()
 
 
-def build_virtual_camera_registry(cameras: Sequence, maximum_views: int = 0):
+def build_virtual_camera_registry(
+    cameras: Sequence,
+    maximum_views: int = 0,
+    *,
+    deduplicate_geometry: bool = False,
+):
     indexed = [(source_index, camera, _geometry_key(camera))
                for source_index, camera in enumerate(cameras)]
     keys = [row[2] for row in indexed]
-    if len(keys) != len(set(keys)):
+    if len(keys) != len(set(keys)) and not deduplicate_geometry:
         raise ValueError("virtual-camera registry contains duplicate geometry")
-    ordered = sorted(indexed, key=lambda row: row[2])
+    full_ordered = sorted(indexed, key=lambda row: (row[2], row[1].image_name))
+    if deduplicate_geometry:
+        ordered = []
+        seen = set()
+        for row in full_ordered:
+            if row[2] not in seen:
+                ordered.append(row)
+                seen.add(row[2])
+    else:
+        ordered = full_ordered
     limit = int(maximum_views)
     if 0 < limit < len(ordered):
         selected_rows = torch.div(torch.arange(limit) * len(ordered), limit,
@@ -54,8 +69,13 @@ def build_virtual_camera_registry(cameras: Sequence, maximum_views: int = 0):
     body = {
         "schema": SCHEMA,
         "version": 1,
-        "policy": POLICY,
-        "full_camera_names": [row[1].image_name for row in ordered],
+        "policy": DEDUPLICATED_POLICY if deduplicate_geometry else POLICY,
+        "full_camera_names": [row[1].image_name for row in full_ordered],
+        "unique_geometry_count": len(ordered),
+        "duplicate_geometry_count": len(full_ordered) - len(ordered),
+        "duplicate_geometry_keeper": (
+            "lexicographically_first_image_name" if deduplicate_geometry else None
+        ),
         "selected_camera_names": [row[1].image_name for row in selected],
         "selected_canonical_indices": selected_rows,
         "selected_legacy_dataset_indices": [row[0] for row in selected],
@@ -81,7 +101,7 @@ def resolve_virtual_camera_registry(cameras: Sequence, registry: dict):
     if (
         body.get("schema") != SCHEMA
         or body.get("version") != 1
-        or body.get("policy") != POLICY
+        or body.get("policy") not in (POLICY, DEDUPLICATED_POLICY)
         or digest != _digest(body)
     ):
         raise ValueError("virtual-camera registry identity is invalid")
@@ -90,6 +110,16 @@ def resolve_virtual_camera_registry(cameras: Sequence, registry: dict):
         raise ValueError("dataset mapping camera names are not unique")
     if set(by_name) != set(body["full_camera_names"]):
         raise ValueError("dataset mapping camera registry differs")
+    if body["policy"] == DEDUPLICATED_POLICY:
+        rebuilt_cameras, _ = build_virtual_camera_registry(
+            cameras, deduplicate_geometry=True
+        )
+        expected_names = [
+            rebuilt_cameras[int(index)].image_name
+            for index in body["selected_canonical_indices"]
+        ]
+        if expected_names != body["selected_camera_names"]:
+            raise ValueError("deduplicated virtual-camera selection differs")
     selected = []
     for entry in body["entries"]:
         camera = by_name.get(entry["name"])

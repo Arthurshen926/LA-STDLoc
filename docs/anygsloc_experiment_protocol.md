@@ -4,6 +4,8 @@
 
 `AnyGSLoc-Base` is the formal method. It uses a frozen RGB Gaussian prior, rendered mapping observations, V2 pre-association filtering, projective tracks, robust ray triangulation, robust track descriptor fusion, an uncapped Projective Anchor map, exact global cosine Top-1, and one PoseLib solve.
 
+Exact duplicate mapping-camera geometries are registered once, keeping the lexicographically first image name. This prevents repeated poses in 7Scenes/12Scenes from receiving duplicate association votes while retaining the complete source-name registry for provenance.
+
 `AnyGSLoc-R` is optional. It may use the first pose to select a sparse confidence Core and Reserve, but it must remain query-specific, sparse, map-read-only, and bounded to one additional pose solve. It is never folded silently into Base.
 
 The following are outside this branch's formal method: offline self-localization feedback, map/descriptor/metric updates from queries, query rendering, dense refinement, learned result selection, and source mapping RGB.

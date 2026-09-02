@@ -113,7 +113,11 @@ def _resolve_render_cameras(mapping, args):
         camera_registry = json.loads(camera_registry_path.read_text())
         cameras = resolve_virtual_camera_registry(mapping, camera_registry)
         return cameras, camera_registry, actual_registry_sha
-    cameras, camera_registry = build_virtual_camera_registry(mapping, args.max_views)
+    cameras, camera_registry = build_virtual_camera_registry(
+        mapping,
+        args.max_views,
+        deduplicate_geometry=args.deduplicate_camera_geometry,
+    )
     return cameras, camera_registry, None
 
 
@@ -717,6 +721,7 @@ def main() -> None:
     parser.add_argument("--white-background", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-views", type=int, default=0)
+    parser.add_argument("--deduplicate-camera-geometry", action="store_true")
     parser.add_argument("--camera-registry", type=Path)
     parser.add_argument("--expected-camera-registry-sha256")
     parser.add_argument("--render-only", action="store_true")

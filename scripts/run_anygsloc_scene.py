@@ -97,6 +97,7 @@ def command_plan(args: argparse.Namespace, prior: dict[str, Any]) -> list[dict[s
                 "--dataset", str(dataset), "--images", args.images,
                 *common_prior,
                 "--output-dir", str(observation.parent), "--render-only",
+                "--deduplicate-camera-geometry",
                 "--keypoints", "2048", "--nms-radius", "4",
                 "--detection-threshold", "0.0",
                 "--render-valid-alpha-minimum", "0.05",
