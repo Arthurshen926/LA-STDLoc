@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import numpy as np
 import torch
 
 from localization.matcher import (
@@ -18,6 +19,95 @@ from localization.matcher import (
     global_cosine_topk,
     maximum_weight_anchor_assignment,
 )
+
+
+def spatial_jackknife_pose_stability(
+    *,
+    keypoints: np.ndarray,
+    points_3d: np.ndarray,
+    pose_w2c: np.ndarray,
+    inlier_rows: np.ndarray,
+    intrinsic: np.ndarray,
+    image_hw: tuple[int, int],
+    reprojection_error_px: float,
+    grid_shape: tuple[int, int] = (4, 4),
+    minimum_remaining_inliers: int = 16,
+    camera: dict | None = None,
+) -> dict:
+    """Measure pose sensitivity to deleting one occupied image region.
+
+    Each leave-one-cell-out pose is a local refinement initialized at the
+    evaluated pose; no extra RANSAC hypothesis is generated.
+    """
+
+    from localization.pose_solver import refine_absolute_pose_from_initial
+
+    xy = np.asarray(keypoints, dtype=np.float64)
+    xyz = np.asarray(points_3d, dtype=np.float64)
+    pose = np.asarray(pose_w2c, dtype=np.float64)
+    rows = np.asarray(inlier_rows, dtype=np.int64).reshape(-1)
+    height, width = int(image_hw[0]), int(image_hw[1])
+    grid_y, grid_x = int(grid_shape[0]), int(grid_shape[1])
+    if not (
+        xy.ndim == 2
+        and xy.shape[1] == 2
+        and xyz.shape == (xy.shape[0], 3)
+        and pose.shape == (4, 4)
+        and np.asarray(intrinsic).shape == (3, 3)
+        and rows.size >= int(minimum_remaining_inliers) + 1
+        and np.unique(rows).size == rows.size
+        and int(rows.min()) >= 0
+        and int(rows.max()) < xy.shape[0]
+        and height > 0
+        and width > 0
+        and grid_y > 1
+        and grid_x > 1
+        and int(minimum_remaining_inliers) >= 4
+    ):
+        raise ValueError("spatial jackknife pose inputs are invalid")
+    inlier_xy = xy[rows]
+    cell_x = np.clip((inlier_xy[:, 0] * grid_x / width).astype(np.int64), 0, grid_x - 1)
+    cell_y = np.clip(
+        (inlier_xy[:, 1] * grid_y / height).astype(np.int64), 0, grid_y - 1
+    )
+    cells = cell_y * grid_x + cell_x
+    translation = []
+    rotation = []
+    removed_counts = []
+    for cell in np.unique(cells):
+        keep = cells != cell
+        if int(np.count_nonzero(keep)) < int(minimum_remaining_inliers):
+            continue
+        refined = refine_absolute_pose_from_initial(
+            xy,
+            xyz,
+            intrinsic,
+            pose,
+            rows[keep],
+            reprojection_error_px=float(reprojection_error_px),
+            camera=camera,
+        )
+        relative = refined.pose_w2c[:3, :3] @ pose[:3, :3].T
+        cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+        update_re = float(np.degrees(np.arccos(cosine)))
+        original_center = np.linalg.inv(pose)[:3, 3]
+        refined_center = np.linalg.inv(refined.pose_w2c)[:3, 3]
+        update_te = float(np.linalg.norm(refined_center - original_center) * 100.0)
+        translation.append(update_te)
+        rotation.append(update_re)
+        removed_counts.append(int(np.count_nonzero(~keep)))
+    if len(translation) < 2:
+        raise ValueError("spatial jackknife needs at least two valid occupied cells")
+    translation_array = np.asarray(translation)
+    rotation_array = np.asarray(rotation)
+    normalized = np.sqrt((translation_array / 5.0) ** 2 + (rotation_array / 5.0) ** 2)
+    return {
+        "valid_group_count": len(translation),
+        "removed_inlier_count_maximum": max(removed_counts),
+        "translation_cm_p90": float(np.percentile(translation_array, 90)),
+        "rotation_deg_p90": float(np.percentile(rotation_array, 90)),
+        "normalized_task_update_p90": float(np.percentile(normalized, 90)),
+    }
 
 
 def default_config() -> dict:
@@ -45,6 +135,8 @@ def default_config() -> dict:
         "reserve_first_pass_inlier_anchors": True,
         "unique_new_anchor_owner": True,
         "pose_conditioned_mutual_matching": False,
+        "set_level_reserve_selection": False,
+        "set_level_diversity_weight": 0.15,
         "heldout_candidate_validation": False,
         "heldout_validation_grid_shape": [8, 8],
         "heldout_validation_modulus": 5,
@@ -87,17 +179,13 @@ def validate_config(value: Mapping) -> dict:
         raise ValueError("V24 pose-conditioned refinement configuration differs")
     if not (
         4.0 <= float(config["projection_gate_px"]) <= 24.0
-        and
-        float(config["projection_gate_px"])
+        and float(config["projection_gate_px"])
         <= float(config["maximum_uncertainty_projection_gate_px"])
         <= 24.0
-        and
-        0.0 < float(config["maximum_score_drop_from_top1"]) <= 0.2
+        and 0.0 < float(config["maximum_score_drop_from_top1"]) <= 0.2
         and 0.0 <= float(config["view_direction_slack_deg"]) <= 60.0
         and 1 <= int(config["maximum_changed_rows"]) <= 512
-        and 0.0
-        < float(config["maximum_changed_to_baseline_inlier_ratio"])
-        <= 2.0
+        and 0.0 < float(config["maximum_changed_to_baseline_inlier_ratio"]) <= 2.0
         and bool(config["preserve_all_first_pass_inliers"])
         == (not bool(config["allow_soft_inliers"]))
         and 0.0
@@ -107,6 +195,7 @@ def validate_config(value: Mapping) -> dict:
         and float(config["soft_inlier_minimum_reprojection_improvement_px"])
         >= float(config["minimum_reprojection_improvement_px"])
         and 1 <= int(config["maximum_soft_inlier_changes"]) <= 64
+        and 0.0 <= float(config["set_level_diversity_weight"]) <= 0.5
     ):
         raise ValueError("V24 tunable correspondence-selection gate is invalid")
     return config
@@ -125,6 +214,8 @@ def runtime_config(
     soft_inlier_minimum_reprojection_improvement_px: float = 2.0,
     maximum_soft_inlier_changes: int = 16,
     pose_conditioned_mutual_matching: bool = False,
+    set_level_reserve_selection: bool = False,
+    set_level_diversity_weight: float = 0.15,
     heldout_candidate_validation: bool = False,
     uncertainty_aware_projection: bool = False,
     maximum_uncertainty_projection_gate_px: float = 12.0,
@@ -133,9 +224,7 @@ def runtime_config(
     config.update(
         {
             "projection_gate_px": float(projection_gate_px),
-            "maximum_score_drop_from_top1": float(
-                maximum_score_drop_from_top1
-            ),
+            "maximum_score_drop_from_top1": float(maximum_score_drop_from_top1),
             "view_direction_slack_deg": float(view_direction_slack_deg),
             "maximum_changed_rows": int(maximum_changed_rows),
             "maximum_changed_to_baseline_inlier_ratio": float(
@@ -146,22 +235,16 @@ def runtime_config(
             "soft_inlier_minimum_baseline_residual_px": float(
                 soft_inlier_minimum_baseline_residual_px
             ),
-            "soft_inlier_maximum_score_drop": float(
-                soft_inlier_maximum_score_drop
-            ),
+            "soft_inlier_maximum_score_drop": float(soft_inlier_maximum_score_drop),
             "soft_inlier_minimum_reprojection_improvement_px": float(
                 soft_inlier_minimum_reprojection_improvement_px
             ),
             "maximum_soft_inlier_changes": int(maximum_soft_inlier_changes),
-            "pose_conditioned_mutual_matching": bool(
-                pose_conditioned_mutual_matching
-            ),
-            "heldout_candidate_validation": bool(
-                heldout_candidate_validation
-            ),
-            "uncertainty_aware_projection": bool(
-                uncertainty_aware_projection
-            ),
+            "pose_conditioned_mutual_matching": bool(pose_conditioned_mutual_matching),
+            "set_level_reserve_selection": bool(set_level_reserve_selection),
+            "set_level_diversity_weight": float(set_level_diversity_weight),
+            "heldout_candidate_validation": bool(heldout_candidate_validation),
+            "uncertainty_aware_projection": bool(uncertainty_aware_projection),
             "maximum_uncertainty_projection_gate_px": float(
                 maximum_uncertainty_projection_gate_px
             ),
@@ -184,15 +267,11 @@ def _anchor_view_support_mask(
     xyz = torch.as_tensor(anchor_xyz).float()
     pose = torch.as_tensor(baseline_pose_w2c, device=xyz.device).float()
     support = dict(anchor_view_support)
-    modes = torch.as_tensor(
-        support.get("direction_modes"), device=xyz.device
-    ).float()
+    modes = torch.as_tensor(support.get("direction_modes"), device=xyz.device).float()
     radii = torch.as_tensor(
         support.get("direction_radius_deg"), device=xyz.device
     ).float()
-    mode_count = torch.as_tensor(
-        support.get("mode_count"), device=xyz.device
-    ).long()
+    mode_count = torch.as_tensor(support.get("mode_count"), device=xyz.device).long()
     minimum_distance = torch.as_tensor(
         support.get("minimum_distance_m"), device=xyz.device
     ).float()
@@ -205,7 +284,9 @@ def _anchor_view_support_mask(
         and support.get("uses_test_queries") is False
         and modes.shape == (count, 2, 3)
         and radii.shape == (count, 2)
-        and mode_count.shape == minimum_distance.shape == maximum_distance.shape
+        and mode_count.shape
+        == minimum_distance.shape
+        == maximum_distance.shape
         == (count,)
     )
     values_valid = bool(support.get("runtime_validated", False)) or bool(
@@ -236,8 +317,7 @@ def _anchor_view_support_mask(
     mode_rows = torch.arange(2, device=xyz.device)[None, :]
     valid_mode = mode_rows < mode_count[:, None]
     direction_supported = (
-        valid_mode
-        & (angular_distance <= radii + float(view_direction_slack_deg))
+        valid_mode & (angular_distance <= radii + float(view_direction_slack_deg))
     ).any(dim=1)
     distance_supported = (
         query_distance >= minimum_distance * float(minimum_distance_ratio)
@@ -254,6 +334,7 @@ def _anchor_view_support_mask(
 def build_pose_visible_topk(
     *,
     query_descriptors: torch.Tensor,
+    query_keypoints: torch.Tensor | None = None,
     normalized_anchor_features: torch.Tensor,
     baseline_anchor_rows: torch.Tensor,
     baseline_scores: torch.Tensor,
@@ -274,6 +355,9 @@ def build_pose_visible_topk(
     view_conditioned_residual_scale: float = 1.0,
     view_conditioned_require_two_valid_modes: bool = False,
     view_conditioned_score_fusion: str = "replace",
+    projection_first_local_candidates: bool = False,
+    projection_first_radius_px: float = 12.0,
+    projection_first_query_chunk_size: int = 128,
 ) -> dict:
     """Retrieve exact Top-K inside the first-pose sparse 3D view frustum.
 
@@ -288,6 +372,11 @@ def build_pose_visible_topk(
     xyz = torch.as_tensor(anchor_xyz).float().to(query.device)
     calibration = torch.as_tensor(intrinsic).float().to(query.device)
     pose = torch.as_tensor(baseline_pose_w2c).float().to(query.device)
+    query_xy = (
+        None
+        if query_keypoints is None
+        else torch.as_tensor(query_keypoints, device=query.device).float()
+    )
     height, width = (int(image_hw[0]), int(image_hw[1]))
     requested = int(topk)
     margin = float(image_margin_px)
@@ -323,16 +412,24 @@ def build_pose_visible_topk(
         )
         and retrieval.unique().numel() == retrieval.numel()
         and (
-            not bool(prefilter_mapping_view_support)
-            or anchor_view_support is not None
+            not bool(prefilter_mapping_view_support) or anchor_view_support is not None
         )
         and (
-            view_conditioned_descriptor_state is None
-            or anchor_view_support is not None
+            view_conditioned_descriptor_state is None or anchor_view_support is not None
         )
         and 0.0 <= float(view_conditioned_minimum_concentration) <= 1.0
         and 0.0 < float(view_conditioned_residual_scale) <= 1.0
         and view_conditioned_score_fusion in {"replace", "max_with_base"}
+        and (
+            not bool(projection_first_local_candidates)
+            or (
+                query_xy is not None
+                and query_xy.shape == (query.shape[0], 2)
+                and bool(torch.isfinite(query_xy).all())
+                and 4.0 <= float(projection_first_radius_px) <= 32.0
+                and int(projection_first_query_chunk_size) >= 1
+            )
+        )
     ):
         raise ValueError("V24 pose-visible Top-K inputs are invalid")
 
@@ -390,59 +487,107 @@ def build_pose_visible_topk(
             baseline_pose_w2c=pose,
             mode_features=view_conditioned_descriptor_state["mode_features"],
             mode_valid=view_conditioned_descriptor_state["mode_valid"],
-            mode_concentration=view_conditioned_descriptor_state[
-                "mode_concentration"
-            ],
+            mode_authorized=view_conditioned_descriptor_state.get(
+                "mode_authorized", view_conditioned_descriptor_state["mode_valid"]
+            ),
+            mode_concentration=view_conditioned_descriptor_state["mode_concentration"],
+            direction_radius_deg=anchor_view_support["direction_radius_deg"],
             minimum_concentration=float(view_conditioned_minimum_concentration),
             anchor_rows=pool_rows,
             residual_scale=float(view_conditioned_residual_scale),
-            require_two_valid_modes=bool(
-                view_conditioned_require_two_valid_modes
-            ),
+            require_two_valid_modes=bool(view_conditioned_require_two_valid_modes),
         )
         selected_mode_count = int(mode_report["selected_mode_anchor_count"])
         base_fallback_count = int(mode_report["base_fallback_anchor_count"])
     output_rows = baseline[:, None].expand(-1, requested).clone()
     output_scores = scores[:, None].expand(-1, requested).clone()
+    projection_local_edge_count = 0
+    projection_local_nonempty_query_count = 0
     if retrieval.numel():
-        if (
-            view_conditioned_descriptor_state is not None
-            and view_conditioned_score_fusion == "max_with_base"
-        ):
-            normalized_query = torch.nn.functional.normalize(
-                query[retrieval], dim=1
-            )
-            local_scores = torch.maximum(
-                normalized_query @ base_retrieval_features.T,
-                normalized_query @ retrieval_features.T,
-            )
-            best_scores, best_rows = torch.topk(
-                local_scores, k=requested, dim=1
-            )
-            local = TopKMatches(
-                keypoint_indices=retrieval,
-                anchor_indices=best_rows,
-                scores=best_scores,
-            )
+        if bool(projection_first_local_candidates):
+            # Geometry-first ablation: descriptors only rank Anchors whose T0
+            # projections already fall inside the sparse keypoint neighborhood.
+            # Chunking bounds the temporary [query, visible Anchor] matrices.
+            output_scores[:, 1:] -= 1.0
+            normalized_query = torch.nn.functional.normalize(query[retrieval], dim=1)
+            projected_pool = projected[pool_rows]
+            alternative_count = min(requested - 1, int(pool_rows.numel()))
+            chunk_size = int(projection_first_query_chunk_size)
+            for start in range(0, retrieval.numel(), chunk_size):
+                query_rows = retrieval[start : start + chunk_size]
+                descriptors = normalized_query[start : start + chunk_size]
+                delta = query_xy[query_rows, None, :] - projected_pool[None, :, :]
+                local_mask = (
+                    delta.square().sum(dim=2) <= float(projection_first_radius_px) ** 2
+                )
+                local_mask &= pool_rows[None, :] != baseline[query_rows, None]
+                projection_local_edge_count += int(local_mask.sum().item())
+                projection_local_nonempty_query_count += int(
+                    local_mask.any(dim=1).sum().item()
+                )
+                local_scores = descriptors @ retrieval_features.T
+                if (
+                    view_conditioned_descriptor_state is not None
+                    and view_conditioned_score_fusion == "max_with_base"
+                ):
+                    local_scores = torch.maximum(
+                        local_scores, descriptors @ base_retrieval_features.T
+                    )
+                local_scores.masked_fill_(~local_mask, -torch.inf)
+                best_scores, best_columns = torch.topk(
+                    local_scores, k=alternative_count, dim=1
+                )
+                finite = torch.isfinite(best_scores)
+                destination_rows = output_rows[query_rows, 1 : 1 + alternative_count]
+                destination_scores = output_scores[
+                    query_rows, 1 : 1 + alternative_count
+                ]
+                mapped_rows = pool_rows[best_columns]
+                destination_rows[finite] = mapped_rows[finite]
+                destination_scores[finite] = best_scores[finite]
+                output_rows[query_rows, 1 : 1 + alternative_count] = destination_rows
+                output_scores[query_rows, 1 : 1 + alternative_count] = (
+                    destination_scores
+                )
         else:
-            local = global_cosine_topk(
-                query[retrieval],
-                retrieval_features,
-                topk=requested,
-                anchor_descriptors_normalized=True,
+            if (
+                view_conditioned_descriptor_state is not None
+                and view_conditioned_score_fusion == "max_with_base"
+            ):
+                normalized_query = torch.nn.functional.normalize(
+                    query[retrieval], dim=1
+                )
+                local_scores = torch.maximum(
+                    normalized_query @ base_retrieval_features.T,
+                    normalized_query @ retrieval_features.T,
+                )
+                best_scores, best_rows = torch.topk(local_scores, k=requested, dim=1)
+                local = TopKMatches(
+                    keypoint_indices=retrieval,
+                    anchor_indices=best_rows,
+                    scores=best_scores,
+                )
+            else:
+                local = global_cosine_topk(
+                    query[retrieval],
+                    retrieval_features,
+                    topk=requested,
+                    anchor_descriptors_normalized=True,
+                )
+            mapped_rows = pool_rows[local.anchor_indices]
+            alternative_scores = local.scores.masked_fill(
+                mapped_rows == baseline[retrieval, None], -torch.inf
             )
-        mapped_rows = pool_rows[local.anchor_indices]
-        alternative_scores = local.scores.masked_fill(
-            mapped_rows == baseline[retrieval, None], -torch.inf
-        )
-        alt_scores, alt_columns = torch.topk(
-            alternative_scores, k=requested - 1, dim=1
-        )
-        alt_rows = mapped_rows.gather(1, alt_columns)
-        if not bool(torch.isfinite(alt_scores).all()):
-            raise RuntimeError("V24 pose-visible pool has too few alternative Anchors")
-        output_rows[retrieval, 1:] = alt_rows
-        output_scores[retrieval, 1:] = alt_scores
+            alt_scores, alt_columns = torch.topk(
+                alternative_scores, k=requested - 1, dim=1
+            )
+            alt_rows = mapped_rows.gather(1, alt_columns)
+            if not bool(torch.isfinite(alt_scores).all()):
+                raise RuntimeError(
+                    "V24 pose-visible pool has too few alternative Anchors"
+                )
+            output_rows[retrieval, 1:] = alt_rows
+            output_scores[retrieval, 1:] = alt_scores
     result = TopKMatches(
         keypoint_indices=torch.arange(query.shape[0], device=query.device),
         anchor_indices=output_rows,
@@ -459,6 +604,12 @@ def build_pose_visible_topk(
         "view_conditioned_selected_mode_anchor_count": selected_mode_count,
         "view_conditioned_base_fallback_anchor_count": base_fallback_count,
         "view_conditioned_score_fusion": view_conditioned_score_fusion,
+        "projection_first_local_candidates": bool(projection_first_local_candidates),
+        "projection_first_radius_px": float(projection_first_radius_px),
+        "projection_local_edge_count": int(projection_local_edge_count),
+        "projection_local_nonempty_query_count": int(
+            projection_local_nonempty_query_count
+        ),
     }
 
 
@@ -617,9 +768,7 @@ def _pose_covariance_from_first_pass_inliers(
     pose_jacobian = torch.cat(
         (
             projection_jacobian,
-            -torch.einsum(
-                "nij,njk->nik", projection_jacobian, _skew_symmetric(camera)
-            ),
+            -torch.einsum("nij,njk->nik", projection_jacobian, _skew_symmetric(camera)),
         ),
         dim=2,
     )
@@ -700,9 +849,7 @@ def select_pose_conditioned_rows(
     residual = (projected - xy[:, None, :]).norm(dim=2)
     residual[depth <= 1e-12] = torch.inf
 
-    edge_projection_gate = torch.full_like(
-        residual, float(cfg["projection_gate_px"])
-    )
+    edge_projection_gate = torch.full_like(residual, float(cfg["projection_gate_px"]))
     pose_information_condition = 0.0
     expanded_projection_edges = 0
     if bool(cfg["uncertainty_aware_projection"]):
@@ -766,9 +913,7 @@ def select_pose_conditioned_rows(
             .clamp_min(0.0)
         )
         projected_sigma = (
-            float(cfg["keypoint_variance_px2"])
-            + pose_variance
-            + anchor_variance
+            float(cfg["keypoint_variance_px2"]) + pose_variance + anchor_variance
         ).sqrt()
         edge_projection_gate = (
             float(cfg["uncertainty_sigma_multiplier"]) * projected_sigma
@@ -776,14 +921,11 @@ def select_pose_conditioned_rows(
             min=float(cfg["projection_gate_px"]),
             max=float(cfg["maximum_uncertainty_projection_gate_px"]),
         )
-        edge_projection_gate[depth <= 1e-12] = float(
-            cfg["projection_gate_px"]
-        )
+        edge_projection_gate[depth <= 1e-12] = float(cfg["projection_gate_px"])
         expanded_projection_edges = int(
-            (
-                edge_projection_gate
-                > float(cfg["projection_gate_px"]) + 1e-6
-            ).sum().item()
+            (edge_projection_gate > float(cfg["projection_gate_px"]) + 1e-6)
+            .sum()
+            .item()
         )
 
     view_supported = torch.ones_like(residual, dtype=torch.bool)
@@ -810,7 +952,9 @@ def select_pose_conditioned_rows(
             and support.get("uses_test_queries") is False
             and modes.shape == (xyz.shape[0], 2, 3)
             and radii.shape == (xyz.shape[0], 2)
-            and mode_count.shape == minimum_distance.shape == maximum_distance.shape
+            and mode_count.shape
+            == minimum_distance.shape
+            == maximum_distance.shape
             == (xyz.shape[0],)
         )
         values_valid = bool(support.get("runtime_validated", False)) or bool(
@@ -856,17 +1000,12 @@ def select_pose_conditioned_rows(
             & (query_distance > 1e-8)
         )
 
-    first_pass_inlier = torch.zeros(
-        count, dtype=torch.bool, device=candidates.device
-    )
+    first_pass_inlier = torch.zeros(count, dtype=torch.bool, device=candidates.device)
     first_pass_inlier[inliers] = True
     soft_inlier = (
         first_pass_inlier
         & bool(cfg["allow_soft_inliers"])
-        & (
-            residual[:, 0]
-            >= float(cfg["soft_inlier_minimum_baseline_residual_px"])
-        )
+        & (residual[:, 0] >= float(cfg["soft_inlier_minimum_baseline_residual_px"]))
     )
     protected = first_pass_inlier & (~soft_inlier)
     reserved_anchors = torch.zeros(
@@ -894,9 +1033,11 @@ def select_pose_conditioned_rows(
             and torch.isfinite(uncertainty).all()
             and (uncertainty >= 0).all()
         )
-        if matchability.shape != uncertainty.shape or matchability.shape != (
-            xyz.shape[0],
-        ) or not values_valid:
+        if (
+            matchability.shape != uncertainty.shape
+            or matchability.shape != (xyz.shape[0],)
+            or not values_valid
+        ):
             raise ValueError("V24 mapping reliability inputs are invalid")
         reliability_cost = 0.5 * (1.0 - matchability[candidates].clamp(0.0, 1.0))
         reliability_cost += 0.5 * (
@@ -910,9 +1051,7 @@ def select_pose_conditioned_rows(
     row_maximum_drop = torch.full(
         (count, 1), maximum_drop, dtype=scores.dtype, device=candidates.device
     )
-    row_maximum_drop[soft_inlier] = float(
-        cfg["soft_inlier_maximum_score_drop"]
-    )
+    row_maximum_drop[soft_inlier] = float(cfg["soft_inlier_maximum_score_drop"])
     row_minimum_improvement = torch.full(
         (count, 1),
         float(cfg["minimum_reprojection_improvement_px"]),
@@ -929,9 +1068,7 @@ def select_pose_conditioned_rows(
         & (~reserved_anchors[candidates])
         & view_supported
     )
-    verification_rows = torch.empty(
-        0, dtype=torch.long, device=candidates.device
-    )
+    verification_rows = torch.empty(0, dtype=torch.long, device=candidates.device)
     verification_edges = torch.empty(
         (0, topk), dtype=torch.bool, device=candidates.device
     )
@@ -949,12 +1086,8 @@ def select_pose_conditioned_rows(
         ) == 0
         has_alternative = descriptor_view_eligible.any(dim=1)
         verification_mask = deterministic_holdout & has_alternative
-        tentative_rows = torch.nonzero(
-            verification_mask, as_tuple=False
-        ).reshape(-1)
-        if tentative_rows.numel() >= int(
-            cfg["heldout_validation_minimum_rows"]
-        ):
+        tentative_rows = torch.nonzero(verification_mask, as_tuple=False).reshape(-1)
+        if tentative_rows.numel() >= int(cfg["heldout_validation_minimum_rows"]):
             verification_rows = tentative_rows
             # Rank zero supplies the native correspondence.  The alternative
             # edges use descriptor + mapping support only; no T1 evidence and
@@ -999,9 +1132,7 @@ def select_pose_conditioned_rows(
                 include_self=True,
             )
             eligible &= scores == maximum_score[candidates]
-        mutual_rejected_edges = eligible_before_mutual - int(
-            eligible.sum().item()
-        )
+        mutual_rejected_edges = eligible_before_mutual - int(eligible.sum().item())
     ranked_cost = joint_cost.masked_fill(~eligible, torch.inf)
     best_cost, best_rank = ranked_cost.min(dim=1)
     selected = baseline.clone()
@@ -1016,31 +1147,71 @@ def select_pose_conditioned_rows(
         changed=changed,
         anchor_count=xyz.shape[0],
     )
-    soft_changed_rows = torch.nonzero(
-        changed & soft_inlier, as_tuple=False
-    ).reshape(-1)
+    soft_changed_rows = torch.nonzero(changed & soft_inlier, as_tuple=False).reshape(-1)
     soft_capacity_rejections = 0
     if soft_changed_rows.numel() > int(cfg["maximum_soft_inlier_changes"]):
         ranked_soft = soft_changed_rows[
             torch.argsort(best_cost[soft_changed_rows], stable=True)
         ]
-        rejected_soft = ranked_soft[int(cfg["maximum_soft_inlier_changes"]):]
+        rejected_soft = ranked_soft[int(cfg["maximum_soft_inlier_changes"]) :]
         changed[rejected_soft] = False
         soft_capacity_rejections = int(rejected_soft.numel())
     changed_rows = torch.nonzero(changed, as_tuple=False).reshape(-1)
     maximum_changed = min(
         int(cfg["maximum_changed_rows"]),
-        int(
-            float(cfg["maximum_changed_to_baseline_inlier_ratio"])
-            * inliers.numel()
-        ),
+        int(float(cfg["maximum_changed_to_baseline_inlier_ratio"]) * inliers.numel()),
     )
     capacity_rejections = 0
     if changed_rows.numel() > maximum_changed:
-        ranked_rows = changed_rows[
-            torch.argsort(best_cost[changed_rows], stable=True)
-        ]
-        rejected = ranked_rows[maximum_changed:]
+        if bool(cfg["set_level_reserve_selection"]):
+            if image_hw is None:
+                raise ValueError(
+                    "set-level Reserve selection requires image dimensions"
+                )
+            height, width = map(int, image_hw)
+            row_xy = xy[changed_rows]
+            cell_x = (row_xy[:, 0] * 8 / width).long().clamp(0, 7)
+            cell_y = (row_xy[:, 1] * 6 / height).long().clamp(0, 5)
+            cells = cell_y * 8 + cell_x
+            selected_depth = camera[changed_rows, best_rank[changed_rows], 2]
+            depth_low = torch.quantile(selected_depth, 0.02)
+            depth_high = torch.quantile(selected_depth, 0.98)
+            depth_bin = (
+                (
+                    (selected_depth - depth_low)
+                    / (depth_high - depth_low).clamp_min(1e-8)
+                    * 4
+                )
+                .long()
+                .clamp(0, 3)
+            )
+            cell_count = torch.zeros(48, device=changed_rows.device)
+            depth_count = torch.zeros(4, device=changed_rows.device)
+            available = torch.ones(
+                changed_rows.numel(), dtype=torch.bool, device=changed_rows.device
+            )
+            chosen = []
+            for _ in range(maximum_changed):
+                utility = -best_cost[changed_rows]
+                utility += float(cfg["set_level_diversity_weight"]) * (
+                    (1.0 + cell_count[cells]).rsqrt()
+                    + (1.0 + depth_count[depth_bin]).rsqrt()
+                )
+                utility[~available] = -torch.inf
+                local = int(torch.argmax(utility))
+                chosen.append(local)
+                available[local] = False
+                cell_count[cells[local]] += 1
+                depth_count[depth_bin[local]] += 1
+            ranked_rows = changed_rows[
+                torch.as_tensor(chosen, device=changed_rows.device)
+            ]
+            rejected = changed_rows[available]
+        else:
+            ranked_rows = changed_rows[
+                torch.argsort(best_cost[changed_rows], stable=True)
+            ]
+            rejected = ranked_rows[maximum_changed:]
         changed[rejected] = False
         capacity_rejections = int(rejected.numel())
     selected[~changed] = baseline[~changed]
@@ -1086,10 +1257,9 @@ def select_pose_conditioned_rows(
             - soft_capacity_rejections
         ),
         "capacity_rejection_count": capacity_rejections,
+        "set_level_reserve_selection_enabled": bool(cfg["set_level_reserve_selection"]),
         "soft_inlier_candidate_row_count": int(soft_inlier.sum().item()),
-        "soft_inlier_changed_row_count": int(
-            (changed & soft_inlier).sum().item()
-        ),
+        "soft_inlier_changed_row_count": int((changed & soft_inlier).sum().item()),
         "soft_inlier_capacity_rejection_count": soft_capacity_rejections,
         "hard_core_inlier_row_count": int(protected.sum().item()),
         "view_support_available": bool(view_support_available),
@@ -1175,9 +1345,7 @@ def compare_poses_on_heldout_candidate_graph(
     projected = homogeneous[..., :2] / depth.clamp_min(1e-12).unsqueeze(-1)
     residual = (projected - xy[None, :, None, :]).norm(dim=3)
     finite = torch.isfinite(residual) & (depth > 1e-12)
-    descriptor_cost = (
-        (scores[:, :1] - scores).clamp_min(0.0) / maximum_drop
-    )
+    descriptor_cost = (scores[:, :1] - scores).clamp_min(0.0) / maximum_drop
     geometry_cost = torch.log1p((residual / scale) ** 2)
     energy = 0.5 * descriptor_cost[None] + 0.5 * geometry_cost
     edge_valid = valid[None] & finite
@@ -1208,9 +1376,7 @@ def compare_poses_on_heldout_candidate_graph(
             if not bool((locations.sum(dim=1) == 1).all()):
                 raise RuntimeError("held-out assignment edge is not unique")
             assigned_ranks = locations.float().argmax(dim=1)
-            assigned_utility = ordered_utility[
-                assigned_rows, assigned_ranks
-            ]
+            assigned_utility = ordered_utility[assigned_rows, assigned_ranks]
         utility_sum = utility.new_tensor(-dustbin * candidates.shape[0])
         if assigned_rows.numel():
             utility_sum += assigned_utility.sum() + dustbin * assigned_rows.numel()
@@ -1264,9 +1430,7 @@ def compare_poses_on_common_candidate_grid(
     xy = torch.as_tensor(keypoints).float()
     candidates = torch.as_tensor(topk_anchor_rows, device=xy.device).long()
     scores = torch.as_tensor(topk_scores, device=xy.device).float()
-    inliers = torch.as_tensor(
-        baseline_inlier_rows, device=xy.device
-    ).long().reshape(-1)
+    inliers = torch.as_tensor(baseline_inlier_rows, device=xy.device).long().reshape(-1)
     xyz = torch.as_tensor(anchor_xyz, device=xy.device).float()
     calibration = torch.as_tensor(intrinsic, device=xy.device).float()
     poses = torch.stack(
@@ -1340,9 +1504,12 @@ def compare_poses_on_common_candidate_grid(
     best_cost, best_rank = edge_cost.min(dim=2)
     if not bool(torch.isfinite(best_cost).all()):
         raise RuntimeError("V25 common candidate grid has an unexplained query row")
-    selected_owner = candidates[None, :, :].expand(2, -1, -1).gather(
-        2, best_rank.unsqueeze(2)
-    ).squeeze(2)
+    selected_owner = (
+        candidates[None, :, :]
+        .expand(2, -1, -1)
+        .gather(2, best_rank.unsqueeze(2))
+        .squeeze(2)
+    )
     duplicate_count = torch.stack(
         [
             torch.tensor(
@@ -1385,9 +1552,13 @@ def changed_inlier_spatial_cell_count(
     inliers = torch.as_tensor(candidate_inlier_rows).long().cpu().reshape(-1)
     if xy.ndim != 2 or xy.shape[1] != 2:
         raise ValueError("V24 spatial-support keypoints must have shape [N, 2]")
-    if changed.numel() and (int(changed.min()) < 0 or int(changed.max()) >= xy.shape[0]):
+    if changed.numel() and (
+        int(changed.min()) < 0 or int(changed.max()) >= xy.shape[0]
+    ):
         raise ValueError("V24 changed row is outside the keypoint registry")
-    if inliers.numel() and (int(inliers.min()) < 0 or int(inliers.max()) >= xy.shape[0]):
+    if inliers.numel() and (
+        int(inliers.min()) < 0 or int(inliers.max()) >= xy.shape[0]
+    ):
         raise ValueError("V24 candidate inlier is outside the keypoint registry")
     mask = torch.zeros(xy.shape[0], dtype=torch.bool)
     mask[changed] = True

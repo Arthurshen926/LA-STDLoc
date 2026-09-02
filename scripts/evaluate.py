@@ -60,9 +60,7 @@ def main() -> None:
     parser.add_argument(
         "--view-conditioned-minimum-concentration", type=float, default=0.0
     )
-    parser.add_argument(
-        "--view-conditioned-residual-scale", type=float, default=1.0
-    )
+    parser.add_argument("--view-conditioned-residual-scale", type=float, default=1.0)
     parser.add_argument(
         "--view-conditioned-require-two-valid-modes", action="store_true"
     )
@@ -88,6 +86,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--confidence-core-progressive-sampling",
+        action="store_true",
+        help=(
+            "Keep the complete retained confidence Core but order it by "
+            "cosine score for PoseLib progressive sampling."
+        ),
+    )
+    parser.add_argument(
         "--group-aware-pose",
         action="store_true",
         help=(
@@ -106,6 +112,42 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default="configs/paper_mainline.yaml")
     parser.add_argument("--split", choices=("mapping", "test"), default="test")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--keypoint-count-override",
+        type=int,
+        help="Engineering upper-bound override; mapping-derived default is unchanged.",
+    )
+    parser.add_argument(
+        "--superpoint-subpixel-refinement",
+        action="store_true",
+        help=(
+            "Apply a bounded 3x3 quadratic detector-peak fit before sparse "
+            "descriptor sampling and PnP."
+        ),
+    )
+    parser.add_argument(
+        "--superpoint-subpixel-geometry-only",
+        action="store_true",
+        help=(
+            "Keep native sparse descriptors bit-exact and refine only the 2D "
+            "coordinates passed to PnP."
+        ),
+    )
+    parser.add_argument(
+        "--superpoint-subpixel-maximum-offset", type=float, default=0.5
+    )
+    parser.add_argument("--ransac-confidence-override", type=float)
+    parser.add_argument("--ransac-maximum-iterations-override", type=int)
+    parser.add_argument("--ransac-minimum-iterations-override", type=int)
+    parser.add_argument(
+        "--ransac-hypothesis-core-size",
+        type=int,
+        default=0,
+        help=(
+            "Experimental first-pose solver: generate robust hypotheses on "
+            "this many strongest matches, then rescore and refine on all matches."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument(
         "--suppress-duplicate-anchors",
@@ -219,12 +261,8 @@ def main() -> None:
         type=float,
         default=-1.0,
     )
-    parser.add_argument(
-        "--refinement-minimum-changed-inliers", type=int, default=8
-    )
-    parser.add_argument(
-        "--refinement-projection-gate-px", type=float, default=8.0
-    )
+    parser.add_argument("--refinement-minimum-changed-inliers", type=int, default=8)
+    parser.add_argument("--refinement-projection-gate-px", type=float, default=8.0)
     parser.add_argument(
         "--refinement-uncertainty-projection-gate-px",
         type=float,
@@ -243,17 +281,13 @@ def main() -> None:
     parser.add_argument(
         "--refinement-view-direction-slack-deg", type=float, default=15.0
     )
-    parser.add_argument(
-        "--refinement-maximum-changed-rows", type=int, default=128
-    )
+    parser.add_argument("--refinement-maximum-changed-rows", type=int, default=128)
     parser.add_argument(
         "--refinement-maximum-changed-to-baseline-inlier-ratio",
         type=float,
         default=0.50,
     )
-    parser.add_argument(
-        "--refinement-minimum-proposal-count", type=int, default=60
-    )
+    parser.add_argument("--refinement-minimum-proposal-count", type=int, default=60)
     parser.add_argument(
         "--refinement-minimum-proposal-relative-gain", type=float, default=0.075
     )
@@ -269,6 +303,17 @@ def main() -> None:
             "Apply mapping-only viewing-direction and distance support before "
             "the exact second-stage Top-K retrieval."
         ),
+    )
+    parser.add_argument(
+        "--refinement-projection-first-local-candidates",
+        action="store_true",
+        help=(
+            "Rank descriptors only among Anchors projected near each sparse "
+            "query keypoint under T0, instead of descriptor Top-K first."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-projection-first-radius-px", type=float, default=12.0
     )
     parser.add_argument(
         "--refinement-common-candidate-grid-gate",
@@ -324,11 +369,27 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--refinement-set-level-reserve-selection",
+        action="store_true",
+        help=(
+            "Choose a spatially and depth-diverse Reserve bundle at the "
+            "existing proposal cap instead of independent lowest cost."
+        ),
+    )
+    parser.add_argument(
         "--refinement-heldout-candidate-validation",
         action="store_true",
         help=(
             "Reserve a deterministic spatial subset of first-pass outlier rows "
             "from the second solve and compare T0/T1 on their strict sparse graph."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-spatial-jackknife-diagnostic",
+        action="store_true",
+        help=(
+            "Record leave-one-image-cell local pose stability for T0/T1; "
+            "diagnostic only and never authorizes the candidate."
         ),
     )
     parser.add_argument(
@@ -378,8 +439,33 @@ def main() -> None:
             "Top-1 correspondences as the first-pass PnP confidence core."
         ),
     )
+    parser.add_argument("--minimum-retained-match-count", type=int, default=256)
     parser.add_argument(
-        "--minimum-retained-match-count", type=int, default=256
+        "--minimum-sufficient-confidence-core",
+        action="store_true",
+        help=(
+            "Build Core v2 from score, Top1/Top2 margin, mapping reliability, "
+            "uncertainty, and 2D/3D diversity at the requested budget."
+        ),
+    )
+    parser.add_argument(
+        "--first-pass-query-cap",
+        type=int,
+        default=0,
+        help=(
+            "Restrict T0 to the strongest detector rows while leaving all "
+            "extracted rows available to the sparse Reserve; zero disables."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-expanded-reserve-maximum-inlier-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Use detector rows beyond the exact T0 cap only when T0 inliers "
+            "divided by retained Core matches do not exceed this query-level "
+            "threshold; zero disables adaptive reserve expansion."
+        ),
     )
     parser.add_argument(
         "--core-reserve-refinement",
@@ -389,34 +475,41 @@ def main() -> None:
             "pose-consistent reserve Top-1 rows to one local sparse refinement."
         ),
     )
+    parser.add_argument("--core-reserve-reprojection-gate-px", type=float, default=4.0)
+    parser.add_argument("--core-reserve-minimum-supported-rows", type=int, default=16)
     parser.add_argument(
-        "--core-reserve-reprojection-gate-px", type=float, default=4.0
+        "--final-pose-polish-reprojection-px",
+        type=float,
+        default=0.0,
+        help=(
+            "Locally polish the final pose using only current inliers within "
+            "this strict pixel radius; zero disables."
+        ),
     )
     parser.add_argument(
-        "--core-reserve-minimum-supported-rows", type=int, default=16
+        "--final-pose-polish-minimum-inliers", type=int, default=64
     )
     args = parser.parse_args()
     if args.assignment_topk < 0:
         parser.error("--assignment-topk must be zero or positive")
     if args.assignment_topk and (
-        args.suppress_duplicate_anchors
-        or args.guided_sampling
-        or args.group_aware_pose
+        args.suppress_duplicate_anchors or args.guided_sampling or args.group_aware_pose
     ):
         parser.error(
             "--assignment-topk cannot be combined with duplicate suppression "
             "guided sampling, or group-aware pose"
         )
-    if sum(
-        (
-            args.topk_geometric_feedback,
-            args.sparse_lgcv_topk_feedback,
-            args.pose_conditioned_sparse_refinement,
+    if (
+        sum(
+            (
+                args.topk_geometric_feedback,
+                args.sparse_lgcv_topk_feedback,
+                args.pose_conditioned_sparse_refinement,
+            )
         )
-    ) > 1:
-        parser.error(
-            "online sparse-refinement modes are separate ablations"
-        )
+        > 1
+    ):
+        parser.error("online sparse-refinement modes are separate ablations")
     if (
         args.topk_geometric_feedback
         or args.sparse_lgcv_topk_feedback
@@ -428,9 +521,7 @@ def main() -> None:
         or args.group_aware_pose
         or args.context_state is not None
     ):
-        parser.error(
-            "online sparse refinement is a separate shared-metric ablation"
-        )
+        parser.error("online sparse refinement is a separate shared-metric ablation")
     if args.view_conditioned_anchor_state is not None and not (
         args.pose_conditioned_sparse_refinement
         and args.metric_state is not None
@@ -475,9 +566,43 @@ def main() -> None:
         else None
     )
     keypoint_count = resolve_keypoint_count(deployment, calibration_cameras)
+    if args.keypoint_count_override is not None:
+        if not 512 <= int(args.keypoint_count_override) <= 4096:
+            parser.error("--keypoint-count-override must be in [512,4096]")
+        keypoint_count = int(args.keypoint_count_override)
     reprojection_error_px = resolve_reprojection_error_px(
         deployment, calibration_cameras, scene_calibration
     )
+    ransac_confidence = (
+        float(deployment["confidence"])
+        if args.ransac_confidence_override is None
+        else float(args.ransac_confidence_override)
+    )
+    ransac_maximum_iterations = (
+        int(deployment["maximum_iterations"])
+        if args.ransac_maximum_iterations_override is None
+        else int(args.ransac_maximum_iterations_override)
+    )
+    ransac_minimum_iterations = (
+        int(deployment["minimum_iterations"])
+        if args.ransac_minimum_iterations_override is None
+        else int(args.ransac_minimum_iterations_override)
+    )
+    if not (
+        0.5 < ransac_confidence < 1.0
+        and 1 <= ransac_minimum_iterations <= ransac_maximum_iterations
+        and ransac_maximum_iterations <= 100000
+    ):
+        parser.error("RANSAC override configuration is invalid")
+    if args.ransac_hypothesis_core_size and not (
+        64 <= int(args.ransac_hypothesis_core_size) <= keypoint_count
+    ):
+        parser.error("--ransac-hypothesis-core-size must be zero or in [64,K]")
+    if (
+        args.superpoint_subpixel_refinement
+        and args.superpoint_subpixel_geometry_only
+    ) or not 0.0 <= float(args.superpoint_subpixel_maximum_offset) <= 0.5:
+        parser.error("SuperPoint subpixel configuration is invalid")
     descriptor_state_path = (
         args.context_state.resolve()
         if args.context_state is not None
@@ -494,9 +619,7 @@ def main() -> None:
         {
             "path": str(args.view_conditioned_anchor_state.resolve()),
             "sha256": sha256_file(args.view_conditioned_anchor_state),
-            "minimum_concentration": float(
-                args.view_conditioned_minimum_concentration
-            ),
+            "minimum_concentration": float(args.view_conditioned_minimum_concentration),
             "residual_scale": float(args.view_conditioned_residual_scale),
             "require_two_valid_modes": bool(
                 args.view_conditioned_require_two_valid_modes
@@ -522,13 +645,20 @@ def main() -> None:
         device=args.device,
         keypoint_count=keypoint_count,
         nms_radius=int(deployment["nms"]),
+        subpixel_keypoints=args.superpoint_subpixel_refinement,
+        subpixel_geometry_only=args.superpoint_subpixel_geometry_only,
+        subpixel_maximum_offset=args.superpoint_subpixel_maximum_offset,
         reprojection_error_px=reprojection_error_px,
-        confidence=deployment["confidence"],
-        max_iterations=deployment["maximum_iterations"],
-        min_iterations=deployment["minimum_iterations"],
+        confidence=ransac_confidence,
+        max_iterations=ransac_maximum_iterations,
+        min_iterations=ransac_minimum_iterations,
         seed=args.seed,
+        ransac_hypothesis_core_size=args.ransac_hypothesis_core_size,
         suppress_duplicate_anchors=args.suppress_duplicate_anchors,
         guided_sampling=args.guided_sampling,
+        confidence_core_progressive_sampling=(
+            args.confidence_core_progressive_sampling
+        ),
         group_aware_pose=args.group_aware_pose,
         group_field=args.group_field,
         group_hypothesis_samples=args.group_hypothesis_samples,
@@ -536,16 +666,10 @@ def main() -> None:
         assignment_dustbin_score=args.assignment_dustbin_score,
         topk_geometric_feedback=args.topk_geometric_feedback,
         sparse_lgcv_topk_feedback=args.sparse_lgcv_topk_feedback,
-        pose_conditioned_sparse_refinement=(
-            args.pose_conditioned_sparse_refinement
-        ),
+        pose_conditioned_sparse_refinement=(args.pose_conditioned_sparse_refinement),
         refinement_pose_backend=args.refinement_pose_backend,
-        feedback_minimum_baseline_inliers=(
-            args.feedback_minimum_baseline_inliers
-        ),
-        feedback_maximum_baseline_inliers=(
-            args.feedback_maximum_baseline_inliers
-        ),
+        feedback_minimum_baseline_inliers=(args.feedback_minimum_baseline_inliers),
+        feedback_maximum_baseline_inliers=(args.feedback_maximum_baseline_inliers),
         feedback_minimum_candidate_inlier_gain=(
             args.feedback_minimum_candidate_inlier_gain
         ),
@@ -580,25 +704,17 @@ def main() -> None:
         refinement_maximum_score_drop_from_top1=(
             args.refinement_maximum_score_drop_from_top1
         ),
-        refinement_view_direction_slack_deg=(
-            args.refinement_view_direction_slack_deg
-        ),
-        refinement_maximum_changed_rows=(
-            args.refinement_maximum_changed_rows
-        ),
+        refinement_view_direction_slack_deg=(args.refinement_view_direction_slack_deg),
+        refinement_maximum_changed_rows=(args.refinement_maximum_changed_rows),
         refinement_maximum_changed_to_baseline_inlier_ratio=(
             args.refinement_maximum_changed_to_baseline_inlier_ratio
         ),
-        refinement_minimum_proposal_count=(
-            args.refinement_minimum_proposal_count
-        ),
+        refinement_minimum_proposal_count=(args.refinement_minimum_proposal_count),
         refinement_minimum_proposal_relative_gain=(
             args.refinement_minimum_proposal_relative_gain
         ),
         refinement_active_row_retrieval=args.refinement_active_row_retrieval,
-        refinement_pre_topk_view_filter=(
-            args.refinement_pre_topk_view_filter
-        ),
+        refinement_pre_topk_view_filter=(args.refinement_pre_topk_view_filter),
         refinement_common_candidate_grid_gate=(
             args.refinement_common_candidate_grid_gate
         ),
@@ -622,8 +738,20 @@ def main() -> None:
         refinement_pose_conditioned_mutual_matching=(
             args.refinement_pose_conditioned_mutual_matching
         ),
+        refinement_set_level_reserve_selection=(
+            args.refinement_set_level_reserve_selection
+        ),
+        refinement_projection_first_local_candidates=(
+            args.refinement_projection_first_local_candidates
+        ),
+        refinement_projection_first_radius_px=(
+            args.refinement_projection_first_radius_px
+        ),
         refinement_heldout_candidate_validation=(
             args.refinement_heldout_candidate_validation
+        ),
+        refinement_spatial_jackknife_diagnostic=(
+            args.refinement_spatial_jackknife_diagnostic
         ),
         refinement_minimum_heldout_relative_energy_gain=(
             args.refinement_minimum_heldout_relative_energy_gain
@@ -634,9 +762,7 @@ def main() -> None:
         refinement_maximum_uncertainty_projection_gate_px=(
             args.refinement_maximum_uncertainty_projection_gate_px
         ),
-        refinement_minimum_changed_inliers=(
-            args.refinement_minimum_changed_inliers
-        ),
+        refinement_minimum_changed_inliers=(args.refinement_minimum_changed_inliers),
         refinement_minimum_changed_inlier_fraction=(
             args.refinement_minimum_changed_inlier_fraction
         ),
@@ -648,13 +774,18 @@ def main() -> None:
         ),
         match_retention_fraction=args.match_retention_fraction,
         minimum_retained_match_count=args.minimum_retained_match_count,
+        minimum_sufficient_confidence_core=(args.minimum_sufficient_confidence_core),
+        first_pass_query_cap=args.first_pass_query_cap,
+        refinement_expanded_reserve_maximum_inlier_fraction=(
+            args.refinement_expanded_reserve_maximum_inlier_fraction
+        ),
         core_reserve_refinement=args.core_reserve_refinement,
-        core_reserve_reprojection_gate_px=(
-            args.core_reserve_reprojection_gate_px
+        core_reserve_reprojection_gate_px=(args.core_reserve_reprojection_gate_px),
+        core_reserve_minimum_supported_rows=(args.core_reserve_minimum_supported_rows),
+        final_pose_polish_reprojection_px=(
+            args.final_pose_polish_reprojection_px
         ),
-        core_reserve_minimum_supported_rows=(
-            args.core_reserve_minimum_supported_rows
-        ),
+        final_pose_polish_minimum_inliers=(args.final_pose_polish_minimum_inliers),
         profile_mode=not args.deployment_mode,
     )
     result = evaluate_dataset(
@@ -678,6 +809,28 @@ def main() -> None:
         {
             "evaluated_split": args.split,
             "random_seed": int(args.seed),
+            "ransac_confidence": float(ransac_confidence),
+            "ransac_maximum_iterations": int(ransac_maximum_iterations),
+            "ransac_minimum_iterations": int(ransac_minimum_iterations),
+            "ransac_hypothesis_core_size": int(args.ransac_hypothesis_core_size),
+            "superpoint_subpixel_refinement": bool(
+                args.superpoint_subpixel_refinement
+            ),
+            "superpoint_subpixel_geometry_only": bool(
+                args.superpoint_subpixel_geometry_only
+            ),
+            "superpoint_subpixel_maximum_offset": float(
+                args.superpoint_subpixel_maximum_offset
+            ),
+            "final_pose_polish_reprojection_px": float(
+                args.final_pose_polish_reprojection_px
+            ),
+            "final_pose_polish_minimum_inliers": int(
+                args.final_pose_polish_minimum_inliers
+            ),
+            "confidence_core_progressive_sampling": bool(
+                args.confidence_core_progressive_sampling
+            ),
             "input_map_path": artifact_contract["map"]["path"],
             "input_map_sha256": artifact_contract["map"]["sha256"],
             "input_descriptor_state_role": artifact_contract["descriptor_state"][
@@ -686,9 +839,9 @@ def main() -> None:
             "input_descriptor_state_path": artifact_contract["descriptor_state"][
                 "path"
             ],
-            "input_descriptor_state_sha256": artifact_contract[
-                "descriptor_state"
-            ]["sha256"],
+            "input_descriptor_state_sha256": artifact_contract["descriptor_state"][
+                "sha256"
+            ],
             "view_conditioned_anchor_state": view_conditioned_contract,
         }
     )
@@ -704,8 +857,28 @@ def main() -> None:
                 "schema": "lafgs_sparse_deployment_contract",
                 "version": 2,
                 "keypoint_count": int(keypoint_count),
+                "keypoint_count_override": (
+                    int(args.keypoint_count_override)
+                    if args.keypoint_count_override is not None
+                    else None
+                ),
                 "nms_radius": int(deployment["nms"]),
+                "superpoint_subpixel_refinement": bool(
+                    args.superpoint_subpixel_refinement
+                ),
+                "superpoint_subpixel_geometry_only": bool(
+                    args.superpoint_subpixel_geometry_only
+                ),
+                "superpoint_subpixel_maximum_offset": float(
+                    args.superpoint_subpixel_maximum_offset
+                ),
                 "ransac_reprojection_px": float(reprojection_error_px),
+                "ransac_confidence": float(ransac_confidence),
+                "ransac_maximum_iterations": int(ransac_maximum_iterations),
+                "ransac_minimum_iterations": int(ransac_minimum_iterations),
+                "ransac_hypothesis_core_size": int(
+                    args.ransac_hypothesis_core_size
+                ),
                 "scene_calibration": (
                     str(calibration_path.resolve())
                     if calibration_path is not None
@@ -716,14 +889,12 @@ def main() -> None:
                 "pose_solves": (
                     "one PoseLib RANSAC plus at most one local nonlinear refinement"
                     if args.core_reserve_refinement
-                    else
-                    "one PoseLib RANSAC plus one local nonlinear refinement"
+                    else "one PoseLib RANSAC plus one local nonlinear refinement"
                     if args.pose_conditioned_sparse_refinement
                     and args.refinement_pose_backend == "local"
                     else "one plus at most one bounded PoseLib RANSAC"
                     if args.pose_conditioned_sparse_refinement
-                    else
-                    "one plus at most one feedback solve"
+                    else "one plus at most one feedback solve"
                     if args.topk_geometric_feedback
                     or args.sparse_lgcv_topk_feedback
                     or args.pose_conditioned_sparse_refinement
@@ -731,18 +902,17 @@ def main() -> None:
                 ),
                 "duplicate_anchor_suppression": bool(args.suppress_duplicate_anchors),
                 "guided_sampling": bool(args.guided_sampling),
+                "confidence_core_progressive_sampling": bool(
+                    args.confidence_core_progressive_sampling
+                ),
                 "group_aware_pose": bool(args.group_aware_pose),
                 "group_field": args.group_field if args.group_aware_pose else None,
                 "group_hypothesis_samples": (
-                    int(args.group_hypothesis_samples)
-                    if args.group_aware_pose
-                    else 0
+                    int(args.group_hypothesis_samples) if args.group_aware_pose else 0
                 ),
                 "capacity_assignment": bool(args.assignment_topk > 0),
                 "topk_geometric_feedback": bool(args.topk_geometric_feedback),
-                "sparse_lgcv_topk_feedback": bool(
-                    args.sparse_lgcv_topk_feedback
-                ),
+                "sparse_lgcv_topk_feedback": bool(args.sparse_lgcv_topk_feedback),
                 "pose_conditioned_sparse_refinement": bool(
                     args.pose_conditioned_sparse_refinement
                 ),
@@ -869,8 +1039,20 @@ def main() -> None:
                 "refinement_pose_conditioned_mutual_matching": bool(
                     args.refinement_pose_conditioned_mutual_matching
                 ),
+                "refinement_set_level_reserve_selection": bool(
+                    args.refinement_set_level_reserve_selection
+                ),
+                "refinement_projection_first_local_candidates": bool(
+                    args.refinement_projection_first_local_candidates
+                ),
+                "refinement_projection_first_radius_px": float(
+                    args.refinement_projection_first_radius_px
+                ),
                 "refinement_heldout_candidate_validation": bool(
                     args.refinement_heldout_candidate_validation
+                ),
+                "refinement_spatial_jackknife_diagnostic": bool(
+                    args.refinement_spatial_jackknife_diagnostic
                 ),
                 "refinement_minimum_heldout_relative_energy_gain": float(
                     args.refinement_minimum_heldout_relative_energy_gain
@@ -890,20 +1072,27 @@ def main() -> None:
                 "refinement_maximum_changed_inlier_median_residual_px": float(
                     args.refinement_maximum_changed_inlier_median_residual_px
                 ),
-                "match_retention_fraction": float(
-                    args.match_retention_fraction
+                "match_retention_fraction": float(args.match_retention_fraction),
+                "minimum_retained_match_count": int(args.minimum_retained_match_count),
+                "minimum_sufficient_confidence_core": bool(
+                    args.minimum_sufficient_confidence_core
                 ),
-                "minimum_retained_match_count": int(
-                    args.minimum_retained_match_count
+                "first_pass_query_cap": int(args.first_pass_query_cap),
+                "refinement_expanded_reserve_maximum_inlier_fraction": float(
+                    args.refinement_expanded_reserve_maximum_inlier_fraction
                 ),
-                "core_reserve_refinement": bool(
-                    args.core_reserve_refinement
-                ),
+                "core_reserve_refinement": bool(args.core_reserve_refinement),
                 "core_reserve_reprojection_gate_px": float(
                     args.core_reserve_reprojection_gate_px
                 ),
                 "core_reserve_minimum_supported_rows": int(
                     args.core_reserve_minimum_supported_rows
+                ),
+                "final_pose_polish_reprojection_px": float(
+                    args.final_pose_polish_reprojection_px
+                ),
+                "final_pose_polish_minimum_inliers": int(
+                    args.final_pose_polish_minimum_inliers
                 ),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),

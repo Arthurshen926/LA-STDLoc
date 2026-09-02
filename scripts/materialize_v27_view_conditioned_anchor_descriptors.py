@@ -22,6 +22,10 @@ def main() -> None:
     parser.add_argument("--mapping-observation-cache", type=Path, required=True)
     parser.add_argument("--expected-cache-sha256", required=True)
     parser.add_argument("--minimum-mode-observations", type=int, default=2)
+    parser.add_argument("--minimum-mapping-families", type=int, default=2)
+    parser.add_argument("--minimum-owner-margin", type=float, default=0.0)
+    parser.add_argument("--authorization-device", default="cpu")
+    parser.add_argument("--authorization-chunk-size", type=int, default=256)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -39,6 +43,10 @@ def main() -> None:
         map_state=map_state,
         observation_cache=cache,
         minimum_mode_observations=args.minimum_mode_observations,
+        minimum_mapping_families=args.minimum_mapping_families,
+        minimum_owner_margin=args.minimum_owner_margin,
+        authorization_device=args.authorization_device,
+        authorization_chunk_size=args.authorization_chunk_size,
     )
     if (
         sha256_file(map_path) != args.expected_map_sha256
@@ -52,10 +60,10 @@ def main() -> None:
     )
     print(
         f"wrote {output} sha256={sha256_file(output)} "
-        f"valid_modes={int(payload['mode_valid'].sum())}"
+        f"valid_modes={int(payload['mode_valid'].sum())} "
+        f"authorized_modes={int(payload['mode_authorized'].sum())}"
     )
 
 
 if __name__ == "__main__":
     main()
-

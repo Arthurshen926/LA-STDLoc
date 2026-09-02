@@ -10,6 +10,7 @@ from localization.matcher import (
     global_cosine_top2,
     global_cosine_topk,
     maximum_weight_anchor_assignment,
+    retain_diverse_confidence_matches,
     retain_high_score_matches,
     suppress_duplicate_anchor_matches,
     suppress_duplicate_entity_matches,
@@ -57,6 +58,32 @@ def test_global_matcher_has_no_landmark_cap():
     matches = global_cosine_top1(query, bank)
     assert matches.anchor_indices.tolist() == [0, 0, 1]
     assert matches.keypoint_indices.tolist() == [0, 1, 2]
+
+
+def test_diverse_confidence_core_is_unique_and_restores_query_order():
+    matches = Top1Matches(
+        keypoint_indices=torch.arange(8),
+        anchor_indices=torch.tensor([0, 0, 1, 2, 3, 4, 5, 6]),
+        scores=torch.tensor([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]),
+    )
+    retained = retain_diverse_confidence_matches(
+        matches,
+        keypoints=torch.tensor(
+            [[5, 5], [6, 5], [90, 5], [5, 90], [90, 90], [50, 50], [30, 70], [70, 30]]
+        ),
+        second_best_scores=matches.scores - 0.1,
+        anchor_matchability=torch.ones(7),
+        anchor_uncertainty=torch.ones(7),
+        anchor_xyz=torch.arange(21).reshape(7, 3).float(),
+        image_hw=(100, 100),
+        retention_fraction=0.5,
+        minimum_count=4,
+    )
+    assert retained.keypoint_indices.numel() == 4
+    assert retained.anchor_indices.unique().numel() == 4
+    assert torch.equal(
+        retained.keypoint_indices, torch.sort(retained.keypoint_indices).values
+    )
 
 
 def test_high_score_retention_preserves_native_query_order() -> None:

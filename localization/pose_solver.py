@@ -172,6 +172,152 @@ def refine_absolute_pose_from_initial(
     return PoseEstimate(pose_w2c, inliers, diagnostics)
 
 
+def solve_absolute_pose_from_hypothesis_core(
+    points_2d: np.ndarray,
+    points_3d: np.ndarray,
+    intrinsic: np.ndarray,
+    match_quality: np.ndarray,
+    *,
+    hypothesis_core_size: int,
+    reprojection_error_px: float = 12.0,
+    confidence: float = 0.99999,
+    max_iterations: int = 100000,
+    min_iterations: int = 1000,
+    seed: int = 2026,
+    camera: dict | None = None,
+) -> PoseEstimate:
+    """Generate a robust pose on a small quality core, then verify it globally.
+
+    PoseLib scores every RANSAC hypothesis against every supplied
+    correspondence.  On large sparse registries that dominates runtime.  This
+    experimental wrapper generates and scores hypotheses on the strongest
+    descriptor matches, but never reports those core inliers as final support:
+    the winning pose is rescored on the complete correspondence set and locally
+    refined on its complete inlier set.  If the core cannot produce a valid
+    hypothesis, the exact full-registry solver is used as a fail-safe.
+    """
+
+    points_2d = np.asarray(points_2d)
+    points_3d = np.asarray(points_3d)
+    intrinsic = np.asarray(intrinsic)
+    quality = np.asarray(match_quality, dtype=np.float64).reshape(-1)
+    count = int(points_2d.shape[0])
+    core_size = int(hypothesis_core_size)
+    if not (
+        points_2d.shape == (count, 2)
+        and points_3d.shape == (count, 3)
+        and quality.shape == (count,)
+        and bool(np.isfinite(quality).all())
+        and core_size >= 4
+    ):
+        raise ValueError("hypothesis-core pose inputs are invalid")
+    solve_kwargs = {
+        "reprojection_error_px": float(reprojection_error_px),
+        "confidence": float(confidence),
+        "max_iterations": int(max_iterations),
+        "min_iterations": int(min_iterations),
+        "seed": int(seed),
+        "camera": camera,
+    }
+    if count <= core_size:
+        estimate = solve_absolute_pose(
+            points_2d,
+            points_3d,
+            intrinsic,
+            **solve_kwargs,
+        )
+        diagnostics = dict(estimate.diagnostics)
+        diagnostics.update(
+            {
+                "hypothesis_core_used": False,
+                "hypothesis_core_size": count,
+                "hypothesis_core_fallback": False,
+            }
+        )
+        return PoseEstimate(estimate.pose_w2c, estimate.inliers, diagnostics)
+
+    # Stable sorting makes equal-score selection reproducible and independent
+    # of the input platform's partial-sort tie handling.
+    order = np.argsort(-quality, kind="stable")[:core_size]
+    core = solve_absolute_pose(
+        points_2d[order],
+        points_3d[order],
+        intrinsic,
+        **solve_kwargs,
+    )
+    if core.inliers.size < 4:
+        fallback = solve_absolute_pose(
+            points_2d,
+            points_3d,
+            intrinsic,
+            **solve_kwargs,
+        )
+        diagnostics = dict(fallback.diagnostics)
+        diagnostics.update(
+            {
+                "hypothesis_core_used": True,
+                "hypothesis_core_size": core_size,
+                "hypothesis_core_fallback": True,
+                "hypothesis_core_iterations": int(
+                    core.diagnostics.get("iterations", 0)
+                ),
+            }
+        )
+        return PoseEstimate(fallback.pose_w2c, fallback.inliers, diagnostics)
+
+    pose = np.asarray(core.pose_w2c, dtype=np.float64)
+    camera_points = (pose[:3, :3] @ points_3d.T + pose[:3, 3:4]).T
+    depth = camera_points[:, 2]
+    projected = np.full((count, 2), np.inf, dtype=np.float64)
+    valid = depth > 1e-12
+    homogeneous = (intrinsic @ camera_points[valid].T).T
+    projected[valid] = homogeneous[:, :2] / homogeneous[:, 2:3]
+    residual = np.linalg.norm(projected - points_2d, axis=1)
+    full_inliers = np.flatnonzero(residual <= float(reprojection_error_px))
+    if full_inliers.size < 4:
+        fallback = solve_absolute_pose(
+            points_2d,
+            points_3d,
+            intrinsic,
+            **solve_kwargs,
+        )
+        diagnostics = dict(fallback.diagnostics)
+        diagnostics.update(
+            {
+                "hypothesis_core_used": True,
+                "hypothesis_core_size": core_size,
+                "hypothesis_core_fallback": True,
+                "hypothesis_core_iterations": int(
+                    core.diagnostics.get("iterations", 0)
+                ),
+            }
+        )
+        return PoseEstimate(fallback.pose_w2c, fallback.inliers, diagnostics)
+
+    refined = refine_absolute_pose_from_initial(
+        points_2d,
+        points_3d,
+        intrinsic,
+        core.pose_w2c,
+        full_inliers,
+        reprojection_error_px=float(reprojection_error_px),
+        camera=camera,
+    )
+    diagnostics = dict(refined.diagnostics)
+    diagnostics.update(
+        {
+            # Preserve the robust hypothesis count as the public RANSAC cost.
+            "iterations": int(core.diagnostics.get("iterations", 0)),
+            "hypothesis_core_used": True,
+            "hypothesis_core_size": core_size,
+            "hypothesis_core_fallback": False,
+            "hypothesis_core_iterations": int(core.diagnostics.get("iterations", 0)),
+            "hypothesis_core_initial_full_inliers": int(full_inliers.size),
+        }
+    )
+    return PoseEstimate(refined.pose_w2c, refined.inliers, diagnostics)
+
+
 def solve_group_diverse_absolute_pose(
     points_2d: np.ndarray,
     points_3d: np.ndarray,

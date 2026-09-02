@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from features.superpoint import SuperPoint
+from features.superpoint import SuperPoint, quadratic_subpixel_keypoints
 from features.scene_specific_detector import (
     SceneSpecificDetector,
     fuse_scene_reliability,
@@ -27,6 +27,7 @@ class SparseFeatures:
     scores: torch.Tensor
     descriptors: torch.Tensor
     image_hw: tuple[int, int]
+    detector_ranks: torch.Tensor | None = None
 
 
 def sample_mask(mask: torch.Tensor, keypoints: torch.Tensor) -> torch.Tensor:
@@ -52,6 +53,9 @@ class NativeSuperPointFrontend:
         device: torch.device | str = "cuda",
         keypoint_count: int = 2048,
         nms_radius: int = 4,
+        subpixel_keypoints: bool = False,
+        subpixel_geometry_only: bool = False,
+        subpixel_maximum_offset: float = 0.5,
         metric: SharedLowRankMetric | None = None,
         context_adapter: MapConsistentContextAdapter | None = None,
         photometric_contract: dict | None = None,
@@ -64,6 +68,13 @@ class NativeSuperPointFrontend:
         if int(nms_radius) < 0:
             raise ValueError("SuperPoint NMS radius must be non-negative")
         self.nms_radius = int(nms_radius)
+        self.subpixel_keypoints = bool(subpixel_keypoints)
+        self.subpixel_geometry_only = bool(subpixel_geometry_only)
+        self.subpixel_maximum_offset = float(subpixel_maximum_offset)
+        if self.subpixel_keypoints and self.subpixel_geometry_only:
+            raise ValueError("select one SuperPoint subpixel mode")
+        if not 0.0 <= self.subpixel_maximum_offset <= 0.5:
+            raise ValueError("SuperPoint subpixel maximum offset is invalid")
         self.model = SuperPoint().to(self.device).eval()
         self.model.nms_radius = self.nms_radius
         self.metric = metric.to(self.device).eval() if metric is not None else None
@@ -125,6 +136,7 @@ class NativeSuperPointFrontend:
             image = image * resized_mask[None, None].to(image.dtype)
 
         dense_descriptors = None
+        subpixel_score_map = None
         if self.scene_detector is not None:
             dense_descriptors, native_scores = self.model._dense_outputs(image)
             detector_logits = self.scene_detector(
@@ -136,6 +148,7 @@ class NativeSuperPointFrontend:
                 native_sparse = self.model._sparse_from_dense(
                     dense_descriptors, native_scores, top_k=self.keypoint_count,
                     detection_threshold=0.0,
+                    subpixel_refinement=self.subpixel_keypoints,
                 )[0]
                 activate = bool(
                     mean_candidate_reliability(
@@ -150,27 +163,56 @@ class NativeSuperPointFrontend:
                 sparse = self.model._sparse_from_dense(
                     dense_descriptors, detector_scores,
                     top_k=self.keypoint_count, detection_threshold=0.0,
+                    subpixel_refinement=self.subpixel_keypoints,
                 )[0]
+                subpixel_score_map = detector_scores[0]
             else:
                 sparse = native_sparse
+                subpixel_score_map = native_scores[0]
         elif self.context_adapter is None:
-            sparse = self.model.detectAndCompute(
-                image, top_k=self.keypoint_count
-            )[0]
+            if self.subpixel_geometry_only:
+                sparse_batch, dense_outputs = self.model.detectAndComputeWithDense(
+                    image,
+                    top_k=self.keypoint_count,
+                    subpixel_refinement=False,
+                )
+                sparse = sparse_batch[0]
+                subpixel_score_map = dense_outputs[1][0, 0]
+            else:
+                sparse = self.model.detectAndCompute(
+                    image,
+                    top_k=self.keypoint_count,
+                    subpixel_refinement=self.subpixel_keypoints,
+                )[0]
         else:
             sparse_batch, dense_outputs = self.model.detectAndComputeWithDense(
-                image, top_k=self.keypoint_count
+                image,
+                top_k=self.keypoint_count,
+                subpixel_refinement=self.subpixel_keypoints,
             )
             sparse = sparse_batch[0]
             dense_descriptors = dense_outputs[0][0]
+            subpixel_score_map = dense_outputs[1][0, 0]
         keypoints = sparse["keypoints"]
+        if self.subpixel_geometry_only:
+            if subpixel_score_map is None:
+                raise RuntimeError("subpixel geometry score map is unavailable")
+            keypoints = quadratic_subpixel_keypoints(
+                keypoints,
+                subpixel_score_map,
+                maximum_offset=self.subpixel_maximum_offset,
+            )
         scores = sparse["keypoint_scores"]
         descriptors = F.normalize(sparse["descriptors"], dim=1)
+        detector_ranks = torch.arange(
+            keypoints.shape[0], device=keypoints.device, dtype=torch.long
+        )
         if resized_mask is not None:
             keep = sample_mask(resized_mask, keypoints)
             keypoints = keypoints[keep]
             scores = scores[keep]
             descriptors = descriptors[keep]
+            detector_ranks = detector_ranks[keep]
         if self.context_adapter is not None and descriptors.numel():
             if resized_mask is None:
                 dense_valid = torch.ones(
@@ -201,4 +243,10 @@ class NativeSuperPointFrontend:
             descriptors, _ = self.context_adapter(descriptors, context)
         if self.metric is not None and descriptors.numel():
             descriptors, _ = self.metric(descriptors)
-        return SparseFeatures(keypoints, scores, descriptors, (height, width))
+        return SparseFeatures(
+            keypoints,
+            scores,
+            descriptors,
+            (height, width),
+            detector_ranks,
+        )

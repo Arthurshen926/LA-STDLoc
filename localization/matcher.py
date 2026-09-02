@@ -81,6 +81,117 @@ def retain_high_score_matches(
 
 
 @torch.inference_mode()
+def retain_diverse_confidence_matches(
+    matches: Top1Matches,
+    *,
+    keypoints: torch.Tensor,
+    second_best_scores: torch.Tensor,
+    anchor_matchability: torch.Tensor,
+    anchor_uncertainty: torch.Tensor,
+    anchor_xyz: torch.Tensor,
+    image_hw: tuple[int, int],
+    retention_fraction: float,
+    minimum_count: int = 256,
+    image_grid_shape: tuple[int, int] = (6, 8),
+    spatial_bins_per_axis: int = 4,
+    diversity_weight: float = 0.15,
+) -> Top1Matches:
+    """Select a confidence core with mapping-only 2D/3D diversity priors."""
+
+    rows = torch.as_tensor(matches.keypoint_indices).long()
+    owners = torch.as_tensor(matches.anchor_indices).long()
+    score = torch.as_tensor(matches.scores).float()
+    second = torch.as_tensor(second_best_scores, device=score.device).float()
+    xy = torch.as_tensor(keypoints, device=score.device).float()[rows]
+    reliability_bank = torch.as_tensor(anchor_matchability, device=score.device).float()
+    uncertainty_bank = torch.as_tensor(anchor_uncertainty, device=score.device).float()
+    xyz_bank = torch.as_tensor(anchor_xyz, device=score.device).float()
+    count = score.numel()
+    height, width = int(image_hw[0]), int(image_hw[1])
+    grid_y, grid_x = int(image_grid_shape[0]), int(image_grid_shape[1])
+    target = min(count, max(int(minimum_count), int(np.ceil(float(retention_fraction) * count))))
+    if not (
+        rows.shape == owners.shape == score.shape == second.shape == (count,)
+        and 0.0 < float(retention_fraction) <= 1.0
+        and int(minimum_count) >= 4
+        and height > 0
+        and width > 0
+        and grid_y > 1
+        and grid_x > 1
+        and int(spatial_bins_per_axis) >= 2
+        and 0.0 <= float(diversity_weight) <= 0.5
+        and (not owners.numel() or int(owners.min()) >= 0)
+        and (not owners.numel() or int(owners.max()) < reliability_bank.numel())
+        and reliability_bank.shape == uncertainty_bank.shape == (xyz_bank.shape[0],)
+        and xyz_bank.shape[1:] == (3,)
+        and bool(torch.isfinite(score).all())
+        and bool(torch.isfinite(second).all())
+    ):
+        raise ValueError("diverse confidence-core inputs are invalid")
+    if target == count:
+        return matches
+
+    def percentile(value: torch.Tensor) -> torch.Tensor:
+        order = torch.argsort(value, stable=True)
+        output = torch.empty_like(value)
+        output[order] = torch.linspace(0.0, 1.0, value.numel(), device=value.device)
+        return output
+
+    reliability = reliability_bank[owners]
+    certainty = (1.0 + uncertainty_bank[owners]).reciprocal()
+    margin = score - second
+    confidence = (
+        0.45 * percentile(score)
+        + 0.30 * percentile(margin)
+        + 0.15 * percentile(reliability)
+        + 0.10 * percentile(certainty)
+    )
+    cell_x = (xy[:, 0] * grid_x / width).long().clamp(0, grid_x - 1)
+    cell_y = (xy[:, 1] * grid_y / height).long().clamp(0, grid_y - 1)
+    cells = cell_y * grid_x + cell_x
+    cell_population = torch.bincount(cells, minlength=grid_y * grid_x).float()
+    cell_bonus = cell_population[cells].clamp_min(1).rsqrt()
+
+    matched_xyz = xyz_bank[owners]
+    low = torch.quantile(matched_xyz, 0.02, dim=0)
+    high = torch.quantile(matched_xyz, 0.98, dim=0)
+    normalized = ((matched_xyz - low) / (high - low).clamp_min(1e-8)).clamp(0, 0.999999)
+    bins = (normalized * int(spatial_bins_per_axis)).long()
+    spatial_id = (
+        bins[:, 0] * int(spatial_bins_per_axis) ** 2
+        + bins[:, 1] * int(spatial_bins_per_axis)
+        + bins[:, 2]
+    )
+    spatial_population = torch.bincount(
+        spatial_id, minlength=int(spatial_bins_per_axis) ** 3
+    ).float()
+    spatial_bonus = spatial_population[spatial_id].clamp_min(1).rsqrt()
+    quality = confidence + float(diversity_weight) * (cell_bonus + spatial_bonus)
+
+    # One query row per Anchor inside the core.  The highest-quality row owns
+    # the Anchor; if uniqueness leaves too few rows, fill from remaining rows.
+    ranked = torch.argsort(quality, descending=True, stable=True)
+    owner_order = torch.argsort(owners[ranked], stable=True)
+    grouped = ranked[owner_order]
+    grouped_owners = owners[grouped]
+    first = torch.ones(count, dtype=torch.bool, device=score.device)
+    first[1:] = grouped_owners[1:] != grouped_owners[:-1]
+    unique_rows = grouped[first]
+    unique_rows = unique_rows[torch.argsort(quality[unique_rows], descending=True, stable=True)]
+    selected = unique_rows[:target]
+    if selected.numel() < target:
+        used = torch.zeros(count, dtype=torch.bool, device=score.device)
+        used[selected] = True
+        selected = torch.cat((selected, ranked[~used[ranked]][: target - selected.numel()]))
+    selected = torch.sort(selected).values
+    return Top1Matches(
+        keypoint_indices=rows[selected],
+        anchor_indices=owners[selected],
+        scores=score[selected],
+    )
+
+
+@torch.inference_mode()
 def global_owner_prototype_top1(
     query_descriptors: torch.Tensor,
     anchor_descriptors: torch.Tensor,

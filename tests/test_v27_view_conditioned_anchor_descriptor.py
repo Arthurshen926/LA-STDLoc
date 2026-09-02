@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from map_learning.v27_view_conditioned_anchor_descriptor import (
+    authorize_mapping_view_modes,
     build_mapping_view_conditioned_descriptors,
     select_view_conditioned_anchor_features,
     validate_artifact,
@@ -94,7 +95,27 @@ def test_selector_changes_only_valid_nearest_mode() -> None:
     )
     assert torch.equal(selected[0], torch.tensor([1.0, 0.0]))
     assert torch.allclose(selected[1], base[1])
-    assert report == {"selected_mode_anchor_count": 1, "base_fallback_anchor_count": 1}
+    assert report == {
+        "selected_mode_anchor_count": 1,
+        "base_fallback_anchor_count": 1,
+        "selected_mode_mean_alpha": 1.0,
+    }
+
+
+def test_exact_owner_authorization_rejects_false_stealing_mode() -> None:
+    base = torch.eye(2)
+    result = authorize_mapping_view_modes(
+        mode_features=torch.tensor(
+            [[[1.0, 0.0], [1.0, 0.0]], [[1.0, 0.0], [0.0, 1.0]]]
+        ),
+        mode_valid=torch.tensor([[True, False], [True, True]]),
+        base_anchor_features=base,
+        device="cpu",
+    )
+    assert result["mode_authorized"].tolist() == [
+        [True, False],
+        [False, True],
+    ]
 
 
 def test_fail_closed_on_test_cache_and_corrupt_artifact() -> None:
