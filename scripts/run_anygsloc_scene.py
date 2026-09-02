@@ -239,6 +239,13 @@ def main() -> None:
     root.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    env["PATH"] = f"{PYTHON.parent}:{env.get('PATH', '')}"
+    environment_root = PYTHON.parent.parent
+    env["LD_LIBRARY_PATH"] = (
+        f"{environment_root / 'lib'}:"
+        f"{environment_root / 'lib/python3.9/site-packages/torch/lib'}:"
+        f"{env.get('LD_LIBRARY_PATH', '')}"
+    )
     env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     env["OMP_NUM_THREADS"] = str(args.cpu_threads)
     env["MKL_NUM_THREADS"] = str(args.cpu_threads)
