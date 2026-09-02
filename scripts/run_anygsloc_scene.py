@@ -163,7 +163,8 @@ def run_stage(stage: dict[str, Any], *, root: Path, env: dict[str, str]) -> dict
         raise RuntimeError(f"partial map output must be quarantined: {output.parent}")
     if stage["name"] == "base_evaluation" and output.parent.exists():
         raise RuntimeError(f"partial evaluation output must be quarantined: {output.parent}")
-    output.parent.mkdir(parents=True, exist_ok=True)
+    if stage["name"] not in ("projective_map", "base_evaluation"):
+        output.parent.mkdir(parents=True, exist_ok=True)
     command_path = log_dir / f"{stage['name']}.command.json"
     atomic_json(command_path, {"command": stage["command"], "cwd": str(Path.cwd())})
     started = time.perf_counter()
