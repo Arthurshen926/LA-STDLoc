@@ -1,0 +1,42 @@
+{
+  "schema": "anygsloc_paper_experiment_matrix",
+  "version": 1,
+  "output_root": "/mnt/pool/sqy/anygsloc_paper_experiments_20260902",
+  "formal_config": "configs/anygsloc_mainline.yaml",
+  "scope": {
+    "offline_self_localization_feedback": false,
+    "descriptor_or_metric_training": false,
+    "test_query_map_adaptation": false,
+    "base_is_primary": true,
+    "online_refinement_is_optional": true
+  },
+  "primary_24_scene": [
+    {"family":"Cambridge","scene":"GreatCourt","dataset":"/mnt/pool/sqy/Cambridge_stdloc/GreatCourt","gaussian_ply":"/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/GreatCourt/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply","gaussian_type":"2dgs","sh_degree":3,"existing_base":"/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901/GreatCourt"},
+    {"family":"Cambridge","scene":"KingsCollege","dataset":"/mnt/pool/sqy/Cambridge_stdloc/KingsCollege","gaussian_ply":"/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/KingsCollege/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply","gaussian_type":"2dgs","sh_degree":3,"existing_base":"/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901/KingsCollege"},
+    {"family":"Cambridge","scene":"OldHospital","dataset":"/mnt/pool/sqy/Cambridge_stdloc/OldHospital","gaussian_ply":"/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/OldHospital/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply","gaussian_type":"2dgs","sh_degree":3,"existing_base":"/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901/OldHospital"},
+    {"family":"Cambridge","scene":"ShopFacade","dataset":"/mnt/pool/sqy/Cambridge_stdloc/ShopFacade","gaussian_ply":"/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/ShopFacade/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply","gaussian_type":"2dgs","sh_degree":3,"existing_base":"/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901/ShopFacade"},
+    {"family":"Cambridge","scene":"StMarysChurch","dataset":"/mnt/pool/sqy/Cambridge_stdloc/StMarysChurch","gaussian_ply":"/mnt/pool/sqy/stdloc_lafgs_v1_frozen_multiscene_20260731/StMarysChurch/prior/rgb_matcha_2dgs/point_cloud/iteration_30000/point_cloud.ply","gaussian_type":"2dgs","sh_degree":3,"existing_base":"/mnt/pool/sqy/lafgs_v24_cambridge_high_capacity_online_20260901/StMarysChurch"},
+    {"family":"7Scenes","scene":"chess"},{"family":"7Scenes","scene":"fire"},{"family":"7Scenes","scene":"heads"},{"family":"7Scenes","scene":"office"},{"family":"7Scenes","scene":"pumpkin"},{"family":"7Scenes","scene":"redkitchen"},{"family":"7Scenes","scene":"stairs"},
+    {"family":"12Scenes","scene":"apt1_kitchen"},{"family":"12Scenes","scene":"apt1_living"},{"family":"12Scenes","scene":"apt2_bed"},{"family":"12Scenes","scene":"apt2_kitchen"},{"family":"12Scenes","scene":"apt2_living"},{"family":"12Scenes","scene":"apt2_luke"},{"family":"12Scenes","scene":"office1_gates362"},{"family":"12Scenes","scene":"office1_gates381"},{"family":"12Scenes","scene":"office1_lounge"},{"family":"12Scenes","scene":"office1_manolis"},{"family":"12Scenes","scene":"office2_5a"},{"family":"12Scenes","scene":"office2_5b"}
+  ],
+  "prior_robustness": [
+    {"family":"CambridgePrior","scene":"KingsCollege_vanilla_2dgs","dataset":"/mnt/pool/sqy/Cambridge_stdloc/KingsCollege","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/KingsCollege/vanilla_2dgs/stdloc_model/rgb_prior_manifest.json"},
+    {"family":"CambridgePrior","scene":"KingsCollege_vanilla_3dgs","dataset":"/mnt/pool/sqy/Cambridge_stdloc/KingsCollege","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/KingsCollege/vanilla_3dgs/stdloc_model/rgb_prior_manifest.json"},
+    {"family":"CambridgePrior","scene":"KingsCollege_anysplat_ff","dataset":"/mnt/pool/sqy/Cambridge_stdloc/KingsCollege","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/KingsCollege/anysplat_ff/stdloc_model/rgb_prior_manifest.json"},
+    {"family":"CambridgePrior","scene":"OldHospital_vanilla_2dgs","dataset":"/mnt/pool/sqy/Cambridge_stdloc/OldHospital","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/OldHospital/vanilla_2dgs/stdloc_model/rgb_prior_manifest.json"},
+    {"family":"CambridgePrior","scene":"OldHospital_vanilla_3dgs","dataset":"/mnt/pool/sqy/Cambridge_stdloc/OldHospital","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/OldHospital/vanilla_3dgs/stdloc_model/rgb_prior_manifest.json"},
+    {"family":"CambridgePrior","scene":"OldHospital_anysplat_ff","dataset":"/mnt/pool/sqy/Cambridge_stdloc/OldHospital","prior_manifest":"/mnt/pool/sqy/stdloc_lafgs_offtheshelf_prior_20260802/priors/OldHospital/anysplat_ff/stdloc_model/rgb_prior_manifest.json"}
+  ],
+  "ablations": {
+    "map_construction": ["without_v2", "without_projective_completion", "single_view_descriptor", "mean_descriptor", "robust_track_fusion"],
+    "map_capacity": [0.25, 0.5, 0.75, 1.0],
+    "mapping_camera_fraction": [0.25, 0.5, 0.75, 1.0],
+    "prior_quality": ["vanilla_2dgs", "vanilla_3dgs", "anysplat_ff", "matcha_2dgs", "real_rgb_upper_bound"],
+    "online": ["base", "optional_anygsloc_r"]
+  },
+  "reporting": {
+    "accuracy": ["median_te_cm", "median_re_deg", "p90_te_cm", "mean_te_cm", "r5", "catastrophe_count"],
+    "runtime": ["mean_ms", "p50_ms", "p90_ms", "frontend_ms", "matching_ms", "pnp_ms", "second_solve_rate"],
+    "map": ["anchor_count", "map_bytes", "build_wall_seconds", "peak_gpu_memory_bytes", "peak_cpu_rss_bytes"]
+  }
+}

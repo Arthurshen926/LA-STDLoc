@@ -14,6 +14,7 @@ from common.hashing import canonical_json, sha256_file
 
 
 SCHEMA = "lafgs_paper_mainline"
+ANYGSLOC_SCHEMA = "anygsloc_paper_mainline"
 VERSIONS = frozenset({1, 2})
 OFFLINE_CHAIN = (
     "frozen_rgb_gaussian_prior",
@@ -43,6 +44,18 @@ TOP_LEVEL_KEYS = frozenset(
         "mapping",
     }
 )
+ANYGSLOC_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema",
+        "version",
+        "method",
+        "prior",
+        "mapping",
+        "deployment",
+        "online_refinement",
+        "seeds",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +67,9 @@ class MainlineConfig:
 
     def validate(self) -> None:
         values = self.values
+        if values.get("schema") == ANYGSLOC_SCHEMA:
+            self._validate_anygsloc()
+            return
         unknown = set(values) - TOP_LEVEL_KEYS
         if unknown:
             raise ValueError(f"unknown paper-mainline config sections: {sorted(unknown)}")
@@ -123,7 +139,90 @@ class MainlineConfig:
             if int(mapping.get("keypoints", 0)) <= 0:
                 raise ValueError("mapping keypoint count must be positive")
 
+    def _validate_anygsloc(self) -> None:
+        values = self.values
+        unknown = set(values) - ANYGSLOC_TOP_LEVEL_KEYS
+        if unknown:
+            raise ValueError(f"unknown AnyGSLoc mainline config sections: {sorted(unknown)}")
+        if values.get("version") != 1:
+            raise ValueError("unsupported AnyGSLoc paper-mainline config version")
+        method = values.get("method", {})
+        required_false = (
+            "offline_self_localization_feedback",
+            "descriptor_or_metric_training",
+            "test_query_map_adaptation",
+            "query_rendering",
+            "dense_matching",
+            "map_writeback",
+        )
+        if method.get("name") != "AnyGSLoc" or method.get("status") != "frozen":
+            raise ValueError("AnyGSLoc method must be named AnyGSLoc and frozen")
+        enabled = [key for key in required_false if method.get(key) is not False]
+        if enabled:
+            raise ValueError(f"forbidden AnyGSLoc mainline mechanisms: {enabled}")
+        if values.get("prior", {}).get("frozen") is not True:
+            raise ValueError("AnyGSLoc RGB Gaussian prior must remain frozen")
+        mapping = values.get("mapping", {})
+        mapping_required = {
+            "sparse_frontend": "ulfloc_native_metric",
+            "keypoints": 2048,
+            "nms": 4,
+            "v2_filter_stage": "after_detection_before_pair_association",
+            "descriptor_aggregation": "robust_track_fusion",
+            "map_capacity": "all_valid_projective_tracks",
+        }
+        mapping_mismatch = {
+            key: (mapping.get(key), expected)
+            for key, expected in mapping_required.items()
+            if mapping.get(key) != expected
+        }
+        if mapping_mismatch:
+            raise ValueError(f"AnyGSLoc mapping contract changed: {mapping_mismatch}")
+        self._validate_deployment(values.get("deployment", {}))
+        refinement = values.get("online_refinement", {})
+        if refinement.get("optional") is not True:
+            raise ValueError("AnyGSLoc-R must remain optional")
+        if refinement.get("map_read_only") is not True:
+            raise ValueError("AnyGSLoc-R must be map-read-only")
+        if int(refinement.get("maximum_additional_pose_solves", -1)) not in (0, 1):
+            raise ValueError("AnyGSLoc-R may use at most one additional pose solve")
+
+    @staticmethod
+    def _validate_deployment(deployment: Mapping[str, Any]) -> None:
+        required = {
+            "sparse_frontend": "ulfloc_native_metric",
+            "nms": 4,
+            "global_topk": 1,
+            "max_matches_per_keypoint": 0,
+            "max_matches_per_landmark": 0,
+            "reprojection_error_px": 12,
+            "confidence": 0.99999,
+            "maximum_iterations": 100000,
+            "minimum_iterations": 1000,
+            "solver": "poselib",
+            "pose_solves": 1,
+        }
+        mismatched = {
+            key: (deployment.get(key), expected)
+            for key, expected in required.items()
+            if deployment.get(key) != expected
+        }
+        if mismatched:
+            raise ValueError(f"deployment contract changed: {mismatched}")
+
     def manifest(self) -> dict[str, Any]:
+        if self.values["schema"] == ANYGSLOC_SCHEMA:
+            return {
+                "schema": "anygsloc_resolved_mainline_config",
+                "version": int(self.values["version"]),
+                "config_path": str(self.path),
+                "config_sha256": self.file_sha256,
+                "resolved_config_sha256": self.resolved_sha256,
+                "offline_self_localization_feedback": False,
+                "mapping": dict(self.values["mapping"]),
+                "deployment": dict(self.values["deployment"]),
+                "online_refinement": dict(self.values["online_refinement"]),
+            }
         return {
             "schema": "lafgs_resolved_mainline_config",
             "version": int(self.values["version"]),

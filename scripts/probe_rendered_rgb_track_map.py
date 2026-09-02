@@ -140,6 +140,7 @@ def _render_feature_cache(args, output: Path) -> dict:
     model = model.cuda().eval()
     extractor = FeatureExtractor("sp", nms_radius=args.nms_radius).cuda().eval()
     extractor.requires_grad_(False)
+    background = torch.ones(3, device="cuda") if args.white_background else torch.zeros(3, device="cuda")
 
     records: dict[str, dict] = {}
     render_seconds = 0.0
@@ -159,7 +160,7 @@ def _render_feature_cache(args, output: Path) -> dict:
             camera.fov_y,
             camera.width,
             camera.height,
-            bg_color=torch.zeros(3, device="cuda"),
+            bg_color=background,
             render_mode="RGB+ED" if render_valid else "RGB",
             # V6 needs RGB, alpha, and proposal-only depth, never the legacy
             # learned/random Gaussian localization-feature render.
@@ -282,7 +283,7 @@ def _render_feature_cache(args, output: Path) -> dict:
             "keypoints": args.keypoints,
             "nms_radius": args.nms_radius,
             "detection_threshold": args.detection_threshold,
-            "background": "black",
+            "background": "white" if args.white_background else "black",
             "render_mode": (
                 "RGB+ED" if args.render_valid_alpha_minimum is not None else "RGB"
             ),
@@ -713,6 +714,7 @@ def main() -> None:
     parser.add_argument("--gaussian-ply", type=Path, required=True)
     parser.add_argument("--gaussian-type", choices=("2dgs", "3dgs"), default="2dgs")
     parser.add_argument("--sh-degree", type=int, default=3)
+    parser.add_argument("--white-background", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-views", type=int, default=0)
     parser.add_argument("--camera-registry", type=Path)

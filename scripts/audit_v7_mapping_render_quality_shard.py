@@ -19,7 +19,7 @@ from evidence.v7_render_certificate import (
     extreme_distortion_row_mask,
 )
 from evidence.virtual_camera_registry import resolve_virtual_camera_registry
-from priors.models import GaussianModel2D
+from priors.models import GaussianModel2D, GaussianModel3D
 from priors.rendering import render_from_pose_gsplat
 
 
@@ -42,6 +42,11 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--images", default="processed")
     parser.add_argument("--gaussian-ply", type=Path, required=True)
+    parser.add_argument(
+        "--gaussian-type", choices=("2dgs", "3dgs"), default="2dgs"
+    )
+    parser.add_argument("--sh-degree", type=int, default=3)
+    parser.add_argument("--white-background", action="store_true")
     parser.add_argument("--observation-cache", type=Path, required=True)
     parser.add_argument(
         "--anchor-map",
@@ -88,12 +93,14 @@ def main() -> None:
     device = torch.device(args.device)
     if device.type != "cuda":
         raise ValueError("mapping render-quality audit requires CUDA")
-    model = GaussianModel2D(3, device=device)
+    model_class = GaussianModel2D if args.gaussian_type == "2dgs" else GaussianModel3D
+    model = model_class(args.sh_degree, device=device)
     model.load_ply(prior_path, loc_feature_dim=0)
     model = model.to(device).eval()
     thresholds = CertificateThresholds()
     indices = list(range(args.shard_index, len(cameras), args.shard_count))
     records = []
+    background = torch.ones(3, device=device) if args.white_background else torch.zeros(3, device=device)
     started = time.perf_counter()
     for local_row, query_index in enumerate(indices):
         camera = cameras[query_index]
@@ -106,7 +113,7 @@ def main() -> None:
             camera.fov_y,
             camera.width,
             camera.height,
-            bg_color=torch.zeros(3, device=device),
+            bg_color=background,
             render_mode="RGB+ED",
             rgb_only=True,
             rasterize_mode="antialiased",
@@ -180,6 +187,9 @@ def main() -> None:
             "dataset": str(args.dataset.resolve()),
             "gaussian_ply": str(prior_path),
             "gaussian_ply_sha256": sha256_file(prior_path),
+            "gaussian_type": args.gaussian_type,
+            "sh_degree": int(args.sh_degree),
+            "background": "white" if args.white_background else "black",
             "observation_cache": str(cache_path),
             "observation_cache_sha256": sha256_file(cache_path),
             "anchor_map": str(map_path) if map_path is not None else None,

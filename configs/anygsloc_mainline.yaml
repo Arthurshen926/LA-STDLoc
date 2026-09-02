@@ -1,0 +1,79 @@
+schema: anygsloc_paper_mainline
+version: 1
+
+method:
+  name: AnyGSLoc
+  status: frozen
+  offline_self_localization_feedback: false
+  descriptor_or_metric_training: false
+  test_query_map_adaptation: false
+  query_rendering: false
+  dense_matching: false
+  map_writeback: false
+
+prior:
+  kind: off_the_shelf_rgb_gaussian
+  frozen: true
+  accepts:
+    - vanilla_2dgs
+    - vanilla_3dgs
+    - anysplat_ff_3dgs
+    - matcha_2dgs
+
+mapping:
+  sparse_frontend: ulfloc_native_metric
+  keypoints: 2048
+  keypoint_reference_area_px: 2073600
+  keypoint_minimum: 1024
+  keypoint_maximum: 2048
+  nms: 4
+  detection_threshold: 0.0
+  render_valid_alpha_minimum: 0.05
+  render_valid_neighborhood_radius: 4
+  v2_filter_stage: after_detection_before_pair_association
+  pair_neighbors: 6
+  minimum_pair_similarity: 0.65
+  minimum_pair_margin: 0.01
+  maximum_epipolar_error_px: 2.0
+  minimum_track_views: 3
+  minimum_triangulation_parallax_deg: 1.0
+  maximum_triangulation_reprojection_px: 2.0
+  descriptor_aggregation: robust_track_fusion
+  projective_completion: true
+  map_capacity: all_valid_projective_tracks
+
+deployment:
+  sparse_frontend: ulfloc_native_metric
+  query_feature_contract: native_resized_input
+  keypoints: 2048
+  keypoint_reference_area_px: 2073600
+  keypoint_minimum: 1024
+  keypoint_maximum: 2048
+  nms: 4
+  global_topk: 1
+  max_matches_per_keypoint: 0
+  max_matches_per_landmark: 0
+  reprojection_error_px: 12
+  reprojection_error_diagonal_fraction: 0.005447348607662378
+  reprojection_error_angular_tangent: 0.007176912978323976
+  confidence: 0.99999
+  maximum_iterations: 100000
+  minimum_iterations: 1000
+  solver: poselib
+  pose_solves: 1
+  valid_mask_policy: object_and_sky_and_distortion_v1
+
+online_refinement:
+  name: AnyGSLoc-R
+  optional: true
+  default_enabled: false
+  map_read_only: true
+  query_specific: true
+  sparse_only: true
+  maximum_additional_pose_solves: 1
+  claim: confidence_core_sparse_reserve_refinement
+
+seeds:
+  - 2026
+  - 2027
+  - 2028
