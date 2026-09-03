@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -135,11 +136,19 @@ def main() -> None:
     payload, cells = load_cells(args.matrix.resolve(), args.group, selected)
     audited = [audit_cell(cell) for cell in cells]
     output_root = Path(payload["output_root"]).resolve()
-    audit_path = output_root / f"{args.group}_input_audit.json"
+    selection_identity = ",".join(sorted(row["key"] for row in audited))
+    selection_tag = (
+        "all"
+        if not selected
+        else hashlib.sha256(selection_identity.encode()).hexdigest()[:12]
+    )
+    audit_path = output_root / f"{args.group}_{selection_tag}_input_audit.json"
     audit = {
         "schema": "anygsloc_experiment_input_audit",
         "version": 1,
         "group": args.group,
+        "selection_identity": selection_identity,
+        "selection_tag": selection_tag,
         "cell_count": len(audited),
         "valid_cell_count": sum(not row["input_errors"] for row in audited),
         "cells": audited,
@@ -157,8 +166,15 @@ def main() -> None:
         row for row in audited
         if not (args.reuse_existing_base and row["existing_base_complete"])
     ]
-    state_path = output_root / f"{args.group}_state.json"
-    state = {"schema": "anygsloc_experiment_state", "version": 1, "started": time.time(), "cells": {}}
+    state_path = output_root / f"{args.group}_{selection_tag}_state.json"
+    state = {
+        "schema": "anygsloc_experiment_state",
+        "version": 1,
+        "selection_identity": selection_identity,
+        "selection_tag": selection_tag,
+        "started": time.time(),
+        "cells": {},
+    }
 
     def execute(index_cell: tuple[int, dict[str, Any]]) -> tuple[str, int, list[str]]:
         index, cell = index_cell
