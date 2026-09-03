@@ -107,7 +107,7 @@ def main() -> None:
         observation_cache_sha256=observation_cache_sha256,
     )
     provider, source_rows, filter_report = build_v2_filtered_provider(
-        cache, rows_by_query=rows
+        cache, rows_by_query=rows, allow_empty_queries=True
     )
     # Release the unfiltered sparse tensors. Dense alpha/depth tensors remain
     # referenced by the filtered records for completion proposals.
@@ -135,16 +135,37 @@ def main() -> None:
         parallel_minimum_tracks=5000,
     )
     base["candidate_kind"] = "v2_projective_track"
-    completion = build_projective_completion(
-        provider, association, voxel_size_m=0.05, alpha_minimum=0.05,
-        minimum_similarity=0.7, minimum_margin=0.01,
-        maximum_epipolar_error_px=2.0, minimum_observations=3,
-        minimum_camera_families=2, maximum_rows_per_view=256,
-        safety_maximum_components=100000, device=args.device,
-    )
+    completion = None
+    completion_unavailable_reason = None
+    try:
+        completion = build_projective_completion(
+            provider, association, voxel_size_m=0.05, alpha_minimum=0.05,
+            minimum_similarity=0.7, minimum_margin=0.01,
+            maximum_epipolar_error_px=2.0, minimum_observations=3,
+            minimum_camera_families=2, maximum_rows_per_view=256,
+            safety_maximum_components=100000, device=args.device,
+        )
+    except ValueError as error:
+        unavailable = {
+            "no unused render-valid observations for completion": (
+                "no_unused_render_valid_completion_observations"
+            ),
+            "depth proposals produced no descriptor-consistent component": (
+                "no_descriptor_consistent_projective_completion"
+            ),
+            "association graph contains no ray-triangulated Anchor": (
+                "no_ray_triangulated_completion_anchor"
+            ),
+        }
+        if str(error) not in unavailable:
+            raise
+        completion_unavailable_reason = unavailable[str(error)]
     base = remap_candidate_rows_to_source(base, source_rows)
-    completion = remap_candidate_rows_to_source(completion, source_rows)
-    candidates = merge_projective_candidates([base, completion])
+    candidate_parts = [base]
+    if completion is not None:
+        completion = remap_candidate_rows_to_source(completion, source_rows)
+        candidate_parts.append(completion)
+    candidates = merge_projective_candidates(candidate_parts)
     reconstruction_seconds = time.perf_counter() - reconstruction_started
 
     association_path = args.output_dir / "association_graph.pt"
@@ -161,7 +182,9 @@ def main() -> None:
         "v8_association_graph": str(association_path.resolve()),
         "v8_association_graph_sha256": sha256_file(association_path),
         "v8_filter_stage": "after_detection_before_pair_association",
-        "projective_completion_enabled": True,
+        "projective_completion_attempted": True,
+        "projective_completion_enabled": completion is not None,
+        "projective_completion_unavailable_reason": completion_unavailable_reason,
     }
     state = materialize_projective_anchor_map(candidates, lineage=lineage)
     # The candidate CSR has already been remapped from filtered-local row ids
@@ -203,7 +226,9 @@ def main() -> None:
             "mapping_views": len(provider),
             "association_components": int(association["diagnostics"]["track_count"]),
             "base_projective_anchors": int(base["anchor_xyz"].shape[0]),
-            "completion_anchors": int(completion["anchor_xyz"].shape[0]),
+            "completion_anchors": int(
+                0 if completion is None else completion["anchor_xyz"].shape[0]
+            ),
             "total_anchors": int(state["anchor_xyz"].shape[0]),
         },
         "association_diagnostics": dict(association["diagnostics"]),
@@ -222,6 +247,12 @@ def main() -> None:
             "all_descriptors_fused_from_v2_valid_observations": True,
             "query_detector_used": False, "feedback_used": False,
             "mapping_only_anchor_view_support": True,
+            "empty_v2_query_policy": "retain_zero_row_mapping_view",
+            "projective_completion_attempted": True,
+            "projective_completion_available": completion is not None,
+            "projective_completion_unavailable_reason": (
+                completion_unavailable_reason
+            ),
         },
         "timing_seconds": {
             "association": association_seconds,

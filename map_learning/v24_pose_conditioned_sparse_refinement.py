@@ -117,6 +117,12 @@ def default_config() -> dict:
         "topk": 64,
         "projection_gate_px": 8.0,
         "maximum_score_drop_from_top1": 0.10,
+        "reliability_adaptive_score_drop": False,
+        "reliability_expanded_score_drop": 0.10,
+        "reliability_minimum_matchability_quantile": 0.50,
+        "reliability_maximum_uncertainty_quantile": 0.50,
+        "reliability_maximum_geometry_cost": 0.50,
+        "reliability_minimum_reprojection_improvement_px": 4.0,
         "minimum_reprojection_improvement_px": 1.0,
         "descriptor_cost_weight": 0.50,
         "geometry_cost_weight": 0.40,
@@ -183,6 +189,18 @@ def validate_config(value: Mapping) -> dict:
         <= float(config["maximum_uncertainty_projection_gate_px"])
         <= 24.0
         and 0.0 < float(config["maximum_score_drop_from_top1"]) <= 0.2
+        and float(config["maximum_score_drop_from_top1"])
+        <= float(config["reliability_expanded_score_drop"])
+        <= 0.2
+        and 0.0
+        <= float(config["reliability_minimum_matchability_quantile"])
+        <= 1.0
+        and 0.0
+        <= float(config["reliability_maximum_uncertainty_quantile"])
+        <= 1.0
+        and 0.0 < float(config["reliability_maximum_geometry_cost"]) <= 1.0
+        and float(config["reliability_minimum_reprojection_improvement_px"])
+        >= float(config["minimum_reprojection_improvement_px"])
         and 0.0 <= float(config["view_direction_slack_deg"]) <= 60.0
         and 1 <= int(config["maximum_changed_rows"]) <= 512
         and 0.0 < float(config["maximum_changed_to_baseline_inlier_ratio"]) <= 2.0
@@ -205,6 +223,12 @@ def runtime_config(
     *,
     projection_gate_px: float = 8.0,
     maximum_score_drop_from_top1: float = 0.10,
+    reliability_adaptive_score_drop: bool = False,
+    reliability_expanded_score_drop: float = 0.10,
+    reliability_minimum_matchability_quantile: float = 0.50,
+    reliability_maximum_uncertainty_quantile: float = 0.50,
+    reliability_maximum_geometry_cost: float = 0.50,
+    reliability_minimum_reprojection_improvement_px: float = 4.0,
     view_direction_slack_deg: float = 20.0,
     maximum_changed_rows: int = 256,
     maximum_changed_to_baseline_inlier_ratio: float = 1.0,
@@ -225,6 +249,24 @@ def runtime_config(
         {
             "projection_gate_px": float(projection_gate_px),
             "maximum_score_drop_from_top1": float(maximum_score_drop_from_top1),
+            "reliability_adaptive_score_drop": bool(
+                reliability_adaptive_score_drop
+            ),
+            "reliability_expanded_score_drop": float(
+                reliability_expanded_score_drop
+            ),
+            "reliability_minimum_matchability_quantile": float(
+                reliability_minimum_matchability_quantile
+            ),
+            "reliability_maximum_uncertainty_quantile": float(
+                reliability_maximum_uncertainty_quantile
+            ),
+            "reliability_maximum_geometry_cost": float(
+                reliability_maximum_geometry_cost
+            ),
+            "reliability_minimum_reprojection_improvement_px": float(
+                reliability_minimum_reprojection_improvement_px
+            ),
             "view_direction_slack_deg": float(view_direction_slack_deg),
             "maximum_changed_rows": int(maximum_changed_rows),
             "maximum_changed_to_baseline_inlier_ratio": float(
@@ -1019,6 +1061,8 @@ def select_pose_conditioned_rows(
     descriptor_cost = score_drop.clamp_min(0.0) / maximum_drop
     geometry_cost = residual / edge_projection_gate
     reliability_cost = torch.zeros_like(geometry_cost)
+    reliability_matchability_threshold = 0.0
+    reliability_uncertainty_threshold = 0.0
     if (anchor_matchability is None) != (anchor_uncertainty is None):
         raise ValueError("V24 mapping reliability inputs must be paired")
     if anchor_matchability is not None:
@@ -1043,15 +1087,65 @@ def select_pose_conditioned_rows(
         reliability_cost += 0.5 * (
             uncertainty[candidates] / (1.0 + uncertainty[candidates])
         )
+    elif bool(cfg["reliability_adaptive_score_drop"]):
+        raise ValueError(
+            "reliability-adaptive score drop requires mapping reliability"
+        )
     joint_cost = (
         float(cfg["descriptor_cost_weight"]) * descriptor_cost
         + float(cfg["geometry_cost_weight"]) * geometry_cost
         + float(cfg["mapping_reliability_cost_weight"]) * reliability_cost
     )
-    row_maximum_drop = torch.full(
-        (count, 1), maximum_drop, dtype=scores.dtype, device=candidates.device
+    edge_maximum_drop = torch.full(
+        (count, topk), maximum_drop, dtype=scores.dtype, device=candidates.device
     )
-    row_maximum_drop[soft_inlier] = float(cfg["soft_inlier_maximum_score_drop"])
+    reliability_authorized = torch.zeros_like(residual, dtype=torch.bool)
+    expanded_budget_edge = torch.zeros_like(residual, dtype=torch.bool)
+    if bool(cfg["reliability_adaptive_score_drop"]):
+        bounded_matchability = matchability.clamp(0.0, 1.0)
+        reliability_matchability_threshold = float(
+            torch.quantile(
+                bounded_matchability,
+                float(cfg["reliability_minimum_matchability_quantile"]),
+            ).item()
+        )
+        reliability_uncertainty_threshold = float(
+            torch.quantile(
+                uncertainty,
+                float(cfg["reliability_maximum_uncertainty_quantile"]),
+            ).item()
+        )
+        reliability_authorized = (
+            (~first_pass_inlier[:, None])
+            & (
+                bounded_matchability[candidates]
+                >= reliability_matchability_threshold
+            )
+            & (uncertainty[candidates] <= reliability_uncertainty_threshold)
+            & (
+                geometry_cost
+                <= float(cfg["reliability_maximum_geometry_cost"])
+            )
+            & (
+                residual
+                <= residual[:, :1]
+                - float(
+                    cfg["reliability_minimum_reprojection_improvement_px"]
+                )
+            )
+            & view_supported
+        )
+        edge_maximum_drop[reliability_authorized] = float(
+            cfg["reliability_expanded_score_drop"]
+        )
+        expanded_budget_edge = (
+            reliability_authorized
+            & (score_drop > maximum_drop)
+            & (score_drop <= float(cfg["reliability_expanded_score_drop"]))
+        )
+    edge_maximum_drop[soft_inlier] = float(
+        cfg["soft_inlier_maximum_score_drop"]
+    )
     row_minimum_improvement = torch.full(
         (count, 1),
         float(cfg["minimum_reprojection_improvement_px"]),
@@ -1063,7 +1157,7 @@ def select_pose_conditioned_rows(
     )
     descriptor_view_eligible = (
         (~protected[:, None])
-        & (score_drop <= row_maximum_drop)
+        & (score_drop <= edge_maximum_drop)
         & (candidates != baseline[:, None])
         & (~reserved_anchors[candidates])
         & view_supported
@@ -1220,6 +1314,11 @@ def select_pose_conditioned_rows(
         raise RuntimeError("V24 refinement changed a protected first-pass inlier")
     changed_rows = torch.nonzero(changed, as_tuple=False).reshape(-1)
     ranks = best_rank[changed_rows]
+    adaptive_selected = (
+        expanded_budget_edge[changed_rows, ranks]
+        if changed_rows.numel()
+        else torch.empty(0, dtype=torch.bool, device=candidates.device)
+    )
     return {
         "anchor_rows": selected,
         "changed_query_rows": changed_rows,
@@ -1228,6 +1327,24 @@ def select_pose_conditioned_rows(
         "selected_score_drop": score_drop[changed_rows, ranks],
         "selected_joint_cost": best_cost[changed_rows],
         "eligible_edge_count": int(eligible.sum().item()),
+        "reliability_adaptive_score_drop_enabled": bool(
+            cfg["reliability_adaptive_score_drop"]
+        ),
+        "reliability_authorized_edge_count": int(
+            reliability_authorized.sum().item()
+        ),
+        "reliability_expanded_budget_edge_count": int(
+            expanded_budget_edge.sum().item()
+        ),
+        "reliability_expanded_selected_row_count": int(
+            adaptive_selected.sum().item()
+        ),
+        "reliability_matchability_threshold": float(
+            reliability_matchability_threshold
+        ),
+        "reliability_uncertainty_threshold": float(
+            reliability_uncertainty_threshold
+        ),
         "mutual_candidate_matching_enabled": bool(
             cfg["pose_conditioned_mutual_matching"]
         ),

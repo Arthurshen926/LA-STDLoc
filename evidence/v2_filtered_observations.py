@@ -24,6 +24,7 @@ def build_v2_filtered_provider(
     cache: dict,
     *,
     rows_by_query: Sequence[torch.Tensor],
+    allow_empty_queries: bool = False,
 ) -> tuple[GaussianRenderObservationProvider, list[torch.Tensor], dict]:
     """Filter sparse rows while retaining dense render evidence by reference.
 
@@ -43,6 +44,7 @@ def build_v2_filtered_provider(
     source_rows = []
     raw_count = 0
     retained_count = 0
+    empty_query_names = []
     for query_index, name in enumerate(names):
         record = records[name]
         keypoints = torch.as_tensor(record["native_keypoints"])
@@ -51,7 +53,9 @@ def build_v2_filtered_provider(
             raise ValueError(f"V2 rows do not align for {name}")
         selected = torch.nonzero(mask, as_tuple=False).reshape(-1)
         if selected.numel() == 0:
-            raise ValueError(f"V2 removed every detector row for {name}")
+            if not bool(allow_empty_queries):
+                raise ValueError(f"V2 removed every detector row for {name}")
+            empty_query_names.append(name)
         output = dict(record)
         for field in SPARSE_ROW_FIELDS:
             value = record.get(field)
@@ -70,6 +74,8 @@ def build_v2_filtered_provider(
         source_rows.append(selected)
         raw_count += int(mask.numel())
         retained_count += int(selected.numel())
+    if retained_count == 0:
+        raise ValueError("V2 removed every detector row from every mapping query")
     payload = {
         **dict(cache),
         "queries": filtered_records,
@@ -80,6 +86,15 @@ def build_v2_filtered_provider(
             "retained_row_count": retained_count,
             "removed_row_count": raw_count - retained_count,
             "retained_fraction": retained_count / raw_count,
+            "input_query_count": len(names),
+            "retained_query_count": len(names) - len(empty_query_names),
+            "empty_query_count": len(empty_query_names),
+            "empty_query_names": empty_query_names,
+            "empty_query_policy": (
+                "retain_zero_row_mapping_view"
+                if bool(allow_empty_queries)
+                else "fail_closed"
+            ),
             "superpoint_input": "complete_unmasked_rgb",
             "filter_stage": "after_detection_before_pair_association",
         },

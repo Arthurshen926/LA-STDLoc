@@ -117,6 +117,75 @@ def test_joint_selector_requires_geometric_improvement_and_descriptor_support() 
     assert result["anchor_rows"].tolist() == [0]
 
 
+def test_reliability_authorizes_only_strong_geometry_score_drop_expansion() -> None:
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],  # reliable alternative for row 1
+            [20.0, 0.0, 1.0],  # bad row-1 baseline
+            [30.0, 0.0, 1.0],
+        ]
+    )
+    candidates, scores = _topk(
+        [[0], [2, 1]],
+        [[1.0], [1.0, 0.93]],
+    )
+    common = dict(
+        keypoints=torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.tensor([0]),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+        anchor_matchability=torch.tensor([0.8, 0.9, 0.1, 0.2]),
+        anchor_uncertainty=torch.tensor([0.2, 0.1, 2.0, 1.0]),
+    )
+    fixed = select_pose_conditioned_rows(
+        **common,
+        config=runtime_config(maximum_score_drop_from_top1=0.03),
+    )
+    adaptive = select_pose_conditioned_rows(
+        **common,
+        config=runtime_config(
+            maximum_score_drop_from_top1=0.03,
+            reliability_adaptive_score_drop=True,
+            reliability_expanded_score_drop=0.10,
+        ),
+    )
+
+    assert fixed["changed_query_rows"].numel() == 0
+    assert adaptive["changed_query_rows"].tolist() == [1]
+    assert adaptive["reliability_expanded_budget_edge_count"] == 1
+    assert adaptive["reliability_expanded_selected_row_count"] == 1
+
+
+def test_reliability_expansion_rejects_low_quality_anchor() -> None:
+    xyz = torch.tensor(
+        [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [20.0, 0.0, 1.0]]
+    )
+    candidates, scores = _topk([[0], [2, 1]], [[1.0], [1.0, 0.93]])
+    result = select_pose_conditioned_rows(
+        keypoints=torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.tensor([0]),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+        anchor_matchability=torch.tensor([0.8, 0.1, 0.9]),
+        anchor_uncertainty=torch.tensor([0.2, 2.0, 0.1]),
+        config=runtime_config(
+            maximum_score_drop_from_top1=0.03,
+            reliability_adaptive_score_drop=True,
+            reliability_expanded_score_drop=0.10,
+        ),
+    )
+
+    assert result["changed_query_rows"].numel() == 0
+    assert result["reliability_expanded_budget_edge_count"] == 0
+
+
 def test_pose_conditioned_mutual_matching_keeps_anchor_best_query() -> None:
     # Both rows can geometrically claim Anchor 2.  Joint cost prefers row 0,
     # while the mutual descriptor check correctly lets Anchor 2 choose row 1.

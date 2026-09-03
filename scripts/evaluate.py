@@ -279,6 +279,37 @@ def main() -> None:
         "--refinement-maximum-score-drop-from-top1", type=float, default=0.03
     )
     parser.add_argument(
+        "--refinement-reliability-adaptive-score-drop",
+        action="store_true",
+        help=(
+            "Allow a wider descriptor score drop only for mapping-reliable "
+            "Anchors with strong first-pose reprojection evidence."
+        ),
+    )
+    parser.add_argument(
+        "--refinement-reliability-expanded-score-drop", type=float, default=0.10
+    )
+    parser.add_argument(
+        "--refinement-reliability-minimum-matchability-quantile",
+        type=float,
+        default=0.50,
+    )
+    parser.add_argument(
+        "--refinement-reliability-maximum-uncertainty-quantile",
+        type=float,
+        default=0.50,
+    )
+    parser.add_argument(
+        "--refinement-reliability-maximum-geometry-cost",
+        type=float,
+        default=0.50,
+    )
+    parser.add_argument(
+        "--refinement-reliability-minimum-improvement-px",
+        type=float,
+        default=4.0,
+    )
+    parser.add_argument(
         "--refinement-view-direction-slack-deg", type=float, default=15.0
     )
     parser.add_argument("--refinement-maximum-changed-rows", type=int, default=128)
@@ -704,6 +735,24 @@ def main() -> None:
         refinement_maximum_score_drop_from_top1=(
             args.refinement_maximum_score_drop_from_top1
         ),
+        refinement_reliability_adaptive_score_drop=(
+            args.refinement_reliability_adaptive_score_drop
+        ),
+        refinement_reliability_expanded_score_drop=(
+            args.refinement_reliability_expanded_score_drop
+        ),
+        refinement_reliability_minimum_matchability_quantile=(
+            args.refinement_reliability_minimum_matchability_quantile
+        ),
+        refinement_reliability_maximum_uncertainty_quantile=(
+            args.refinement_reliability_maximum_uncertainty_quantile
+        ),
+        refinement_reliability_maximum_geometry_cost=(
+            args.refinement_reliability_maximum_geometry_cost
+        ),
+        refinement_reliability_minimum_improvement_px=(
+            args.refinement_reliability_minimum_improvement_px
+        ),
         refinement_view_direction_slack_deg=(args.refinement_view_direction_slack_deg),
         refinement_maximum_changed_rows=(args.refinement_maximum_changed_rows),
         refinement_maximum_changed_to_baseline_inlier_ratio=(
@@ -990,6 +1039,24 @@ def main() -> None:
                 ),
                 "refinement_maximum_score_drop_from_top1": float(
                     args.refinement_maximum_score_drop_from_top1
+                ),
+                "refinement_reliability_adaptive_score_drop": bool(
+                    args.refinement_reliability_adaptive_score_drop
+                ),
+                "refinement_reliability_expanded_score_drop": float(
+                    args.refinement_reliability_expanded_score_drop
+                ),
+                "refinement_reliability_minimum_matchability_quantile": float(
+                    args.refinement_reliability_minimum_matchability_quantile
+                ),
+                "refinement_reliability_maximum_uncertainty_quantile": float(
+                    args.refinement_reliability_maximum_uncertainty_quantile
+                ),
+                "refinement_reliability_maximum_geometry_cost": float(
+                    args.refinement_reliability_maximum_geometry_cost
+                ),
+                "refinement_reliability_minimum_improvement_px": float(
+                    args.refinement_reliability_minimum_improvement_px
                 ),
                 "refinement_view_direction_slack_deg": float(
                     args.refinement_view_direction_slack_deg

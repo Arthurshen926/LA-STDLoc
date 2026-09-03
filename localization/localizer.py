@@ -250,6 +250,12 @@ class SparseLocalizer:
         refinement_uncertainty_projection_gate_px: float = 0.0,
         refinement_uncertainty_maximum_baseline_inliers: int = 0,
         refinement_maximum_score_drop_from_top1: float = 0.03,
+        refinement_reliability_adaptive_score_drop: bool = False,
+        refinement_reliability_expanded_score_drop: float = 0.10,
+        refinement_reliability_minimum_matchability_quantile: float = 0.50,
+        refinement_reliability_maximum_uncertainty_quantile: float = 0.50,
+        refinement_reliability_maximum_geometry_cost: float = 0.50,
+        refinement_reliability_minimum_improvement_px: float = 4.0,
         refinement_view_direction_slack_deg: float = 15.0,
         refinement_maximum_changed_rows: int = 128,
         refinement_maximum_changed_to_baseline_inlier_ratio: float = 0.50,
@@ -594,6 +600,24 @@ class SparseLocalizer:
         self.pose_conditioned_selection_config = pose_conditioned_runtime_config(
             projection_gate_px=refinement_projection_gate_px,
             maximum_score_drop_from_top1=(refinement_maximum_score_drop_from_top1),
+            reliability_adaptive_score_drop=(
+                refinement_reliability_adaptive_score_drop
+            ),
+            reliability_expanded_score_drop=(
+                refinement_reliability_expanded_score_drop
+            ),
+            reliability_minimum_matchability_quantile=(
+                refinement_reliability_minimum_matchability_quantile
+            ),
+            reliability_maximum_uncertainty_quantile=(
+                refinement_reliability_maximum_uncertainty_quantile
+            ),
+            reliability_maximum_geometry_cost=(
+                refinement_reliability_maximum_geometry_cost
+            ),
+            reliability_minimum_reprojection_improvement_px=(
+                refinement_reliability_minimum_improvement_px
+            ),
             view_direction_slack_deg=refinement_view_direction_slack_deg,
             maximum_changed_rows=refinement_maximum_changed_rows,
             maximum_changed_to_baseline_inlier_ratio=(
@@ -1356,6 +1380,11 @@ class SparseLocalizer:
         feedback_changed_inlier_median_residual_px = 0.0
         feedback_support_passed = False
         feedback_eligible_edges = 0
+        feedback_reliability_authorized_edges = 0
+        feedback_reliability_expanded_budget_edges = 0
+        feedback_reliability_expanded_selected_rows = 0
+        feedback_reliability_matchability_threshold = 0.0
+        feedback_reliability_uncertainty_threshold = 0.0
         feedback_duplicate_owner_rejections = 0
         feedback_mutual_candidate_rejections = 0
         feedback_heldout_query_rows = 0
@@ -1662,6 +1691,21 @@ class SparseLocalizer:
                         for key, value in provisional_device.items()
                     }
                     feedback_eligible_edges = int(provisional["eligible_edge_count"])
+                    feedback_reliability_authorized_edges = int(
+                        provisional["reliability_authorized_edge_count"]
+                    )
+                    feedback_reliability_expanded_budget_edges = int(
+                        provisional["reliability_expanded_budget_edge_count"]
+                    )
+                    feedback_reliability_expanded_selected_rows = int(
+                        provisional["reliability_expanded_selected_row_count"]
+                    )
+                    feedback_reliability_matchability_threshold = float(
+                        provisional["reliability_matchability_threshold"]
+                    )
+                    feedback_reliability_uncertainty_threshold = float(
+                        provisional["reliability_uncertainty_threshold"]
+                    )
                     feedback_duplicate_owner_rejections = int(
                         provisional["duplicate_candidate_owner_rejection_count"]
                     )
@@ -2544,6 +2588,28 @@ class SparseLocalizer:
                 ),
                 "sparse_feedback_support_passed": int(feedback_support_passed),
                 "sparse_feedback_eligible_candidate_edges": feedback_eligible_edges,
+                "sparse_feedback_reliability_adaptive_score_drop": int(
+                    bool(
+                        self.pose_conditioned_selection_config[
+                            "reliability_adaptive_score_drop"
+                        ]
+                    )
+                ),
+                "sparse_feedback_reliability_authorized_edges": int(
+                    feedback_reliability_authorized_edges
+                ),
+                "sparse_feedback_reliability_expanded_budget_edges": int(
+                    feedback_reliability_expanded_budget_edges
+                ),
+                "sparse_feedback_reliability_expanded_selected_rows": int(
+                    feedback_reliability_expanded_selected_rows
+                ),
+                "sparse_feedback_reliability_matchability_threshold": float(
+                    feedback_reliability_matchability_threshold
+                ),
+                "sparse_feedback_reliability_uncertainty_threshold": float(
+                    feedback_reliability_uncertainty_threshold
+                ),
                 "sparse_feedback_duplicate_owner_rejections": (
                     feedback_duplicate_owner_rejections
                 ),

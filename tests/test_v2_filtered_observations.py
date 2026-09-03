@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from evidence.v2_filtered_observations import (
     build_v2_filtered_provider,
@@ -51,3 +52,30 @@ def test_candidate_csr_is_remapped_to_original_cache_rows() -> None:
     )
     assert remapped["projective_anchor_observations"]["keypoint_indices"].tolist() == [4, 9]
     assert remapped["contract"]["observation_rows_remapped_to_source_cache"] is True
+
+
+def test_v2_can_retain_an_empty_view_in_the_mapping_registry() -> None:
+    cache = _cache()
+    cache["queries"]["seq/b.png"] = dict(cache["queries"]["seq/a.png"])
+    provider, source, report = build_v2_filtered_provider(
+        cache,
+        rows_by_query=[
+            torch.tensor([False, False, False]),
+            torch.tensor([True, False, True]),
+        ],
+        allow_empty_queries=True,
+    )
+
+    assert list(provider.names) == ["seq/a.png", "seq/b.png"]
+    assert provider.build_view(0).keypoints.shape == (0, 2)
+    assert source[0].numel() == 0
+    assert source[1].tolist() == [0, 2]
+    assert report["empty_query_names"] == ["seq/a.png"]
+    assert report["retained_query_count"] == 1
+
+
+def test_v2_still_rejects_an_empty_view_without_explicit_policy() -> None:
+    with pytest.raises(ValueError, match="removed every detector row"):
+        build_v2_filtered_provider(
+            _cache(), rows_by_query=[torch.tensor([False, False, False])]
+        )
