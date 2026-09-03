@@ -66,6 +66,16 @@ def test_local_artifact_marks_rows_without_rejecting_whole_render() -> None:
     assert result["row_uncertain"].tolist() == [False, True, False]
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_missing_artifact_raster_preserves_cuda_row_device() -> None:
+    values = {
+        key: value.cuda() if isinstance(value, torch.Tensor) else value
+        for key, value in _normal().items()
+    }
+    result = certify_v7_render(**values)
+    assert result["row_valid"].is_cuda
+
+
 def test_reject_and_uncertain_certification_cannot_mutate_map_state() -> None:
     state = {"anchor_ids": torch.arange(3), "anchor_features": torch.eye(3)}
     frozen = copy.deepcopy(state)

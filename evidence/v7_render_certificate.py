@@ -374,7 +374,9 @@ def certify_v7_render(
     )
     row_structure_supported = _sample_rows(structure_support, keypoints)
     if artifact_row_mask is None:
-        artifact_rows = torch.zeros(keypoints.shape[0], dtype=torch.bool)
+        artifact_rows = torch.zeros(
+            keypoints.shape[0], dtype=torch.bool, device=row_pixel_valid.device
+        )
     else:
         artifact_rows = torch.as_tensor(
             artifact_row_mask, dtype=torch.bool, device=row_pixel_valid.device
