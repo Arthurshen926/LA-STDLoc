@@ -327,6 +327,25 @@ def subset_projective_anchor_map(state: dict, selected: torch.Tensor) -> dict:
     }
     output["canonical_anchor_count"] = int(selected.numel())
     output["micro_anchor_count"] = int(selected.numel())
+    view_support = state.get("anchor_view_support")
+    if isinstance(view_support, dict):
+        subset_support = dict(view_support)
+        for field in (
+            "direction_modes",
+            "direction_radius_deg",
+            "mode_count",
+            "minimum_distance_m",
+            "maximum_distance_m",
+            "observation_count",
+        ):
+            value = view_support.get(field)
+            if value is None:
+                continue
+            tensor = torch.as_tensor(value)
+            if tensor.ndim < 1 or tensor.shape[0] != count:
+                raise ValueError("Anchor view support does not align with the map")
+            subset_support[field] = tensor[selected].clone()
+        output["anchor_view_support"] = subset_support
     report = state.get("v6_descriptor_distillation")
     if isinstance(report, dict):
         report = dict(report)
