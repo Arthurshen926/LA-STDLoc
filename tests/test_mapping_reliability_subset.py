@@ -1,13 +1,14 @@
 import pytest
 import torch
 
+from common.v6_contracts import ANCHOR_CANDIDATE_SCHEMA
 from map_learning.mapping_reliability_subset import select_mapping_reliable_anchors
 from topology.v6_anchor_map import subset_projective_anchor_map
 
 
 def _candidates():
     return {
-        "schema": "lafgs_projective_anchor_candidates",
+        "schema": ANCHOR_CANDIDATE_SCHEMA,
         "uses_source_mapping_rgb": False,
         "uses_test_queries": False,
         "anchor_xyz": torch.zeros(4, 3),

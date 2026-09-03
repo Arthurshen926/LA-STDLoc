@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import torch
 
+from common.v6_contracts import ANCHOR_CANDIDATE_SCHEMA
+
 
 def select_mapping_reliable_anchors(
     candidates: dict,
@@ -20,7 +22,7 @@ def select_mapping_reliable_anchors(
     a fixed top percentile of otherwise unreliable Tracks.
     """
 
-    if candidates.get("schema") != "lafgs_projective_anchor_candidates":
+    if candidates.get("schema") != ANCHOR_CANDIDATE_SCHEMA:
         raise ValueError("reliability selection requires projective candidates")
     if candidates.get("uses_source_mapping_rgb") is not False:
         raise ValueError("source RGB candidates are outside this mapping-only arm")
