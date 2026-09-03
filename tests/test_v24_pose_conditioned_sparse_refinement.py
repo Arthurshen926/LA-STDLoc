@@ -186,6 +186,40 @@ def test_reliability_expansion_rejects_low_quality_anchor() -> None:
     assert result["reliability_expanded_budget_edge_count"] == 0
 
 
+def test_reliability_expansion_is_only_a_no_base_candidate_fallback() -> None:
+    xyz = torch.tensor(
+        [
+            [0.0, 0.0, 1.0],
+            [2.0, 0.0, 1.0],  # already feasible inside the native score budget
+            [20.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],  # lower residual but outside the native budget
+        ]
+    )
+    candidates, scores = _topk(
+        [[0], [2, 1, 3]], [[1.0], [1.0, 0.98, 0.93]]
+    )
+    result = select_pose_conditioned_rows(
+        keypoints=torch.tensor([[0.0, 0.0], [1.0, 0.0]]),
+        topk_anchor_rows=candidates,
+        topk_scores=scores,
+        baseline_inlier_rows=torch.tensor([0]),
+        anchor_xyz=xyz,
+        intrinsic=torch.eye(3),
+        baseline_pose_w2c=torch.eye(4),
+        anchor_matchability=torch.tensor([0.8, 0.9, 0.1, 0.95]),
+        anchor_uncertainty=torch.tensor([0.2, 0.1, 2.0, 0.05]),
+        config=runtime_config(
+            maximum_score_drop_from_top1=0.03,
+            reliability_adaptive_score_drop=True,
+            reliability_expanded_score_drop=0.10,
+        ),
+    )
+
+    assert result["anchor_rows"].tolist() == [0, 1]
+    assert result["reliability_expanded_budget_edge_count"] == 0
+    assert result["reliability_fallback_query_row_count"] == 0
+
+
 def test_pose_conditioned_mutual_matching_keeps_anchor_best_query() -> None:
     # Both rows can geometrically claim Anchor 2.  Joint cost prefers row 0,
     # while the mutual descriptor check correctly lets Anchor 2 choose row 1.

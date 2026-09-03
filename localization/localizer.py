@@ -1383,6 +1383,7 @@ class SparseLocalizer:
         feedback_reliability_authorized_edges = 0
         feedback_reliability_expanded_budget_edges = 0
         feedback_reliability_expanded_selected_rows = 0
+        feedback_reliability_fallback_query_rows = 0
         feedback_reliability_matchability_threshold = 0.0
         feedback_reliability_uncertainty_threshold = 0.0
         feedback_duplicate_owner_rejections = 0
@@ -1699,6 +1700,9 @@ class SparseLocalizer:
                     )
                     feedback_reliability_expanded_selected_rows = int(
                         provisional["reliability_expanded_selected_row_count"]
+                    )
+                    feedback_reliability_fallback_query_rows = int(
+                        provisional["reliability_fallback_query_row_count"]
                     )
                     feedback_reliability_matchability_threshold = float(
                         provisional["reliability_matchability_threshold"]
@@ -2603,6 +2607,9 @@ class SparseLocalizer:
                 ),
                 "sparse_feedback_reliability_expanded_selected_rows": int(
                     feedback_reliability_expanded_selected_rows
+                ),
+                "sparse_feedback_reliability_fallback_query_rows": int(
+                    feedback_reliability_fallback_query_rows
                 ),
                 "sparse_feedback_reliability_matchability_threshold": float(
                     feedback_reliability_matchability_threshold

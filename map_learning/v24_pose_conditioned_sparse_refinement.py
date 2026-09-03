@@ -123,6 +123,7 @@ def default_config() -> dict:
         "reliability_maximum_uncertainty_quantile": 0.50,
         "reliability_maximum_geometry_cost": 0.50,
         "reliability_minimum_reprojection_improvement_px": 4.0,
+        "reliability_expansion_requires_no_base_geometric_candidate": True,
         "minimum_reprojection_improvement_px": 1.0,
         "descriptor_cost_weight": 0.50,
         "geometry_cost_weight": 0.40,
@@ -175,6 +176,7 @@ def validate_config(value: Mapping) -> dict:
         "heldout_validation_minimum_rows",
         "uncertainty_sigma_multiplier",
         "keypoint_variance_px2",
+        "reliability_expansion_requires_no_base_geometric_candidate",
         "candidate_selection",
         "ground_truth_used",
         "map_mutated",
@@ -1135,6 +1137,23 @@ def select_pose_conditioned_rows(
             )
             & view_supported
         )
+        base_geometric_candidate = (
+            (~protected[:, None])
+            & (score_drop <= maximum_drop)
+            & (candidates != baseline[:, None])
+            & (~reserved_anchors[candidates])
+            & view_supported
+            & (residual <= edge_projection_gate)
+            & (
+                residual
+                <= residual[:, :1]
+                - float(cfg["minimum_reprojection_improvement_px"])
+            )
+        )
+        if bool(cfg["reliability_expansion_requires_no_base_geometric_candidate"]):
+            reliability_authorized &= ~base_geometric_candidate.any(
+                dim=1, keepdim=True
+            )
         edge_maximum_drop[reliability_authorized] = float(
             cfg["reliability_expanded_score_drop"]
         )
@@ -1338,6 +1357,9 @@ def select_pose_conditioned_rows(
         ),
         "reliability_expanded_selected_row_count": int(
             adaptive_selected.sum().item()
+        ),
+        "reliability_fallback_query_row_count": int(
+            reliability_authorized.any(dim=1).sum().item()
         ),
         "reliability_matchability_threshold": float(
             reliability_matchability_threshold
