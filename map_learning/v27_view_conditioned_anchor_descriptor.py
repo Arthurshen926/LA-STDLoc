@@ -257,8 +257,8 @@ def authorize_mapping_view_modes(
     base = F.normalize(torch.as_tensor(base_anchor_features).float(), dim=1)
     count, mode_count, dimension = modes.shape
     if not (
-        mode_count == 2
-        and valid.shape == (count, 2)
+        mode_count >= 1
+        and valid.shape == (count, mode_count)
         and base.shape == (count, dimension)
         and float(minimum_owner_margin) >= 0.0
         and int(chunk_size) >= 1
@@ -267,16 +267,16 @@ def authorize_mapping_view_modes(
     ):
         raise ValueError("V27 mode-authorization inputs are invalid")
     active = torch.nonzero(valid.reshape(-1), as_tuple=False).reshape(-1)
-    owner_margin = torch.full((count * 2,), -torch.inf)
-    owner_score = torch.zeros(count * 2)
-    false_score = torch.zeros(count * 2)
+    owner_margin = torch.full((count * mode_count,), -torch.inf)
+    owner_score = torch.zeros(count * mode_count)
+    false_score = torch.zeros(count * mode_count)
     target = torch.device(device)
     base_device = base.to(target)
     for start in range(0, active.numel(), int(chunk_size)):
         flat = active[start : start + int(chunk_size)]
-        query = modes.reshape(count * 2, dimension)[flat].to(target)
+        query = modes.reshape(count * mode_count, dimension)[flat].to(target)
         scores = query @ base_device.T
-        owners = torch.div(flat, 2, rounding_mode="floor").to(target)
+        owners = torch.div(flat, mode_count, rounding_mode="floor").to(target)
         local = torch.arange(flat.numel(), device=target)
         positive = scores[local, owners].clone()
         scores[local, owners] = -torch.inf
@@ -284,11 +284,11 @@ def authorize_mapping_view_modes(
         owner_score[flat] = positive.cpu()
         false_score[flat] = negative.cpu()
         owner_margin[flat] = (positive - negative).cpu()
-    margin = owner_margin.reshape(count, 2)
+    margin = owner_margin.reshape(count, mode_count)
     authorized = valid & (margin >= float(minimum_owner_margin))
     return {
-        "mode_owner_score": owner_score.reshape(count, 2).contiguous(),
-        "mode_max_false_score": false_score.reshape(count, 2).contiguous(),
+        "mode_owner_score": owner_score.reshape(count, mode_count).contiguous(),
+        "mode_max_false_score": false_score.reshape(count, mode_count).contiguous(),
         "mode_owner_margin": margin.contiguous(),
         "mode_authorized": authorized.contiguous(),
     }
@@ -453,6 +453,7 @@ def validate_artifact(payload: Mapping, *, map_state: Mapping | None = None) -> 
 def select_view_conditioned_anchor_features(
     *,
     base_anchor_features: torch.Tensor,
+    base_anchor_features_normalized: bool = False,
     anchor_xyz: torch.Tensor,
     direction_modes: torch.Tensor,
     baseline_pose_w2c: torch.Tensor,
@@ -468,7 +469,9 @@ def select_view_conditioned_anchor_features(
 ) -> tuple[torch.Tensor, dict[str, int | float]]:
     """Select one descriptor per Anchor using only the estimated first pose."""
 
-    base = F.normalize(torch.as_tensor(base_anchor_features).float(), dim=1)
+    base = torch.as_tensor(base_anchor_features).float()
+    if not bool(base_anchor_features_normalized):
+        base = F.normalize(base, dim=1)
     xyz = torch.as_tensor(anchor_xyz, device=base.device).float()
     directions = torch.as_tensor(direction_modes, device=base.device).float()
     modes = torch.as_tensor(mode_features, device=base.device).float()
@@ -489,18 +492,7 @@ def select_view_conditioned_anchor_features(
         if direction_radius_deg is None
         else torch.as_tensor(direction_radius_deg, device=base.device).float()
     )
-    if not (
-        xyz.shape == (base.shape[0], 3)
-        and directions.shape == (base.shape[0], 2, 3)
-        and modes.shape == (base.shape[0], 2, base.shape[1])
-        and valid.shape == authorized.shape == concentration.shape == (base.shape[0], 2)
-        and (radii is None or radii.shape == (base.shape[0], 2))
-        and pose.shape == (4, 4)
-        and 0.0 <= float(minimum_concentration) <= 1.0
-        and 0.0 < float(residual_scale) <= 1.0
-        and bool(torch.isfinite(pose).all())
-    ):
-        raise ValueError("V27 runtime selection inputs are invalid")
+    mode_count = int(modes.shape[1]) if modes.ndim == 3 else 0
     rows = (
         torch.arange(base.shape[0], device=base.device)
         if anchor_rows is None
@@ -510,6 +502,27 @@ def select_view_conditioned_anchor_features(
         rows.numel() and (int(rows.min()) < 0 or int(rows.max()) >= base.shape[0])
     ):
         raise ValueError("V27 selected Anchor rows are invalid")
+    if not (
+        xyz.shape == (base.shape[0], 3)
+        and mode_count >= 1
+        and directions.shape == (base.shape[0], mode_count, 3)
+        and modes.shape == (base.shape[0], mode_count, base.shape[1])
+        and valid.shape
+        == authorized.shape
+        == concentration.shape
+        == (base.shape[0], mode_count)
+        and (radii is None or radii.shape == (base.shape[0], mode_count))
+        and pose.shape == (4, 4)
+        and 0.0 <= float(minimum_concentration) <= 1.0
+        and 0.0 < float(residual_scale) <= 1.0
+        and bool(torch.isfinite(pose).all())
+        and bool(torch.isfinite(base[rows]).all())
+        and (
+            bool(base_anchor_features_normalized)
+            or bool((base[rows].norm(dim=1) > 1e-12).all())
+        )
+    ):
+        raise ValueError("V27 runtime selection inputs are invalid")
     center = -(pose[:3, :3].T @ pose[:3, 3])
     rays = F.normalize(center[None] - xyz[rows], dim=1)
     directional_cosine = torch.einsum("nd,nmd->nm", rays, directions[rows])
@@ -521,7 +534,7 @@ def select_view_conditioned_anchor_features(
         & (selected_concentration >= float(minimum_concentration))
     )
     if bool(require_two_valid_modes):
-        use &= valid[rows].all(dim=1)
+        use &= valid[rows].sum(dim=1) >= 2
     selected = base[rows].clone()
     denominator = max(1.0 - float(minimum_concentration), 1e-6)
     concentration_confidence = (

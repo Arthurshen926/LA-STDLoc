@@ -526,8 +526,11 @@ def build_pose_visible_topk(
 
         retrieval_features, mode_report = select_view_conditioned_anchor_features(
             base_anchor_features=features,
+            base_anchor_features_normalized=True,
             anchor_xyz=xyz,
-            direction_modes=anchor_view_support["direction_modes"],
+            direction_modes=view_conditioned_descriptor_state.get(
+                "direction_modes", anchor_view_support["direction_modes"]
+            ),
             baseline_pose_w2c=pose,
             mode_features=view_conditioned_descriptor_state["mode_features"],
             mode_valid=view_conditioned_descriptor_state["mode_valid"],
@@ -535,7 +538,9 @@ def build_pose_visible_topk(
                 "mode_authorized", view_conditioned_descriptor_state["mode_valid"]
             ),
             mode_concentration=view_conditioned_descriptor_state["mode_concentration"],
-            direction_radius_deg=anchor_view_support["direction_radius_deg"],
+            direction_radius_deg=view_conditioned_descriptor_state.get(
+                "direction_radius_deg", anchor_view_support["direction_radius_deg"]
+            ),
             minimum_concentration=float(view_conditioned_minimum_concentration),
             anchor_rows=pool_rows,
             residual_scale=float(view_conditioned_residual_scale),

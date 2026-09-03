@@ -1,0 +1,82 @@
+diff --git a/poses/feature_detector.py b/poses/feature_detector.py
+index e9e6a91..be4a1d1 100644
+--- a/poses/feature_detector.py
++++ b/poses/feature_detector.py
+@@ -267,7 +267,17 @@ class Detector():
+             extractor = torch.jit.load(cache_path)
+         else:
+             print(f"Compiling feature extractor (batch={batch})")
+-            extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained=True, top_k=top_k)
++            xfeat_root = os.environ.get(
++                "I3DGS_XFEAT_ROOT",
++                os.path.join(os.path.dirname(__file__), "..", "submodules", "xfeat"),
++            )
++            extractor = torch.hub.load(
++                os.path.abspath(xfeat_root),
++                'XFeat',
++                source='local',
++                pretrained=True,
++                top_k=top_k,
++            )
+             extractor = extractor.cuda().eval().to(torch.half)
+ 
+             ## Overriding the functions to run at fixed size (fixed_H, fixed_W computed above)
+diff --git a/scene/dense_extractor.py b/scene/dense_extractor.py
+index 2b42de5..64154f4 100644
+--- a/scene/dense_extractor.py
++++ b/scene/dense_extractor.py
+@@ -32,7 +32,17 @@ class DenseExtractor():
+         if os.path.exists(cache_path):
+             self.extractor = torch.jit.load(cache_path)
+         else:
+-            self.extractor = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained = True, top_k = 4096)
++            xfeat_root = os.environ.get(
++                "I3DGS_XFEAT_ROOT",
++                os.path.join(os.path.dirname(__file__), "..", "submodules", "xfeat"),
++            )
++            self.extractor = torch.hub.load(
++                os.path.abspath(xfeat_root),
++                'XFeat',
++                source='local',
++                pretrained=True,
++                top_k=4096,
++            )
+             self.extractor = self.extractor.half().cuda().eval()
+ 
+             state_dict = copy.deepcopy(self.extractor.state_dict())
+diff --git a/scene/vpr_model.py b/scene/vpr_model.py
+index 644ef31..e9e3cad 100644
+--- a/scene/vpr_model.py
++++ b/scene/vpr_model.py
+@@ -166,7 +166,15 @@ class VPRModelWrapper:
+                 self.model = None
+ 
+         if self.model is None:
+-            model = torch.hub.load("gmberton/MegaLoc", "get_trained_model", trust_repo=True)
++            megaloc_root = os.environ.get("I3DGS_MEGALOC_ROOT")
++            if megaloc_root:
++                model = torch.hub.load(
++                    os.path.abspath(megaloc_root),
++                    "get_trained_model",
++                    source="local",
++                )
++            else:
++                model = torch.hub.load("gmberton/MegaLoc", "get_trained_model", trust_repo=True)
+             internal = VPRInternal(
+                 model.half().eval().cuda(),
+                 use_rotated_descriptors,
+diff --git a/train.py b/train.py
+index 80acaf5..6ef5a0a 100644
+--- a/train.py
++++ b/train.py
+@@ -199,6 +199,12 @@ class ReconstructionTask:
+         prev_keyframes_odo, prev_keyframes_loop, close_loop = self.scene_model.get_most_similar_keyframes(
+             vpr_feature, self.args.num_prev_keyframes_miniba_incr, desc_kpts
+         )
++        # External COLMAP poses are already expressed in a single global frame.
++        # Running the estimated-pose loop-closure BA in this mode is redundant and
++        # can corrupt the fixed-pose reconstruction (or hit stale observation
++        # indices while Gaussian optimization runs asynchronously).
++        if self.args.use_colmap_poses and self.args.lr_poses == 0:
++            close_loop = False
+         increment_runtime(runtimes["VPR"], start_time)

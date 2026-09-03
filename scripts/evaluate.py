@@ -53,7 +53,7 @@ def main() -> None:
         "--view-conditioned-anchor-state",
         type=Path,
         help=(
-            "Mapping-only V27 descriptor modes, selected by the first pose "
+            "Mapping-only V27/V32 descriptor modes, selected by the first pose "
             "inside pose-conditioned sparse refinement."
         ),
     )
@@ -520,6 +520,25 @@ def main() -> None:
     parser.add_argument(
         "--final-pose-polish-minimum-inliers", type=int, default=64
     )
+    parser.add_argument(
+        "--final-pose-polish-mapping-quality-fraction",
+        type=float,
+        default=1.0,
+        help=(
+            "Keep this query-local fraction of strict inliers with the best "
+            "mapping matchability/covariance quality for final pose polish."
+        ),
+    )
+    parser.add_argument(
+        "--final-pose-polish-maximum-update-translation-cm",
+        type=float,
+        default=10.0,
+    )
+    parser.add_argument(
+        "--final-pose-polish-maximum-update-rotation-deg",
+        type=float,
+        default=0.10,
+    )
     args = parser.parse_args()
     if args.assignment_topk < 0:
         parser.error("--assignment-topk must be zero or positive")
@@ -835,6 +854,15 @@ def main() -> None:
             args.final_pose_polish_reprojection_px
         ),
         final_pose_polish_minimum_inliers=(args.final_pose_polish_minimum_inliers),
+        final_pose_polish_mapping_quality_fraction=(
+            args.final_pose_polish_mapping_quality_fraction
+        ),
+        final_pose_polish_maximum_update_translation_cm=(
+            args.final_pose_polish_maximum_update_translation_cm
+        ),
+        final_pose_polish_maximum_update_rotation_deg=(
+            args.final_pose_polish_maximum_update_rotation_deg
+        ),
         profile_mode=not args.deployment_mode,
     )
     result = evaluate_dataset(
@@ -876,6 +904,15 @@ def main() -> None:
             ),
             "final_pose_polish_minimum_inliers": int(
                 args.final_pose_polish_minimum_inliers
+            ),
+            "final_pose_polish_mapping_quality_fraction": float(
+                args.final_pose_polish_mapping_quality_fraction
+            ),
+            "final_pose_polish_maximum_update_translation_cm": float(
+                args.final_pose_polish_maximum_update_translation_cm
+            ),
+            "final_pose_polish_maximum_update_rotation_deg": float(
+                args.final_pose_polish_maximum_update_rotation_deg
             ),
             "confidence_core_progressive_sampling": bool(
                 args.confidence_core_progressive_sampling
@@ -1160,6 +1197,15 @@ def main() -> None:
                 ),
                 "final_pose_polish_minimum_inliers": int(
                     args.final_pose_polish_minimum_inliers
+                ),
+                "final_pose_polish_mapping_quality_fraction": float(
+                    args.final_pose_polish_mapping_quality_fraction
+                ),
+                "final_pose_polish_maximum_update_translation_cm": float(
+                    args.final_pose_polish_maximum_update_translation_cm
+                ),
+                "final_pose_polish_maximum_update_rotation_deg": float(
+                    args.final_pose_polish_maximum_update_rotation_deg
                 ),
                 "assignment_topk": int(args.assignment_topk),
                 "assignment_dustbin_score": float(args.assignment_dustbin_score),

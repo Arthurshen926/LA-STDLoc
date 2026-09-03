@@ -1,0 +1,13 @@
+diff --git a/megaloc_model.py b/megaloc_model.py
+index 3559bc2..d3fac3b 100644
+--- a/megaloc_model.py
++++ b/megaloc_model.py
+@@ -56,7 +56,7 @@ def get_matching_probs(S, dustbin_score=1.0, num_iters=3, reg=1.0):
+     S_aug[:, m, :] = dustbin_score
+ 
+     # prepare normalized source and target log-weights
+-    norm = -torch.tensor(math.log(n + m), device=S.device)
++    norm = -torch.tensor(math.log(n + m), device=S.device, dtype=S.dtype)
+     log_a, log_b = norm.expand(m + 1).contiguous(), norm.expand(n).contiguous()
+     log_a[-1] = log_a[-1] + math.log(n - m)
+     log_a, log_b = log_a.expand(batch_size, -1), log_b.expand(batch_size, -1)

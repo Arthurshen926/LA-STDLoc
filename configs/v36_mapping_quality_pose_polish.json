@@ -1,0 +1,26 @@
+{
+  "schema": "anygsloc_v36_mapping_quality_pose_polish_experiment",
+  "version": 1,
+  "consumed_by_cli": false,
+  "offline_feedback_enabled": false,
+  "query_rendering_enabled": false,
+  "dense_matching_enabled": false,
+  "test_adaptation_enabled": false,
+  "runtime": {
+    "final_pose_polish_reprojection_px": 4.0,
+    "final_pose_polish_minimum_inliers": 64,
+    "final_pose_polish_mapping_quality_fraction": 0.5,
+    "final_pose_polish_maximum_update_translation_cm": 10.0,
+    "final_pose_polish_maximum_update_rotation_deg": 0.06,
+    "minimum_original_inlier_retention": 0.98
+  },
+  "selection": {
+    "quality": "sqrt(anchor_matchability / (1 + scene_normalized_anchor_covariance_trace))",
+    "candidate_rows": "current_pose_inliers_with_reprojection_residual_at_most_4px",
+    "tie_break": "stable_original_row_order"
+  },
+  "acceptance": {
+    "selected_row_median_residual_must_not_increase": true,
+    "catastrophe_or_gt_used": false
+  }
+}

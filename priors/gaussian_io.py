@@ -246,7 +246,15 @@ def main():
     )
     parser.add_argument(
         "--source_method",
-        choices=["vanilla_3dgs", "vanilla_2dgs", "anysplat", "matcha", "unknown"],
+        choices=[
+            "vanilla_3dgs",
+            "vanilla_2dgs",
+            "anysplat",
+            "long_lrm",
+            "i3dgs",
+            "matcha",
+            "unknown",
+        ],
         default="unknown",
     )
     parser.add_argument("--source_commit", default="unknown")

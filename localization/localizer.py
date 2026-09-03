@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 import time
 
 import numpy as np
@@ -48,6 +49,42 @@ def _reprojection_residuals(
     valid = depth > 1e-12
     projected[valid] = homogeneous[valid, :2] / depth[valid, None]
     return np.linalg.norm(projected - points_2d, axis=1)
+
+
+def _mapping_quality_polish_rows(
+    strict_rows: np.ndarray,
+    *,
+    match_anchor_rows: torch.Tensor,
+    anchor_quality: torch.Tensor,
+    retention_fraction: float,
+    minimum_count: int,
+) -> np.ndarray:
+    """Retain the most geometrically reliable strict inliers for local polish."""
+
+    rows = np.asarray(strict_rows, dtype=np.int64).reshape(-1)
+    owners = torch.as_tensor(match_anchor_rows).long().reshape(-1)
+    quality = torch.as_tensor(anchor_quality, device=owners.device).float().reshape(-1)
+    fraction = float(retention_fraction)
+    minimum = int(minimum_count)
+    if not (
+        0.25 <= fraction <= 1.0
+        and minimum >= 4
+        and np.unique(rows).size == rows.size
+        and (rows.size == 0 or (int(rows.min()) >= 0 and int(rows.max()) < owners.numel()))
+        and (owners.numel() == 0 or (int(owners.min()) >= 0 and int(owners.max()) < quality.numel()))
+        and bool(torch.isfinite(quality).all())
+    ):
+        raise ValueError("mapping-quality pose-polish rows are invalid")
+    keep_count = min(
+        rows.size,
+        max(minimum, int(math.ceil(rows.size * fraction))),
+    )
+    if keep_count == rows.size:
+        return rows.copy()
+    row_tensor = torch.from_numpy(rows).to(owners.device)
+    row_quality = quality[owners[row_tensor]]
+    ordering = torch.argsort(row_quality, descending=True, stable=True)[:keep_count]
+    return rows[ordering.detach().cpu().numpy()]
 
 
 def _pose_update_magnitude(
@@ -290,6 +327,9 @@ class SparseLocalizer:
         core_reserve_minimum_supported_rows: int = 16,
         final_pose_polish_reprojection_px: float = 0.0,
         final_pose_polish_minimum_inliers: int = 64,
+        final_pose_polish_mapping_quality_fraction: float = 1.0,
+        final_pose_polish_maximum_update_translation_cm: float = 10.0,
+        final_pose_polish_maximum_update_rotation_deg: float = 0.10,
         refinement_minimum_changed_inliers: int = 8,
         refinement_minimum_changed_inlier_fraction: float = 0.10,
         refinement_minimum_changed_inlier_spatial_cells: int = 3,
@@ -352,7 +392,7 @@ class SparseLocalizer:
                 )
             ):
                 raise ValueError(
-                    "V27 view-conditioned descriptors require an exact identity metric"
+                    "view-conditioned descriptors require an exact identity metric"
                 )
         # This is the exact normalization that the historical matcher applied
         # to every map chunk for every query.  Materialize it once instead.
@@ -430,19 +470,25 @@ class SparseLocalizer:
         if self.view_conditioned_score_fusion not in {"replace", "max_with_base"}:
             raise ValueError("V27 descriptor score fusion is invalid")
         if view_conditioned_anchor_state_path is not None:
-            from map_learning.v27_view_conditioned_anchor_descriptor import (
-                validate_artifact,
-            )
-
             if self.anchor_view_support is None:
                 raise ValueError(
-                    "V27 view-conditioned descriptors require F0 view support"
+                    "view-conditioned descriptors require F0 view support"
                 )
             artifact = torch.load(
                 view_conditioned_anchor_state_path,
                 map_location="cpu",
                 weights_only=False,
             )
+            if artifact.get("schema") == (
+                "lafgs_v27_mapping_view_conditioned_anchor_descriptors"
+            ):
+                from map_learning.v27_view_conditioned_anchor_descriptor import (
+                    validate_artifact,
+                )
+            elif artifact.get("schema") == "anygsloc_v32_mapping_descriptor_mode_anchor":
+                from map_learning.v32_descriptor_mode_anchor import validate_artifact
+            else:
+                raise ValueError("unsupported view-conditioned descriptor artifact")
             validate_artifact(artifact, map_state=state)
             stable_input = artifact["inputs"]["stable_map"]
             if stable_input.get("sha256") != sha256_file(map_path):
@@ -462,6 +508,17 @@ class SparseLocalizer:
                     device=self.device,
                 ).bool(),
             }
+            if "mode_direction_vectors" in artifact:
+                self.view_conditioned_anchor_state["direction_modes"] = (
+                    torch.as_tensor(
+                        artifact["mode_direction_vectors"], device=self.device
+                    ).float()
+                )
+                self.view_conditioned_anchor_state["direction_radius_deg"] = (
+                    torch.as_tensor(
+                        artifact["mode_direction_radius_deg"], device=self.device
+                    ).float()
+                )
         prototype_features = state.get("anchor_extra_prototype_features")
         prototype_owners = state.get("anchor_extra_prototype_owner_rows")
         if (prototype_features is None) != (prototype_owners is None):
@@ -750,6 +807,15 @@ class SparseLocalizer:
         self.final_pose_polish_minimum_inliers = int(
             final_pose_polish_minimum_inliers
         )
+        self.final_pose_polish_mapping_quality_fraction = float(
+            final_pose_polish_mapping_quality_fraction
+        )
+        self.final_pose_polish_maximum_update_translation_cm = float(
+            final_pose_polish_maximum_update_translation_cm
+        )
+        self.final_pose_polish_maximum_update_rotation_deg = float(
+            final_pose_polish_maximum_update_rotation_deg
+        )
         if not (
             0.25 <= self.match_retention_fraction <= 1.0
             and self.minimum_retained_match_count >= 4
@@ -807,6 +873,13 @@ class SparseLocalizer:
             and self.core_reserve_minimum_supported_rows >= 4
         ):
             raise ValueError("core-reserve refinement configuration is invalid")
+        if not 0.25 <= self.final_pose_polish_mapping_quality_fraction <= 1.0:
+            raise ValueError("final pose-polish mapping-quality fraction is invalid")
+        if not (
+            self.final_pose_polish_maximum_update_translation_cm > 0.0
+            and 0.0 < self.final_pose_polish_maximum_update_rotation_deg <= 1.0
+        ):
+            raise ValueError("final pose-polish update bound is invalid")
         if self.final_pose_polish_reprojection_px and not (
             1.0
             <= self.final_pose_polish_reprojection_px
@@ -992,6 +1065,10 @@ class SparseLocalizer:
             )
         ):
             raise ValueError("mapping reliability metadata is invalid")
+        self.anchor_retrieval_quality = torch.sqrt(
+            self.anchor_matchability.clamp(0.0, 1.0)
+            * (1.0 + self.anchor_uncertainty).reciprocal()
+        )
 
     @torch.inference_mode()
     def localize(
@@ -2359,6 +2436,16 @@ class SparseLocalizer:
                 original_residual[original_inliers]
                 <= self.final_pose_polish_reprojection_px
             ]
+            if strict_rows.size >= self.final_pose_polish_minimum_inliers:
+                strict_rows = _mapping_quality_polish_rows(
+                    strict_rows,
+                    match_anchor_rows=matches.anchor_indices,
+                    anchor_quality=self.anchor_retrieval_quality,
+                    retention_fraction=(
+                        self.final_pose_polish_mapping_quality_fraction
+                    ),
+                    minimum_count=self.final_pose_polish_minimum_inliers,
+                )
             final_pose_polish_rows = int(strict_rows.size)
             if strict_rows.size >= self.final_pose_polish_minimum_inliers:
                 polished = refine_absolute_pose_from_initial(
@@ -2390,8 +2477,10 @@ class SparseLocalizer:
                     final_pose_polish_inlier_retention >= 0.98
                     and np.median(polished_residual[strict_rows])
                     <= np.median(original_residual[strict_rows]) + 1e-6
-                    and final_pose_polish_update_translation_cm <= 10.0
-                    and final_pose_polish_update_rotation_deg <= 0.10
+                    and final_pose_polish_update_translation_cm
+                    <= self.final_pose_polish_maximum_update_translation_cm
+                    and final_pose_polish_update_rotation_deg
+                    <= self.final_pose_polish_maximum_update_rotation_deg
                 )
                 if final_pose_polish_accepted:
                     diagnostics = dict(polished.diagnostics)
@@ -2425,6 +2514,15 @@ class SparseLocalizer:
                 "top1_match_count": int(raw_matches.scores.numel()),
                 "final_pose_polish_reprojection_px": float(
                     self.final_pose_polish_reprojection_px
+                ),
+                "final_pose_polish_mapping_quality_fraction": float(
+                    self.final_pose_polish_mapping_quality_fraction
+                ),
+                "final_pose_polish_maximum_update_translation_cm": float(
+                    self.final_pose_polish_maximum_update_translation_cm
+                ),
+                "final_pose_polish_maximum_update_rotation_deg": float(
+                    self.final_pose_polish_maximum_update_rotation_deg
                 ),
                 "final_pose_polish_rows": int(final_pose_polish_rows),
                 "final_pose_polish_inlier_retention_fraction": float(
