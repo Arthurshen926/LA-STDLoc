@@ -1,0 +1,118 @@
+diff --git a/scene/__init__.py b/scene/__init__.py
+index 8091614..c70e4ec 100644
+--- a/scene/__init__.py
++++ b/scene/__init__.py
+@@ -22,7 +22,7 @@ class Scene:
+ 
+     gaussians : GaussianModel
+ 
+-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
++    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], init_ply=None):
+         """b
+         :param path: Path to colmap scene main folder.
+         """
+@@ -49,7 +49,8 @@ class Scene:
+             assert False, "Could not recognize scene type!"
+ 
+         if not self.loaded_iter:
+-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
++            initialization_ply = init_ply if init_ply is not None else scene_info.ply_path
++            with open(initialization_ply, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+                 dest_file.write(src_file.read())
+             json_cams = []
+             camlist = []
+@@ -79,6 +80,9 @@ class Scene:
+                                                            "point_cloud",
+                                                            "iteration_" + str(self.loaded_iter),
+                                                            "point_cloud.ply"), args.train_test_exp)
++        elif init_ply is not None:
++            self.gaussians.load_ply(init_ply, args.train_test_exp)
++            self.gaussians.initialize_training_state(scene_info.train_cameras, self.cameras_extent)
+         else:
+             self.gaussians.create_from_pcd(scene_info.point_cloud, scene_info.train_cameras, self.cameras_extent)
+ 
+diff --git a/scene/gaussian_model.py b/scene/gaussian_model.py
+index 473887d..160b4fa 100644
+--- a/scene/gaussian_model.py
++++ b/scene/gaussian_model.py
+@@ -169,6 +169,11 @@ class GaussianModel:
+         self._scaling = nn.Parameter(scales.requires_grad_(True))
+         self._rotation = nn.Parameter(rots.requires_grad_(True))
+         self._opacity = nn.Parameter(opacities.requires_grad_(True))
++        self.initialize_training_state(cam_infos, spatial_lr_scale)
++
++    def initialize_training_state(self, cam_infos, spatial_lr_scale):
++        """Initialize optimizer-side state for either a point cloud or a loaded Gaussian PLY."""
++        self.spatial_lr_scale = spatial_lr_scale
+         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+         self.exposure_mapping = {cam_info.image_name: idx for idx, cam_info in enumerate(cam_infos)}
+         self.pretrained_exposures = None
+@@ -247,11 +252,20 @@ class GaussianModel:
+         scale = self._scaling.detach().cpu().numpy()
+         rotation = self._rotation.detach().cpu().numpy()
+ 
+-        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
++        attribute_names = self.construct_list_of_attributes()
++        dtype_full = [(attribute, 'f4') for attribute in attribute_names]
+ 
++        # Filling the structured array by field avoids both a large temporary
++        # concatenation and a Python tuple per Gaussian.  The upstream writer
++        # becomes a several-minute bottleneck for million-primitive warm starts.
+         elements = np.empty(xyz.shape[0], dtype=dtype_full)
+-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+-        elements[:] = list(map(tuple, attributes))
++        attribute_blocks = (xyz, normals, f_dc, f_rest, opacities, scale, rotation)
++        attribute_index = 0
++        for block in attribute_blocks:
++            for column in range(block.shape[1]):
++                elements[attribute_names[attribute_index]] = block[:, column]
++                attribute_index += 1
++        assert attribute_index == len(attribute_names)
+         el = PlyElement.describe(elements, 'vertex')
+         PlyData([el]).write(path)
+ 
+diff --git a/train.py b/train.py
+index 8206903..ac7a1d7 100644
+--- a/train.py
++++ b/train.py
+@@ -40,7 +40,7 @@ try:
+ except:
+     SPARSE_ADAM_AVAILABLE = False
+ 
+-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
++def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, init_ply):
+ 
+     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
+         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
+@@ -48,7 +48,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
+     first_iter = 0
+     tb_writer = prepare_output_and_logger(dataset)
+     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
+-    scene = Scene(dataset, gaussians)
++    scene = Scene(dataset, gaussians, init_ply=init_ply)
+     gaussians.training_setup(opt)
+     if checkpoint:
+         (model_params, first_iter) = torch.load(checkpoint)
+@@ -267,7 +267,13 @@ if __name__ == "__main__":
+     parser.add_argument('--disable_viewer', action='store_true', default=False)
+     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+     parser.add_argument("--start_checkpoint", type=str, default = None)
++    parser.add_argument("--init_ply", type=str, default=None,
++                        help="Initialize all Gaussian parameters from a GraphDeco-format PLY.")
+     args = parser.parse_args(sys.argv[1:])
++    if args.init_ply is not None:
++        args.init_ply = os.path.abspath(args.init_ply)
++        if not os.path.isfile(args.init_ply):
++            parser.error(f"--init_ply does not exist: {args.init_ply}")
+     args.save_iterations.append(args.iterations)
+     
+     print("Optimizing " + args.model_path)
+@@ -279,7 +285,7 @@ if __name__ == "__main__":
+     if not args.disable_viewer:
+         network_gui.init(args.ip, args.port)
+     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
++    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.init_ply)
+ 
+     # All done
+     print("\nTraining complete.")

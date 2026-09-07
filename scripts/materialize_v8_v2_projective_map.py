@@ -12,7 +12,15 @@ import time
 import torch
 
 from common.hashing import sha256_file
-from common.v6_contracts import RENDER_OBSERVATION_SCHEMA, require_schema
+from common.v6_contracts import (
+    ASSOCIATION_GRAPH_SCHEMA,
+    RENDER_OBSERVATION_SCHEMA,
+    require_schema,
+)
+import evidence.cycle_core_reserve as cycle_core_reserve_module
+import evidence.projective_reconstruction as projective_reconstruction_module
+import evidence.v2_filtered_observations as v2_filtered_observations_module
+from evidence.cycle_core_reserve import select_cycle_core_coverage_reserve
 from evidence.projective_association import build_projective_association_graph
 from evidence.projective_completion import build_projective_completion
 from evidence.projective_reconstruction import reconstruct_projective_anchors
@@ -32,6 +40,21 @@ def _save(value: dict, path: Path) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     torch.save(value, temporary)
     os.replace(temporary, path)
+
+
+def _implementation_sha256() -> dict[str, str]:
+    """Hash implementation modules, never decorator wrapper bytecode."""
+
+    return {
+        "materializer": sha256_file(Path(__file__)),
+        "projective_reconstruction": sha256_file(
+            Path(projective_reconstruction_module.__file__)
+        ),
+        "v2_filtered_observations": sha256_file(
+            Path(v2_filtered_observations_module.__file__)
+        ),
+        "cycle_core_reserve": sha256_file(Path(cycle_core_reserve_module.__file__)),
+    }
 
 
 def _load_v2_rows(
@@ -84,10 +107,68 @@ def main() -> None:
     parser.add_argument("--observation-cache", type=Path, required=True)
     parser.add_argument("--v2-audit-shards", type=Path, nargs="+", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--reuse-association-graph",
+        type=Path,
+        help=(
+            "Reuse an exactly lineage-bound association graph when evaluating "
+            "a reconstruction-only factor such as Track purification."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--cpu-threads", type=int, default=4)
     parser.add_argument("--triangulation-workers", type=int, default=4)
+    parser.add_argument(
+        "--maximum-valid-rows-per-query",
+        type=int,
+        default=None,
+        help=(
+            "Optional association budget applied after V2 filtering. This "
+            "supports validity-compensated detection: detect more raw rows, "
+            "then retain the strongest valid rows up to this fixed budget."
+        ),
+    )
+    parser.add_argument(
+        "--joint-track-purification",
+        action="store_true",
+        help=(
+            "Reweight Track observations using mapping-only reprojection, "
+            "descriptor, and relative rendered-depth consistency before a "
+            "second pure-ray reconstruction."
+        ),
+    )
+    parser.add_argument(
+        "--purification-minimum-weight", type=float, default=0.05
+    )
+    parser.add_argument(
+        "--purification-maximum-adjusted-fraction-per-track",
+        type=float,
+        default=0.20,
+        help=(
+            "Maximum fraction of observations that Track purification may "
+            "downweight inside any one Track."
+        ),
+    )
+    parser.add_argument("--cycle-core-coverage-reserve", action="store_true")
+    parser.add_argument("--reserve-spatial-voxel-size-m", type=float, default=0.50)
+    parser.add_argument("--reserve-image-grid-y", type=int, default=6)
+    parser.add_argument("--reserve-image-grid-x", type=int, default=8)
     args = parser.parse_args()
+    if not 0.0 < float(args.purification_minimum_weight) <= 1.0:
+        parser.error("--purification-minimum-weight must lie inside (0,1]")
+    if not 0.0 <= float(
+        args.purification_maximum_adjusted_fraction_per_track
+    ) <= 0.5:
+        parser.error(
+            "--purification-maximum-adjusted-fraction-per-track must lie "
+            "inside [0,0.5]"
+        )
+    if (
+        float(args.reserve_spatial_voxel_size_m) <= 0
+        or int(args.reserve_image_grid_y) < 1
+        or int(args.reserve_image_grid_x) < 1
+    ):
+        parser.error("cycle-core coverage parameters must be positive")
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
     args.output_dir.mkdir(parents=True)
@@ -107,24 +188,68 @@ def main() -> None:
         observation_cache_sha256=observation_cache_sha256,
     )
     provider, source_rows, filter_report = build_v2_filtered_provider(
-        cache, rows_by_query=rows, allow_empty_queries=True
+        cache,
+        rows_by_query=rows,
+        allow_empty_queries=True,
+        maximum_rows_per_query=args.maximum_valid_rows_per_query,
     )
     # Release the unfiltered sparse tensors. Dense alpha/depth tensors remain
     # referenced by the filtered records for completion proposals.
     del cache
 
     association_started = time.perf_counter()
-    association = build_projective_association_graph(
-        provider, pair_neighbors=6, minimum_similarity=0.65,
-        minimum_margin=0.01, maximum_epipolar_error_px=2.0,
-        minimum_track_views=3, device=args.device,
-    )
-    association["input_sha256"] = {
-        "observation_cache": observation_cache_sha256,
-        "v2_audit_shards": audit_shard_sha256,
-    }
-    association["v2_preassociation_filter"] = filter_report
-    association["source_keypoint_indices_by_query"] = source_rows
+    reused_association_sha256 = None
+    if args.reuse_association_graph is None:
+        association = build_projective_association_graph(
+            provider, pair_neighbors=6, minimum_similarity=0.65,
+            minimum_margin=0.01, maximum_epipolar_error_px=2.0,
+            minimum_track_views=3, device=args.device,
+        )
+        association["input_sha256"] = {
+            "observation_cache": observation_cache_sha256,
+            "v2_audit_shards": audit_shard_sha256,
+        }
+        association["v2_preassociation_filter"] = filter_report
+        association["source_keypoint_indices_by_query"] = source_rows
+    else:
+        reuse_path = args.reuse_association_graph.resolve()
+        reused_association_sha256 = sha256_file(reuse_path)
+        association = torch.load(reuse_path, map_location="cpu", weights_only=False)
+        expected_input = {
+            "observation_cache": observation_cache_sha256,
+            "v2_audit_shards": audit_shard_sha256,
+        }
+        source = association.get("source_keypoint_indices_by_query")
+        source_matches = (
+            isinstance(source, list)
+            and len(source) == len(source_rows)
+            and all(
+                torch.equal(torch.as_tensor(left), torch.as_tensor(right))
+                for left, right in zip(source, source_rows)
+            )
+        )
+        prior_filter = dict(association.get("v2_preassociation_filter", {}))
+        filter_matches = all(
+            prior_filter.get(key) == filter_report.get(key)
+            for key in ("raw_row_count", "retained_row_count")
+        ) and all(
+            key not in prior_filter or prior_filter[key] == filter_report.get(key)
+            for key in (
+                "v2_valid_row_count_before_budget",
+                "maximum_rows_per_query",
+                "row_budget_selection",
+            )
+        )
+        if (
+            association.get("schema") != ASSOCIATION_GRAPH_SCHEMA
+            or association.get("uses_source_mapping_rgb") is not False
+            or association.get("uses_test_queries") is not False
+            or list(association.get("query_names", ())) != names
+            or association.get("input_sha256") != expected_input
+            or not source_matches
+            or not filter_matches
+        ):
+            raise ValueError("reused association graph differs from exact V2 inputs")
     association_seconds = time.perf_counter() - association_started
 
     reconstruction_started = time.perf_counter()
@@ -133,7 +258,23 @@ def main() -> None:
         minimum_parallax_deg=1.0, maximum_reprojection_px=2.0,
         parallel_workers=args.triangulation_workers,
         parallel_minimum_tracks=5000,
+        joint_track_purification=args.joint_track_purification,
+        purification_minimum_weight=args.purification_minimum_weight,
+        purification_maximum_adjusted_fraction_per_track=(
+            args.purification_maximum_adjusted_fraction_per_track
+        ),
     )
+    cycle_core_reserve_report = None
+    if args.cycle_core_coverage_reserve:
+        mapping_views = [provider.build_view(index) for index in range(len(provider))]
+        base, cycle_core_reserve_report = select_cycle_core_coverage_reserve(
+            base,
+            association,
+            keypoints_by_query=[view.keypoints for view in mapping_views],
+            image_hw_by_query=[view.image_hw for view in mapping_views],
+            spatial_voxel_size_m=args.reserve_spatial_voxel_size_m,
+            image_grid_shape=(args.reserve_image_grid_y, args.reserve_image_grid_x),
+        )
     base["candidate_kind"] = "v2_projective_track"
     completion = None
     completion_unavailable_reason = None
@@ -175,13 +316,37 @@ def main() -> None:
     _save(association, association_path)
     _save(candidates, candidates_path)
     lineage = {
+        "implementation_sha256": _implementation_sha256(),
         "v8_observation_cache": str(args.observation_cache.resolve()),
         "v8_observation_cache_sha256": observation_cache_sha256,
         "v8_v2_audit_shards": [str(path.resolve()) for path in args.v2_audit_shards],
         "v8_v2_audit_shard_sha256": audit_shard_sha256,
         "v8_association_graph": str(association_path.resolve()),
         "v8_association_graph_sha256": sha256_file(association_path),
+        "reused_association_graph": (
+            None
+            if args.reuse_association_graph is None
+            else str(args.reuse_association_graph.resolve())
+        ),
+        "reused_association_graph_sha256": reused_association_sha256,
         "v8_filter_stage": "after_detection_before_pair_association",
+        "validity_compensated_detection": {
+            "enabled": args.maximum_valid_rows_per_query is not None,
+            "raw_keypoints_per_query": int(
+                provider.payload.get("configuration", {}).get("keypoints", -1)
+            ),
+            "maximum_valid_rows_per_query": args.maximum_valid_rows_per_query,
+            "selection": filter_report["row_budget_selection"],
+        },
+        "joint_track_purification": {
+            "enabled": bool(args.joint_track_purification),
+            "minimum_weight": float(args.purification_minimum_weight),
+            "maximum_adjusted_fraction_per_track": float(
+                args.purification_maximum_adjusted_fraction_per_track
+            ),
+            "report": base.get("joint_track_purification"),
+        },
+        "cycle_core_coverage_reserve": cycle_core_reserve_report,
         "projective_completion_attempted": True,
         "projective_completion_enabled": completion is not None,
         "projective_completion_unavailable_reason": completion_unavailable_reason,
@@ -243,7 +408,26 @@ def main() -> None:
         "contracts": {
             "superpoint_complete_unmasked_rgb": True,
             "v2_before_pair_association": True,
-            "all_tracks_rebuilt": True, "all_geometry_retriangulated": True,
+            "association_reused_exactly": args.reuse_association_graph is not None,
+            "validity_compensated_detection": (
+                args.maximum_valid_rows_per_query is not None
+            ),
+            "maximum_valid_rows_per_query": args.maximum_valid_rows_per_query,
+            "joint_track_purification": bool(args.joint_track_purification),
+            "purification_maximum_adjusted_fraction_per_track": float(
+                args.purification_maximum_adjusted_fraction_per_track
+            ),
+            "gaussian_depth_role": (
+                "observation_consistency_only"
+                if args.joint_track_purification
+                else "unused"
+            ),
+            "cycle_core_coverage_reserve": bool(
+                args.cycle_core_coverage_reserve
+            ),
+            "all_tracks_rebuilt": args.reuse_association_graph is None,
+            "tracks_reused_exactly": args.reuse_association_graph is not None,
+            "all_geometry_retriangulated": True,
             "all_descriptors_fused_from_v2_valid_observations": True,
             "query_detector_used": False, "feedback_used": False,
             "mapping_only_anchor_view_support": True,

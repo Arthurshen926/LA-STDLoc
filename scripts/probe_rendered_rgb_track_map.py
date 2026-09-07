@@ -45,6 +45,11 @@ from features.extractor import FeatureExtractor
 from features.superpoint import render_validity_mask_from_alpha
 from map_learning.metric import SharedLowRankMetric
 from priors.models import GaussianModel2D, GaussianModel3D
+import priors.mapping_supersampling as mapping_supersampling_module
+from priors.mapping_supersampling import (
+    mapping_render_sampling_contract,
+    render_mapping_rgbd,
+)
 from priors.rendering import render_from_pose_gsplat
 from topology.track_core import _eligible_tracks, _track_quality
 
@@ -153,24 +158,41 @@ def _render_feature_cache(args, output: Path) -> dict:
     valid_detector_rows = 0
     valid_pixels = 0
     total_pixels = 0
+    render_sampling_contract = None
     for row, camera in enumerate(cameras):
         pose = torch.from_numpy(camera.pose_w2c).cuda().float()
         render_started = time.perf_counter()
         render_valid = args.render_valid_alpha_minimum is not None
-        package = render_from_pose_gsplat(
-            model,
-            pose,
-            camera.fov_x,
-            camera.fov_y,
-            camera.width,
-            camera.height,
-            bg_color=background,
-            render_mode="RGB+ED" if render_valid else "RGB",
-            # V6 needs RGB, alpha, and proposal-only depth, never the legacy
-            # learned/random Gaussian localization-feature render.
-            rgb_only=True,
-            rasterize_mode="antialiased",
-        )
+        if int(args.render_supersampling_factor) == 1:
+            package = render_from_pose_gsplat(
+                model,
+                pose,
+                camera.fov_x,
+                camera.fov_y,
+                camera.width,
+                camera.height,
+                bg_color=background,
+                render_mode="RGB+ED" if render_valid else "RGB",
+                # V6 needs RGB, alpha, and proposal-only depth, never the legacy
+                # learned/random Gaussian localization-feature render.
+                rgb_only=True,
+                rasterize_mode="antialiased",
+            )
+            render_sampling_contract = mapping_render_sampling_contract(
+                gaussian_type=args.gaussian_type, supersampling_factor=1
+            )
+        else:
+            package, render_sampling_contract = render_mapping_rgbd(
+                model,
+                pose,
+                fov_x=camera.fov_x,
+                fov_y=camera.fov_y,
+                width=camera.width,
+                height=camera.height,
+                background=background,
+                gaussian_type=args.gaussian_type,
+                supersampling_factor=args.render_supersampling_factor,
+            )
         rendered_payload = package["render"].float()
         rendered = rendered_payload[:3].clamp(0.0, 1.0)
         validity_mask = None
@@ -264,6 +286,12 @@ def _render_feature_cache(args, output: Path) -> dict:
         "uses_test_queries": False,
         "uses_rendered_depth": args.render_valid_alpha_minimum is not None,
         "uses_gaussian_geometry_for_triangulation": False,
+        "implementation_sha256": {
+            "observation_materializer": sha256_file(Path(__file__)),
+            "mapping_supersampling": sha256_file(
+                Path(mapping_supersampling_module.__file__)
+            ),
+        },
         "mapping_query_count": len(cameras),
         "full_mapping_query_count": len(mapping),
         # Kept only for archived artifact readers. New stages resolve by the
@@ -291,7 +319,10 @@ def _render_feature_cache(args, output: Path) -> dict:
             "render_mode": (
                 "RGB+ED" if args.render_valid_alpha_minimum is not None else "RGB"
             ),
-            "rasterize_mode": "antialiased",
+            "rasterize_mode": render_sampling_contract[
+                "effective_rasterize_mode"
+            ],
+            "mapping_render_sampling": render_sampling_contract,
             "render_valid_observation_extraction": (
                 None
                 if args.render_valid_alpha_minimum is None
@@ -731,6 +762,7 @@ def main() -> None:
     parser.add_argument("--detection-threshold", type=float, default=0.0)
     parser.add_argument("--render-valid-alpha-minimum", type=float, default=None)
     parser.add_argument("--render-valid-neighborhood-radius", type=int, default=4)
+    parser.add_argument("--render-supersampling-factor", type=int, default=1)
     parser.add_argument("--pair-neighbors", type=int, default=6)
     parser.add_argument(
         "--pair-policy",
@@ -783,6 +815,10 @@ def main() -> None:
         parser.error("--render-valid-alpha-minimum must be in [0,1]")
     if int(args.render_valid_neighborhood_radius) < 0:
         parser.error("--render-valid-neighborhood-radius must be non-negative")
+    if not 1 <= int(args.render_supersampling_factor) <= 4:
+        parser.error("--render-supersampling-factor must lie inside [1,4]")
+    if int(args.render_supersampling_factor) > 1 and args.render_valid_alpha_minimum is None:
+        parser.error("supersampled mapping renders require alpha/depth extraction")
     torch.set_num_threads(int(args.cpu_threads))
     if not torch.cuda.is_available():
         raise RuntimeError("rendered-RGB Track probe requires CUDA")

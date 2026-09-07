@@ -1,0 +1,34 @@
+schema: lafgs_prior_adapter
+version: 1
+type: 2dgs
+source_method: matcha
+frozen: true
+
+construction:
+  mapping_only: true
+  uses_test_queries: false
+  initialization:
+    engine: matcha_mast3r
+    chart_count: 20
+    chart_selection: pose_clustered_mapping_views
+    camera_poses: mapping_only
+  dense_refinement:
+    engine: matcha_2dgs
+    iterations: 7000
+    resolution_long_edge: 1600
+    dense_regularization: default
+    depth_ratio: 0.5
+    densification_until_iteration: 15000
+    opacity_reset_interval: 3000
+    mip_filter: true
+    rgb_loss: l1
+    rgb_mask_indices: [0, 2]
+    normal_consistency_from_iteration: 7000
+    distortion_from_iteration: 3000
+
+admission:
+  require_novel_view_audit: true
+  require_unchanged_anygsloc_test_evaluation: true
+  offline_self_localization_feedback: false
+  descriptor_or_metric_training: false
+

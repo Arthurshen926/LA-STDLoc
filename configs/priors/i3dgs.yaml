@@ -4,3 +4,28 @@ type: 3dgs
 source_method: i3dgs
 requires_mapping_only_sim3: false
 frozen: true
+
+construction:
+  mapping_only: true
+  uses_test_queries: false
+  fast_initialization:
+    engine: i3dgs
+    prepared_downscale: 2
+    use_colmap_poses: true
+    pose_learning_rate: 0.0
+    sh_degree: 3
+    maximum_active_keyframes: 250
+    global_finetune_epochs: 3
+  global_consistency_refinement:
+    engine: graphdeco_3dgs
+    prepared_downscale: 1
+    iterations: 1000
+    densification: false
+    exposure_optimization: false
+    position_lr_initial: 0.00008
+    position_lr_final: 0.0000008
+    feature_lr: 0.0025
+    opacity_lr: 0.0125
+    scaling_lr: 0.0025
+    rotation_lr: 0.0005
+    lambda_dssim: 0.2

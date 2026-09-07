@@ -1,0 +1,104 @@
+diff --git a/2d-gaussian-splatting/train_with_charts.py b/2d-gaussian-splatting/train_with_charts.py
+index 22dc13f..cc3a1fd 100644
+--- a/2d-gaussian-splatting/train_with_charts.py
++++ b/2d-gaussian-splatting/train_with_charts.py
+@@ -600,6 +600,7 @@ def training(
+     max_chart_gaussians=None, max_chart_abs_point=None, max_chart_abs_depth=None,
+     min_chart_conf=None, min_chart_conf_quantile=None,
+     chart_prior_conf_weight_floor=None, chart_prior_conf_weight_power=1.0,
++    early_stop_iteration=None,
+ ):
+     
+     save_log_images = False
+@@ -1334,6 +1335,16 @@ def training(
+                 print("\n[ITER {}] Saving Gaussians".format(iteration))
+                 scene.save(iteration)
+ 
++            # Preserve the configured optimization horizon and its LR
++            # schedules while materializing an early-stop prior.
++            if early_stop_iteration is not None and iteration >= early_stop_iteration:
++                progress_bar.close()
++                print(
++                    "\n[ITER {}] Early-stop checkpoint materialized; "
++                    "leaving the configured schedule unchanged.".format(iteration)
++                )
++                break
++
+ 
+             # Densification
+             if iteration < opt.densify_until_iter:
+@@ -1491,6 +1502,15 @@ if __name__ == "__main__":
+     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+     parser.add_argument("--quiet", action="store_true")
+     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
++    parser.add_argument(
++        "--early_stop_iteration",
++        type=int,
++        default=None,
++        help=(
++            "Stop immediately after this iteration is saved without changing "
++            "the configured optimization horizon or learning-rate schedules."
++        ),
++    )
+     parser.add_argument("--start_checkpoint", type=str, default = None)
+     parser.add_argument("--use_refined_charts", action="store_true", default=False)
+     parser.add_argument("--use_mip_filter", action="store_true", default=False)
+@@ -1542,6 +1562,10 @@ if __name__ == "__main__":
+     parser.add_argument("--chart_prior_conf_weight_power", type=float, default=1.0)
+     args = parser.parse_args(sys.argv[1:])
+     args.save_iterations.append(args.iterations)
++    if args.early_stop_iteration is not None:
++        if not 0 < args.early_stop_iteration <= args.iterations:
++            parser.error("--early_stop_iteration must lie inside [1, --iterations]")
++        args.save_iterations.append(args.early_stop_iteration)
+     
+     print("Optimizing " + args.model_path)
+ 
+@@ -1578,7 +1602,8 @@ if __name__ == "__main__":
+         args.large_splat_radius_reg, args.large_splat_radius_threshold, args.large_splat_radius_from,
+         args.max_chart_gaussians, args.max_chart_abs_point, args.max_chart_abs_depth,
+         args.min_chart_conf, args.min_chart_conf_quantile,
+-        args.chart_prior_conf_weight_floor, args.chart_prior_conf_weight_power
++        args.chart_prior_conf_weight_floor, args.chart_prior_conf_weight_power,
++        args.early_stop_iteration,
+     )
+ 
+     # All done
+diff --git a/scripts/refine_free_gaussians.py b/scripts/refine_free_gaussians.py
+index 30a5852..86bd0c6 100644
+--- a/scripts/refine_free_gaussians.py
++++ b/scripts/refine_free_gaussians.py
+@@ -169,6 +169,12 @@ if __name__ == '__main__':
+     parser.add_argument('--depthanything_encoder', type=str, default='vitl')
+     parser.add_argument('--dense_regul', type=str, default='default', help='Strength of dense regularization. Can be "default", "strong", "weak", or "none".')
+     parser.add_argument('--iterations', type=int, default=None, help='Override the iteration count from the refinement config.')
++    parser.add_argument(
++        '--early-stop-iteration',
++        type=int,
++        default=None,
++        help='Save and stop here while retaining the full configured schedule.',
++    )
+     parser.add_argument('--data_device', choices=['cpu', 'cuda'], default='cuda')
+     parser.add_argument('--resolution', type=int, default=-1)
+     
+@@ -231,6 +237,8 @@ if __name__ == '__main__':
+     with open(config_path, 'r') as f:
+         config = yaml.safe_load(f)
+     iterations = args.iterations if args.iterations is not None else config['iterations']
++    if args.early_stop_iteration is not None and not 0 < args.early_stop_iteration <= iterations:
++        parser.error('--early-stop-iteration must lie inside [1, --iterations]')
+         
+     # Dense supervision (optional)
+     if args.dense_data_path is not None:
+@@ -310,6 +318,11 @@ if __name__ == '__main__':
+         "-s", args.mast3r_scene,
+         "-m", args.output_path,
+         "--iterations", str(iterations),
++        (
++            f"--early_stop_iteration {args.early_stop_iteration}"
++            if args.early_stop_iteration is not None
++            else ""
++        ),
+         "--data_device", args.data_device,
+         "--resolution", str(args.resolution),
+         "--densify_until_iter", str(config['densify_until_iter']),

@@ -20,6 +20,10 @@ from evidence.v7_render_certificate import (
 )
 from evidence.virtual_camera_registry import resolve_virtual_camera_registry
 from priors.models import GaussianModel2D, GaussianModel3D
+from priors.mapping_supersampling import (
+    mapping_render_sampling_contract,
+    render_mapping_rgbd,
+)
 from priors.rendering import render_from_pose_gsplat
 
 
@@ -78,6 +82,20 @@ def main() -> None:
     ):
         raise ValueError("audit requires the frozen rendered mapping cache")
     names = list(cache["queries"])
+    sampling_contract = dict(
+        cache.get("configuration", {}).get("mapping_render_sampling", {})
+    )
+    supersampling_factor = int(sampling_contract.get("supersampling_factor", 1))
+    if not 1 <= supersampling_factor <= 4:
+        raise ValueError("cache mapping supersampling contract is invalid")
+    expected_sampling_contract = mapping_render_sampling_contract(
+        gaussian_type=args.gaussian_type,
+        supersampling_factor=supersampling_factor,
+    )
+    if sampling_contract and sampling_contract != expected_sampling_contract:
+        raise ValueError("cache mapping render sampling contract is inconsistent")
+    if not sampling_contract:
+        sampling_contract = expected_sampling_contract
     if map_path is not None:
         anchor_map = torch.load(map_path, map_location="cpu", weights_only=False)
         if list(anchor_map["v6_mapping_query_names"]) != names:
@@ -106,18 +124,33 @@ def main() -> None:
         camera = cameras[query_index]
         cached = cache["queries"][names[query_index]]
         pose = torch.from_numpy(camera.pose_w2c).to(device=device, dtype=torch.float32)
-        package = render_from_pose_gsplat(
-            model,
-            pose,
-            camera.fov_x,
-            camera.fov_y,
-            camera.width,
-            camera.height,
-            bg_color=background,
-            render_mode="RGB+ED",
-            rgb_only=True,
-            rasterize_mode="antialiased",
-        )
+        if supersampling_factor == 1:
+            package = render_from_pose_gsplat(
+                model,
+                pose,
+                camera.fov_x,
+                camera.fov_y,
+                camera.width,
+                camera.height,
+                bg_color=background,
+                render_mode="RGB+ED",
+                rgb_only=True,
+                rasterize_mode="antialiased",
+            )
+        else:
+            package, replay_contract = render_mapping_rgbd(
+                model,
+                pose,
+                fov_x=camera.fov_x,
+                fov_y=camera.fov_y,
+                width=camera.width,
+                height=camera.height,
+                background=background,
+                gaussian_type=args.gaussian_type,
+                supersampling_factor=supersampling_factor,
+            )
+            if replay_contract != sampling_contract:
+                raise ValueError("supersampled render replay contract differs from cache")
         rgb = package["render"].float()[:3].clamp(0.0, 1.0)
         alpha = package.get("alphas", package.get("rend_alpha"))
         depth = package.get("depth")
@@ -192,6 +225,7 @@ def main() -> None:
             "background": "white" if args.white_background else "black",
             "observation_cache": str(cache_path),
             "observation_cache_sha256": sha256_file(cache_path),
+            "mapping_render_sampling": sampling_contract,
             "anchor_map": str(map_path) if map_path is not None else None,
             "anchor_map_sha256": (
                 sha256_file(map_path) if map_path is not None else None

@@ -19,9 +19,12 @@ scale cardinality and SH degree, removes non-finite primitives, and records
 geometry/appearance hashes. The RGB geometry and appearance are frozen during
 all LaFGS stages.
 
-Supported producer labels are `vanilla_3dgs`, `vanilla_2dgs`, `anysplat`, and
-`matcha`. AnySplat canonical-frame outputs must be mapping-only Sim(3)-aligned
-before import; query/test cameras must not participate in that alignment.
+Supported producer labels are `vanilla_3dgs`, `vanilla_2dgs`, `anysplat`,
+`long_lrm`, `i3dgs`, and `matcha`. AnySplat/Long-LRM canonical-frame outputs
+must be mapping-only Sim(3)-aligned before import; query/test cameras must not
+participate in that alignment. Validated fast construction presets are
+documented in
+[`fast_generative_gaussian_prior.md`](fast_generative_gaussian_prior.md).
 
 Do not equalize primitive counts across 2DGS and 3DGS. Fair prior comparisons
 hold mapping RGB, mapping poses, localization budget, SuperPoint, topology, A1,

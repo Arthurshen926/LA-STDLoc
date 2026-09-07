@@ -1,0 +1,25 @@
+{
+  "scope": "critical_source_hashes_at_protocol_start_not_a_complete_environment_snapshot",
+  "experiment_root": "/mnt/pool/sqy/anygsloc_weak_prior_protocol_20260907",
+  "git_commit": "9b8a32423d587cf7493871f01d10504177ef589e",
+  "dirty_worktree": true,
+  "hashes": {
+    "scripts/run_anygsloc_scene.py": "db92b759a59bd488fa01c4eb9cdd44aaf2cb577a97adf1273a352245360405ec",
+    "scripts/probe_rendered_rgb_track_map.py": "7ca4916f9334ea9e9fc673a29b0ac3bc7bc0e2db71476561c2b74941f9672ac2",
+    "scripts/audit_v7_mapping_render_quality_shard.py": "fd44db5d48b768869a7b7bb61975e3c032804ddc6c593ee11e03b6e068a53a26",
+    "scripts/materialize_v8_v2_projective_map.py": "c6c288a48ff8fcb7481f5b58dd9c0dae7cf6370221db5103636f3afbc7c4f8b4",
+    "scripts/evaluate.py": "0dcbb4edb20884d04f81bfa8c5286b63cd285e40c8dbdaadbff3dda52b5def45",
+    "evidence/projective_association.py": "a2cca321d30be49b19ab9bc42cd67b135e2dec7ffa7d1ddb7003ae1fef88564f",
+    "evidence/projective_reconstruction.py": "f886000d2d34bab9516c827b57a14a6ac3909df5c5dd982e8affcc15bf6994d7",
+    "evidence/v2_filtered_observations.py": "cabf8d14ac2b5eee5abe2616c6d7ed10d83383e645ab85702806ead09ee0cbc6",
+    "evidence/triangulation.py": "2fb69be0796575d207284c2e02176b01ca8b669c7aca88b5d2454a87f98c83f9",
+    "evidence/camera_pair_policy.py": "fa9e3d43443586c5b5162dda7b4b71dad490837564a5d288836211836bd5bbd9",
+    "evidence/v7_render_certificate.py": "9276286f35185c6e68b562d47dfc0ead72d7866c18e9466655e115d7a0b9f5c6",
+    "features/superpoint.py": "fc98954ccb47591ecb6a48789071a59ca86a076010d7101c3c8e5e778c1c00b0",
+    "priors/models.py": "cb7499e8cfb9d3260a1a83caef96bb13daa190fe777772d712bff77aafb8c7e9",
+    "priors/rendering.py": "fa658e6ccd2372be74055256198818b1e5931edfa6c2b6213b290a1f5cbaac5a",
+    "localization/localizer.py": "64dbd12ed0e6da5ecd5e6da939e4ea1394e86c47a532e6a7dcdba620a25b8ed4",
+    "evaluation/evaluator.py": "9b4e4ca4791597ce84d625a8ac0bf2c9ad9c0310e72b3854d8eb1c0f7a1e2abd",
+    "configs/anygsloc_mainline.yaml": "765ebaf700d3d648521559e06d3cdf2bb97ab198dab1721dbe00ea2e4f8cdf4b"
+  }
+}

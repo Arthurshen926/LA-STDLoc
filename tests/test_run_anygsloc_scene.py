@@ -27,6 +27,16 @@ def _args(tmp_path: Path) -> argparse.Namespace:
         audit_shards=2,
         cpu_threads=4,
         triangulation_workers=2,
+        mapping_raw_keypoints=2048,
+        mapping_retained_keypoints=2048,
+        mapping_render_supersampling_factor=1,
+        joint_track_purification=False,
+        purification_minimum_weight=0.05,
+        purification_maximum_adjusted_fraction_per_track=0.20,
+        cycle_core_coverage_reserve=False,
+        reserve_spatial_voxel_size_m=0.50,
+        reserve_image_grid_y=6,
+        reserve_image_grid_x=8,
     )
 
 
@@ -46,6 +56,24 @@ def test_scene_plan_has_only_mapping_base_and_test_evaluation(tmp_path):
     assert "training" not in flattened
     assert "--render-only" in flattened
     assert "--split test" in flattened
+    assert "--maximum-valid-rows-per-query" not in flattened
+    assert "--joint-track-purification" not in flattened
+
+
+def test_scene_plan_supports_isolated_weak_prior_mapping_factors(tmp_path):
+    args = _args(tmp_path)
+    args.mapping_raw_keypoints = 3072
+    args.joint_track_purification = True
+    args.cycle_core_coverage_reserve = True
+    plan = command_plan(args, resolve_prior(args))
+    observation = plan[0]["command"]
+    mapping = next(stage for stage in plan if stage["name"] == "projective_map")[
+        "command"
+    ]
+    assert observation[observation.index("--keypoints") + 1] == "3072"
+    assert mapping[mapping.index("--maximum-valid-rows-per-query") + 1] == "2048"
+    assert "--joint-track-purification" in mapping
+    assert "--cycle-core-coverage-reserve" in mapping
 
 
 def test_normalized_manifest_controls_renderer_contract(tmp_path):

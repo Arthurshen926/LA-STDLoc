@@ -79,3 +79,49 @@ def test_v2_still_rejects_an_empty_view_without_explicit_policy() -> None:
         build_v2_filtered_provider(
             _cache(), rows_by_query=[torch.tensor([False, False, False])]
         )
+
+
+def test_v2_refills_fixed_budget_from_valid_overflow_rows() -> None:
+    cache = _cache()
+    record = cache["queries"]["seq/a.png"]
+    record["native_keypoints"] = torch.tensor(
+        [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]]
+    )
+    record["native_descriptors"] = torch.eye(4)
+    record["native_scores"] = torch.tensor([0.9, 0.8, 0.7, 0.6])
+
+    provider, source, report = build_v2_filtered_provider(
+        cache,
+        rows_by_query=[torch.tensor([False, True, True, True])],
+        maximum_rows_per_query=2,
+    )
+
+    assert source[0].tolist() == [1, 2]
+    assert provider.build_view(0).keypoints.tolist() == [[2.0, 2.0], [3.0, 3.0]]
+    assert report["v2_valid_row_count_before_budget"] == 3
+    assert report["association_budget_removed_row_count"] == 1
+    assert report["overflow_valid_rows_recovered"] == 1
+    assert report["maximum_rows_per_query"] == 2
+
+
+def test_v2_budget_uses_stable_detector_score_order() -> None:
+    cache = _cache()
+    record = cache["queries"]["seq/a.png"]
+    record["native_scores"] = torch.tensor([0.1, 0.9, 0.9])
+    provider, source, report = build_v2_filtered_provider(
+        cache,
+        rows_by_query=[torch.tensor([True, True, True])],
+        maximum_rows_per_query=2,
+    )
+    assert source[0].tolist() == [1, 2]
+    assert provider.build_view(0).keypoints.tolist() == [[2.0, 2.0], [3.0, 3.0]]
+    assert report["overflow_valid_rows_recovered"] == 0
+
+
+def test_v2_budget_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        build_v2_filtered_provider(
+            _cache(),
+            rows_by_query=[torch.tensor([True, True, True])],
+            maximum_rows_per_query=0,
+        )

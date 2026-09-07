@@ -1,0 +1,71 @@
+{
+  "schema": "anygsloc_fast_generative_prior_validation",
+  "version": 1,
+  "date": "2026-09-04",
+  "protocol": {
+    "construction_uses_mapping_images_only": true,
+    "construction_uses_test_queries": false,
+    "offline_self_localization_feedback": false,
+    "descriptor_or_metric_training": false,
+    "localization_pipeline_changed_between_priors": false
+  },
+  "recommended_preset": "matcha_7k_schedule_preserving_early_stop",
+  "shopfacade": {
+    "source_checkpoint_ply_sha256": "88df4dbf0225a59bae7f5caa85da0265b1928bda57c2c1d2cb58a2dece17d27e",
+    "normalized_prior": {
+      "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/prior/rgb_matcha7k_2dgs/point_cloud/iteration_7000/point_cloud.ply",
+      "sha256": "14c994a76e5fdd520e900d8e138916b9d55842b29e11b45d468d28ff102d777f",
+      "bytes": 183261612
+    },
+    "novel_view_audit": {
+      "sample_count": 12,
+      "median_psnr_db": 14.122834980797775,
+      "median_ssim": 0.5289731025695801,
+      "median_mae": 0.13475970178842545,
+      "report_sha256": "c386c4153792ec2714d202a12c3ad5d1f6b9408b34df0d5d77d0c79bf4545187"
+    },
+    "map": {
+      "anchor_count": 29724,
+      "mapping_observation_count": 331882,
+      "retained_mapping_row_fraction": 0.8531325954217868,
+      "sha256": "33f446144aeb9f4efe5e0e6451facb625e5b20698da93c784b4588d352fdf1bc"
+    },
+    "localization": {
+      "query_count": 103,
+      "median_te_cm": 2.1732576191425323,
+      "mean_te_cm": 4.8829940703778885,
+      "median_re_deg": 0.10933243219987422,
+      "mean_re_deg": 0.22626829043841712,
+      "recall_5cm_5deg_percent": 83.49514563106796,
+      "catastrophic_100cm_count": 0,
+      "mean_runtime_ms": 157.71392362138022,
+      "summary_sha256": "d054addaa8786c2c704c09d971752d693a4cf295f0d7c7269ec033c2839ab3b5"
+    }
+  },
+  "four_scene_render_screen": {
+    "GreatCourt": {
+      "median_psnr_db": 15.294793352486096,
+      "median_ssim": 0.697525680065155,
+      "median_mae": 0.12768838554620743,
+      "report_sha256": "b081148ae5d4d2fb56c1c455d8acc44804164c790c5a656728db1b41e0c32a58"
+    },
+    "KingsCollege": {
+      "median_psnr_db": 14.220864673678477,
+      "median_ssim": 0.5574574768543243,
+      "median_mae": 0.13769716024398804,
+      "report_sha256": "a3517510ac65b9614746af40199e1c3bb2cc533028fbcf3d06c4812bdeda24e0"
+    },
+    "OldHospital": {
+      "median_psnr_db": 14.236377033673058,
+      "median_ssim": 0.5220834463834763,
+      "median_mae": 0.1344139352440834,
+      "report_sha256": "ba9c6797e5d217929d17e4810575f008397103f9c0e60fc47f16dd79087c3f67"
+    },
+    "ShopFacade": {
+      "median_psnr_db": 14.122834980797775,
+      "median_ssim": 0.5289731025695801,
+      "median_mae": 0.13475970178842545,
+      "report_sha256": "c386c4153792ec2714d202a12c3ad5d1f6b9408b34df0d5d77d0c79bf4545187"
+    }
+  }
+}

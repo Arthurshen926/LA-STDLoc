@@ -1,0 +1,146 @@
+{
+  "schema": "anygsloc_long_lrm_shopfacade_comparison",
+  "version": 1,
+  "date": "2026-09-07",
+  "scene": "ShopFacade",
+  "query_count": 103,
+  "offline_feedback": false,
+  "online_refinement": false,
+  "test_queries_used_for_reconstruction": false,
+  "rows": [
+    {
+      "method": "long_lrm_raw",
+      "evaluation": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/anygsloc_base_long_lrm_raw_pose32/evaluation/base_seed2026/summary.json",
+        "sha256": "d8e9e7701cfaea2903e7d77b83515e4ec4c4c03282ee28a9add6da0891eb5512"
+      },
+      "query_results": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/anygsloc_base_long_lrm_raw_pose32/evaluation/base_seed2026/results.json",
+        "sha256": "5fa15b21e1ea49e01af2ab98706f091d5dc34f1fb53232ca83ba8932b5cf2f05"
+      },
+      "appearance_audit": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/view_audit_long_lrm_raw_test12/report.json",
+        "sha256": "63a6801129040a3ce16e136eb0ad028ef6fd2711ce36ebc5621f5f096d891fed"
+      },
+      "map_report": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/anygsloc_base_long_lrm_raw_pose32/projective_map/report.json",
+        "sha256": "0d6af0182f29227379473aa50f86e9b341bc415f1b9539b087d78448b4f84f79"
+      },
+      "anchors": 39426,
+      "appearance_test12_median": {
+        "alpha_covered_fraction_005": 1.0,
+        "alpha_covered_fraction_050": 0.9999988079071045,
+        "alpha_mean": 0.9699365198612213,
+        "mae": 0.15159278362989426,
+        "psnr_db": 13.870742824670316,
+        "ssim": 0.41722166538238525
+      },
+      "render_background": "white",
+      "median_te_cm": 8.449157327413559,
+      "median_ae_deg": 0.24684050196374852,
+      "p90_te_cm": 16.8061825633049,
+      "recall_5cm_5deg_percent": 15.53398058252427,
+      "catastrophic_100cm_count": 0,
+      "total_ms_mean": 407.99289951733886,
+      "total_ms_p50": 306.0652567073703,
+      "total_ms_p90": 749.8513896018267,
+      "solver_inlier_ratio_percent": 11.504931716545439,
+      "mean_hypotheses": 32031.058252427185,
+      "ransac_ms_mean": 345.9208230261953
+    },
+    {
+      "method": "long_lrm_1000",
+      "evaluation": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/long_lrm_ft1000_gpu2_replay_20260907/summary.json",
+        "sha256": "ca4aac5458ed8a5c2bb16931f47c4104048ddb7457981dd96f7cab41930da4a8"
+      },
+      "query_results": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/long_lrm_ft1000_gpu2_replay_20260907/results.json",
+        "sha256": "1df125ca5c77c44aec8a5ad1e397f225189e638db45c4b3b2ea8d6cab2c3d5c6"
+      },
+      "appearance_audit": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/view_audit_long_lrm_ft1000_test12/report.json",
+        "sha256": "6cb0a7ee87f2261aa0931e79b3ec887f3199f450518aca6402b36f8668c07b9b"
+      },
+      "map_report": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/anygsloc_base_long_lrm_ft1000/projective_map/report.json",
+        "sha256": "e7a3cfaf9fdf8bbbb3acc0ec408c204ad43d374aee06361d9187410d5a4db039"
+      },
+      "anchors": 31894,
+      "appearance_test12_median": {
+        "alpha_covered_fraction_005": 1.0,
+        "alpha_covered_fraction_050": 1.0,
+        "alpha_mean": 0.9916570484638214,
+        "mae": 0.14089256525039673,
+        "psnr_db": 14.195359693217203,
+        "ssim": 0.459830567240715
+      },
+      "render_background": "black",
+      "median_te_cm": 7.074956595897675,
+      "median_ae_deg": 0.19617211764797085,
+      "p90_te_cm": 12.851186990737915,
+      "recall_5cm_5deg_percent": 23.300970873786408,
+      "catastrophic_100cm_count": 0,
+      "total_ms_mean": 95.73741657749831,
+      "total_ms_p50": 68.63963790237904,
+      "total_ms_p90": 118.23627222329377,
+      "solver_inlier_ratio_percent": 24.257113561859466,
+      "mean_hypotheses": 3433.621359223301,
+      "ransac_ms_mean": 43.74123313147756
+    },
+    {
+      "method": "i3dgs_1000",
+      "evaluation": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/i3dgs_reference_replay_20260907/summary.json",
+        "sha256": "2072f1a31ea7a8c6a701c24c9cdf6b2be3acf4836ddd38de7fe01003ca464de0"
+      },
+      "query_results": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/i3dgs_reference_replay_20260907/results.json",
+        "sha256": "adbe35e7a4caf5ce6de56d51b8c1ae5367968cb34a872b50a65e8a092494bbc1"
+      },
+      "appearance_audit": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/view_audit_test12_globaljoint_d1_ft1000/report.json",
+        "sha256": "1bedab0b611f04296017830db38817ae39fc8accf8df6994f40f057cb2340400"
+      },
+      "map_report": {
+        "path": "/mnt/pool/sqy/anygsloc_fast_prior_20260904/ShopFacade/anygsloc_base_globaljoint_d1_ft1000/projective_map/report.json",
+        "sha256": "79837fe27ac6cecd3b3f9094dd76fcd338c779bc1a90347d530bb31e1caaf4f3"
+      },
+      "anchors": 24024,
+      "appearance_test12_median": {
+        "alpha_covered_fraction_005": 1.0,
+        "alpha_covered_fraction_050": 1.0,
+        "alpha_mean": 0.998029887676239,
+        "mae": 0.15517215430736542,
+        "psnr_db": 13.512095531225409,
+        "ssim": 0.43636251986026764
+      },
+      "render_background": "black",
+      "median_te_cm": 6.943830847740173,
+      "median_ae_deg": 0.16495125625077645,
+      "p90_te_cm": 12.344948798418045,
+      "recall_5cm_5deg_percent": 24.271844660194176,
+      "catastrophic_100cm_count": 0,
+      "total_ms_mean": 100.54929638552724,
+      "total_ms_p50": 64.77972585707903,
+      "total_ms_p90": 110.0165484473109,
+      "solver_inlier_ratio_percent": 26.479153930209833,
+      "mean_hypotheses": 3030.4271844660193,
+      "ransac_ms_mean": 40.58484127292934
+    }
+  ],
+  "refined_vs_raw_paired": {
+    "gained_R5": 12,
+    "lost_R5": 4,
+    "translation_improved_queries": 67
+  },
+  "refined_gpu2_pose_replay_exact": true,
+  "i3dgs_reference_pose_replay_exact": true,
+  "limitations": [
+    "Single scene and seed; no universal model ranking.",
+    "Initial Long-LRM artifact has frozen SHA but original random pruning seed was not recorded.",
+    "Initialization data/compute differ; refinement optimizer settings match.",
+    "Timing includes cold start; shared host and other GPUs may have concurrent work.",
+    "Historical AnySplat other-scene results are not a paired comparison."
+  ]
+}

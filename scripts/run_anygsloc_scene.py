@@ -98,11 +98,14 @@ def command_plan(args: argparse.Namespace, prior: dict[str, Any]) -> list[dict[s
                 *common_prior,
                 "--output-dir", str(observation.parent), "--render-only",
                 "--deduplicate-camera-geometry",
-                "--keypoints", "2048", "--nms-radius", "4",
+                "--keypoints", str(args.mapping_raw_keypoints),
+                "--nms-radius", "4",
                 "--detection-threshold", "0.0",
                 "--render-valid-alpha-minimum", "0.05",
-                "--render-valid-neighborhood-radius", "4",
-                "--device", "cuda:0", "--cpu-threads", str(args.cpu_threads),
+                    "--render-valid-neighborhood-radius", "4",
+                    "--render-supersampling-factor",
+                    str(args.mapping_render_supersampling_factor),
+                    "--device", "cuda:0", "--cpu-threads", str(args.cpu_threads),
             ],
         }
     ]
@@ -133,6 +136,41 @@ def command_plan(args: argparse.Namespace, prior: dict[str, Any]) -> list[dict[s
                     "--output-dir", str(map_dir), "--device", "cuda:0",
                     "--cpu-threads", str(args.cpu_threads),
                     "--triangulation-workers", str(args.triangulation_workers),
+                    *(
+                        [
+                            "--maximum-valid-rows-per-query",
+                            str(args.mapping_retained_keypoints),
+                        ]
+                        if args.mapping_raw_keypoints
+                        > args.mapping_retained_keypoints
+                        else []
+                    ),
+                    *(
+                        [
+                            "--joint-track-purification",
+                            "--purification-minimum-weight",
+                            str(args.purification_minimum_weight),
+                            "--purification-maximum-adjusted-fraction-per-track",
+                            str(
+                                args.purification_maximum_adjusted_fraction_per_track
+                            ),
+                        ]
+                        if args.joint_track_purification
+                        else []
+                    ),
+                    *(
+                        [
+                            "--cycle-core-coverage-reserve",
+                            "--reserve-spatial-voxel-size-m",
+                            str(args.reserve_spatial_voxel_size_m),
+                            "--reserve-image-grid-y",
+                            str(args.reserve_image_grid_y),
+                            "--reserve-image-grid-x",
+                            str(args.reserve_image_grid_x),
+                        ]
+                        if args.cycle_core_coverage_reserve
+                        else []
+                    ),
                 ],
             },
             {
@@ -199,11 +237,56 @@ def main() -> None:
     parser.add_argument("--audit-shards", type=int, default=2)
     parser.add_argument("--cpu-threads", type=int, default=8)
     parser.add_argument("--triangulation-workers", type=int, default=4)
+    parser.add_argument(
+        "--mapping-raw-keypoints",
+        type=int,
+        default=2048,
+        help="Raw mapping detections before V2 validity filtering.",
+    )
+    parser.add_argument(
+        "--mapping-retained-keypoints",
+        type=int,
+        default=2048,
+        help="Maximum valid mapping rows passed to pair association.",
+    )
+    parser.add_argument(
+        "--mapping-render-supersampling-factor", type=int, default=1
+    )
+    parser.add_argument("--joint-track-purification", action="store_true")
+    parser.add_argument("--purification-minimum-weight", type=float, default=0.05)
+    parser.add_argument(
+        "--purification-maximum-adjusted-fraction-per-track",
+        type=float,
+        default=0.20,
+    )
+    parser.add_argument("--cycle-core-coverage-reserve", action="store_true")
+    parser.add_argument("--reserve-spatial-voxel-size-m", type=float, default=0.50)
+    parser.add_argument("--reserve-image-grid-y", type=int, default=6)
+    parser.add_argument("--reserve-image-grid-x", type=int, default=8)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--mapping-only", action="store_true")
     args = parser.parse_args()
     if args.audit_shards < 1 or args.cpu_threads < 1 or args.triangulation_workers < 1:
         parser.error("worker and shard counts must be positive")
+    if args.mapping_retained_keypoints < 1:
+        parser.error("--mapping-retained-keypoints must be positive")
+    if args.mapping_raw_keypoints < args.mapping_retained_keypoints:
+        parser.error("raw mapping keypoints cannot be below the retained budget")
+    if not 1 <= args.mapping_render_supersampling_factor <= 4:
+        parser.error("--mapping-render-supersampling-factor must lie inside [1,4]")
+    if not 0.0 < args.purification_minimum_weight <= 1.0:
+        parser.error("--purification-minimum-weight must lie inside (0,1]")
+    if not 0.0 <= args.purification_maximum_adjusted_fraction_per_track <= 0.5:
+        parser.error(
+            "--purification-maximum-adjusted-fraction-per-track must lie "
+            "inside [0,0.5]"
+        )
+    if (
+        args.reserve_spatial_voxel_size_m <= 0
+        or args.reserve_image_grid_y < 1
+        or args.reserve_image_grid_x < 1
+    ):
+        parser.error("cycle-core coverage parameters must be positive")
     args.config = args.config.expanduser().resolve()
     config = load_mainline_config(args.config)
     if config.values["schema"] != ANYGSLOC_SCHEMA:
@@ -230,6 +313,33 @@ def main() -> None:
             "query_rendering": False,
             "dense_matching": False,
             "map_writeback": False,
+        },
+        "mapping_detection": {
+            "policy": (
+                "validity_compensated_detection"
+                if args.mapping_raw_keypoints > args.mapping_retained_keypoints
+                else "fixed_topk_before_v2"
+            ),
+            "raw_keypoints": int(args.mapping_raw_keypoints),
+            "retained_keypoints_after_v2": int(args.mapping_retained_keypoints),
+            "render_supersampling_factor": int(
+                args.mapping_render_supersampling_factor
+            ),
+            "joint_track_purification": bool(args.joint_track_purification),
+            "purification_minimum_weight": float(args.purification_minimum_weight),
+            "purification_maximum_adjusted_fraction_per_track": float(
+                args.purification_maximum_adjusted_fraction_per_track
+            ),
+            "cycle_core_coverage_reserve": bool(
+                args.cycle_core_coverage_reserve
+            ),
+            "reserve_spatial_voxel_size_m": float(
+                args.reserve_spatial_voxel_size_m
+            ),
+            "reserve_image_grid_shape": [
+                int(args.reserve_image_grid_y),
+                int(args.reserve_image_grid_x),
+            ],
         },
         "stages": plan,
     }

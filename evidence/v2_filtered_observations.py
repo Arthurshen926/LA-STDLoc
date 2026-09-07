@@ -25,6 +25,7 @@ def build_v2_filtered_provider(
     *,
     rows_by_query: Sequence[torch.Tensor],
     allow_empty_queries: bool = False,
+    maximum_rows_per_query: int | None = None,
 ) -> tuple[GaussianRenderObservationProvider, list[torch.Tensor], dict]:
     """Filter sparse rows while retaining dense render evidence by reference.
 
@@ -40,10 +41,18 @@ def build_v2_filtered_provider(
     names = list(records)
     if len(rows_by_query) != len(names):
         raise ValueError("V2 row registry must contain one mask per query")
+    if maximum_rows_per_query is not None and int(maximum_rows_per_query) <= 0:
+        raise ValueError("maximum_rows_per_query must be positive when provided")
+    row_budget = (
+        None if maximum_rows_per_query is None else int(maximum_rows_per_query)
+    )
     filtered_records = {}
     source_rows = []
     raw_count = 0
+    v2_valid_count = 0
     retained_count = 0
+    budget_removed_count = 0
+    overflow_recovered_count = 0
     empty_query_names = []
     for query_index, name in enumerate(names):
         record = records[name]
@@ -52,6 +61,29 @@ def build_v2_filtered_provider(
         if mask.numel() != keypoints.shape[0]:
             raise ValueError(f"V2 rows do not align for {name}")
         selected = torch.nonzero(mask, as_tuple=False).reshape(-1)
+        valid_before_budget = int(selected.numel())
+        raw_top_budget = None
+        if row_budget is not None:
+            scores = torch.as_tensor(record["native_scores"]).float().reshape(-1)
+            if scores.numel() != mask.numel():
+                raise ValueError(f"detector scores do not align for {name}")
+            raw_top_budget = torch.zeros(mask.numel(), dtype=torch.bool)
+            raw_top_budget[
+                torch.argsort(scores, descending=True, stable=True)[:row_budget]
+            ] = True
+            if selected.numel() > row_budget:
+                order = torch.argsort(
+                    scores[selected], descending=True, stable=True
+                )[:row_budget]
+                selected = selected[order]
+        # Rows beyond the retained association budget would have been absent
+        # from a conventional top-K detector cache.  Count how many valid rows
+        # the over-detect -> V2 -> refill policy actually recovers.
+        overflow_recovered_count += int(
+            (~raw_top_budget[selected]).sum()
+            if raw_top_budget is not None
+            else 0
+        )
         if selected.numel() == 0:
             if not bool(allow_empty_queries):
                 raise ValueError(f"V2 removed every detector row for {name}")
@@ -73,7 +105,9 @@ def build_v2_filtered_provider(
         filtered_records[name] = output
         source_rows.append(selected)
         raw_count += int(mask.numel())
+        v2_valid_count += valid_before_budget
         retained_count += int(selected.numel())
+        budget_removed_count += valid_before_budget - int(selected.numel())
     if retained_count == 0:
         raise ValueError("V2 removed every detector row from every mapping query")
     payload = {
@@ -83,9 +117,19 @@ def build_v2_filtered_provider(
             "schema": "lafgs_v2_preassociation_filter",
             "version": 1,
             "raw_row_count": raw_count,
+            "v2_valid_row_count_before_budget": v2_valid_count,
             "retained_row_count": retained_count,
+            "v2_removed_row_count": raw_count - v2_valid_count,
+            "association_budget_removed_row_count": budget_removed_count,
             "removed_row_count": raw_count - retained_count,
             "retained_fraction": retained_count / raw_count,
+            "maximum_rows_per_query": row_budget,
+            "row_budget_selection": (
+                "all_v2_valid_rows"
+                if row_budget is None
+                else "stable_detector_score_topk_after_v2"
+            ),
+            "overflow_valid_rows_recovered": overflow_recovered_count,
             "input_query_count": len(names),
             "retained_query_count": len(names) - len(empty_query_names),
             "empty_query_count": len(empty_query_names),
