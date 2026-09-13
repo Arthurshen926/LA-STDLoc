@@ -335,10 +335,13 @@ class SparseLocalizer:
         refinement_minimum_changed_inlier_spatial_cells: int = 3,
         refinement_maximum_changed_inlier_median_residual_px: float = 6.0,
         profile_mode: bool = True,
+        allow_source_rgb_diagnostic: bool = False,
         reuse_correspondence_buffers: bool = True,
     ) -> None:
         self.device = torch.device(device)
         state = torch.load(map_path, map_location="cpu", weights_only=False)
+        if state.get("provenance", {}).get("uses_source_mapping_rgb") is True and not allow_source_rgb_diagnostic:
+            raise ValueError("source-RGB map requires explicit diagnostic opt-in; not source-image-free deployment")
         if state.get("schema") != "lafgs_materialized_anchor_map":
             raise ValueError("unsupported localization map schema")
         if (metric_state_path is None) == (context_state_path is None):

@@ -129,7 +129,7 @@ def _write_dataset(root: Path) -> tuple[list[str], str, torch.Tensor]:
     sparse = root / "sparse/0"
     sparse.mkdir(parents=True)
     (sparse / "cameras.txt").write_text(
-        "1 PINHOLE 64 64 50 50 31.5 31.5\n", encoding="utf-8"
+        "1 PINHOLE 64 64 50 50 32 32\n", encoding="utf-8"
     )
     rows = [
         f"{index} 1 0 0 0 0 0 0 1 {name}\n\n"

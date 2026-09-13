@@ -1,0 +1,30 @@
+{
+  "sources": {
+    "STDLoc": "https://arxiv.org/html/2503.19358v1",
+    "ULF-Loc": "https://arxiv.org/html/2605.04730v1"
+  },
+  "scene_order": {
+    "Cambridge": ["GreatCourt", "KingsCollege", "OldHospital", "ShopFacade", "StMarysChurch"],
+    "7Scenes": ["chess", "fire", "heads", "office", "pumpkin", "redkitchen", "stairs"],
+    "12Scenes": ["apt1_kitchen", "apt1_living", "apt2_bed", "apt2_kitchen", "apt2_living", "apt2_luke", "office1_gates362", "office1_gates381", "office1_lounge", "office1_manolis", "office2_5a", "office2_5b"]
+  },
+  "STDLoc": {
+    "Cambridge": [[15.7,0.06],[15,0.17],[11.9,0.21],[3,0.13],[4.7,0.14]],
+    "7Scenes": [[0.46,0.15],[0.57,0.24],[0.45,0.26],[0.86,0.24],[0.93,0.21],[0.63,0.19],[1.42,0.41]],
+    "12Scenes": [[0.26,0.17],[0.36,0.17],[0.31,0.16],[0.28,0.18],[0.31,0.13],[0.49,0.20],[0.4,0.14],[0.36,0.17],[0.47,0.15],[0.34,0.17],[0.58,0.24],[0.57,0.22]],
+    "recall": {"7Scenes":[99.1,90.9,72.8],"12Scenes":[98.4,97.2,90.1],"Cambridge":[95.4,70.8,59.9]},
+    "source_notes": "Cambridge/7Scenes medians: original Tables 2/1. 12Scenes and extended recalls: cited STDLoc rows in ULF-Loc, not present in STDLoc original benchmark tables.",
+    "cambridge_original_total_ms":152.3,
+    "cambridge_fps_reported_in_ulfloc":3.9
+  },
+  "ULF-Loc": {
+    "Cambridge": [[7.49,0.04],[17.03,0.19],[10.26,0.19],[2.83,0.14],[3.65,0.11]],
+    "7Scenes": [[0.42,0.11],[0.44,0.19],[0.36,0.21],[0.73,0.20],[0.92,0.18],[0.65,0.13],[1.38,0.36]],
+    "12Scenes": [[0.29,0.19],[0.29,0.14],[0.29,0.12],[0.25,0.17],[0.26,0.12],[0.41,0.17],[0.35,0.14],[0.31,0.14],[0.43,0.13],[0.32,0.15],[0.47,0.22],[0.38,0.16]],
+    "recall": {"7Scenes":[99.5,93.2,75.0],"12Scenes":[99.2,98.8,94.1],"Cambridge":[93.7,72.0,62.2]},
+    "source_notes":"Tables 1/2/4/A/B; Appendix C.5. Numerical scene averages in generated tables are recomputed from published rounded cells, not copied rounded averages.",
+    "cambridge_fps":4.4
+  },
+  "recall_thresholds_cm_deg": {"Cambridge":[[50,5],[15,5],[10,5]],"7Scenes":[[5,5],[2,2],[1,1]],"12Scenes":[[5,5],[2,2],[1,1]]},
+  "hardware":"Both papers report RTX 4090. Local recorded runs use RTX 3090; do not claim same-hardware speedups."
+}

@@ -95,6 +95,7 @@ def build_projective_association_graph(
     maximum_epipolar_error_px: float = 2.0,
     epipolar_candidate_topk: int = 4,
     minimum_track_views: int = 3,
+    require_cycle: bool = True,
     view_bins: int = 8,
     view_direction_weight: float = 0.5,
     device: str = "cuda",
@@ -130,8 +131,8 @@ def build_projective_association_graph(
         maximum_epipolar_error_px=float(maximum_epipolar_error_px),
         epipolar_candidate_topk=int(epipolar_candidate_topk),
         minimum_track_views=int(minimum_track_views),
-        require_cycle=True,
-        allow_chain_tracks=True,
+        require_cycle=bool(require_cycle),
+        allow_chain_tracks=bool(require_cycle),
         return_pair_sidecar=True,
         device=device,
     )

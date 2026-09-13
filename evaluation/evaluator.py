@@ -58,7 +58,13 @@ def evaluate_dataset(
     localizer: SparseLocalizer,
     cameras: Iterable[CameraRecord],
     output: str | Path | None = None,
+    audit_correspondences: bool = False,
 ) -> dict[str, Any]:
+    if audit_correspondences and output is None:
+        raise ValueError("correspondence audit requires an output directory")
+    if audit_correspondences and (Path(output) / "correspondence_audit.npz").exists():
+        raise FileExistsError(Path(output) / "correspondence_audit.npz")
+    audit_rows = []
     rows = []
     rotation_errors = []
     translation_errors = []
@@ -86,6 +92,17 @@ def evaluate_dataset(
             result.intrinsic,
             result.pose.inliers,
         )
+        if audit_correspondences:
+            # Post-solve telemetry only: GT is never passed back to localization.
+            camera_xyz = points_3d @ camera.pose_w2c[:3, :3].T + camera.pose_w2c[:3, 3]
+            h = camera_xyz @ result.intrinsic.T
+            valid = camera_xyz[:, 2] > 1e-8
+            errors = np.full(len(points_3d), np.inf)
+            errors[valid] = np.linalg.norm(h[valid, :2] / h[valid, 2:3] - points_2d[valid], axis=1)
+            inlier = np.zeros(len(points_3d), dtype=bool)
+            inlier[result.pose.inliers] = True
+            audit_rows.append((result.matches.anchor_indices.cpu().numpy().astype(np.int64),
+                               errors, inlier))
         rotation_errors.append(rotation)
         translation_errors.append(translation)
         rows.append(
@@ -160,4 +177,15 @@ def evaluate_dataset(
         output.mkdir(parents=True, exist_ok=True)
         (output / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
         (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        if audit_correspondences:
+            np.savez_compressed(
+                output / "correspondence_audit.npz",
+                schema=np.array("anygsloc_postsolve_gt_diagnostic_v1"),
+                uses_test_gt=np.array(True),
+                query_names=np.array([row["image_name"] for row in rows]),
+                offsets=np.r_[0, np.cumsum([len(r[0]) for r in audit_rows])],
+                anchor_rows=np.concatenate([r[0] for r in audit_rows]) if audit_rows else np.array([], dtype=np.int64),
+                gt_reprojection_px=np.concatenate([r[1] for r in audit_rows]) if audit_rows else np.array([]),
+                inlier=np.concatenate([r[2] for r in audit_rows]) if audit_rows else np.array([], dtype=bool),
+            )
     return payload

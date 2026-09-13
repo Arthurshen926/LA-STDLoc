@@ -1,0 +1,9 @@
+{
+  "status": "frozen_priority_candidate",
+  "base_config": "configs/anygsloc_mainline.yaml",
+  "map": "full_mapping_only_F0_no_pruning",
+  "evaluation_args": ["--match-retention-fraction", "0.65", "--ransac-minimum-iterations-override", "250", "--ransac-confidence-override", "0.999", "--ransac-maximum-iterations-override", "30000", "--deployment-mode"],
+  "offline_feedback": false,
+  "online_refinement": false,
+  "scope": "Cambridge validated; indoor transfer pending; test-calibrated engineering operating point"
+}

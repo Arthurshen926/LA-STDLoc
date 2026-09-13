@@ -135,3 +135,32 @@ def test_consistent_depth_bias_does_not_move_or_penalize_track() -> None:
         **inputs, rendered_depth=None
     )
     assert torch.allclose(with_depth, without_depth)
+
+
+def test_fixed_ray_reconstruction_is_bitwise_invariant_to_auxiliary_depth():
+    # Conditional representation test only: fixed pixels, cameras, Track IDs,
+    # detector/descriptor evidence. V2 and completion are deliberately frozen.
+    K=torch.tensor([[100.,0.,64.],[0.,100.,64.],[0.,0.,1.]])
+    records={}
+    for i,center in enumerate([-.8,-.4,0.,.4,.8]):
+        T=torch.eye(4);T[0,3]=-center
+        records[str(i)]={'native_keypoints':torch.tensor([[64.-20.*center-.5,63.5]]),
+            'native_descriptors':torch.tensor([[1.,0.,0.]]),'native_scores':torch.ones(1),
+            'native_K':K,'pose_w2c':T,'native_input_hw':torch.tensor([128,128]),
+            'native_depth':torch.full((128,128),5.)}
+    association={'schema':ASSOCIATION_GRAPH_SCHEMA,'uses_source_mapping_rgb':False,'uses_test_queries':False,
+        'query_names':list(records),'query_bins':torch.arange(5),'diagnostics':{'track_count':1},
+        'component_statistics':{'identity_reliability':torch.ones(1)},
+        'tracks':{'track_index':torch.zeros(5,dtype=torch.long),'query_index':torch.arange(5),
+                  'keypoint_index':torch.zeros(5,dtype=torch.long),'confidence':torch.ones(5)}}
+    results=[]
+    for scale in [.01,1.,20.]:
+        payload={'schema':'render_observation_cache_v2','version':2,
+                 'uses_source_mapping_rgb':False,'uses_test_queries':False,
+                 'queries':{k:{**r,'native_depth':r['native_depth']*scale*(int(k)+1)} for k,r in records.items()}}
+        results.append(reconstruct_projective_anchors(GaussianRenderObservationProvider(payload),association,parallel_workers=1))
+    for result in results:
+        assert result['anchor_xyz'].shape==(1,3)
+        assert torch.allclose(result['anchor_xyz'],torch.tensor([[0.,0.,5.]]),atol=1e-5)
+        for field in ['anchor_xyz','anchor_features','anchor_position_covariance']:
+            assert torch.equal(result[field],results[0][field])

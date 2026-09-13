@@ -14,11 +14,13 @@ def main() -> None:
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--images", default="processed")
+    parser.add_argument("--input-image-domain", choices=['rectified','distorted'], help='Required with nonzero distortion; processed legacy Cambridge RGB is already rectified.')
     args = parser.parse_args()
     result = prepare_cambridge_mapping(
         args.dataset,
         args.output,
         images=args.images,
+        input_image_domain=args.input_image_domain,
     )
     print(json.dumps({key: value for key, value in result.items() if key != "records"}, indent=2))
 

@@ -35,6 +35,7 @@ def build_projective_completion(
     alpha_minimum: float,
     minimum_similarity: float,
     minimum_margin: float = 0.01,
+    robust_reweighting: bool = True,
     maximum_epipolar_error_px: float = 2.0,
     minimum_observations: int = 3,
     minimum_camera_families: int = 2,
@@ -280,7 +281,7 @@ def build_projective_completion(
             ).clamp(0, 1)
         },
     }
-    result = reconstruct_projective_anchors(observations, association)
+    result = reconstruct_projective_anchors(observations, association, robust_reweighting=robust_reweighting)
     result["schema"] = ANCHOR_CANDIDATE_SCHEMA
     result["candidate_kind"] = "depth_proposed_projective_completion"
     result["contract"].update(

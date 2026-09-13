@@ -111,12 +111,15 @@ def test_prepare_12scenes_reads_official_4x4_intrinsics(tmp_path: Path):
         _write_pose(data / f"frame-{index:06d}.pose.txt", float(index))
 
     manifest = prepare_12scenes(source, tmp_path / "prepared")
-    assert manifest["intrinsics"] == {
-        "fx": 1158.3,
-        "fy": 1153.53,
-        "cx": 649.0,
-        "cy": 483.5,
+    assert manifest["source_intrinsics"] == {
+        "fx": 1158.3, "fy": 1153.53, "cx": 649.0, "cy": 483.5,
     }
+    assert manifest["intrinsics"] == {
+        "fx": 1158.3, "fy": 1153.53, "cx": 648.0, "cy": 484.0,
+    }
+    dataset = ColmapDataset(tmp_path / 'prepared')
+    assert len(dataset.cameras) == 2
+    assert (tmp_path / 'prepared/masks.pkl').is_file()
 
 
 def test_prepare_reference_model_preserves_points_and_excludes_test_prior_images(
@@ -263,6 +266,16 @@ def test_simple_radial_rectification_respects_colmap_pixel_centers():
         expected_source_y_cv,
         atol=1e-4,
     )
+
+
+def test_offcenter_pinhole_is_recentered_with_pixels_not_only_metadata():
+    camera = SimpleNamespace(id=1,model='PINHOLE',width=64,height=48,
+                             params=np.array([50.,50.,34.,23.]))
+    rectification = _camera_rectification(camera)
+    assert rectification.pinhole == (50.,50.,32.,24.)
+    assert rectification.remap_x[10,10] == 12.
+    assert rectification.remap_y[10,10] == 9.
+    assert not rectification.valid_mask[:,63].any()
 
 
 def test_prepare_reference_model_rectifies_simple_radial_images(tmp_path: Path):

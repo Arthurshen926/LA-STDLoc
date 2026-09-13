@@ -2,6 +2,16 @@
 
 更新：2026-09-07。实验分支 `codex/anygsloc-paper-mainline`。
 
+**2026-09-08 重要勘误：历史 Vanilla 输入在 OldHospital/KingsCollege
+重复去畸变，已逐像素确认；固定地图补偿取得明显精度改善。
+下文为修复前历史结果，不可直接归因于 vanilla 先验算法上限。见
+[接入错误与补偿验证](vanilla_rectification_bug_20260908.md)。**
+
+后续状态：同协议 OldHospital 双先验重建与完整 test 已完成，逐 query
+TE/RE 重现历史 F0。新的固定几何描述子、几何来源、表面检测与观测修正
+实验见 [受控诊断续报](weak_prior_controlled_diagnostics_20260907.md)。
+下文“启动”部分是历史记录，不代表当前仍在等待基线重建。
+
 ## 当前决策
 
 不更换默认 F0 构图方案。有效行补偿、联合 Track 净化、cycle/core 覆盖
@@ -101,7 +111,7 @@ keypoints、descriptors、scores、K、pose、image size、depth、alpha 上
 - 旧净化产物曾将装饰器所在的 torch 文件误记为 reconstruction 源哈希，
   当前实现已修复。旧数值结果保留作开发证据，不作为完整代码溯源的晋级产物。
 
-## 协议对照：正在补齐
+## 协议对照：当时的启动记录（后续已完成）
 
 先在 OldHospital 对 MAtCHA / vanilla 2DGS 都从头执行：render extraction、
 V2 audit、association、triangulation、completion、identity metric、test。
@@ -110,7 +120,7 @@ V2 audit、association、triangulation、completion、identity metric、test。
 完成后还需核对运行期间是否发生变化。
 
 新产物根目录：`/mnt/pool/sqy/anygsloc_weak_prior_protocol_20260907`。
-当前已启动，不应当作已经完成的公平对照。
+当时处于已启动状态；后续已完成，最新核对结果见上方续报。
 
 启动时的关键源码哈希保存在
 `docs/evidence/weak_prior_protocol_20260907_source_start.json`。

@@ -63,14 +63,23 @@ def _load_v2_rows(
     *,
     observation_cache: Path,
     observation_cache_sha256: str,
+    cache_input: dict | None = None,
+    cache_configuration: dict | None = None,
 ) -> list[torch.Tensor]:
     records = {}
     shard_indices = set()
     expected_shard_count = len(paths)
+    prior_signatures = set()
     for path in paths:
         shard = torch.load(path, map_location="cpu", weights_only=False)
         shard_index = int(shard.get("shard_index", -1))
         shard_input = dict(shard.get("input", {}))
+        prior_signatures.add(tuple(shard_input.get(k) for k in ['gaussian_ply_sha256','gaussian_type','sh_degree','background']))
+        if cache_input and cache_input.get('gaussian_ply_sha256'):
+            from evidence.render_input_contract import validate_render_input
+            validate_render_input({'input':cache_input,'configuration':cache_configuration or {}},
+                prior_sha256=shard_input.get('gaussian_ply_sha256'),gaussian_type=shard_input.get('gaussian_type'),
+                sh_degree=shard_input.get('sh_degree',-1),background=shard_input.get('background'))
         if (
             shard.get("schema") != "lafgs_v7_mapping_render_quality_audit_shard"
             or shard.get("status") != "PASS"
@@ -95,6 +104,8 @@ def _load_v2_rows(
             if record["query_name"] != names[index]:
                 raise ValueError("V2 query registry differs from observation cache")
             records[index] = torch.as_tensor(record["row_valid"]).bool()
+    if len(prior_signatures) != 1:
+        raise ValueError('V2 shards use inconsistent Gaussian/render sources')
     if shard_indices != set(range(expected_shard_count)) or sorted(records) != list(
         range(len(names))
     ):
@@ -106,7 +117,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--observation-cache", type=Path, required=True)
     parser.add_argument("--v2-audit-shards", type=Path, nargs="+", required=True)
+    parser.add_argument(
+        "--disable-v2-row-filter", action="store_true",
+        help="Explicit no-V2 ablation: retain cached detector rows; audits are lineage-checked but not used to filter.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--disable-cycle-consistency", action="store_true")
+    parser.add_argument("--disable-robust-ray-reweighting", action="store_true")
     parser.add_argument(
         "--reuse-association-graph",
         type=Path,
@@ -154,6 +171,10 @@ def main() -> None:
     parser.add_argument("--reserve-image-grid-y", type=int, default=6)
     parser.add_argument("--reserve-image-grid-x", type=int, default=8)
     args = parser.parse_args()
+    if args.disable_v2_row_filter and args.reuse_association_graph is not None:
+        parser.error("no-V2 ablation must rebuild associations")
+    if args.disable_cycle_consistency and args.reuse_association_graph is not None:
+        parser.error("association ablation must rebuild associations")
     if not 0.0 < float(args.purification_minimum_weight) <= 1.0:
         parser.error("--purification-minimum-weight must lie inside (0,1]")
     if not 0.0 <= float(
@@ -186,13 +207,31 @@ def main() -> None:
         names,
         observation_cache=args.observation_cache,
         observation_cache_sha256=observation_cache_sha256,
+        cache_input=cache.get('input'), cache_configuration=cache.get('configuration'),
     )
+    original_v2_valid_count = sum(int(row.sum()) for row in rows)
+    if args.disable_v2_row_filter:
+        rows = [torch.ones_like(row, dtype=torch.bool) for row in rows]
     provider, source_rows, filter_report = build_v2_filtered_provider(
         cache,
         rows_by_query=rows,
         allow_empty_queries=True,
         maximum_rows_per_query=args.maximum_valid_rows_per_query,
     )
+    if args.disable_v2_row_filter:
+        filter_report = {
+            **filter_report,
+            "v2_row_filter_applied": False,
+            "row_filter_policy": "all_cached_detector_rows_no_v2_ablation",
+            "v2_valid_row_count_before_budget": original_v2_valid_count,
+            "audit_role": "lineage_checked_not_used_for_row_selection",
+            "filter_stage": "disabled_no_v2_ablation",
+            "row_budget_selection": (
+                "all_cached_detector_rows" if args.maximum_valid_rows_per_query is None
+                else "stable_detector_score_topk_without_v2"
+            ),
+        }
+        provider.payload["v2_preassociation_filter"] = filter_report
     # Release the unfiltered sparse tensors. Dense alpha/depth tensors remain
     # referenced by the filtered records for completion proposals.
     del cache
@@ -204,11 +243,14 @@ def main() -> None:
             provider, pair_neighbors=6, minimum_similarity=0.65,
             minimum_margin=0.01, maximum_epipolar_error_px=2.0,
             minimum_track_views=3, device=args.device,
+            require_cycle=not args.disable_cycle_consistency,
         )
         association["input_sha256"] = {
             "observation_cache": observation_cache_sha256,
             "v2_audit_shards": audit_shard_sha256,
         }
+        if args.disable_v2_row_filter:
+            association["input_sha256"]["v2_row_filter_disabled"] = True
         association["v2_preassociation_filter"] = filter_report
         association["source_keypoint_indices_by_query"] = source_rows
     else:
@@ -258,6 +300,7 @@ def main() -> None:
         minimum_parallax_deg=1.0, maximum_reprojection_px=2.0,
         parallel_workers=args.triangulation_workers,
         parallel_minimum_tracks=5000,
+        robust_reweighting=not args.disable_robust_ray_reweighting,
         joint_track_purification=args.joint_track_purification,
         purification_minimum_weight=args.purification_minimum_weight,
         purification_maximum_adjusted_fraction_per_track=(
@@ -275,13 +318,16 @@ def main() -> None:
             spatial_voxel_size_m=args.reserve_spatial_voxel_size_m,
             image_grid_shape=(args.reserve_image_grid_y, args.reserve_image_grid_x),
         )
-    base["candidate_kind"] = "v2_projective_track"
+    base["candidate_kind"] = (
+        "unfiltered_projective_track" if args.disable_v2_row_filter else "v2_projective_track"
+    )
     completion = None
     completion_unavailable_reason = None
     try:
         completion = build_projective_completion(
             provider, association, voxel_size_m=0.05, alpha_minimum=0.05,
             minimum_similarity=0.7, minimum_margin=0.01,
+            robust_reweighting=not args.disable_robust_ray_reweighting,
             maximum_epipolar_error_px=2.0, minimum_observations=3,
             minimum_camera_families=2, maximum_rows_per_view=256,
             safety_maximum_components=100000, device=args.device,
@@ -307,6 +353,8 @@ def main() -> None:
         completion = remap_candidate_rows_to_source(completion, source_rows)
         candidate_parts.append(completion)
     candidates = merge_projective_candidates(candidate_parts)
+    if args.disable_v2_row_filter:
+        candidates["contract"]["v2_row_filter_applied"] = False
     reconstruction_seconds = time.perf_counter() - reconstruction_started
 
     association_path = args.output_dir / "association_graph.pt"
@@ -329,7 +377,10 @@ def main() -> None:
             else str(args.reuse_association_graph.resolve())
         ),
         "reused_association_graph_sha256": reused_association_sha256,
-        "v8_filter_stage": "after_detection_before_pair_association",
+        "v8_filter_stage": (
+            "disabled_no_v2_ablation" if args.disable_v2_row_filter
+            else "after_detection_before_pair_association"
+        ),
         "validity_compensated_detection": {
             "enabled": args.maximum_valid_rows_per_query is not None,
             "raw_keypoints_per_query": int(
@@ -361,11 +412,14 @@ def main() -> None:
     state["projective_anchor_construction"] = {
         **dict(state["projective_anchor_construction"]),
         "schema": "lafgs_v8_v2_projective_anchor_construction",
-        "v2_preassociation_filter": True,
+        "v2_preassociation_filter": not args.disable_v2_row_filter,
     }
     state["provenance"] = {
         **dict(state["provenance"]),
-        "mapping_source": "gaussian_render_v2_filtered_before_projective_association",
+        "mapping_source": (
+            "gaussian_render_no_v2_ablation" if args.disable_v2_row_filter
+            else "gaussian_render_v2_filtered_before_projective_association"
+        ),
     }
     mapping_poses = torch.stack(
         [provider.build_view(index).pose_w2c.float().cpu() for index in range(len(provider))]
@@ -407,7 +461,7 @@ def main() -> None:
         },
         "contracts": {
             "superpoint_complete_unmasked_rgb": True,
-            "v2_before_pair_association": True,
+            "v2_before_pair_association": not args.disable_v2_row_filter,
             "association_reused_exactly": args.reuse_association_graph is not None,
             "validity_compensated_detection": (
                 args.maximum_valid_rows_per_query is not None
@@ -428,7 +482,7 @@ def main() -> None:
             "all_tracks_rebuilt": args.reuse_association_graph is None,
             "tracks_reused_exactly": args.reuse_association_graph is not None,
             "all_geometry_retriangulated": True,
-            "all_descriptors_fused_from_v2_valid_observations": True,
+            "all_descriptors_fused_from_v2_valid_observations": not args.disable_v2_row_filter,
             "query_detector_used": False, "feedback_used": False,
             "mapping_only_anchor_view_support": True,
             "empty_v2_query_policy": "retain_zero_row_mapping_view",

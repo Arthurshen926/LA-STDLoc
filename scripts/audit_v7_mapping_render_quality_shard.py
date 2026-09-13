@@ -65,6 +65,7 @@ def main() -> None:
     parser.add_argument("--shard-count", type=int, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--progress-interval", type=int, default=25)
+    parser.add_argument('--allow-legacy-unbound-cache', action='store_true', help='Explicit audit-only compatibility for historical caches without a prior SHA.')
     args = parser.parse_args()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         parser.error("invalid shard index/count")
@@ -75,6 +76,11 @@ def main() -> None:
     map_path = args.anchor_map.resolve() if args.anchor_map is not None else None
     prior_path = args.gaussian_ply.resolve()
     cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+    from evidence.render_input_contract import validate_render_input
+    prior_sha256 = sha256_file(prior_path)
+    prior_binding_verified = validate_render_input(cache, prior_sha256=prior_sha256,
+        gaussian_type=args.gaussian_type, sh_degree=args.sh_degree,
+        background='white' if args.white_background else 'black', allow_legacy=args.allow_legacy_unbound_cache)
     if (
         cache.get("schema") != "render_observation_cache_v2"
         or cache.get("uses_source_mapping_rgb") is not False
@@ -204,6 +210,8 @@ def main() -> None:
                 flush=True,
             )
 
+    if sha256_file(prior_path) != prior_sha256:
+        raise ValueError('Gaussian prior changed during render audit')
     payload = {
         "schema": SCHEMA,
         "version": 1,
@@ -220,6 +228,7 @@ def main() -> None:
             "dataset": str(args.dataset.resolve()),
             "gaussian_ply": str(prior_path),
             "gaussian_ply_sha256": sha256_file(prior_path),
+            "cache_prior_binding_verified": prior_binding_verified,
             "gaussian_type": args.gaussian_type,
             "sh_degree": int(args.sh_degree),
             "background": "white" if args.white_background else "black",

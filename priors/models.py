@@ -145,7 +145,7 @@ class FrozenGaussianModel(nn.Module):
             torch.from_numpy(features_rest).to(device), requires_grad=False
         )
         self._opacity = nn.Parameter(
-            torch.from_numpy(opacity).to(device), requires_grad=False
+            torch.from_numpy(opacity.copy(order="C")).to(device), requires_grad=False
         )
         self._scaling = nn.Parameter(
             torch.from_numpy(scales).to(device), requires_grad=False

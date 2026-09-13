@@ -147,6 +147,7 @@ def prepare_cambridge_mapping(
     *,
     images: str = "processed",
     view_count: int = 32,
+    input_image_domain: str | None = None,
 ) -> dict:
     """Prepare exactly 32 pose-diverse, mapping-only Cambridge views."""
 
@@ -188,7 +189,8 @@ def prepare_cambridge_mapping(
             if pixels.shape[:2] != (int(camera.height), int(camera.width)):
                 raise ValueError(f"image/camera size mismatch for {source}")
             matrix, distortion = _camera_matrix(camera)
-            undistorted = cv2.undistort(pixels, matrix, distortion, None, matrix)
+            from priors.image_domain import prepare_pixels
+            undistorted, matrix = prepare_pixels(pixels, matrix, distortion, domain=input_image_domain)
             flat = _flat_name(name)
             destination = temporary / "images" / flat
             if not cv2.imwrite(str(destination), undistorted):
@@ -230,6 +232,8 @@ def prepare_cambridge_mapping(
             "uses_test_queries": False,
             "dataset_root": str(dataset_root),
             "images_source": images,
+            "input_image_domain": input_image_domain or "zero_distortion_inferred_rectified",
+            "undistortion": "explicit_domain_colmap_half_center_v2",
             "mapping_split": str(dataset_root / "dataset_train.txt"),
             "mapping_split_sha256": _sha256(dataset_root / "dataset_train.txt"),
             "source_colmap_images": str(extrinsic_path),

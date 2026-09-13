@@ -22,7 +22,32 @@ from data.colmap import (
 
 
 def _focal_to_fov(focal: float, pixels: int) -> float:
+    if not math.isfinite(float(focal)) or float(focal) <= 0 or int(pixels) <= 0:
+        raise ValueError('camera focal length and image extent must be finite and positive')
     return 2.0 * math.atan(float(pixels) / (2.0 * float(focal)))
+
+
+def validate_centered_camera(intrinsic) -> None:
+    """The current FOV-only raster/PnP interface cannot retain a shifted center.
+
+    Reject incompatible calibration instead of silently localizing with another
+    camera. This does not rectify pixels or infer that distorted RGB is valid.
+    Legacy Cambridge processed RGB has a separately audited rectification path.
+    """
+    params = np.asarray(intrinsic.params, dtype=np.float64)
+    if intrinsic.model in {'SIMPLE_PINHOLE', 'SIMPLE_RADIAL'}:
+        expected = 3 if intrinsic.model == 'SIMPLE_PINHOLE' else 4
+        principal = params[1:3]
+    elif intrinsic.model in {'PINHOLE', 'OPENCV'}:
+        expected = 4 if intrinsic.model == 'PINHOLE' else 8
+        principal = params[2:4]
+    else:
+        raise ValueError(f'unsupported camera model: {intrinsic.model}')
+    if params.shape != (expected,) or not np.isfinite(params).all():
+        raise ValueError('camera parameters have an invalid shape or nonfinite values')
+    center = np.array([intrinsic.width / 2., intrinsic.height / 2.])
+    if not np.allclose(principal, center, atol=1e-6, rtol=0):
+        raise ValueError('non-centered principal point is unsupported by the FOV-only renderer/PnP; rectify images and calibration together before loading')
 
 
 @dataclass(frozen=True)
@@ -54,6 +79,9 @@ class ColmapDataset:
         self._by_name = {camera.image_name: camera for camera in self.cameras}
         if len(self._by_name) != len(self.cameras):
             raise ValueError("camera image names must be unique")
+        missing_test = self._test_names - self._by_name.keys()
+        if missing_test:
+            raise ValueError(f'test split references unregistered images: {sorted(missing_test)[:3]}')
         self._masks = self._load_masks()
 
     def _load_test_names(self) -> frozenset[str]:
@@ -63,12 +91,15 @@ class ColmapDataset:
             names = [
                 line.split()[0]
                 for line in cambridge.read_text().splitlines()
-                if line and not line.startswith("#")
+                if line.strip() and not line.lstrip().startswith("#")
+                and Path(line.split()[0]).suffix.lower() in {'.png','.jpg','.jpeg','.webp'}
             ]
         elif scene_list.is_file():
             names = [line.strip() for line in scene_list.read_text().splitlines()]
         else:
             names = []
+        if len(names) != len(set(names)):
+            raise ValueError('test split contains duplicate image names')
         return frozenset(names)
 
     def _load_cameras(self) -> list[CameraRecord]:
@@ -80,6 +111,8 @@ class ColmapDataset:
             extrinsics = read_extrinsics_text(str(sparse / "images.txt"))
             intrinsics = read_intrinsics_text(str(sparse / "cameras.txt"))
         records = []
+        for intrinsic in intrinsics.values():
+            validate_centered_camera(intrinsic)
         for key in extrinsics:
             extrinsic = extrinsics[key]
             intrinsic = intrinsics[extrinsic.camera_id]
@@ -128,6 +161,12 @@ class ColmapDataset:
     @staticmethod
     def load_image(camera: CameraRecord) -> torch.Tensor:
         with Image.open(camera.image_path) as image:
+            # Palette/CMYK channels are not RGB channels. Preserve the legacy
+            # RGB, RGBA and grayscale numeric paths used by frozen evaluations.
+            if image.mode in {'P', 'CMYK', 'LA', '1'}:
+                image = image.convert('RGB')
+            elif image.mode not in {'RGB', 'RGBA', 'L'}:
+                raise ValueError(f'unsupported image mode {image.mode}; explicit 8-bit RGB conversion required')
             value = torch.from_numpy(np.asarray(image, dtype=np.float32) / 255.0)
         if value.ndim == 2:
             value = value[..., None]

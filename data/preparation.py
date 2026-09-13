@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image
 
 from data.colmap import (
+    Camera as ColmapCamera,
     read_extrinsics_binary,
     read_extrinsics_text,
     read_intrinsics_binary,
@@ -220,7 +221,9 @@ def _camera_rectification(camera) -> CameraRectification:
     params = np.asarray(camera.params, dtype=np.float64)
     fx, fy, cx, cy = _pinhole_parameters(camera)
     width, height = int(camera.width), int(camera.height)
-    if camera.model in {"SIMPLE_PINHOLE", "PINHOLE"}:
+    target_cx, target_cy = width / 2., height / 2.
+    centered = abs(cx-target_cx) <= 1e-6 and abs(cy-target_cy) <= 1e-6
+    if camera.model in {"SIMPLE_PINHOLE", "PINHOLE"} and centered:
         return CameraRectification(
             pinhole=(fx, fy, cx, cy),
             remap_x=None,
@@ -229,7 +232,9 @@ def _camera_rectification(camera) -> CameraRectification:
             source_model=str(camera.model),
             source_parameters=tuple(float(value) for value in params),
         )
-    if camera.model == "SIMPLE_RADIAL":
+    if camera.model in {"SIMPLE_PINHOLE", "PINHOLE"}:
+        distortion = np.zeros(5, dtype=np.float64)
+    elif camera.model == "SIMPLE_RADIAL":
         if params.size != 4:
             raise ValueError(f"Invalid SIMPLE_RADIAL camera {camera.id}")
         distortion = np.array([params[3], 0.0, 0.0, 0.0, 0.0])
@@ -250,11 +255,13 @@ def _camera_rectification(camera) -> CameraRectification:
         [[fx, 0.0, cx - 0.5], [0.0, fy, cy - 0.5], [0.0, 0.0, 1.0]],
         dtype=np.float64,
     )
+    target_matrix = camera_matrix.copy()
+    target_matrix[:2,2] = [target_cx-.5, target_cy-.5]
     remap_x, remap_y = cv2.initUndistortRectifyMap(
         camera_matrix,
         distortion,
         np.eye(3, dtype=np.float64),
-        camera_matrix,
+        target_matrix,
         (width, height),
         cv2.CV_32FC1,
     )
@@ -268,7 +275,7 @@ def _camera_rectification(camera) -> CameraRectification:
         borderValue=0,
     ).astype(np.bool_)
     return CameraRectification(
-        pinhole=(fx, fy, cx, cy),
+        pinhole=(fx, fy, target_cx, target_cy),
         remap_x=remap_x,
         remap_y=remap_y,
         valid_mask=valid_mask,
@@ -507,6 +514,10 @@ def _write_colmap_scene(
     if not any(not frame.is_test for frame in frames):
         raise ValueError("Prepared scene has no mapping frames")
     width, height, fx, fy, cx, cy = intrinsics
+    original_intrinsics = dict(fx=fx, fy=fy, cx=cx, cy=cy)
+    input_camera = ColmapCamera(1, 'PINHOLE', width, height, np.array([fx,fy,cx,cy]))
+    rectification = _camera_rectification(input_camera)
+    fx, fy, cx, cy = rectification.pinhole
     processed = output / "processed"
     sparse = output / "sparse/0"
     prior_images = output / "prior_input/images"
@@ -527,7 +538,7 @@ def _write_colmap_scene(
                     f"Image/calibration size mismatch for {frame.source_image}: "
                     f"{image.size} != {(width, height)}"
                 )
-        _link(frame.source_image, processed / frame.image_name)
+        _write_rectified_image(frame.source_image, processed / frame.image_name, rectification)
         pose_w2c = np.linalg.inv(frame.pose_c2w)
         qvec = rotmat2qvec(pose_w2c[:3, :3])
         tvec = pose_w2c[:3, 3]
@@ -536,7 +547,7 @@ def _write_colmap_scene(
         if frame.is_test:
             test_names.append(frame.image_name)
         else:
-            _link(frame.source_image, prior_images / frame.image_name)
+            _link(processed / frame.image_name, prior_images / frame.image_name)
             mapping_image_lines.extend([" ".join(map(str, values)), ""])
     camera_text = (
         "# CAMERA_ID MODEL WIDTH HEIGHT PARAMS\n"
@@ -563,6 +574,8 @@ def _write_colmap_scene(
         "width": width,
         "height": height,
         "intrinsics": {"fx": fx, "fy": fy, "cx": cx, "cy": cy},
+        "source_intrinsics": original_intrinsics,
+        "principal_point_rectification": _rectification_manifest(input_camera, rectification),
         "mapping_frames": len(frames) - len(test_names),
         "test_frames": len(test_names),
         "total_frames": len(frames),
@@ -573,6 +586,10 @@ def _write_colmap_scene(
             "sparse_model": "prior_input/sparse/0",
         },
     }
+    if rectification.remap_x is not None:
+        channels = (np.ones((height,width),dtype=bool), np.ones((height,width),dtype=bool), rectification.valid_mask)
+        with (output / 'masks.pkl').open('wb') as handle:
+            pickle.dump({frame.image_name: channels for frame in frames}, handle, protocol=pickle.HIGHEST_PROTOCOL)
     (output / "dataset_manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )

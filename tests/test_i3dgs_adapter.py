@@ -5,6 +5,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from plyfile import PlyData, PlyElement
 
 from priors.i3dgs_adapter import (
@@ -43,7 +44,7 @@ def test_prepare_cambridge_mapping_is_flat_mapping_only(tmp_path: Path) -> None:
     source = tmp_path / "scene"
     output = tmp_path / "prepared"
     _write_cambridge_fixture(source)
-    payload = prepare_cambridge_mapping(source, output, downscale=2.0)
+    payload = prepare_cambridge_mapping(source, output, downscale=2.0, input_image_domain='rectified')
 
     assert payload["schema"] == PREPARED_SCHEMA
     assert payload["image_count"] == 6
@@ -73,7 +74,8 @@ def test_sh_rotation_preserves_directional_colour() -> None:
     )
 
 
-def test_export_i3dgs_leaves_to_mapping_world(tmp_path: Path) -> None:
+@pytest.mark.parametrize('invalid_rotation', [None, float('nan'), 0.0])
+def test_export_i3dgs_leaves_to_mapping_world(tmp_path: Path, invalid_rotation) -> None:
     angle = np.deg2rad(90.0)
     rotation = np.asarray(
         [[np.cos(angle), -np.sin(angle), 0], [np.sin(angle), np.cos(angle), 0], [0, 0, 1]],
@@ -115,6 +117,10 @@ def test_export_i3dgs_leaves_to_mapping_world(tmp_path: Path) -> None:
     vertices["rot_0"] = 1.0
     vertices["child_0"] = [-1, 0]
     vertices["parent"] = [1, -1]
+    if invalid_rotation is not None:
+        vertices = np.concatenate([vertices, vertices[:1].copy()])
+        for index in range(4):
+            vertices[f'rot_{index}'][-1] = invalid_rotation
     source_path = tmp_path / "hierarchy.ply"
     PlyData([PlyElement.describe(vertices, "vertex")], text=False).write(source_path)
 
@@ -126,7 +132,8 @@ def test_export_i3dgs_leaves_to_mapping_world(tmp_path: Path) -> None:
         output_manifest=tmp_path / "export.json",
     )
     output = PlyData.read(output_path)["vertex"].data
-    assert report["source_vertex_count"] == 2
+    assert report["source_vertex_count"] == (2 if invalid_rotation is None else 3)
+    assert report['dropped_invalid_rotation_leaf_count'] == int(invalid_rotation is not None)
     assert report["primitive_count"] == 1
     expected_center = -rotation.T @ first_w2c[:3, 3]
     expected_xyz = np.asarray([1.0, 2.0, 3.0]) @ rotation / 0.5 + expected_center

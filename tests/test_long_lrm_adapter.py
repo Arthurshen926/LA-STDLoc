@@ -65,7 +65,7 @@ def test_prepare_and_export_long_lrm_mapping_only(tmp_path: Path) -> None:
     dataset = tmp_path / "ShopFacade"
     prepared_root = tmp_path / "prepared"
     _write_cambridge_fixture(dataset)
-    prepared = prepare_cambridge_mapping(dataset, prepared_root)
+    prepared = prepare_cambridge_mapping(dataset, prepared_root, input_image_domain='rectified')
     assert prepared["schema"] == PREPARED_SCHEMA
     assert prepared["role"] == "mapping_only"
     assert prepared["uses_test_queries"] is False

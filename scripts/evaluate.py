@@ -109,6 +109,10 @@ def main() -> None:
         help="Evaluate A0 by materializing a Stage-A state with an identity metric.",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--audit-correspondences", action="store_true",
+                        help="Save post-solve GT correspondence diagnostics; no influence on matching or pose.")
+    parser.add_argument("--allow-source-rgb-diagnostic", action="store_true",
+                        help="Explicitly evaluate a source-RGB diagnostic map, not a source-image-free result.")
     parser.add_argument("--config", type=Path, default="configs/paper_mainline.yaml")
     parser.add_argument("--split", choices=("mapping", "test"), default="test")
     parser.add_argument("--device", default="cuda")
@@ -864,12 +868,14 @@ def main() -> None:
             args.final_pose_polish_maximum_update_rotation_deg
         ),
         profile_mode=not args.deployment_mode,
+        allow_source_rgb_diagnostic=args.allow_source_rgb_diagnostic,
     )
     result = evaluate_dataset(
         dataset=dataset,
         localizer=localizer,
         cameras=cameras,
         output=args.output,
+        audit_correspondences=args.audit_correspondences,
     )
     if (
         sha256_file(map_path) != artifact_contract["map"]["sha256"]
@@ -885,6 +891,7 @@ def main() -> None:
     result["summary"].update(
         {
             "evaluated_split": args.split,
+            "source_rgb_diagnostic_opt_in": bool(args.allow_source_rgb_diagnostic),
             "random_seed": int(args.seed),
             "ransac_confidence": float(ransac_confidence),
             "ransac_maximum_iterations": int(ransac_maximum_iterations),
@@ -942,6 +949,8 @@ def main() -> None:
             {
                 "schema": "lafgs_sparse_deployment_contract",
                 "version": 2,
+                "source_rgb_diagnostic_opt_in": bool(args.allow_source_rgb_diagnostic),
+                "source_image_free_deployment_claim": not bool(args.allow_source_rgb_diagnostic),
                 "keypoint_count": int(keypoint_count),
                 "keypoint_count_override": (
                     int(args.keypoint_count_override)

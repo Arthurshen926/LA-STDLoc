@@ -1644,6 +1644,7 @@ def robust_triangulate_associations(
     minimum_view_bins: int = 2,
     huber_delta_px: float = 2.0,
     iterations: int = 3,
+    robust_reweighting: bool = True,
     minimum_parallax_deg: float = 1.0,
     parallax_quantile: float = 0.75,
     maximum_reprojection_px: float = 2.0,
@@ -1800,7 +1801,7 @@ def robust_triangulate_associations(
             point, normal, condition = _weighted_ray_intersection(
                 centers, directions, weight
             )
-            for _ in range(max(int(iterations), 1)):
+            for _ in range(max(int(iterations), 1) if robust_reweighting else 0):
                 projected, depth = _project(
                     point, camera_K[queries], pose_w2c[queries]
                 )

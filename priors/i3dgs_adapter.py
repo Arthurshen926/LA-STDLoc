@@ -62,6 +62,14 @@ def _read_mapping_names(dataset_root: Path) -> list[str]:
         names.append(fields[0])
     if not names or len(names) != len(set(names)):
         raise ValueError("mapping split must contain unique pose-bearing image rows")
+    for name in names:
+        _flat_name(name)
+    test_path = dataset_root / 'dataset_test.txt'
+    if test_path.is_file():
+        tests = {line.split()[0] for line in test_path.read_text().splitlines()
+                 if line.split() and line.split()[0].lower().endswith(('.png','.jpg','.jpeg','.webp'))}
+        if set(names) & tests:
+            raise ValueError('mapping/test image overlap would leak test RGB into prior training')
     return names
 
 
@@ -120,6 +128,7 @@ def _write_prepared_image(
     destination: Path,
     camera,
     downscale: float,
+    input_image_domain: str | None = None,
 ) -> tuple[int, int, np.ndarray]:
     image = cv2.imread(str(source), cv2.IMREAD_COLOR)
     if image is None:
@@ -131,24 +140,9 @@ def _write_prepared_image(
     height = int(round(camera.height / downscale))
     if width < 16 or height < 16:
         raise ValueError("prepared image dimensions are unreasonably small")
-    target_matrix = matrix.copy()
-    target_matrix[0] /= downscale
-    target_matrix[1] /= downscale
-    map_x, map_y = cv2.initUndistortRectifyMap(
-        matrix,
-        distortion,
-        None,
-        target_matrix,
-        (width, height),
-        cv2.CV_32FC1,
-    )
-    prepared = cv2.remap(
-        image,
-        map_x,
-        map_y,
-        interpolation=cv2.INTER_AREA,
-        borderMode=cv2.BORDER_CONSTANT,
-    )
+    from priors.image_domain import prepare_pixels
+    prepared, target_matrix = prepare_pixels(image, matrix, distortion,
+        domain=input_image_domain, width=width, height=height)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not cv2.imwrite(str(destination), prepared):
         raise OSError(f"failed to write prepared image: {destination}")
@@ -190,6 +184,7 @@ def prepare_cambridge_mapping(
     *,
     images: str = "processed",
     downscale: float = 2.0,
+    input_image_domain: str | None = None,
 ) -> dict:
     """Materialize an undistorted, flat, mapping-only i3DGS dataset."""
 
@@ -238,7 +233,7 @@ def prepare_cambridge_mapping(
             source = dataset_root / images / name
             destination = temporary / "images" / flat
             width, height, target_matrix = _write_prepared_image(
-                source, destination, camera, downscale
+                source, destination, camera, downscale, input_image_domain
             )
             camera_id = ordinal + 1
             image_id = ordinal + 1
@@ -290,7 +285,8 @@ def prepare_cambridge_mapping(
             "source_colmap_cameras": str(intrinsic_path),
             "source_colmap_cameras_sha256": _sha256(intrinsic_path),
             "downscale": float(downscale),
-            "undistortion": "opencv_same_intrinsics_then_downscale",
+            "input_image_domain": input_image_domain or "zero_distortion_inferred_rectified",
+            "undistortion": "explicit_domain_colmap_half_center_then_area_resize_v2",
             "image_count": len(records),
             "prepared_images_sha256": aggregate.hexdigest(),
             "i3dgs_internal_pose_normalization": normalization,
@@ -467,8 +463,12 @@ def export_i3dgs_world_prior(
         [vertex[f"rot_{index}"][leaf_mask] for index in range(4)], axis=1
     ).astype(np.float64)
     norms = np.linalg.norm(raw_quaternions, axis=1)
-    if np.any(~np.isfinite(norms)) or np.any(norms <= 1e-9):
-        raise ValueError("i3DGS PLY contains invalid rotations")
+    valid_rotation = np.isfinite(norms) & (norms > 1e-9)
+    # Keep the row mask through conversion: scipy rejects NaNs before the
+    # existing non-finite primitive filter can run. Identity is only a temporary
+    # conversion placeholder; invalid primitives are never written to the PLY.
+    raw_quaternions[~valid_rotation] = [1.0, 0.0, 0.0, 0.0]
+    norms[~valid_rotation] = 1.0
     local_xyzw = (raw_quaternions / norms[:, None])[:, [1, 2, 3, 0]]
     local_rotations = Rotation.from_quat(local_xyzw).as_matrix()
     world_rotations = rotation_local_to_world[None] @ local_rotations
@@ -481,7 +481,8 @@ def export_i3dgs_world_prior(
     scales -= math.log(scale)
     opacity = np.asarray(vertex["opacity"][leaf_mask], dtype=np.float64)
     finite = (
-        np.isfinite(xyz_world).all(axis=1)
+        valid_rotation
+        & np.isfinite(xyz_world).all(axis=1)
         & np.isfinite(coefficients_world).all(axis=(1, 2))
         & np.isfinite(world_wxyz).all(axis=1)
         & np.isfinite(scales).all(axis=1)
@@ -536,6 +537,7 @@ def export_i3dgs_world_prior(
         "source_vertex_count": int(vertex.shape[0]),
         "source_leaf_count": int(leaf_mask.sum()),
         "dropped_nonfinite_leaf_count": dropped_nonfinite,
+        "dropped_invalid_rotation_leaf_count": int((~valid_rotation).sum()),
         "primitive_count": rows,
         "sh_degree": degree,
         "source_sh_layout": source_layout,

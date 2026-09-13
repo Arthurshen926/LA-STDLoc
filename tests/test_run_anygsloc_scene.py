@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.run_anygsloc_scene import command_plan, resolve_prior
+from scripts.run_anygsloc_scene import command_plan, resolve_prior, run_stage
 
 
 def _args(tmp_path: Path) -> argparse.Namespace:
@@ -122,3 +122,25 @@ def test_feature_trained_prior_fails_closed(tmp_path):
     args.gaussian_ply = None
     with pytest.raises(ValueError, match="feature-trained"):
         resolve_prior(args)
+
+
+def test_unattested_stage_cannot_be_reused(tmp_path):
+    output=tmp_path/'result.txt';output.write_text('old')
+    with pytest.raises(RuntimeError,match='unattested'):
+        run_stage({'name':'synthetic','output':str(output),'command':['unused']},root=tmp_path,env={})
+
+
+def test_stage_reuse_binds_inputs_and_output_content(tmp_path):
+    import sys
+    source=tmp_path/'input.txt';source.write_text('one')
+    output=tmp_path/'result.txt'
+    stage={'name':'synthetic','output':str(output),'command':[sys.executable,'-c',
+           'import pathlib,sys;pathlib.Path(sys.argv[2]).write_text(pathlib.Path(sys.argv[1]).read_text())',str(source),'--output',str(output)]}
+    stage['command'][2]='import pathlib,sys;pathlib.Path(sys.argv[3]).write_text(pathlib.Path(sys.argv[1]).read_text())'
+    first=run_stage(stage,root=tmp_path,env={})
+    assert first['status']=='executed'
+    assert run_stage(stage,root=tmp_path,env={})['status']=='reused'
+    source.write_text('two')
+    with pytest.raises(RuntimeError,match='stale'): run_stage(stage,root=tmp_path,env={})
+    source.write_text('one');output.write_text('corrupt')
+    with pytest.raises(RuntimeError,match='artifacts changed'): run_stage(stage,root=tmp_path,env={})

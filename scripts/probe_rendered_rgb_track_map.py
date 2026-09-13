@@ -129,6 +129,7 @@ def _resolve_render_cameras(mapping, args):
 @torch.inference_mode()
 def _render_feature_cache(args, output: Path) -> dict:
     started = time.perf_counter()
+    prior_sha256 = sha256_file(args.gaussian_ply)
     dataset = ColmapDataset(args.dataset, images=args.images)
     mapping = dataset.split("mapping")
     cameras, camera_registry, actual_registry_sha = _resolve_render_cameras(
@@ -275,6 +276,8 @@ def _render_feature_cache(args, output: Path) -> dict:
                 flush=True,
             )
 
+    if sha256_file(args.gaussian_ply) != prior_sha256:
+        raise ValueError('Gaussian prior changed during render materialization')
     payload = {
         "schema": (
             RENDER_OBSERVATION_SCHEMA
@@ -286,6 +289,8 @@ def _render_feature_cache(args, output: Path) -> dict:
         "uses_test_queries": False,
         "uses_rendered_depth": args.render_valid_alpha_minimum is not None,
         "uses_gaussian_geometry_for_triangulation": False,
+        "input": {"gaussian_ply": str(Path(args.gaussian_ply).resolve()),
+                  "gaussian_ply_sha256": prior_sha256},
         "implementation_sha256": {
             "observation_materializer": sha256_file(Path(__file__)),
             "mapping_supersampling": sha256_file(

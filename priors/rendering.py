@@ -10,6 +10,7 @@
 #
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -17,6 +18,22 @@ import gsplat
 from gsplat import rasterization, rasterization_2dgs
 
 from priors.models import FrozenGaussianModel
+
+
+def _rasterization_2dgs_inference_retry(**kwargs):
+    """Reduce intersection-list memory without changing cameras or primitives.
+
+    Only inference may retry. Leave the except scope before retrying so the
+    failed CUDA call's traceback no longer retains its intermediate tensors.
+    """
+    try:
+        return rasterization_2dgs(**kwargs)
+    except torch.cuda.OutOfMemoryError:
+        if torch.is_grad_enabled() or kwargs.get('tile_size', 16) != 16:
+            raise
+    torch.cuda.empty_cache()
+    warnings.warn('2DGS inference OOM: retrying with 32px tiles; unchanged resolution and primitives', RuntimeWarning)
+    return rasterization_2dgs(**dict(kwargs, tile_size=32))
 
 
 def _radii_to_visibility(info):
@@ -158,7 +175,7 @@ def get_render_visible_mask_2dgs(
         dim=-1,
     )
     colors, alphas, normals, surf_normals, distort, median_depth, info = (
-        rasterization_2dgs(
+        _rasterization_2dgs_inference_retry(
             means=means3D,  # [N, 3]
             quats=rotations,  # [N, 4]
             scales=scales,  # [N, 3]
@@ -417,7 +434,7 @@ def render_gsplat_2dgs(
 
     render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     colors, alphas, normals, surf_normals, distort, median_depth, info = (
-        rasterization_2dgs(
+        _rasterization_2dgs_inference_retry(
             means=means3D,  # [N, 3]
             quats=rotations,  # [N, 4]
             scales=scales,  # [N, 3]
@@ -760,7 +777,7 @@ def render_from_pose_gsplat_2dgs(
 
     render_opacity = _apply_opacity_multiplier(opacity.squeeze(-1), opacity_multiplier)
     colors, alphas, normals, surf_normals, distort, median_depth, info = (
-        rasterization_2dgs(
+        _rasterization_2dgs_inference_retry(
             means=means3D,  # [N, 3]
             quats=rotations,  # [N, 4]
             scales=scales,  # [N, 3]

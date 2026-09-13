@@ -191,12 +191,65 @@ def command_plan(args: argparse.Namespace, prior: dict[str, Any]) -> list[dict[s
     return stages
 
 
+def stage_contract(stage: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
+    """Conservative content binding; same filename is not evidence of reuse."""
+    command = stage['command']
+    inputs = {}
+    excluded = {'--output','--output-dir','--output_model'}
+    for index, token in enumerate(command):
+        if index and command[index-1] in excluded:
+            continue
+        path = Path(token)
+        if not token.startswith('-') and path.is_file():
+            inputs[str(path.resolve())] = sha256_file(path)
+    if '--dataset' in command:
+        dataset = Path(command[command.index('--dataset')+1])
+        for relative in ['sparse/0/cameras.bin','sparse/0/cameras.txt','sparse/0/images.bin','sparse/0/images.txt',
+                         'sparse/0/list_test.txt','dataset_train.txt','dataset_test.txt']:
+            path = dataset / relative
+            if path.is_file(): inputs[str(path.resolve())] = sha256_file(path)
+        if stage['name'] == 'base_evaluation':
+            from data.datasets import ColmapDataset
+            folder = command[command.index('--images')+1] if '--images' in command else 'processed'
+            data = ColmapDataset(dataset, images=folder)
+            for camera in data.split('test'):
+                inputs[str(camera.image_path.resolve())] = sha256_file(camera.image_path)
+            for path in [dataset/'masks.pkl',dataset/folder/'masks.pkl']:
+                if path.is_file(): inputs[str(path.resolve())] = sha256_file(path)
+    repo = Path(__file__).resolve().parents[1]
+    code = {}
+    for directory in ['common','data','evidence','features','localization','evaluation','priors','map_learning','topology','scripts']:
+        for path in sorted((repo/directory).rglob('*.py')):
+            code[str(path.relative_to(repo))] = sha256_file(path)
+    body = {'version':1,'command':command,'cwd':str(Path.cwd()),'inputs':inputs,'code':code,
+            'environment':{k:env.get(k) for k in ['PYTHONPATH','LD_LIBRARY_PATH','OMP_NUM_THREADS','MKL_NUM_THREADS']}}
+    body['sha256'] = hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()
+    return body
+
+
+def stage_outputs(stage):
+    output = Path(stage['output'])
+    paths = [output]
+    if stage['name'] in {'projective_map','base_evaluation'}:
+        paths = sorted(p for p in output.parent.iterdir() if p.is_file() and p.suffix in {'.pt','.json','.npz'})
+    return {str(p.resolve()):sha256_file(p) for p in paths}
+
+
 def run_stage(stage: dict[str, Any], *, root: Path, env: dict[str, str]) -> dict[str, Any]:
     output = Path(stage["output"])
     log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    contract = stage_contract(stage,env)
+    completion_path = log_dir / f"{stage['name']}.timing.json"
     if output.is_file():
-        return {"status": "reused", "seconds": 0.0, "output_sha256": sha256_file(output)}
+        if not completion_path.is_file():
+            raise RuntimeError('unattested existing stage output; use a fresh output directory')
+        previous = json.loads(completion_path.read_text())
+        if previous.get('input_contract_sha256') != contract['sha256']:
+            raise RuntimeError('stage inputs, command, environment or code changed; refusing stale output reuse')
+        if previous.get('artifact_sha256') != stage_outputs(stage):
+            raise RuntimeError('stage artifacts changed since completion; refusing reuse')
+        return {**previous, 'status': 'reused', 'seconds': 0.0}
     if stage["name"] == "projective_map" and output.parent.exists():
         raise RuntimeError(f"partial map output must be quarantined: {output.parent}")
     if stage["name"] == "base_evaluation" and output.parent.exists():
@@ -204,7 +257,7 @@ def run_stage(stage: dict[str, Any], *, root: Path, env: dict[str, str]) -> dict
     if stage["name"] not in ("projective_map", "base_evaluation"):
         output.parent.mkdir(parents=True, exist_ok=True)
     command_path = log_dir / f"{stage['name']}.command.json"
-    atomic_json(command_path, {"command": stage["command"], "cwd": str(Path.cwd())})
+    atomic_json(command_path, {"command": stage["command"], "cwd": str(Path.cwd()), 'input_contract':contract})
     started = time.perf_counter()
     with (log_dir / f"{stage['name']}.stdout.log").open("wb") as stdout, (
         log_dir / f"{stage['name']}.stderr.log"
@@ -215,7 +268,10 @@ def run_stage(stage: dict[str, Any], *, root: Path, env: dict[str, str]) -> dict
         raise subprocess.CalledProcessError(result.returncode, stage["command"])
     if not output.is_file():
         raise RuntimeError(f"stage completed without declared output: {output}")
-    record = {"status": "executed", "seconds": elapsed, "output_sha256": sha256_file(output)}
+    if stage_contract(stage,env)['sha256'] != contract['sha256']:
+        raise RuntimeError('stage inputs or implementation changed while running; output is not attested')
+    record = {"status": "executed", "seconds": elapsed, "output_sha256": sha256_file(output),
+              'input_contract_sha256':contract['sha256'], 'artifact_sha256':stage_outputs(stage)}
     atomic_json(log_dir / f"{stage['name']}.timing.json", record)
     return record
 
