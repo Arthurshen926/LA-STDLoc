@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from features.superpoint import SuperPoint, render_validity_mask_from_alpha
+from anygsloc.features.superpoint import SuperPoint, render_validity_mask_from_alpha
 
 
 def _model() -> SuperPoint:

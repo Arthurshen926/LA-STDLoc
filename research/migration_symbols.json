@@ -1,0 +1,378 @@
+{
+  "scripts.probe_rendered_rgb_track_map": {
+    "destination": "anygsloc/mapping/render_observations.py",
+    "source_sha256": "b3d60b468d510124583ddf7af003ee75fcce0939ae76bf3740d3239d90ac2316",
+    "symbols": [
+      "_atomic_torch_save",
+      "_intrinsic",
+      "_resolve_render_cameras",
+      "_render_feature_cache"
+    ]
+  },
+  "scripts.audit_v7_mapping_render_quality_shard": {
+    "destination": "anygsloc/mapping/audit_render.py",
+    "source_sha256": "e1edffae520f0ba9d50d4ee405ad5289d8f0dd3b3e01d7a86a17a2126837c429",
+    "symbols": [
+      "_atomic_save",
+      "main"
+    ]
+  },
+  "scripts.materialize_v8_v2_projective_map": {
+    "destination": "anygsloc/mapping/materialize.py",
+    "source_sha256": "ebcdac0ac732fc0266b50d58ef7ccb1e231def998015b185833fa10a35e3674a",
+    "symbols": [
+      "_save",
+      "_implementation_sha256",
+      "_load_v2_rows",
+      "main"
+    ]
+  },
+  "scripts.materialize_purity_candidates": {
+    "destination": "anygsloc/mapping/subset.py",
+    "source_sha256": "b2acde96c8d16e3fcd2a36ce98e09557211c3d0be83fc22897a61cffb9cb0afb",
+    "symbols": [
+      "subset"
+    ]
+  },
+  "topology.adaptive_distillation": {
+    "destination": "anygsloc/mapping/pose_evidence.py",
+    "source_sha256": "496955ac955bd0c273e7a49981bfbb10ec2c2ff8f315624368e4e4529faff11c",
+    "symbols": [
+      "_ordered_rows",
+      "_query_row_matchability",
+      "_project_world_covariance",
+      "_build_pose_evidence",
+      "_initial_pose_state"
+    ]
+  },
+  "topology.sufficiency_selector": {
+    "destination": "anygsloc/mapping/selector.py",
+    "source_sha256": "932bcf3a3cb4f6e93f9af5592a94b91b0da166f92acb5eee1aff3ac79db593ff",
+    "symbols": [
+      "select_precision_compatibility",
+      "HierarchicalSufficiencySelector"
+    ]
+  },
+  "topology.dynamic_reserve": {
+    "destination": "anygsloc/mapping/observability.py",
+    "source_sha256": "ed53e00279d4c2204abde85ec173a5978fdd48761cfe434333092142902c0083",
+    "symbols": [
+      "PoseEvidence",
+      "IncrementalPoseRowAssignment",
+      "spatial_voxel_ids",
+      "greedy_dynamic_pose_reserve"
+    ]
+  },
+  "data.datasets": {
+    "destination": "anygsloc/data/datasets.py",
+    "source_sha256": "d96e89cced828f7b480f455ccc6ba75232f92dd7d080876a630e75a23a4bc042",
+    "symbols": [
+      "_focal_to_fov",
+      "validate_centered_camera",
+      "CameraRecord",
+      "ColmapDataset"
+    ]
+  },
+  "evaluation.metrics": {
+    "destination": "anygsloc/evaluation/metrics.py",
+    "source_sha256": "788dc071e1172a2f0d4751c18f1f53d7ba114f29ff798ab909cbaae34317270f",
+    "symbols": [
+      "pose_error",
+      "summarize_pose_errors"
+    ]
+  },
+  "features.superpoint": {
+    "destination": "anygsloc/features/superpoint.py",
+    "source_sha256": "fc98954ccb47591ecb6a48789071a59ca86a076010d7101c3c8e5e778c1c00b0",
+    "symbols": [
+      "resolve_superpoint_weights",
+      "batched_nms",
+      "render_validity_mask_from_alpha",
+      "select_top_k_keypoints",
+      "sample_descriptors",
+      "quadratic_subpixel_keypoints",
+      "SuperPoint"
+    ]
+  },
+  "evidence.parallel_triangulation": {
+    "destination": "anygsloc/mapping/parallel_triangulation.py",
+    "source_sha256": "cc17ce397ad6784cc89398d187159b766f72ddd1048c8b0f5d78d0f4f203bebe",
+    "symbols": [
+      "_canonical_tensor",
+      "_pack_inputs",
+      "_load_packed",
+      "_default_command",
+      "_fixed_ranges",
+      "_run_fresh_processes",
+      "robust_triangulate_associations_fresh_cpu",
+      "_run_worker",
+      "main"
+    ]
+  },
+  "evidence.observation_provider": {
+    "destination": "anygsloc/mapping/observation_provider.py",
+    "source_sha256": "a912e3fba4784538cdddcae5a48a044f3f8a7711b662593ba22bd87f2366583e",
+    "symbols": [
+      "_tensor",
+      "ObservationView",
+      "ObservationProvider",
+      "GaussianRenderObservationProvider"
+    ]
+  },
+  "evidence.projective_association": {
+    "destination": "anygsloc/mapping/projective_association.py",
+    "source_sha256": "83a32ff2c65c1c63e14f8eb346c917a638a5f4982ef13978f432f89e5909c7c4",
+    "symbols": [
+      "_render_valid_rows",
+      "_component_statistics",
+      "build_projective_association_graph"
+    ]
+  },
+  "evidence.projective_completion": {
+    "destination": "anygsloc/mapping/projective_completion.py",
+    "source_sha256": "0a76e6cd31fe91fd70abf34fa7a743876fdc8e591485ab8712e7dc2404a665e4",
+    "symbols": [
+      "_unproject",
+      "build_projective_completion"
+    ]
+  },
+  "evidence.triangulation": {
+    "destination": "anygsloc/mapping/triangulation.py",
+    "source_sha256": "2fa53cd761e24df5c71b5e70b1f40fe07baa8916c31a66d05ce9906ae40b07df",
+    "symbols": [
+      "camera_pose_bins",
+      "_skew",
+      "fundamental_from_known_poses",
+      "symmetric_epipolar_distance",
+      "reciprocal_epipolar_matches",
+      "_cycle_supported_pair_edges",
+      "_SparseDisjointSet",
+      "_ConflictAwareTrackSet",
+      "_graded_track_components",
+      "build_cycle_consistent_tracks",
+      "_deduplicate_landmark_query",
+      "_camera_rays",
+      "_weighted_ray_intersection",
+      "_project",
+      "_reprojection_normal_matrix",
+      "_surface_supported_weak_axis_update",
+      "robust_triangulate_associations"
+    ]
+  },
+  "common.v6_contracts": {
+    "destination": "anygsloc/mapping/contracts.py",
+    "source_sha256": "22618f8be2e5fc926d08bafb588ac2aa3ca9acb754930aff3007a22c333eb05c",
+    "symbols": [
+      "require_mapping_only",
+      "require_schema",
+      "exact_identity_positive_contract",
+      "require_exact_identity_positive_contract"
+    ]
+  },
+  "evidence.projective_reconstruction": {
+    "destination": "anygsloc/mapping/projective_reconstruction.py",
+    "source_sha256": "e45594230bbd79c6939e3d992848c9c31683e6f76f276e4546c2d44325ebc9ee",
+    "symbols": [
+      "_gather",
+      "_robust_residual_scale",
+      "joint_track_observation_weights",
+      "reconstruct_projective_anchors"
+    ]
+  },
+  "common.hashing": {
+    "destination": "anygsloc/utils/hashing.py",
+    "source_sha256": "1fc0fb86931e542dac53c302dc26a1475542b2ee8a8c5f9341da439eaae5d234",
+    "symbols": [
+      "sha256_file"
+    ]
+  },
+  "evidence.render_input_contract": {
+    "destination": "anygsloc/mapping/render_input_contract.py",
+    "source_sha256": "afafa02836b535688646eaefed34a33edcb1ad0b97aa8f6e04c260b89cd11d10",
+    "symbols": [
+      "validate_render_input"
+    ]
+  },
+  "evidence.v2_filtered_observations": {
+    "destination": "anygsloc/mapping/v2_filtered_observations.py",
+    "source_sha256": "cabf8d14ac2b5eee5abe2616c6d7ed10d83383e645ab85702806ead09ee0cbc6",
+    "symbols": [
+      "build_v2_filtered_provider",
+      "remap_candidate_rows_to_source"
+    ]
+  },
+  "evidence.virtual_camera_registry": {
+    "destination": "anygsloc/mapping/virtual_camera_registry.py",
+    "source_sha256": "3fcf510e96c1b1f77ea807227f94d3f9911b2d3c874660b498317472f2b8b785",
+    "symbols": [
+      "camera_intrinsic",
+      "_geometry_key",
+      "_digest",
+      "build_virtual_camera_registry",
+      "resolve_virtual_camera_registry"
+    ]
+  },
+  "features.extractor": {
+    "destination": "anygsloc/features/extractor.py",
+    "source_sha256": "e36c436b77944a3b5ba1c0525a8e6a3796714f3f43a7fb8979df707c7c5df792",
+    "symbols": [
+      "FeatureExtractor"
+    ]
+  },
+  "priors.models": {
+    "destination": "anygsloc/priors/models.py",
+    "source_sha256": "f5660a42c46665a58a956af4631dc4813faa9b5fc989764ab67c5845f5bc2642",
+    "symbols": [
+      "_ordered_properties",
+      "_stack_properties",
+      "FrozenGaussianModel",
+      "GaussianModel3D",
+      "GaussianModel2D"
+    ]
+  },
+  "priors.mapping_supersampling": {
+    "destination": "anygsloc/priors/mapping_supersampling.py",
+    "source_sha256": "b3777cb68fe294195b7be377ea18f57d54d11a4165093ac44f3602a1f768c391",
+    "symbols": [
+      "mapping_render_sampling_contract",
+      "_channel_first",
+      "downsample_mapping_render_package",
+      "render_mapping_rgbd"
+    ]
+  },
+  "priors.rendering": {
+    "destination": "anygsloc/priors/rendering.py",
+    "source_sha256": "e1ee50c89eab7e7d9a08465f2d15ebd29d5453ad99b3b10d0ed93b54de9409c2",
+    "symbols": [
+      "_rasterization_2dgs_inference_retry",
+      "_radii_to_visibility",
+      "_apply_opacity_multiplier",
+      "_render_mode_channel_count",
+      "_background_for_channels",
+      "render_from_pose_gsplat",
+      "render_from_pose_gsplat_2dgs"
+    ]
+  },
+  "evidence.v7_render_certificate": {
+    "destination": "anygsloc/mapping/render_certificate.py",
+    "source_sha256": "9276286f35185c6e68b562d47dfc0ead72d7866c18e9466655e115d7a0b9f5c6",
+    "symbols": [
+      "CertificateThresholds",
+      "_validate_thresholds",
+      "_image_tensors",
+      "_sample_rows",
+      "_depth_discontinuity",
+      "_border_mask",
+      "_scaled_radius",
+      "_local_average",
+      "_normalized_map",
+      "rgb_structure_support_mask",
+      "extreme_distortion_row_mask",
+      "certify_v7_render"
+    ]
+  },
+  "evidence.cycle_core_reserve": {
+    "destination": "anygsloc/mapping/cycle_core_reserve.py",
+    "source_sha256": "8ff908453b228c7294afa1558b3ac6b71c9ad6add4a17924be39c0349c8040d3",
+    "symbols": [
+      "_subset_candidate",
+      "select_cycle_core_coverage_reserve"
+    ]
+  },
+  "map_learning.v24_anchor_view_support": {
+    "destination": "anygsloc/mapping/view_support.py",
+    "source_sha256": "1aae0b0fe2d59b2d0fd9d4bf17fa30f2d33f83da98a74eeef93709f8397f8933",
+    "symbols": [
+      "_camera_centers",
+      "_direction_modes",
+      "build_anchor_view_support"
+    ]
+  },
+  "topology.v6_anchor_map": {
+    "destination": "anygsloc/mapping/anchor_map.py",
+    "source_sha256": "e5049443a36addd8d58fe8b571accffc12a1595e5f17fe08f449ef100500b76d",
+    "symbols": [
+      "merge_projective_candidates",
+      "materialize_projective_anchor_map",
+      "identity_metric_state"
+    ]
+  },
+  "topology.matching_coverage": {
+    "destination": "anygsloc/mapping/coverage.py",
+    "source_sha256": "c53aeab894da766de87b24d43b9c37589c79d204dfebf85e2dd0864aaa2bfdac",
+    "symbols": [
+      "IncrementalBipartiteCoverage",
+      "query_weights_from_groups",
+      "greedy_matching_reserve"
+    ]
+  },
+  "topology.pose_information": {
+    "destination": "anygsloc/mapping/pose_information.py",
+    "source_sha256": "a072924b4f6c162ca494359f51ec10f59d683e08f5d36ead587f05be926dca83",
+    "symbols": [
+      "pose_jacobian_analytic",
+      "task_scaled_pose_jacobian",
+      "fisher_contributions",
+      "translation_schur_complement",
+      "_spd_eigenvalues",
+      "_spd_logdet",
+      "conditional_add_gain"
+    ]
+  },
+  "data.colmap": {
+    "destination": "anygsloc/data/colmap.py",
+    "source_sha256": "fdefb67e37f596e2c972f98d5a8d49eaa7425bac33f4e79a4bd33d8e302a408a",
+    "symbols": [
+      "qvec2rotmat",
+      "Image",
+      "read_next_bytes",
+      "read_intrinsics_text",
+      "read_extrinsics_binary",
+      "read_intrinsics_binary",
+      "read_extrinsics_text"
+    ]
+  },
+  "features.multiview_fusion": {
+    "destination": "anygsloc/features/multiview_fusion.py",
+    "source_sha256": "572400cb0edfc36fdf7b9c6c7e429a7b8fc9daeab2a0bfaceee1b6bd465d84e8",
+    "symbols": []
+  },
+  "features.raster_sampling": {
+    "destination": "anygsloc/features/raster_sampling.py",
+    "source_sha256": "986c24d7e6ec6e5084066736f2d2e7c69d2ab85a5c0346baf6e8737b478ce0d9",
+    "symbols": [
+      "sample_raster_at_grid_uv"
+    ]
+  },
+  "evidence.camera_pair_policy": {
+    "destination": "anygsloc/mapping/camera_pair_policy.py",
+    "source_sha256": "fa9e3d43443586c5b5162dda7b4b71dad490837564a5d288836211836bd5bbd9",
+    "symbols": [
+      "_camera_centers_and_axes",
+      "candidate_camera_pairs",
+      "_camera_pair_geometry_table"
+    ]
+  },
+  "evidence.tracks": {
+    "destination": "anygsloc/mapping/tracks.py",
+    "source_sha256": "eb63a9583c99c9d2c61376fe42aa6201e7b1f98736be27189c5d8bb0b68321d2",
+    "symbols": [
+      "robust_fuse_track_descriptors",
+      "fuse_projective_anchor_observations"
+    ]
+  },
+  "map_learning.metric": {
+    "destination": "anygsloc/mapping/identity.py",
+    "source_sha256": "3766b1f38c6ca3b00fbfb4c2890d026b2d365dd47d38721b2e368e2bd3512fef",
+    "symbols": [
+      "SharedLowRankMetric"
+    ]
+  },
+  "evidence.parallax_stratified_pair_policy": {
+    "destination": "anygsloc/mapping/parallax_stratified_pair_policy.py",
+    "source_sha256": "07b8b5127756d52e745c31d08249ae330baf35b0a9cc4c5e0d97184e1eb97697",
+    "symbols": [
+      "parallax_stratified_pairs"
+    ]
+  }
+}

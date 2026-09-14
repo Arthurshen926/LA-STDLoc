@@ -1,7 +1,7 @@
 import torch
 
-from topology.dynamic_reserve import PoseEvidence
-from topology.sufficiency_selector import (
+from anygsloc.mapping.observability import PoseEvidence
+from anygsloc.mapping.selector import (
     CompatibilitySufficiencySelector,
     HierarchicalSufficiencySelector,
 )
@@ -35,9 +35,7 @@ def test_compatibility_selector_uses_one_state_and_primary_reason():
     assert selector.selected_ids.tolist() == [0, 3]
     assert torch.equal(
         selector.compatibility_materialization_ids,
-        torch.unique(
-            torch.cat((core, coverage)), sorted=False
-        ),
+        torch.unique(torch.cat((core, coverage)), sorted=False),
     )
     assert matching.counts.tolist() == [2, 2]
     assert report["unmet_query_count"] == 0
@@ -122,9 +120,7 @@ def test_compatibility_selector_appends_observability_to_same_trace():
     assert artifact["selected_universe_ids"].tolist() == [0, 1]
     assert torch.equal(
         artifact["compatibility_materialization_ids"],
-        torch.unique(
-            torch.cat((torch.tensor([0]), selected)), sorted=False
-        ),
+        torch.unique(torch.cat((torch.tensor([0]), selected)), sorted=False),
     )
     assert artifact["primary_selection_reasons"][-1] == "observability_completion"
     assert artifact["candidate_partitions"] == {

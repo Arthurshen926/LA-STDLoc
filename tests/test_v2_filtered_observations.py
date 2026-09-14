@@ -1,7 +1,7 @@
 import torch
 import pytest
 
-from evidence.v2_filtered_observations import (
+from anygsloc.mapping.v2_filtered_observations import (
     build_v2_filtered_provider,
     remap_candidate_rows_to_source,
 )
@@ -20,8 +20,10 @@ def _cache() -> dict:
         "native_depth": torch.ones(8, 8),
     }
     return {
-        "schema": "render_observation_cache_v2", "version": 2,
-        "uses_source_mapping_rgb": False, "uses_test_queries": False,
+        "schema": "render_observation_cache_v2",
+        "version": 2,
+        "uses_source_mapping_rgb": False,
+        "uses_test_queries": False,
         "queries": {"seq/a.png": record},
     }
 
@@ -47,10 +49,11 @@ def test_candidate_csr_is_remapped_to_original_cache_rows() -> None:
         },
         "contract": {},
     }
-    remapped = remap_candidate_rows_to_source(
-        candidate, [torch.tensor([4, 9])]
-    )
-    assert remapped["projective_anchor_observations"]["keypoint_indices"].tolist() == [4, 9]
+    remapped = remap_candidate_rows_to_source(candidate, [torch.tensor([4, 9])])
+    assert remapped["projective_anchor_observations"]["keypoint_indices"].tolist() == [
+        4,
+        9,
+    ]
     assert remapped["contract"]["observation_rows_remapped_to_source_cache"] is True
 
 

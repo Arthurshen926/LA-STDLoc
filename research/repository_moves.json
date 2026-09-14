@@ -1,0 +1,27 @@
+{
+  "moved_roots": [
+    "common",
+    "data",
+    "evaluation",
+    "evidence",
+    "features",
+    "localization",
+    "map_learning",
+    "priors",
+    "topology",
+    "visualization",
+    "scripts",
+    "configs",
+    "tests",
+    "paper_baseline",
+    "benchmarks",
+    "third_party_patches",
+    "paper",
+    "docs"
+  ],
+  "legacy_root": "research/legacy",
+  "additional_files": {
+    "CITATION.cff": "research/legacy/CITATION.cff",
+    "requirements.txt (preserved original)": "research/legacy/requirements.txt"
+  }
+}

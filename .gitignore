@@ -190,3 +190,6 @@ checkpoints/
 wandb/
 *.pth
 *.ckpt
+
+# Recoverable local build artifacts moved during repository migration.
+/research/build_artifacts/

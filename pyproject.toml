@@ -3,36 +3,31 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lafgs"
-version = "0.1.0"
-description = "Rendering-to-localization topology distillation for Gaussian scene priors"
+name = "anygsloc"
+version = "0.3.0"
+description = "Frozen Gaussian-to-anchor mapping and compact sparse localization"
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = {file = "LICENSE"}
 dependencies = [
-  "gsplat==1.5.3",
-  "matplotlib>=3.7",
-  "ninja==1.13.0",
   "numpy>=1.24,<2",
   "opencv-python>=4.8",
   "Pillow>=10",
-  "plyfile>=1.1",
   "poselib==2.0.5",
-  "PyYAML>=6",
-  "scipy>=1.10",
   "torch>=2.0,<2.5",
   "torchvision>=0.15,<0.20",
-  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<9"]
+mapping = ["gsplat==1.5.3", "matplotlib>=3.7", "ninja==1.13.0", "plyfile>=1.1", "PyYAML>=6", "scipy>=1.10", "tqdm>=4.66"]
 
-[tool.setuptools]
-packages = [
-  "common", "data", "evaluation", "evidence", "features",
-  "localization", "map_learning", "priors", "topology", "visualization",
-]
+[project.scripts]
+anygsloc = "anygsloc.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["anygsloc", "anygsloc.*"]
+exclude = ["research*", "tests*", "tools*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

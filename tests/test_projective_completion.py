@@ -1,9 +1,9 @@
 import pytest
 import torch
 
-from evidence.observation_provider import GaussianRenderObservationProvider
-from evidence.projective_completion import build_projective_completion
-from evidence.triangulation import reciprocal_epipolar_matches
+from anygsloc.mapping.observation_provider import GaussianRenderObservationProvider
+from anygsloc.mapping.projective_completion import build_projective_completion
+from anygsloc.mapping.triangulation import reciprocal_epipolar_matches
 
 
 def test_projective_completion_rejects_invalid_voxel_size() -> None:
@@ -18,9 +18,7 @@ def test_projective_completion_rejects_invalid_voxel_size() -> None:
 
 
 def test_single_candidate_reciprocal_match_has_no_runner_up() -> None:
-    intrinsic = torch.tensor(
-        [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
-    )
+    intrinsic = torch.tensor([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
     pose_a = torch.eye(4)
     pose_b = torch.eye(4)
     pose_b[0, 3] = -1.0
@@ -45,9 +43,7 @@ def test_single_candidate_reciprocal_match_has_no_runner_up() -> None:
 
 def test_completion_uses_target_only_to_seed_support_region() -> None:
     point = torch.tensor([0.0, 0.0, 5.0])
-    intrinsic = torch.tensor(
-        [[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]]
-    )
+    intrinsic = torch.tensor([[100.0, 0.0, 50.0], [0.0, 100.0, 50.0], [0.0, 0.0, 1.0]])
     queries = {}
     names = []
     for index, center_x in enumerate((0.0, 0.5, 1.0, 1.5)):
