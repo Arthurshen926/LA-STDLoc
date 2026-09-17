@@ -30,6 +30,24 @@ def main():
     p.add_argument('--run-tag', default='test')
     p.add_argument('native', nargs=argparse.REMAINDER)
     a = p.parse_args()
+    delegation = a.receipt.parent.parent / 'delegation.json'
+    if delegation.is_file():
+        entries = json.loads(delegation.read_text())
+        delegated = entries.get(str(a.receipt))
+        if delegated and os.environ.get('ANYGSLOC_DELEGATE_EXECUTOR') != '1':
+            while True:
+                state_path = Path(delegated['state'])
+                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                result = state.get('jobs', {}).get(delegated['job'], {})
+                if result.get('status') == 'complete':
+                    receipt = json.loads(a.receipt.read_text())
+                    if receipt.get('status') != 'complete':
+                        raise RuntimeError('delegated receipt is not complete')
+                    print('Reusing completed delegated task:', delegated['job'], flush=True)
+                    return
+                if result.get('status') in {'failed', 'blocked', 'interrupted'}:
+                    raise RuntimeError('delegated task failed: ' + delegated['job'])
+                time.sleep(5)
     if a.receipt.exists():
         raise FileExistsError(a.receipt)
     sys.path.insert(0, str(a.repo))
